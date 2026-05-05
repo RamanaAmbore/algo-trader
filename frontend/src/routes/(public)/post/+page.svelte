@@ -77,6 +77,14 @@
   </div>
 {:else if error && !content}
   <div class="p-3 rounded bg-red-50 text-red-700 text-sm border border-red-200">{error}</div>
+{:else if !content}
+  <div class="flex flex-col items-center justify-center py-12 text-center">
+    <h2 class="text-base font-semibold text-[#1a2744] mb-2">Insights coming soon</h2>
+    <p class="text-sm text-[#1e3050]/80 max-w-sm leading-relaxed">
+      We publish thoughts on markets, trading systems, and risk management here.
+      Check back soon — or <a href="/contact" class="underline text-[#1a2744] hover:text-[#c8a84b]">contact us</a> if there's something specific you'd like us to write about.
+    </p>
+  </div>
 {:else if content}
   <div class="md-body">
     {@html renderMarkdown(content)}

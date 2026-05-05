@@ -93,13 +93,17 @@
   // Shared SIM / LIVE pills — amber for simulated (matches the page-top
   // "SIMULATOR ACTIVE" banner), emerald for live. Replaces the pink
   // badge that was making the Order log look like an error list.
-  const SIM_PILL   = '<span class="mode-pill mode-pill-sim">SIM</span>';
-  const LIVE_PILL  = '<span class="mode-pill mode-pill-live">LIVE</span>';
-  const PAPER_PILL = '<span class="mode-pill mode-pill-paper">PAPER</span>';
+  const SIM_PILL    = '<span class="mode-pill mode-pill-sim">SIM</span>';
+  const LIVE_PILL   = '<span class="mode-pill mode-pill-live">LIVE</span>';
+  const PAPER_PILL  = '<span class="mode-pill mode-pill-paper">PAPER</span>';
+  const REPLAY_PILL = '<span class="mode-pill mode-pill-replay">REPLAY</span>';
+  const SHADOW_PILL = '<span class="mode-pill mode-pill-shadow">SHADOW</span>';
 
   function _modePill(mode) {
-    if (mode === 'sim')   return SIM_PILL;
-    if (mode === 'paper') return PAPER_PILL;
+    if (mode === 'sim')    return SIM_PILL;
+    if (mode === 'paper')  return PAPER_PILL;
+    if (mode === 'replay') return REPLAY_PILL;
+    if (mode === 'shadow') return SHADOW_PILL;
     return LIVE_PILL;
   }
 
@@ -219,7 +223,11 @@
       ? ` <span class="log-chip"><span class="log-chip-key">chase:</span>#${o.attempts}</span>`
       : '';
     const engine = o.engine ? ` <span class="log-chip"><span class="log-chip-key">engine:</span>${o.engine}</span>` : '';
-    return `<span class="${rowCls}"><span class="log-ts">${t}</span> ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${statusChip}${attemptChip}${engine}</span>`;
+    // Agent-id chip — links back to the firing agent on /agents.
+    const agentChip = o.agent_id
+      ? ` <a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
+      : '';
+    return `<span class="${rowCls}"><span class="log-ts">${t}</span> ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${statusChip}${attemptChip}${engine}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -298,7 +306,11 @@
 {:else}
 <pre class="log-panel {heightClass}">{#if logTab === 'order'}{@html _orderLogHtml()}{:else if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
   const t = _shortTime(e.timestamp);
-  return `<span class="log-agent-default"><span class="log-ts">${t}</span> ${e.event_type||''} ${e.trigger_condition||''}</span>`;
+  const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
+            : e.event_type === 'action_success' ? 'log-agent-success'
+            : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
+            : 'log-agent-default';
+  return `<span class="${cls}"><span class="log-ts">${t}</span> ${e.event_type||''} ${e.trigger_condition||''}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
   const t = parseLogLineTime(l);
   const rest = t ? stripTs(l) : l;
@@ -379,6 +391,18 @@
     background: rgba(56,189,248,0.14);
     color: #7dd3fc;
     border-color: rgba(56,189,248,0.45);
+  }
+  /* Mode-4 replay — green, matching the navbar REPLAY badge. */
+  :global(.mode-pill-replay) {
+    background: rgba(74,222,128,0.14);
+    color: #4ade80;
+    border-color: rgba(74,222,128,0.45);
+  }
+  /* Mode-5 shadow — orange, matching the navbar SHADOW badge. */
+  :global(.mode-pill-shadow) {
+    background: rgba(251,146,60,0.14);
+    color: #fb923c;
+    border-color: rgba(251,146,60,0.45);
   }
 
 </style>

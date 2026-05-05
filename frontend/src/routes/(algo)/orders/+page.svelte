@@ -133,10 +133,11 @@
     try { orderLog = await fetchRecentAgentEvents(100); }
     catch (e) { /* ignore */ }
   }
-  async function loadAgentLog() {
-    try { agentLog = await fetchRecentAgentEvents(100); }
-    catch (e) { /* ignore */ }
-  }
+  // agentLog is intentionally kept empty on the Orders page — it is the
+  // same data source as orderLog (fetchRecentAgentEvents), so populating
+  // both causes the Terminal tab to render every event twice. The Orders
+  // page LogPanel only needs orderLog (for filteredOrder + Terminal) and
+  // orderRows (for the structured Order tab). The Agent tab is idle here.
   async function loadSystemLog() {
     try {
       const d = await fetchAdminLogs(100);
@@ -145,7 +146,6 @@
   }
   function loadCurrentLog() {
     if (logTab === 'order') loadOrderLog();
-    else if (logTab === 'agent') loadAgentLog();
     else if (logTab === 'system') loadSystemLog();
   }
 

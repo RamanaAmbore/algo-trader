@@ -29,6 +29,11 @@
 {#if $authStore.user}
   <div class="w-full space-y-4">
 
+    <!-- Coming-soon banner -->
+    <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 leading-relaxed">
+      Portfolio dashboard is coming soon — your partner contribution and profit-sharing terms are summarised below. Live NAV and YTD performance will be wired in shortly.
+    </div>
+
     <!-- Partner summary card -->
     <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5">
       <h2 class="page-heading">Partner Summary</h2>

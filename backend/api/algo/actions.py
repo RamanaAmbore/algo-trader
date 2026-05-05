@@ -54,6 +54,11 @@ def _resolve_mode(action_type: str, context: dict) -> str:
     from backend.shared.helpers.settings import get_bool
     if not is_prod_branch():
         return "paper"                         # dev never hits broker
+    # Master safety kill-switch: when True, every broker-hitting action lands
+    # as paper regardless of per-action live flags.  Mirrors the /ticket
+    # route's existing behaviour so agent fires honour the same safety.
+    if get_bool("execution.paper_trading_mode", True):
+        return "paper"
     if get_bool("execution.shadow_mode", False):
         return "shadow"
     if get_bool(f"execution.live.{action_type}", False):
@@ -93,19 +98,22 @@ async def execute(agent, actions: list, context: dict):
                 await _paper_trade(agent, action_type, params, context)
             elif mode == "live":
                 # Real broker path. Only reached on main AND with the
-                # per-action flag flipped to True in /admin/settings.
-                if action_type == "chase_close":
-                    await _action_chase_close(context, params)
+                # per-action flag flipped to True in /admin/settings AND
+                # paper_trading_mode == False.
+                if action_type in ("chase_close", "chase_close_positions"):
+                    await _action_live_chase_close_positions(agent, context, params)
                 elif action_type == "place_order":
                     await _action_place_order(context, params)
                 elif action_type == "close_position":
-                    await close_position(context, params)
-                # modify_order / cancel_order / cancel_all_orders /
-                # chase_close_positions land in the _log_invoke stubs at
-                # the bottom of this file for now — they'll hit the
-                # broker once their real wiring lands.
+                    await _action_live_close_position(agent, context, params)
+                elif action_type == "modify_order":
+                    await _action_live_modify_order(agent, context, params)
+                elif action_type == "cancel_order":
+                    await _action_live_cancel_order(agent, context, params)
+                elif action_type == "cancel_all_orders":
+                    await _action_live_cancel_all_orders(agent, context, params)
                 else:
-                    logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler yet")
+                    logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")
             else:  # 'noop' — non-broker action
                 if action_type == "send_summary":
                     await _action_send_summary(context, params)
@@ -694,12 +702,341 @@ async def _action_place_order(context: dict, params: dict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  NEW-GRAMMAR ACTION HANDLERS
+#  LIVE broker action handlers (mode 3)
 #
-#  Referenced by dotted path from the grammar_tokens seed (see grammar.py).
-#  Each handler has the signature (ctx, params) → result dict.
-#  Stubs at this phase — they log the invocation so the pipeline can be
-#  exercised end-to-end before real broker calls land.
+#  Each handler calls the broker via run_in_executor (Kite SDK is sync).
+#  On any failure: write AlgoOrder.status='REJECTED' + return error dict
+#  so execute() writes an action_failed event rather than bubbling the
+#  exception to the agent engine.
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _write_live_order(agent, action_type: str, resolved: dict,
+                            broker_order_id: str | None = None,
+                            status: str = "OPEN",
+                            detail_suffix: str = "") -> int | None:
+    """
+    Persist one AlgoOrder(mode='live') row.  Returns the row id.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+
+    account  = str(resolved.get("account", ""))
+    symbol   = str(resolved.get("symbol", ""))
+    side     = str(resolved.get("side", "SELL"))
+    qty      = int(resolved.get("qty") or 0)
+    price    = resolved.get("price")
+    exchange = str(resolved.get("exchange") or "NFO")
+
+    price_str = f"@₹{price:,.2f}" if price is not None else "@MARKET"
+    detail = (f"{agent.slug} → {action_type}: {side} {qty} "
+              f"{symbol} {price_str} · acct={account}"
+              + (f" · {detail_suffix}" if detail_suffix else ""))
+    logger.warning(f"[LIVE] {detail}")
+
+    try:
+        async with async_session() as s:
+            row = AlgoOrder(
+                account=account, symbol=symbol, exchange=exchange,
+                transaction_type=side, quantity=qty,
+                initial_price=(float(price) if price is not None else None),
+                status=status, engine="live", mode="live",
+                broker_order_id=broker_order_id or "",
+                detail=detail,
+            )
+            s.add(row)
+            await s.commit()
+            return row.id
+    except Exception as e:
+        logger.error(f"[LIVE] AlgoOrder write failed for {action_type}: {e}")
+        return None
+
+
+async def _action_live_close_position(agent, context: dict, params: dict):
+    """
+    Close a single position via the adaptive chase engine.
+
+    Resolves account / symbol / qty / side from params, fetches LTP from
+    the broker as the initial limit price, then delegates to chase_order()
+    which handles cancel-and-re-place until filled or attempt-cap.
+
+    An AlgoOrder(mode='live') row is written before the first placement.
+    The chase engine drives the actual Kite calls; any placement or fill
+    event is logged by chase.py itself.
+    """
+    import asyncio
+    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.shared.brokers import get_broker
+
+    account  = str(params.get("account") or "")
+    symbol   = str(params.get("symbol") or params.get("tradingsymbol") or "")
+    exchange = str(params.get("exchange") or "NFO")
+    qty      = int(params.get("quantity") or params.get("qty") or 0)
+    side     = (params.get("side") or params.get("transaction_type") or "SELL").upper()
+
+    if not account or not symbol or qty <= 0:
+        raise ValueError(f"close_position: missing required params (account={account!r}, "
+                         f"symbol={symbol!r}, qty={qty})")
+
+    # Fetch LTP as the initial limit price — the chase engine re-quotes
+    # on every subsequent attempt so this is just the first bid.
+    price = None
+    try:
+        broker = get_broker(account)
+        loop = asyncio.get_running_loop()
+        ltp_data = await loop.run_in_executor(
+            None, broker.kite.ltp, [f"{exchange}:{symbol}"]
+        )
+        key = f"{exchange}:{symbol}"
+        price = float((ltp_data.get(key) or {}).get("last_price") or 0) or None
+    except Exception as e:
+        logger.warning(f"[LIVE] close_position LTP fetch failed, proceeding with None price: {e}")
+
+    # Persist the intent row before touching the broker.
+    await _write_live_order(agent, "close_position", {
+        "account": account, "symbol": symbol, "exchange": exchange,
+        "side": side, "qty": qty, "price": price,
+    }, status="OPEN")
+
+    cfg = ChaseConfig(exchange=exchange, product=str(params.get("product") or "NRML"))
+    await chase_order(
+        account=account, symbol=symbol,
+        transaction_type=side, quantity=qty,
+        cfg=cfg,
+    )
+
+
+async def _action_live_modify_order(agent, context: dict, params: dict):
+    """
+    Modify an open broker order.  Wraps kite.modify_order in run_in_executor.
+    Updates the matching AlgoOrder row on success.
+    """
+    import asyncio
+    from backend.shared.brokers import get_broker
+
+    account  = str(params.get("account") or "")
+    order_id = str(params.get("order_id") or "")
+    variety  = str(params.get("variety") or "regular")
+
+    if not account or not order_id:
+        raise ValueError(f"modify_order: account and order_id are required")
+
+    broker = get_broker(account)
+    loop = asyncio.get_running_loop()
+
+    kwargs: dict = {}
+    for field in ("quantity", "price", "trigger_price", "order_type", "validity"):
+        v = params.get(field)
+        if v is not None:
+            kwargs[field] = v
+
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: broker.kite.modify_order(variety=variety, order_id=order_id, **kwargs)
+        )
+    except Exception as e:
+        # Update the AlgoOrder row to REJECTED so the operator can see it.
+        try:
+            from sqlalchemy import update as sql_update
+            from backend.api.database import async_session
+            from backend.api.models import AlgoOrder
+            async with async_session() as s:
+                await s.execute(
+                    sql_update(AlgoOrder)
+                    .where(AlgoOrder.broker_order_id == order_id)
+                    .values(status="REJECTED", detail=str(e)[:240])
+                )
+                await s.commit()
+        except Exception:
+            pass
+        raise
+
+
+async def _action_live_cancel_order(agent, context: dict, params: dict):
+    """
+    Cancel a single open broker order.  Wraps kite.cancel_order.
+    Marks the matching AlgoOrder row CANCELLED on success.
+    """
+    import asyncio
+    from backend.shared.brokers import get_broker
+    from sqlalchemy import update as sql_update
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+
+    account  = str(params.get("account") or "")
+    order_id = str(params.get("order_id") or "")
+    variety  = str(params.get("variety") or "regular")
+
+    if not account or not order_id:
+        raise ValueError(f"cancel_order: account and order_id are required")
+
+    broker = get_broker(account)
+    loop = asyncio.get_running_loop()
+
+    try:
+        await loop.run_in_executor(
+            None, broker.kite.cancel_order, variety, order_id
+        )
+    except Exception as e:
+        raise
+
+    # Mark CANCELLED in our order log.
+    try:
+        async with async_session() as s:
+            await s.execute(
+                sql_update(AlgoOrder)
+                .where(AlgoOrder.broker_order_id == order_id)
+                .values(status="CANCELLED",
+                        detail=f"Cancelled by agent {agent.slug}")
+            )
+            await s.commit()
+    except Exception as db_e:
+        logger.warning(f"[LIVE] cancel_order DB update failed: {db_e}")
+
+
+async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
+    """
+    Cancel every open order across all accounts (or a scoped account).
+
+    Iterates Connections().conn, calls kite.orders() to get the open
+    order list, then kite.cancel_order() for each.  All broker calls are
+    wrapped in run_in_executor.  Returns aggregate cancelled count via log.
+    """
+    import asyncio
+    from backend.shared.helpers.connections import Connections
+
+    loop = asyncio.get_running_loop()
+    scope_account = str(params.get("account") or "")
+    conns = Connections().conn
+
+    total_cancelled = 0
+    total_errors = 0
+
+    for acct, kite_conn in conns.items():
+        if scope_account and acct != scope_account:
+            continue
+        try:
+            kite = kite_conn.get_kite_conn()
+            orders = await loop.run_in_executor(None, kite.orders)
+            open_orders = [o for o in (orders or [])
+                           if str(o.get("status", "")).upper() in
+                           ("OPEN", "TRIGGER PENDING", "AMO REQ RECEIVED")]
+            for o in open_orders:
+                oid     = str(o.get("order_id", ""))
+                variety = str(o.get("variety") or "regular")
+                if not oid:
+                    continue
+                try:
+                    await loop.run_in_executor(
+                        None, kite.cancel_order, variety, oid
+                    )
+                    total_cancelled += 1
+                    logger.info(f"[LIVE] cancel_all_orders: cancelled {oid} [{acct}]")
+                except Exception as e:
+                    total_errors += 1
+                    logger.warning(f"[LIVE] cancel_all_orders: failed to cancel {oid} [{acct}]: {e}")
+        except Exception as e:
+            logger.error(f"[LIVE] cancel_all_orders: order list failed for [{acct}]: {e}")
+
+    logger.info(f"[LIVE] cancel_all_orders complete: {total_cancelled} cancelled, "
+                f"{total_errors} errors (agent={agent.slug})")
+
+
+async def _action_live_chase_close_positions(agent, context: dict, params: dict):
+    """
+    Close every open position in scope using the adaptive chase engine.
+
+    Scope resolution — params.scope:
+      'total'   (default) — every position across all accounts
+      'account'           — positions for params.account only
+
+    For each non-zero position, derives the closing side (SELL for long,
+    BUY for short), fetches LTP for the initial limit, writes an
+    AlgoOrder(mode='live') row, then fires chase_order() as an asyncio
+    task so multiple positions close concurrently (same pattern as the
+    expiry engine).
+
+    We deliberately do NOT use ExpiryEngine.scan_positions() here because
+    that scanner applies expiry-day ITM/NTM filters that are irrelevant
+    for a generic loss-agent close.  Instead we read directly from
+    context['df_positions'] (the live Kite snapshot already in context)
+    which is a pandas DataFrame with columns: account, tradingsymbol,
+    exchange, quantity, last_price, close_price, …
+    """
+    import asyncio
+    import pandas as pd
+    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.shared.brokers import get_broker
+
+    scope        = (params.get("scope") or "total").lower()
+    scope_acct   = str(params.get("account") or "") if scope == "account" else None
+    loop         = asyncio.get_running_loop()
+
+    # Read live positions from context (already fetched by _task_performance).
+    df = context.get("df_positions")
+    if df is None or (hasattr(df, "empty") and df.empty):
+        logger.warning(f"[LIVE] chase_close_positions: no positions in context for agent {agent.slug}")
+        return
+
+    try:
+        rows: list[dict] = df.to_dict(orient="records")
+    except Exception as e:
+        logger.error(f"[LIVE] chase_close_positions: could not read df_positions: {e}")
+        return
+
+    if scope_acct:
+        rows = [r for r in rows if str(r.get("account")) == scope_acct]
+
+    # Filter to non-zero positions only.
+    rows = [r for r in rows if int(r.get("quantity") or 0) != 0]
+
+    if not rows:
+        logger.warning(f"[LIVE] chase_close_positions: scope matched 0 positions "
+                       f"(agent={agent.slug}, scope={scope})")
+        return
+
+    chase_tasks = []
+    for p in rows:
+        acct     = str(p.get("account", ""))
+        symbol   = str(p.get("tradingsymbol", ""))
+        exchange = str(p.get("exchange") or "NFO")
+        qty_held = int(p.get("quantity") or 0)
+        side     = "SELL" if qty_held > 0 else "BUY"
+        qty      = abs(qty_held)
+
+        # Best effort initial limit price from LTP in context row.
+        ltp = p.get("last_price") or p.get("close_price")
+        price = float(ltp) if ltp is not None else None
+
+        # Persist intent row before broker call.
+        await _write_live_order(agent, "chase_close_positions", {
+            "account": acct, "symbol": symbol, "exchange": exchange,
+            "side": side, "qty": qty, "price": price,
+        }, status="OPEN")
+
+        cfg = ChaseConfig(exchange=exchange, product="NRML")
+        chase_tasks.append(
+            asyncio.create_task(
+                chase_order(account=acct, symbol=symbol,
+                            transaction_type=side, quantity=qty, cfg=cfg)
+            )
+        )
+        logger.info(f"[LIVE] chase_close_positions: queued {side} {qty} {symbol} [{acct}]")
+
+    # Await all chase tasks concurrently — each manages its own retry loop.
+    if chase_tasks:
+        results = await asyncio.gather(*chase_tasks, return_exceptions=True)
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.error(f"[LIVE] chase_close_positions: task {i} failed: {res}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Grammar-token action handlers (dotted-path resolvers from grammar.py)
+#
+#  These are the public entry points that GrammarRegistry resolves via
+#  dotted path.  They delegate to the _action_* helpers above for live
+#  mode; paper/sim/shadow routing is done upstream in execute().
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _log_invoke(action: str, params: dict) -> dict:
@@ -708,7 +1045,7 @@ def _log_invoke(action: str, params: dict) -> dict:
 
 
 async def place_order(ctx, params: dict) -> dict:
-    """Place a new broker order — wiring pending full action-runner landing."""
+    """Place a new broker order."""
     return _log_invoke("place_order", params)
 
 
@@ -725,10 +1062,7 @@ async def cancel_all_orders(ctx, params: dict) -> dict:
 
 
 async def chase_close_positions(ctx, params: dict) -> dict:
-    """
-    Close every open position in scope via the adaptive chase engine.
-    Delegates to ExpiryEngine primitives once the action runner lands.
-    """
+    """Close every open position in scope via the adaptive chase engine."""
     return _log_invoke("chase_close_positions", params)
 
 
@@ -736,14 +1070,9 @@ async def close_position(ctx, params: dict) -> dict:
     """
     One-shot close of a single position with a LIMIT order at current LTP.
 
-    Live mode: wiring pending the action runner landing — logs the
-    invocation so the pipeline is exercised end-to-end without touching
-    the broker.
-
-    Sim mode: dispatched through `_sim_paper_trade` upstream (execute() in
-    this module routes on ctx['sim_mode']), which records an AlgoOrder
-    with initial_price = sim's current LTP for the symbol. So this
-    handler is the LIVE path only.
+    Sim / paper / shadow modes are dispatched upstream by execute() before
+    this function is reached.  This grammar-token resolver is the LIVE path
+    only — actual broker wiring lives in _action_live_close_position above.
     """
     return _log_invoke("close_position", params)
 

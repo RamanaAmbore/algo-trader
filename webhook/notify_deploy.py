@@ -80,8 +80,11 @@ def main():
     # / cap_in_dev.mail gate runtime alerts, not this deploy ping.
 
     # --- Telegram ---
-    token   = sec.get("telegram_bot_token", "")
-    chat_id = sec.get("telegram_chat_id", "")
+    # Prefer dedicated deploy-bot keys so deploy pings can go to a
+    # separate bot/channel; fall back to the shared alert keys so
+    # existing deployments require no secrets.yaml change.
+    token   = sec.get("telegram_bot_token_deploy") or sec.get("telegram_bot_token", "")
+    chat_id = sec.get("telegram_chat_id_deploy")   or sec.get("telegram_chat_id", "")
     if token and chat_id:
         branch_line = f"\n⚠ <b>Branch: {branch}</b>" if is_non_main else ""
         try:

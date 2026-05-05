@@ -271,7 +271,7 @@ class OrdersController(Controller):
         from backend.api.models import AlgoOrder
         async with async_session() as s:
             q = sql_select(AlgoOrder).order_by(desc(AlgoOrder.id)).limit(max(1, min(n, 500)))
-            if mode in ("live", "sim", "paper"):
+            if mode in ("live", "sim", "paper", "replay", "shadow"):
                 q = q.where(AlgoOrder.mode == mode)
             rows = (await s.execute(q)).scalars().all()
         # Mask account codes for non-admin callers (demo + public).

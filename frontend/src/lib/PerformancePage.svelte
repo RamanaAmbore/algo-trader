@@ -14,14 +14,18 @@
   ModuleRegistry.registerModules([AllCommunityModule]);
 
   const {
-    theme         = 'ag-theme-ramboq',
-    allowOrders   = false,
-    maskAccounts  = true,
+    theme             = 'ag-theme-ramboq',
+    allowOrders       = false,
+    maskAccounts      = true,
     // When true, drop the top timestamp+Refresh row and move the refresh
     // timestamp into the tabs row as the last element. Used by the
     // admin /dashboard page; default keeps the public /performance
     // layout unchanged.
-    compactHeader = false,
+    compactHeader     = false,
+    // When true, positions rows for options (CE/PE) and futures (FUT)
+    // show a small "→ Options" link that deep-links to /admin/options.
+    // Only passed as true from the algo /dashboard; never on public pages.
+    enableOptionsLink = false,
   } = $props();
   const isDark = $derived(theme === 'ag-theme-algo');
 
@@ -219,16 +223,45 @@
     { field: 'pnl',     headerName: 'P&L',     flex: 1, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
-  const positionsCols = [
+  // Options deep-link cell renderer — only wired up when enableOptionsLink
+  // is true (admin /dashboard). Appends a small "→ Opt" pill after the
+  // symbol text for rows whose symbol is an option (CE/PE) or future (FUT).
+  // Returns an HTMLElement so AG Grid can mount it cleanly without innerHTML.
+  function _optionsLinkRenderer(params) {
+    const sym  = params.value || '';
+    const acct = params.data?.account || '';
+    const span = document.createElement('span');
+    span.style.cssText = 'display:inline-flex;align-items:center;gap:0.3rem;width:100%';
+    span.textContent = sym;
+    if (/(?:CE|PE|FUT)$/.test(sym)) {
+      const href = `/admin/options?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;
+      const a = document.createElement('a');
+      a.href = href;
+      a.className = 'perf-opts-link';
+      a.textContent = '→';
+      a.title = `Open ${sym} in Options`;
+      // Prevent the row-click from also firing (which would open the
+      // OrderTicket). Only the link itself routes to /admin/options.
+      a.addEventListener('click', (e) => e.stopPropagation());
+      span.appendChild(a);
+    }
+    return span;
+  }
+
+  const positionsSymbolCol = $derived(enableOptionsLink
+    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 140, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
+    : { field: 'tradingsymbol', headerName: 'Symbol', width: 130, pinned: 'left', cellClass: symFill, headerClass: symFill });
+
+  const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
-    // 130 fits a 14-char symbol cleanly, 150 was leaving white space.
-    { field: 'tradingsymbol', headerName: 'Symbol',    width: 130, pinned: 'left', cellClass: symFill, headerClass: symFill },
+    // 140 when options link active (extra room for the pill), 130 otherwise.
+    positionsSymbolCol,
     { field: 'close_price',   headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price', headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'pnl',           headerName: 'P&L',       width: 78, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',      headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
-  ];
+  ]);
 
   const fundsCols = [
     { field: 'account',      headerName: 'Account',      width: 100, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
@@ -765,4 +798,26 @@
 
   /* Dashboard timestamp — yellow to match log and algo-ts timestamps */
   .perf-dark :global(.perf-ts) { color: #fde047 !important; }
+
+  /* Options deep-link pill — amber accent, scoped to positions rows in
+     the algo /dashboard (enableOptionsLink=true). Appears after the
+     symbol text as a small "→" arrow. Absent on public /performance. */
+  :global(.perf-opts-link) {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    padding: 0 0.28rem;
+    border-radius: 0.18rem;
+    background: rgba(251,191,36,0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,0.40);
+    text-decoration: none;
+    line-height: 1.4;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  :global(.perf-opts-link:hover) {
+    background: rgba(251,191,36,0.28);
+    color: #fde68a;
+  }
 </style>

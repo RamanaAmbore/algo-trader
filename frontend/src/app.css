@@ -494,9 +494,32 @@
 .log-panel .log-agent-triggered   { color: #fb923c; background: rgba(251,146,60,0.1); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-alert       { color: #facc15; background: rgba(250,204,21,0.08); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-success     { color: #4ade80; background: rgba(74,222,128,0.08); display: block; padding: 0 4px; border-radius: 2px; }
-.log-panel .log-agent-failed      { color: #f87171; background: rgba(248,113,113,0.08); display: block; padding: 0 4px; border-radius: 2px; }
+.log-panel .log-agent-failed      { color: #f87171; background: rgba(248,113,113,0.12); display: block; padding: 0 4px; border-radius: 2px; }
+.log-panel .log-agent-cooldown    { color: #64748b; display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-default     { color: #9ca3af; }
 .log-panel .log-ts                { color: #fde047; font-weight: 700; margin-right: 4px; }
+/* Agent-id link chip on AlgoOrder rows — amber accent, matching the
+   algo palette. Renders inline after the engine chip; absent when
+   agent_id is null (tickets, replays without an originating agent). */
+.log-panel .log-agent-chip {
+  display: inline-block;
+  font-size: 0.5rem;
+  font-weight: 600;
+  padding: 0 0.35rem;
+  margin-left: 0.15rem;
+  border-radius: 0.2rem;
+  background: rgba(251,191,36,0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251,191,36,0.4);
+  text-decoration: none;
+  vertical-align: baseline;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.log-panel .log-agent-chip:hover {
+  background: rgba(251,191,36,0.28);
+  color: #fde68a;
+}
 .log-panel .log-chip              { display: inline-block; font-size: 0.6rem; padding: 0 0.3rem; margin: 0 0.1rem; border-radius: 0.2rem; background: rgba(39,53,82,0.55); border: 1px solid rgba(255,255,255,0.08); }
 .log-panel .log-chip-key          { color: #7dd3fc; font-weight: 600; text-transform: uppercase; margin-right: 0.15rem; font-size: 0.5rem; }
 

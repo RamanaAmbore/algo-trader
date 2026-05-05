@@ -480,3 +480,43 @@ export const fetchAdminLogs = (n = 100) =>
 // ── Contact (public) ──────────────────────────────────────────────────
 /** POST /api/contact/ — public contact form submission. */
 export const submitContact = (payload) => _post('/contact/', payload);
+
+// ── Admin: Alerts history ─────────────────────────────────────────────
+/**
+ * GET /api/admin/alerts/history — paginated agent-event history.
+ * Params: { limit, agent_slug, since_minutes, event_type, sim_mode }
+ * Returns { events: AgentEvent[] } or AgentEvent[] directly.
+ */
+export async function fetchAlertsHistory(params = {}) {
+  const p = new URLSearchParams();
+  if (params.limit)         p.set('limit',        String(params.limit));
+  if (params.agent_slug)    p.set('agent_slug',   String(params.agent_slug));
+  // since_minutes=0 must pass through (means "no time filter") — only
+  // skip when the caller didn't supply the param at all.
+  if (params.since_minutes != null) p.set('since_minutes', String(params.since_minutes));
+  if (params.event_type)    p.set('event_type',   String(params.event_type));
+  if (params.sim_mode != null) p.set('sim_mode',  String(params.sim_mode));
+  return _get(`/admin/alerts/history?${p}`, { auth: true });
+}
+
+// ── Admin: System health ──────────────────────────────────────────────
+/**
+ * GET /api/admin/health — system diagnostics snapshot.
+ * Returns { branch, git_hash, git_subject, uptime, brokers,
+ *           db, cache, sim, paper }.
+ */
+export const fetchSystemHealth = () => _get('/admin/health', { auth: true });
+
+// ── Admin: Per-agent P&L attribution ─────────────────────────────────
+/**
+ * GET /api/admin/pnl/by-agent — P&L attribution grouped by agent.
+ * Params: { period: 'today'|'week'|'month'|'all', mode: 'all'|'live'|'paper' }
+ * Returns { agents: [{ agent_slug, agent_name, orders, filled,
+ *                      gross_pnl, win_pct, avg_slippage }] }
+ */
+export async function fetchAgentPnL(params = {}) {
+  const p = new URLSearchParams();
+  if (params.period) p.set('period', String(params.period));
+  if (params.mode)   p.set('mode',   String(params.mode));
+  return _get(`/admin/pnl/by-agent?${p}`, { auth: true });
+}

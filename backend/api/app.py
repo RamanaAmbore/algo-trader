@@ -39,6 +39,9 @@ from backend.api.routes.settings import SettingsController
 from backend.api.routes.brokers import BrokersController
 from backend.api.routes.charts import ChartsController
 from backend.api.routes.options import OptionsController
+from backend.api.routes.alerts import AlertsController
+from backend.api.routes.health import HealthController
+from backend.api.routes.pnl import PnLController
 from backend.api.routes.simulator import SimulatorController
 from backend.api.routes.replay import ReplayController
 from backend.api.routes.shadow import ShadowController
@@ -131,6 +134,9 @@ _route_handlers = [
     ContactController,
     ConfigController,
     SettingsController,
+    AlertsController,
+    HealthController,
+    PnLController,
     SimulatorController,
     ReplayController,
     ShadowController,

@@ -67,9 +67,10 @@ class ShadowTradeEngine:
             "tag": "ramboq-shadow",
         }
 
-        # Validate via basket_margin
+        # Validate via basket_margin — async-safe (Kite SDK is sync requests)
         ok, reason = True, "shadow — not executed"
         try:
+            import asyncio, json as _json
             broker = get_broker(account)
             if qty > 0 and price is not None and symbol and exchange:
                 basket_order = {
@@ -82,8 +83,21 @@ class ShadowTradeEngine:
                     "price": price,
                     "variety": resolved.get("variety") or "regular",
                 }
-                broker.kite.basket_margin([basket_order])
-                reason = "basket_margin OK — not executed"
+                loop = asyncio.get_running_loop()
+                bm_result = await loop.run_in_executor(
+                    None, broker.kite.basket_margin, [basket_order]
+                )
+                # Capture the actual initial/final margin numbers from the
+                # basket_margin response rather than discarding them.
+                try:
+                    bm_summary = _json.dumps({
+                        "initial_margin": bm_result.get("initial") if isinstance(bm_result, dict) else None,
+                        "final_margin":   bm_result.get("final")   if isinstance(bm_result, dict) else None,
+                        "raw":            bm_result,
+                    }, default=str)[:240]
+                except Exception:
+                    bm_summary = str(bm_result)[:240]
+                reason = f"basket_margin OK — {bm_summary}"
         except Exception as e:
             ok = False
             reason = str(e)[:240]

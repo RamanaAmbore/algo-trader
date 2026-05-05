@@ -63,10 +63,14 @@
   //   'main' = prod only
   //   absent = always shown
   const _algoLinksAll = [
-    { href: '/dashboard',        label: 'Dashboard' },
-    { href: '/agents',           label: 'Agents'    },
-    { href: '/orders',           label: 'Orders'    },
-    { href: '/admin/options',    label: 'Options'   },
+    // ── Monitor ──
+    { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
+    { href: '/agents',           label: 'Agents',    group: 'monitor' },
+    { href: '/orders',           label: 'Orders',    group: 'monitor' },
+    { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
+    // ── Analyze ──
+    { href: '/admin/options',    label: 'Options',   group: 'analyze' },
+    { href: '/admin/pnl',        label: 'P&L',       adminOnly: true, group: 'analyze' },
     // ── Modes (branch-filtered) ──
     { href: '/admin/simulator',  label: 'Simulator', branches: ['dev'],  group: 'modes' },
     { href: '/admin/replay',     label: 'Replay',                        group: 'modes' },
@@ -74,12 +78,13 @@
     { href: '/admin/shadow',     label: 'Shadow',    branches: ['main'], group: 'modes' },
     { href: '/admin/live',       label: 'Live',      branches: ['main'], group: 'modes' },
     // ── Build / extend ──
-    { href: '/console',          label: 'Terminal'  },
-    { href: '/admin/tokens',     label: 'Tokens'    },
+    { href: '/console',          label: 'Terminal',  group: 'build' },
+    { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
     // ── Config ──
-    { href: '/admin/settings',   label: 'Settings', adminOnly: true },
-    { href: '/admin/brokers',    label: 'Brokers',  adminOnly: true },
-    { href: '/admin',            label: 'Users',    adminOnly: true },
+    { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
+    { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
+    { href: '/admin/brokers',    label: 'Brokers',   adminOnly: true, group: 'config' },
+    { href: '/admin',            label: 'Users',     adminOnly: true, group: 'config' },
   ];
   // Branch-aware + demo-aware filter.
   const algoLinks = $derived(
@@ -191,7 +196,10 @@
         </button>
 
         <nav class="flex items-center gap-0.5 flex-1">
-          {#each algoLinks as link}
+          {#each algoLinks as link, i}
+            {#if i > 0 && link.group !== algoLinks[i - 1].group}
+              <span class="algo-nav-sep" aria-hidden="true"></span>
+            {/if}
             <button
               onclick={() => goto(link.href)}
               class="algo-nav-btn {isActive(link.href) ? 'algo-nav-btn-active' : ''}"
@@ -495,6 +503,19 @@
     margin-right: 0.3rem;
   }
 
+
+  /* Group separator — thin vertical bar between nav groups.
+     Dim sky-blue at low opacity so it reads as a structural divider
+     without drawing the eye away from the active item. */
+  .algo-nav-sep {
+    display: inline-block;
+    width: 1px;
+    height: 1rem;
+    background: rgba(125,211,252,0.18);
+    margin: 0 0.3rem;
+    flex-shrink: 0;
+    align-self: center;
+  }
 
   /* Nav buttons */
   :global(.algo-nav-btn) {
