@@ -1,8 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, logTime, visibleInterval } from '$lib/stores';
-  import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
+  import { clientTimestamp, logTime, visibleInterval } from '$lib/stores';
+  import { fetchOrders, cancelOrder, modifyOrder, fetchRecentAgentEvents, fetchAdminLogs } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
@@ -40,11 +40,6 @@
     openOrders: orders
       .filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING'),
   });
-
-  function authHeaders() {
-    const token = $authStore.token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   async function loadOrders() {
     loading = true; error = '';
@@ -135,21 +130,16 @@
   }
 
   async function loadOrderLog() {
-    try {
-      const res = await fetch('/api/agents/events/recent?n=100', { headers: authHeaders() });
-      orderLog = await res.json().catch(() => []);
-    } catch (e) { /* ignore */ }
+    try { orderLog = await fetchRecentAgentEvents(100); }
+    catch (e) { /* ignore */ }
   }
   async function loadAgentLog() {
-    try {
-      const res = await fetch('/api/agents/events/recent?n=100', { headers: authHeaders() });
-      agentLog = await res.json().catch(() => []);
-    } catch (e) { /* ignore */ }
+    try { agentLog = await fetchRecentAgentEvents(100); }
+    catch (e) { /* ignore */ }
   }
   async function loadSystemLog() {
     try {
-      const res = await fetch('/api/admin/logs?n=100', { headers: authHeaders() });
-      const d = await res.json().catch(() => ({}));
+      const d = await fetchAdminLogs(100);
       systemLog = d.lines || [];
     } catch (e) { /* ignore */ }
   }
@@ -216,7 +206,7 @@
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 
-{#if error}<div class="mb-1 p-1.5 rounded bg-red-50 text-red-700 text-xs border border-red-200">{error}</div>{/if}
+{#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
 {#if success}<div class="mb-1 p-1.5 rounded bg-green-50 text-green-700 text-xs border border-green-200">{success}</div>{/if}
 
 <!-- Order Entry -->

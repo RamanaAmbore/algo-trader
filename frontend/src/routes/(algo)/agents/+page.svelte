@@ -1,11 +1,10 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
+  import { clientTimestamp, visibleInterval } from '$lib/stores';
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent,
     fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
-    startSimForAgent, fetchAlgoOrdersRecent,
+    startSimForAgent, fetchAlgoOrdersRecent, fetchAdminLogs,
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
 
@@ -42,11 +41,6 @@
   let ws;
   let refreshTeardown;
   let simStatusTeardown;
-
-  function authHeaders() {
-    const token = $authStore.token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   async function loadAgents() {
     try {
@@ -85,8 +79,8 @@
 
   async function loadSystemLog() {
     try {
-      const res = await fetch('/api/admin/logs?n=100', { headers: authHeaders() });
-      if (res.ok) { const d = await res.json(); systemLog = d.lines || []; }
+      const d = await fetchAdminLogs(100);
+      systemLog = d.lines || [];
     } catch (e) { /* ignore */ }
   }
 
@@ -344,7 +338,7 @@
       logTab = 'simulator';
       loadSimLog();
     } catch (e) {
-      error = `Run-in-Simulator failed: ${e.message}`;
+      error = e.message || 'Sim start failed.';
     }
   }
 
@@ -380,7 +374,7 @@
 </div>
 
 {#if error}
-  <div class="mb-3 p-2 rounded bg-red-50 text-red-700 text-xs border border-red-200">{error}</div>
+  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
 {/if}
 
 <!-- Recursive tree renderer used by both the normal expanded view and the

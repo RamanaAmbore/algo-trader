@@ -108,6 +108,10 @@ function _todayIST() {
 }
 
 async function _fetchAndCache() {
+  // TODO(FIX-25): migrate to api.js _get once a fetchInstruments helper is
+  // added. Dynamic import is required here because this file is used outside
+  // the Svelte component lifecycle; a static api.js import would pull in
+  // authStore at module level and risk SSR issues.
   const { authStore } = await import('$lib/stores');
   const token = authStore.getToken();
   const res = await fetch('/api/instruments/', {

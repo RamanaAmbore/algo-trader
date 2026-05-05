@@ -243,8 +243,10 @@ class SimulatorController(Controller):
         uses the real book as the starting state. Bypasses the in-process
         cache so the snapshot is fresh at the moment of the call.
         """
+        import asyncio
         try:
-            return get_driver().seed_live()
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, get_driver().seed_live)
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))
 

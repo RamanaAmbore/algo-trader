@@ -20,16 +20,17 @@ Endpoints
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get
+from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 from sqlalchemy import desc, select
 
 from backend.api.algo.paper import get_prod_paper_engine
 from backend.api.algo.sim.driver import get_driver
-from backend.api.auth_guard import admin_guard, auth_or_demo_guard
+from backend.api.auth_guard import admin_guard, auth_or_demo_guard, is_admin_request
 from backend.api.database import async_session
 from backend.api.models import AlgoOrder
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -175,7 +176,7 @@ class ChartsController(Controller):
     guards = [auth_or_demo_guard]
 
     @get("/paper-status")
-    async def paper_status(self) -> PaperStatus:
+    async def paper_status(self, request: Request) -> PaperStatus:
         """Snapshot of the prod paper engine — used by /admin/paper to
         render the status banner + open-order pills + chart grid. The
         engine itself is a singleton constructed lazily; reading its state
@@ -188,6 +189,14 @@ class ChartsController(Controller):
         # Show enabled=false on dev so the UI banner explains the gate.
         enabled = (branch == "main")
         details = eng.open_order_details()
+        # Mask raw account identifiers (e.g. ZG0790 → ZG####) for
+        # non-admin callers (demo visitors). Symbol / price fields stay
+        # as-is — they carry no account-identifying information.
+        if not is_admin_request(request):
+            details = [
+                {**d, "account": re.sub(r'\d', '#', str(d.get("account") or ""))}
+                for d in details
+            ]
         return PaperStatus(
             enabled=enabled, branch=branch,
             open_order_count=len(details),

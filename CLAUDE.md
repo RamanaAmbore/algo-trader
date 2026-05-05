@@ -4,6 +4,35 @@ This file is for Claude Code. It provides project context, file map, patterns, a
 
 ---
 
+## Multi-agent coordination (read first)
+
+The main Claude instance is the **coordinator**. Specialised subagents live in `~/.claude/agents/`:
+
+| Agent | Use for | Tools | Model |
+|---|---|---|---|
+| `backend` | Litestar / SQLAlchemy / msgspec / Polars work | edit | sonnet |
+| `frontend` | SvelteKit / Svelte 5 / ag-Grid / SVG charts / Tailwind | edit | sonnet |
+| `backend-test` | pytest + pytest-asyncio for routes, agent engine, simulator, helpers | edit | haiku |
+| `frontend-test` | Playwright e2e, svelte-check, mobile-viewport regression | edit | haiku |
+| `audit` | Read-only defect / security / convention review. Does NOT write code. | read | sonnet |
+| `doc` | CLAUDE.md / USER_GUIDE.md / ADMIN_GUIDE.md / runbooks | edit | haiku |
+
+**Parallel by default.** When a task decomposes into independent sub-tasks (no shared file, no dependent output), the coordinator **MUST** dispatch them in a single message with multiple `Agent` tool calls. Sequence only when one agent's output feeds another.
+
+Common parallel patterns:
+- Frontend change + backend change for the same feature → `frontend` + `backend` in parallel; then `frontend-test` + `backend-test` in parallel; then `audit` + `doc`.
+- Pre-merge sweep → `audit` + `frontend-test` + `backend-test` in parallel.
+- Bug investigation → multiple `audit` (or `Explore`) agents pointed at different suspect areas in parallel.
+
+Sequence when:
+- The audit finds defects that need fixing → `audit` first, then `frontend` / `backend` to apply fixes.
+- A schema/route change in `backend` is required before `frontend` can wire to it.
+- `doc` runs after code changes settle (so it documents the final state, not a moving target).
+
+The coordinator owns synthesis: never delegate "decide what to do based on your findings" — read the agent reports yourself and decide the next move.
+
+---
+
 ## Project Overview
 
 **RamboQuant** is a production web app for RamboQuant Analytics LLP at [ramboq.com](https://ramboq.com). It provides portfolio performance tracking, market updates (via Gemini AI), user onboarding, and investment information.
@@ -358,7 +387,7 @@ In-process TTL cache in `backend/api/cache.py` with per-key locking. `get_neares
 ### Built-in Agents (seeded from YAML)
 Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mcx_close_summary`) are **`status: "inactive"` by default** — `_task_performance` and `_task_close` in `backend/api/background.py` already send open/close summaries directly, so enabling the agents would cause duplicate alerts. `seed_agents()` force-resets these four to inactive on every startup.
 
-**Loss agents** (prefix `loss-`) cover the 14 static + rate loss rules plus 2 fund negatives. They now ship **active** by default — `alert_utils.check_and_alert` is retired. Toggle individually from the `/agents` page.
+**Loss agents** (prefix `loss-`) ship as 12 pure alerting agents (holdings/positions static + rate thresholds) plus 2 fund-negative agents, all **active** by default. One additional `loss-pos-total-auto-close` agent ships **inactive** (destructive close-position action). The former `check_and_alert` loss engine is retired; toggle any agent individually from the `/agents` page.
 
 ### SvelteKit Pages (routes under `frontend/src/routes/(algo)/`)
 - **`+layout.svelte`** — algo-site top nav, ordered by usage frequency: Dashboard · Agents · Orders (live monitoring) → Options · Paper · Simulator (analysis surfaces) → Terminal · Tokens (build / extend) → Settings · Brokers (configuration) → Users (admin). The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
@@ -451,7 +480,7 @@ Ramboq's risk + automation engine is built around four words:
 
 | Word | Meaning |
 |---|---|
-| **Agent** | A rule row (DB: `agents`) with `condition + notify + actions + metadata`. Seeded from `BUILTIN_AGENTS` in `agent_engine.py` (14 loss rules + 2 fund negatives ship active by default) and extensible via the `/agents` UI. |
+| **Agent** | A rule row (DB: `agents`) with `condition + notify + actions + metadata`. Seeded from `BUILTIN_AGENTS` in `agent_engine.py`: 12 alerting + 2 fund-negative agents ship **active** by default; 1 auto-close agent ships **inactive**. Extensible via the `/agents` UI. |
 | **Alert** | The runtime event an agent emits when its condition fires. Persisted to `agent_events` with a `sim_mode` flag so real fires can be separated from simulated ones. |
 | **Notify** | A delivery channel (`telegram / email / websocket / log`). |
 | **Action** | A side-effect the alert invokes (order placement, monitoring, modify, cancel, close, flag-set, …). Handlers in `actions.py`; real broker wiring lands per-action as each is promoted out of stub mode. |
@@ -1088,12 +1117,11 @@ OptionsPayoff resets back to the auto `±span_sigmas × σ × √T` range that t
 
 ## Market Summary + Market News (public)
 
-Both `/market` and `/performance` consolidate the AI summary and news feed into a single tabbed card with `[Market Summary | Market News]`. Only one panel is visible at a time so the page stays compact; flipping tabs is a paint, not a fetch (both feeds load on mount). Same UX shape on both surfaces — operators get the same affordance whether they're viewing the dedicated Market page or the Performance dashboard.
+`/market` consolidates the AI summary and news feed into a single tabbed card with `[Market Summary | Market News]`. Only one panel is visible at a time so the page stays compact; flipping tabs is a paint, not a fetch (both feeds load on mount).
 
-Tab styling — the tab strip sits **outside** the white card, on the page's cream background. Active tab carries a champagne **bottom** border (`#d4920c`); the row's own `border-bottom: 1px solid #e7e0cf` stitches the strip together. The active tab's bottom border merges flush with the row's via `margin-bottom: -1px`, then a small `margin-top: 0.6rem` on the panel beneath gives the two regions visual separation. Earlier iterations used a left-border indicator with a tinted background; the bottom-border + outside-the-card treatment reads more naturally as a desktop-app document-tab. Right side of the tab row carries a "Loading…" / "Refreshing…" indicator. **Inside the panel**, a "Refreshed at <ts>" line uses the same Tailwind triplet as `PerformancePage`'s page-level timestamp (`text-[0.65rem] text-muted perf-ts`) so the timestamp shape is consistent everywhere on the public site. `nowrap` keeps the dual-timezone string on a single line; the card's horizontal padding absorbs any overflow on narrow viewports. Routes:
+Tab styling — the tab strip sits **outside** the white card, on the page's cream background. Active tab carries a champagne **bottom** border (`#d4920c`); the row's own `border-bottom: 1px solid #e7e0cf` stitches the strip together. The active tab's bottom border merges flush with the row's via `margin-bottom: -1px`, then a small `margin-top: 0.6rem` on the panel beneath gives the two regions visual separation. Earlier iterations used a left-border indicator with a tinted background; the bottom-border + outside-the-card treatment reads more naturally as a desktop-app document-tab. Right side of the tab row carries a "Loading…" / "Refreshing…" indicator. **Inside the panel**, a "Refreshed at <ts>" line uses consistent timestamp styling across the public site. `nowrap` keeps the dual-timezone string on a single line. Route:
 
-- [`/market`](frontend/src/routes/(public)/market/+page.svelte) — page-level `lastRefresh` timestamp at the top, then a tabbed card.
-- [`/performance`](frontend/src/routes/(public)/performance/+page.svelte) — performance grids first, then the same tabbed card below.
+- [`/market`](frontend/src/routes/(public)/market/+page.svelte) — page-level `lastRefresh` timestamp at the top, then a tabbed card. The `/performance` page surfaces positions + holdings only (tabbed card removed to keep focus on the book).
 
 The Gemini market-summary prompt was simplified iteratively: drop the `**Daily Market Report — [date]**` heading, drop the date/timestamp line, drop the H3 report-title instruction, and finally hardened to "the very first line of your output MUST be `### Market Summary`" with the no-title rule lifted into the system prompt as well as the user prompt. The "Refreshed at <ts>" line under the tabs is the canonical date-stamp.
 
@@ -1148,7 +1176,7 @@ A single Svelte component handles every order op the platform needs (open / clos
 | **PAPER** | `POST /api/orders/ticket` with `mode: "paper"`. Backend persists an `AlgoOrder` row + registers the order with the prod paper engine via `register_open_order`. The engine's 5-second tick runs the same fill / modify / unfilled lifecycle that agent fires use, driven by real bid/ask via `LiveQuoteSource`. |
 | **LIVE** | Same endpoint with `mode: "live"`. Two backend gates fire before any broker call: (1) `is_prod_branch()` — non-prod returns 403; (2) `get_bool('execution.live.place_order')` — operator flag in `/admin/settings → execution`. Both pass → `kite.place_order()` tagged `ramboq-ticket`. UI fires a `window.confirm()` listing side / qty / symbol / price / **account** / product before submit. |
 
-**Account selector** — required for PAPER + LIVE so the operator picks which Kite handle the order routes through; never relying on the backend's silent "first available" fallback. The ticket renders a readonly account display when there's exactly one available, a `<select>` dropdown when there's more than one, and refuses to submit if `_account` is blank. Pre-filled from the calling page's account state when an obvious choice exists (e.g. the operator already filtered to one account in `/admin/options`).
+**Account selector** — required for PAPER + LIVE so the operator picks which Kite handle the order routes through; never relying on the backend's silent "first available" fallback. The ticket renders a readonly account display when there's exactly one available, a `<select>` dropdown when there's more than one, and refuses to submit if `_account` is blank. Pre-filled from the calling page's account state when an obvious choice exists (e.g. the operator already filtered to one account in `/admin/options`). The backend enforces the same rule: ticket route returns 400 when account is blank or unknown to it, with no silent first-account fallback.
 
 **Validation** — before any backend call: qty must be a positive multiple of `lotSize` when known (NIFTY 50, BANKNIFTY 15, …), price ≥ 0, trigger ≥ 0, account picked. Backend additionally validates the enum fields (variety / exchange / product / order_type) up-front so Kite's cryptic "Invalid input — 400" never reaches the operator.
 
@@ -1168,6 +1196,10 @@ A single Svelte component handles every order op the platform needs (open / clos
 - `/agents` fire-confirm
 - `/performance`, `/dashboard` row "Square off" / "Sell" / "Top up"
 - `/console` `place …` command — replace text-only path with the ticket for explicit confirmation
+
+### Kite postback HMAC validation (Wave A)
+
+`POST /api/orders/postback` (Kite's real-time order status callback) now validates the incoming `checksum` field via HMAC-SHA256 over `order_id + order_timestamp + api_secret` before broadcasting. Mismatched signatures return 401 + WARNING-level log. Multi-account fallback: tries the claimed `user_id` account first, then iterates all loaded accounts to find a match (since Kite postbacks don't always carry a recognisable user_id).
 
 ---
 
@@ -1192,6 +1224,8 @@ The guard sets `connection.state.is_demo = True` for anonymous prod requests. Ev
 | `PUT /api/orders/{id}` (modify) | 403 |
 | `DELETE /api/orders/{id}` (cancel) | 403 |
 | `POST /api/orders/ticket` mode=`live` | silently downgraded to `paper` (visitor's Submit still works) |
+| `GET /api/charts/paper-status` | open_order_details accounts masked for demo |
+| `GET /api/options/analytics?mode=live` | 403 Demo: read-only |
 | `POST /api/agents/`, `PUT /api/agents/{slug}`, `DELETE /api/agents/{slug}` | `admin_guard` override → 401 |
 | `/api/admin/brokers/*`, `/api/admin/settings/*`, `/api/admin/grammar/*`, `/api/admin/users/*` | `admin_guard` (controller-level) → 401 |
 
@@ -1212,7 +1246,7 @@ The guard sets `connection.state.is_demo = True` for anonymous prod requests. Ev
 | `main` | paper engine has open orders | **PAPER** (blue) |
 | `main` | logged in, idle | (none) |
 | non-`main` | sim active | **SIM** (red) |
-| non-`main` | paper engine has open orders | **PAPER** (blue) |
+| non-`main` | any state | (none — paper engine disabled) |
 | any | both | both stack |
 
 Outlined-pill style: subtle tinted background + bright text + matching colour border + a small leading dot that pulses (2 s). Earlier solid-fill DEMO/SIM/PAPER badges with whole-pill opacity-pulse animation read as too loud — the dot-only animation reads as a calmer "alive indicator" without the throb. Existing full-width banners under the nav still surface scenario / chase detail.
@@ -1245,6 +1279,7 @@ Method shortcuts (`_get / _post / _put / _patch / _del`) wrap `_request` for erg
 |---|---|
 | Regex validators | `validate_email()`, `validate_phone()` etc. in `utils.py` recompile regex on every call. Worth precompiling to module-level constants if form submissions become a bottleneck |
 | Parallel broker calls | `fetch_holdings`, `fetch_positions`, `fetch_margins` broker calls run concurrently via `ThreadPoolExecutor` in the API background tasks |
+| Async event-loop offload (Wave A) | Paper engine `tick_loop`, `_basket_margin_validate`, and sim driver `seed_live` use `run_in_executor` to keep sync broker HTTP off the asyncio event loop |
 
 ---
 

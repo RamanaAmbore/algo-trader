@@ -477,7 +477,11 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
         }
         # KiteConnect exposes `basket_margin` which validates a list of
         # orders without placing them. Raises on malformed parameters.
-        broker.kite.basket_margin([basket_order])
+        # broker.kite.basket_margin is a synchronous requests call; run it
+        # in a thread executor so the event loop is not blocked.
+        import asyncio
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, broker.kite.basket_margin, [basket_order])
         return True, "basket_margin OK"
     except Exception as e:
         return False, str(e)[:240]

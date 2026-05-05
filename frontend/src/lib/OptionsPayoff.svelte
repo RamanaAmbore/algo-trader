@@ -617,12 +617,12 @@
           <text x={xt.x} y={ly}
                 text-anchor="end"
                 transform="rotate(-30 {xt.x} {ly})"
-                fill={wholeSigma ? '#fbbf24' : '#e2e8f0'}
+                fill={wholeSigma ? '#fbbf24' : '#c8d8f0'}
                 stroke="#152033"
                 stroke-width="3"
                 paint-order="stroke fill"
-                font-size={wholeSigma ? 12 : 11}
-                font-weight={wholeSigma ? 700 : 600}
+                font-size={wholeSigma ? 11 : 10}
+                font-weight={wholeSigma ? 700 : 500}
                 font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
             {xt.label}
           </text>

@@ -15,6 +15,8 @@ POST /api/orders/postback     — Kite postback: real-time order status updates
 GET  /api/accounts/           — list accounts (masked display + unmasked ID for order form)
 """
 
+import hashlib
+import hmac
 import json
 
 import msgspec
@@ -429,13 +431,15 @@ class OrdersController(Controller):
         data.price         = _snap_to_tick(data.price)
         data.trigger_price = _snap_to_tick(data.trigger_price)
 
-        # Resolve account — caller may leave blank; pick the first
-        # available connection (mirrors what the agent paper-trade
-        # path does for total-scope actions).
+        # Resolve account — caller must supply one explicitly. Silently
+        # falling back to the first available account would route an
+        # operator's order to a different account than intended.
         conns = Connections()
-        account = data.account or (next(iter(conns.conn)) if conns.conn else "")
+        account = (data.account or "").strip()
         if not account:
-            raise HTTPException(status_code=400, detail="no broker accounts available")
+            raise HTTPException(status_code=400, detail="Account is required.")
+        if account not in conns.conn:
+            raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
 
         # ─── LIVE branch ─────────────────────────────────────────────
         # Two gates: branch + per-action setting flag. Both must be
@@ -626,19 +630,58 @@ class OrdersController(Controller):
     @post("/postback", guards=[])
     async def order_postback(self, request: Request) -> dict:
         """Kite postback — receives real-time order status updates.
-        No JWT guard — Kite sends this directly. Authenticated by the
-        postback secret configured in the Kite developer console."""
+        No JWT guard — Kite sends this directly. Verified via
+        HMAC-SHA256 signature over order_id + order_timestamp + api_secret
+        using the account's api_secret as the key (Kite postback protocol).
+        """
         try:
             body = await request.json()
-            order_id = body.get("order_id", "")
-            account = body.get("user_id", "")
-            status = body.get("status", "")
-            tradingsymbol = body.get("tradingsymbol", "")
-            txn = body.get("transaction_type", "")
-            qty = body.get("quantity", 0)
-            price = body.get("average_price") or body.get("price", 0)
-            status_msg = body.get("status_message") or ""
-            masked = mask_column(pd.Series([account]))[0] if account else ""
+            order_id        = body.get("order_id", "")
+            order_timestamp = body.get("order_timestamp", "")
+            checksum        = body.get("checksum", "")
+            account         = body.get("user_id", "")
+            status          = body.get("status", "")
+            tradingsymbol   = body.get("tradingsymbol", "")
+            txn             = body.get("transaction_type", "")
+            qty             = body.get("quantity", 0)
+            price           = body.get("average_price") or body.get("price", 0)
+            status_msg      = body.get("status_message") or ""
+            masked          = mask_column(pd.Series([account]))[0] if account else ""
+
+            # ── HMAC verification ────────────────────────────────────
+            # Kite signs each postback with:
+            #   sha256(order_id + order_timestamp + api_secret)
+            # Try the account's own api_secret first; fall back to
+            # iterating every loaded account (Kite postback doesn't
+            # always include a recognisable user_id). We have ≤5
+            # accounts so the iteration is negligible.
+            conns = Connections()
+            candidates: list[str] = []
+            if account and account in conns.conn:
+                # Put the claimed account first so the fast path hits.
+                candidates = [account] + [a for a in conns.conn if a != account]
+            else:
+                candidates = list(conns.conn.keys())
+
+            sig_valid = False
+            for acct in candidates:
+                api_secret = conns.conn[acct]._api_secret
+                msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
+                expected = hashlib.sha256(msg).hexdigest()
+                if hmac.compare_digest(expected, str(checksum)):
+                    sig_valid = True
+                    break
+
+            if not sig_valid:
+                logger.warning(
+                    "postback signature mismatch",
+                    extra={"order_id": order_id},
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid postback signature.",
+                )
+            # ─────────────────────────────────────────────────────────
 
             logger.info(f"Postback: {order_id} [{masked}] {status} {txn} {qty} "
                         f"{tradingsymbol} price={price} msg={status_msg}")
@@ -660,6 +703,8 @@ class OrdersController(Controller):
             }))
 
             return {"status": "ok"}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Postback error: {e}")
             return {"status": "error", "detail": str(e)}

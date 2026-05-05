@@ -56,7 +56,7 @@
       delete dirty[s.key];
       dirty = { ...dirty };
       note = `Saved ${s.key}`;
-    } catch (e) { error = `Save failed: ${e.message}`; }
+    } catch (e) { error = 'Save failed.'; }
   }
 
   async function reset(/** @type {any} */ s) {
@@ -67,7 +67,7 @@
       delete dirty[s.key];
       dirty = { ...dirty };
       note = `Reset ${s.key} to ${updated.default_value}`;
-    } catch (e) { error = `Reset failed: ${e.message}`; }
+    } catch (e) { error = 'Reset failed.'; }
   }
 
   // Execution-mode summary used by the top banner: how many of the
@@ -287,15 +287,13 @@
     border-color: #fbbf24;
   }
 
-  /* Expanded info — same gradient + amber accent the OrderPopup and
-     <select> dropdown use, so info reveals feel like a continuation of
-     the row, not an OS-native tooltip. */
+  /* Expanded info — flat slate-blue surface, faint sky-blue border,
+     no left accent (matches canonical InfoHint styling). */
   .info-popout {
     margin: 0.15rem 0 0.4rem 1.6rem;
     padding: 0.4rem 0.6rem;
     border-radius: 0.25rem;
-    border: 1px solid rgba(251,191,36,0.25);
-    border-left: 3px solid #fbbf24;
+    border: 1px solid rgba(125,211,252,0.25);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
 </style>

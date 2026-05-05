@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get, post
+from litestar import Controller, Request, get, post
 from litestar.exceptions import HTTPException
 
 from backend.api.algo.derivatives import (
@@ -648,7 +648,8 @@ class OptionsController(Controller):
     guards = [auth_or_demo_guard]
 
     @get("/analytics")
-    async def analytics(self, mode: str = "live", symbol: str = "",
+    async def analytics(self, request: Request,
+                        mode: str = "live", symbol: str = "",
                         account: Optional[str] = None,
                         qty: Optional[int] = None,
                         avg_cost: Optional[float] = None,
@@ -668,6 +669,10 @@ class OptionsController(Controller):
         if mode not in _VALID_MODES:
             raise HTTPException(status_code=400,
                                 detail=f"mode must be one of {_VALID_MODES}")
+        # Demo sessions may only use sim or hypothetical mode; probing
+        # live broker positions leaks account data.
+        if getattr(request.state, "is_demo", False) and mode == "live":
+            raise HTTPException(status_code=403, detail="Demo: read-only.")
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol is required")
 

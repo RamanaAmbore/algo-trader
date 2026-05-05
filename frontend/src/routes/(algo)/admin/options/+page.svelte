@@ -1430,7 +1430,7 @@
   }
   function fmtPct(/** @type {number|null|undefined} */ v) {
     if (v == null) return '—';
-    return `${(v * 100).toFixed(1)}%`;
+    return `${(v * 100).toFixed(2)}%`;
   }
   function fmtNum(/** @type {number|null|undefined} */ v, /** @type {number} */ dp = 4) {
     if (v == null) return '—';
@@ -2070,7 +2070,7 @@
               </span>
               <span class="num">{cost != null ? '₹' + cost.toFixed(2) : '—'}</span>
               <span class="num">{ltp != null ? '₹' + ltp.toFixed(2) : '—'}</span>
-              <span class="num">{lg ? (lg.iv * 100).toFixed(1) + '%' : '—'}</span>
+              <span class="num">{lg ? (lg.iv * 100).toFixed(2) + '%' : '—'}</span>
               <span class="num">{lg ? lg.greeks.delta.toFixed(2) : '—'}</span>
               <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? lg.greeks.theta.toFixed(0) : '—'}</span>
               <span class="num">{lg ? lg.greeks.vega.toFixed(0) : '—'}</span>
@@ -2154,7 +2154,7 @@
               <div class="kv-pair">
                 <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
                 <span class="kv-v {strategy.risk.ev_pct > 0 ? 'kv-pos' : strategy.risk.ev_pct < 0 ? 'kv-neg' : ''}">
-                  {strategy.risk.ev_pct > 0 ? '+' : ''}{strategy.risk.ev_pct.toFixed(1)}%
+                  {strategy.risk.ev_pct > 0 ? '+' : ''}{strategy.risk.ev_pct.toFixed(2)}%
                 </span>
               </div>
             {/if}

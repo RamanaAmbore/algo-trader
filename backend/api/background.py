@@ -286,7 +286,7 @@ async def _task_performance(state: dict) -> None:
         today = now.date()
 
         # Refresh holiday calendars at year boundary
-        if not holiday_cache or getattr(state, '_hol_year', None) != today.year:
+        if not holiday_cache or state.get('_hol_year', None) != today.year:
             holiday_cache = {}
             state['_hol_year'] = today.year
 

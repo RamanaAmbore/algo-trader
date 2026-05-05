@@ -471,3 +471,12 @@ export const clearShadowData    = () => _post('/shadow/clear', {}, { auth: true 
 
 // ── Live ──────────────────────────────────────────────────────────────
 export const fetchLiveStatus    = () => _get('/live/status', { auth: true });
+
+// ── Admin logs ────────────────────────────────────────────────────────
+/** GET /api/admin/logs?n=… — tail the API log file. */
+export const fetchAdminLogs = (n = 100) =>
+  _get(`/admin/logs?n=${n}`, { auth: true });
+
+// ── Contact (public) ──────────────────────────────────────────────────
+/** POST /api/contact/ — public contact form submission. */
+export const submitContact = (payload) => _post('/contact/', payload);

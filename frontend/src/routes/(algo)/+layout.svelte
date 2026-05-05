@@ -201,7 +201,7 @@
 
         <!-- Mode badges — env-aware:
              prod (main)  → DEMO (anonymous) | PAPER (paper engine has open orders) | nothing
-             dev (non-main) → SIM (sim active) | PAPER (paper engine has open orders) | both
+             dev (non-main) → SIM (sim active) — PAPER never shows on dev (paperStatus.enabled is main-only)
              Word labels (DEMO / PAPER / SIM) instead of single letters
              so the affordance is unambiguous on every page. -->
         {#if isDemo}

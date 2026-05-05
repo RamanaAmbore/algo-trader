@@ -1,4 +1,6 @@
 <script>
+  import { submitContact } from '$lib/api';
+
   let form = { name: '', email: '', message: '' };
   let submitting = false;
   let success    = '';
@@ -9,17 +11,11 @@
     success    = '';
     error      = '';
     try {
-      const res = await fetch('/api/contact/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(d.detail || 'Failed to send message');
+      const d = await submitContact(form);
       success = d.detail || 'Your message has been sent. We will get back to you shortly.';
       form = { name: '', email: '', message: '' };
     } catch (e) {
-      error = /** @type {Error} */ (e).message || 'Failed to send message. Please try again.';
+      error = /** @type {Error} */ (e).message || 'Failed to send message.';
     } finally {
       submitting = false;
     }

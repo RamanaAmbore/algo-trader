@@ -199,10 +199,16 @@ class PaperTradeEngine:
         Mode-2 entry point — runs `step()` every `interval_seconds`
         until cancelled. Mode 1 doesn't call this; the simulator's
         scenario tick drives `step()` directly.
+
+        `step()` is sync but calls `LiveQuoteSource.prefetch_for()` which
+        makes blocking broker HTTP requests. Offload to a thread executor
+        so the event loop is never stalled by the ~200–500 ms Kite round-
+        trip.
         """
+        loop = asyncio.get_running_loop()
         while True:
             try:
-                self.step()
+                await loop.run_in_executor(None, self.step)
             except Exception as e:
                 logger.error(f"PaperTradeEngine[{self._label}] step failed: {e}")
             await asyncio.sleep(max(1, interval_seconds))

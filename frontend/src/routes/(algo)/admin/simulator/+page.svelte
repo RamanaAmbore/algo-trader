@@ -8,12 +8,12 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
+  import { clientTimestamp, visibleInterval, branchLabel } from '$lib/stores';
   import {
     fetchSimScenarios, fetchSimStatus, startSim, stopSim, stepSim,
     runSimCycle, clearSimArtefacts, seedSimLive, fetchSimEvents,
     fetchSimTicks, fetchAgents, fetchAlgoOrdersRecent,
-    fetchChartSymbols, fetchChartBatch,
+    fetchChartSymbols, fetchChartBatch, fetchAdminLogs,
   } from '$lib/api';
   import LogPanel    from '$lib/LogPanel.svelte';
   import Select      from '$lib/Select.svelte';
@@ -89,11 +89,6 @@
   const orderLog  = $derived(events);
   let   orderRows = $state(/** @type {any[]} */ ([]));
 
-  function authHeaders() {
-    const token = $authStore.token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
   async function loadOrderRows() {
     try { orderRows = await fetchAlgoOrdersRecent(100, 'all') || []; }
     catch (_) { /* ignore */ }
@@ -105,8 +100,8 @@
   }
   async function loadSystemLog() {
     try {
-      const res = await fetch('/api/admin/logs?n=100', { headers: authHeaders() });
-      if (res.ok) { const d = await res.json(); systemLog = d.lines || []; }
+      const d = await fetchAdminLogs(100);
+      systemLog = d.lines || [];
     } catch (_) { /* ignore */ }
   }
   function loadCurrentLog() {
@@ -538,8 +533,8 @@
   {#if simOff}
     <div class="mt-2 p-2 rounded text-[0.65rem] text-amber-200
                 bg-amber-500/10 border border-amber-500/40">
-      Simulator is disabled on the <b>{status?.branch ?? 'current'}</b>
-      branch (cap_in_<b>{status?.branch ?? 'branch'}</b>.simulator is
+      Simulator is disabled on the <b>{branchLabel(status?.branch ?? 'current')}</b>
+      branch (cap_in_<b>{branchLabel(status?.branch ?? 'branch')}</b>.simulator is
       off). Toggle it in <code>backend_config.yaml</code> or from the
       Settings page to re-enable.
     </div>

@@ -5,6 +5,7 @@
   import LogPanel from '$lib/LogPanel.svelte';
   import OrderTicket from '$lib/order/OrderTicket.svelte';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
+  import { interpretAgent } from '$lib/api';
 
   let command      = $state('');
   let cmdHistory   = $state([]);  // [{cmd, result, time}]
@@ -57,11 +58,7 @@
     // Agent command
     if (cmd.toLowerCase().startsWith('agent ')) {
       try {
-        const res = await fetch('/api/agents/interpret', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ command: cmd }),
-        });
-        const d = await res.json().catch(() => ({}));
+        const d = await interpretAgent(cmd);
         addResult(cmd, d.output || d.detail || 'No output');
       } catch (e) { addResult(cmd, `ERROR: ${e.message}`); }
       finally { running = false; command = ''; }
