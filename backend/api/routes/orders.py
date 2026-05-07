@@ -521,20 +521,39 @@ class OrdersController(Controller):
             except HTTPException:
                 raise
             except Exception as e:
-                # Enriched failure log: include account / exchange / symbol /
-                # product / side / qty / order_type / price so the next time
-                # Kite returns a generic message ("Insufficient permission",
-                # "Margin shortfall", etc.) the operator can tell at a glance
-                # which leg + which account triggered the rejection without
-                # cross-referencing login timestamps.
+                # Enriched failure log: account / exchange / symbol / product /
+                # side / qty / order_type / price + post-flight diagnosis via
+                # basket_margin (Kite's "Insufficient permission for that call"
+                # is overloaded — segment scope, account activation, OR margin
+                # shortfall all surface as the same string).
+                from backend.api.algo.actions import diagnose_live_failure
                 masked_acct = mask_column(pd.Series([account]))[0]
+                kite_msg = str(e)
+                diag_order = {
+                    "exchange": data.exchange or "NFO",
+                    "symbol":   sym,
+                    "side":     side,
+                    "qty":      qty,
+                    "order_type": order_type,
+                    "product":  data.product or "NRML",
+                    "price":    data.price or 0,
+                    "variety":  data.variety or "regular",
+                }
+                try:
+                    diag = await diagnose_live_failure(_kite_for(account), diag_order, kite_msg)
+                except Exception:
+                    diag = "diagnosis unavailable"
                 logger.error(
                     f"[LIVE-TICKET] place_order failed for {masked_acct} "
                     f"{(data.exchange or 'NFO')}/{sym} {(data.product or 'NRML')} "
                     f"{side} {qty} {order_type}"
-                    f"{f' @{data.price}' if data.price else ''}: {e}"
+                    f"{f' @{data.price}' if data.price else ''}: "
+                    f"{kite_msg} | diag: {diag}"
                 )
-                raise HTTPException(status_code=400, detail=str(e))
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{kite_msg} ({diag})"[:400],
+                )
 
         # Persist AlgoOrder row first so the engine has an id to
         # reference back into.

@@ -488,6 +488,49 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
         return False, str(e)[:240]
 
 
+async def diagnose_live_failure(kite_or_broker, order: dict, kite_error: str) -> str:
+    """
+    When kite.place_order raises, run basket_margin to distinguish the
+    likely cause. Kite returns "Insufficient permission for that call"
+    for several distinct conditions (segment scope, account activation,
+    margin shortfall) — basket_margin gives us a second signal:
+
+      - basket_margin succeeds  →  margin OK; place_order failure is
+                                   likely a segment-permission issue
+      - basket_margin fails with margin/fund/shortfall keywords → margin
+      - basket_margin fails with the same generic error              → unclear
+
+    `kite_or_broker` may be either a raw KiteConnect instance or a
+    `Broker` adapter (which exposes `.kite`). Returns a one-line
+    diagnostic suitable for both the log line and the operator-facing
+    HTTP detail.
+    """
+    import asyncio
+    kite = getattr(kite_or_broker, "kite", kite_or_broker)
+    basket_order = {
+        "exchange":         order.get("exchange", "NFO"),
+        "tradingsymbol":    order.get("symbol") or order.get("tradingsymbol"),
+        "transaction_type": order.get("side") or order.get("transaction_type"),
+        "quantity":         order.get("qty") or order.get("quantity"),
+        "order_type":       order.get("order_type", "LIMIT"),
+        "product":          order.get("product", "NRML"),
+        "price":            order.get("price") or 0,
+        "variety":          order.get("variety", "regular"),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, kite.basket_margin, [basket_order])
+        return ("margin OK via basket_margin — likely segment permission "
+                "(check Account → Segments + API key exchange scope at "
+                "developers.kite.trade)")
+    except Exception as bm_e:
+        bm_msg = str(bm_e)
+        low = bm_msg.lower()
+        if any(k in low for k in ("margin", "fund", "shortfall", "balance")):
+            return f"margin shortfall (basket_margin: {bm_msg[:160]})"
+        return f"basket_margin also failed ({bm_msg[:160]}); cause unclear"
+
+
 async def _write_paper_order(agent, action_type: str, resolved: dict, context: dict):
     """
     Write ONE AlgoOrder(mode='paper') row after a dry-run via Kite's
@@ -791,11 +834,28 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     }, status="OPEN")
 
     cfg = ChaseConfig(exchange=exchange, product=str(params.get("product") or "NRML"))
-    await chase_order(
-        account=account, symbol=symbol,
-        transaction_type=side, quantity=qty,
-        cfg=cfg,
-    )
+    try:
+        await chase_order(
+            account=account, symbol=symbol,
+            transaction_type=side, quantity=qty,
+            cfg=cfg,
+        )
+    except Exception as e:
+        # Run basket_margin diagnosis so an agent-fired close failure logs
+        # whether the cause was margin or permission, same enrichment the
+        # /ticket route applies on operator-typed orders.
+        diag_order = {
+            "exchange": exchange, "symbol": symbol, "side": side, "qty": qty,
+            "order_type": "LIMIT", "product": str(params.get("product") or "NRML"),
+            "price": price or 0, "variety": "regular",
+        }
+        try:
+            diag = await diagnose_live_failure(broker, diag_order, str(e))
+        except Exception:
+            diag = "diagnosis unavailable"
+        logger.error(f"[LIVE] close_position failed for {account} {exchange}/{symbol} "
+                     f"{side} {qty}: {e} | diag: {diag}")
+        raise
 
 
 async def _action_live_modify_order(agent, context: dict, params: dict):
@@ -1021,7 +1081,28 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
         results = await asyncio.gather(*chase_tasks, return_exceptions=True)
         for i, res in enumerate(results):
             if isinstance(res, Exception):
-                logger.error(f"[LIVE] chase_close_positions: task {i} failed: {res}")
+                # Diagnose via basket_margin so the log distinguishes
+                # margin-shortfall from segment-permission for this leg.
+                p = rows[i]
+                acct     = str(p.get("account", ""))
+                symbol   = str(p.get("tradingsymbol", ""))
+                exchange = str(p.get("exchange") or "NFO")
+                qty      = abs(int(p.get("quantity") or 0))
+                side     = "SELL" if int(p.get("quantity") or 0) > 0 else "BUY"
+                ltp      = p.get("last_price") or p.get("close_price") or 0
+                diag_order = {
+                    "exchange": exchange, "symbol": symbol, "side": side,
+                    "qty": qty, "order_type": "LIMIT", "product": "NRML",
+                    "price": float(ltp) if ltp else 0, "variety": "regular",
+                }
+                try:
+                    broker = get_broker(acct)
+                    diag = await diagnose_live_failure(broker, diag_order, str(res))
+                except Exception:
+                    diag = "diagnosis unavailable"
+                logger.error(f"[LIVE] chase_close_positions task {i} failed for "
+                             f"{acct} {exchange}/{symbol} {side} {qty}: "
+                             f"{res} | diag: {diag}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
