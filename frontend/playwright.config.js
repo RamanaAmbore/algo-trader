@@ -19,10 +19,14 @@ export default defineConfig({
     { name: 'mobile', use: { ...devices['iPhone 13'] } },
   ],
 
-  webServer: {
-    command: 'npm run dev -- --port 5174 --strictPort',
-    url: 'http://localhost:5174',
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  // Skip the local dev server when running against an external URL
+  // (e.g. PLAYWRIGHT_BASE_URL=https://ramboq.com for prod diagnostics).
+  webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER || process.env.PLAYWRIGHT_BASE_URL
+    ? undefined
+    : {
+        command: 'npm run dev -- --port 5174 --strictPort',
+        url: 'http://localhost:5174',
+        reuseExistingServer: !process.env.CI,
+        timeout: 60_000,
+      },
 });
