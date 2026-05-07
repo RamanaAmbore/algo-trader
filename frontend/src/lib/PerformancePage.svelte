@@ -286,6 +286,12 @@
 
   function makeGrid(el, colDefs, rowData = [], onRowClick = null) {
     return createGrid(el, {
+      // ag-Grid v33 changed the default theme to the Theming-API
+      // (themeQuartz). Pinning to 'legacy' keeps the existing CSS-file
+      // theming we've built up (ag-theme-ramboq + ag-theme-algo) so we
+      // don't have to migrate the palette + density rules to the new
+      // API right now.
+      theme: 'legacy',
       columnDefs: colDefs,
       rowData,
       defaultColDef: defaultCol,
