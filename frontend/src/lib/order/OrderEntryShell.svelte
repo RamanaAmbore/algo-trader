@@ -14,8 +14,8 @@
   // Ticket tab so existing callsites only need to swap the import
   // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
 
-  import { onMount } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus } from '$lib/api';
+  import { onMount, onDestroy } from 'svelte';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents } from '$lib/api';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -178,14 +178,46 @@
     addToBasket(leg);
   }
 
+  // ── Recent order events log ──────────────────────────────────────────
+  let _events = $state(/** @type {any[]} */ ([]));
+  /** @type {ReturnType<typeof setInterval> | undefined} */
+  let _eventsPoll;
+
+  async function _loadEvents() {
+    try {
+      const res = await fetchOrderEvents(20, 'all');
+      _events = (Array.isArray(res) ? res : (res?.events ?? [])).slice(0, 20);
+    } catch (_) { /* silent — strip stays at last-good values */ }
+  }
+
+  /** Format an ISO UTC timestamp string to HH:MM:SS in IST. */
+  function _fmtEventTime(/** @type {string} */ ts) {
+    if (!ts) return '--:--:--';
+    try {
+      const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+      return d.toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      });
+    } catch (_) { return ts.slice(11, 19) || '--:--:--'; }
+  }
+
   // Close on Escape (only when the confirm overlay inside OrderTicket
   // is NOT open — OrderTicket handles its own Escape for that).
   onMount(() => {
+    _loadEvents();
+    _eventsPoll = setInterval(_loadEvents, 3000);
+
     const onKey = (/** @type {KeyboardEvent} */ e) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  });
+
+  onDestroy(() => {
+    if (_eventsPoll) clearInterval(_eventsPoll);
   });
 
   const TABS = /** @type {const} */ ([
@@ -347,6 +379,26 @@
         </div>
       </div>
     {/if}
+
+    <!-- Recent order events log — always visible when the shell is open. -->
+    <div class="oes-eventlog">
+      <div class="oes-eventlog-head">Recent order events</div>
+      {#if _events.length}
+        <div class="oes-eventlog-body">
+          {#each _events as ev (ev.id)}
+            <div class="oes-event-row">
+              <span class="oes-event-time">{_fmtEventTime(ev.ts)}</span>
+              <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
+              <span class="oes-event-msg">
+                {ev.order_id ? `#${ev.order_id} · ` : ''}{ev.message ?? ''}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="oes-eventlog-empty">No recent order events.</div>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -574,5 +626,59 @@
   /* Hide OrderTicket header (symbol line) — the shell title carries it. */
   .oes-ticket-body :global(.ot-header) {
     display: none !important;
+  }
+
+  /* ── Recent order events log ─────────────────────────────────────── */
+  .oes-eventlog {
+    border-top: 1px solid rgba(125,211,252,0.18);
+    padding: 0.5rem 1rem 0.7rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    background: rgba(15,23,42,0.55);
+    max-height: 9rem;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .oes-eventlog-head {
+    color: #7e97b8;
+    font-size: 0.55rem;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    margin-bottom: 0.3rem;
+    text-transform: uppercase;
+  }
+  .oes-eventlog-body { display: flex; flex-direction: column; gap: 0.18rem; }
+  .oes-event-row {
+    display: grid;
+    grid-template-columns: 4.5rem 6rem 1fr;
+    gap: 0.4rem;
+    align-items: baseline;
+    color: #c8d8f0;
+  }
+  .oes-event-time {
+    color: #7e97b8;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-event-kind {
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.55rem;
+  }
+  .oes-event-kind-placed          { color: #38bdf8; }
+  .oes-event-kind-chase_modify    { color: #fbbf24; }
+  .oes-event-kind-fill            { color: #22c55e; }
+  .oes-event-kind-unfill          { color: #f87171; }
+  .oes-event-kind-reject          { color: #ef4444; }
+  .oes-event-kind-preflight_ok    { color: #94a3b8; }
+  .oes-event-kind-preflight_block { color: #ef4444; }
+  .oes-event-kind-cancel          { color: #94a3b8; }
+  .oes-event-kind-postback        { color: #c084fc; }
+  .oes-event-msg { color: #c8d8f0; }
+  .oes-eventlog-empty {
+    color: #7e97b8;
+    font-style: italic;
+    text-align: center;
+    padding: 0.4rem 0;
   }
 </style>
