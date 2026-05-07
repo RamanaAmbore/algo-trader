@@ -677,19 +677,14 @@
           {@const beChipW   = beLabel.length * 6.5 + 12}
           {@const beChipH   = 16}
           <g transform="rotate(-90 {beAnchorX} {beAnchorY})">
-            <!-- Navy backing rect (slightly larger) — fully opaque so the
-                 σ price label / grid line behind the chip is masked
-                 instead of bleeding through. -->
+            <!-- Backing rect masks the σ price label behind the chip. -->
             <rect x={beAnchorX - 1} y={beAnchorY - beChipH / 2 - 1}
                   width={beChipW + 2} height={beChipH + 2} rx="4"
                   fill="#0d1829"/>
-            <!-- Solid amber pill on top of the navy backing — high
-                 contrast against navy text below. -->
             <rect x={beAnchorX} y={beAnchorY - beChipH / 2}
                   width={beChipW} height={beChipH} rx="3"
                   fill="#fbbf24"
                   stroke="#d4920c" stroke-width="1"/>
-            <!-- Navy text on amber chip — maximum legibility. -->
             <text x={beAnchorX + 6} y={beAnchorY + 4}
                   text-anchor="start"
                   fill="#0d1829"

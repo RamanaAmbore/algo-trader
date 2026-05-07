@@ -1,18 +1,4 @@
-"""Generate app-icon-{192,512}.png + favicon.{png,ico} + logo.png from
-the same source as frontend/static/app-icon.svg.
-
-Single brand mark across every surface: solid navy square +
-bull silhouette inset at 333/512 of the canvas (the original pre-ring
-proportions). No ring, no bevel, no drop shadow — the icon's shape
-and size IS the navy background.
-
-Outputs (all under frontend/static/):
-  - app-icon-192.png  (PWA manifest, apple-touch-icon)
-  - app-icon-512.png  (PWA manifest, Google JSON-LD Organization.logo)
-  - favicon.png       (browser-tab fallback for older clients)
-  - favicon.ico       (multi-size 16/32/48/64/128/256 ICO bundle)
-  - logo.png          (legacy /logo.png path; preserved for back-compat)
-"""
+"""Generate every PNG/ICO brand asset from bull.png — re-run after editing bull.png."""
 
 from pathlib import Path
 from PIL import Image
@@ -22,30 +8,36 @@ STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
 NAVY = (13, 24, 41, 255)
+BULL_INSET = 333 / 512  # bull width as fraction of canvas (matches app-icon.svg)
 
 
-def build(size: int) -> Image.Image:
-    """Navy square canvas with the bull centred at 333/512 inset."""
-    s = size
-    canvas = Image.new("RGBA", (s, s), NAVY)
-    bull_size = int(round(s * (333 / 512)))
-    bull = Image.open(BULL_SRC).convert("RGBA").resize(
-        (bull_size, bull_size), Image.LANCZOS
-    )
-    cx = cy = s / 2
-    bx = int(cx - bull_size / 2)
-    by = int(cy - bull_size / 2)
-    canvas.alpha_composite(bull, (bx, by))
+def _bull_for(size: int, source: Image.Image) -> Image.Image:
+    bull_size = int(round(size * BULL_INSET))
+    return source.resize((bull_size, bull_size), Image.LANCZOS)
+
+
+def build(size: int, source: Image.Image) -> Image.Image:
+    canvas = Image.new("RGBA", (size, size), NAVY)
+    bull = _bull_for(size, source)
+    bw = bull.size[0]
+    canvas.alpha_composite(bull, ((size - bw) // 2, (size - bw) // 2))
     return canvas
 
 
 def main() -> None:
-    for size in (192, 512):
-        out = STATIC / f"app-icon-{size}.png"
-        build(size).save(out, format="PNG", optimize=True)
-        print(f"wrote {out} ({out.stat().st_size:,} bytes)")
+    source = Image.open(BULL_SRC).convert("RGBA")
 
-    fav_master = build(256)
+    for size in (192, 512):
+        img = build(size, source)
+        out = STATIC / f"app-icon-{size}.png"
+        img.save(out, format="PNG", optimize=True)
+        print(f"wrote {out} ({out.stat().st_size:,} bytes)")
+        if size == 512:
+            logo = STATIC / "logo.png"
+            img.save(logo, format="PNG", optimize=True)
+            print(f"wrote {logo} ({logo.stat().st_size:,} bytes)")
+
+    fav_master = build(256, source)
     fav_png = STATIC / "favicon.png"
     fav_master.save(fav_png, format="PNG", optimize=True)
     print(f"wrote {fav_png} ({fav_png.stat().st_size:,} bytes)")
@@ -57,10 +49,6 @@ def main() -> None:
         sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
     print(f"wrote {fav_ico} ({fav_ico.stat().st_size:,} bytes)")
-
-    logo = STATIC / "logo.png"
-    build(512).save(logo, format="PNG", optimize=True)
-    print(f"wrote {logo} ({logo.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":
