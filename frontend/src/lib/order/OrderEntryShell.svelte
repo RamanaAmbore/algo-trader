@@ -244,7 +244,7 @@
           aria-selected={isActive}
           aria-disabled={disabled}
           style="
-            color: #ffffff;
+            color: {isActive ? tab.activeTxt : '#cbd5e1'};
             background: {tab.activeBg};
             border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
             font-weight: {isActive ? '800' : '600'};
@@ -300,7 +300,7 @@
             defaultMode={_ticketProps.defaultMode ?? defaultMode}
             availableModes={_ticketProps.availableModes ?? availableModes}
             currentQty={_ticketProps.currentQty ?? currentQty}
-            onAddToBasket={basketMode ? addToBasket : (_ticketProps.onAddToBasket ?? onAddToBasket)}
+            onAddToBasket={addToBasket}
             basketMode={basketMode}
             {onSubmit}
             {onClose} />
