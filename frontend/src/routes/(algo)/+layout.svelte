@@ -74,9 +74,7 @@
     // ── Modes (branch-filtered) ──
     { href: '/admin/simulator',  label: 'Simulator', branches: ['dev'],  group: 'modes' },
     { href: '/admin/replay',     label: 'Replay',                        group: 'modes' },
-    { href: '/admin/paper',      label: 'Paper',     branches: ['main'], group: 'modes' },
-    { href: '/admin/shadow',     label: 'Shadow',    branches: ['main'], group: 'modes' },
-    { href: '/admin/live',       label: 'Live',      branches: ['main'], group: 'modes' },
+    { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
     // ── Build / extend ──
     { href: '/console',          label: 'Terminal',  group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
