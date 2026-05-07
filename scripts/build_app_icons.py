@@ -1,7 +1,7 @@
 """Generate every PNG/ICO brand asset from bull.png — re-run after editing bull.png."""
 
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageFilter, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
@@ -9,18 +9,53 @@ BULL_SRC = STATIC / "bull.png"
 
 NAVY = (13, 24, 41, 255)
 BULL_INSET = 333 / 512  # bull width as fraction of canvas (matches app-icon.svg)
+GLOW_COLOR = (251, 191, 36)  # #fbbf24 — same amber as the navbar bull glow
+RING_RGBA = (255, 255, 255, 56)  # white @ alpha 0.22, matching the SVG
+RING_INSET = 11 / 512  # distance from canvas edge to ring (matches r=245 at 512)
 
 
-def _bull_for(size: int, source: Image.Image) -> Image.Image:
-    bull_size = int(round(size * BULL_INSET))
-    return source.resize((bull_size, bull_size), Image.LANCZOS)
+def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
+    """Build one halo: take bull's alpha, blur it, tint amber at the given alpha."""
+    alpha = bull.getchannel("A")
+    blurred = alpha.filter(ImageFilter.GaussianBlur(radius=std_dev))
+    halo = Image.new("RGBA", bull.size, GLOW_COLOR + (0,))
+    # Modulate the per-pixel alpha by the desired opacity
+    halo.putalpha(blurred.point(lambda v: int(v * opacity)))
+    return halo
 
 
 def build(size: int, source: Image.Image) -> Image.Image:
     canvas = Image.new("RGBA", (size, size), NAVY)
-    bull = _bull_for(size, source)
-    bw = bull.size[0]
-    canvas.alpha_composite(bull, ((size - bw) // 2, (size - bw) // 2))
+    bull_size = int(round(size * BULL_INSET))
+    bull = source.resize((bull_size, bull_size), Image.LANCZOS)
+
+    # Position the bull centred on the canvas.
+    bx = (size - bull_size) // 2
+    by = (size - bull_size) // 2
+
+    # Two halo layers — outer wide & faint, inner tight & brighter.
+    # Scale Gaussian std-dev so the perceived radius is constant
+    # across canvas sizes (12 / 6 px on the 512 canvas).
+    outer_std = 12 * size / 512
+    inner_std = 6 * size / 512
+    outer = _glow_layer(bull, outer_std, opacity=0.20)
+    inner = _glow_layer(bull, inner_std, opacity=0.35)
+
+    canvas.alpha_composite(outer, (bx, by))
+    canvas.alpha_composite(inner, (bx, by))
+    canvas.alpha_composite(bull,  (bx, by))
+
+    # Subtle white ring just inside the canvas edge.
+    ring_pad = max(2, int(round(size * RING_INSET)))
+    ring_w   = max(1, int(round(size * (2 / 512))))
+    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).ellipse(
+        (ring_pad, ring_pad, size - ring_pad, size - ring_pad),
+        outline=RING_RGBA,
+        width=ring_w,
+    )
+    canvas.alpha_composite(overlay)
+
     return canvas
 
 

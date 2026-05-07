@@ -142,9 +142,19 @@
     try {
       const res = await fetchExecutionMode();
       if (res?.mode)          executionMode.set(res.mode);
-      if (res?.allowed_modes) allowedModes = res.allowed_modes;
+      if (res?.allowed_modes && res.allowed_modes.length) {
+        allowedModes = res.allowed_modes;
+      }
       if (res?.branch)        modeBranch   = res.branch;
-    } catch (_) { /* backend not yet wired — stay on default */ }
+    } catch (e) {
+      console.warn('[mode] /api/admin/execution/mode fetch failed:', e);
+    }
+    if (allowedModes.length === 0) {
+      // Fallback so the chip is selectable even when the API is unreachable.
+      allowedModes = paperStatus?.branch === 'main'
+        ? ['paper', 'shadow', 'live']
+        : ['sim', 'replay', 'paper'];
+    }
   }
 
   async function pickMode(/** @type {string} */ mode) {
