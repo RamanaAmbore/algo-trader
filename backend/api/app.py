@@ -101,12 +101,18 @@ if _FRONTEND_BUILD.exists():
         # Guard against directory traversal
         if ".." in path:
             return File(path=_index_html, filename="index.html", content_disposition_type="inline")
-        static_file = _FRONTEND_BUILD / path
+        # Litestar's `{path:path}` capture includes the leading slash; pathlib's
+        # `/` operator replaces the base when given an absolute path, so always
+        # strip leading + trailing slashes before joining.
+        rel = path.strip("/")
+        if not rel:
+            return File(path=_index_html, filename="index.html", content_disposition_type="inline")
+        static_file = _FRONTEND_BUILD / rel
         # 1. Exact match (PNG, SVG, robots.txt, etc.)
         if static_file.is_file():
             return File(path=static_file, content_disposition_type="inline")
         # 2. Prerendered page — adapter-static writes /about → about.html
-        html_file = _FRONTEND_BUILD / (path.rstrip("/") + ".html")
+        html_file = _FRONTEND_BUILD / (rel + ".html")
         if html_file.is_file():
             return File(path=html_file, filename="index.html", content_disposition_type="inline")
         # 3. SPA fallback for (algo) routes and anything else
