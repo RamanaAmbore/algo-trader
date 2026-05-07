@@ -29,6 +29,12 @@
   // aggregated CASH pill on the strip; the dashboard owns the
   // detailed funds grid.
   let funds     = $state(/** @type {any[]} */ ([]));
+  // Per-source loaded flags so the strip can distinguish "haven't
+  // fetched yet" (show "—") from "fetched and got empty" (show ₹0).
+  // The earlier `array.length > 0` heuristic conflated the two.
+  let positionsLoaded = $state(false);
+  let holdingsLoaded  = $state(false);
+  let fundsLoaded     = $state(false);
   let lastRefresh = $state('');
 
   /** @type {ReturnType<typeof marketAwareInterval> | null} */
@@ -40,22 +46,33 @@
   async function loadOnce() {
     try {
       // Cache hit — paint instantly, then refresh in the background.
-      if (dataCache.positions?.rows) positions = dataCache.positions.rows;
-      if (dataCache.holdings?.rows)  holdings  = dataCache.holdings.rows;
+      // Treat a cached value as "loaded" so we don't flash "—" before
+      // the next fetch resolves.
+      if (dataCache.positions?.rows) {
+        positions = dataCache.positions.rows;
+        positionsLoaded = true;
+      }
+      if (dataCache.holdings?.rows)  {
+        holdings  = dataCache.holdings.rows;
+        holdingsLoaded = true;
+      }
       if (dataCache.funds?.rows) {
         funds = dataCache.funds.rows.filter(
           (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
         );
+        fundsLoaded = true;
       }
       const [p, h, f] = await Promise.allSettled([
         fetchPositions(), fetchHoldings(), fetchFunds(),
       ]);
       if (p.status === 'fulfilled') {
         positions = p.value?.rows || [];
+        positionsLoaded = true;
         dataCache.positions = p.value;
       }
       if (h.status === 'fulfilled') {
         holdings = h.value?.rows || [];
+        holdingsLoaded = true;
         dataCache.holdings = h.value;
       }
       if (f.status === 'fulfilled') {
@@ -67,6 +84,7 @@
         funds = (f.value?.rows || []).filter(
           (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
         );
+        fundsLoaded = true;
         dataCache.funds = f.value;
       }
       lastRefresh = new Date().toLocaleTimeString('en-IN', {
@@ -209,25 +227,25 @@
     <span class="ps-agg" title="Positions P/L — open + closed intraday">
       <span class="ps-agg-k">Pos</span>
       <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(positionsPnl, positions.length > 0)}
+        {fmtMoney(positionsPnl, positionsLoaded)}
       </span>
     </span>
     <span class="ps-agg" title="Holdings — today's mark-to-market move (day_change_val)">
       <span class="ps-agg-k">Day</span>
       <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(holdingsToday, holdings.length > 0)}
+        {fmtMoney(holdingsToday, holdingsLoaded)}
       </span>
     </span>
     <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
       <span class="ps-agg-k">Hold</span>
       <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(holdingsTotal, holdings.length > 0)}
+        {fmtMoney(holdingsTotal, holdingsLoaded)}
       </span>
     </span>
     <span class="ps-agg" title="Cash — free balance summed across accounts">
       <span class="ps-agg-k">Cash</span>
       <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(cashTotal, funds.length > 0)}
+        {fmtMoney(cashTotal, fundsLoaded)}
       </span>
     </span>
     <span class="ps-agg ps-agg-meta">

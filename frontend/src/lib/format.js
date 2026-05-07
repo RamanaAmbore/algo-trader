@@ -20,10 +20,15 @@ const _IN0 = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 0,
 });
 
-/** 2 dp, Indian grouping — for LTP, avg price, limit, fill, slippage. */
+/** Live quotes / order prices.
+ *  |v| < 500 → 2 decimals  (option premiums, slippage, sub-rupee tickers)
+ *  |v| ≥ 500 → 0 decimals  (NIFTY ~22k, gold, futures — decimals are noise
+ *                           at that magnitude and steal column width).
+ *  Examples: 0.05 → "0.05", 1234.5 → "1,235", 22156.7 → "22,157" */
 export function priceFmt(v) {
   if (v == null || !isFinite(v)) return '—';
-  return _IN2.format(Number(v));
+  const n = Number(v);
+  return Math.abs(n) >= 500 ? _IN0.format(Math.round(n)) : _IN2.format(n);
 }
 
 /** 2 dp fixed — for percentages and ratios (caller appends % if needed). */
