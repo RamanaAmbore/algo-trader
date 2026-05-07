@@ -100,16 +100,16 @@
       {fmtMoney(positionsPnl)}
     </span>
   </span>
-  <span class="ps-agg" title="Cash — free balance summed across accounts">
-    <span class="ps-agg-k">Cash</span>
-    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
-      {fmtMoney(cashTotal)}
-    </span>
-  </span>
   <span class="ps-agg" title="Available margin — summed across accounts">
     <span class="ps-agg-k">M</span>
     <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(marginTotal)}
+    </span>
+  </span>
+  <span class="ps-agg" title="Cash — free balance summed across accounts">
+    <span class="ps-agg-k">Cash</span>
+    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+      {fmtMoney(cashTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings — today's mark-to-market move (day_change_val)">
