@@ -11,6 +11,7 @@
     promoteShadowToLive, clearShadowData,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import { priceFmt, qtyFmt } from '$lib/format';
 
   let status   = $state(/** @type {any} */ ({}));
   let orders   = $state(/** @type {any[]} */ ([]));
@@ -158,8 +159,8 @@
                 <td>{o.id}</td>
                 <td>{o.symbol}</td>
                 <td class={o.side === 'BUY' ? 'sim-buy' : 'sim-sell'}>{o.side}</td>
-                <td>{o.quantity}</td>
-                <td class="sim-td-mono">{o.initial_price != null ? `₹${o.initial_price.toLocaleString()}` : '—'}</td>
+                <td>{qtyFmt(o.quantity)}</td>
+                <td class="sim-td-mono">{o.initial_price != null ? `₹${priceFmt(o.initial_price)}` : '—'}</td>
                 <td>
                   <span class="sim-pill" class:sim-pill-ok={o.status === 'SHADOW_OK'} class:sim-pill-rej={o.status === 'SHADOW_REJECTED'}>
                     {o.status === 'SHADOW_OK' ? 'OK' : o.status === 'SHADOW_REJECTED' ? 'REJECTED' : o.status}

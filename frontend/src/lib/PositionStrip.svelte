@@ -18,6 +18,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { dataCache, marketAwareInterval } from '$lib/stores';
   import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
+  import { aggFmt, pctFmt } from '$lib/format';
 
   // Local mirror of the cache so the strip re-renders when /dashboard
   // refreshes the snapshot. The cache itself isn't a Svelte store
@@ -180,13 +181,12 @@
 
   function fmtMoney(/** @type {number} */ v) {
     if (!isFinite(v)) return '—';
-    const sign = v < 0 ? '−' : '';
-    return `${sign}₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    return `₹${aggFmt(v)}`;
   }
   function fmtPct(/** @type {number} */ v) {
     if (!isFinite(v) || v === 0) return '0.00%';
     const sign = v < 0 ? '−' : '';
-    return `${sign}${Math.abs(v).toFixed(2)}%`;
+    return `${sign}${pctFmt(Math.abs(v))}%`;
   }
 </script>
 

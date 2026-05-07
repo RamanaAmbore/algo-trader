@@ -20,6 +20,7 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import PriceChart  from '$lib/PriceChart.svelte';
   import InfoHint    from '$lib/InfoHint.svelte';
+  import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
 
   let scenarios = $state(/** @type {any[]} */ ([]));
   let status    = $state(/** @type {any} */ ({}));
@@ -374,12 +375,12 @@
       <span class="sim-pills-label">Positions ({status.positions.length}):</span>
       {#each status.positions as p}
         <span class="sim-pill sim-pill-{p.quantity >= 0 ? 'long' : 'short'}"
-              title={`LTP ₹${p.last_price?.toFixed?.(2) ?? '—'} · bid ₹${p.bid?.toFixed?.(2) ?? '—'} · ask ₹${p.ask?.toFixed?.(2) ?? '—'}`}>
+              title={`LTP ₹${priceFmt(p.last_price)} · bid ₹${priceFmt(p.bid)} · ask ₹${priceFmt(p.ask)}`}>
           <span class="sim-pill-side">{p.quantity >= 0 ? 'LONG' : 'SHORT'}</span>
           <span class="sim-pill-sym">{p.symbol}</span>
-          <span class="sim-pill-qty">{Math.abs(p.quantity ?? 0)}</span>
+          <span class="sim-pill-qty">{qtyFmt(Math.abs(p.quantity ?? 0))}</span>
           <span class="sim-pill-pnl {(p.pnl ?? 0) < 0 ? 'neg' : (p.pnl ?? 0) > 0 ? 'pos' : ''}">
-            ₹{(p.pnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+            ₹{aggFmt(p.pnl ?? 0)}
           </span>
         </span>
       {/each}
@@ -396,8 +397,8 @@
         <span class="sim-pill sim-pill-chase">
           <span class="sim-pill-side sim-pill-side-{o.side === 'BUY' ? 'buy' : 'sell'}">{o.side}</span>
           <span class="sim-pill-sym">{o.symbol}</span>
-          <span class="sim-pill-qty">{o.qty}</span>
-          <span class="sim-pill-limit">@₹{o.limit_price?.toFixed?.(2) ?? '—'}</span>
+          <span class="sim-pill-qty">{qtyFmt(o.qty)}</span>
+          <span class="sim-pill-limit">@₹{priceFmt(o.limit_price)}</span>
           <span class="sim-pill-attempts">#{o.attempts}</span>
         </span>
       {/each}

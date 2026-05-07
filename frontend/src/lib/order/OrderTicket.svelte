@@ -27,6 +27,7 @@
   import { onMount, untrack } from 'svelte';
   import OrderDepth from './OrderDepth.svelte';
   import { placeTicketOrder, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
+  import { aggFmt } from '$lib/format';
 
   /** @type {{
    *   symbol:    string,
@@ -656,20 +657,14 @@
           <span class="ot-funds-k">Total</span>
         {/if}
         <span class="ot-funds-k">Avail margin</span>
-        <span class="ot-funds-v">
-          {_accountFunds.avail_margin < 0 ? '−' : ''}₹{Math.abs(Number(_accountFunds.avail_margin || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-        </span>
+        <span class="ot-funds-v">₹{aggFmt(_accountFunds.avail_margin || 0)}</span>
         <span class="ot-funds-sep">·</span>
         <span class="ot-funds-k">Cash</span>
-        <span class="ot-funds-v">
-          {_accountFunds.cash < 0 ? '−' : ''}₹{Math.abs(Number(_accountFunds.cash || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-        </span>
+        <span class="ot-funds-v">₹{aggFmt(_accountFunds.cash || 0)}</span>
         {#if _accountFunds.used_margin > 0}
           <span class="ot-funds-sep">·</span>
           <span class="ot-funds-k">Used</span>
-          <span class="ot-funds-v">
-            ₹{Math.abs(Number(_accountFunds.used_margin || 0)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-          </span>
+          <span class="ot-funds-v">₹{aggFmt(_accountFunds.used_margin || 0)}</span>
         {/if}
       </div>
     {/if}

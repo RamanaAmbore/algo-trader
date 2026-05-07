@@ -22,6 +22,7 @@
   import LogPanel   from '$lib/LogPanel.svelte';
   import PriceChart from '$lib/PriceChart.svelte';
   import InfoHint   from '$lib/InfoHint.svelte';
+  import { priceFmt, qtyFmt } from '$lib/format';
 
   let status         = $state(/** @type {any} */ ({}));
   let orderRows      = $state(/** @type {any[]} */ ([]));
@@ -140,8 +141,8 @@
       <span class="paper-pill">
         <span class="paper-pill-side paper-pill-side-{o.side === 'BUY' ? 'buy' : 'sell'}">{o.side}</span>
         <span class="paper-pill-sym">{o.symbol}</span>
-        <span class="paper-pill-qty">{o.qty}</span>
-        <span class="paper-pill-limit">@₹{o.limit_price?.toFixed?.(2) ?? '—'}</span>
+        <span class="paper-pill-qty">{qtyFmt(o.qty)}</span>
+        <span class="paper-pill-limit">@₹{priceFmt(o.limit_price)}</span>
         <span class="paper-pill-attempts">#{o.attempts}</span>
       </span>
     {/each}

@@ -9,6 +9,7 @@
   import { onMount } from 'svelte';
   import { authStore, clientTimestamp } from '$lib/stores';
   import { fetchAgentPnL } from '$lib/api';
+  import { priceFmt, pctFmt, aggFmt, qtyFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
 
   // ── State ──────────────────────────────────────────────────────────
@@ -80,17 +81,13 @@
   });
 
   // ── Helpers ────────────────────────────────────────────────────────
-  /** Integer with commas, no decimals. */
-  function _n(/** @type {number|null|undefined} */ v) {
-    if (v == null) return '—';
-    return Math.round(v).toLocaleString('en-IN');
-  }
+  /** Integer with commas, no decimals — for order counts. */
+  const _n = qtyFmt;
 
   /** Rupee-formatted with commas, no decimals. Positive = green, negative = red. */
   function _pnl(/** @type {number|null|undefined} */ v) {
     if (v == null) return { text: '—', cls: '' };
-    const rounded = Math.round(v);
-    const txt = (v < 0 ? '-₹' : '₹') + Math.abs(rounded).toLocaleString('en-IN');
+    const txt = '₹' + aggFmt(v);
     const cls = v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : '';
     return { text: txt, cls };
   }
@@ -98,7 +95,7 @@
   /** Percent, 2 decimals. */
   function _pct(/** @type {number|null|undefined} */ v) {
     if (v == null) return '—';
-    return v.toFixed(2) + '%';
+    return pctFmt(v) + '%';
   }
 
   /** Sort-arrow indicator. */
@@ -196,7 +193,7 @@
             <td class="td-num">{_n(r.filled_count)}</td>
             <td class="td-num {pnl.cls}">{pnl.text}</td>
             <td class="td-num">{_pct((r.win_rate ?? 0) * 100)}</td>
-            <td class="td-num">{_n(r.avg_slippage)}</td>
+            <td class="td-num">{r.avg_slippage != null ? priceFmt(r.avg_slippage) : '—'}</td>
           </tr>
         {/each}
       </tbody>

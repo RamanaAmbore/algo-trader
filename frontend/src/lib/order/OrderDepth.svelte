@@ -10,6 +10,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { fetchQuote } from '$lib/api';
+  import { priceFmt, qtyFmt } from '$lib/format';
 
   /** @type {{
    *   symbol: string,
@@ -62,7 +63,7 @@
   <div class="ot-depth-h">
     Depth · {symbol}{exchange ? ' · ' + exchange : ''}
     {#if q && q.ltp}
-      <span class="ot-depth-ltp">LTP ₹{q.ltp.toFixed(2)}</span>
+      <span class="ot-depth-ltp">LTP ₹{priceFmt(q.ltp)}</span>
     {:else if err}
       <span class="ot-depth-meta">{err}</span>
     {:else}
@@ -76,10 +77,10 @@
     <span class="ot-depth-label">Ask qty</span>
     {#each buyRows as b, i (i)}
       {@const a = sellRows[i]}
-      <span class="ot-depth-cell ot-depth-bid-qty">{b ? b.quantity.toLocaleString('en-IN') : '—'}</span>
-      <span class="ot-depth-cell ot-depth-bid">{b ? '₹' + b.price.toFixed(2) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask">{a ? '₹' + a.price.toFixed(2) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask-qty">{a ? a.quantity.toLocaleString('en-IN') : '—'}</span>
+      <span class="ot-depth-cell ot-depth-bid-qty">{b ? qtyFmt(b.quantity) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-bid">{b ? '₹' + priceFmt(b.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask">{a ? '₹' + priceFmt(a.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask-qty">{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>
 </div>

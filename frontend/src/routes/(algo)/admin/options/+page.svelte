@@ -35,6 +35,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
+  import { priceFmt, pctFmt, aggFmt } from '$lib/format';
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -1426,11 +1427,11 @@
   function fmtMoney(/** @type {number|null|undefined} */ v, /** @type {boolean} */ signed = true) {
     if (v == null) return '∞';
     const sign = signed ? (v < 0 ? '-' : v > 0 ? '+' : '') : '';
-    return `${sign}₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    return `${sign}₹${aggFmt(Math.abs(v))}`;
   }
   function fmtPct(/** @type {number|null|undefined} */ v) {
     if (v == null) return '—';
-    return `${(v * 100).toFixed(2)}%`;
+    return `${pctFmt(v * 100)}%`;
   }
   function fmtNum(/** @type {number|null|undefined} */ v, /** @type {number} */ dp = 4) {
     if (v == null) return '—';
@@ -1579,9 +1580,9 @@
         Option chain
         {#if chainSpot != null}
           <span class="chain-spot-pill" title="Underlying spot — ATM strike highlighted in the grid below">
-            SPOT ₹{chainSpot.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+            SPOT ₹{aggFmt(chainSpot)}
             {#if chainAtmStrike != null}
-              · ATM {chainAtmStrike.toFixed(0)}
+              · ATM {aggFmt(chainAtmStrike)}
             {/if}
           </span>
         {/if}
@@ -1843,10 +1844,10 @@
                 <span class="chain-basket-qty">× {leg.lotSize} = {leg.lots * leg.lotSize}</span>
                 <span class="chain-basket-limit-static"
                       title={leg.limit > 0
-                        ? `Algo-selected limit (₹${leg.limit.toLocaleString('en-IN', { maximumFractionDigits: 2 })} from the chain bid/ask at add-time). Chase re-quotes per the L/M/H pill.`
+                        ? `Algo-selected limit (₹${priceFmt(leg.limit)} from the chain bid/ask at add-time). Chase re-quotes per the L/M/H pill.`
                         : 'No quote available — leg routes as MARKET.'}>
                   {#if leg.limit > 0}
-                    algo @{leg.limit.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                    algo @{priceFmt(leg.limit)}
                   {:else}
                     @MKT
                   {/if}
@@ -2066,14 +2067,14 @@
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
               <span class="num {c.qty < 0 ? 'kv-neg' : 'kv-pos'}">{c.qty > 0 ? '+' : ''}{c.qty}</span>
               <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cand-pnl-pos' : 'cand-pnl-neg'}">
-                {pnl == null ? '—' : (pnl >= 0 ? '+' : '−') + '₹' + Math.abs(pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                {pnl == null ? '—' : (pnl >= 0 ? '+' : '−') + '₹' + aggFmt(Math.abs(pnl))}
               </span>
-              <span class="num">{cost != null ? '₹' + cost.toFixed(2) : '—'}</span>
-              <span class="num">{ltp != null ? '₹' + ltp.toFixed(2) : '—'}</span>
-              <span class="num">{lg ? (lg.iv * 100).toFixed(2) + '%' : '—'}</span>
-              <span class="num">{lg ? lg.greeks.delta.toFixed(2) : '—'}</span>
-              <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? lg.greeks.theta.toFixed(0) : '—'}</span>
-              <span class="num">{lg ? lg.greeks.vega.toFixed(0) : '—'}</span>
+              <span class="num">{cost != null ? '₹' + priceFmt(cost) : '—'}</span>
+              <span class="num">{ltp != null ? '₹' + priceFmt(ltp) : '—'}</span>
+              <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
+              <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
+              <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggFmt(lg.greeks.theta) : '—'}</span>
+              <span class="num">{lg ? aggFmt(lg.greeks.vega) : '—'}</span>
             </div>
           {/each}
         </div>
@@ -2103,23 +2104,23 @@
           <div class="opt-kv opt-kv-greeks">
             <div class="kv-pair" title="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise.">
               <span class="kv-k kv-k-greek">Δ</span>
-              <span class="kv-v">{fmtNum(strategy.aggregate_greeks.delta, 2)}</span>
+              <span class="kv-v">{pctFmt(strategy.aggregate_greeks.delta)}</span>
             </div>
             <div class="kv-pair" title="Gamma — rate-of-change of delta as spot moves.">
               <span class="kv-k kv-k-greek">Γ</span>
-              <span class="kv-v">{fmtNum(strategy.aggregate_greeks.gamma, 2)}</span>
+              <span class="kv-v">{pctFmt(strategy.aggregate_greeks.gamma)}</span>
             </div>
             <div class="kv-pair" title="Theta — daily decay in rupees. Positive when net short premium.">
               <span class="kv-k kv-k-greek">Θ</span>
-              <span class="kv-v {strategy.aggregate_greeks.theta < 0 ? 'kv-neg' : 'kv-pos'}">{fmtNum(strategy.aggregate_greeks.theta, 2)}</span>
+              <span class="kv-v {strategy.aggregate_greeks.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt(strategy.aggregate_greeks.theta)}</span>
             </div>
             <div class="kv-pair" title="Vega — P&L change per 1 % IV move. Positive = long volatility.">
               <span class="kv-k kv-k-greek">𝒱</span>
-              <span class="kv-v {strategy.aggregate_greeks.vega < 0 ? 'kv-neg' : 'kv-pos'}">{fmtNum(strategy.aggregate_greeks.vega, 2)}</span>
+              <span class="kv-v {strategy.aggregate_greeks.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt(strategy.aggregate_greeks.vega)}</span>
             </div>
             <div class="kv-pair" title="Rho — sensitivity to a 1 % rate change. Mostly cosmetic for short-dated index options.">
               <span class="kv-k kv-k-greek">ρ</span>
-              <span class="kv-v">{fmtNum(strategy.aggregate_greeks.rho, 2)}</span>
+              <span class="kv-v">{pctFmt(strategy.aggregate_greeks.rho)}</span>
             </div>
           </div>
         </div>
@@ -2132,13 +2133,13 @@
           <div class="opt-kv">
             <div class="kv-pair">
               <span class="kv-k">R:R <InfoHint popup text={'<b>Risk-to-reward</b> = max_profit / |max_loss|. "1 : 0.5" = risk ₹100 to make ₹50. "1 : 3" = risk ₹100 to make ₹300. <b>—</b> when one side is unbounded.'} /></span>
-              <span class="kv-v">{strategy.risk.rr_ratio == null ? '—' : `1 : ${strategy.risk.rr_ratio.toFixed(2)}`}</span>
+              <span class="kv-v">{strategy.risk.rr_ratio == null ? '—' : `1 : ${pctFmt(strategy.risk.rr_ratio)}`}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">
                 {#if strategy.risk.breakevens.length}
-                  {strategy.risk.breakevens.map(/** @param {number} b */ (b) => `₹${b.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`).join(' / ')}
+                  {strategy.risk.breakevens.map(/** @param {number} b */ (b) => `₹${aggFmt(b)}`).join(' / ')}
                 {:else}—{/if}
               </span>
             </div>
@@ -2154,7 +2155,7 @@
               <div class="kv-pair">
                 <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
                 <span class="kv-v {strategy.risk.ev_pct > 0 ? 'kv-pos' : strategy.risk.ev_pct < 0 ? 'kv-neg' : ''}">
-                  {strategy.risk.ev_pct.toFixed(2)}%
+                  {pctFmt(strategy.risk.ev_pct)}%
                 </span>
               </div>
             {/if}

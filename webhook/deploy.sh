@@ -24,6 +24,11 @@ esac
 LOG="$APP_ROOT/.log/hook_debug.log"
 
 {
+  # Abort on any error so a failed git pull doesn't get masked by a successful
+  # restart further down. The previous version swallowed git failures and
+  # reported "Deployment complete" even when the working tree was stale.
+  set -e
+
   echo "[$TS] Deploy triggered: $ENV (branch: $BRANCH)"
   echo "Running as: $(whoami)"
 
@@ -46,18 +51,16 @@ LOG="$APP_ROOT/.log/hook_debug.log"
   CONFIG_BAK="/tmp/ramboq_config_$$.yaml"
   [ -f "backend/config/backend_config.yaml" ] && cp "backend/config/backend_config.yaml" "$CONFIG_BAK"
 
-  # Reset backend_config.yaml to git-tracked version so git operations proceed cleanly
-  git checkout -- backend/config/backend_config.yaml 2>/dev/null || true
-
   # --- Git update ---
+  # Hard-reset against origin instead of `git pull` so any local working-tree
+  # drift (npm-regenerated package-lock.json, sed-edited backend_config.yaml,
+  # editor swap files) doesn't block the merge. The only "local changes" the
+  # working tree carries are deploy-induced; treating them as authoritative
+  # over origin caused 3 silent deploy-failures previously.
   PREV_HEAD=$(git rev-parse HEAD)
-  if [ "$ENV" = "prod" ]; then
-    git pull origin main
-  else
-    git fetch origin "$BRANCH"
-    git checkout -B "$BRANCH" "origin/$BRANCH"
-    git pull origin "$BRANCH"
-  fi
+  git fetch origin "$BRANCH"
+  git checkout -B "$BRANCH" "origin/$BRANCH" 2>/dev/null || git checkout "$BRANCH"
+  git reset --hard "origin/$BRANCH"
   CHANGED=$(git diff --name-only "$PREV_HEAD" HEAD)
 
   # --- Restore / merge server-specific config flags ---
@@ -164,5 +167,5 @@ PYEOF
     && echo "[$TS] Startup notification done" \
     || echo "[$TS] WARNING: startup notification failed"
 
-  echo "[$TS] Deployment complete"
+  echo "[$TS] Deployment complete (HEAD: $(git rev-parse --short HEAD))"
 } >> "$LOG" 2>&1

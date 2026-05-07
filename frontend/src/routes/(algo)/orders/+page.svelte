@@ -8,6 +8,7 @@
   import OrderDetail from '$lib/OrderDetail.svelte';
   import OrderTicket from '$lib/order/OrderTicket.svelte';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
+  import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
   import { orderGrammar, setQuoteLoadedCallback, previewSymbol, enrichOrderPairs, buildOrderPayload } from '$lib/command/grammars/orders';
   import { createPerformanceSocket } from '$lib/ws';
@@ -286,10 +287,10 @@
             : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{o.status}</span>
         </div>
         <div class="text-[0.55rem] text-[#c8d8f0]/70 flex flex-wrap gap-x-2 uppercase">
-          <span>QTY:<b>{o.filled_quantity}/{o.quantity}</b></span>
+          <span>QTY:<b>{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</b></span>
           <span>ORDER:<b>{o.order_type}</b></span>
-          <span>PRICE:<b>{o.average_price || o.price || '—'}</b></span>
-          {#if o.trigger_price}<span>TRIGGER:<b>{o.trigger_price}</b></span>{/if}
+          <span>PRICE:<b>{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</b></span>
+          {#if o.trigger_price}<span>TRIGGER:<b>{priceFmt(o.trigger_price)}</b></span>{/if}
           <span>PRODUCT:<b>{o.product}</b></span>
           <span>VARIETY:<b>{o.variety}</b></span>
           {#if o.tag}<span>TAG:<b>{o.tag}</b></span>{/if}

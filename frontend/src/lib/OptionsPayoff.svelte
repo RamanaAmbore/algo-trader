@@ -254,6 +254,8 @@
     });
   });
 
+  import { priceFmt, aggFmt } from '$lib/format';
+
   // Profit + loss zones — shade above and below zero on the today curve
   // up to the chart bounds. Two filled paths whose top/bottom rides the
   // today curve and whose other edge is the chart's boundary.
@@ -273,11 +275,10 @@
   });
 
   function fmtMoney(/** @type {number} */ v) {
-    const sign = v < 0 ? '-' : '';
-    return `${sign}₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    return `₹${aggFmt(v)}`;
   }
   function fmtSpot(/** @type {number} */ v) {
-    return `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+    return `₹${priceFmt(v)}`;
   }
 
   // After dismiss, suppress hover for a short window so the cursor's
@@ -484,11 +485,11 @@
         <span class="ps-k">SPOT</span>
         <span class={'ps-v ps-spot ps-spot-' + spotDir}
               title={prevClose != null && prevClose > 0
-                ? 'Prev close ₹' + prevClose.toLocaleString('en-IN', { maximumFractionDigits: 2 })
+                ? 'Prev close ₹' + priceFmt(prevClose)
                   + ' · ' + (spot >= prevClose ? '+' : '−')
                   + Math.abs((spot / prevClose - 1) * 100).toFixed(2) + '%'
                 : 'Spot — prev close unavailable'}>
-          ₹{spot.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          ₹{aggFmt(spot)}
         </span>
       </div>
       {#if curveAtSpot}
