@@ -144,8 +144,19 @@
   // AG Grid valueFormatter wrappers — receive { value } objects.
   // numFmt — per-unit prices (LTP, Avg Price): 2 decimals for precision.
   const numFmt  = ({ value }) => value == null ? '' : priceFmt(value);
-  // aggFmtGrid — ₹ aggregates (Cur Val, P&L, Day Loss, Cash, Margins, etc.): 0 decimals.
-  const aggFmtGrid = ({ value }) => value == null ? '' : aggFmt(value);
+  // aggFmtGrid — ₹ aggregates (Cur Val, P&L, Day Loss, Cash, Margins, etc.).
+  // Below ₹1 lakh: 0-decimal en-IN format ("99,999"). At/above ₹1 lakh:
+  // round to nearest thousand and append "K" so "1,50,432" reads as
+  // "150K" — keeps the column tight on the dashboard, avoids paise-level
+  // visual noise that doesn't matter at lakhs+ scale. Operator can revert
+  // by removing this branch and falling back to plain `aggFmt(value)`.
+  function _aggLakhsK(/** @type {number} */ v) {
+    if (!isFinite(v)) return '—';
+    const n = Number(v);
+    if (Math.abs(n) < 100_000) return aggFmt(n);
+    return `${aggFmt(Math.round(n / 1000))}K`;
+  }
+  const aggFmtGrid = ({ value }) => value == null ? '' : _aggLakhsK(value);
   const pctFmtGrid = ({ value }) => value == null ? '' : `${pctFmt(value)}%`;
   const maskAcct = ({ value }) =>
     maskAccounts && value ? String(value).replace(/\d/g, '#') : value;
