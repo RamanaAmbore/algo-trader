@@ -671,7 +671,7 @@
                so the operator can read both with a tilted glance, distinct
                color (amber vs gray) so BE still pops as "important
                threshold" rather than another σ tick. -->
-          {@const beLabel = `BE ${be.toFixed(0)}`}
+          {@const beLabel = priceFmt(be)}
           {@const beAnchorX = xOf(be) + 5}
           {@const beAnchorY = height - PAD_B - 14}
           {@const beChipW   = beLabel.length * 6.5 + 12}
