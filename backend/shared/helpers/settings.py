@@ -188,23 +188,14 @@ SEEDS: list[tuple] = [
      "Re-scan interval (min) on expiry day for new ITM positions.",
      "min", {"min": 1, "max": 120, "step": 1}),
 
-    # ── Execution (master paper/live toggle) ─────────────────────────────
-    # Single source of truth for paper-vs-live routing on prod.
-    # When True (default), every broker-hitting action lands as a paper
-    # AlgoOrder row registered with the PaperTradeEngine. When False,
-    # real Kite calls fire. The branch is the hard outer gate — on
-    # non-main (dev) this flag is ignored and every action is paper.
-    # Toggle from /admin/live.
-    ("execution",   "execution.paper_trading_mode", "bool", True,
-     "Master execution gate. When True, every broker-hitting action lands "
-     "as paper. When False, real Kite calls fire. Toggle from /admin/live.",
-     None, None),
-
-    # Shadow mode — logs the exact Kite payload without executing
-    ("execution",   "execution.shadow_mode", "bool", False,
-     "PROD ONLY. When ON, broker-hitting actions log the exact Kite payload "
-     "and validate via basket_margin without executing. Previews real orders "
-     "before promoting to live.", None, None),
+    # execution.* flags are owned by /api/admin/execution/mode (navbar
+    # combobox) — single source of truth. Seeding them here would create
+    # a second editable surface and foot-gun the operator into thinking
+    # they can toggle paper/live from the Settings page. The get_bool()
+    # readers fall back to the in-code default (True for paper_trading_mode,
+    # False for shadow_mode) when no DB row exists, so removing them from
+    # SEEDS breaks nothing at runtime. The seeder auto-prunes any existing
+    # execution.* rows from the DB on next startup.
 
     # ── Replay / Backtest ────────────────────────────────────────��─────
     ("replay",      "replay.max_days",           "int",  60,

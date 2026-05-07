@@ -410,6 +410,13 @@
   // before the modal closes. Without it the modal disappears silently
   // and the operator has no idea whether the order actually landed.
   /** @type {string} */ let submitOk = $state('');
+  // LIVE confirm modal — replaces window.confirm() with an in-component
+  // themed overlay so the operator doesn't get an unstyled browser dialog.
+  let _confirmOpen = $state(false);
+  /** @type {string} */ let _confirmText = $state('');
+  // Internal gate: set to true by _doSubmitLive so submit() skips the
+  // confirm guard on its second entry (confirm was already accepted).
+  let _liveConfirmed = false;
 
   async function submit() {
     if (validationErr) return;
@@ -449,16 +456,17 @@
       return;
     }
 
-    // LIVE only: one-line confirm so accidental clicks don't put real
-    // money on the wire. Paper / shadow / draft submit immediately —
-    // no confirm noise on the fast workflow.
-    if (_mode === 'live') {
+    // LIVE only: show the themed in-component confirm modal so accidental
+    // clicks don't put real money on the wire. Paper / draft submit
+    // immediately — no confirm noise on the fast workflow.
+    // _liveConfirmed bypasses this on the second entry from _doSubmitLive.
+    if (_mode === 'live' && !_liveConfirmed) {
       const px = showLimit ? `@₹${_price}` : 'MARKET';
-      const ok = typeof window !== 'undefined' && window.confirm(
-        `${_side} ${_qty} ${symbol} ${px} · ${_account}`
-      );
-      if (!ok) return;
+      _confirmText = `${_side} ${_qty} ${symbol} ${px} · ${_account}`;
+      _confirmOpen = true;
+      return;
     }
+    _liveConfirmed = false;  // reset for next submit
     const payload = {
       mode:           _mode,
       action,
@@ -525,6 +533,14 @@
     }
   }
 
+  /** Called by the LIVE confirm modal's "Place LIVE order" button.
+   *  Sets the bypass flag, closes the confirm overlay, then runs submit(). */
+  async function _doSubmitLive() {
+    _confirmOpen = false;
+    _liveConfirmed = true;
+    await submit();
+  }
+
   // Esc to close + backstop /api/accounts/ self-fetch. Runs when
   // the caller didn't supply real accounts (the chain picker pre-
   // /accounts/ load, the per-row buttons before the page poll
@@ -534,7 +550,10 @@
   // _selfAccounts empty and the picker collapses gracefully.
   onMount(() => {
     const onKey = (/** @type {KeyboardEvent} */ e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (_confirmOpen) { _confirmOpen = false; return; }
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
 
@@ -877,6 +896,32 @@
     </div>
   </div>
 </div>
+
+<!-- LIVE confirm overlay — rendered outside the main modal so it sits
+     above it in the stacking context. Only shown when _mode='live' and
+     the operator clicks Place. -->
+{#if _confirmOpen}
+  <div class="ot-confirm-overlay" role="presentation"
+       onclick={() => { _confirmOpen = false; }}></div>
+  <div class="ot-confirm-modal" role="dialog" aria-modal="true"
+       aria-label="Confirm live order">
+    <div class="ot-confirm-header">
+      <span class="ot-confirm-mode-pill">LIVE</span>
+      <h3 class="ot-confirm-title">Confirm live order</h3>
+    </div>
+    <div class="ot-confirm-body">
+      <div class="ot-confirm-line">{_confirmText}</div>
+      <p class="ot-confirm-warn">This will execute against the real broker. There is no undo.</p>
+    </div>
+    <div class="ot-confirm-actions">
+      <button type="button" class="ot-cancel" onclick={() => { _confirmOpen = false; }}>Cancel</button>
+      <button type="button" class="ot-submit-live-btn" onclick={_doSubmitLive}
+              disabled={submitting}>
+        {submitting ? '…' : 'Place LIVE order'}
+      </button>
+    </div>
+  </div>
+{/if}
 
 <style>
   .ot-overlay {
@@ -1368,4 +1413,89 @@
   .ot-submit-buy  { background: #4ade80; }
   .ot-submit-sell { background: #f87171; }
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── LIVE confirm modal ──────────────────────────────────────────────── */
+  .ot-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 110;
+  }
+  .ot-confirm-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 111;
+    background: linear-gradient(180deg, #1e2d45 0%, #152033 100%);
+    border: 1px solid rgba(239,68,68,0.45);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    width: min(26rem, calc(100vw - 2rem));
+    box-shadow: 0 12px 32px rgba(0,0,0,0.7);
+    font-family: ui-monospace, monospace;
+    color: #c8d8f0;
+  }
+  .ot-confirm-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.75rem;
+  }
+  .ot-confirm-mode-pill {
+    color: #ef4444;
+    background: rgba(239,68,68,0.12);
+    border: 1px solid #ef4444;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+  }
+  .ot-confirm-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin: 0;
+  }
+  .ot-confirm-body {
+    margin-bottom: 0.9rem;
+  }
+  .ot-confirm-line {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #fde68a;
+    background: rgba(251,191,36,0.07);
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: 4px;
+    padding: 0.4rem 0.6rem;
+    margin-bottom: 0.5rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .ot-confirm-warn {
+    font-size: 0.65rem;
+    color: #fca5a5;
+    margin: 0;
+  }
+  .ot-confirm-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+  .ot-submit-live-btn {
+    padding: 0.45rem 1rem;
+    border-radius: 3px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%);
+    color: white;
+  }
+  .ot-submit-live-btn:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .ot-submit-live-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 </style>

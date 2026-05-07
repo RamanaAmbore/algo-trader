@@ -325,46 +325,40 @@
           {/each}
         </nav>
 
-        <!-- ── Execution-mode combobox ────────────────────────────── -->
+        <!-- ── Execution-mode chip + dropdown ──────────────────────
+             This is BOTH the current-mode badge AND the picker trigger.
+             Replaces the old "MODE: PAPER ▾" button and the transient
+             mode-* badges below — one element does both jobs. -->
         {#if $authStore.user && allowedModes.length > 0}
           <div class="mode-combo-wrap">
-            <button
-              class="mode-combo-btn"
-              style="color:{MODE_COLOR[$executionMode] ?? '#94a3b8'};background:{MODE_BG[$executionMode] ?? 'rgba(148,163,184,0.1)'};border-color:{MODE_COLOR[$executionMode] ?? '#94a3b8'}"
-              onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
-              aria-haspopup="listbox"
-              aria-expanded={modeOpen}
-              title="Execution mode"
-            >
-              <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor" class="mode-combo-icon">
-                <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
-              </svg>
-              <span class="mode-combo-label">MODE: {($executionMode ?? 'paper').toUpperCase()}</span>
-              <svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="mode-combo-caret">
-                <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <button class="algo-mode-badge mode-trigger"
+                    data-mode={$executionMode ?? 'paper'}
+                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+                    aria-haspopup="listbox" aria-expanded={modeOpen}
+                    title="Click to change execution mode">
+              {($executionMode ?? 'paper').toUpperCase()}
+              <svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="mode-trigger-caret">
+                <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
             {#if modeOpen}
-              <!-- Click-outside dismissal via the same overlay trick as mobile menu -->
               <div class="mode-combo-overlay" role="presentation"
                    onclick={() => { modeOpen = false; }}></div>
               <ul class="mode-combo-dropdown" role="listbox">
                 {#each allowedModes as m}
                   <li>
-                    <button
-                      class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
-                      style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
-                      role="option"
-                      aria-selected={$executionMode === m}
-                      onclick={() => pickMode(m)}
-                    >{m.toUpperCase()}</button>
+                    <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
+                            style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
+                            role="option" aria-selected={$executionMode === m}
+                            onclick={() => pickMode(m)}>
+                      {m.toUpperCase()}
+                    </button>
                   </li>
                 {/each}
               </ul>
             {/if}
-            {#if modeError}
-              <span class="mode-combo-error">{modeError}</span>
-            {/if}
+            {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
         {/if}
 
@@ -384,34 +378,11 @@
           </button>
         {/if}
 
-        <!-- Mode badges — env-aware:
-             prod (main)  → DEMO (anonymous) | PAPER (paper engine has open orders) | nothing
-             dev (non-main) → SIM (sim active) — PAPER never shows on dev (paperStatus.enabled is main-only)
-             Word labels (DEMO / PAPER / SIM) instead of single letters
-             so the affordance is unambiguous on every page. -->
+        <!-- DEMO badge — session-state indicator (anonymous-on-prod),
+             not a mode setting, so it stays separate from the mode chip. -->
         {#if isDemo}
           <span class="algo-mode-badge algo-mode-demo"
                 title="Demo mode — anonymous visitor, paper-only, no broker connection">DEMO</span>
-        {/if}
-        {#if paperStatus?.branch !== 'main' && simStatus?.active}
-          <span class="algo-mode-badge algo-mode-sim"
-                title="Simulator is running — fabricated market data">SIM</span>
-        {/if}
-        {#if replayStatus?.active}
-          <span class="algo-mode-badge algo-mode-replay"
-                title="Replay running — tick {replayStatus.tick_index}/{replayStatus.total_ticks}">REPLAY</span>
-        {/if}
-        {#if paperStatus?.enabled && paperStatus.open_order_count > 0}
-          <span class="algo-mode-badge algo-mode-paper"
-                title="Paper engine has {paperStatus.open_order_count} open chase order{paperStatus.open_order_count === 1 ? '' : 's'}">PAPER</span>
-        {/if}
-        {#if shadowStatus?.shadow_active}
-          <span class="algo-mode-badge algo-mode-shadow"
-                title="Shadow mode — orders logged, not executed">SHADOW</span>
-        {/if}
-        {#if liveStatus?.live_count > 0}
-          <span class="algo-mode-badge algo-mode-live"
-                title="{liveStatus.live_count}/{liveStatus.total_flags} actions are LIVE">LIVE</span>
         {/if}
         {#if $authStore.user}
           <span class="algo-user-pill">
@@ -437,20 +408,14 @@
         {#if isDemo}
           <span class="algo-mode-badge algo-mode-demo" title="Demo mode — paper-only">DEMO</span>
         {/if}
-        {#if paperStatus?.branch !== 'main' && simStatus?.active}
-          <span class="algo-mode-badge algo-mode-sim" title="Simulator running">SIM</span>
-        {/if}
-        {#if replayStatus?.active}
-          <span class="algo-mode-badge algo-mode-replay" title="Replay running">REPLAY</span>
-        {/if}
-        {#if paperStatus?.enabled && paperStatus.open_order_count > 0}
-          <span class="algo-mode-badge algo-mode-paper" title="Paper engine has open chase orders">PAPER</span>
-        {/if}
-        {#if shadowStatus?.shadow_active}
-          <span class="algo-mode-badge algo-mode-shadow" title="Shadow mode active">SHADOW</span>
-        {/if}
-        {#if liveStatus?.live_count > 0}
-          <span class="algo-mode-badge algo-mode-live" title="Live actions enabled">LIVE</span>
+        <!-- Mobile mode chip — same data-mode colour as desktop; no dropdown on mobile
+             (mode changes happen via the hamburger menu → Execution page). -->
+        {#if $authStore.user && allowedModes.length > 0}
+          <span class="algo-mode-badge mode-trigger mode-trigger-mobile"
+                data-mode={$executionMode ?? 'paper'}
+                title="Execution mode: {($executionMode ?? 'paper').toUpperCase()}">
+            {($executionMode ?? 'paper').toUpperCase()}
+          </span>
         {/if}
         {#if $authStore.user && showChaseChip}
           <button
@@ -1213,27 +1178,26 @@
     margin-right: 0.3rem;
     flex-shrink: 0;
   }
-  .mode-combo-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    height: 1.4rem;
-    padding: 0 0.55rem;
-    border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.07em;
-    border: 1px solid;
+  /* Mode trigger — the chip IS the dropdown button. Picks up colour from
+     data-mode attribute so it reads as the current mode at a glance.
+     Extends .algo-mode-badge (defined above) with cursor + caret. */
+  .mode-trigger {
     cursor: pointer;
-    white-space: nowrap;
-    transition: filter 0.08s;
+    padding: 0 0.65rem;
+    gap: 0.3rem;
     outline: none;
+    transition: filter 0.08s;
   }
-  .mode-combo-btn:hover { filter: brightness(1.15); }
-  .mode-combo-icon { flex-shrink: 0; }
-  .mode-combo-label { line-height: 1; }
-  .mode-combo-caret { flex-shrink: 0; opacity: 0.7; }
+  .mode-trigger:hover { filter: brightness(1.2); }
+  .mode-trigger-caret { flex-shrink: 0; opacity: 0.7; }
+  .mode-trigger-mobile { cursor: default; }
+  /* Per-mode colour override via data-mode attribute so the trigger
+     matches the colour scheme previously applied via inline style. */
+  .algo-mode-badge[data-mode='paper']  { color:#38bdf8; background:rgba(56,189,248,0.10);  border-color:#38bdf8; }
+  .algo-mode-badge[data-mode='live']   { color:#4ade80; background:rgba(74,222,128,0.15);  border-color:rgba(74,222,128,0.4); }
+  .algo-mode-badge[data-mode='shadow'] { color:#fb923c; background:rgba(251,146,60,0.10);  border-color:#fb923c; }
+  .algo-mode-badge[data-mode='sim']    { color:#fb7185; background:rgba(251,113,133,0.10); border-color:#fb7185; }
+  .algo-mode-badge[data-mode='replay'] { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
 
   /* Full-viewport invisible overlay so clicking outside closes the dropdown. */
   .mode-combo-overlay {

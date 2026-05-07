@@ -593,7 +593,7 @@
         bind:value={selectedAccount}
         options={[
           { value: 'all', label: 'All Accounts' },
-          ...accounts.map(a => ({ value: a, label: maskAccounts ? a.replace(/\d/g, '#') : a })),
+          ...accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a })),
         ]}
         theme={compactHeader ? 'dark' : 'light'} />
     </div>
