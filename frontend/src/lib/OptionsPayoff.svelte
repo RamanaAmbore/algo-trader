@@ -609,7 +609,7 @@
                σ-line beneath was just made more subtle so these
                labels become the dominant read. -->
           {@const vx = xt.x + 5}
-          {@const vy = height - PAD_B - 14}
+          {@const vy = height - PAD_B - 10}
           <text x={vx} y={vy}
                 text-anchor="start"
                 transform="rotate(-90 {vx} {vy})"
@@ -642,29 +642,31 @@
                the heavier dash + bolder stroke compared to the σ
                grid still telegraphs this is the outcome-zero
                boundary, not a routine grid line. -->
-          <!-- BE vertical: alpha 0.75 → 0.30, stroke-width 1.25 → 1
-               so the line itself is very subtle; the rotated cream
-               BE-price label still pops via its halo. -->
+          <!-- BE vertical: SOLID amber line (deliberately distinct from the
+               dotted σ verticals which use the same axis). Brighter amber-400
+               (#fbbf24) at higher alpha so the line is clearly visible while
+               not crowding the today/expiry curves. -->
           <line x1={xOf(be)} x2={xOf(be)} y1={PAD_T} y2={height - PAD_B}
-                stroke="rgba(253,230,138,0.55)" stroke-width="1.25"
-                stroke-dasharray="6 3"/>
-          <!-- BE label anchored near the BOTTOM of the chart, same
-               convention as the σ-tick price labels: away from the
-               top-left stat overlay + top-right Refresh button.
-               5 px gap to the right of the dashed line so the BE
-               glyphs aren't sitting on the cream stroke. -->
-          {@const bx = xOf(be) + 5}
-          {@const by = height - PAD_B - 14}
-          <text x={bx} y={by}
-                text-anchor="start"
-                transform="rotate(-90 {bx} {by})"
-                fill="#fde68a"
-                stroke="#152033"
-                stroke-width="3"
-                paint-order="stroke fill"
-                font-size="11" font-weight="700"
+                stroke="rgba(251,191,36,0.65)" stroke-width="1.5"/>
+          <!-- BE label rendered as a horizontal amber pill near the x-axis —
+               distinct shape (horizontal vs σ vertical) and distinct color
+               (amber vs gray) so operators read it as "important threshold"
+               at a glance, not just another grid label. -->
+          {@const beLabel = `BE ${be.toFixed(0)}`}
+          {@const pillH = 16}
+          {@const pillW = beLabel.length * 6.5 + 12}
+          {@const pillCx = xOf(be)}
+          {@const pillCy = height - PAD_B - 12}
+          <rect x={pillCx - pillW / 2} y={pillCy - pillH / 2}
+                width={pillW} height={pillH} rx="3"
+                fill="rgba(251,191,36,0.20)"
+                stroke="#fbbf24" stroke-width="1"/>
+          <text x={pillCx} y={pillCy + 4}
+                text-anchor="middle"
+                fill="#fbbf24"
+                font-size="10" font-weight="700"
                 font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
-            BE {be.toFixed(0)}
+            {beLabel}
           </text>
         {/if}
       {/each}
