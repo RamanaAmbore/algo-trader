@@ -1,5 +1,5 @@
 <script>
-  // CommandLineTab — command input + output area extracted from
+  // CommandLineTab — grammar-driven command bar extracted from
   // /console/+page.svelte. Shared between the standalone Terminal page
   // and the OrderEntryShell's "Command line" tab.
   //
@@ -11,7 +11,16 @@
   import { onMount } from 'svelte';
   import { authStore } from '$lib/stores';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
+  import { loadAccounts } from '$lib/data/accounts';
   import { interpretAgent } from '$lib/api';
+  import CommandBar from '$lib/CommandBar.svelte';
+  import {
+    orderGrammar,
+    setQuoteLoadedCallback,
+    previewSymbol,
+    enrichOrderPairs,
+    buildOrderPayload,
+  } from '$lib/command/grammars/orders';
 
   /** @type {{
    *   onParsedOrder?: (props: any) => void,
@@ -28,29 +37,26 @@
     standalone = false,
   } = $props();
 
-  let command    = $state('');
   /** @type {Array<{cmd: string, result: string, time: string}>} */
   let cmdHistory = $state([]);
   let running    = $state(false);
+  let cmdVerb    = $state('');
 
-  onMount(() => { loadInstruments().catch(() => {}); });
+  // No open-orders context needed here — the tab is for fresh orders only.
+  const cmdContext = { openOrders: [] };
+
+  /** @type {any} */
+  let cmdBar;
+
+  onMount(() => {
+    loadInstruments().catch(() => {});
+    loadAccounts().catch(() => {});
+    setQuoteLoadedCallback(() => cmdBar?.refresh());
+  });
 
   function authHeaders() {
     const token = $authStore.token;
     return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
-  function parseOrder(/** @type {string} */ cmd) {
-    const parts = cmd.trim().split(/\s+/);
-    if (parts.length < 4) return null;
-    const txn = parts[0].toUpperCase();
-    if (txn !== 'BUY' && txn !== 'SELL') return null;
-    return {
-      transaction_type: txn, account: parts[1], tradingsymbol: parts[2],
-      quantity: parseInt(parts[3]) || 0, order_type: (parts[4] || 'LIMIT').toUpperCase(),
-      price: parseFloat(parts[5]) || 0, exchange: 'NFO', product: 'NRML',
-      variety: 'regular', validity: 'DAY',
-    };
   }
 
   function addResult(/** @type {string} */ cmd, /** @type {string} */ result) {
@@ -58,67 +64,100 @@
     cmdHistory = [{ cmd, result, time }, ...cmdHistory].slice(0, 200);
   }
 
-  async function runCommand() {
-    if (!command.trim()) return;
-    const cmd = command.trim();
+  function orderEnrichPairs(pairs, ctx) {
+    cmdVerb = (ctx?._verb || '').toUpperCase();
+    return enrichOrderPairs(pairs, ctx);
+  }
+
+  // onsubmitRaw fires for every submit (even when the grammar can't parse it),
+  // carrying `_line` = the raw textarea text. Used for agent + shell commands
+  // that don't match the order grammar verbs.
+  async function runRaw(parsed) {
+    const raw = (parsed._line || '').trim();
+    if (!raw) return;
+    const verb = (raw.split(/\s+/)[0] || '').toLowerCase();
+
+    // Order verbs are handled by onsubmit (runParsed) — skip here.
+    if (verb === 'buy' || verb === 'sell' || verb === 'cancel' || verb === 'modify') return;
+
     running = true;
-
-    // Agent command
-    if (cmd.toLowerCase().startsWith('agent ')) {
-      try {
-        const d = await interpretAgent(cmd);
-        addResult(cmd, d.output || d.detail || 'No output');
-      } catch (e) { addResult(cmd, `ERROR: ${/** @type {any} */ (e).message}`); }
-      finally { running = false; command = ''; }
-      return;
-    }
-
-    // Order command — parse and route
-    const order = parseOrder(cmd);
-    if (order) {
-      const sym  = String(order.tradingsymbol || '').toUpperCase();
-      const inst = getInstrument(sym);
-      const exch = inst?.e || order.exchange || 'NFO';
-      const lot  = Number(inst?.ls || 1);
-      const props = {
-        symbol:         sym,
-        exchange:       exch,
-        side:           order.transaction_type,
-        action:         'open',
-        qty:            Number(order.quantity) || 0,
-        lotSize:        lot,
-        orderType:      order.order_type || 'LIMIT',
-        price:          order.price > 0 ? order.price : undefined,
-        product:        order.product,
-        accounts:       [],
-        account:        String(order.account || ''),
-        defaultMode:    'live',
-        availableModes: ['live'],
-        _origCommand:   cmd,
-      };
-      addResult(cmd, `Opening ticket: ${order.transaction_type} ${order.quantity} ${sym} on ${exch}`);
-      running = false; command = '';
-      if (onParsedOrder) {
-        onParsedOrder(props);
-      }
-      return;
-    }
-
-    // Shell command
     try {
-      const res = await fetch('/api/admin/exec', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ command: cmd }),
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) { addResult(cmd, d.detail || 'Error'); }
-      else {
-        let out = (d.stdout || '') + (d.stderr ? '\n[stderr]\n' + d.stderr : '');
-        if (!out.trim()) out = `[exit ${d.returncode}]`;
-        addResult(cmd, out);
+      // Agent command
+      if (verb === 'agent') {
+        try {
+          const d = await interpretAgent(raw);
+          addResult(raw, d.output || d.detail || 'No output');
+        } catch (e) { addResult(raw, `ERROR: ${/** @type {any} */ (e).message}`); }
+        cmdBar?.clear(); cmdVerb = '';
+        return;
       }
-    } catch (e) { addResult(cmd, /** @type {any} */ (e).message); }
-    finally { running = false; command = ''; }
+
+      // Shell command
+      try {
+        const res = await fetch('/api/admin/exec', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ command: raw }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) { addResult(raw, d.detail || 'Error'); }
+        else {
+          let out = (d.stdout || '') + (d.stderr ? '\n[stderr]\n' + d.stderr : '');
+          if (!out.trim()) out = `[exit ${d.returncode}]`;
+          addResult(raw, out);
+        }
+      } catch (e) { addResult(raw, /** @type {any} */ (e).message); }
+      cmdBar?.clear(); cmdVerb = '';
+    } finally {
+      running = false;
+    }
+  }
+
+  // onsubmit fires only when the grammar validates cleanly (buy/sell/cancel/modify).
+  async function runParsed(parsed) {
+    running = true;
+    const raw = (parsed._line || `${parsed.verb} …`).trim();
+    try {
+      const verb = parsed.verb || '';
+
+      // Order command — build props and route
+      if (verb === 'buy' || verb === 'sell') {
+        const payload = buildOrderPayload(parsed);
+        if (!payload) throw new Error(`couldn't build order payload`);
+        const sym  = String(payload.tradingsymbol || '').toUpperCase();
+        const inst = getInstrument(sym);
+        const lot  = Number(inst?.ls || 1);
+        const props = {
+          symbol:         sym,
+          exchange:       payload.exchange || inst?.e || 'NFO',
+          side:           payload.transaction_type,
+          action:         'open',
+          qty:            Number(payload.quantity) || 0,
+          lotSize:        lot,
+          orderType:      payload.order_type || 'LIMIT',
+          price:          payload.price > 0 ? payload.price : undefined,
+          trigger:        payload.trigger_price > 0 ? payload.trigger_price : undefined,
+          product:        payload.product,
+          accounts:       [],
+          account:        String(payload.account || ''),
+          defaultMode:    'live',
+          availableModes: ['live'],
+          _origCommand:   raw,
+        };
+        addResult(
+          raw,
+          `Opening ticket: ${payload.transaction_type} ${payload.quantity} ${sym} on ${payload.exchange}`,
+        );
+        cmdBar?.clear(); cmdVerb = '';
+        running = false;
+        if (onParsedOrder) onParsedOrder(props);
+        return;
+      }
+    } catch (e) {
+      addResult(raw, /** @type {any} */ (e).message);
+    } finally {
+      running = false;
+    }
   }
 
   // Expose cmdHistory so standalone Terminal page can pass it to LogPanel.
@@ -127,17 +166,26 @@
 
 <div class="clt-root" class:clt-standalone={standalone}>
   <div class="relative mb-2">
-    <textarea
-      bind:value={command}
-      class="field-input cmd-input font-mono text-xs w-full"
-      style="height:8rem; padding-bottom:1.5rem"
-      placeholder="Shell command, order (buy/sell), or agent command"
-      onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runCommand(); } }}
-    ></textarea>
-    <div class="absolute bottom-3 right-2 flex gap-1 z-10">
-      <button onclick={runCommand} disabled={running}
-        class="sim-btn sim-btn-order sim-btn-primary disabled:opacity-40">{running ? '...' : 'Run'}</button>
-      <button onclick={() => { command = ''; }}
+    <CommandBar
+      bind:this={cmdBar}
+      grammar={orderGrammar}
+      context={cmdContext}
+      rows={2}
+      placeholder="buy | sell | agent | shell command"
+      onsubmit={runParsed}
+      onsubmitRaw={runRaw}
+      previewFn={previewSymbol}
+      enrichPairs={orderEnrichPairs}
+      disabled={running}
+    />
+    <div class="absolute bottom-1 right-2 flex gap-1 z-10">
+      <button onclick={() => cmdBar?.submit()} disabled={running}
+        class="sim-btn sim-btn-order
+          {cmdVerb === 'SELL' ? 'sim-btn-danger' : 'sim-btn-primary'}
+          disabled:opacity-40">
+        {cmdVerb === 'BUY' ? 'BUY' : cmdVerb === 'SELL' ? 'SELL' : 'Run'}
+      </button>
+      <button onclick={() => { cmdBar?.clear(); cmdVerb = ''; }}
         class="sim-btn sim-btn-order sim-btn-secondary">Clear</button>
     </div>
   </div>

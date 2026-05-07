@@ -218,7 +218,7 @@
     if (Object.keys(_shortcutKwargs).length > 0) {
       Object.assign(p.kwargs, _shortcutKwargs);
     }
-    if (onsubmitRaw) onsubmitRaw(p);
+    if (onsubmitRaw) onsubmitRaw({ ...p, _line: value });
     if (!p.errors || p.errors.length === 0) {
       onsubmit(p);
     } else {
