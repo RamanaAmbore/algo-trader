@@ -199,31 +199,41 @@
   // LEFT half. Each column gets just enough room for its widest
   // expected value + the ~4 px cell padding from the theme.
   const holdingsSummaryCols = [
-    { field: 'account',               headerName: 'Account',  width: 70, minWidth: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
-    { field: 'cur_val',               headerName: 'Cur Val',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'inv_val',               headerName: 'Inv Val',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_val',        headerName: 'Day P&L',  flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    // Order: operator priority — Day P&L (today's move) leads, P&L (carry)
+    // follows, current/inv totals trail. Widths fixed (not flex) so the
+    // big aggregate numbers (₹X,XX,XXX or crore-level) stop getting
+    // truncated on the summary row.
+    { field: 'account',               headerName: 'Account',  width: 70,  minWidth: 70,  cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Cur Val',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'inv_val',               headerName: 'Inv Val',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
+  // Order priority: LTP → Avg Price → Day P&L → Day % → P&L → P&L % → Qty → Cur Val.
+  // Day cols promoted from index 7-8 to 5-6 so they read in the visible scan
+  // column on narrow viewports (operator was scrolling to find them).
   const holdingsCols = [
     { field: 'account',               headerName: 'Account',  width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 105, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'close_price',           headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
     { field: 'cur_val',               headerName: 'Cur Val',  width: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
+  // Positions summary widened so the aggregate ₹ values aren't truncated.
+  // Day P&L / Day % / P&L % columns deferred — PositionsSummaryRow schema
+  // doesn't carry those fields yet; backend change pending operator sign-off.
   const positionsSummaryCols = [
-    { field: 'account', headerName: 'Account', width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
-    { field: 'pnl',     headerName: 'P&L',     flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'account', headerName: 'Account', width: 70,  cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'pnl',     headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Options deep-link cell renderer — only wired up when enableOptionsLink

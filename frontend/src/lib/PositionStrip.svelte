@@ -65,6 +65,18 @@
       const [p, h, f] = await Promise.allSettled([
         fetchPositions(), fetchHoldings(), fetchFunds(),
       ]);
+      // DIAG: surface what each fetch actually returned. Operator opens
+      // devtools console to see "[PositionStrip] positions: rows=N" or
+      // "rejected: <reason>". Cheap, non-invasive — no UI noise.
+      try {
+        const _diag = (label, r) =>
+          console.log(`[PositionStrip] ${label}:`, r.status === 'fulfilled'
+            ? `rows=${(r.value?.rows || []).length}`
+            : `rejected: ${r.reason?.message || r.reason}`);
+        _diag('positions', p);
+        _diag('holdings', h);
+        _diag('funds', f);
+      } catch (_) { /* console may be unavailable in some envs */ }
       if (p.status === 'fulfilled') {
         positions = p.value?.rows || [];
         positionsLoaded = true;
