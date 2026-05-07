@@ -1080,7 +1080,9 @@
     const sym  = String(c.symbol).toUpperCase();
     const inst = getInstrument(sym);
     const lot  = Number(inst?.ls || 1);
-    const qty  = Math.abs(Number(c.qty || 0)) || lot;
+    // Add path: default to 1 lot regardless of the draft's recorded qty.
+    // Operator can step it up in the ticket; close path keeps existing qty.
+    const qty  = lot;
     const side = Number(c.qty || 0) < 0 ? 'SELL' : 'BUY';
     const acct = _ticketAccountDefault();
     openTicket({

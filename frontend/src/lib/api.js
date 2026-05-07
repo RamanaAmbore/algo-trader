@@ -81,9 +81,24 @@ function _logApiError(/** @type {string} */ path,
 
 // Strip HTTP-method boilerplate and clamp to one banner line. Full
 // detail still lives in the console — this is just for display.
+// Non-string inputs (e.g. structured 422 detail = {blocked: [...]})
+// are summarised before regex-replace so .replace never blows up.
 const _METHOD_PREFIX_RE = /^(GET|POST|PUT|PATCH|DELETE)\s+\S+\s+failed:\s*/i;
-function _trimDetail(/** @type {string} */ s) {
-  const cleaned = s.replace(_METHOD_PREFIX_RE, '');
+function _trimDetail(/** @type {unknown} */ s) {
+  let str;
+  if (typeof s === 'string') {
+    str = s;
+  } else if (s && typeof s === 'object') {
+    const o = /** @type {any} */ (s);
+    if (Array.isArray(o.blocked) && o.blocked.length) {
+      str = o.blocked[0]?.reason || 'Order blocked.';
+    } else {
+      str = o.reason || o.message || JSON.stringify(o);
+    }
+  } else {
+    str = String(s ?? '');
+  }
+  const cleaned = str.replace(_METHOD_PREFIX_RE, '');
   return cleaned.length > 60 ? cleaned.slice(0, 57) + '…' : cleaned;
 }
 
@@ -146,7 +161,10 @@ async function _request(/** @type {string} */ method,
     const errBody = await res.json().catch(() => ({}));
     const detail = errBody?.detail || res.statusText || null;
     _logApiError(path, res.status, detail);
-    throw new Error(_friendlyError(res.status, detail));
+    const err = new Error(_friendlyError(res.status, detail));
+    /** @type {any} */ (err).status = res.status;
+    /** @type {any} */ (err).detail = detail;
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
