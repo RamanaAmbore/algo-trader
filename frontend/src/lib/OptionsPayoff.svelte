@@ -621,10 +621,10 @@
             {xt.label}
           </text>
           <!-- Vertical price label on the σ tick. Uniform across whole +
-               half σ (size / weight / fill all the same) — the σ symbol
-               label already differentiates importance via its own
-               whole-vs-half styling. Number formatting flows through
-               priceFmt for consistent en-IN comma grouping. -->
+               half σ. No comma grouping (chart-specific exception to the
+               app-wide priceFmt rule — the rotated label reads cleaner
+               as a contiguous digit run, separators add visual clutter
+               in a 5-digit vertical strip). -->
           {@const vx = xt.x + 5}
           {@const vy = height - PAD_B - 10}
           <text x={vx} y={vy}
@@ -634,10 +634,10 @@
                 stroke="#152033"
                 stroke-width="4"
                 paint-order="stroke fill"
-                font-size="11"
+                font-size="13"
                 font-weight="600"
                 font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
-            {priceFmt(xt.s)}
+            {Math.round(xt.s)}
           </text>
         {/if}
       {/each}
