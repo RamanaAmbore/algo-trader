@@ -343,7 +343,7 @@
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
                     data-mode={$executionMode ?? 'paper'}
-                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+                    onclick={(e) => { console.log('[mode-chip] click', { modeOpen, allowedModes, executionMode: $executionMode }); modeOpen = !modeOpen; modeError = ''; e.stopPropagation(); }}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
               {($executionMode ?? 'paper').toUpperCase()}
@@ -423,7 +423,7 @@
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
                     data-mode={$executionMode ?? 'paper'}
-                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+                    onclick={(e) => { console.log('[mode-chip] click', { modeOpen, allowedModes, executionMode: $executionMode }); modeOpen = !modeOpen; modeError = ''; e.stopPropagation(); }}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
               {($executionMode ?? 'paper').toUpperCase()}
@@ -1221,9 +1221,13 @@
     gap: 0.3rem;
     outline: none;
     transition: filter 0.08s;
+    pointer-events: auto;
+    position: relative;
+    z-index: 51;
   }
   .mode-trigger:hover { filter: brightness(1.2); }
-  .mode-trigger-caret { flex-shrink: 0; opacity: 0.7; }
+  .mode-trigger:active { filter: brightness(0.85); }
+  .mode-trigger-caret { flex-shrink: 0; opacity: 0.7; pointer-events: none; }
   /* Per-mode colour override via data-mode attribute so the trigger
      matches the colour scheme previously applied via inline style. */
   .algo-mode-badge[data-mode='paper']  { color:#38bdf8; background:rgba(56,189,248,0.10);  border-color:#38bdf8; }
