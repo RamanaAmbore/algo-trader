@@ -35,7 +35,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
-  import { priceFmt, pctFmt, aggFmt } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -1436,10 +1436,13 @@
   onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); });
 
   // ── Helpers ──────────────────────────────────────────────────────
-  function fmtMoney(/** @type {number|null|undefined} */ v, /** @type {boolean} */ signed = true) {
+  // Number formatters delegate to format.js — no ₹ prefix and no leading
+  // `+` on positives anywhere (color carries direction; the rupee symbol
+  // ate column width). `signed` retained as a flag for legacy callers
+  // that wanted the +/- chip; both paths now omit the +.
+  function fmtMoney(/** @type {number|null|undefined} */ v, /** @type {boolean} */ _signed = true) {
     if (v == null) return '∞';
-    const sign = signed ? (v < 0 ? '-' : v > 0 ? '+' : '') : '';
-    return `${sign}₹${aggFmt(Math.abs(v))}`;
+    return aggCompact(v);
   }
   function fmtPct(/** @type {number|null|undefined} */ v) {
     if (v == null) return '—';
@@ -1592,9 +1595,9 @@
         Option chain
         {#if chainSpot != null}
           <span class="chain-spot-pill" title="Underlying spot — ATM strike highlighted in the grid below">
-            SPOT ₹{aggFmt(chainSpot)}
+            SPOT {priceFmt(chainSpot)}
             {#if chainAtmStrike != null}
-              · ATM {aggFmt(chainAtmStrike)}
+              · ATM {priceFmt(chainAtmStrike)}
             {/if}
           </span>
         {/if}
@@ -2077,16 +2080,16 @@
                 {/if}
               </span>
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
-              <span class="num {c.qty < 0 ? 'kv-neg' : 'kv-pos'}">{c.qty > 0 ? '+' : ''}{c.qty}</span>
+              <span class="num {c.qty < 0 ? 'kv-neg' : 'kv-pos'}">{c.qty}</span>
               <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cand-pnl-pos' : 'cand-pnl-neg'}">
-                {pnl == null ? '—' : (pnl >= 0 ? '+' : '−') + '₹' + aggFmt(Math.abs(pnl))}
+                {pnl == null ? '—' : aggCompact(pnl)}
               </span>
-              <span class="num">{cost != null ? '₹' + priceFmt(cost) : '—'}</span>
-              <span class="num">{ltp != null ? '₹' + priceFmt(ltp) : '—'}</span>
+              <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
+              <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
-              <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggFmt(lg.greeks.theta) : '—'}</span>
-              <span class="num">{lg ? aggFmt(lg.greeks.vega) : '—'}</span>
+              <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
+              <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
             </div>
           {/each}
         </div>
@@ -2151,7 +2154,7 @@
               <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">
                 {#if strategy.risk.breakevens.length}
-                  {strategy.risk.breakevens.map(/** @param {number} b */ (b) => `₹${aggFmt(b)}`).join(' / ')}
+                  {strategy.risk.breakevens.map(/** @param {number} b */ (b) => priceFmt(b)).join(' / ')}
                 {:else}—{/if}
               </span>
             </div>

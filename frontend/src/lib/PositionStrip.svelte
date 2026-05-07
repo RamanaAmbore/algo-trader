@@ -7,7 +7,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { dataCache, marketAwareInterval } from '$lib/stores';
   import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
-  import { aggFmt } from '$lib/format';
+  import { aggCompact } from '$lib/format';
 
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
@@ -79,8 +79,8 @@
   });
 
   function fmtMoney(/** @type {number} */ v) {
-    if (!isFinite(v)) return '₹0';
-    return `₹${aggFmt(v)}`;
+    if (!isFinite(v)) return '0';
+    return aggCompact(v);
   }
 </script>
 

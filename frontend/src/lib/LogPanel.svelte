@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { parseLogLineTime } from '$lib/stores';
   import { fetchNews } from '$lib/api';
+  import { priceFmt, aggCompact } from '$lib/format';
 
   /** @type {{
    *   heightClass?: string,
@@ -117,7 +118,10 @@
   function _fmtVal(v) {
     if (v === null || v === undefined) return '–';
     if (typeof v === 'number') {
-      if (Math.abs(v) >= 1000) return '₹' + v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+      // ≥ 1k → compact K/L; < 1k → keep 2-dp precision (sim-tick
+      // entries are a mix of per-share prices and P&L deltas, so
+      // the cutoff is the same threshold the helper uses anyway).
+      if (Math.abs(v) >= 1000) return aggCompact(v);
       return (Math.round(v * 100) / 100).toString();
     }
     return String(v);
@@ -143,9 +147,7 @@
       const o = entry.order || {};
       // BUY = green, SELL = neutral (not red — a sell isn't an error).
       const sideCls = o.side === 'BUY' ? 'log-agent-success' : 'log-info';
-      const price   = (o.price != null)
-        ? '@₹' + Number(o.price).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-        : '';
+      const price   = (o.price != null) ? '@' + priceFmt(o.price) : '';
       return `<span class="${sideCls}"><span class="log-ts">${ts}</span> ${SIM_PILL}◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}</span>`;
     }
     const cls = _classifySimLine(entry);
@@ -213,12 +215,8 @@
     else if (status === 'SHADOW_OK')       rowCls = 'log-order-shadow-ok';
     else if (status === 'SHADOW_REJECTED') rowCls = 'log-order-rejected';
     else if (o.transaction_type === 'BUY') rowCls = 'log-agent-success';
-    const fillPrice = (o.fill_price != null)
-      ? '@₹' + Number(o.fill_price).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-      : null;
-    const initPrice = (o.initial_price != null)
-      ? '@₹' + Number(o.initial_price).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-      : '';
+    const fillPrice = (o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null;
+    const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
     // Prefer fill_price once the chase landed; otherwise show the initial
     // limit price the operator submitted.
     const price     = fillPrice || initPrice;

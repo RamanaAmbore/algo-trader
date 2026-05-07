@@ -10,7 +10,7 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { priceFmt, pctFmt, aggFmt } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -143,19 +143,7 @@
 
   // AG Grid valueFormatter wrappers — receive { value } objects.
   const numFmt = ({ value }) => value == null ? '' : priceFmt(value);
-  // Indian-scale units to keep columns tight:
-  //   |v| < 1,000          → plain en-IN ("999", "-432")
-  //   |v| < 1,00,000       → rounded thousand + "K" ("50K", "99K")
-  //   |v| ≥ 1,00,000       → lakhs + 2dp + "L" ("1.50L", "150.00L")
-  function _aggLakhs(/** @type {number} */ v) {
-    if (!isFinite(v)) return '—';
-    const n = Number(v);
-    const a = Math.abs(n);
-    if (a < 1_000)    return aggFmt(n);
-    if (a < 100_000)  return `${Math.round(n / 1_000)}K`;
-    return `${(n / 100_000).toFixed(2)}L`;
-  }
-  const aggFmtGrid = ({ value }) => value == null ? '' : _aggLakhs(value);
+  const aggFmtGrid = ({ value }) => value == null ? '' : aggCompact(value);
   const pctFmtGrid = ({ value }) => value == null ? '' : `${pctFmt(value)}%`;
   const maskAcct = ({ value }) =>
     maskAccounts && value ? String(value).replace(/\d/g, '#') : value;
