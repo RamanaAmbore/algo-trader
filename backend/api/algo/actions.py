@@ -24,7 +24,7 @@ BROKER_ACTIONS = {
 }
 
 
-def _resolve_mode(action_type: str, context: dict) -> str:
+def _resolve_mode(_action_type: str, context: dict) -> str:
     """
     Decide how this action should be executed:
       * 'sim'    — agent was fired by the simulator → route to the sim
@@ -33,37 +33,31 @@ def _resolve_mode(action_type: str, context: dict) -> str:
                    paper-trade writer (informational only)
       * 'shadow' — real data, log-only: captures exact Kite payload +
                    basket_margin validation without executing. Prod only.
-      * 'paper'  — mode 2: real data, paper order. On non-main (dev) this
-                   is the only path for broker actions. On main (prod),
-                   it's the default when shadow is off and the per-action
-                   `execution.live.<action>` DB flag is still False
+      * 'paper'  — mode 2: real data, paper order. Default on prod when
+                   `execution.paper_trading_mode` is True (the default),
+                   and always on dev regardless of the setting.
       * 'live'   — mode 3: real data, real order. Only reachable on
-                   main AND the per-action flag is True
+                   main AND `execution.paper_trading_mode` is False.
       * 'noop'   — non-broker action (no gate); the existing handler
                    (send_summary, emit_log, …) runs as-is
 
-    Precedence: sim > replay > (prod branch check) > shadow > live > paper
+    Precedence: sim > replay > (prod branch check) > shadow > paper_trading_mode > live
     """
     if context.get("sim_mode"):
         return "sim"
     if context.get("replay_mode"):
         return "replay"
-    if action_type not in BROKER_ACTIONS:
+    if _action_type not in BROKER_ACTIONS:
         return "noop"
     from backend.shared.helpers.utils    import is_prod_branch
     from backend.shared.helpers.settings import get_bool
     if not is_prod_branch():
         return "paper"                         # dev never hits broker
-    # Master safety kill-switch: when True, every broker-hitting action lands
-    # as paper regardless of per-action live flags.  Mirrors the /ticket
-    # route's existing behaviour so agent fires honour the same safety.
-    if get_bool("execution.paper_trading_mode", True):
-        return "paper"
     if get_bool("execution.shadow_mode", False):
         return "shadow"
-    if get_bool(f"execution.live.{action_type}", False):
-        return "live"
-    return "paper"
+    if get_bool("execution.paper_trading_mode", True):
+        return "paper"
+    return "live"
 
 
 async def execute(agent, actions: list, context: dict):
@@ -97,9 +91,8 @@ async def execute(agent, actions: list, context: dict):
             elif mode == "paper":
                 await _paper_trade(agent, action_type, params, context)
             elif mode == "live":
-                # Real broker path. Only reached on main AND with the
-                # per-action flag flipped to True in /admin/settings AND
-                # paper_trading_mode == False.
+                # Real broker path. Only reached on main AND with
+                # execution.paper_trading_mode = False in /admin/live.
                 if action_type in ("chase_close", "chase_close_positions"):
                     await _action_live_chase_close_positions(agent, context, params)
                 elif action_type == "place_order":

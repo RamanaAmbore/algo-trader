@@ -362,7 +362,7 @@
 
 <style>
   /* Reuse the simulator page's design tokens */
-  .sim-page          { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem; }
+  .sim-page          { max-width: 72rem; margin: 0 auto; padding: 0; }
   .sim-header        { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
   .sim-header h2     { font-size: 1.25rem; font-weight: 700; color: #e2e8f0; margin: 0; }
   .badge-replay      { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em;
@@ -440,4 +440,16 @@
   .sim-pill          { font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
   .sim-pill-replay   { color: #4ade80; background: rgba(74,222,128,0.12); }
   .sim-empty-charts  { font-size: 0.65rem; color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
+
+  @media (max-width: 768px) {
+    .sim-controls        { padding: 0.75rem; }
+    .sim-form-row        { flex-direction: column; gap: 0.5rem; }
+    .sim-input           { min-width: 0; width: 100%; }
+    .sim-input-sm        { min-width: 0; width: 100%; }
+    .replay-charts       { grid-template-columns: 1fr; }
+    .sim-table-wrap      { -webkit-overflow-scrolling: touch; }
+    .sim-table td,
+    .sim-table th        { padding: 0.25rem 0.35rem; font-size: 0.65rem; }
+    .sim-td-detail       { max-width: 12rem; }
+  }
 </style>

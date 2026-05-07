@@ -10,7 +10,7 @@ is logged, but no order is actually placed. Prod only.
 Endpoints
   GET  /api/shadow/status    — shadow engine status + recent count
   GET  /api/shadow/orders    — recent mode='shadow' algo orders
-  POST /api/shadow/promote   — flip execution.live.* flags to True
+  POST /api/shadow/promote   — set paper_trading_mode=false, shadow_mode=false
   POST /api/shadow/clear     — wipe shadow rows from algo_orders
 """
 
@@ -85,19 +85,13 @@ class ShadowController(Controller):
 
     @post("/promote")
     async def promote(self) -> dict:
-        """Flip execution.live.* flags to True, disable shadow mode."""
+        """Promote from shadow to live: set paper_trading_mode=false, shadow_mode=false."""
         from backend.api.models import Setting
         from backend.shared.helpers.settings import invalidate_cache
 
         keys_to_set = {
-            "execution.shadow_mode": "False",
-            "execution.paper_trading_mode": "False",
-            "execution.live.cancel_order": "True",
-            "execution.live.cancel_all_orders": "True",
-            "execution.live.modify_order": "True",
-            "execution.live.place_order": "True",
-            "execution.live.close_position": "True",
-            "execution.live.chase_close_positions": "True",
+            "execution.shadow_mode":        "false",
+            "execution.paper_trading_mode": "false",
         }
 
         promoted = []

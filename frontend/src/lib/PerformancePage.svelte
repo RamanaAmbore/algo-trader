@@ -140,8 +140,12 @@
     return (sym || '').replace(/\d.*$/, '');
   }
 
+  // numFmt — per-unit prices (LTP, Avg Price): 2 decimals for precision.
   const numFmt  = ({ value }) =>
     value == null ? '' : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  // aggFmt — ₹ aggregates (Cur Val, P&L, Day Loss, Cash, Margins, etc.): 0 decimals.
+  const aggFmt  = ({ value }) =>
+    value == null ? '' : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 0 });
   const pctFmt  = ({ value }) =>
     value == null ? '' : `${Number(value).toFixed(2)}%`;
   const maskAcct = ({ value }) =>
@@ -197,11 +201,11 @@
   // expected value + the ~4 px cell padding from the theme.
   const holdingsSummaryCols = [
     { field: 'account',               headerName: 'Account',  width: 70, minWidth: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
-    { field: 'cur_val',               headerName: 'Cur Val',  flex: 1, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'inv_val',               headerName: 'Inv Val',  flex: 1, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      flex: 1, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Cur Val',  flex: 1, valueFormatter: aggFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'inv_val',               headerName: 'Inv Val',  flex: 1, valueFormatter: aggFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      flex: 1, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_val',        headerName: 'Day P&L',  flex: 1, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L',  flex: 1, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
@@ -210,17 +214,17 @@
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 105, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'close_price',           headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'cur_val',               headerName: 'Cur Val',  width: 88, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Cur Val',  width: 88, valueFormatter: aggFmt, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   const positionsSummaryCols = [
     { field: 'account', headerName: 'Account', width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
-    { field: 'pnl',     headerName: 'P&L',     flex: 1, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',     headerName: 'P&L',     flex: 1, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Options deep-link cell renderer — only wired up when enableOptionsLink
@@ -259,16 +263,16 @@
     positionsSymbolCol,
     { field: 'close_price',   headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price', headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'pnl',           headerName: 'P&L',       width: 78, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',           headerName: 'P&L',       width: 78, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',      headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
   ]);
 
   const fundsCols = [
-    { field: 'account',      headerName: 'Account',      width: 100, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
-    { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: numFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'account',      headerName: 'Account',      width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: aggFmt, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: aggFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: aggFmt, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   function makeGrid(el, colDefs, rowData = [], onRowClick = null) {

@@ -273,7 +273,7 @@
   });
 
   function fmtMoney(/** @type {number} */ v) {
-    const sign = v < 0 ? '-' : v > 0 ? '+' : '';
+    const sign = v < 0 ? '-' : '';
     return `${sign}₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   }
   function fmtSpot(/** @type {number} */ v) {
@@ -603,13 +603,13 @@
         {@const wholeSigma = xt.sigma != null && xt.sigma % 1 === 0}
         {@const isCenter   = xt.sigma === 0}
         {#if !isCenter}
-          <!-- σ-tick verticals: more subtle than before so the price
-               labels rendered ON them stay the dominant visual.
-               whole-σ: 0.30 → 0.18, half-σ: 0.14 → 0.07. -->
+          <!-- σ-tick verticals: dotted pattern so they read as
+               reference markers rather than structural lines.
+               whole-σ: "2 3" dot pattern, half-σ: "1 4" sparser. -->
           <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
                 stroke="rgba(200,216,240,{wholeSigma ? 0.18 : 0.07})"
                 stroke-width="1"
-                stroke-dasharray={wholeSigma ? '4 3' : '2 3'}/>
+                stroke-dasharray={wholeSigma ? '2 3' : '1 4'}/>
         {/if}
         {#if !isCenter}
           <!-- σ tick label at the bottom (rotated -30°). -->
@@ -658,13 +658,10 @@
            visually distinct as the only DOTTED vertical. round line-
            caps render the dasharray "1 4" as a clean dot-grid. -->
       {#if spot > sMin && spot < sMax}
-        <!-- Spot vertical kept dotted but very subtle (alpha 0.85
-             → 0.30) so the dotted pattern is just-visible against
-             the chart curves; the rotated SPOT-price label below
-             carries the readable identity via its halo. -->
+        <!-- Spot vertical — solid cyan, most important reference line
+             on the chart. stroke-dasharray removed. -->
         <line x1={xOf(spot)} x2={xOf(spot)} y1={PAD_T} y2={height - PAD_B}
-              stroke="rgba(125,211,252,0.30)" stroke-width="1.25"
-              stroke-dasharray="1 4" stroke-linecap="round"/>
+              stroke="#22d3ee" stroke-width="2"/>
         <!-- Anchor 5 px to the right of the spot line — visible gap
              between the cyan vertical and the SPOT label glyphs. -->
         {@const sx = xOf(spot) + 5}
@@ -872,6 +869,8 @@
     display: block;
     cursor: crosshair;
     touch-action: pan-y;
+    position: relative;
+    z-index: 2;
   }
   .payoff-svg.payoff-panning { cursor: grabbing; }
   .payoff-reset {
@@ -983,7 +982,7 @@
     width: 0;
     height: 12px;
   }
-  .legend-spot-mark { border-left: 2px dotted #7dd3fc; }
+  .legend-spot-mark { border-left: 2px solid #22d3ee; }
   .legend-be-mark   { border-left: 2px dashed #fde68a; }
   /* Solid swatch for the spot legend — visually pairs with the
      SOLID cyan vertical drawn at the spot price (BE is dashed

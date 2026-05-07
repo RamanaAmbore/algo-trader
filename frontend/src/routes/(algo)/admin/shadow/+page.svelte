@@ -190,7 +190,7 @@
 </div>
 
 <style>
-  .sim-page          { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem; }
+  .sim-page          { max-width: 72rem; margin: 0 auto; padding: 0; }
   .sim-header        { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
   .sim-header h2     { font-size: 1.25rem; font-weight: 700; color: #e2e8f0; margin: 0; }
   .badge-shadow      { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em;
@@ -243,4 +243,14 @@
   .shadow-detail-row td { padding: 0; background: rgba(15,23,42,0.8); }
   .shadow-payload    { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #94a3b8;
                         padding: 0.75rem 1rem; margin: 0; white-space: pre-wrap; line-height: 1.5; }
+
+  @media (max-width: 768px) {
+    .sim-controls        { padding: 0.75rem; }
+    .shadow-status-row   { gap: 1rem; }
+    .sim-btn-row         { flex-wrap: wrap; }
+    .sim-table-wrap      { -webkit-overflow-scrolling: touch; }
+    .sim-table td,
+    .sim-table th        { padding: 0.25rem 0.35rem; font-size: 0.65rem; }
+    .shadow-payload      { font-size: 0.6rem; padding: 0.5rem 0.6rem; }
+  }
 </style>

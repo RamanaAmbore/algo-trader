@@ -73,11 +73,10 @@
     // surfaces with a drafts panel (admin/options) keep 'draft'.
     defaultMode    = /** @type {'draft' | 'paper' | 'live'} */ ('live'),
     // Which mode pills the operator can see. PAPER is no longer a
-    // user-facing choice — the backend's `execution.paper_trading_mode`
-    // setting routes every 'live' mode to paper on prod when ON
-    // (default true), and dev branch is paper-only via the branch
-    // gate. Operators pick between DRAFT (page-local what-if) and
-    // LIVE (submit to backend, server decides paper-vs-live).
+    // user-facing choice — on dev all orders are paper-only via the
+    // branch gate; on prod the per-action execution.live.* flags
+    // decide paper vs live for each action. Operators pick between
+    // DRAFT (page-local what-if) and LIVE (submit to backend).
     availableModes = /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'live']),
     // Signed qty of the operator's existing position when the ticket
     // is opened from a position-row click. Drives the side toggle's
@@ -760,12 +759,10 @@
             <button type="button" class="ot-mode-pill ot-mode-draft" class:on={_mode === 'draft'}
                     onclick={() => _mode = 'draft'}>DRAFT</button>
           {/if}
-          <!-- PAPER pill retired from default availableModes — the
-               backend's `execution.paper_trading_mode` setting
-               routes every 'live' mode to paper on prod when it's
-               ON (default true), and dev is paper-only via the
-               branch gate. Calling sites that need PAPER as an
-               explicit choice can still pass it via
+          <!-- PAPER pill not in default availableModes — dev is paper-
+               only via the branch gate; on prod the per-action
+               execution.live.* flags decide. Calling sites that need
+               PAPER as an explicit choice can still pass it via
                availableModes. -->
           {#if availableModes.includes('paper')}
             <button type="button" class="ot-mode-pill ot-mode-paper" class:on={_mode === 'paper'}
@@ -774,7 +771,7 @@
           {/if}
           {#if availableModes.includes('live')}
             <button type="button" class="ot-mode-pill ot-mode-live" class:on={_mode === 'live'}
-                    title="Submit to backend. Routed to paper when execution.paper_trading_mode is ON (default on prod) or always on dev; routed to LIVE only when the setting is OFF + the per-action execution.live.* flag is on."
+                    title="Submit to backend. On dev always routes to paper. On prod, routed to LIVE only when the per-action execution.live.* flag is on."
                     onclick={() => _mode = 'live'}>LIVE</button>
           {/if}
         </div>

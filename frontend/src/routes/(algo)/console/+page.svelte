@@ -92,8 +92,8 @@
         accounts: [],
         account:  String(order.account || ''),
         // Terminal commands have no drafts surface — submit goes
-        // to backend; the execution.paper_trading_mode setting
-        // routes paper-vs-live on prod.
+        // to backend; per-action execution.live.* flags decide
+        // paper vs live on prod.
         defaultMode:    'live',
         availableModes: ['live'],
         _origCommand:   cmd,

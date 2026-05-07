@@ -593,7 +593,7 @@
   .algo-mode-replay { color: #4ade80; background: rgba(74,222,128,0.10); }
   .algo-mode-paper  { color: #38bdf8; background: rgba(56,189,248,0.10); }
   .algo-mode-shadow { color: #fb923c; background: rgba(251,146,60,0.10); }
-  .algo-mode-live   { color: #ef4444; background: rgba(239,68,68,0.10); }
+  .algo-mode-live   { color: #4ade80; background: rgba(74,222,128,0.15); border-color: rgba(74,222,128,0.4); }
   @keyframes algo-mode-dot {
     0%, 100% { opacity: 1;   transform: scale(1); }
     50%      { opacity: 0.4; transform: scale(0.8); }

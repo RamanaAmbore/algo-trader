@@ -219,13 +219,6 @@
     flex-wrap: wrap;
     margin-bottom: 0.65rem;
   }
-  .algo-ts {
-    margin-left: auto;
-    font-size: 0.6rem;
-    color: #7e97b8;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
   .err-banner {
     margin-bottom: 0.5rem;
     padding: 0.25rem 0.65rem;

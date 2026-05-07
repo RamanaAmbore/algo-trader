@@ -53,7 +53,7 @@ def is_prod_branch() -> bool:
     True on the main (prod) branch, False on any dev branch. This is the
     hard outer gate for mode 2 vs mode 3 — on non-main every broker-
     hitting action writes mode='paper' regardless of any DB flag; on
-    main the per-action `execution.live.<action>` flag decides.
+    main the `execution.paper_trading_mode` master toggle decides.
     """
     return config.get("deploy_branch") == "main"
 

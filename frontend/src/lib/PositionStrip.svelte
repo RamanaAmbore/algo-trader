@@ -180,12 +180,12 @@
 
   function fmtMoney(/** @type {number} */ v) {
     if (!isFinite(v)) return '—';
-    const sign = v > 0 ? '+' : v < 0 ? '−' : '';
+    const sign = v < 0 ? '−' : '';
     return `${sign}₹${Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   }
   function fmtPct(/** @type {number} */ v) {
     if (!isFinite(v) || v === 0) return '0.00%';
-    const sign = v > 0 ? '+' : '−';
+    const sign = v < 0 ? '−' : '';
     return `${sign}${Math.abs(v).toFixed(2)}%`;
   }
 </script>

@@ -470,6 +470,9 @@ export const promoteShadowToLive = () => _post('/shadow/promote', {}, { auth: tr
 export const clearShadowData    = () => _post('/shadow/clear', {}, { auth: true });
 
 // ── Live ──────────────────────────────────────────────────────────────
+// Returns: { branch, enabled, paper_trading_mode, effective_mode, shadow_mode }
+// paper_trading_mode: true = PAPER (safe default), false = LIVE (real orders).
+// effective_mode: 'dev_paper' | 'paper' | 'shadow' | 'live' | 'mixed'
 export const fetchLiveStatus    = () => _get('/live/status', { auth: true });
 
 // ── Admin logs ────────────────────────────────────────────────────────

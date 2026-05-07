@@ -296,16 +296,15 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
 
 def _agent_execution_mode_tag(agent) -> str:
     """
-    Inspect this agent's broker actions and report whether they'd land
-    paper / live / mixed under the current per-action flags. Used to tag
-    alert subjects so an operator on Telegram can tell at a glance
-    whether a fired agent caused a real broker order or a paper one.
+    Inspect the master paper_trading_mode toggle and report whether this
+    agent's broker actions would land as paper or live. Used to tag alert
+    subjects so an operator on Telegram can tell at a glance whether a
+    fired agent caused a real broker order or a paper one.
 
       - non-main branch: returns '' (live engine doesn't run on dev)
       - main, no broker actions configured: '' (alert-only agent)
-      - main, every broker action is live: '' (default real-mode alert)
-      - main, every broker action is paper: '[PAPER]'
-      - main, mixed: '[MIXED]'
+      - main, paper_trading_mode=True:  '[PAPER]'
+      - main, paper_trading_mode=False: '' (live execution)
     """
     from backend.shared.helpers.utils import is_prod_branch
     from backend.shared.helpers.settings import get_bool
@@ -316,10 +315,9 @@ def _agent_execution_mode_tag(agent) -> str:
     broker_types = types & BROKER_ACTIONS
     if not broker_types:
         return ''
-    states = {get_bool(f"execution.live.{t}", False) for t in broker_types}
-    if states == {True}:  return ''
-    if states == {False}: return '[PAPER]'
-    return '[MIXED]'
+    if get_bool("execution.paper_trading_mode", True):
+        return '[PAPER]'
+    return ''
 
 
 def _v2_should_suppress(agent, matches, now, cfg) -> bool:

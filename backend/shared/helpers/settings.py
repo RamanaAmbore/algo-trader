@@ -188,46 +188,17 @@ SEEDS: list[tuple] = [
      "Re-scan interval (min) on expiry day for new ITM positions.",
      "min", {"min": 1, "max": 120, "step": 1}),
 
-    # ── Execution (mode 2 / 3 per-action promotion) ──────────────────────
-    # Every broker-hitting action defaults to False → the handler writes an
-    # AlgoOrder.mode='paper' row and registers it with the PaperTradeEngine
-    # for fill simulation against live Kite quotes. Flip a flag to True and
-    # that specific action starts calling the broker for real
-    # (AlgoOrder.mode='live'). The branch is the hard outer gate — on
-    # non-main (dev) these flags are ignored and every action is paper.
-    # ── Master paper-trading toggle ─────────────────────────────────
-    # When True, EVERY operator-initiated order on prod is forced to
-    # paper regardless of the per-action `execution.live.*` flags below
-    # — the OrderTicket / chain-quick-place / row-click flows all
-    # short-circuit to the prod paper engine.
-    #
-    # Branch interaction:
-    #   - dev branch  → always paper (branch gate, this setting is N/A)
-    #   - main + True → paper (this is the default; safe by design)
-    #   - main + False → per-action `execution.live.*` flags decide
-    #
-    # Operator flips this OFF only when intentionally promoting actions
-    # to live broker calls. Default True so a fresh prod deploy lands
-    # safe.
+    # ── Execution (master paper/live toggle) ─────────────────────────────
+    # Single source of truth for paper-vs-live routing on prod.
+    # When True (default), every broker-hitting action lands as a paper
+    # AlgoOrder row registered with the PaperTradeEngine. When False,
+    # real Kite calls fire. The branch is the hard outer gate — on
+    # non-main (dev) this flag is ignored and every action is paper.
+    # Toggle from /admin/live.
     ("execution",   "execution.paper_trading_mode", "bool", True,
-     "PROD ONLY. When ON, every order is forced to paper regardless "
-     "of the per-action `execution.live.*` flags. Flip OFF to enable "
-     "real broker orders. Dev branch is always paper.", None, None),
-
-    ("execution",   "execution.live.cancel_order",  "bool", False,
-     "Allow `cancel_order` to hit the broker. Most reversible — typically "
-     "flipped to True first.", None, None),
-    ("execution",   "execution.live.cancel_all_orders","bool", False,
-     "Allow `cancel_all_orders` to hit the broker.", None, None),
-    ("execution",   "execution.live.modify_order",  "bool", False,
-     "Allow `modify_order` to hit the broker.", None, None),
-    ("execution",   "execution.live.place_order",   "bool", False,
-     "Allow `place_order` to hit the broker. Typically last to flip.",
+     "Master execution gate. When True, every broker-hitting action lands "
+     "as paper. When False, real Kite calls fire. Toggle from /admin/live.",
      None, None),
-    ("execution",   "execution.live.close_position","bool", False,
-     "Allow `close_position` to hit the broker.", None, None),
-    ("execution",   "execution.live.chase_close_positions","bool", False,
-     "Allow `chase_close_positions` to hit the broker.", None, None),
 
     # Shadow mode — logs the exact Kite payload without executing
     ("execution",   "execution.shadow_mode", "bool", False,
