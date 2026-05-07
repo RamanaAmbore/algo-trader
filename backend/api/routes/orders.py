@@ -6,6 +6,10 @@ POST /api/orders/ticket       — primary order-placement entry point. Routes by
                                 mode (paper / live), records an AlgoOrder row,
                                 supports chase + chase_aggressiveness. Every
                                 frontend surface flows through this endpoint.
+POST /api/orders/preflight    — pre-validate an order before it hits the broker.
+                                Returns structured blockers (MARGIN_SHORTFALL,
+                                SEGMENT_INACTIVE, QTY_FREEZE, ACCOUNT_UNKNOWN)
+                                with actionable fix text. Does not place an order.
 POST /api/orders/place        — DEPRECATED. Direct-broker placement, kept for
                                 external scripts only. New integrations must
                                 use /ticket. Hits log a deprecation warning.
@@ -209,6 +213,16 @@ def _fetch_orders() -> OrdersResponse:
     return OrdersResponse(rows=rows, refreshed_at=timestamp_display())
 
 
+class AlgoOrderEventInfo(msgspec.Struct):
+    """One row from the per-order timeline."""
+    id: int
+    order_id: int
+    ts: str          # ISO-8601 UTC timestamp
+    kind: str
+    message: str
+    payload_json: str | None
+
+
 class AlgoOrderInfo(msgspec.Struct):
     """Shape exposed to the frontend Order-log tab. Thin wrapper over the
     AlgoOrder row — adds a display-ready price string would be nice but
@@ -294,6 +308,176 @@ class OrdersController(Controller):
             )
             for r in rows
         ]
+
+    @get("/{order_id:int}/events")
+    async def order_events(self, order_id: int, request: Request) -> list[AlgoOrderEventInfo]:
+        """Per-order event timeline, oldest-first.
+
+        Returns every row in algo_order_events for the given AlgoOrder id.
+        account values inside payload_json are masked for non-admin (demo)
+        callers so raw account codes are never exposed.
+        """
+        import re
+        from sqlalchemy import asc, select as _sql_select
+        from backend.api.database import async_session as _async_session
+        from backend.api.models import AlgoOrderEvent as _AlgoOrderEvent
+
+        async with _async_session() as s:
+            rows = (await s.execute(
+                _sql_select(_AlgoOrderEvent)
+                .where(_AlgoOrderEvent.order_id == order_id)
+                .order_by(asc(_AlgoOrderEvent.ts))
+            )).scalars().all()
+
+        do_mask = not is_admin_request(request)
+
+        def _mask_payload(raw: str | None) -> str | None:
+            if raw is None or not do_mask:
+                return raw
+            # Replace bare account codes like ZG0790 → ZG#### in the JSON string.
+            return re.sub(r'\b([A-Z]{2})\d{4,8}\b', r'\1####', raw)
+
+        return [
+            AlgoOrderEventInfo(
+                id=r.id,
+                order_id=r.order_id,
+                ts=r.ts.isoformat() if r.ts else "",
+                kind=r.kind,
+                message=r.message,
+                payload_json=_mask_payload(r.payload_json),
+            )
+            for r in rows
+        ]
+
+    @get("/events/recent")
+    async def recent_order_events(
+        self,
+        request: Request,
+        limit: int = 50,
+        status: str = "open",
+    ) -> list[AlgoOrderEventInfo]:
+        """Recent events for orders whose current status matches the filter.
+
+        Default: status=open — useful for the navbar chase chip to show what's
+        happening on actively-chasing orders without listing the whole history.
+
+        status='open'  → OPEN orders only (default)
+        status='all'   → every order regardless of status
+        status=<other> → exact case-insensitive status match
+        """
+        import re
+        from sqlalchemy import asc, desc, select as _sql_select, and_
+        from backend.api.database import async_session as _async_session
+        from backend.api.models import AlgoOrder as _AlgoOrder, AlgoOrderEvent as _AlgoOrderEvent
+
+        limit = max(1, min(limit, 500))
+        status_filter = (status or "open").strip().upper()
+
+        async with _async_session() as s:
+            if status_filter == "ALL":
+                # All orders — pull latest N events across the full table.
+                rows = (await s.execute(
+                    _sql_select(_AlgoOrderEvent)
+                    .order_by(desc(_AlgoOrderEvent.ts))
+                    .limit(limit)
+                )).scalars().all()
+                # Return oldest-first within the window.
+                rows = list(reversed(rows))
+            else:
+                # Fetch matching order ids first, then their events.
+                kite_status = "OPEN" if status_filter == "OPEN" else status_filter
+                order_ids_q = (await s.execute(
+                    _sql_select(_AlgoOrder.id).where(
+                        _AlgoOrder.status == kite_status
+                    ).order_by(desc(_AlgoOrder.created_at)).limit(200)
+                )).scalars().all()
+                if not order_ids_q:
+                    return []
+                rows = (await s.execute(
+                    _sql_select(_AlgoOrderEvent)
+                    .where(_AlgoOrderEvent.order_id.in_(order_ids_q))
+                    .order_by(asc(_AlgoOrderEvent.ts))
+                    .limit(limit)
+                )).scalars().all()
+
+        do_mask = not is_admin_request(request)
+
+        def _mask_payload(raw: str | None) -> str | None:
+            if raw is None or not do_mask:
+                return raw
+            return re.sub(r'\b([A-Z]{2})\d{4,8}\b', r'\1####', raw)
+
+        return [
+            AlgoOrderEventInfo(
+                id=r.id,
+                order_id=r.order_id,
+                ts=r.ts.isoformat() if r.ts else "",
+                kind=r.kind,
+                message=r.message,
+                payload_json=_mask_payload(r.payload_json),
+            )
+            for r in rows
+        ]
+
+    @post("/preflight")
+    async def preflight_order(self, request: Request) -> dict:
+        """
+        Pre-validate an order before any broker call.
+
+        Runs four checks: ACCOUNT_UNKNOWN → SEGMENT_INACTIVE → QTY_FREEZE →
+        MARGIN_SHORTFALL. Returns ok=true when all pass, or ok=false with a
+        structured `blocked[]` list each carrying code / reason / fix / data.
+
+        Gated by jwt_guard (admin) — demo callers see 401; this endpoint
+        intentionally never proxies to broker on demo sessions.
+        """
+        import msgspec as _ms
+        from backend.api.algo.actions import run_preflight
+
+        if getattr(request.state, "is_demo", False):
+            raise HTTPException(status_code=403,
+                detail="Demo: preflight requires an authenticated session.")
+
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+        account       = str(body.get("account") or "").strip()
+        exchange      = str(body.get("exchange") or "NFO").strip().upper()
+        tradingsymbol = str(body.get("tradingsymbol") or "").strip().upper()
+        quantity      = int(body.get("quantity") or 0)
+        order_type    = str(body.get("order_type") or "LIMIT").strip().upper()
+        product       = str(body.get("product") or "NRML").strip().upper()
+        variety       = str(body.get("variety") or "regular").strip().lower()
+        side          = str(body.get("side") or body.get("transaction_type") or "BUY").strip().upper()
+        price         = float(body.get("price") or 0)
+        trigger_price = float(body.get("trigger_price") or 0)
+
+        if not account:
+            raise HTTPException(status_code=400, detail="account is required")
+        if not tradingsymbol:
+            raise HTTPException(status_code=400, detail="tradingsymbol is required")
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="quantity must be > 0")
+        if exchange not in _EXCHANGES:
+            raise HTTPException(status_code=400,
+                detail=f"exchange must be one of {sorted(_EXCHANGES)}")
+        if side not in _TXN_TYPES:
+            raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+
+        result = await run_preflight(account, {
+            "exchange":         exchange,
+            "tradingsymbol":    tradingsymbol,
+            "quantity":         quantity,
+            "order_type":       order_type,
+            "product":          product,
+            "variety":          variety,
+            "transaction_type": side,
+            "price":            price,
+            "trigger_price":    trigger_price,
+        })
+        return result
 
     @post("/place")
     async def place_order(self, data: PlaceOrderRequest, request: Request) -> PlaceOrderResponse:
@@ -467,6 +651,30 @@ class OrdersController(Controller):
                 raise HTTPException(status_code=403,
                     detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/execution (LIVE mode).")
 
+            # ── Preflight gate ────────────────────────────────────────
+            # Run before any broker call; surface structured blockers to
+            # the operator with specific fix hints. Skipped for PAPER /
+            # SHADOW / SIM (paper engine uses basket_margin internally;
+            # shadow validates its own way).
+            from backend.api.algo.actions import run_preflight as _run_preflight
+            _pf = await _run_preflight(account, {
+                "exchange":         (data.exchange or "NFO"),
+                "tradingsymbol":    sym,
+                "quantity":         qty,
+                "order_type":       (data.order_type or "LIMIT"),
+                "product":          (data.product or "NRML"),
+                "variety":          (data.variety or "regular"),
+                "transaction_type": side,
+                "price":            data.price or 0,
+                "trigger_price":    data.trigger_price or 0,
+            })
+            if not _pf["ok"]:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"blocked": _pf["blocked"],
+                            "diagnostics": _pf["diagnostics"]},
+                )
+
             order_type = (data.order_type or "LIMIT")
             chase_eligible = (data.chase
                               and order_type == "LIMIT"
@@ -613,6 +821,24 @@ class OrdersController(Controller):
             logger.info(f"[PAPER-TICKET] chase opted out — order #{algo_order_id} "
                         f"resting at limit ₹{data.price}")
 
+        # Timeline: placed event for the ticket order.
+        if algo_order_id:
+            try:
+                from backend.api.algo.order_events import write_event as _write_evt
+                import asyncio as _aio
+                _aio.create_task(_write_evt(
+                    algo_order_id, "placed",
+                    f"[PAPER-TICKET] manual {side} {qty} {sym} "
+                    f"{'@₹' + f'{data.price:.2f}' if data.price is not None else '@MARKET'}",
+                    payload={
+                        "account": account, "price": data.price,
+                        "exchange": data.exchange or "NFO",
+                        "source": "ticket",
+                    },
+                ))
+            except Exception:
+                pass
+
         masked = mask_column(pd.Series([account]))[0]
         logger.info(f"Ticket paper order: {algo_order_id} [{masked}] {side} {qty} {sym}")
         return TicketOrderResponse(
@@ -706,6 +932,46 @@ class OrdersController(Controller):
 
             logger.info(f"Postback: {order_id} [{masked}] {status} {txn} {qty} "
                         f"{tradingsymbol} price={price} msg={status_msg}")
+
+            # Timeline: write postback event to any matching AlgoOrder rows.
+            # We match on broker_order_id (Kite's order_id string).  Best-effort —
+            # never raises; the postback acknowledgement must still return quickly.
+            try:
+                from sqlalchemy import select as _sql_select
+                from backend.api.database import async_session as _async_session
+                from backend.api.models import AlgoOrder as _AlgoOrder
+                from backend.api.algo.order_events import write_event as _write_event
+                import asyncio as _asyncio
+
+                async def _pb_event():
+                    try:
+                        async with _async_session() as _s:
+                            _rows = (await _s.execute(
+                                _sql_select(_AlgoOrder).where(
+                                    _AlgoOrder.broker_order_id == str(order_id)
+                                )
+                            )).scalars().all()
+                        for _r in _rows:
+                            await _write_event(
+                                _r.id, "postback",
+                                f"Kite postback: {status} {txn} {qty} {tradingsymbol} "
+                                f"@{price}",
+                                payload={
+                                    "broker_order_id": order_id,
+                                    "status": status,
+                                    "tradingsymbol": tradingsymbol,
+                                    "transaction_type": txn,
+                                    "quantity": qty,
+                                    "price": price,
+                                    "status_message": status_msg,
+                                },
+                            )
+                    except Exception as _pe:
+                        logger.debug(f"postback event write failed: {_pe}")
+
+                _asyncio.create_task(_pb_event())
+            except Exception:
+                pass
 
             # Invalidate orders cache so next fetch gets fresh data
             invalidate("orders")

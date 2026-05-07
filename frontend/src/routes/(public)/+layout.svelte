@@ -5,15 +5,6 @@
 
   const { children } = $props();
 
-  // Action: stretch pub-brand-sub letter-spacing to match pub-brand-name width
-  // Portfolio page requires sign-in (any role)
-  $effect(() => {
-    const path = page.url.pathname;
-    if (path.startsWith('/portfolio')) {
-      if (!$authStore.user) goto('/signin');
-    }
-  });
-
   function isActive(/** @type {string} */ href) {
     return page.url.pathname.startsWith(href);
   }
@@ -28,17 +19,11 @@
     { href: '/market',      label: 'Market'      },
     { href: '/performance', label: 'Performance' },
     { href: '/faq',         label: 'FAQ'         },
-    { href: '/post',        label: 'Insights'    },
     { href: '/contact',     label: 'Contact'     },
   ];
 
-  const partnerLinks = [
-    { href: '/portfolio', label: 'Portfolio' },
-  ];
-
-  function navLinks(user) {
-    if (!user) return baseLinks;
-    return [...baseLinks, ...partnerLinks];
+  function navLinks(_user) {
+    return baseLinks;
   }
 
   let menuOpen = $state(false);

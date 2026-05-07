@@ -2,11 +2,14 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount, onDestroy } from 'svelte';
-  import { authStore, visibleInterval } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode } from '$lib/stores';
   import {
     fetchSimStatus, fetchPaperStatus,
     fetchReplayStatus, fetchShadowStatus, fetchLiveStatus,
+    fetchExecutionMode, setExecutionMode,
+    fetchOrderEvents,
   } from '$lib/api';
+  import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
   import PositionStrip from '$lib/PositionStrip.svelte';
 
   const { children } = $props();
@@ -70,10 +73,7 @@
     { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
     // ── Analyze ──
     { href: '/admin/options',    label: 'Options',   group: 'analyze' },
-    { href: '/admin/pnl',        label: 'P&L',       adminOnly: true, group: 'analyze' },
-    // ── Modes (branch-filtered) ──
-    { href: '/admin/simulator',  label: 'Simulator', branches: ['dev'],  group: 'modes' },
-    { href: '/admin/replay',     label: 'Replay',                        group: 'modes' },
+    // ── Modes ──
     { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
     // ── Build / extend ──
     { href: '/console',          label: 'Terminal',  group: 'build' },
@@ -117,11 +117,126 @@
   let menuOpen = $state(false);
   const closeMenu = () => { menuOpen = false; };
 
+  // ── Execution-mode combobox ────────────────────────────────────────
+  let modeOpen      = $state(false);
+  let modeError     = $state('');
+  let allowedModes  = $state(/** @type {string[]} */ ([]));
+  let modeBranch    = $state('');
+
+  const MODE_COLOR = {
+    sim:    '#ec4899',
+    replay: '#22c55e',
+    paper:  '#0ea5e9',
+    shadow: '#f97316',
+    live:   '#ef4444',
+  };
+  const MODE_BG = {
+    sim:    'rgba(236,72,153,0.12)',
+    replay: 'rgba(34,197,94,0.12)',
+    paper:  'rgba(14,165,233,0.12)',
+    shadow: 'rgba(249,115,22,0.12)',
+    live:   'rgba(239,68,68,0.12)',
+  };
+
+  async function loadMode() {
+    try {
+      const res = await fetchExecutionMode();
+      if (res?.mode)          executionMode.set(res.mode);
+      if (res?.allowed_modes) allowedModes = res.allowed_modes;
+      if (res?.branch)        modeBranch   = res.branch;
+    } catch (_) { /* backend not yet wired — stay on default */ }
+  }
+
+  async function pickMode(/** @type {string} */ mode) {
+    modeOpen  = false;
+    modeError = '';
+    if (mode === 'live') {
+      const ok = window.confirm(
+        'Switch to LIVE mode? Every order placed from this session will hit the real broker.'
+      );
+      if (!ok) return;
+    }
+    try {
+      const res = await setExecutionMode(mode);
+      if (res?.mode) executionMode.set(res.mode);
+    } catch (e) {
+      modeError = /** @type {any} */ (e)?.message ?? 'Mode change failed.';
+      setTimeout(() => { modeError = ''; }, 3000);
+    }
+  }
+
+  // ── Chase chip + timeline drawer ───────────────────────────────────
+  let chaseOrders     = $state(/** @type {any[]} */ ([]));
+  let drawerOpen      = $state(false);
+  let lastTerminalAt  = $state(/** @type {Date|null} */ (null));
+  let chaseInteracted = $state(false);  // tracks hover/click in the 60s auto-hide window
+
+  // Open order count derived from chaseOrders (flat event list grouped by order_id).
+  const openOrderIds = $derived.by(() => {
+    const ids = new Set();
+    for (const ev of chaseOrders) {
+      if ((ev.status ?? ev.kind) === 'open' || ev.order_status === 'OPEN') {
+        ids.add(ev.order_id ?? ev.id);
+      }
+    }
+    return ids;
+  });
+
+  /** Unique symbols in open orders — shown in the hover tooltip. */
+  const openSymbols = $derived.by(() => {
+    const syms = new Set();
+    for (const ev of chaseOrders) {
+      if (openOrderIds.has(ev.order_id ?? ev.id)) {
+        const sym = ev.symbol ?? ev.tradingsymbol;
+        if (sym) syms.add(sym);
+      }
+    }
+    return [...syms];
+  });
+
+  async function pollChase() {
+    try {
+      const res = await fetchOrderEvents(50, 'open');
+      // Accept { events: [...] } or bare array.
+      const raw = Array.isArray(res) ? res : (res?.events ?? res?.orders ?? []);
+      chaseOrders = raw;
+      // Track last terminal event for auto-hide timer.
+      const terminal = raw.filter(e => {
+        const k = e.kind ?? e.event_type ?? '';
+        return ['fill','unfill','reject','cancel'].includes(k);
+      });
+      if (terminal.length) {
+        const ts = terminal.map(e => new Date(e.created_at ?? e.timestamp ?? 0));
+        const newest = new Date(Math.max(...ts.map(d => d.getTime())));
+        if (!lastTerminalAt || newest > lastTerminalAt) lastTerminalAt = newest;
+      }
+    } catch (_) { /* treat as no open orders */ }
+  }
+
+  // Auto-hide chip + drawer 60s after last terminal unless the operator
+  // is currently hovering/has clicked (chaseInteracted). The interaction
+  // flag resets itself 60s after last interaction so idle eventually wins.
+  let _chaseHideTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  function _onChaseInteract() {
+    chaseInteracted = true;
+    if (_chaseHideTimer) clearTimeout(_chaseHideTimer);
+    _chaseHideTimer = setTimeout(() => { chaseInteracted = false; }, 60_000);
+  }
+
+  const showChaseChip = $derived.by(() => {
+    if (openOrderIds.size > 0) return true;
+    if (!lastTerminalAt) return false;
+    if (chaseInteracted) return true;
+    const age = Date.now() - lastTerminalAt.getTime();
+    return age < 60_000;
+  });
+
   // ── Polling pipeline ───────────────────────────────────────────────
   // The state vars are declared at the top of the script so the
   // `isDemo` derivation + nav filter can read them; the actual
   // pollers + lifecycle live here.
   let simTeardown, paperTeardown, replayTeardown, shadowTeardown, liveTeardown;
+  let modeTeardown, chaseTeardown;
   async function pollSim() {
     try { simStatus = await fetchSimStatus(); }
     catch (_) { /* cap flag off or auth gone — treat as idle */ }
@@ -148,10 +263,15 @@
     pollReplay(); replayTeardown = visibleInterval(pollReplay, 5000);
     pollShadow(); shadowTeardown = visibleInterval(pollShadow, 5000);
     pollLive();   liveTeardown   = visibleInterval(pollLive,   5000);
+    // Execution-mode combobox — seed then poll every 30s.
+    loadMode();   modeTeardown   = visibleInterval(loadMode,  30000);
+    // Chase chip — poll every 3s.
+    pollChase();  chaseTeardown  = visibleInterval(pollChase,  3000);
   });
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
     shadowTeardown?.(); liveTeardown?.();
+    modeTeardown?.(); chaseTeardown?.();
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────
@@ -204,6 +324,65 @@
             >{link.label}</button>
           {/each}
         </nav>
+
+        <!-- ── Execution-mode combobox ────────────────────────────── -->
+        {#if $authStore.user && allowedModes.length > 0}
+          <div class="mode-combo-wrap">
+            <button
+              class="mode-combo-btn"
+              style="color:{MODE_COLOR[$executionMode] ?? '#94a3b8'};background:{MODE_BG[$executionMode] ?? 'rgba(148,163,184,0.1)'};border-color:{MODE_COLOR[$executionMode] ?? '#94a3b8'}"
+              onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+              aria-haspopup="listbox"
+              aria-expanded={modeOpen}
+              title="Execution mode"
+            >
+              <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor" class="mode-combo-icon">
+                <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+              </svg>
+              <span class="mode-combo-label">MODE: {($executionMode ?? 'paper').toUpperCase()}</span>
+              <svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="mode-combo-caret">
+                <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            {#if modeOpen}
+              <!-- Click-outside dismissal via the same overlay trick as mobile menu -->
+              <div class="mode-combo-overlay" role="presentation"
+                   onclick={() => { modeOpen = false; }}></div>
+              <ul class="mode-combo-dropdown" role="listbox">
+                {#each allowedModes as m}
+                  <li>
+                    <button
+                      class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
+                      style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
+                      role="option"
+                      aria-selected={$executionMode === m}
+                      onclick={() => pickMode(m)}
+                    >{m.toUpperCase()}</button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if modeError}
+              <span class="mode-combo-error">{modeError}</span>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- ── Chase chip ─────────────────────────────────────────── -->
+        {#if $authStore.user && showChaseChip}
+          <button
+            class="chase-chip"
+            onclick={() => { drawerOpen = !drawerOpen; _onChaseInteract(); }}
+            onmouseenter={() => { _onChaseInteract(); }}
+            title={openSymbols.length ? `Chasing: ${openSymbols.join(', ')}` : 'Chase orders'}
+          >
+            <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
+            </svg>
+            <span>{openOrderIds.size} chasing</span>
+            <span class="chase-chip-arrow">→</span>
+          </button>
+        {/if}
 
         <!-- Mode badges — env-aware:
              prod (main)  → DEMO (anonymous) | PAPER (paper engine has open orders) | nothing
@@ -272,6 +451,20 @@
         {/if}
         {#if liveStatus?.live_count > 0}
           <span class="algo-mode-badge algo-mode-live" title="Live actions enabled">LIVE</span>
+        {/if}
+        {#if $authStore.user && showChaseChip}
+          <button
+            class="chase-chip"
+            onclick={() => { drawerOpen = !drawerOpen; _onChaseInteract(); }}
+            onmouseenter={() => { _onChaseInteract(); }}
+            title={openSymbols.length ? `Chasing: ${openSymbols.join(', ')}` : 'Chase orders'}
+          >
+            <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
+            </svg>
+            <span>{openOrderIds.size}</span>
+            <span class="chase-chip-arrow">→</span>
+          </button>
         {/if}
         {#if $authStore.user}
           <span class="algo-user-pill">
@@ -374,6 +567,14 @@
          from /api/positions + /api/holdings on mount; auto-hides
          when the operator has no positions. -->
     <PositionStrip />
+
+    <!-- Chase timeline drawer — rendered outside normal flow so it
+         overlays everything. Mounts inside .algo-card for z-index context. -->
+    <OrderTimelineDrawer
+      open={drawerOpen}
+      orders={chaseOrders}
+      onClose={() => { drawerOpen = false; }}
+    />
 
     <main class="algo-content">
       {@render children()}
@@ -1002,6 +1203,121 @@
   :global(.algo-content .btn-tertiary) { color: #c8d8f0; }
   :global(.algo-content .btn-tertiary:hover) { background: rgba(251,191,36,0.1); color: #fbbf24; }
   :global(.algo-content .btn-tertiary.active) { color: #fbbf24; background: rgba(251,191,36,0.15); }
+
+  /* ── Execution-mode combobox ─────────────────────────────────────────── */
+  .mode-combo-wrap {
+    position: relative;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    margin-right: 0.3rem;
+    flex-shrink: 0;
+  }
+  .mode-combo-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.4rem;
+    padding: 0 0.55rem;
+    border-radius: 9999px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    border: 1px solid;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.08s;
+    outline: none;
+  }
+  .mode-combo-btn:hover { filter: brightness(1.15); }
+  .mode-combo-icon { flex-shrink: 0; }
+  .mode-combo-label { line-height: 1; }
+  .mode-combo-caret { flex-shrink: 0; opacity: 0.7; }
+
+  /* Full-viewport invisible overlay so clicking outside closes the dropdown. */
+  .mode-combo-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+  }
+  .mode-combo-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 60;
+    background: #0a1020;
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 6px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55);
+    list-style: none;
+    margin: 0;
+    padding: 0.2rem 0;
+    min-width: 7rem;
+  }
+  .mode-combo-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.35rem 0.75rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    color: var(--mc, #94a3b8);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.06s;
+    outline: none;
+  }
+  .mode-combo-item:hover { background: rgba(255,255,255,0.07); }
+  .mode-combo-item-active {
+    background: rgba(255,255,255,0.05);
+    font-weight: 800;
+  }
+  .mode-combo-error {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: #1a0a0a;
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    color: #f87171;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    white-space: nowrap;
+    z-index: 61;
+  }
+
+  /* ── Chase chip ──────────────────────────────────────────────────────── */
+  .chase-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.4rem;
+    padding: 0 0.55rem;
+    border-radius: 9999px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    cursor: pointer;
+    white-space: nowrap;
+    outline: none;
+    margin-right: 0.3rem;
+    transition: background-color 0.08s, filter 0.08s;
+    animation: algo-mode-dot 2s ease-in-out infinite;
+  }
+  .chase-chip:hover {
+    background: rgba(251, 191, 36, 0.22);
+    filter: brightness(1.1);
+  }
+  .chase-chip-arrow { opacity: 0.7; }
 
   /* ── Status-driven surface card — used across algo pages ─────────────────── */
   :global(.algo-status-card) {

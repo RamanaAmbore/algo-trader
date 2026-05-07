@@ -46,6 +46,7 @@ from backend.api.routes.simulator import SimulatorController
 from backend.api.routes.replay import ReplayController
 from backend.api.routes.shadow import ShadowController
 from backend.api.routes.live import LiveController
+from backend.api.routes.execution import ExecutionController
 from backend.api.routes.ws import performance_ws_handler
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -155,6 +156,7 @@ _route_handlers = [
     ReplayController,
     ShadowController,
     LiveController,
+    ExecutionController,
     ChartsController,
     OptionsController,
     BrokersController,

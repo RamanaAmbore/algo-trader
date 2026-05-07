@@ -264,6 +264,19 @@ async def _write_sim_order(agent, action_type: str, resolved: dict):
         logger.error(f"[SIM] paper-trade write failed: {e}")
         return
 
+    # Timeline: placed event (fire-and-forget — never raises).
+    if algo_order_id:
+        try:
+            from backend.api.algo.order_events import write_event
+            await write_event(
+                algo_order_id, "placed",
+                f"[SIM] {agent.slug} → {action_type}: {side} {qty} {symbol} "
+                f"{'@₹' + f'{price:,.2f}' if price is not None else '@MARKET'}",
+                payload={"account": account, "price": price, "exchange": exchange},
+            )
+        except Exception:
+            pass
+
     try:
         from backend.api.algo.sim.driver import get_driver
         drv = get_driver()
@@ -515,6 +528,210 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
         return False, str(e)[:240]
 
 
+async def run_preflight(account: str, order: dict) -> dict:
+    """
+    Pre-validate an order before any broker placement.
+
+    Runs four checks in order:
+      1. ACCOUNT_UNKNOWN  — account not in Connections map.
+      2. SEGMENT_INACTIVE — exchange not in kite.profile()['exchanges'].
+      3. QTY_FREEZE       — quantity exceeds the instrument's freeze_qty
+                           from the Kite instruments dump.
+      4. MARGIN_SHORTFALL — kite.basket_margin reports required > available.
+
+    Returns a dict:
+      {
+        "ok": bool,
+        "blocked": [{"code", "reason", "fix", "data"}, ...],
+        "diagnostics": {
+          "basket_margin_used": float | None,
+          "available_margin":   float | None,
+          "margin_shortfall":   float | None,
+        }
+      }
+
+    Never raises — any broker call failure surfaced as a blocker or
+    skipped gracefully.
+    """
+    import asyncio
+    import math
+    from backend.shared.helpers.connections import Connections
+
+    blocked: list[dict] = []
+    diagnostics: dict = {
+        "basket_margin_used": None,
+        "available_margin":   None,
+        "margin_shortfall":   None,
+    }
+
+    # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
+    conns = Connections()
+    if account not in conns.conn:
+        from backend.shared.helpers.utils import mask_column
+        import pandas as pd
+        masked = mask_column(pd.Series([account]))[0] if account else account
+        blocked.append({
+            "code":   "ACCOUNT_UNKNOWN",
+            "reason": f"Account {masked} not loaded in broker connections",
+            "fix":    "Add the account in /admin/brokers and verify it shows LOADED",
+            "data":   {},
+        })
+        return {"ok": False, "blocked": blocked, "diagnostics": diagnostics}
+
+    kite_conn = conns.conn[account]
+    kite = kite_conn.get_kite_conn()
+    loop = asyncio.get_running_loop()
+
+    exchange  = str(order.get("exchange", "NFO"))
+    symbol    = str(order.get("tradingsymbol") or order.get("symbol", ""))
+    qty       = int(order.get("quantity") or order.get("qty") or 0)
+    side      = str(order.get("transaction_type") or order.get("side", "BUY"))
+    price     = order.get("price") or 0
+    product   = str(order.get("product", "NRML"))
+    order_type = str(order.get("order_type", "LIMIT"))
+    variety   = str(order.get("variety", "regular"))
+
+    # ── 2. SEGMENT_INACTIVE ───────────────────────────────────────────────
+    try:
+        profile = await loop.run_in_executor(None, kite.profile)
+        enabled_exchanges = set(profile.get("exchanges") or [])
+        if exchange not in enabled_exchanges:
+            blocked.append({
+                "code":   "SEGMENT_INACTIVE",
+                "reason": f"{exchange} segment not activated on this account",
+                "fix":    (f"Activate the {exchange} segment in the Kite developer "
+                           "console for this account, then re-test"),
+                "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
+            })
+    except Exception as e:
+        logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
+
+    # ── 3. QTY_FREEZE ─────────────────────────────────────────────────────
+    if exchange in ("NFO", "BFO", "MCX", "CDS") and qty > 0:
+        try:
+            raw_instruments = await loop.run_in_executor(
+                None, kite.instruments, exchange
+            )
+            freeze_qty: int | None = None
+            lot_size: int = 1
+            for inst in raw_instruments:
+                if inst.get("tradingsymbol") == symbol:
+                    freeze_qty = inst.get("freeze_qty") or None
+                    lot_size   = int(inst.get("lot_size") or 1)
+                    break
+            if freeze_qty is not None and qty > int(freeze_qty):
+                # How many lots fit in the freeze limit?
+                max_qty = int(freeze_qty)
+                max_lots = max(1, max_qty // lot_size) if lot_size > 0 else max_qty
+                blocked.append({
+                    "code":   "QTY_FREEZE",
+                    "reason": (f"Quantity {qty} exceeds {symbol} freeze qty "
+                               f"{freeze_qty}"),
+                    "fix":    (f"Reduce qty to {max_qty:,} "
+                               f"({max_lots:,} lot{'s' if max_lots != 1 else ''}) "
+                               "or split into multiple orders"),
+                    "data":   {
+                        "freeze_qty": int(freeze_qty),
+                        "lot_size":   lot_size,
+                        "requested":  qty,
+                    },
+                })
+        except Exception as e:
+            logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
+
+    # ── 4. MARGIN_SHORTFALL ───────────────────────────────────────────────
+    basket_order = {
+        "exchange":         exchange,
+        "tradingsymbol":    symbol,
+        "transaction_type": side,
+        "quantity":         qty,
+        "order_type":       order_type,
+        "product":          product,
+        "price":            float(price) if price else 0.0,
+        "variety":          variety,
+    }
+    try:
+        bm_result = await loop.run_in_executor(
+            None, kite.basket_margin, [basket_order]
+        )
+        # Kite returns a list; take the first element.
+        if isinstance(bm_result, list) and bm_result:
+            bm_result = bm_result[0]
+        required  = float((bm_result or {}).get("initial", {}).get("total") or
+                          (bm_result or {}).get("required") or 0)
+        available = float((bm_result or {}).get("initial", {}).get("available",
+                          {}).get("cash") or
+                          (bm_result or {}).get("available") or 0)
+        shortfall = max(0.0, required - available)
+        diagnostics["basket_margin_used"] = required
+        diagnostics["available_margin"]   = available
+        diagnostics["margin_shortfall"]   = shortfall if shortfall > 0 else None
+
+        if shortfall > 0 and not math.isnan(shortfall):
+            # Estimate the reduced qty that would fit within available margin.
+            if required > 0 and available > 0:
+                # Infer per-unit margin and solve for max fillable qty aligned
+                # to lot_size.
+                per_unit = required / qty if qty > 0 else 0
+                if per_unit > 0:
+                    max_qty_fit = int(available / per_unit)
+                    # Round down to nearest lot boundary (if we know lot_size).
+                    try:
+                        from backend.api.cache import get_or_fetch
+                        lot_size_hint = 1
+                        instr_cache = None
+                        instr_cache_raw = None
+                        try:
+                            from backend.api.routes.instruments import _fetch_instruments
+                            instr_cache = await loop.run_in_executor(
+                                None, lambda: None  # avoid re-fetching; use cached
+                            )
+                        except Exception:
+                            pass
+                        if lot_size_hint > 0:
+                            max_qty_fit = (max_qty_fit // lot_size_hint) * lot_size_hint
+                        max_qty_fit = max(0, max_qty_fit)
+                        fix_qty = (f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0
+                                   else "")
+                    except Exception:
+                        fix_qty = ""
+                else:
+                    fix_qty = ""
+            else:
+                fix_qty = ""
+
+            blocked.append({
+                "code":   "MARGIN_SHORTFALL",
+                "reason": (f"Required margin ₹{required:,.0f} exceeds available "
+                           f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
+                "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account"
+                           + fix_qty),
+                "data":   {
+                    "required":   required,
+                    "available":  available,
+                    "shortfall":  shortfall,
+                },
+            })
+    except Exception as e:
+        bm_msg = str(e).lower()
+        # basket_margin raised — interpret the error signal.
+        if any(k in bm_msg for k in ("margin", "fund", "shortfall", "balance")):
+            blocked.append({
+                "code":   "MARGIN_SHORTFALL",
+                "reason": f"Margin check failed: {str(e)[:160]}",
+                "fix":    "Add margin to the account or reduce quantity",
+                "data":   {"broker_error": str(e)[:240]},
+            })
+        else:
+            logger.debug(f"[PREFLIGHT] basket_margin raised for {account}: {e}")
+
+    return {
+        "ok":          len(blocked) == 0,
+        "blocked":     blocked,
+        "diagnostics": diagnostics,
+    }
+
+
 async def diagnose_live_failure(kite_or_broker, order: dict, kite_error: str) -> str:
     """
     When kite.place_order raises, run basket_margin to distinguish the
@@ -625,6 +842,27 @@ async def _write_paper_order(agent, action_type: str, resolved: dict, context: d
     except Exception as e:
         logger.error(f"[PAPER] write failed: {e}")
         return
+
+    # Timeline events — placed or rejected.
+    if algo_order_id:
+        try:
+            from backend.api.algo.order_events import write_event
+            if ok:
+                await write_event(
+                    algo_order_id, "placed",
+                    f"[PAPER] {agent.slug} → {action_type}: {side} {qty} {symbol} "
+                    f"{'@₹' + f'{price:,.2f}' if price is not None else '@MARKET'} — preflight OK",
+                    payload={"account": account, "price": price, "exchange": exchange,
+                             "margin_check": reason},
+                )
+            else:
+                await write_event(
+                    algo_order_id, "reject",
+                    f"[PAPER] {agent.slug} → {action_type}: REJECTED ({reason[:200]})",
+                    payload={"account": account, "price": price, "broker_response": reason},
+                )
+        except Exception:
+            pass
 
     if not ok:
         # Rejected by basket_margin — nothing to chase. The REJECTED
@@ -791,11 +1029,76 @@ async def _action_place_order(context: dict, params: dict):
         except Exception as ltp_e:
             logger.warning(f"[LIVE] place_order LTP fetch failed, proceeding with None price: {ltp_e}")
 
-    # Persist intent row before touching the broker.
-    await _write_live_order(_shim, "place_order", {
-        "account": account, "symbol": symbol, "exchange": exchange,
-        "side": side, "qty": qty, "price": price,
-    }, status="OPEN")
+    # ── Preflight ─────────────────────────────────────────────────────────
+    # Run before persisting the intent row so a blocked order never
+    # creates an OPEN row that the chase loop would try to re-quote.
+    pf = await run_preflight(account, {
+        "exchange": exchange, "tradingsymbol": symbol, "side": side,
+        "quantity": qty, "order_type": "LIMIT", "product": product,
+        "price": price or 0, "variety": "regular",
+    })
+    if not pf["ok"]:
+        reasons = "; ".join(b["reason"] for b in pf["blocked"])
+        logger.warning(f"[LIVE] place_order BLOCKED for {account} {exchange}/{symbol} "
+                       f"{side} {qty}: {reasons}")
+        # Write a synthetic AlgoOrder row so the block is visible in the
+        # Orders log alongside real fires.
+        _fake_order_id = await _write_live_order(
+            _shim, "place_order",
+            {"account": account, "symbol": symbol, "exchange": exchange,
+             "side": side, "qty": qty, "price": price},
+            status="REJECTED",
+            detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+        )
+        # Fire-and-forget event + Telegram alert (best-effort).
+        try:
+            if _fake_order_id:
+                from backend.api.algo.order_events import write_event as _write_ev
+                import asyncio as _aio
+                _aio.create_task(_write_ev(
+                    _fake_order_id, "preflight_block",
+                    f"Preflight blocked: {reasons[:300]}",
+                    payload={"blocked": pf["blocked"],
+                             "diagnostics": pf["diagnostics"]},
+                ))
+        except Exception:
+            pass
+        try:
+            from backend.shared.helpers.alert_utils import _dispatch
+            import asyncio as _aio
+            lines = [f"• [{b['code']}] {b['reason']} — {b['fix']}"
+                     for b in pf["blocked"]]
+            msg_lines = (
+                [f"🚫 Order preflight BLOCKED: {side} {qty} {symbol} [{account}]"]
+                + lines
+            )
+            _aio.create_task(_dispatch(
+                "\n".join(msg_lines),
+                f"RamboQuant: Order blocked — {symbol}",
+                "\n".join(msg_lines),
+            ))
+        except Exception:
+            pass
+        return  # abort without placing
+
+    # Emit preflight_ok event (fire-and-forget).
+    try:
+        _intent_id = await _write_live_order(
+            _shim, "place_order",
+            {"account": account, "symbol": symbol, "exchange": exchange,
+             "side": side, "qty": qty, "price": price},
+            status="OPEN",
+        )
+        if _intent_id:
+            from backend.api.algo.order_events import write_event as _write_ev_ok
+            import asyncio as _aio
+            _aio.create_task(_write_ev_ok(
+                _intent_id, "preflight_ok",
+                "Preflight passed",
+                payload={"diagnostics": pf["diagnostics"]},
+            ))
+    except Exception:
+        pass
 
     cfg = ChaseConfig(exchange=exchange, product=product)
     try:

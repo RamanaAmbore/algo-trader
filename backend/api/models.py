@@ -121,6 +121,29 @@ class AlgoEvent(Base):
     )
 
 
+class AlgoOrderEvent(Base):
+    """Append-only per-order timeline. One row per state transition so
+    operators have a full audit trail (placed → chase_modify × N → fill /
+    unfill / reject) without overwriting AlgoOrder.detail."""
+    __tablename__ = "algo_order_events"
+
+    id: Mapped[int]       = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("algo_orders.id"), nullable=False, index=True
+    )
+    ts: Mapped[datetime]  = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    # kind ∈ placed | chase_modify | fill | unfill | reject | cancel |
+    #         postback | margin_check | preflight_ok | preflight_block | error
+    kind: Mapped[str]     = mapped_column(String(32), nullable=False)
+    # Human-readable one-liner: "chase #2 limit=₹181"
+    message: Mapped[str]  = mapped_column(String(500), nullable=False, default="")
+    # Structured detail (limit, qty, slippage, broker_response, …). Nullable.
+    payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Agent Framework — Conditions → Alerts → Actions
 # ---------------------------------------------------------------------------

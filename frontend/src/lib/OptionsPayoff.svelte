@@ -141,6 +141,35 @@
        ? breakevens.filter(b => b != null)
        : (breakeven != null ? [breakeven] : [])));
 
+  // Pin positions for the horizontal BE chips at the top of the chart.
+  // Two BEs within 60px of each other on screen stack vertically so
+  // their pills don't collide. First pin at PAD_T - 14, second at
+  // PAD_T - 36. Three or more exotic BEs re-overlap (edge case, fine).
+  // This derived block reads xOf() which itself depends on sMin/sSpan;
+  // those are reactive so pins recompute on zoom/pan automatically.
+  // We can't call xOf() directly here (it's a plain function that closes
+  // over reactive vars) — Svelte 5 tracks the reactive reads inside the
+  // $derived.by() callback, so wrapping in $derived.by() is correct.
+  /** @type {Array<{be:number,label:string,pinY:number,chipW:number}>} */
+  const bePins = $derived.by(() => {
+    // xOf reads sMin + sSpan; must be called inside a reactive context.
+    return breakevenList.map((be, i) => {
+      const label = 'BE ' + priceFmt(be);
+      const chipW = label.length * 7 + 14;
+      // Check previous pin for x-proximity to decide stack level.
+      let stackLevel = 0;
+      for (let j = 0; j < i; j++) {
+        if (Math.abs(xOf(breakevenList[j]) - xOf(be)) < 60) {
+          stackLevel = Math.max(stackLevel, 1);
+        }
+      }
+      // Level 0 → PAD_T - 22 (4 px above curves); Level 1 → PAD_T - 44.
+      // PAD_T = 50 keeps both stack levels inside the SVG viewport.
+      const pinY = PAD_T - 22 - stackLevel * 22;
+      return { be, label, pinY, chipW };
+    });
+  });
+
   /** @type {{x:number,y:number,spot:number,today:number,expiry:number}|null} */
   let hover = $state(null);
 
@@ -149,7 +178,9 @@
   // PAD_B widened from 28 → 40 so rotated σ labels (-30°) and the
   // breakeven labels stacked beneath them have the vertical room they
   // need without colliding with the chart legend.
-  const PAD_L = 14, PAD_R = 12, PAD_T = 12, PAD_B = 40;
+  // PAD_T bumped 12 → 50 to give the BE pins (level-0 at PAD_T-22,
+  // level-1 at PAD_T-44) clean headroom inside the SVG viewport.
+  const PAD_L = 14, PAD_R = 12, PAD_T = 50, PAD_B = 40;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -646,53 +677,40 @@
       <line x1={PAD_L} x2={W - PAD_R} y1={zeroY} y2={zeroY}
             stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
 
-      <!-- Breakeven markers — soft cream dashed verticals; multi-leg
-           strategies (iron condor, butterfly) can produce two.
-           BE PRICE rendered vertically on the line itself. -->
-      {#each breakevenList as be}
-        {#if be > sMin && be < sMax}
-          <!-- Breakeven verticals use a soft cream / amber-200 palette
-               (`#fde68a` ~ Tailwind amber-200). The pink/magenta tone
-               we shipped first read as foreign next to the chart's
-               amber + sky-blue + cyan family. Cream stays visually
-               quiet but keeps the "important threshold" connotation;
-               the heavier dash + bolder stroke compared to the σ
-               grid still telegraphs this is the outcome-zero
-               boundary, not a routine grid line. -->
-          <!-- BE vertical: SOLID amber line (distinct shape from the dotted
-               σ verticals on the same axis). Subtle alpha — the amber pill
-               label is the primary BE signal; the line itself is a quiet
-               vertical anchor so it doesn't compete with the today/expiry
-               curves. -->
-          <line x1={xOf(be)} x2={xOf(be)} y1={PAD_T} y2={height - PAD_B}
+      <!-- Breakeven markers — full-height amber vertical line + a
+           horizontal pill pinned ABOVE the chart top edge so the
+           label reads left-to-right without any head-tilt.
+           A thin connector line drops from the pill bottom to PAD_T
+           to visually link pill → vertical. Two BEs within 60 px
+           stack vertically (level-0 at PAD_T-14, level-1 at PAD_T-36)
+           so their pills never collide. -->
+      {#each bePins as pin}
+        {#if pin.be > sMin && pin.be < sMax}
+          {@const bx = xOf(pin.be)}
+          {@const chipH = 18}
+          <!-- Full-height vertical amber line — quiet alpha, distinct
+               from σ dotted grid but not competing with the curves. -->
+          <line x1={bx} x2={bx} y1={PAD_T} y2={height - PAD_B}
                 stroke="rgba(251,191,36,0.30)" stroke-width="1"/>
-          <!-- BE label rendered as a VERTICAL amber pill running along
-               the BE line itself — same orientation as the σ price labels
-               so the operator can read both with a tilted glance, distinct
-               color (amber vs gray) so BE still pops as "important
-               threshold" rather than another σ tick. -->
-          {@const beLabel = priceFmt(be)}
-          {@const beAnchorX = xOf(be) + 5}
-          {@const beAnchorY = height - PAD_B - 10}
-          {@const beChipW   = beLabel.length * 6.5 + 12}
-          {@const beChipH   = 16}
-          <g transform="rotate(-90 {beAnchorX} {beAnchorY})">
-            <!-- Backing rect masks the σ price label behind the chip. -->
-            <rect x={beAnchorX - 1} y={beAnchorY - beChipH / 2 - 1}
-                  width={beChipW + 2} height={beChipH + 2} rx="4"
-                  fill="#0d1829"/>
-            <rect x={beAnchorX} y={beAnchorY - beChipH / 2}
-                  width={beChipW} height={beChipH} rx="3"
-                  fill="#fbbf24"
-                  stroke="#d4920c" stroke-width="1"/>
-            <text x={beAnchorX + 6} y={beAnchorY + 4}
-                  text-anchor="start"
-                  fill="#0d1829"
-                  font-size="11" font-weight="800"
-                  font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
-              {beLabel}
-            </text>
-          </g>
+          <!-- Connector: thin 0.5px amber line from pill bottom to PAD_T. -->
+          <line x1={bx} x2={bx} y1={pin.pinY + chipH} y2={PAD_T}
+                stroke="#fbbf24" stroke-opacity="0.55" stroke-width="0.5"/>
+          <!-- Navy padding rect underneath to mask any σ label text
+               sitting immediately behind the pill. -->
+          <rect x={bx - pin.chipW / 2 - 1} y={pin.pinY - 1}
+                width={pin.chipW + 2} height={chipH + 2} rx="5"
+                fill="#0d1829"/>
+          <!-- Amber pill — horizontal, rx 4, text centered. -->
+          <rect x={bx - pin.chipW / 2} y={pin.pinY}
+                width={pin.chipW} height={chipH} rx="4"
+                fill="#fbbf24" stroke="#d4920c" stroke-width="1"/>
+          <text x={bx} y={pin.pinY + chipH / 2 + 4}
+                text-anchor="middle"
+                fill="#0d1829"
+                font-size="12" font-weight="700"
+                font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+            {pin.label}
+          </text>
         {/if}
       {/each}
 

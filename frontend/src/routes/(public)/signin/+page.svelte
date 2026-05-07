@@ -19,7 +19,7 @@
         role:         data.role,
         display_name: data.display_name,
       });
-      goto(data.role === 'admin' ? '/dashboard' : '/portfolio');
+      goto(data.role === 'admin' ? '/dashboard' : '/performance');
     } catch (e) {
       error = e.message;
     } finally { loading = false; }
@@ -42,7 +42,7 @@
         role:         data.role,
         display_name: data.display_name,
       });
-      goto('/portfolio');
+      goto('/performance');
     } catch (e) {
       error = e.message;
     } finally { loading = false; }

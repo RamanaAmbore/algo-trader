@@ -113,6 +113,31 @@ class PaperTradeEngine:
         with self._lock:
             self._open_orders.append(order)
 
+        # Write the initial placed event asynchronously if we have a DB id.
+        oid = order.get("algo_order_id")
+        if oid:
+            try:
+                import asyncio
+                from backend.api.algo.order_events import write_event
+                task = asyncio.create_task(write_event(
+                    oid, "placed",
+                    f"[{self._label.upper()}] {order.get('agent_slug','?')} "
+                    f"{order.get('side')} {order.get('qty')} {order.get('symbol')} "
+                    f"registered with chase engine",
+                    payload={
+                        "limit_price":   order.get("limit_price"),
+                        "initial_price": order.get("initial_price"),
+                        "account":       order.get("account"),
+                        "exchange":      order.get("exchange"),
+                        "agent_slug":    order.get("agent_slug"),
+                        "action_type":   order.get("action_type"),
+                    },
+                ))
+                self._pending_updates.add(task)
+                task.add_done_callback(self._pending_updates.discard)
+            except RuntimeError:
+                pass  # no event loop (sync context) — skip
+
     def step(self) -> None:
         """
         One chase iteration. Walks every OPEN order, asks the quote
@@ -494,6 +519,8 @@ class PaperTradeEngine:
         from backend.api.database import async_session
         from backend.api.models  import AlgoOrder
         from sqlalchemy          import select as _select
+        from backend.api.algo.order_events import write_event
+
         async with async_session() as s:
             row = (await s.execute(
                 _select(AlgoOrder).where(AlgoOrder.id == order["algo_order_id"])
@@ -544,6 +571,39 @@ class PaperTradeEngine:
                     f"UNFILLED — gave up after {row.attempts} chase(s)"
                 )
             await s.commit()
+
+        # Write the timeline event AFTER the AlgoOrder update commits so the
+        # event row is never orphaned ahead of the status it describes.
+        event_kind = {
+            "modify":   "chase_modify",
+            "fill":     "fill",
+            "unfilled": "unfill",
+        }.get(kind, kind)
+
+        payload: dict = {
+            "attempts": int(order.get("attempts", 0)),
+            "limit_price": order.get("limit_price"),
+            "account": order.get("account"),
+            "symbol": symbol,
+        }
+        if kind == "fill":
+            payload["fill_price"] = order.get("fill_price")
+            payload["slippage"] = float(order.get("fill_price", 0)) - float(
+                order.get("initial_price") or order.get("limit_price") or 0
+            )
+
+        # Build the message that mirrors row.detail for easy reading.
+        if kind == "modify":
+            msg = (f"chase #{row.attempts} limit=₹{limit:,.2f}"
+                   if limit is not None else f"chase #{row.attempts}")
+        elif kind == "fill":
+            fp = order.get("fill_price")
+            msg = (f"FILLED @₹{fp:,.2f} after {row.attempts} chase(s)"
+                   if fp is not None else f"FILLED after {row.attempts} chase(s)")
+        else:
+            msg = f"UNFILLED — gave up after {row.attempts} chase(s)"
+
+        await write_event(order["algo_order_id"], event_kind, msg, payload)
 
 
 # ═════════════════════════════════════════════════════════════════════════

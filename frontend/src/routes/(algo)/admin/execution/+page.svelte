@@ -1,38 +1,41 @@
 <script>
   // Execution mode dashboard (/admin/execution).
   //
-  // Consolidates three prod-only mode pages:
-  //   PAPER  — visual monitor for the paper-trade engine (real quotes, fake fills)
-  //   SHADOW — orders validated via basket_margin but never placed; promote to live
-  //   LIVE   — master paper_trading_mode toggle; switches the whole engine to real orders
+  // Consolidates all five execution modes:
+  //   SIM    — fabricated positions, scenario-driven (dev default on)
+  //   REPLAY — historical candle backtest
+  //   PAPER  — real quotes, paper fills (prod default)
+  //   SHADOW — validated via basket_margin, never placed
+  //   LIVE   — real broker orders
   //
-  // A custom combo-box at the top selects the active mode. The selection is
-  // reflected in the URL as ?mode=paper|shadow|live so deep-links and bookmarks work.
-  // All three sub-sections are rendered in the same component; mode switching is an
-  // instant repaint — no lazy loading, no dynamic imports.
-  //
-  // On non-main branches all three modes are disabled (the engine never runs there);
-  // the combo box shows all options greyed with a tooltip explaining the gate.
+  // The global `executionMode` store (driven by the navbar combobox) is the
+  // single source of truth. On mount, ?mode= in the URL seeds the store via
+  // setExecutionMode() so deep-links still work. All sub-sections are rendered
+  // inline; switching is an instant repaint with no dynamic imports.
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, clientTimestamp, visibleInterval, branchLabel } from '$lib/stores';
+  import { authStore, clientTimestamp, visibleInterval, branchLabel, executionMode } from '$lib/stores';
   import {
     fetchPaperStatus, fetchChartSymbols, fetchChartBatch, fetchAlgoOrdersRecent,
     fetchShadowStatus, fetchShadowOrders, promoteShadowToLive, clearShadowData,
-    fetchLiveStatus, updateSetting,
+    fetchLiveStatus, updateSetting, setExecutionMode,
   } from '$lib/api';
-  import LogPanel   from '$lib/LogPanel.svelte';
-  import PriceChart from '$lib/PriceChart.svelte';
-  import InfoHint   from '$lib/InfoHint.svelte';
+  import LogPanel       from '$lib/LogPanel.svelte';
+  import PriceChart     from '$lib/PriceChart.svelte';
+  import InfoHint       from '$lib/InfoHint.svelte';
+  import SimulatorPanel from '$lib/execution/SimulatorPanel.svelte';
+  import ReplayPanel    from '$lib/execution/ReplayPanel.svelte';
   import { priceFmt, qtyFmt } from '$lib/format';
 
   // ── Mode selection ───────────────────────────────────────────────────
-  /** @type {Array<'paper'|'shadow'|'live'>} */
-  const ALL_MODES = ['paper', 'shadow', 'live'];
+  /** @type {Array<'sim'|'replay'|'paper'|'shadow'|'live'>} */
+  const ALL_MODES = ['sim', 'replay', 'paper', 'shadow', 'live'];
 
   const MODE_META = {
+    sim:    { label: 'SIM',    color: '#ec4899', bg: 'rgba(236,72,153,0.12)',  border: 'rgba(236,72,153,0.35)'  },
+    replay: { label: 'REPLAY', color: '#22c55e', bg: 'rgba(34,197,94,0.12)',   border: 'rgba(34,197,94,0.35)'   },
     paper:  { label: 'PAPER',  color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.35)'  },
     shadow: { label: 'SHADOW', color: '#fb923c', bg: 'rgba(251,146,60,0.12)',  border: 'rgba(251,146,60,0.35)'  },
     live:   { label: 'LIVE',   color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.35)'  },
@@ -42,38 +45,43 @@
   let branch = $state('');   // resolved after first paper-status poll
   let prodBranch = $derived(branch === 'main');
 
-  // Branch-filtered mode list: dev shows only PAPER; prod shows all three.
-  /** @type {Array<'paper'|'shadow'|'live'>} */
-  const availableModes = $derived(prodBranch ? ALL_MODES : /** @type {Array<'paper'>} */ (['paper']));
+  // Branch-filtered mode list.
+  // dev:  sim + replay (+ paper for visibility, gated inside panel)
+  // prod: replay + paper + shadow + live
+  /** @type {Array<'sim'|'replay'|'paper'|'shadow'|'live'>} */
+  const availableModes = $derived(
+    prodBranch
+      ? /** @type {Array<'replay'|'paper'|'shadow'|'live'>} */ (['replay', 'paper', 'shadow', 'live'])
+      : /** @type {Array<'sim'|'replay'|'paper'>} */ (['sim', 'replay', 'paper'])
+  );
 
   let error  = $state('');
   let loading = $state(true);
   let _loadFails = 0;
 
-  // Read mode from URL, default to 'paper'.
-  let mode = $state(/** @type {'paper'|'shadow'|'live'} */ ('paper'));
+  // The active mode is driven by the global executionMode store.
+  // The local `mode` getter just aliases the store value for template use.
+  const mode = $derived($executionMode);
 
-  $effect(() => {
+  // On mount, read ?mode= from the URL and push it into the global store so
+  // deep-links (/admin/execution?mode=sim) work after the navbar combobox
+  // was introduced. This is a one-time sync on navigation; subsequent mode
+  // changes go through the navbar combobox → setExecutionMode().
+  onMount(async () => {
     const param = page.url.searchParams.get('mode');
-    if (param === 'paper' || param === 'shadow' || param === 'live') {
-      mode = param;
-    } else {
-      mode = 'paper';
+    const valid = /** @type {const} */ (['sim', 'replay', 'paper', 'shadow', 'live']);
+    if (param && valid.includes(/** @type {any} */ (param))) {
+      try { await setExecutionMode(param); } catch (_) { executionMode.set(/** @type {any} */ (param)); }
     }
+    document.addEventListener('click', onDocClick, true);
   });
 
-  // On dev branches only PAPER is available; redirect shadow/live → paper.
-  $effect(() => {
-    if (!prodBranch && (mode === 'shadow' || mode === 'live')) {
-      goto('/admin/execution?mode=paper', { replaceState: true, noScroll: true });
-    }
-  });
-
-  /** Push the selected mode to the URL without a full navigation. */
-  function selectMode(/** @type {'paper'|'shadow'|'live'} */ m) {
+  /** Push the selected mode to the URL and the global store. */
+  async function selectMode(/** @type {string} */ m) {
     if (m === mode) { comboOpen = false; return; }
-    goto(`/admin/execution?mode=${m}`, { replaceState: false, noScroll: true });
     comboOpen = false;
+    try { await setExecutionMode(m); } catch (_) { executionMode.set(/** @type {any} */ (m)); }
+    goto(`/admin/execution?mode=${m}`, { replaceState: false, noScroll: true });
   }
 
   // ── Combo-box state ──────────────────────────────────────────────────
@@ -306,32 +314,32 @@
   }
 
   // ── Polling lifecycle ─────────────────────────────────────────────────
-  // When mode changes: stop the previous mode's poller, start the new one.
-  // Polling interval: paper = 3 s, shadow = 5 s, live = 5 s.
+  // sim and replay panels own their own internal pollers; we only drive
+  // paper / shadow / live from here.
   const POLL_INTERVALS = { paper: 3000, shadow: 5000, live: 5000 };
-  const LOAD_FNS       = { paper: loadPaper, shadow: loadShadow, live: loadLive };
+  const LOAD_FNS = /** @type {Record<string, () => Promise<void>>} */ ({
+    paper: loadPaper, shadow: loadShadow, live: loadLive,
+  });
 
   $effect(() => {
-    // This effect re-runs whenever `mode` changes.
     const currentMode = mode;
     modeTeardown?.();
     modeTeardown = undefined;
-    loading = true;
-    _loadFails = 0;
-    error = '';
     const fn = LOAD_FNS[currentMode];
-    fn();
-    modeTeardown = visibleInterval(fn, POLL_INTERVALS[currentMode]);
-    // Cleanup runs when mode changes again or component unmounts.
+    if (fn) {
+      loading = true;
+      _loadFails = 0;
+      error = '';
+      fn();
+      modeTeardown = visibleInterval(fn, POLL_INTERVALS[currentMode]);
+    }
     return () => {
       modeTeardown?.();
       modeTeardown = undefined;
     };
   });
 
-  onMount(() => {
-    document.addEventListener('click', onDocClick, true);
-  });
+  // onMount is defined above (handles ?mode= URL seed + docClick listener).
   onDestroy(() => {
     modeTeardown?.();
     document.removeEventListener('click', onDocClick, true);
@@ -394,6 +402,8 @@
                 {mmeta.label}
               </span>
               <span class="exec-opt-desc">
+                {#if m === 'sim'}Fabricated positions · scenario-driven{/if}
+                {#if m === 'replay'}Historical candles · backtest{/if}
                 {#if m === 'paper'}Real quotes · paper fills{/if}
                 {#if m === 'shadow'}Validated · never executed{/if}
                 {#if m === 'live'}Real broker orders{/if}
@@ -407,7 +417,7 @@
       {/if}
     </div>
 
-    <InfoHint popup text="Consolidated view of all three prod execution modes. <b>PAPER</b> — real Kite quotes, paper fills; monitor open chase orders and bid/ask charts. <b>SHADOW</b> — orders validated via basket_margin but never placed; review payload + margin verdict, then promote to live. <b>LIVE</b> — master toggle that switches the whole engine between paper (safe default) and real Kite orders." />
+    <InfoHint popup text="All five execution modes in one place. <b>SIM</b> — fabricated positions, scenario-driven; exercises the full agent engine without touching the broker. <b>REPLAY</b> — historical Kite OHLCV candles fed through the agent engine at accelerated speed. <b>PAPER</b> — real Kite quotes, paper fills; monitor open chase orders and charts. <b>SHADOW</b> — orders validated via basket_margin but never placed; promote to live when ready. <b>LIVE</b> — master toggle that switches the whole engine to real Kite orders." />
   </div>
 
   <span class="algo-ts">{clientTimestamp()}</span>
@@ -415,6 +425,20 @@
 
 {#if error}
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>
+{/if}
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SIM MODE
+     ═══════════════════════════════════════════════════════════════════ -->
+{#if mode === 'sim'}
+  <SimulatorPanel />
+{/if}
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     REPLAY MODE
+     ═══════════════════════════════════════════════════════════════════ -->
+{#if mode === 'replay'}
+  <ReplayPanel />
 {/if}
 
 <!-- ═══════════════════════════════════════════════════════════════════

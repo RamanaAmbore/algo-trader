@@ -46,7 +46,7 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     """Create all tables (idempotent)."""
     async with engine.begin() as conn:
-        from backend.api.models import User, Agent, AgentEvent, MarketReport, NewsHeadline, GrammarToken, Setting  # noqa: F401 — ensure model registered
+        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting  # noqa: F401 — ensure model registered
         await conn.run_sync(Base.metadata.create_all)
 
         # Idempotent column additions for tables that pre-date the column.
@@ -90,6 +90,10 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode ON algo_orders (mode)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_status ON algo_orders (status)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_created_at ON algo_orders (created_at)",
+            # algo_order_events — index on order_id for per-order timeline queries.
+            # Base.metadata.create_all will create the table; the index is added
+            # idempotently here so existing deployments pick it up too.
+            "CREATE INDEX IF NOT EXISTS ix_algo_order_events_order_id ON algo_order_events (order_id)",
         ):
             await conn.execute(text(stmt))
         # Agent lifespan columns — added after the agents table existed in

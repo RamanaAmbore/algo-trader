@@ -148,6 +148,13 @@ export function marketAwareInterval(fn, ms) {
  *  through unchanged (dev branches keep their working name).
  *  Internal predicates (`paperStatus.branch === 'main'`, etc.) keep
  *  using the raw value — this helper is presentation-only. */
+/** Global execution-mode store.
+ *  Read by OrderTicket on open to set the default mode pill.
+ *  Values: 'sim' | 'replay' | 'paper' | 'shadow' | 'live'
+ *  Defaults to 'paper'; will be wired to /api/admin/execution/mode
+ *  in a follow-up commit. */
+export const executionMode = writable(/** @type {'sim'|'replay'|'paper'|'shadow'|'live'} */ ('paper'));
+
 export function branchLabel(/** @type {string|null|undefined} */ name) {
   if (!name) return '';
   return name === 'main' ? 'prod' : name;

@@ -25,9 +25,12 @@
   // outcome routes through onSubmit(payload).
 
   import { onMount, untrack } from 'svelte';
+  import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import { placeTicketOrder, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
   import { aggFmt } from '$lib/format';
+  import { executionMode } from '$lib/stores';
+  import { getInstrument } from '$lib/data/instruments';
 
   /** @type {{
    *   symbol:    string,
@@ -134,25 +137,31 @@
 
   // Local form state — start from prop defaults, then operator edits.
   let _side    = $state(side);
+
+  // Resolved lot size — starts from the prop; may be updated on mount
+  // via the instruments cache when the caller didn't supply one.
+  let _lotSize = $state(lotSize);
+
   // Qty path:
-  //   - lotSize > 0  → operator edits in LOTS via [−] [N] [+], the
-  //     resolved qty `_lots * lotSize` flows into _qty. Mirrors the
+  //   - _lotSize > 0  → operator edits in LOTS via [−] [N] [+], the
+  //     resolved qty `_lots * _lotSize` flows into _qty. Mirrors the
   //     chain picker so both surfaces read consistently.
-  //   - lotSize == 0 → cash equity / no lot concept; fall back to
+  //   - _lotSize == 0 → cash equity / no lot concept; fall back to
   //     raw number input bound directly to _qty.
   // Initial _lots comes from the caller-supplied qty (rounded to the
-  // nearest whole lot, floored at 1).
+  // nearest whole lot, floored at 1). When qty is also 0 we start at
+  // 1 lot so the ticket opens ready-to-submit.
   let _lots = $state(
-    lotSize > 0
-      ? Math.max(1, Math.round((Number(qty) || lotSize) / lotSize))
+    _lotSize > 0
+      ? Math.max(1, Math.round((Number(qty) || _lotSize) / _lotSize))
       : 1
   );
-  let _qty     = $state(qty || lotSize || 0);
-  // Keep _qty in sync with _lots × lotSize so submit + validation see
-  // the resolved raw quantity. Skipped when lotSize=0 (operator types
+  let _qty     = $state(qty || _lotSize || (isEquity ? 1 : 0));
+  // Keep _qty in sync with _lots × _lotSize so submit + validation see
+  // the resolved raw quantity. Skipped when _lotSize=0 (operator types
   // qty directly).
   $effect(() => {
-    if (lotSize > 0) _qty = _lots * lotSize;
+    if (_lotSize > 0) _qty = _lots * _lotSize;
   });
   function stepLots(/** @type {number} */ delta) {
     _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
@@ -162,14 +171,26 @@
   let _price   = $state(price ?? '');
   let _trigger = $state(trigger ?? '');
   let _product = $state(productVal);
-  // Initial mode comes from `defaultMode` prop; if the caller's
-  // chosen default isn't in `availableModes`, fall back to the
-  // first allowed mode so a misconfigured caller doesn't open the
-  // ticket on a hidden pill.
+  // Initial mode:
+  //   1. defaultMode prop wins when the caller explicitly picked one
+  //      AND it's in availableModes.
+  //   2. Otherwise fall back to the global executionMode store
+  //      (operator's last-used mode — synced from /admin/live toggle
+  //      in a follow-up). The store normalises shadow/sim/replay to
+  //      'paper' for surfaces that only expose draft/paper/live pills.
+  //   3. Last resort: first available mode.
+  function _resolveInitialMode() {
+    const normalise = (/** @type {string} */ m) => {
+      if (m === 'sim' || m === 'replay' || m === 'shadow') return 'paper';
+      return /** @type {'draft'|'paper'|'live'} */ (m);
+    };
+    if (availableModes.includes(defaultMode)) return defaultMode;
+    const fromStore = normalise(get(executionMode) || 'paper');
+    if (availableModes.includes(fromStore)) return fromStore;
+    return availableModes[0] || 'draft';
+  }
   let _mode    = $state(/** @type {'draft' | 'paper' | 'live'} */ (
-    untrack(() => availableModes.includes(defaultMode)
-      ? defaultMode
-      : (availableModes[0] || 'draft'))
+    untrack(_resolveInitialMode)
   ));
   // Chase toggle — when on, the backend's paper engine re-quotes
   // the limit each tick until the order fills (or hits the chase-
@@ -342,10 +363,12 @@
   // hitting the broker. Lot-size check protects against rejections
   // for non-multiple quantities (NIFTY lot 50, BANKNIFTY 15, etc.).
   const validationErr = $derived.by(() => {
-    if (!Number(_qty)) return 'Qty required';
-    if (Number(_qty) <= 0) return 'Qty must be positive';
-    if (lotSize > 0 && Number(_qty) % lotSize !== 0) {
-      return `Qty must be a multiple of lot ${lotSize}`;
+    if (!Number(_qty) || Number(_qty) <= 0) {
+      if (_lotSize > 0) return `Qty required (1 lot = ${_lotSize} for ${symbol})`;
+      return 'Qty required';
+    }
+    if (_lotSize > 0 && Number(_qty) % _lotSize !== 0) {
+      return `Qty must be a multiple of lot ${_lotSize}`;
     }
     if (showLimit   && !Number(_price))   return 'Limit price required';
     if (showTrigger && !Number(_trigger)) return 'Trigger price required';
@@ -366,7 +389,7 @@
       sym:      symbol,
       exchange: exchange || 'NFO',
       lots:     Math.max(1, Number(_lots) || 1),
-      lotSize:  Number(lotSize) || 1,
+      lotSize:  Number(_lotSize) || 1,
       product:  _product,
       limit:    showLimit ? Number(_roundToTick(_price)) || 0 : 0,
       chaseAgg: showLimit && _chase ? _chaseAgg : 'low',
@@ -426,21 +449,13 @@
       return;
     }
 
-    // LIVE confirmation — surfaces a hard-stop browser confirm so an
-    // accidental click doesn't put real money on the wire. The
-    // backend separately gates by branch + the
-    // execution.live.place_order setting flag, but that's silent;
-    // this dialog is the loud one. Account is included so the
-    // operator can verify the right Kite handle BEFORE confirming.
+    // LIVE only: one-line confirm so accidental clicks don't put real
+    // money on the wire. Paper / shadow / draft submit immediately —
+    // no confirm noise on the fast workflow.
     if (_mode === 'live') {
-      const px = showLimit ? `@₹${_price} LIMIT` : '@MARKET';
+      const px = showLimit ? `@₹${_price}` : 'MARKET';
       const ok = typeof window !== 'undefined' && window.confirm(
-        `Place LIVE broker order?\n\n` +
-        `  ${_side} ${_qty} ${symbol}\n` +
-        `  ${px}\n` +
-        `  Account: ${_account}\n` +
-        `  Product: ${_product}\n\n` +
-        `This is a REAL trade. Click Cancel to stop.`
+        `${_side} ${_qty} ${symbol} ${px} · ${_account}`
       );
       if (!ok) return;
     }
@@ -493,12 +508,15 @@
       // Notify the caller — DRAFT mode appends to drafts[]; PAPER /
       // LIVE let the caller refresh its local view if it wants to.
       await onSubmit(payload);
-      // DRAFT closes immediately; PAPER / LIVE pause briefly so the
-      // operator reads the success line before the modal disappears.
+      // DRAFT closes immediately. PAPER / shadow: 200 ms flash so the
+      // operator sees "order placed" without the ticket lingering.
+      // LIVE keeps a slightly longer 600 ms pause (real broker hit).
       if (_mode === 'draft') {
         onClose();
+      } else if (_mode === 'live') {
+        setTimeout(onClose, 600);
       } else {
-        setTimeout(onClose, 1400);
+        setTimeout(onClose, 200);
       }
     } catch (e) {
       submitErr = /** @type {any} */ (e)?.message || String(e);
@@ -519,6 +537,21 @@
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
+
+    // Lot-size auto-fill from instruments cache when the caller
+    // didn't supply lotSize (= 0). Equity keeps qty=1 raw; F&O
+    // must trade in whole lots. Uses the synchronous getInstrument()
+    // which returns null before loadInstruments() resolves — in that
+    // case the fallback is 1 and the operator can adjust.
+    if (_lotSize === 0 && !isEquity && symbol) {
+      const inst = getInstrument(symbol.toUpperCase());
+      if (inst?.ls && Number(inst.ls) > 0) {
+        const ls = Number(inst.ls);
+        _lotSize = ls;
+        // Seed _lots = 1 and let the $effect derive _qty.
+        _lots = Math.max(1, qty > 0 ? Math.round(qty / ls) : 1);
+      }
+    }
     const propRealCount = (accounts || []).filter(_isRealAcct).length;
     if (!propRealCount) {
       fetchAccounts()
@@ -553,7 +586,7 @@
         <span class="ot-symbol-text">{symbol}</span>
         <span class="ot-symbol-meta">
           {exchange ? exchange + ' · ' : ''}
-          {kind}{lotSize ? ' · lot ' + lotSize : ''}
+          {kind}{_lotSize ? ' · lot ' + _lotSize : ''}
           {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
         </span>
       </div>
@@ -587,7 +620,7 @@
                 onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
       </div>
       <div class="ot-qty-block">
-        {#if lotSize > 0}
+        {#if _lotSize > 0}
           <!-- Lots-driven qty input — only +/− steppers, no dropdown.
                Operator preference + the dropdown was spilling out of
                the row on narrow viewports. Format mirrors the chain
@@ -605,7 +638,7 @@
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(1)}
                     aria-label="Increase lots">+</button>
-            <span class="ot-meta">(× {lotSize} = {_qty})</span>
+            <span class="ot-meta">(× {_lotSize} = {_qty})</span>
           </div>
         {:else}
           <label class="ot-label" for="ot-qty">Qty</label>

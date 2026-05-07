@@ -192,7 +192,6 @@ export const fetchAccounts  = () => _get('/accounts/', { auth: true });
 // ── Public endpoints (no JWT needed) ─────────────────────────────────────────
 export const fetchMarket = () => _get('/market/');
 export const fetchNews   = () => _get('/news/');
-export const fetchPost   = () => _get('/config/post');
 export const fetchAbout  = () => _get('/config/about');
 
 // ── Agent endpoints (admin) ───────────────────────────────────────────────────
@@ -509,6 +508,22 @@ export async function fetchAlertsHistory(params = {}) {
  *           db, cache, sim, paper }.
  */
 export const fetchSystemHealth = () => _get('/admin/health', { auth: true });
+
+// ── Execution mode (admin) ────────────────────────────────────────────
+/** GET /api/admin/execution/mode — returns { mode, branch, allowed_modes }. */
+export const fetchExecutionMode = () => _get('/admin/execution/mode', { auth: true });
+
+/** POST /api/admin/execution/mode — body { mode }. Returns 200 or 403. */
+export const setExecutionMode = (mode) =>
+  _post('/admin/execution/mode', { mode }, { auth: true });
+
+// ── Order events (open orders for chase chip) ─────────────────────────
+/** GET /api/orders/events/recent?limit=N&status=open — recent order events. */
+export const fetchOrderEvents = (limit = 50, status = null) => {
+  const p = new URLSearchParams({ limit: String(limit) });
+  if (status) p.set('status', status);
+  return _get(`/orders/events/recent?${p}`, { auth: true });
+};
 
 // ── Admin: Per-agent P&L attribution ─────────────────────────────────
 /**
