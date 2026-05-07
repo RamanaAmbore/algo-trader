@@ -8,6 +8,15 @@
 # Services run uvicorn (Litestar API) + SvelteKit SPA as static files.
 # The SvelteKit build (frontend/build/) is served as static files by Litestar.
 
+# D7 — Lock file prevents two webhook events from racing against each other.
+# Common when GitHub fires two pushes back-to-back. MUST come before set -e
+# because flock -n exits 1 when the lock is held, which we handle explicitly.
+LOCK="/tmp/ramboq_deploy_${1:-prod}.lock"
+exec 200>"$LOCK"
+flock -n 200 || { echo "[$(date '+%F %T')] Another deploy in progress — aborting"; exit 0; }
+
+set -e
+
 TS=$(date '+%Y-%m-%d %H:%M:%S')
 export HOME=/var/www
 
@@ -23,16 +32,39 @@ esac
 
 LOG="$APP_ROOT/.log/hook_debug.log"
 
+# D9 — Trap: on any non-zero exit, fire a failure notification before the
+# process dies. on_exit receives $? from the trap. Best-effort — don't let
+# the notification itself cause a secondary failure.
+on_exit() {
+    EXIT_CODE=$1
+    if [ "$EXIT_CODE" -ne 0 ]; then
+        echo "[$TS] DEPLOY FAILED with exit code $EXIT_CODE"
+        python "$APP_ROOT/webhook/notify_deploy.py" \
+            --status fail \
+            --branch "$BRANCH" \
+            --commit "$(git -C "$APP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+            --reason "exit code $EXIT_CODE during deploy" 2>&1 || true
+    fi
+}
+trap 'on_exit $?' EXIT
+
 {
   # Abort on any error so a failed git pull doesn't get masked by a successful
   # restart further down. The previous version swallowed git failures and
   # reported "Deployment complete" even when the working tree was stale.
-  set -e
 
   echo "[$TS] Deploy triggered: $ENV (branch: $BRANCH)"
   echo "Running as: $(whoami)"
 
   cd "$APP_ROOT" || { echo "[$TS] ERROR: cannot cd to $APP_ROOT"; exit 1; }
+
+  # D3 — Self-healing chown BEFORE git ops so subsequent git/npm operations
+  # don't choke on root-owned files left by aborted deploys or manual SSH work.
+  # Idempotent — harmless on a clean tree.
+  sudo chown -R www-data:www-data \
+      "$APP_ROOT/.git" "$APP_ROOT/.log" "$APP_ROOT/backend/config" \
+      "$APP_ROOT/frontend/.svelte-kit" "$APP_ROOT/frontend/build" \
+      "$APP_ROOT/frontend/node_modules" 2>/dev/null || true
 
   git --git-dir="$APP_ROOT/.git" --work-tree="$APP_ROOT" config --add safe.directory "$APP_ROOT"
 
@@ -62,6 +94,15 @@ LOG="$APP_ROOT/.log/hook_debug.log"
   git checkout -B "$BRANCH" "origin/$BRANCH" 2>/dev/null || git checkout "$BRANCH"
   git reset --hard "origin/$BRANCH"
   CHANGED=$(git diff --name-only "$PREV_HEAD" HEAD)
+
+  # D4 — If this push includes a deploy.sh update, re-exec into the new version.
+  # `exec` replaces the current process so the original instance's
+  # "Deployment complete" log + notify_deploy.py never fires — only ONE
+  # Telegram/email alert per logical deploy.
+  if echo "$CHANGED" | grep -q "^webhook/deploy.sh$"; then
+      echo "[$TS] deploy.sh changed in this push — re-executing with new version (single notification)"
+      exec bash "$APP_ROOT/webhook/deploy.sh" "$ENV" "$REF"
+  fi
 
   # --- Restore / merge server-specific config flags ---
   # Preserves top-level scalars AND the cap_in_dev dict from the server's prior
@@ -162,10 +203,45 @@ PYEOF
   echo "[$TS] Restarting $API_SERVICE..."
   sudo systemctl restart "$API_SERVICE" || echo "[$TS] ERROR: failed to restart $API_SERVICE"
 
+  # D5 — Health check: verify the service actually came up before declaring success.
+  # Tries /api/health first; falls back to / (SPA shell). Both return 200 when
+  # Litestar is up. prod=8502, dev=8503 (per CLAUDE.md deployment architecture).
+  PORT=$([ "$ENV" = "prod" ] && echo 8502 || echo 8503)
+  DEPLOY_STATUS="fail"
+  for i in 1 2 3 4 5 6; do
+      if curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 || \
+         curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
+          DEPLOY_STATUS="ok"
+          echo "[$TS] Health check OK on port $PORT (attempt $i)"
+          break
+      fi
+      sleep 5
+  done
+  if [ "$DEPLOY_STATUS" = "fail" ]; then
+      echo "[$TS] ERROR: Health check failed — service did not respond on port $PORT after 6 attempts"
+  fi
+
+  # D11 — Write last_deploy.json for /admin/health to surface deploy info.
+  LAST_DEPLOY_JSON="$APP_ROOT/.log/last_deploy.json"
+  cat > "$LAST_DEPLOY_JSON" <<JSONEOF
+{
+  "branch": "$BRANCH",
+  "commit": "$(git rev-parse --short HEAD)",
+  "commit_full": "$(git rev-parse HEAD)",
+  "subject": "$(git log -1 --format=%s | sed 's/"/\\"/g')",
+  "ts": "$TS",
+  "status": "$DEPLOY_STATUS"
+}
+JSONEOF
+  sudo chown www-data:www-data "$LAST_DEPLOY_JSON" 2>/dev/null || true
+
   echo "[$TS] Sending startup notification..."
   python "$APP_ROOT/webhook/notify_deploy.py" \
-    && echo "[$TS] Startup notification done" \
-    || echo "[$TS] WARNING: startup notification failed"
+      --status "$DEPLOY_STATUS" \
+      --branch "$BRANCH" \
+      --commit "$(git rev-parse --short HEAD)" \
+      && echo "[$TS] Startup notification done" \
+      || echo "[$TS] WARNING: startup notification failed"
 
   echo "[$TS] Deployment complete (HEAD: $(git rev-parse --short HEAD))"
 } >> "$LOG" 2>&1

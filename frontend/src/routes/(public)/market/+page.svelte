@@ -118,10 +118,26 @@
   });
 </script>
 <svelte:head>
-  <title>Market Report | RamboQuant Analytics</title>
-  <meta name="description" content="AI-powered daily market report covering Indian equity, commodity, and global markets." />
+  <title>Daily Market Report | RamboQuant Analytics</title>
+  <meta name="description" content="AI-generated daily reports on Indian equity markets, options activity, and macroeconomic events." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Daily Market Report | RamboQuant Analytics" />
+  <meta property="og:description" content="AI-generated daily reports on Indian equity markets, options activity, and macroeconomic events." />
+  <meta property="og:url" content="https://ramboq.com/market" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ramboq.com/og-image.svg" />
+  <meta property="og:site_name" content="RamboQuant Analytics" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Daily Market Report | RamboQuant Analytics" />
+  <meta name="twitter:description" content="AI-generated daily reports on Indian equity markets, options activity, and macroeconomic events." />
+  <meta name="twitter:image" content="https://ramboq.com/og-image.svg" />
 </svelte:head>
 
+
+<h1 class="sr-only">Daily Market Report</h1>
 
 <!-- Tabs sit OUTSIDE the white card on the page background, mirroring
      the /performance page treatment. Champagne BOTTOM border on the

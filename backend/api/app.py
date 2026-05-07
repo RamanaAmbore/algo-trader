@@ -98,10 +98,18 @@ if _FRONTEND_BUILD.exists():
 
     @get("/{path:path}", include_in_schema=False)
     async def _spa_fallback(path: str) -> File:  # noqa: F811
-        # Serve static files (logo.png, nav_image.png, etc.) if they exist
+        # Guard against directory traversal
+        if ".." in path:
+            return File(path=_index_html, filename="index.html", content_disposition_type="inline")
         static_file = _FRONTEND_BUILD / path
-        if static_file.is_file() and ".." not in path:
+        # 1. Exact match (PNG, SVG, robots.txt, etc.)
+        if static_file.is_file():
             return File(path=static_file, content_disposition_type="inline")
+        # 2. Prerendered page — adapter-static writes /about → about.html
+        html_file = _FRONTEND_BUILD / (path.rstrip("/") + ".html")
+        if html_file.is_file():
+            return File(path=html_file, filename="index.html", content_disposition_type="inline")
+        # 3. SPA fallback for (algo) routes and anything else
         return File(path=_index_html, filename="index.html", content_disposition_type="inline")
 
     @get("/", include_in_schema=False)

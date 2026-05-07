@@ -1,9 +1,24 @@
 <svelte:head>
-  <title>About | RamboQuant Analytics</title>
-  <meta name="description" content="Learn about RamboQuant Analytics LLP — investment strategy, philosophy, and team." />
+  <title>About RamboQuant | RamboQuant Analytics</title>
+  <meta name="description" content="Learn about RamboQuant Analytics LLP — our investment philosophy, team, and partnership structure for accredited investors." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="About RamboQuant | RamboQuant Analytics" />
+  <meta property="og:description" content="Learn about RamboQuant Analytics LLP — our investment philosophy, team, and partnership structure for accredited investors." />
+  <meta property="og:url" content="https://ramboq.com/about" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ramboq.com/og-image.svg" />
+  <meta property="og:site_name" content="RamboQuant Analytics" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="About RamboQuant | RamboQuant Analytics" />
+  <meta name="twitter:description" content="Learn about RamboQuant Analytics LLP — our investment philosophy, team, and partnership structure for accredited investors." />
+  <meta name="twitter:image" content="https://ramboq.com/og-image.svg" />
 </svelte:head>
 
 <div class="about-card">
+  <h1 class="sr-only">About RamboQuant Analytics LLP</h1>
   <!-- Stat strip -->
   <div class="stat-strip">
     <div class="stat-item">

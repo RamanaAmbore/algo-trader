@@ -47,6 +47,14 @@
   const bullSrc = "/bull.png";
 </script>
 
+<svelte:head>
+  <!-- Per-page canonical: every public route gets its own URL so
+       Google doesn't collapse all pages back to /. Individual pages
+       override title, description, og:*, and twitter:* via their
+       own <svelte:head> blocks. -->
+  <link rel="canonical" href="https://ramboq.com{page.url.pathname}" />
+</svelte:head>
+
 <div class="pub-viewport">
   <div class="pub-accent-top"></div>
 

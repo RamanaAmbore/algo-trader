@@ -10,8 +10,22 @@
 </script>
 
 <svelte:head>
-  <title>Performance | RamboQuant Analytics</title>
-  <meta name="description" content="Real-time portfolio performance — holdings, positions, and fund balances." />
+  <title>Live Portfolio Performance | RamboQuant Analytics</title>
+  <meta name="description" content="Real-time view of RamboQuant's holdings, positions, and portfolio P&amp;L." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Live Portfolio Performance | RamboQuant Analytics" />
+  <meta property="og:description" content="Real-time view of RamboQuant's holdings, positions, and portfolio P&L." />
+  <meta property="og:url" content="https://ramboq.com/performance" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ramboq.com/og-image.svg" />
+  <meta property="og:site_name" content="RamboQuant Analytics" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Live Portfolio Performance | RamboQuant Analytics" />
+  <meta name="twitter:description" content="Real-time view of RamboQuant's holdings, positions, and portfolio P&L." />
+  <meta name="twitter:image" content="https://ramboq.com/og-image.svg" />
 </svelte:head>
 
 <!-- Negative side margins cancel half of .pub-content's 1rem side

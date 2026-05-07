@@ -3,7 +3,14 @@
 Deploy notification script — called directly from deploy scripts after service restart.
 Uses only stdlib + requests to avoid opening app log files (permission conflict with
 the running service process). Reads config and secrets directly from YAML.
+
+Flags:
+  --status ok|fail   (default: ok)
+  --branch <name>    git branch (default: read from backend_config.yaml)
+  --commit <hash>    short commit hash (default: unknown)
+  --reason <text>    failure reason, shown when --status fail (optional)
 """
+import argparse
 import smtplib
 import sys
 from datetime import datetime
@@ -27,6 +34,17 @@ def _timestamp():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="RamboQuant deploy notification")
+    parser.add_argument("--status", default="ok", choices=["ok", "fail"],
+                        help="Deploy outcome (default: ok)")
+    parser.add_argument("--branch", default="",
+                        help="Git branch name (default: read from backend_config.yaml)")
+    parser.add_argument("--commit", default="unknown",
+                        help="Short commit hash (default: unknown)")
+    parser.add_argument("--reason", default="",
+                        help="Failure reason string (used when --status fail)")
+    args = parser.parse_args()
+
     try:
         with open("backend/config/backend_config.yaml", "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
@@ -36,9 +54,14 @@ def main():
         print(f"notify_deploy: config load failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    branch = cfg.get("deploy_branch", "main")
+    # Branch: prefer the CLI arg; fall back to what's written in the config file.
+    branch = args.branch or cfg.get("deploy_branch", "main")
     is_non_main = branch != "main"
     branch_tag = f" [{branch}]" if is_non_main else ""
+    commit = args.commit
+    status = args.status
+    reason = args.reason
+
     caps = cfg.get("cap_in_dev") or {}
     if not isinstance(caps, dict):
         caps = {}
@@ -49,13 +72,25 @@ def main():
             return True
         return bool(caps.get(name, False))
 
-    # Skip entirely on dev when notify_on_deploy is off.
-    if is_non_main and not _cap("notify_on_deploy"):
+    # Skip entirely on dev when notify_on_deploy is off — but always fire on
+    # failure so operators know the deploy broke even on a gated dev branch.
+    if is_non_main and not _cap("notify_on_deploy") and status == "ok":
         print("notify_deploy: skipped — notify_on_deploy disabled for this environment")
         return
 
     ts = _timestamp()
     errors = []
+
+    # Build the event label and detail line based on status.
+    if status == "ok":
+        event_label = f"Deploy OK{branch_tag}"
+        detail_line = f"{branch} → {commit}"
+        tg_header   = f"<b>Deploy OK{branch_tag}</b> · <code>{commit}</code>"
+    else:
+        event_label = f"⚠ DEPLOY FAILED{branch_tag}"
+        detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "")
+        tg_header   = (f"<b>⚠ DEPLOY FAILED{branch_tag}</b> · <code>{commit}</code>"
+                       + (f"\n{reason}" if reason else ""))
 
     # Services that were restarted by this deploy (per-env)
     import subprocess
@@ -68,8 +103,8 @@ def main():
         try:
             result = subprocess.run(["systemctl", "is-active", svc],
                                     capture_output=True, text=True, timeout=5)
-            status = result.stdout.strip()
-            services_status.append(f"{svc}: {status}")
+            svc_status = result.stdout.strip()
+            services_status.append(f"{svc}: {svc_status}")
         except Exception:
             services_status.append(f"{svc}: unknown")
     svc_text = " | ".join(services_status)
@@ -91,7 +126,7 @@ def main():
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={"chat_id": chat_id,
-                      "text": f"<b>Deploy OK{branch_tag}</b>{branch_line}\n{ts}\n<code>{svc_text}</code>",
+                      "text": f"{tg_header}{branch_line}\n{ts}\n<code>{svc_text}</code>",
                       "parse_mode": "HTML"},
                 timeout=10,
             )
@@ -111,7 +146,7 @@ def main():
         smtp_name     = sec.get("smtp_user_name", "")
         alert_emails  = sec.get("alert_emails", [])
 
-        subject = f"RamboQuant Deploy OK{branch_tag}: {ts}"
+        subject = f"RamboQuant {event_label}: {ts}"
 
         branch_banner = ""
         if is_non_main:
@@ -123,20 +158,34 @@ def main():
                 f"</div>"
             )
 
+        fail_banner = ""
+        if status == "fail":
+            fail_banner = (
+                f"<div style='background-color:#f8d7da;border:1px solid #f5c6cb;"
+                f"border-radius:4px;padding:8px 14px;margin-bottom:12px;"
+                f"font-family:sans-serif;font-size:13px;color:#721c24'>"
+                f"&#9888; <strong>DEPLOY FAILED</strong>"
+                + (f": {reason}" if reason else "")
+                + f"</div>"
+            )
+
         html_body = (
             f"<html><body style='font-family:sans-serif'>"
             f"{branch_banner}"
+            f"{fail_banner}"
             f"<table style='border-collapse:collapse;width:100%'>"
             f"<thead><tr>"
             f"<th style='background-color:#1a3a5c;color:#fff;padding:8px 12px;text-align:left;font-size:13px'>Event</th>"
+            f"<th style='background-color:#1a3a5c;color:#fff;padding:8px 12px;text-align:left;font-size:13px'>Detail</th>"
             f"<th style='background-color:#1a3a5c;color:#fff;padding:8px 12px;text-align:left;font-size:13px'>Timestamp</th>"
             f"</tr></thead>"
             f"<tbody><tr>"
-            f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea'><b>Deploy OK{branch_tag}</b></td>"
+            f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea'><b>{event_label}</b></td>"
+            f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea;font-family:monospace'>{detail_line}</td>"
             f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea;font-family:monospace'>{ts}</td>"
             f"</tr><tr>"
             f"<td style='padding:6px 12px;font-size:12px;border-bottom:1px solid #dce3ea'>Services</td>"
-            f"<td style='padding:6px 12px;font-size:12px;border-bottom:1px solid #dce3ea;font-family:monospace'>{svc_text}</td>"
+            f"<td colspan='2' style='padding:6px 12px;font-size:12px;border-bottom:1px solid #dce3ea;font-family:monospace'>{svc_text}</td>"
             f"</tr></tbody>"
             f"</table>"
             f"</body></html>"

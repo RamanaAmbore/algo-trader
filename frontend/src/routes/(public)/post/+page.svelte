@@ -60,7 +60,21 @@
 </script>
 <svelte:head>
   <title>Investment Insights | RamboQuant Analytics</title>
-  <meta name="description" content="Investment insights and market analysis from RamboQuant Analytics." />
+  <meta name="description" content="Thoughts on systematic investing, options strategies, and risk management from the RamboQuant team." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Investment Insights | RamboQuant Analytics" />
+  <meta property="og:description" content="Thoughts on systematic investing, options strategies, and risk management from the RamboQuant team." />
+  <meta property="og:url" content="https://ramboq.com/post" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ramboq.com/og-image.svg" />
+  <meta property="og:site_name" content="RamboQuant Analytics" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Investment Insights | RamboQuant Analytics" />
+  <meta name="twitter:description" content="Thoughts on systematic investing, options strategies, and risk management from the RamboQuant team." />
+  <meta name="twitter:image" content="https://ramboq.com/og-image.svg" />
 </svelte:head>
 
 
@@ -71,6 +85,7 @@
 {/if}
 
 <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5 pt-4">
+<h1 class="page-heading">Investment Insights</h1>
 {#if loading && !content}
   <div class="text-center text-text/40 animate-pulse text-sm py-8">
     Loading…

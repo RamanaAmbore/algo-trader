@@ -480,18 +480,9 @@
          the abbreviated keys; we override per-row with a `title=` so a
          hover/long-press surfaces the meaning of each label
          (operator: "what is meaning of σ"). -->
+    <!-- O3: SPOT row removed — the top-of-chart SVG label (O2) carries
+         the spot value; duplicating it here added noise to a compact box. -->
     <div class="payoff-stats">
-      <div class="ps-row" title="Underlying spot price (current LTP)">
-        <span class="ps-k">SPOT</span>
-        <span class={'ps-v ps-spot ps-spot-' + spotDir}
-              title={prevClose != null && prevClose > 0
-                ? 'Prev close ₹' + priceFmt(prevClose)
-                  + ' · ' + (spot >= prevClose ? '+' : '−')
-                  + Math.abs((spot / prevClose - 1) * 100).toFixed(2) + '%'
-                : 'Spot — prev close unavailable'}>
-          ₹{aggFmt(spot)}
-        </span>
-      </div>
       {#if curveAtSpot}
         <div class="ps-row"
              title={realizedPnl !== 0
@@ -557,17 +548,9 @@
          onpointerup={onPointerUp}
          onpointermove={onPointerMove}
          onpointerleave={onPointerLeave}>
-      <defs>
-        <!-- Tooltip gradient — same #273552 → #1d2a44 vertical
-             gradient as the .payoff-stats overlay (CSS) and the
-             algo-status-card / OrderTicket surfaces. Lets the SVG
-             hover-tooltip read as part of the same surface family
-             without a separate flat-fill rect. -->
-        <linearGradient id="payoff-tip-gradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stop-color="#273552" stop-opacity="0.95"/>
-          <stop offset="100%" stop-color="#1d2a44" stop-opacity="0.95"/>
-        </linearGradient>
-      </defs>
+      <!-- O4: defs retained but gradient unused — tooltip rect now uses
+           flat fill="#0f172a" to match the stat overlay. -->
+      <defs></defs>
       <!-- Profit / loss shading (under the curves so the lines pop) -->
       <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
       <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>
@@ -653,31 +636,34 @@
       <line x1={PAD_L} x2={W - PAD_R} y1={zeroY} y2={zeroY}
             stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
 
+      <!-- O2: Top spot price label — centered in the top padding area.
+           Shows the underlying name (when available via props) + current
+           spot so the operator can read it at a glance without hovering.
+           Uses the SVG W / 2 centre since the chart viewBox is fixed at W. -->
+      {#if spot > 0}
+        <text x={W / 2} y={PAD_T - 1}
+              text-anchor="middle"
+              dominant-baseline="auto"
+              fill="#22d3ee"
+              stroke="#0c1830"
+              stroke-width="3"
+              paint-order="stroke fill"
+              font-size="16" font-weight="600"
+              font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+              style="font-variant-numeric: tabular-nums">
+          {spot.toFixed(0)}
+        </text>
+      {/if}
+
       <!-- Spot vertical — DOTTED cyan (operator request). σ ticks are
            dashed at varying opacities, BE is dashed cream, today is
            solid amber, expiry is dashed sky-blue → spot stays
            visually distinct as the only DOTTED vertical. round line-
            caps render the dasharray "1 4" as a clean dot-grid. -->
       {#if spot > sMin && spot < sMax}
-        <!-- Spot vertical — solid cyan, most important reference line
-             on the chart. stroke-dasharray removed. -->
+        <!-- Spot vertical — O1: subtle cyan, stroke-width 1, opacity 0.3 -->
         <line x1={xOf(spot)} x2={xOf(spot)} y1={PAD_T} y2={height - PAD_B}
-              stroke="#22d3ee" stroke-width="2"/>
-        <!-- Anchor 5 px to the right of the spot line — visible gap
-             between the cyan vertical and the SPOT label glyphs. -->
-        {@const sx = xOf(spot) + 5}
-        {@const sy = height - PAD_B - 4}
-        <text x={sx} y={sy}
-              text-anchor="start"
-              transform="rotate(-90 {sx} {sy})"
-              fill="#7dd3fc"
-              stroke="#152033"
-              stroke-width="3"
-              paint-order="stroke fill"
-              font-size="11" font-weight="700"
-              font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
-          SPOT {spot.toFixed(0)}
-        </text>
+              stroke="#22d3ee" stroke-width="1" stroke-opacity="0.3"/>
       {/if}
 
       <!-- Breakeven markers — soft cream dashed verticals; multi-leg
@@ -777,9 +763,10 @@
                affordance visible on hover.
                Row baselines back to 18 / 36 / 54 (no header strip
                needed without the ×); box height back to 60. -->
+          <!-- O4: flat fill matching the stat overlay -->
           <rect x={tx} y={ty} width="165" height="54" rx="6"
-                fill="url(#payoff-tip-gradient)"
-                stroke="rgba(251,191,36,0.30)" stroke-width="1"
+                fill="#0f172a"
+                stroke="rgba(125,211,252,0.30)" stroke-width="1"
                 style="cursor: pointer;"
                 pointer-events="all"
                 onclick={(e) => { e.stopPropagation(); _dismissHover(); }}
@@ -983,7 +970,8 @@
     width: 0;
     height: 12px;
   }
-  .legend-spot-mark { border-left: 2px solid #22d3ee; }
+  /* O1: legend spot mark thinned to match the subtle 1px chart line */
+  .legend-spot-mark { border-left: 1px solid rgba(34,211,238,0.4); }
   .legend-be-mark   { border-left: 2px dashed #fde68a; }
   /* Solid swatch for the spot legend — visually pairs with the
      SOLID cyan vertical drawn at the spot price (BE is dashed
@@ -991,7 +979,9 @@
 
   /* On-chart stat overlay — reads the key numerics off the curve so
      the chart is self-contained. Sits top-left, semi-transparent,
-     pointer-events disabled so it never blocks the SVG hover/zoom. */
+     pointer-events disabled so it never blocks the SVG hover/zoom.
+     O4: flat appearance — solid navy bg, thin sky-blue border, no
+     shadow, no gradient. */
   .payoff-stats {
     position: absolute;
     top: 0.5rem;
@@ -1001,20 +991,10 @@
     column-gap: 0.5rem;
     row-gap: 0.12rem;
     padding: 0.32rem 0.55rem;
-    /* Match the algo theme's card palette — same gradient, amber
-       border, soft shadow as `.algo-status-card` and the OrderTicket
-       modal. Operator wanted the overlay and popup to read as part
-       of the algo surface family, not a foreign element. */
     border-radius: 6px;
-    background: linear-gradient(180deg, rgba(39,53,82,0.92) 0%, rgba(29,42,68,0.92) 100%);
-    border: 1px solid rgba(251,191,36,0.30);
-    box-shadow: 0 3px 10px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08);
+    background: #0f172a;
+    border: 1px solid rgba(125,211,252,0.30);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    /* Operator: "make the overlay look smaller, reduce the font size
-       slightly". Bumped down 0.75rem → 0.65rem on values and 0.78 →
-       0.7rem on keys; padding + gaps trimmed in proportion. Still
-       large enough to read at a glance but takes ~25 % less vertical
-       and horizontal space. */
     font-size: 0.65rem;
     line-height: 1.2;
     z-index: 1;

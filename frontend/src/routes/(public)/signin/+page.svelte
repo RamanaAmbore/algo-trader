@@ -50,7 +50,21 @@
 </script>
 <svelte:head>
   <title>Sign In | RamboQuant Analytics</title>
-  <meta name="description" content="Sign in to your RamboQuant Analytics partner account." />
+  <meta name="description" content="Sign in to your RamboQuant partner account." />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Sign In | RamboQuant Analytics" />
+  <meta property="og:description" content="Sign in to your RamboQuant partner account." />
+  <meta property="og:url" content="https://ramboq.com/signin" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ramboq.com/og-image.svg" />
+  <meta property="og:site_name" content="RamboQuant Analytics" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Sign In | RamboQuant Analytics" />
+  <meta name="twitter:description" content="Sign in to your RamboQuant partner account." />
+  <meta name="twitter:image" content="https://ramboq.com/og-image.svg" />
 </svelte:head>
 
 <div class="max-w-sm mx-auto mt-4">

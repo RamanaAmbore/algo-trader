@@ -1,3 +1,10 @@
+<svelte:head>
+  <title>Your Portfolio | RamboQuant Analytics</title>
+  <meta name="description" content="View your partner contribution and profit-share details." />
+  <!-- Auth-gated personal data — exclude from search index -->
+  <meta name="robots" content="noindex, nofollow" />
+</svelte:head>
+
 <script>
   import { onMount } from 'svelte';
   import { authStore, clientTimestamp } from '$lib/stores';

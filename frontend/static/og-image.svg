@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <!-- Background: deep navy matching public-site palette -->
+  <rect width="1200" height="630" fill="#0c1830"/>
+
+  <!-- Subtle diagonal texture stripes (matches pub-viewport CSS) -->
+  <defs>
+    <pattern id="stripe" width="56" height="56" patternUnits="userSpaceOnUse" patternTransform="rotate(135)">
+      <line x1="0" y1="0" x2="0" y2="56" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+    </pattern>
+    <!-- Champagne gold gradient for text/accents -->
+    <linearGradient id="goldGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#c8a84b"/>
+      <stop offset="50%" stop-color="#f0d070"/>
+      <stop offset="100%" stop-color="#c8a84b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#stripe)"/>
+
+  <!-- Champagne accent bar at top (mirrors site pub-accent-top) -->
+  <rect x="0" y="0" width="1200" height="6"
+        fill="url(#goldGrad)"/>
+  <!-- Champagne accent bar at bottom -->
+  <rect x="0" y="624" width="1200" height="6"
+        fill="url(#goldGrad)"/>
+
+  <!-- Bull.png is a PNG so we embed as foreignObject reference (won't render in all crawlers).
+       Use an SVG bull silhouette as fallback — minimal upward-horns shape. -->
+  <g transform="translate(600,120)" opacity="0.92">
+    <!-- Simplified bull head silhouette in champagne gold -->
+    <!-- Head -->
+    <ellipse cx="0" cy="0" rx="52" ry="44" fill="#c8a84b"/>
+    <!-- Left horn -->
+    <path d="M-36,-28 Q-90,-90 -60,-110 Q-40,-70 -22,-34" fill="#c8a84b"/>
+    <!-- Right horn -->
+    <path d="M36,-28 Q90,-90 60,-110 Q40,-70 22,-34" fill="#c8a84b"/>
+    <!-- Eyes -->
+    <circle cx="-18" cy="-8" r="5" fill="#0c1830"/>
+    <circle cx="18" cy="-8" r="5" fill="#0c1830"/>
+    <!-- Nose -->
+    <ellipse cx="0" cy="18" rx="18" ry="12" fill="#b8922e"/>
+    <circle cx="-7" cy="18" r="4" fill="#0c1830"/>
+    <circle cx="7" cy="18" r="4" fill="#0c1830"/>
+    <!-- Ears -->
+    <ellipse cx="-56" cy="4" rx="14" ry="10" fill="#b8922e" transform="rotate(-20 -56 4)"/>
+    <ellipse cx="56" cy="4" rx="14" ry="10" fill="#b8922e" transform="rotate(20 56 4)"/>
+  </g>
+
+  <!-- Champagne accent divider line -->
+  <line x1="200" y1="290" x2="1000" y2="290" stroke="#c8a84b" stroke-width="1.5" stroke-opacity="0.55"/>
+
+  <!-- Primary title: RamboQuant Analytics -->
+  <text x="600" y="355"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="68" font-weight="900"
+        text-anchor="middle"
+        fill="url(#goldGrad)"
+        letter-spacing="2">RamboQuant Analytics</text>
+
+  <!-- Subtitle: tagline -->
+  <text x="600" y="415"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="30" font-weight="400"
+        text-anchor="middle"
+        fill="rgba(240,220,180,0.82)"
+        letter-spacing="1">
+    Quantitative Investment for Indian Markets
+  </text>
+
+  <!-- Champagne divider below subtitle -->
+  <line x1="440" y1="445" x2="760" y2="445" stroke="#c8a84b" stroke-width="1.5" stroke-opacity="0.45"/>
+
+  <!-- Bottom tagline -->
+  <text x="600" y="490"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="18" font-weight="500"
+        text-anchor="middle"
+        fill="rgba(200,168,75,0.75)"
+        letter-spacing="5">
+    INVEST · GROW · COMPOUND
+  </text>
+
+  <!-- URL watermark -->
+  <text x="600" y="560"
+        font-family="'Trebuchet MS', Arial, sans-serif"
+        font-size="14" font-weight="400"
+        text-anchor="middle"
+        fill="rgba(200,216,240,0.45)"
+        letter-spacing="2">
+    ramboq.com
+  </text>
+</svg>

@@ -11,9 +11,16 @@ const config = {
     adapter: adapter({
       pages: 'build',
       assets: 'build',
-      fallback: 'index.html', // SPA mode — all routes served from index.html
+      fallback: 'index.html', // SPA mode for (algo) routes; public routes are prerendered
       precompress: false,
     }),
+    prerender: {
+      // Warn (don't fail) when a prerendered page links to a dynamic
+      // (algo) route — those are SPA-only and served via index.html.
+      handleHttpError: 'warn',
+      // Discover all public routes automatically.
+      entries: ['*'],
+    },
     alias: {
       $lib: './src/lib',
     },
