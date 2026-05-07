@@ -244,7 +244,7 @@
           aria-selected={isActive}
           aria-disabled={disabled}
           style="
-            color: {isActive ? tab.activeTxt : '#cbd5e1'};
+            color: {isActive ? tab.activeTxt : '#64748b'};
             background: {tab.activeBg};
             border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
             font-weight: {isActive ? '800' : '600'};
@@ -482,14 +482,18 @@
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */
   .oes-basket-bar {
+    position: sticky;
+    bottom: 0;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.4rem 0.7rem;
-    padding: 0.5rem 1rem;
-    border-top: 1px solid rgba(74,222,128,0.25);
-    background: rgba(74,222,128,0.05);
+    padding: 0.55rem 1rem;
+    border-top: 2px solid #4ade80;
+    background: rgba(74,222,128,0.18);
+    box-shadow: inset 0 4px 12px rgba(0,0,0,0.25);
     flex-shrink: 0;
+    z-index: 2;
   }
   .oes-basket-count {
     font-family: monospace;
@@ -513,8 +517,8 @@
   }
   .oes-basket-clear,
   .oes-basket-submit {
-    height: 1.5rem;
-    padding: 0 0.75rem;
+    height: 1.9rem;
+    padding: 0 0.85rem;
     border-radius: 2px;
     font-family: monospace;
     font-size: 0.62rem;
@@ -527,8 +531,13 @@
   }
   .oes-basket-clear  { color: #a3b9d0; }
   .oes-basket-clear:hover:not(:disabled) { background: rgba(163,185,208,0.08); }
-  .oes-basket-submit { color: #4ade80; background: rgba(74,222,128,0.10); }
-  .oes-basket-submit:hover:not(:disabled) { background: rgba(74,222,128,0.20); }
+  .oes-basket-submit {
+    color: #fff;
+    background: #22c55e;
+    border-color: #22c55e;
+    font-weight: 800;
+  }
+  .oes-basket-submit:hover:not(:disabled) { background: #16a34a; border-color: #16a34a; }
   .oes-basket-clear:disabled,
   .oes-basket-submit:disabled { opacity: 0.45; cursor: progress; }
 

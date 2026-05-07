@@ -993,6 +993,7 @@
     if (!inst) return;
     const lot  = Number(inst.ls || 1);
     openTicket({
+      defaultTab: 'chain',
       symbol:   inst.s,
       // Exchange comes from the instruments cache (Kite's authoritative
       // `e` field per contract). CRUDEOIL options live on MCX, NIFTY
@@ -1522,6 +1523,23 @@
                 if (selectedExpiry)     chainExpiry     = selectedExpiry;
               }
               showAddPanel = !showAddPanel;
+              // Also open the 3-tab shell on the Chain tab so the
+              // operator can build and submit a basket directly from
+              // the shell. The in-page panel stays for visual scan;
+              // the shell is the action surface.
+              if (showAddPanel) {
+                openTicket({
+                  defaultTab: 'chain',
+                  symbol:     '',
+                  exchange:   'NFO',
+                  side:       'BUY',
+                  action:     'open',
+                  qty:        0,
+                  lotSize:    0,
+                  accounts:   ticketAccounts,
+                  account:    _ticketAccountDefault(),
+                });
+              }
             }}>OChain</button>
   </div>
 </div>

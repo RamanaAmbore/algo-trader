@@ -80,6 +80,13 @@ test.describe('Order entry — 3 tabs', () => {
     await expect(chainShell).toBeVisible({ timeout: TIMEOUT });
   });
 
+  test('+ Basket button visible on Ticket tab in shell', async ({ page }) => {
+    await page.goto('/console');
+    if (page.url().includes('/signin')) test.skip(true, 'signin gate');
+    await page.getByRole('tab', { name: /Order ticket/i }).click();
+    await expect(page.locator('.ot-basket').first()).toBeVisible({ timeout: 10000 });
+  });
+
   test('navbar mode chip is present and clickable (admin only)', async ({ page }) => {
     await page.goto('/dashboard');
     if (page.url().includes('/signin')) test.skip(true, 'signin gate');
