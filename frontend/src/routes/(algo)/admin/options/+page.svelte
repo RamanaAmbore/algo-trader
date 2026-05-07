@@ -992,7 +992,6 @@
     const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
     if (!inst) return;
     const lot  = Number(inst.ls || 1);
-    const lots = Math.max(1, Number(chainLots) || 1);
     openTicket({
       symbol:   inst.s,
       // Exchange comes from the instruments cache (Kite's authoritative
@@ -1002,7 +1001,8 @@
       // come back empty.
       exchange: inst.e || 'NFO',
       side:     side === 'long' ? 'BUY' : 'SELL',
-      qty:      lot * lots,
+      // Add path: always 1 lot. Operator steps it up in the ticket.
+      qty:      lot,
       lotSize:  lot,
       accounts: ticketAccounts,
       account:  _ticketAccountDefault(),
@@ -1013,7 +1013,6 @@
                           /** @type {'long'|'short'} */ side = chainSide) {
     if (!sym) return;
     const lot  = Number(lotSize || 1);
-    const lots = Math.max(1, Number(chainLots) || 1);
     // Look up the instrument so we route to the right exchange
     // (commodity futures live on MCX, not NFO).
     const inst = getInstrument(sym.toUpperCase());
@@ -1021,7 +1020,7 @@
       symbol:   sym,
       exchange: inst?.e || 'NFO',
       side:     side === 'long' ? 'BUY' : 'SELL',
-      qty:      lot * lots,
+      qty:      lot,
       lotSize:  lot,
       accounts: ticketAccounts,
       account:  _ticketAccountDefault(),
