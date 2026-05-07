@@ -82,6 +82,16 @@ async def init_db() -> None:
         await conn.execute(text(
             "UPDATE algo_orders SET mode = 'sim' WHERE mode = 'test'"
         ))
+        # Indexes on AlgoOrder hot-path columns. Base.metadata.create_all only
+        # adds indexes when CREATING the table — for tables that pre-date the
+        # `index=True` flag on the model, we add them explicitly here.
+        # CREATE INDEX IF NOT EXISTS is idempotent; cheap no-op once present.
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode ON algo_orders (mode)",
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_status ON algo_orders (status)",
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_created_at ON algo_orders (created_at)",
+        ):
+            await conn.execute(text(stmt))
         # Agent lifespan columns — added after the agents table existed in
         # production. Default 'persistent' on existing rows preserves
         # current behaviour; max_fires + expires_at remain NULL until the

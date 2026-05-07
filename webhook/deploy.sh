@@ -205,8 +205,10 @@ PYEOF
 
   # D5 — Health check: verify the service actually came up before declaring success.
   # Tries /api/health first; falls back to / (SPA shell). Both return 200 when
-  # Litestar is up. prod=8502, dev=8503 (per CLAUDE.md deployment architecture).
-  PORT=$([ "$ENV" = "prod" ] && echo 8502 || echo 8503)
+  # Litestar is up. Uvicorn binds locally to 8000 (prod) / 8001 (dev) —
+  # CLAUDE.md's "8502/8503" labels are the public-facing identifiers via nginx,
+  # not the in-process ports a curl from the same host can reach.
+  PORT=$([ "$ENV" = "prod" ] && echo 8000 || echo 8001)
   DEPLOY_STATUS="fail"
   for i in 1 2 3 4 5 6; do
       if curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 || \
