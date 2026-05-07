@@ -189,9 +189,12 @@
   });
 
   const TABS = /** @type {const} */ ([
-    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', mutedTxt: '#475569' },
-    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', mutedTxt: '#7e6a3b' },
-    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', mutedTxt: '#3a604a' },
+    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', mutedTxt: '#475569',
+      activeBg: 'rgba(125,211,252,0.14)', mutedBg: 'rgba(125,211,252,0.04)' },
+    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', mutedTxt: '#7e6a3b',
+      activeBg: 'rgba(251,191,36,0.14)',  mutedBg: 'rgba(251,191,36,0.04)' },
+    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', mutedTxt: '#3a604a',
+      activeBg: 'rgba(74,222,128,0.14)',   mutedBg: 'rgba(74,222,128,0.04)' },
   ]);
 
   // Effective OrderTicket props — merge _cmdOrderProps (from Command tab
@@ -242,6 +245,7 @@
           aria-disabled={disabled}
           style="
             color: {isActive ? tab.activeTxt : tab.mutedTxt};
+            background: {isActive ? tab.activeBg : tab.mutedBg};
             border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
             opacity: {disabled ? '0.5' : '1'};
             cursor: {disabled ? 'not-allowed' : 'pointer'};
@@ -262,7 +266,13 @@
       {#if _activeTab === 'command'}
         <CommandLineTab
           onParsedOrder={basketMode ? undefined : handleParsedOrder}
-          onAddToBasket={basketMode ? handleCmdAddToBasket : undefined} />
+          onAddToBasket={basketMode ? handleCmdAddToBasket : undefined}
+          prefillSide={side}
+          prefillAccount={account}
+          prefillSymbol={symbol}
+          prefillQty={qty}
+          prefillPrice={price ?? 0}
+          prefillOrderType={orderType} />
 
       {:else if _activeTab === 'ticket'}
         <!-- OrderTicket renders its own overlay/modal chrome; inside

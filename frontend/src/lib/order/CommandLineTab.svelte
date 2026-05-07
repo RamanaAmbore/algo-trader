@@ -26,20 +26,42 @@
    *   onParsedOrder?: (props: any) => void,
    *   onAddToBasket?: (leg: any) => void,
    *   standalone?: boolean,
+   *   prefillSide?: string, prefillAccount?: string, prefillSymbol?: string,
+   *   prefillQty?: number,  prefillPrice?: number,  prefillOrderType?: string,
    * }} */
   let {
-    // When set, order commands route through this callback instead of
-    // opening a nested OrderTicket. The shell switches to the Ticket
-    // tab with the pre-filled props. Standalone Terminal page leaves
-    // this undefined and handles the ticket itself.
     onParsedOrder = /** @type {((props: any) => void) | undefined} */ (undefined),
-    // When set (basketMode active on the shell), BUY/SELL commands add
-    // a basket leg directly instead of switching to the Ticket tab.
     onAddToBasket = /** @type {((leg: any) => void) | undefined} */ (undefined),
-    // True when rendered as the full /console page body — shows extra
-    // layout padding and the help hint line.
-    standalone = false,
+    standalone    = false,
+    // When the parent (OrderEntryShell) already knows context tokens,
+    // we pre-fill the command bar with them so the operator only fills
+    // in the missing slots. Empty strings / 0 / undefined are treated
+    // as "no value" and skipped.
+    prefillSide       = '',
+    prefillAccount    = '',
+    prefillSymbol     = '',
+    prefillQty        = 0,
+    prefillPrice      = 0,
+    prefillOrderType  = '',
   } = $props();
+
+  // Compose the initial command line from known context. Format follows
+  // orderGrammar: `<verb> <account> <symbol> <qty> [<order_type> <price>]`.
+  // Trailing space ensures the next token slot opens immediately.
+  const initialValue = (() => {
+    const parts = [];
+    const verb = String(prefillSide || '').toLowerCase();
+    if (verb === 'buy' || verb === 'sell') parts.push(verb);
+    if (prefillAccount) parts.push(String(prefillAccount));
+    if (prefillSymbol)  parts.push(String(prefillSymbol).toUpperCase());
+    if (prefillQty > 0) parts.push(String(prefillQty));
+    if (prefillOrderType && prefillOrderType.toUpperCase() !== 'LIMIT' &&
+        prefillOrderType.toUpperCase() !== 'MARKET') {
+      parts.push(prefillOrderType.toUpperCase());
+    }
+    if (prefillPrice > 0) parts.push(String(prefillPrice));
+    return parts.length ? parts.join(' ') + ' ' : '';
+  })();
 
   /** @type {Array<{cmd: string, result: string, time: string}>} */
   let cmdHistory = $state([]);
@@ -198,6 +220,7 @@
       context={cmdContext}
       rows={2}
       placeholder="buy | sell | agent | shell command"
+      {initialValue}
       onsubmit={runParsed}
       onsubmitRaw={runRaw}
       previewFn={previewSymbol}
