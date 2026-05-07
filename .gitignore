@@ -3,6 +3,7 @@ __pycache__/
 .log/
 .idea
 .venv
+.icon-venv/
 .vscode
 .DS_Store
 backend/config/secrets.yaml
