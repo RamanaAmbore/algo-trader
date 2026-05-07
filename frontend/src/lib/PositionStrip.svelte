@@ -53,10 +53,12 @@
   });
   onDestroy(() => { teardown?.(); });
 
-  // Pos = intraday positions P&L (open + closed contributions).
-  // Day = today's mark-to-market move on holdings (day_change_val).
-  // Hold = total unrealised P&L on holdings since entry.
-  // Cash = free balance summed across accounts (negative = margin debt).
+  // Pos    = intraday positions P&L (open + closed contributions).
+  // Day    = today's mark-to-market move on holdings (day_change_val).
+  // Hold   = total unrealised P&L on holdings since entry.
+  // P&L    = combined total P&L = Pos + Hold (positions + holdings carry).
+  // Cash   = free balance summed across accounts (negative = margin debt).
+  // M      = available margin summed across accounts.
   const positionsPnl = $derived.by(() => {
     let s = 0;
     for (const p of positions) s += Number(p?.pnl || 0);
@@ -72,9 +74,15 @@
     for (const h of holdings)  s += Number(h?.pnl || 0);
     return s;
   });
+  const totalPnl = $derived(positionsPnl + holdingsTotal);
   const cashTotal = $derived.by(() => {
     let s = 0;
     for (const f of funds) s += Number(f?.cash || 0);
+    return s;
+  });
+  const marginTotal = $derived.by(() => {
+    let s = 0;
+    for (const f of funds) s += Number(f?.avail_margin || 0);
     return s;
   });
 
@@ -104,10 +112,22 @@
       {fmtMoney(holdingsTotal)}
     </span>
   </span>
+  <span class="ps-agg" title="Total P/L — positions + holdings combined">
+    <span class="ps-agg-k">P&L</span>
+    <span class={'ps-agg-v ' + (totalPnl > 0 ? 'ps-pos' : totalPnl < 0 ? 'ps-neg' : 'ps-flat')}>
+      {fmtMoney(totalPnl)}
+    </span>
+  </span>
   <span class="ps-agg" title="Cash — free balance summed across accounts">
     <span class="ps-agg-k">Cash</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(cashTotal)}
+    </span>
+  </span>
+  <span class="ps-agg" title="Available margin — summed across accounts">
+    <span class="ps-agg-k">M</span>
+    <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+      {fmtMoney(marginTotal)}
     </span>
   </span>
 </a>
