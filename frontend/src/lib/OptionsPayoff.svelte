@@ -414,7 +414,7 @@
   // since the chart's spot range is ±spanPct and that range maps
   // 1-to-1 to ±spanSigmas. Falls back to evenly-spaced spot ticks
   // when spanSigmas isn't provided (operator-overridden span_pct).
-  const xTicks = $derived.by(() => {
+  const _xTicksRaw = $derived.by(() => {
     if (!payoff.length) return [];
     if (spanSigmas > 0 && spanPct > 0 && spot > 0) {
       const ticks = [];
@@ -445,6 +445,21 @@
       return { s, x: xOf(s), sigma: null, label: s.toFixed(0) };
     });
   });
+
+  // Cache the last non-empty xTicks so the σ axis doesn't flicker on
+  // refresh when `payoff` briefly transitions through empty (parent
+  // strategy state cycles when fetchStrategyAnalytics is in flight or
+  // legs reactivity briefly empties cleanLegs). Without this the σ
+  // verticals + their rotated price labels blink off then back on.
+  let _stickyXTicks = $state(/** @type {any[]} */ ([]));
+  $effect(() => {
+    if (_xTicksRaw && _xTicksRaw.length > 0) {
+      _stickyXTicks = _xTicksRaw;
+    }
+  });
+  const xTicks = $derived(
+    _xTicksRaw.length > 0 ? _xTicksRaw : _stickyXTicks
+  );
 </script>
 
 <div class="payoff-chart" style="--chart-h: {height}px">
