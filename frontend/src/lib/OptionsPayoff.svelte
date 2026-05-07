@@ -644,12 +644,13 @@
                the heavier dash + bolder stroke compared to the σ
                grid still telegraphs this is the outcome-zero
                boundary, not a routine grid line. -->
-          <!-- BE vertical: SOLID amber line (deliberately distinct from the
-               dotted σ verticals which use the same axis). Brighter amber-400
-               (#fbbf24) at higher alpha so the line is clearly visible while
-               not crowding the today/expiry curves. -->
+          <!-- BE vertical: SOLID amber line (distinct shape from the dotted
+               σ verticals on the same axis). Subtle alpha — the amber pill
+               label is the primary BE signal; the line itself is a quiet
+               vertical anchor so it doesn't compete with the today/expiry
+               curves. -->
           <line x1={xOf(be)} x2={xOf(be)} y1={PAD_T} y2={height - PAD_B}
-                stroke="rgba(251,191,36,0.65)" stroke-width="1.5"/>
+                stroke="rgba(251,191,36,0.30)" stroke-width="1"/>
           <!-- BE label rendered as a horizontal amber pill near the x-axis —
                distinct shape (horizontal vs σ vertical) and distinct color
                (amber vs gray) so operators read it as "important threshold"
