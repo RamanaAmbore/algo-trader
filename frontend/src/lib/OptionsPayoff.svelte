@@ -666,26 +666,29 @@
                curves. -->
           <line x1={xOf(be)} x2={xOf(be)} y1={PAD_T} y2={height - PAD_B}
                 stroke="rgba(251,191,36,0.30)" stroke-width="1"/>
-          <!-- BE label rendered as a horizontal amber pill near the x-axis —
-               distinct shape (horizontal vs σ vertical) and distinct color
-               (amber vs gray) so operators read it as "important threshold"
-               at a glance, not just another grid label. -->
+          <!-- BE label rendered as a VERTICAL amber pill running along
+               the BE line itself — same orientation as the σ price labels
+               so the operator can read both with a tilted glance, distinct
+               color (amber vs gray) so BE still pops as "important
+               threshold" rather than another σ tick. -->
           {@const beLabel = `BE ${be.toFixed(0)}`}
-          {@const pillH = 16}
-          {@const pillW = beLabel.length * 6.5 + 12}
-          {@const pillCx = xOf(be)}
-          {@const pillCy = height - PAD_B - 12}
-          <rect x={pillCx - pillW / 2} y={pillCy - pillH / 2}
-                width={pillW} height={pillH} rx="3"
-                fill="rgba(251,191,36,0.20)"
-                stroke="#fbbf24" stroke-width="1"/>
-          <text x={pillCx} y={pillCy + 4}
-                text-anchor="middle"
-                fill="#fbbf24"
-                font-size="10" font-weight="700"
-                font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
-            {beLabel}
-          </text>
+          {@const beAnchorX = xOf(be) + 5}
+          {@const beAnchorY = height - PAD_B - 14}
+          {@const beChipW   = beLabel.length * 6.5 + 12}
+          {@const beChipH   = 16}
+          <g transform="rotate(-90 {beAnchorX} {beAnchorY})">
+            <rect x={beAnchorX} y={beAnchorY - beChipH / 2}
+                  width={beChipW} height={beChipH} rx="3"
+                  fill="rgba(251,191,36,0.20)"
+                  stroke="#fbbf24" stroke-width="1"/>
+            <text x={beAnchorX + 6} y={beAnchorY + 4}
+                  text-anchor="start"
+                  fill="#fbbf24"
+                  font-size="10" font-weight="700"
+                  font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+              {beLabel}
+            </text>
+          </g>
         {/if}
       {/each}
 
