@@ -1,4 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Full-square navy background so platforms that render the icon as a
+       rectangle (WhatsApp link previews, install prompts) get filled
+       corners instead of transparent ones. -->
+  <rect width="512" height="512" fill="#0d1829"/>
+  <!-- Decorative circle frame on top of the navy fill -->
   <circle cx="256" cy="256" r="256" fill="#0d1829"/>
   <!-- Subtle champagne ring just inside the outer edge -->
   <circle cx="256" cy="256" r="250" fill="none" stroke="#d4920c" stroke-width="3" stroke-opacity="0.65"/>
