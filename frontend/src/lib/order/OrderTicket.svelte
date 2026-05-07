@@ -169,6 +169,26 @@
   $effect(() => {
     if (_lotSize > 0) _qty = _lots * _lotSize;
   });
+
+  // ADD-side qty reset: when the operator flips the side toggle from
+  // CLOSE → ADD on an existing position (currentQty != 0), reset qty
+  // to 1 lot. Adding to a position is a fresh order — operator wants
+  // to default the lot count from scratch, not inherit the held qty.
+  // Flipping back to CLOSE restores held qty so the close path stays
+  // one-click.
+  let _prevSide = _side;
+  $effect(() => {
+    if (!currentQty || currentQty === 0 || _lotSize <= 0) return;
+    if (_side === _prevSide) return;
+    _prevSide = _side;
+    const isAdd = (currentQty > 0 && _side === 'BUY') ||
+                  (currentQty < 0 && _side === 'SELL');
+    if (isAdd) {
+      _lots = 1;
+    } else {
+      _lots = Math.max(1, Math.round(Math.abs(currentQty) / _lotSize));
+    }
+  });
   function stepLots(/** @type {number} */ delta) {
     _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
   }
