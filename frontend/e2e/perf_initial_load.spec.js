@@ -33,18 +33,17 @@ function attachConsoleLogger(page) {
 }
 
 /** Wait until at least one of the given selectors has any rows, OR
- *  the timeout is hit. Returns the per-selector row count map. */
+ *  the timeout is hit. Returns the per-selector row count map.
+ *  Uses Playwright's native event-driven locator wait instead of
+ *  a polling loop — one round-trip when rows arrive vs ~40 across a
+ *  20s window. */
 async function probeGrids(page, selectors, timeout = 15_000) {
-  const start = Date.now();
+  const sels = Object.values(selectors).map((s) => `${s} .ag-row`).join(', ');
+  await page.locator(sels).first().waitFor({ state: 'attached', timeout }).catch(() => {});
   /** @type {Record<string, number>} */
-  let counts = {};
-  while (Date.now() - start < timeout) {
-    counts = {};
-    for (const [label, sel] of Object.entries(selectors)) {
-      counts[label] = await page.locator(`${sel} .ag-row`).count();
-    }
-    if (Object.values(counts).some((c) => c > 0)) return counts;
-    await page.waitForTimeout(500);
+  const counts = {};
+  for (const [label, sel] of Object.entries(selectors)) {
+    counts[label] = await page.locator(`${sel} .ag-row`).count();
   }
   return counts;
 }

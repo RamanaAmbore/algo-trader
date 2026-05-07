@@ -10,7 +10,7 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { priceFmt, pctFmt, aggFmt, qtyFmt } from '$lib/format';
+  import { priceFmt, pctFmt, aggFmt } from '$lib/format';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -142,14 +142,9 @@
   }
 
   // AG Grid valueFormatter wrappers — receive { value } objects.
-  // numFmt — per-unit prices (LTP, Avg Price): 2 decimals for precision.
-  const numFmt  = ({ value }) => value == null ? '' : priceFmt(value);
-  // aggFmtGrid — ₹ aggregates (Cur Val, P&L, Day Loss, Cash, Margins, etc.).
-  // Below ₹1 lakh: 0-decimal en-IN format ("99,999"). At/above ₹1 lakh:
-  // express in lakhs with 2 decimals + "L" suffix so "1,50,432" reads as
-  // "1.50L" — keeps the column tight, matches the Indian-market mental
-  // unit (lakhs) at that magnitude. Operator can revert by swapping
-  // `_aggLakhs(value)` back to `aggFmt(value)` in the wrapper.
+  const numFmt = ({ value }) => value == null ? '' : priceFmt(value);
+  // ≥1 lakh ⇒ "X.XXL" (Indian-market mental unit at that magnitude;
+  // keeps columns tight). Below stays plain en-IN.
   function _aggLakhs(/** @type {number} */ v) {
     if (!isFinite(v)) return '—';
     const n = Number(v);
@@ -776,14 +771,6 @@
     .acct-multi,
     .sym-multi { width: 7.5rem; }
   }
-  /* Refresh timestamp pinned to the far right of the tabs row. */
-  .tabs-row-ts {
-    margin-left: auto;
-    white-space: nowrap;
-  }
-  /* Compact-header Refresh button sits after the account picker. */
-  .tabs-row-refresh { margin-left: auto; }
-
   /* Fund Balances heading — heading left, Refresh button (compactHeader
      only) pinned to the right. Keeps the tabs / filter row focused on
      Account + Symbol selection. */
