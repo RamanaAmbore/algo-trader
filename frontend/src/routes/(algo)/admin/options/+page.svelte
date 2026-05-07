@@ -26,7 +26,7 @@
     placeTicketOrder, fetchLiveStatus,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
-  import OrderTicket   from '$lib/order/OrderTicket.svelte';
+  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
@@ -945,12 +945,10 @@
   });
 
   // Order-ticket state — chain clicks open the reusable
-  // <OrderTicket> modal; on DRAFT submit we append to drafts. Phase
-  // 2 / 3 add PAPER / LIVE submit paths through the ticket without
-  // touching this file.
+  // <OrderEntryShell> modal; on DRAFT submit we append to drafts.
   /** @type {any} */
   let ticketProps = $state(null);
-  function openTicket(/** @type {any} */ p) { ticketProps = p; }
+  function openTicket(/** @type {any} */ p) { ticketProps = { defaultTab: 'ticket', ...p }; }
   function closeTicket() { ticketProps = null; }
 
   // Chain "+" handlers — open the OrderTicket pre-filled. The ticket
@@ -2204,22 +2202,17 @@
      submit). Phase 2 / 3: PAPER + LIVE submit paths land in the
      ticket itself; this page won't need to change. -->
 {#if ticketProps}
-  <!-- Spread every prop the calling site set onto the ticket. The
-       earlier hand-listed pass-through dropped accounts / account /
-       action / defaultMode / availableModes / orderId on the floor —
-       so chain + futures clicks opened the ticket without an account
-       picker (PAPER / LIVE submit blocked) and closePosition's
-       action='close' never reached the modal. Spread keeps any
-       future ticketProps field flowing through automatically. -->
-  <OrderTicket
+  <!-- OrderEntryShell replaces the raw OrderTicket here. All ticketProps
+       spread through to the Ticket tab unchanged. defaultTab is set on
+       openTicket() so chain (i) buttons open on the Ticket tab; future
+       callsites that want the Chain tab default can set defaultTab:'chain'. -->
+  <OrderEntryShell
     {...ticketProps}
     onSubmit={onTicketSubmit}
     onClose={closeTicket}
     onAddToBasket={(payload) => {
-      // Same shape as a quick-add chain leg so the basket pill
-      // renders identically. Symbol's CE/PE/FUT suffix decides
-      // the type accent on the pill. Same-sym + same-side
-      // adds bump lots on the existing leg (dedupe).
+      // Same shape as a quick-add chain leg so the basket pill renders
+      // identically. Symbol's CE/PE/FUT suffix decides the type accent.
       const sym = String(payload.sym || '').toUpperCase();
       const sideTag = payload.side === 'BUY' ? 'BUY' : 'SELL';
       const lots = Number(payload.lots) || 1;

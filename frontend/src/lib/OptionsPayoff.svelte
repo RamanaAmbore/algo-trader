@@ -141,31 +141,25 @@
        ? breakevens.filter(b => b != null)
        : (breakeven != null ? [breakeven] : [])));
 
-  // Pin positions for the horizontal BE chips at the top of the chart.
-  // Two BEs within 60px of each other on screen stack vertically so
-  // their pills don't collide. First pin at PAD_T - 14, second at
-  // PAD_T - 36. Three or more exotic BEs re-overlap (edge case, fine).
-  // This derived block reads xOf() which itself depends on sMin/sSpan;
-  // those are reactive so pins recompute on zoom/pan automatically.
-  // We can't call xOf() directly here (it's a plain function that closes
-  // over reactive vars) — Svelte 5 tracks the reactive reads inside the
-  // $derived.by() callback, so wrapping in $derived.by() is correct.
+  // BE chip pin positions — sit close to the curves to minimise wasted
+  // top whitespace. Level 0 hovers half above / half below the chart's
+  // top edge (navy backing rect masks the curves behind so text stays
+  // legible). Level 1 stacks BELOW level 0 (inside the chart) so two
+  // close-together BEs don't both clip above the viewport.
   /** @type {Array<{be:number,label:string,pinY:number,chipW:number}>} */
   const bePins = $derived.by(() => {
-    // xOf reads sMin + sSpan; must be called inside a reactive context.
     return breakevenList.map((be, i) => {
       const label = 'BE ' + priceFmt(be);
       const chipW = label.length * 7 + 14;
-      // Check previous pin for x-proximity to decide stack level.
       let stackLevel = 0;
       for (let j = 0; j < i; j++) {
         if (Math.abs(xOf(breakevenList[j]) - xOf(be)) < 60) {
           stackLevel = Math.max(stackLevel, 1);
         }
       }
-      // Level 0 → PAD_T - 22 (4 px above curves); Level 1 → PAD_T - 44.
-      // PAD_T = 50 keeps both stack levels inside the SVG viewport.
-      const pinY = PAD_T - 22 - stackLevel * 22;
+      // Level 0: chip straddles PAD_T (half above, half below).
+      // Level 1: 22 px below level 0, fully inside the chart area.
+      const pinY = PAD_T - 9 + stackLevel * 22;
       return { be, label, pinY, chipW };
     });
   });
@@ -178,9 +172,9 @@
   // PAD_B widened from 28 → 40 so rotated σ labels (-30°) and the
   // breakeven labels stacked beneath them have the vertical room they
   // need without colliding with the chart legend.
-  // PAD_T bumped 12 → 50 to give the BE pins (level-0 at PAD_T-22,
-  // level-1 at PAD_T-44) clean headroom inside the SVG viewport.
-  const PAD_L = 14, PAD_R = 12, PAD_T = 50, PAD_B = 40;
+  // Tight top padding — BE chips overlap the top edge (level 0 above,
+  // level 1 just inside) so the chart's data area uses the space.
+  const PAD_L = 14, PAD_R = 12, PAD_T = 14, PAD_B = 40;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -517,10 +511,9 @@
               class="payoff-refresh"
               class:payoff-refresh-busy={loading}
               disabled={loading}
-              aria-label="Refresh prices"
               onclick={() => onRefresh && onRefresh()}>
         <span class="payoff-refresh-label">
-          {#if loading}Refreshing…{:else}↻ Refresh{/if}
+          {#if loading}↻ refreshing{:else}↻ Refresh{/if}
         </span>
       </button>
     {/if}
@@ -954,15 +947,15 @@
     position: absolute;
     top: 0.4rem;
     right: 0.6rem;
-    width: 5.4rem;
-    height: 1.1rem;
+    width: 6.2rem;
+    height: 1.5rem;
     padding: 0;
-    border-radius: 2px;
+    border-radius: 4px;
     border: 1px solid rgba(125,211,252,0.55);
     background: rgba(125,211,252,0.10);
     color: #7dd3fc;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.65rem;
+    font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.04em;
     line-height: 1;
@@ -1052,12 +1045,12 @@
     row-gap: 0.08rem;
     padding: 0.26rem 0.48rem;
     border-radius: 6px;
-    background: #0f172a;
-    border: 1px solid rgba(125,211,252,0.30);
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(125,211,252,0.20);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.575rem;
     line-height: 1.2;
-    z-index: 1;
+    z-index: 0;
   }
   .ps-row {
     display: contents;
