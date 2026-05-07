@@ -210,7 +210,7 @@ class TicketOrderRequest(msgspec.Struct):
     variety: str = "regular"
     price: Optional[float] = None
     trigger_price: Optional[float] = None
-    account: str = ""       # leave blank → first available
+    account: str = ""       # required for PAPER + LIVE; blank → 400
     # Chase the order to closure — re-quote the limit each tick
     # until filled, capped by `simulator.chase_max_attempts`. PAPER
     # orders honour this via the paper engine's tick loop; the flag

@@ -84,6 +84,7 @@ def stub_kite_connection():
     """
     stub = MagicMock()
     stub._api_secret = "test_secret_123"
+    stub.api_secret = "test_secret_123"   # mirrors the public property on KiteConnection
     stub.get_kite_conn = MagicMock(return_value=MagicMock())
     return {"ZG0790": stub}
 

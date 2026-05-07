@@ -360,6 +360,17 @@ class KiteConnection:
     def get_access_token(self):
         return self._access_token
 
+    @property
+    def api_secret(self) -> str:
+        """Public accessor for the Kite API secret.
+
+        Exposes the private `_api_secret` via a stable property so callers
+        aren't depending on the private attribute name.  If the SDK ever
+        renames the underlying field we get a clear AttributeError on a
+        defined name rather than a silent breakage.
+        """
+        return self._api_secret
+
 
 class Connections(SingletonBase):
     # Serialises the one-time init — SingletonBase's own lock protects

@@ -123,13 +123,18 @@ async def test_postback_fallback_account_lookup(async_client, reset_singletons):
     """
     from backend.shared.helpers.connections import Connections
 
-    # Create stubs for multiple accounts
+    # Create stubs for multiple accounts.
+    # Set both _api_secret (legacy) and api_secret (public property mirror)
+    # so the postback HMAC path works regardless of which accessor is used.
     stub1 = MagicMock()
     stub1._api_secret = "secret_acct1"
+    stub1.api_secret = "secret_acct1"
     stub2 = MagicMock()
     stub2._api_secret = "test_secret_123"
+    stub2.api_secret = "test_secret_123"
     stub3 = MagicMock()
     stub3._api_secret = "secret_acct3"
+    stub3.api_secret = "secret_acct3"
 
     conn = Connections()
     conn.conn = {"ACCT1": stub1, "ZG0790": stub2, "ACCT3": stub3}

@@ -94,15 +94,16 @@ class AlgoOrder(Base):
     fill_price: Mapped[float]    = mapped_column(Float, nullable=True)
     attempts: Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
     slippage: Mapped[float]      = mapped_column(Float, nullable=True)
-    status: Mapped[str]          = mapped_column(String(16), nullable=False, default="pending")
-    engine: Mapped[str]          = mapped_column(String(16), nullable=False, default="expiry")  # expiry/manual/interpreter
-    mode: Mapped[str]            = mapped_column(String(8), nullable=False, default="live")     # live/sim
+    status: Mapped[str]          = mapped_column(String(16), nullable=False, default="OPEN", index=True)
+    engine: Mapped[str]          = mapped_column(String(16), nullable=False, default="manual")  # sim/paper/live/replay/shadow/expiry/manual
+    mode: Mapped[str]            = mapped_column(String(8), nullable=False, default="live", index=True)  # sim/paper/live/replay/shadow
     broker_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expiry_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        index=True,
     )
     filled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

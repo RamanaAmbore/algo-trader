@@ -205,9 +205,13 @@
     // falls back to the old side-based cue.
     const status = (o.status || '').toUpperCase();
     let rowCls = 'log-info';
-    if      (status === 'FILLED')   rowCls = 'log-agent-success';
-    else if (status === 'UNFILLED') rowCls = 'log-agent-failed';
-    else if (status === 'OPEN')     rowCls = 'log-agent-alert';
+    if      (status === 'FILLED')          rowCls = 'log-agent-success';
+    else if (status === 'UNFILLED')        rowCls = 'log-agent-failed';
+    else if (status === 'OPEN')            rowCls = 'log-agent-alert';
+    else if (status === 'CANCELLED')       rowCls = 'log-order-cancelled';
+    else if (status === 'REJECTED')        rowCls = 'log-order-rejected';
+    else if (status === 'SHADOW_OK')       rowCls = 'log-order-shadow-ok';
+    else if (status === 'SHADOW_REJECTED') rowCls = 'log-order-rejected';
     else if (o.transaction_type === 'BUY') rowCls = 'log-agent-success';
     const fillPrice = (o.fill_price != null)
       ? '@₹' + Number(o.fill_price).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})
@@ -404,5 +408,13 @@
     color: #fb923c;
     border-color: rgba(251,146,60,0.45);
   }
+
+  /* Order-status row classes — supplement the existing log-agent-* set.
+     CANCELLED: muted slate — the order is gone but not an error.
+     REJECTED: stronger red than UNFILLED — broker hard-rejected.
+     SHADOW_OK: orange — matches the SHADOW mode pill, not a fill. */
+  :global(.log-order-cancelled) { color: #94a3b8; }
+  :global(.log-order-rejected)  { color: #dc2626; }
+  :global(.log-order-shadow-ok) { color: #fb923c; }
 
 </style>

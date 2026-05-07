@@ -24,6 +24,7 @@ shows paper rows the same way it shows live and sim rows.
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections import deque
 from datetime import datetime
 from typing import Callable, Optional
@@ -70,6 +71,12 @@ class PaperTradeEngine:
         self._get_max = get_max_attempts or self._default_max_attempts
         self._on_event = on_event or (lambda evt: None)
 
+        # Serialises concurrent reads/writes to _open_orders.
+        # `step()` runs in a thread executor (from tick_loop) while the
+        # Litestar event-loop thread can call register_open_order() at any
+        # time — without the lock the list can be mutated mid-iteration.
+        self._lock = threading.Lock()
+
         # Open paper orders. Each entry is the dict the caller registered
         # plus a runtime-managed `status` / `attempts` / `placed_at` set.
         self._open_orders: list[dict] = []
@@ -103,7 +110,8 @@ class PaperTradeEngine:
         order.setdefault("status",    "OPEN")
         order.setdefault("attempts",  0)
         order.setdefault("placed_at", datetime.now().isoformat(timespec="seconds"))
-        self._open_orders.append(order)
+        with self._lock:
+            self._open_orders.append(order)
 
     def step(self) -> None:
         """
@@ -112,13 +120,21 @@ class PaperTradeEngine:
         to call from a sync simulator tick or from an async background
         loop (DB writes are scheduled via asyncio.create_task).
         """
-        if not self._open_orders:
-            return
+        # Snapshot the list under the lock so register_open_order() on the
+        # event-loop thread cannot mutate it while we iterate. The snapshot
+        # contains references to the same dicts, so in-place mutations
+        # (status, attempts, limit_price) propagate back to _open_orders
+        # without needing the lock again. We only re-acquire the lock for
+        # structural changes (appends) which only happen in register_open_order.
+        with self._lock:
+            if not self._open_orders:
+                return
+            snapshot = list(self._open_orders)
         # Bulk-fetch quotes for every open order before the loop —
         # LiveQuoteSource does one broker.quote([many]) per account
         # instead of N round-trips. SimQuoteSource is in-memory so its
         # prefetch is a no-op.
-        open_now = [o for o in self._open_orders if o.get("status") == "OPEN"]
+        open_now = [o for o in snapshot if o.get("status") == "OPEN"]
         if open_now:
             try:
                 self._quote.prefetch_for(open_now)
@@ -130,17 +146,17 @@ class PaperTradeEngine:
             self._capture_price_history(open_now)
         max_attempts = max(0, int(self._get_max() or 0))
 
-        for order in list(self._open_orders):
+        for order in snapshot:
             if order.get("status") != "OPEN":
                 continue
             bid, ask = self._quote.bid_ask_for_order(order)
             if bid is None or ask is None:
-                # Quote unavailable — flip to FILLED with a marker note.
-                # Mirrors the simulator's "underlying position absent"
-                # auto-close so stale orders can't accumulate.
-                order["status"] = "FILLED"
-                self._record_event(order, kind="fill",
-                                   note="underlying position absent — auto-closed")
+                # Quote unavailable — mark UNFILLED so operators can
+                # distinguish a real fill from a quote-timeout in the
+                # order log. FILLED is reserved for actual bid/ask crosses.
+                order["status"] = "UNFILLED"
+                self._record_event(order, kind="unfilled",
+                                   note="quote unavailable — paper engine could not fill")
                 continue
 
             side  = str(order.get("side") or "SELL").upper()
@@ -214,10 +230,13 @@ class PaperTradeEngine:
             await asyncio.sleep(max(1, interval_seconds))
 
     def has_open_orders(self) -> bool:
-        return any(o.get("status") == "OPEN" for o in self._open_orders)
+        with self._lock:
+            return any(o.get("status") == "OPEN" for o in self._open_orders)
 
     def open_order_details(self) -> list[dict]:
         """Compact snapshot of in-flight chases for the UI."""
+        with self._lock:
+            snapshot = list(self._open_orders)
         return [
             {
                 "account":       o.get("account"),
@@ -230,7 +249,7 @@ class PaperTradeEngine:
                 "status":        o.get("status"),
                 "algo_order_id": o.get("algo_order_id"),
             }
-            for o in self._open_orders
+            for o in snapshot
             if o.get("status") == "OPEN"
         ]
 

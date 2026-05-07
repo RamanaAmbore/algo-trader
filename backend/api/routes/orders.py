@@ -465,7 +465,7 @@ class OrdersController(Controller):
                     detail="LIVE mode is disabled on non-prod branches; use PAPER on dev.")
             if get_bool("execution.paper_trading_mode", True):
                 raise HTTPException(status_code=403,
-                    detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/live.")
+                    detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/execution (LIVE mode).")
 
             order_type = (data.order_type or "LIMIT")
             chase_eligible = (data.chase
@@ -627,6 +627,9 @@ class OrdersController(Controller):
         if getattr(request.state, "is_demo", False):
             raise HTTPException(status_code=403,
                 detail="Demo: cannot modify orders.")
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403,
+                detail="Admin access required to modify orders.")
         kite   = _kite_for(data.account)
         masked = mask_column(pd.Series([data.account]))[0]
         kwargs = {k: v for k, v in {
@@ -683,7 +686,7 @@ class OrdersController(Controller):
 
             sig_valid = False
             for acct in candidates:
-                api_secret = conns.conn[acct]._api_secret
+                api_secret = conns.conn[acct].api_secret
                 msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
                 expected = hashlib.sha256(msg).hexdigest()
                 if hmac.compare_digest(expected, str(checksum)):
@@ -738,6 +741,9 @@ class OrdersController(Controller):
         if getattr(request.state, "is_demo", False):
             raise HTTPException(status_code=403,
                 detail="Demo: cannot cancel orders.")
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403,
+                detail="Admin access required to cancel orders.")
         kite   = _kite_for(account)
         masked = mask_column(pd.Series([account]))[0]
         try:

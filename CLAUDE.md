@@ -418,8 +418,8 @@ prod:   Replay → Paper → Shadow → Live
 | Mode | Quote source | Trade engine | Where it runs | Default |
 |---|---|---|---|---|
 | **1 — Simulator** | `SimQuoteSource` (fabricated, scenario-driven via [`SimDriver`](backend/api/algo/sim/driver.py)) | `PaperTradeEngine` fed by sim quotes — fills against fabricated bid/ask, removes positions on fill | Dev only (capped off in prod via `cap_in_prod.simulator: False`) | `cap_in_dev.simulator: True` |
-| **2 — Paper** | `LiveQuoteSource` (broker.quote / broker.ltp via the `Broker` adapter, with bid/ask from depth or `simulator.default_spread_pct`) | `PaperTradeEngine` singleton (`get_prod_paper_engine()`), 5-second background tick. Validates each new order via Kite's `basket_margin` before marking OPEN; REJECTED rows carry Kite's exact error in `.detail`. Real positions are NOT updated; cooldown handles re-fire | Prod only (dev never runs the live agent engine) | `execution.paper_trading_mode = True` (default) ⇒ every broker-hitting action lands as paper |
-| **3 — Live** | `LiveQuoteSource` (read paths) | Real broker via [`chase.py`](backend/api/algo/chase.py) — actual Kite `place_order` / `modify_order` / `cancel_order` | Prod only | Promoted by setting `execution.paper_trading_mode = False` in `/admin/live` |
+| **2 — Paper** | `LiveQuoteSource` (broker.quote / broker.ltp via the `Broker` adapter, with bid/ask from depth or `simulator.default_spread_pct`) | `PaperTradeEngine` singleton (`get_prod_paper_engine()`), 5-second background tick. Validates each new order via Kite's `basket_margin` before marking OPEN; REJECTED rows carry Kite's exact error in `.detail`. Real positions are NOT updated; cooldown handles re-fire | Prod only (dev never runs the live agent engine) | `execution.paper_trading_mode = True` (default) — every broker-hitting action lands as paper |
+| **3 — Live** | `LiveQuoteSource` (read paths) | Real broker via [`chase.py`](backend/api/algo/chase.py) — actual Kite `place_order` / `modify_order` / `cancel_order` | Prod only, when `execution.paper_trading_mode = False` | Enabled by setting `execution.paper_trading_mode = False` in `/admin/live` |
 | **4 — Replay** | [`HistoricalQuoteSource`](backend/api/algo/quote/historical.py) (pre-loaded Kite OHLCV candles) | `PaperTradeEngine` fed by historical candles — informational orders only | Both dev and prod | `cap_in_dev.replay: True`, `cap_in_prod.replay: True` |
 | **5 — Shadow** | `LiveQuoteSource` (same as paper/live) | [`ShadowTradeEngine`](backend/api/algo/shadow.py) — logs exact Kite `place_order` kwargs + validates via `basket_margin` without executing | Prod only | `execution.shadow_mode: False` (opt-in) |
 
@@ -431,10 +431,10 @@ prod:   Replay → Paper → Shadow → Live
 
 - [`backend/api/algo/quote/`](backend/api/algo/quote/) — `QuoteSource` ABC + `SimQuoteSource` + `LiveQuoteSource` + `HistoricalQuoteSource`. Bid/ask supplier per open order. `on_fill` hook lets the source update its book on fill (sim drops the symbol; live/replay are no-ops).
 - [`backend/api/algo/paper.py`](backend/api/algo/paper.py) — `PaperTradeEngine` owns the open-order book and the chase / fill / modify / unfilled lifecycle. Constructor takes a `QuoteSource`, a `label` ("sim" / "paper" / "replay"), and an optional event callback. Used by SimDriver (mode 1), get_prod_paper_engine() (mode 2), and ReplayDriver (mode 4).
-- [`backend/api/algo/shadow.py`](backend/api/algo/shadow.py) — `ShadowTradeEngine` singleton. Captures exact Kite payload + basket_margin validation. Writes `AlgoOrder(mode='shadow')` rows. `/admin/shadow` page's "Promote to Live" button sets `paper_trading_mode=false` and `shadow_mode=false`.
+- [`backend/api/algo/shadow.py`](backend/api/algo/shadow.py) — `ShadowTradeEngine` singleton. Captures exact Kite payload + basket_margin validation. Writes `AlgoOrder(mode='shadow')` rows. `/admin/live` page's "Promote to Live" button sets both `execution.paper_trading_mode=false` and `execution.shadow_mode=false`.
 - [`backend/api/algo/replay/driver.py`](backend/api/algo/replay/driver.py) — `ReplayDriver` singleton. Fetches historical candles at start, advances one candle per tick at playback rate, feeds `HistoricalQuoteSource`, runs `run_cycle()` at each tick.
 - [`actions.py::_resolve_mode`](backend/api/algo/actions.py) — single source of truth for "should this action go to sim, replay, shadow, paper, or live?". Reads `context["sim_mode"]`, `context["replay_mode"]`, the branch, `execution.shadow_mode`, and the master `execution.paper_trading_mode` flag.
-- [`agent_engine._agent_execution_mode_tag`](backend/api/algo/agent_engine.py) — checks the master `paper_trading_mode` toggle and tags the alert as `[PAPER]` (paper_trading_mode=True) or empty (live). The tag flows through `alert_utils._dispatch` into Telegram subjects + email subject prefixes so an operator on Telegram can tell at a glance what an alert caused.
+- [`agent_engine._agent_execution_mode_tag`](backend/api/algo/agent_engine.py) — inspects the master `paper_trading_mode` toggle and tags the alert as `[PAPER]` (when paper_trading_mode=True) or empty (when live). The tag flows through `alert_utils._dispatch` into Telegram subjects + email subject prefixes so an operator on Telegram can tell at a glance what execution mode an alert's actions used.
 
 ### Dedicated mode pages and navbar
 
@@ -450,14 +450,14 @@ Each mode has its own page under `/admin/`:
 
 The navbar filters mode entries by branch: dev shows Simulator + Replay; prod shows Replay + Paper + Shadow + Live. Non-mode nav items (Dashboard, Agents, Orders, Options, Terminal, Tokens, Settings, Brokers, Users) are always visible (subject to adminOnly/demo filtering).
 
-**Master execution toggle** (single DB seed, default `True` = paper-safe):
+**Master execution gate** — single `execution.paper_trading_mode` toggle (DB seed, default `True`):
 
-| Setting | Meaning |
-|---|---|
-| `execution.paper_trading_mode = True` | Every broker-hitting action lands as a paper `AlgoOrder` row (default, safe) |
-| `execution.paper_trading_mode = False` | Every broker-hitting action calls the real Kite broker |
+| Value | Route | Meaning |
+|---|---|---|
+| `True` (default) | Paper | Every broker-hitting action lands as a paper `AlgoOrder` row; no real Kite calls |
+| `False` | Live | Every broker-hitting action calls the real Kite broker (via `chase.py`) |
 
-Toggle from `/admin/live`. The banner on that page shows green ("PAPER mode — all actions are paper") when `True`, red ("LIVE mode — real broker calls fire") when `False`.
+Toggle from `/admin/live`. The page banner shows green ("PAPER mode") when `True`, red ("LIVE mode") when `False`. On non-`main` branches, `execution.paper_trading_mode` is ignored and every action is forced to paper.
 
 **Order-log mode pills**: every `AlgoOrder` row carries `mode ∈ {sim, paper, live}`. The LogPanel Order tab shows three distinct pills:
 - `SIM` — amber, fabricated data

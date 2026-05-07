@@ -114,6 +114,30 @@ async def execute(agent, actions: list, context: dict):
                     # chase_close is in BROKER_ACTIONS so we'd only get
                     # here if BROKER_ACTIONS is misconfigured — safety net
                     await _action_chase_close(context, params)
+                elif action_type == "monitor_order":
+                    try:
+                        await monitor_order(context, params)
+                    except Exception as e:
+                        logger.error(f"Agent [{agent.slug}]: monitor_order failed: {e}")
+                        continue
+                elif action_type == "deactivate_agent":
+                    try:
+                        await deactivate_agent(context, params)
+                    except Exception as e:
+                        logger.error(f"Agent [{agent.slug}]: deactivate_agent failed: {e}")
+                        continue
+                elif action_type == "set_flag":
+                    try:
+                        await set_flag(context, params)
+                    except Exception as e:
+                        logger.error(f"Agent [{agent.slug}]: set_flag failed: {e}")
+                        continue
+                elif action_type == "emit_log":
+                    try:
+                        await emit_log(context, params)
+                    except Exception as e:
+                        logger.error(f"Agent [{agent.slug}]: emit_log failed: {e}")
+                        continue
                 else:
                     logger.warning(f"Agent [{agent.slug}]: unknown action type '{action_type}'")
                     continue
@@ -392,7 +416,10 @@ async def _replay_paper_trade(agent, action_type: str, params: dict, context: di
                 exchange=str(params.get("exchange") or "NFO"),
                 transaction_type=side, quantity=qty,
                 initial_price=(float(price) if price is not None else None),
-                status="REPLAY", engine="replay", mode="replay",
+                # Replay orders are deterministic fills against historical
+                # candles — there's no fill lifecycle, so they land FILLED
+                # immediately. OPEN would incorrectly imply a pending chase.
+                status="FILLED", engine="replay", mode="replay",
                 detail=pretty,
             )
             s.add(row)
@@ -721,20 +748,76 @@ async def _action_send_summary(context: dict, params: dict):
 
 
 async def _action_place_order(context: dict, params: dict):
-    """Place an order using the chase engine."""
-    from backend.api.algo.chase import chase_order, ChaseConfig
+    """
+    Place an order using the chase engine (live mode).
 
-    cfg = ChaseConfig(
-        exchange=params.get("exchange", "NFO"),
-        product=params.get("product", "NRML"),
-    )
-    await chase_order(
-        account=params.get("account", ""),
-        symbol=params.get("symbol", ""),
-        transaction_type=params.get("transaction_type", "SELL"),
-        quantity=params.get("quantity", 0),
-        cfg=cfg,
-    )
+    Mirrors the pattern in `_action_live_close_position`:
+      1. Resolve params.
+      2. Persist AlgoOrder(mode='live', status='OPEN') BEFORE the broker call
+         so the order row exists even if the service dies mid-chase.
+      3. Call chase_order(); on failure run basket_margin diagnosis and re-raise
+         so execute() writes an action_failed event.
+    """
+    import asyncio
+    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.shared.brokers import get_broker
+
+    # A sentinel agent object for _write_live_order which expects agent.slug.
+    # _action_place_order is called from execute() where `agent` is in scope,
+    # but this function only receives context/params.  Build a minimal shim.
+    class _AgentShim:
+        slug = context.get("agent_slug", "place_order")
+
+    _shim = _AgentShim()
+
+    account  = str(params.get("account") or "")
+    symbol   = str(params.get("symbol") or "")
+    exchange = str(params.get("exchange") or "NFO")
+    side     = str(params.get("transaction_type") or params.get("side") or "SELL")
+    qty      = int(params.get("quantity") or 0)
+    price    = params.get("price")
+    product  = str(params.get("product") or "NRML")
+
+    # Fetch LTP as the initial limit price (best-effort).
+    if price is None:
+        try:
+            broker = get_broker(account)
+            loop = asyncio.get_running_loop()
+            ltp_data = await loop.run_in_executor(
+                None, broker.kite.ltp, [f"{exchange}:{symbol}"]
+            )
+            key = f"{exchange}:{symbol}"
+            price = float((ltp_data.get(key) or {}).get("last_price") or 0) or None
+        except Exception as ltp_e:
+            logger.warning(f"[LIVE] place_order LTP fetch failed, proceeding with None price: {ltp_e}")
+
+    # Persist intent row before touching the broker.
+    await _write_live_order(_shim, "place_order", {
+        "account": account, "symbol": symbol, "exchange": exchange,
+        "side": side, "qty": qty, "price": price,
+    }, status="OPEN")
+
+    cfg = ChaseConfig(exchange=exchange, product=product)
+    try:
+        await chase_order(
+            account=account, symbol=symbol,
+            transaction_type=side, quantity=qty,
+            cfg=cfg,
+        )
+    except Exception as e:
+        diag_order = {
+            "exchange": exchange, "symbol": symbol, "side": side, "qty": qty,
+            "order_type": "LIMIT", "product": product,
+            "price": price or 0, "variety": "regular",
+        }
+        try:
+            broker = get_broker(account)
+            diag = await diagnose_live_failure(broker, diag_order, str(e))
+        except Exception:
+            diag = "diagnosis unavailable"
+        logger.error(f"[LIVE] place_order failed for {account} {exchange}/{symbol} "
+                     f"{side} {qty}: {e} | diag: {diag}")
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════════════════
