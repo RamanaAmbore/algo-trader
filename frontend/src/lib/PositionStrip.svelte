@@ -197,14 +197,13 @@
 
   const hasContent = $derived(chips.length > 0);
 
-  /** Format an aggregate ₹ value. When the underlying source array is
-   *  empty (positions/holdings/funds not loaded yet OR genuinely zero
-   *  rows for the operator's book), render "—" instead of "₹0" so the
-   *  strip distinguishes "no data" from "loaded with zero P&L".
-   *  @param {number} v
-   *  @param {boolean} [hasSource=true] */
-  function fmtMoney(v, hasSource = true) {
-    if (!isFinite(v) || !hasSource) return '—';
+  /** Format an aggregate ₹ value. Always renders the numeric value
+   *  (₹0 when the underlying feed is empty or hasn't loaded yet) —
+   *  the previous "—" placeholder caused persistent dashes when a
+   *  fetch failed silently or the dataCache wasn't populated by a
+   *  prior /dashboard visit. */
+  function fmtMoney(/** @type {number} */ v) {
+    if (!isFinite(v)) return '₹0';
     return `₹${aggFmt(v)}`;
   }
   function fmtPct(/** @type {number} */ v) {
@@ -227,25 +226,25 @@
     <span class="ps-agg" title="Positions P/L — open + closed intraday">
       <span class="ps-agg-k">Pos</span>
       <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(positionsPnl, positionsLoaded)}
+        {fmtMoney(positionsPnl)}
       </span>
     </span>
     <span class="ps-agg" title="Holdings — today's mark-to-market move (day_change_val)">
       <span class="ps-agg-k">Day</span>
       <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(holdingsToday, holdingsLoaded)}
+        {fmtMoney(holdingsToday)}
       </span>
     </span>
     <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
       <span class="ps-agg-k">Hold</span>
       <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(holdingsTotal, holdingsLoaded)}
+        {fmtMoney(holdingsTotal)}
       </span>
     </span>
     <span class="ps-agg" title="Cash — free balance summed across accounts">
       <span class="ps-agg-k">Cash</span>
       <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
-        {fmtMoney(cashTotal, fundsLoaded)}
+        {fmtMoney(cashTotal)}
       </span>
     </span>
     <span class="ps-agg ps-agg-meta">
