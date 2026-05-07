@@ -146,17 +146,17 @@
   const numFmt  = ({ value }) => value == null ? '' : priceFmt(value);
   // aggFmtGrid — ₹ aggregates (Cur Val, P&L, Day Loss, Cash, Margins, etc.).
   // Below ₹1 lakh: 0-decimal en-IN format ("99,999"). At/above ₹1 lakh:
-  // round to nearest thousand and append "K" so "1,50,432" reads as
-  // "150K" — keeps the column tight on the dashboard, avoids paise-level
-  // visual noise that doesn't matter at lakhs+ scale. Operator can revert
-  // by removing this branch and falling back to plain `aggFmt(value)`.
-  function _aggLakhsK(/** @type {number} */ v) {
+  // express in lakhs with 2 decimals + "L" suffix so "1,50,432" reads as
+  // "1.50L" — keeps the column tight, matches the Indian-market mental
+  // unit (lakhs) at that magnitude. Operator can revert by swapping
+  // `_aggLakhs(value)` back to `aggFmt(value)` in the wrapper.
+  function _aggLakhs(/** @type {number} */ v) {
     if (!isFinite(v)) return '—';
     const n = Number(v);
     if (Math.abs(n) < 100_000) return aggFmt(n);
-    return `${aggFmt(Math.round(n / 1000))}K`;
+    return `${(n / 100_000).toFixed(2)}L`;
   }
-  const aggFmtGrid = ({ value }) => value == null ? '' : _aggLakhsK(value);
+  const aggFmtGrid = ({ value }) => value == null ? '' : _aggLakhs(value);
   const pctFmtGrid = ({ value }) => value == null ? '' : `${pctFmt(value)}%`;
   const maskAcct = ({ value }) =>
     maskAccounts && value ? String(value).replace(/\d/g, '#') : value;
