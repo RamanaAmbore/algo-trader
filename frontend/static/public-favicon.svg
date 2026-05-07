@@ -2,8 +2,9 @@
   <!-- Tab-size ringed-bull favicon. Same visual identity as
        app-icon.svg (PWA + Google brand badge), simplified for 16-32px
        rendering: no filter/drop-shadow (lost below ~64px), tighter
-       stroke-width, viewBox normalized to 64 so the gold ring still
-       reads as a distinct band at favicon size. -->
+       stroke-width. The full-square navy rect makes the corners navy
+       instead of transparent — without it, light browser tabs render
+       a white square around the circular icon. -->
   <defs>
     <linearGradient id="favicon-ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%"   stop-color="#fde68a"/>
@@ -12,7 +13,10 @@
       <stop offset="100%" stop-color="#7c2d12"/>
     </linearGradient>
   </defs>
-  <!-- Navy disk -->
+  <!-- Full-square navy fill so transparent corners don't bleed
+       through to a white tab background. -->
+  <rect width="64" height="64" fill="#0d1829"/>
+  <!-- Inset navy disk -->
   <circle cx="32" cy="32" r="31" fill="#0d1829"/>
   <!-- Gold beveled ring -->
   <circle cx="32" cy="32" r="29.5" fill="none"
