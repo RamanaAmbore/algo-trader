@@ -266,7 +266,7 @@
       <!-- Inline top-3 movers — stays glanceable without an expand
            toggle. Tap-through still goes to /dashboard. -->
       <span class="ps-preview">
-        {#each chips.slice(0, 3) as c (c.kind + '|' + c.symbol)}
+        {#each chips.slice(0, 3) as c (c.kind + '|' + c.account + '|' + c.symbol)}
           <span class={'ps-preview-chip ' + (c.dayChg > 0 ? 'ps-pos-bg' : c.dayChg < 0 ? 'ps-neg-bg' : '')}>
             <span class="ps-preview-sym">{c.symbol}</span>
             <span class="ps-preview-pct">{fmtPct(c.dayPct)}</span>

@@ -295,12 +295,10 @@
       columnDefs: colDefs,
       rowData,
       defaultColDef: defaultCol,
-      columnTypes: {
-        numericColumn: {
-          cellClass: 'ag-right-aligned-cell',
-          headerClass: 'ag-right-aligned-header',
-        },
-      },
+      // ag-Grid v33 forbids overriding built-in column types like
+      // `numericColumn` (warning #34). The built-in already adds
+      // `ag-right-aligned-cell` + `ag-right-aligned-header` classes
+      // that our CSS picks up — no override needed.
       overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#999">—</span>',
       domLayout: 'autoHeight',
       getRowClass,
