@@ -620,24 +620,24 @@
                 font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
             {xt.label}
           </text>
-          <!-- Vertical price label on the σ tick. Bumped from 11/10
-               → 13/12 with a stronger halo (4 px stroke) and brighter
-               whole-σ fill (#f9fafb white-ish, was #e2e8f0). The
-               σ-line beneath was just made more subtle so these
-               labels become the dominant read. -->
+          <!-- Vertical price label on the σ tick. Uniform across whole +
+               half σ (size / weight / fill all the same) — the σ symbol
+               label already differentiates importance via its own
+               whole-vs-half styling. Number formatting flows through
+               priceFmt for consistent en-IN comma grouping. -->
           {@const vx = xt.x + 5}
           {@const vy = height - PAD_B - 10}
           <text x={vx} y={vy}
                 text-anchor="start"
                 transform="rotate(-90 {vx} {vy})"
-                fill={wholeSigma ? '#f9fafb' : '#e2e8f0'}
+                fill="#e2e8f0"
                 stroke="#152033"
                 stroke-width="4"
                 paint-order="stroke fill"
-                font-size={wholeSigma ? 13 : 12}
-                font-weight={wholeSigma ? 700 : 600}
+                font-size="11"
+                font-weight="600"
                 font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
-            {xt.s.toFixed(0)}
+            {priceFmt(xt.s)}
           </text>
         {/if}
       {/each}
