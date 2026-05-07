@@ -190,7 +190,10 @@
   }
 </script>
 
-{#if hasContent}
+<!-- Always render the strip — even when there's no data the navbar
+     should keep its full chrome row underneath. Aggregates fall back
+     to ₹0 cleanly; mover chips stay conditional. -->
+{#if true}
   <!-- Whole strip is one link to /dashboard — single click target,
        no expand-collapse interaction to learn. The top-3 movers
        still surface inline so the strip stays glanceable; the
@@ -249,6 +252,14 @@
      reads as chrome, not page content. Whole element is one click
      target — no expand, no nested buttons. */
   .ps-strip {
+    /* Sticky just below the navbar so the aggregates remain visible
+       as the operator scrolls. The navbar itself sits at top: 0
+       (z-index 50); the strip sits underneath and stacks via top:
+       <navbar-height>. ~50px matches the algo navbar's natural
+       rendered height. */
+    position: sticky;
+    top: 50px;
+    z-index: 49;
     display: flex;
     align-items: center;
     /* Left-align the cluster so it lines up with the page-content
