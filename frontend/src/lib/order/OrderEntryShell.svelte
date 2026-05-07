@@ -15,6 +15,7 @@
   // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
 
   import { onMount } from 'svelte';
+  import { placeTicketOrder, fetchLiveStatus } from '$lib/api';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -42,6 +43,7 @@
    *   onSubmit:        (payload: any) => void | Promise<void>,
    *   onClose:         () => void,
    *   onAddToBasket?:  ((payload: any) => void) | null,
+   *   inline?:         boolean,
    * }} */
   let {
     defaultTab     = /** @type {'command'|'ticket'|'chain'} */ ('ticket'),
@@ -66,6 +68,10 @@
     onSubmit,
     onClose,
     onAddToBasket  = /** @type {((payload:any)=>void)|null} */ (null),
+    // When true, render flat inline (no overlay, no fixed positioning,
+    // no close button). Used by /console which hosts the shell as the
+    // page's primary content rather than as a popup over another page.
+    inline         = false,
   } = $props();
 
   // Determine whether Chain tab applies.
@@ -89,14 +95,87 @@
   }
   let _activeTab = $state(/** @type {'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
 
+  // ── Basket state (shared across all tabs) ───────────────────────────
+  // When basketMode is active (Chain tab is selected), submissions from
+  // Command and Ticket tabs accumulate here instead of firing immediately.
+  const basketMode = $derived(_activeTab === 'chain');
+  /** @type {any[]} */
+  let basketLegs   = $state([]);
+  /** @type {string} */ let basketResultMsg = $state('');
+  let basketSubmitting = $state(false);
+
+  function addToBasket(/** @type {any} */ leg) {
+    basketLegs = [...basketLegs, leg];
+  }
+  function removeBasketLeg(/** @type {number} */ i) {
+    basketLegs = basketLegs.filter((_, k) => k !== i);
+  }
+  function clearBasket() { basketLegs = []; basketResultMsg = ''; }
+
+  /** Submit every leg in the shell basket via placeTicketOrder. */
+  async function submitBasket() {
+    if (basketSubmitting || !basketLegs.length) return;
+    basketSubmitting = true; basketResultMsg = '';
+    let ok = 0; /** @type {string[]} */ const fails = [];
+    let basketMode2 = 'paper';
+    try {
+      const live = await fetchLiveStatus();
+      if (live && live.paper_trading_mode === false && live.branch === 'main') basketMode2 = 'live';
+    } catch { /* safe default */ }
+
+    for (const leg of basketLegs) {
+      try {
+        const hasLimit = Number(leg.limit) > 0;
+        await placeTicketOrder({
+          mode:             basketMode2,
+          side:             leg.side,
+          tradingsymbol:    leg.sym,
+          exchange:         leg.exchange || 'NFO',
+          quantity:         (leg.lots || 1) * (leg.lotSize || 1),
+          product:          leg.product || 'NRML',
+          order_type:       hasLimit ? 'LIMIT' : 'MARKET',
+          variety:          'regular',
+          price:            hasLimit ? Number(leg.limit) : 0,
+          account:          leg.account || '',
+          chase:            hasLimit,
+          chase_aggressiveness: hasLimit ? (leg.chaseAgg || 'low') : 'low',
+        });
+        ok++;
+        onSubmit?.({ ...leg, _basketLeg: true });
+      } catch (e) {
+        fails.push(`${leg.side} ${leg.sym}: ${/** @type {any} */ (e)?.message || 'failed'}`);
+      }
+    }
+    basketSubmitting = false;
+    const total = basketLegs.length;
+    if (!fails.length) {
+      basketResultMsg = `${ok}/${total} placed`;
+      basketLegs = [];
+      setTimeout(onClose, 1500);
+    } else if (ok > 0) {
+      basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}`;
+      // Keep only failed legs in the basket.
+      basketLegs = basketLegs.filter((_, i) => i >= ok);
+    } else {
+      basketResultMsg = `Failed: ${fails[0]}`;
+    }
+  }
+
+  // ── Command tab pre-fill ─────────────────────────────────────────────
   // Ticket pre-fill state — when the Command tab parses an order command
-  // it routes back here to switch to the Ticket tab pre-filled.
+  // it routes back here to switch to the Ticket tab pre-filled (or adds
+  // to basket when basketMode is active).
   /** @type {any} */
   let _cmdOrderProps = $state(null);
 
   function handleParsedOrder(/** @type {any} */ props) {
     _cmdOrderProps = props;
     _activeTab = 'ticket';
+  }
+
+  /** Called by CommandLineTab when basketMode is on. */
+  function handleCmdAddToBasket(/** @type {any} */ leg) {
+    addToBasket(leg);
   }
 
   // Close on Escape (only when the confirm overlay inside OrderTicket
@@ -110,9 +189,9 @@
   });
 
   const TABS = /** @type {const} */ ([
-    { id: 'command', label: 'Command line' },
-    { id: 'ticket',  label: 'Order ticket' },
-    { id: 'chain',   label: 'Chain'        },
+    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', mutedTxt: '#475569' },
+    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', mutedTxt: '#7e6a3b' },
+    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', mutedTxt: '#3a604a' },
   ]);
 
   // Effective OrderTicket props — merge _cmdOrderProps (from Command tab
@@ -127,33 +206,54 @@
   });
 </script>
 
-<!-- Modal overlay — click outside closes. -->
-<div class="oes-overlay" role="dialog" aria-modal="true" aria-label="Order entry"
-     onclick={onClose}>
-  <div class="oes-modal" role="document" onclick={(e) => e.stopPropagation()}>
+<!-- Modal overlay (omitted in inline mode — renders as flat page content). -->
+<div class="oes-overlay"
+     class:oes-inline={inline}
+     role={inline ? undefined : 'dialog'}
+     aria-modal={inline ? undefined : 'true'}
+     aria-label={inline ? undefined : 'Order entry'}
+     onclick={inline ? undefined : onClose}>
+  <div class="oes-modal" class:oes-modal-inline={inline}
+       role="document"
+       onclick={inline ? undefined : (e) => e.stopPropagation()}>
 
-    <!-- Header -->
+    <!-- Header (close button hidden in inline mode) -->
     <div class="oes-header">
       <span class="oes-title">Order entry{symbol ? ' · ' + symbol : ''}</span>
-      <button type="button" class="oes-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
+      {#if !inline}
+        <button type="button" class="oes-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
+      {/if}
     </div>
 
     <!-- Tab strip -->
     <div class="oes-tabs" role="tablist">
       {#each TABS as tab}
-        {@const disabled = tab.id === 'chain' && chainDisabled}
+        {@const disabled   = tab.id === 'chain' && chainDisabled}
+        {@const isActive   = _activeTab === tab.id}
+        {@const badgeCount = tab.id === 'chain' ? basketLegs.length : 0}
         <button
           type="button"
           role="tab"
           class="oes-tab"
-          class:oes-tab-active={_activeTab === tab.id}
           class:oes-tab-disabled={disabled}
           disabled={disabled}
           title={disabled ? 'Option chain only applies to F&O instruments' : undefined}
-          aria-selected={_activeTab === tab.id}
+          aria-selected={isActive}
           aria-disabled={disabled}
+          style="
+            color: {isActive ? tab.activeTxt : tab.mutedTxt};
+            border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
+            opacity: {disabled ? '0.5' : '1'};
+            cursor: {disabled ? 'not-allowed' : 'pointer'};
+          "
           onclick={() => { if (!disabled) _activeTab = /** @type {any} */ (tab.id); }}
-        >{tab.label}</button>
+        >
+          <span class="oes-tab-dot" style="background:{tab.dot};"></span>
+          {tab.label}
+          {#if tab.id === 'chain' && badgeCount > 0}
+            <span class="oes-tab-badge">{badgeCount}</span>
+          {/if}
+        </button>
       {/each}
     </div>
 
@@ -161,7 +261,8 @@
     <div class="oes-body">
       {#if _activeTab === 'command'}
         <CommandLineTab
-          onParsedOrder={handleParsedOrder} />
+          onParsedOrder={basketMode ? undefined : handleParsedOrder}
+          onAddToBasket={basketMode ? handleCmdAddToBasket : undefined} />
 
       {:else if _activeTab === 'ticket'}
         <!-- OrderTicket renders its own overlay/modal chrome; inside
@@ -188,25 +289,53 @@
             defaultMode={_ticketProps.defaultMode ?? defaultMode}
             availableModes={_ticketProps.availableModes ?? availableModes}
             currentQty={_ticketProps.currentQty ?? currentQty}
-            onAddToBasket={_ticketProps.onAddToBasket ?? onAddToBasket}
+            onAddToBasket={basketMode ? addToBasket : (_ticketProps.onAddToBasket ?? onAddToBasket)}
+            basketMode={basketMode}
             {onSubmit}
             {onClose} />
         </div>
 
       {:else if _activeTab === 'chain'}
+        <!-- OptionChainTab's own basket state is migrated to the shell.
+             The tab receives the shared basket as props and calls back
+             into the shell to mutate it. Its own placeBasket is unused
+             when routed through onSubmitBasket. -->
         <OptionChainTab
           {symbol}
           {account}
           {accounts}
+          basketLegs={basketLegs}
+          onAddLeg={addToBasket}
+          onRemoveLeg={(/** @type {any} */ leg) => {
+            const i = basketLegs.findIndex(b => b.key === leg.key);
+            if (i >= 0) removeBasketLeg(i);
+          }}
+          onSubmitBasket={submitBasket}
+          onClearBasket={clearBasket}
           onBasketPlace={({ ok, fail }) => {
             if (ok > 0 && fail === 0) {
-              // All legs submitted — let the caller refresh and close.
               onSubmit?.({ mode: 'paper', _basketLegs: ok });
               setTimeout(onClose, 400);
             }
           }} />
       {/if}
     </div>
+
+    <!-- Shell-level basket bar — visible from any tab when legs exist. -->
+    {#if basketLegs.length > 0}
+      <div class="oes-basket-bar">
+        <span class="oes-basket-count">{basketLegs.length} leg{basketLegs.length === 1 ? '' : 's'} in basket</span>
+        {#if basketResultMsg}
+          <span class="oes-basket-result">{basketResultMsg}</span>
+        {/if}
+        <div class="oes-basket-actions">
+          <button type="button" class="oes-basket-clear" disabled={basketSubmitting} onclick={clearBasket}>Clear</button>
+          <button type="button" class="oes-basket-submit" disabled={basketSubmitting} onclick={submitBasket}>
+            {basketSubmitting ? 'Placing…' : `Submit basket (${basketLegs.length})`}
+          </button>
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -221,6 +350,16 @@
     z-index: 100;
     padding: 1rem;
   }
+  /* Inline mode strips the modal chrome — used by /console which hosts
+     the shell as the page's primary content. */
+  .oes-overlay.oes-inline {
+    position: static;
+    inset: auto;
+    background: transparent;
+    display: block;
+    z-index: auto;
+    padding: 0;
+  }
   .oes-modal {
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1px solid rgba(251,191,36,0.35);
@@ -233,6 +372,12 @@
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
     display: flex;
     flex-direction: column;
+  }
+  .oes-modal.oes-modal-inline {
+    width: 100%;
+    max-height: none;
+    border-radius: 6px;
+    box-shadow: none;
   }
 
   /* Header */
@@ -266,7 +411,8 @@
   }
   .oes-close:hover { border-color: #f87171; color: #f87171; }
 
-  /* Tab strip — bottom-border underline active tab, same as /market tabs. */
+  /* Tab strip — bottom-border underline active tab; each tab has its own
+     accent colour via inline style (applied from the TABS metadata).     */
   .oes-tabs {
     display: flex;
     gap: 0;
@@ -275,32 +421,105 @@
     flex-shrink: 0;
   }
   .oes-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     padding: 0.45rem 0.75rem;
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
-    color: #7e97b8;
     font-size: 0.65rem;
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    cursor: pointer;
-    transition: color 0.12s, border-color 0.12s;
+    transition: color 0.12s, border-color 0.12s, opacity 0.12s;
     white-space: nowrap;
   }
-  .oes-tab:hover:not(.oes-tab-disabled):not(.oes-tab-active) {
-    color: #c8d8f0;
-  }
-  .oes-tab-active {
-    color: #e2e8f0;
-    border-bottom-color: #d4920c; /* champagne gold — matches /market active tab */
+  .oes-tab:hover:not(.oes-tab-disabled) {
+    opacity: 0.8 !important;
   }
   .oes-tab-disabled {
-    color: #3d5068;
-    cursor: not-allowed;
-    opacity: 0.6;
+    cursor: not-allowed !important;
   }
+  /* Colour dot — small circle before the tab label */
+  .oes-tab-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    opacity: 0.75;
+  }
+  /* Count badge on Chain tab */
+  .oes-tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.1rem;
+    height: 1.1rem;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: rgba(74,222,128,0.25);
+    border: 1px solid rgba(74,222,128,0.6);
+    color: #4ade80;
+    font-size: 0.55rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  /* Basket bar — sticky bottom strip inside the modal when legs exist. */
+  .oes-basket-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.7rem;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid rgba(74,222,128,0.25);
+    background: rgba(74,222,128,0.05);
+    flex-shrink: 0;
+  }
+  .oes-basket-count {
+    font-family: monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #4ade80;
+    letter-spacing: 0.04em;
+  }
+  .oes-basket-result {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: #c8d8f0;
+    flex: 1 1 100%;
+    margin-top: 0.15rem;
+  }
+  .oes-basket-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: auto;
+  }
+  .oes-basket-clear,
+  .oes-basket-submit {
+    height: 1.5rem;
+    padding: 0 0.75rem;
+    border-radius: 2px;
+    font-family: monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    border: 1px solid currentColor;
+    background: transparent;
+    white-space: nowrap;
+  }
+  .oes-basket-clear  { color: #a3b9d0; }
+  .oes-basket-clear:hover:not(:disabled) { background: rgba(163,185,208,0.08); }
+  .oes-basket-submit { color: #4ade80; background: rgba(74,222,128,0.10); }
+  .oes-basket-submit:hover:not(:disabled) { background: rgba(74,222,128,0.20); }
+  .oes-basket-clear:disabled,
+  .oes-basket-submit:disabled { opacity: 0.45; cursor: progress; }
 
   /* Body — the tab content area. */
   .oes-body {

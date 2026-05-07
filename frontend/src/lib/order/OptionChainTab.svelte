@@ -25,10 +25,15 @@
   import { priceFmt } from '$lib/format';
 
   /** @type {{
-   *   symbol?:   string,
-   *   account?:  string,
-   *   accounts?: string[],
-   *   onBasketPlace?: (result: {ok: number, fail: number}) => void,
+   *   symbol?:         string,
+   *   account?:        string,
+   *   accounts?:       string[],
+   *   onBasketPlace?:  (result: {ok: number, fail: number}) => void,
+   *   basketLegs?:     any[],
+   *   onAddLeg?:       (leg: any) => void,
+   *   onRemoveLeg?:    (leg: any) => void,
+   *   onSubmitBasket?: () => void,
+   *   onClearBasket?:  () => void,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -37,7 +42,17 @@
     accounts  = /** @type {string[]} */ ([]),
     // Fired after the basket has been submitted. ok = filled count, fail = failed.
     onBasketPlace = /** @type {((r:{ok:number,fail:number})=>void)|undefined} */ (undefined),
+    // When the shell passes these, the chain tab's basket is lifted to the
+    // shell level — the tab reads from and writes to the shell's basketLegs.
+    basketLegs    = /** @type {any[]|undefined} */ (undefined),
+    onAddLeg      = /** @type {((leg: any) => void)|undefined} */ (undefined),
+    onRemoveLeg   = /** @type {((leg: any) => void)|undefined} */ (undefined),
+    onSubmitBasket = /** @type {(() => void)|undefined} */ (undefined),
+    onClearBasket  = /** @type {(() => void)|undefined} */ (undefined),
   } = $props();
+
+  // Whether basket state is lifted to the shell or owned locally.
+  const _externalBasket = $derived(basketLegs !== undefined && !!onAddLeg);
 
   // ── Instruments cache ─────────────────────────────────────────────
   let instrumentsReady = $state(false);
@@ -220,8 +235,13 @@
   }
 
   // ── Basket ────────────────────────────────────────────────────────
+  // When _externalBasket, reads/writes go via shell callbacks.
+  // Local state is the fallback for the standalone chain-only case.
   /** @type {Array<{key:string,side:'BUY'|'SELL',sym:string,exchange:string,lots:number,lotSize:number,product:string,limit:number,chaseAgg:'low'|'med'|'high'}>} */
-  let chainBasket    = $state([]);
+  let _localBasket   = $state([]);
+  // Effective basket — shell's if lifted, otherwise local.
+  const chainBasket  = $derived(_externalBasket ? (basketLegs ?? []) : _localBasket);
+
   let basketPlacing  = $state(false);
   let basketError    = $state('');
   let basketProgress = $state(0);
@@ -240,8 +260,23 @@
   function _mergeIntoBasket(/** @type {{sym:string,side:'BUY'|'SELL',lots:number}} */ incoming) {
     const idx = chainBasket.findIndex(b => b.sym === incoming.sym && b.side === incoming.side);
     if (idx < 0) return false;
-    chainBasket = chainBasket.map((b, i) => i === idx ? { ...b, lots: (b.lots || 0) + (incoming.lots || 1) } : b);
+    // External basket: can't mutate in place — call the shell remove+add cycle.
+    if (_externalBasket && onRemoveLeg && onAddLeg) {
+      const existing = chainBasket[idx];
+      onRemoveLeg(existing);
+      onAddLeg({ ...existing, lots: (existing.lots || 0) + (incoming.lots || 1) });
+    } else {
+      _localBasket = _localBasket.map((b, i) => i === idx ? { ...b, lots: (b.lots || 0) + (incoming.lots || 1) } : b);
+    }
     return true;
+  }
+
+  function _pushToBasket(/** @type {any} */ newLeg) {
+    if (_externalBasket && onAddLeg) {
+      onAddLeg(newLeg);
+    } else {
+      _localBasket = [..._localBasket, newLeg];
+    }
   }
 
   function addOptionToBasket(/** @type {number} */ strike, /** @type {'CE'|'PE'} */ optType, /** @type {'long'|'short'} */ side) {
@@ -254,12 +289,12 @@
     }
     const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
     const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
-    chainBasket = [...chainBasket, {
+    _pushToBasket({
       key:      `${sideTag}|${_quickKeyOpt(strike, optType)}|${Date.now()}`,
       side:     sideTag, sym: String(inst.s), exchange: inst.e || 'NFO',
       lots: 1, lotSize: Number(inst.ls || 1), product: 'NRML',
       limit: Number(limit) || 0, chaseAgg: 'low',
-    }];
+    });
     basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '✓ added');
   }
 
@@ -269,27 +304,52 @@
     if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyFut(sym), '+1 lot'); return;
     }
-    chainBasket = [...chainBasket, {
+    _pushToBasket({
       key:      `${sideTag}|${_quickKeyFut(sym)}|${Date.now()}`,
       side:     sideTag, sym: String(sym), exchange: inst?.e || 'NFO',
       lots: 1, lotSize: Number(lotSize || inst?.ls || 1), product: 'NRML',
       limit: 0, chaseAgg: 'low',
-    }];
+    });
     basketError = ''; _flashToast(_quickKeyFut(sym), '✓ added');
   }
 
   function setBasketChaseAgg(/** @type {string} */ key, /** @type {'low'|'med'|'high'} */ agg) {
-    chainBasket = chainBasket.map(b => b.key === key ? { ...b, chaseAgg: agg } : b);
+    if (_externalBasket) {
+      // External: remove + re-add with updated agg.
+      const leg = chainBasket.find(b => b.key === key);
+      if (leg && onRemoveLeg && onAddLeg) { onRemoveLeg(leg); onAddLeg({ ...leg, chaseAgg: agg }); }
+    } else {
+      _localBasket = _localBasket.map(b => b.key === key ? { ...b, chaseAgg: agg } : b);
+    }
   }
   function basketStepLots(/** @type {string} */ key, /** @type {number} */ delta) {
-    chainBasket = chainBasket.map(b => b.key !== key ? b : { ...b, lots: Math.max(1, Math.floor((b.lots || 1) + delta)) });
+    if (_externalBasket) {
+      const leg = chainBasket.find(b => b.key === key);
+      if (leg && onRemoveLeg && onAddLeg) { onRemoveLeg(leg); onAddLeg({ ...leg, lots: Math.max(1, Math.floor((leg.lots || 1) + delta)) }); }
+    } else {
+      _localBasket = _localBasket.map(b => b.key !== key ? b : { ...b, lots: Math.max(1, Math.floor((b.lots || 1) + delta)) });
+    }
   }
   function removeFromBasket(/** @type {string} */ key) {
-    chainBasket = chainBasket.filter(b => b.key !== key);
+    if (_externalBasket && onRemoveLeg) {
+      const leg = chainBasket.find(b => b.key === key);
+      if (leg) onRemoveLeg(leg);
+    } else {
+      _localBasket = _localBasket.filter(b => b.key !== key);
+    }
   }
-  function clearBasket() { chainBasket = []; basketError = ''; }
+  function clearBasket() {
+    if (_externalBasket && onClearBasket) { onClearBasket(); }
+    else { _localBasket = []; }
+    basketError = '';
+  }
 
   async function placeBasket() {
+    // When the basket is lifted to the shell, delegate entirely.
+    if (_externalBasket && onSubmitBasket) {
+      onSubmitBasket();
+      return;
+    }
     if (basketPlacing || !chainBasket.length) return;
     const acct = _account;
     if (!acct) { basketError = 'No routable account. Pick an account above.'; return; }
@@ -325,9 +385,9 @@
       basketError = failures[0] || 'All legs failed';
     } else if (failures.length) {
       basketError = `${failures.length}/${total} failed: ${failures[0]}`;
-      chainBasket = [];
+      _localBasket = [];
     } else {
-      chainBasket = []; basketJustDone = true;
+      _localBasket = []; basketJustDone = true;
       setTimeout(() => { basketJustDone = false; }, 2200);
     }
     onBasketPlace?.({ ok: total - failures.length, fail: failures.length });

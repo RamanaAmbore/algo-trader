@@ -53,6 +53,7 @@
    *   onSubmit:  (payload: any) => void | Promise<void>,
    *   onClose:   () => void,
    *   onAddToBasket?: ((payload: any) => void) | null,
+   *   basketMode?: boolean,
    * }} */
   let {
     symbol,
@@ -99,6 +100,11 @@
     // caller pushes the leg into its own basket panel (same pill
     // shape as a quick-add). Set to null/undefined to hide.
     onAddToBasket = /** @type {((payload: any) => void) | null} */ (null),
+    // When true (shell's Chain tab is active), the primary Submit
+    // button reads "Add to basket" and routes through onAddToBasket
+    // instead of firing to the backend. The ticket stays open after
+    // add so the operator can adjust the leg and add another.
+    basketMode = false,
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -886,13 +892,22 @@
                 title="Add this leg to the basket — place every leg together later"
                 onclick={addToBasket}>+ Basket</button>
       {/if}
-      <button type="button" class="ot-submit"
-              class:ot-submit-buy={_side === 'BUY'}
-              class:ot-submit-sell={_side === 'SELL'}
-              disabled={!!validationErr || submitting}
-              onclick={submit}>
-        {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if action === 'close'}Close · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
-      </button>
+      {#if basketMode && action !== 'modify'}
+        <!-- basketMode: primary action is "Add to basket" — no backend hit. -->
+        <button type="button" class="ot-submit ot-submit-basket-mode"
+                disabled={!!validationErr}
+                onclick={addToBasket}>
+          + Add to basket
+        </button>
+      {:else}
+        <button type="button" class="ot-submit"
+                class:ot-submit-buy={_side === 'BUY'}
+                class:ot-submit-sell={_side === 'SELL'}
+                disabled={!!validationErr || submitting}
+                onclick={submit}>
+          {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if action === 'close'}Close · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
+        </button>
+      {/if}
     </div>
   </div>
 </div>
@@ -1412,7 +1427,19 @@
   }
   .ot-submit-buy  { background: #4ade80; }
   .ot-submit-sell { background: #f87171; }
+  /* Basket-mode primary action — amber outlined, distinct from the
+     green/red fill so the operator reads "stage, don't fire yet". */
+  .ot-submit-basket-mode {
+    background: rgba(74,222,128,0.12);
+    color: #4ade80;
+    border: 1px solid rgba(74,222,128,0.55);
+  }
+  .ot-submit-basket-mode:hover:not(:disabled) {
+    background: rgba(74,222,128,0.22);
+    border-color: rgba(74,222,128,0.85);
+  }
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+  .ot-submit-basket-mode:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* ── LIVE confirm modal ──────────────────────────────────────────────── */
   .ot-confirm-overlay {

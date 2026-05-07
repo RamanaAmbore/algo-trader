@@ -24,6 +24,7 @@
 
   /** @type {{
    *   onParsedOrder?: (props: any) => void,
+   *   onAddToBasket?: (leg: any) => void,
    *   standalone?: boolean,
    * }} */
   let {
@@ -32,6 +33,9 @@
     // tab with the pre-filled props. Standalone Terminal page leaves
     // this undefined and handles the ticket itself.
     onParsedOrder = /** @type {((props: any) => void) | undefined} */ (undefined),
+    // When set (basketMode active on the shell), BUY/SELL commands add
+    // a basket leg directly instead of switching to the Ticket tab.
+    onAddToBasket = /** @type {((leg: any) => void) | undefined} */ (undefined),
     // True when rendered as the full /console page body — shows extra
     // layout padding and the help hint line.
     standalone = false,
@@ -127,6 +131,28 @@
         const sym  = String(payload.tradingsymbol || '').toUpperCase();
         const inst = getInstrument(sym);
         const lot  = Number(inst?.ls || 1);
+
+        // Basket mode: add a leg directly without switching tabs.
+        if (onAddToBasket) {
+          const hasPrice = payload.price > 0;
+          const leg = {
+            key:      `cmd|${payload.transaction_type}|${sym}|${Date.now()}`,
+            side:     /** @type {'BUY'|'SELL'} */ (payload.transaction_type),
+            sym,
+            exchange: payload.exchange || inst?.e || 'NFO',
+            lots:     Math.max(1, lot > 0 ? Math.round((Number(payload.quantity) || lot) / lot) : 1),
+            lotSize:  lot,
+            product:  payload.product || 'NRML',
+            limit:    hasPrice ? Number(payload.price) : 0,
+            chaseAgg: /** @type {'low'|'med'|'high'} */ ('low'),
+          };
+          addResult(raw, `Added to basket: ${leg.side} ${leg.lots * leg.lotSize} ${sym}`);
+          cmdBar?.clear(); cmdVerb = '';
+          running = false;
+          onAddToBasket(leg);
+          return;
+        }
+
         const props = {
           symbol:         sym,
           exchange:       payload.exchange || inst?.e || 'NFO',
