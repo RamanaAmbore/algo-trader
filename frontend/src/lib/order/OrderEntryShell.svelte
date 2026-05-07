@@ -245,7 +245,7 @@
           aria-disabled={disabled}
           style="
             color: {isActive ? tab.activeTxt : tab.mutedTxt};
-            background: {isActive ? tab.activeBg : tab.mutedBg};
+            background: {tab.activeBg};
             border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
             opacity: {disabled ? '0.5' : '1'};
             cursor: {disabled ? 'not-allowed' : 'pointer'};

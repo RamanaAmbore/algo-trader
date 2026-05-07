@@ -917,10 +917,10 @@
   .payoff-reset {
     position: absolute;
     top: 0.4rem;
-    /* Sit immediately to the LEFT of the Refresh button (Refresh
-       width 5.4rem + 0.6rem right offset + 0.3rem gap = 6.3rem) so
-       the two top-right buttons never overlap. */
-    right: 6.3rem;
+    /* Sit to the LEFT of the wider Refresh button (6.2rem + 0.6rem
+       offset + 0.3rem gap = 7.1rem) so the two top-right buttons
+       never overlap. */
+    right: 7.1rem;
     font-family: monospace;
     font-size: 0.5rem;
     text-transform: uppercase;
@@ -931,7 +931,8 @@
     background: rgba(251,191,36,0.10);
     color: #fbbf24;
     cursor: pointer;
-    z-index: 1;
+    /* SVG has z-index: 2 — reset must sit above it too. */
+    z-index: 5;
   }
   .payoff-reset:hover {
     background: rgba(251,191,36,0.20);
@@ -963,7 +964,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    z-index: 2;
+    /* SVG below has z-index: 2 — refresh must sit above it. */
+    z-index: 5;
     transition: background 0.1s, border-color 0.1s, color 0.1s;
   }
   .payoff-refresh-label {
