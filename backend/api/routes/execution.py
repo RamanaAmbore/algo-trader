@@ -105,8 +105,8 @@ class ExecutionController(Controller):
         resulting state.
         """
         from backend.shared.helpers.utils import config, is_prod_branch
-        from backend.shared.helpers.settings import get_bool, invalidate_cache
-        from sqlalchemy import select, update as sql_update
+        from backend.shared.helpers.settings import get_bool, reload_cache
+        from sqlalchemy import select
         from backend.api.database import async_session
         from backend.api.models import Setting
 
@@ -169,7 +169,10 @@ class ExecutionController(Controller):
                             description="Set by /api/admin/execution/mode (navbar mode chip).",
                         ))
                 await s.commit()
-            invalidate_cache()
+            # Await the reload synchronously — invalidate_cache schedules
+            # a background task, but _get_current_mode below reads the
+            # cache and would race against the reload.
+            await reload_cache()
 
         mode = _get_current_mode(is_prod)
         logger.info(f"[execution] mode switched to '{target}' (effective: '{mode}') "

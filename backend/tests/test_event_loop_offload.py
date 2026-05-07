@@ -57,7 +57,7 @@ async def test_basket_margin_uses_executor():
         call_thread = threading.current_thread()
         return {"status": "ok"}
 
-    mock_kite.basket_margin = mock_basket_margin
+    mock_kite.basket_order_margins = mock_basket_margin
 
     # Call the function with a sample order
     order = {
@@ -94,7 +94,7 @@ async def test_basket_margin_executor_exception_handling():
     mock_broker.kite = mock_kite
 
     # Make basket_margin raise an exception
-    mock_kite.basket_margin = MagicMock(
+    mock_kite.basket_order_margins = MagicMock(
         side_effect=ValueError("Insufficient margin")
     )
 

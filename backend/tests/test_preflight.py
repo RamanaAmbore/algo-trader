@@ -10,7 +10,7 @@ Covers:
 Per project convention we do NOT mock broker API calls for the core
 integration flows; the preflight helper is tested by controlling the
 Connections singleton and patching the narrowest broker boundary
-(kite.basket_margin on the KiteConnect object) for margin tests only.
+(kite.basket_order_margins on the KiteConnect object) for margin tests only.
 """
 
 import pytest
@@ -44,7 +44,7 @@ def _make_kite_conn(api_secret: str = "secret"):
     ]
 
     # basket_margin — default: success (no shortfall)
-    kite_mock.basket_margin.return_value = [{
+    kite_mock.basket_order_margins.return_value = [{
         "initial": {
             "total": 10000.0,
             "available": {"cash": 50000.0},
@@ -162,7 +162,7 @@ async def test_preflight_margin_shortfall():
 
     conn_stub, kite_mock = _make_kite_conn()
     # Override basket_margin to return a shortfall scenario
-    kite_mock.basket_margin.return_value = [{
+    kite_mock.basket_order_margins.return_value = [{
         "initial": {
             "total": 200000.0,               # required ₹2L
             "available": {"cash": 50000.0},  # only ₹50k available

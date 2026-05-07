@@ -85,7 +85,7 @@ class ShadowTradeEngine:
                 }
                 loop = asyncio.get_running_loop()
                 bm_result = await loop.run_in_executor(
-                    None, broker.kite.basket_margin, [basket_order]
+                    None, broker.kite.basket_order_margins, [basket_order]
                 )
                 # Capture the actual initial/final margin numbers from the
                 # basket_margin response rather than discarding them.

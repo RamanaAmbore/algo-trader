@@ -518,11 +518,11 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
         }
         # KiteConnect exposes `basket_margin` which validates a list of
         # orders without placing them. Raises on malformed parameters.
-        # broker.kite.basket_margin is a synchronous requests call; run it
+        # broker.kite.basket_order_margins is a synchronous requests call; run it
         # in a thread executor so the event loop is not blocked.
         import asyncio
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, broker.kite.basket_margin, [basket_order])
+        await loop.run_in_executor(None, broker.kite.basket_order_margins, [basket_order])
         return True, "basket_margin OK"
     except Exception as e:
         return False, str(e)[:240]
@@ -537,7 +537,7 @@ async def run_preflight(account: str, order: dict) -> dict:
       2. SEGMENT_INACTIVE — exchange not in kite.profile()['exchanges'].
       3. QTY_FREEZE       — quantity exceeds the instrument's freeze_qty
                            from the Kite instruments dump.
-      4. MARGIN_SHORTFALL — kite.basket_margin reports required > available.
+      4. MARGIN_SHORTFALL — kite.basket_order_margins reports required > available.
 
     Returns a dict:
       {
@@ -652,7 +652,7 @@ async def run_preflight(account: str, order: dict) -> dict:
     }
     try:
         bm_result = await loop.run_in_executor(
-            None, kite.basket_margin, [basket_order]
+            None, kite.basket_order_margins, [basket_order]
         )
         # Kite returns a list; take the first element.
         if isinstance(bm_result, list) and bm_result:
@@ -763,7 +763,7 @@ async def diagnose_live_failure(kite_or_broker, order: dict, kite_error: str) ->
     }
     try:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, kite.basket_margin, [basket_order])
+        await loop.run_in_executor(None, kite.basket_order_margins, [basket_order])
         return ("margin OK via basket_margin — likely segment permission "
                 "(check Account → Segments + API key exchange scope at "
                 "developers.kite.trade)")
