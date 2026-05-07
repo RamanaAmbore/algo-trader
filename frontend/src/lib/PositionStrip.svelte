@@ -259,24 +259,10 @@
         {fmtMoney(cashTotal)}
       </span>
     </span>
-    <span class="ps-agg ps-agg-meta">
-      <span class="ps-agg-k">{livePositionCount}P · {liveHoldingCount}H</span>
-    </span>
-    {#if chips.length > 0}
-      <!-- Inline top-3 movers — stays glanceable without an expand
-           toggle. Tap-through still goes to /dashboard. -->
-      <span class="ps-preview">
-        {#each chips.slice(0, 3) as c (c.kind + '|' + c.account + '|' + c.symbol)}
-          <span class={'ps-preview-chip ' + (c.dayChg > 0 ? 'ps-pos-bg' : c.dayChg < 0 ? 'ps-neg-bg' : '')}>
-            <span class="ps-preview-sym">{c.symbol}</span>
-            <span class="ps-preview-pct">{fmtPct(c.dayPct)}</span>
-          </span>
-        {/each}
-      </span>
-    {/if}
-    {#if lastRefresh}
-      <span class="ps-refresh" title="Last refreshed (auto every 30 s)">{lastRefresh}</span>
-    {/if}
+    <!-- Strip is intentionally minimal: only the four aggregate buckets
+         (Pos / Day / Hold / Cash). Mover chips, position/holding count,
+         and refresh timestamp moved to /dashboard where they fit. The
+         strip is glanceable chrome, not an interactive surface. -->
   </a>
 {/if}
 
