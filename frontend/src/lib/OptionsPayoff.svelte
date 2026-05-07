@@ -679,7 +679,7 @@
           <g transform="rotate(-90 {beAnchorX} {beAnchorY})">
             <rect x={beAnchorX} y={beAnchorY - beChipH / 2}
                   width={beChipW} height={beChipH} rx="3"
-                  fill="rgba(251,191,36,0.20)"
+                  fill="rgba(251,191,36,0.35)"
                   stroke="#fbbf24" stroke-width="1"/>
             <text x={beAnchorX + 6} y={beAnchorY + 4}
                   text-anchor="start"
