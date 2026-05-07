@@ -403,6 +403,10 @@
     });
   });
 
+  // Spot x-coordinate — used for the Y-label chips column and the
+  // spot price label so they share a single vertical axis.
+  const spotX = $derived(xOf(spot));
+
   // X-axis ticks — sigma marks at every 0.5σ across ±spanSigmas
   // around the spot, when spanSigmas + spanPct are supplied (the API
   // returns both for auto-derived ranges). Each k-σ point sits at
@@ -555,24 +559,25 @@
       <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
       <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>
 
-      <!-- Y-axis grid + labels. Halo (stroke + paint-order) lets the
-           label punch cleanly through the horizontal grid line behind
-           it without needing extra padding. Bumped from font-size 9
-           muted-slate to font-size 11 light-blue + weight 600 — the
-           earlier styling was too dim/small to read at a glance, and
-           on mobile it disappeared into the chart background. -->
+      <!-- Y-axis grid lines (structural frame — always rendered).
+           Tick marks on left edge are faint; the numeric P&L labels
+           render here faintly as a fallback reference, with brighter
+           chip-backed copies on the spot vertical column (O2). -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}
               stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
-        <text x={PAD_L - 6} y={t.y + 4} text-anchor="end"
-              fill="#c8d8f0"
-              stroke="#152033"
-              stroke-width="3"
-              paint-order="stroke fill"
-              font-size="11" font-weight="600"
-              font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
-          {fmtMoney(t.v)}
-        </text>
+        <!-- Left edge tick mark — subtle structural reference -->
+        <line x1={PAD_L} x2={PAD_L + 3} y1={t.y} y2={t.y}
+              stroke="rgba(200,216,240,0.30)" stroke-width="1"/>
+        <!-- Faint left-edge numeric label (kept behind the spot-axis
+             chips for redundancy when spot is near a chart edge). -->
+        {#if Math.abs(t.v) > 0.5}
+          <text x={PAD_L - 6} y={t.y + 3}
+                text-anchor="end"
+                font-size="9"
+                fill="rgba(200,216,240,0.30)"
+                style="font-variant-numeric: tabular-nums">{fmtMoney(t.v)}</text>
+        {/if}
       {/each}
 
       <!-- X-axis grid + labels — sigma marks at every 0.5σ across
@@ -636,36 +641,6 @@
       <line x1={PAD_L} x2={W - PAD_R} y1={zeroY} y2={zeroY}
             stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
 
-      <!-- O2: Top spot price label — centered in the top padding area.
-           Shows the underlying name (when available via props) + current
-           spot so the operator can read it at a glance without hovering.
-           Uses the SVG W / 2 centre since the chart viewBox is fixed at W. -->
-      {#if spot > 0}
-        <text x={W / 2} y={PAD_T - 1}
-              text-anchor="middle"
-              dominant-baseline="auto"
-              fill="#22d3ee"
-              stroke="#0c1830"
-              stroke-width="3"
-              paint-order="stroke fill"
-              font-size="16" font-weight="600"
-              font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-              style="font-variant-numeric: tabular-nums">
-          {spot.toFixed(0)}
-        </text>
-      {/if}
-
-      <!-- Spot vertical — DOTTED cyan (operator request). σ ticks are
-           dashed at varying opacities, BE is dashed cream, today is
-           solid amber, expiry is dashed sky-blue → spot stays
-           visually distinct as the only DOTTED vertical. round line-
-           caps render the dasharray "1 4" as a clean dot-grid. -->
-      {#if spot > sMin && spot < sMax}
-        <!-- Spot vertical — O1: subtle cyan, stroke-width 1, opacity 0.3 -->
-        <line x1={xOf(spot)} x2={xOf(spot)} y1={PAD_T} y2={height - PAD_B}
-              stroke="#22d3ee" stroke-width="1" stroke-opacity="0.3"/>
-      {/if}
-
       <!-- Breakeven markers — soft cream dashed verticals; multi-leg
            strategies (iron condor, butterfly) can produce two.
            BE PRICE rendered vertically on the line itself. -->
@@ -706,12 +681,6 @@
         {/if}
       {/each}
 
-      <!-- Spot vertical line removed by operator request (only σ
-           ticks + breakevens remain as on-chart verticals). The
-           current-P&L dot below still anchors at spot, and the
-           SPOT readout in the top-left stat overlay carries the
-           numeric value. -->
-
       <!-- Time-slice curves (between Today and Expiry) — drawn FIRST
            so the today + expiry anchor curves render on top. Dashed,
            thinner than the anchors, with HSL-interpolated colour
@@ -730,8 +699,66 @@
 
       <!-- Current P&L marker (dot at spot, today_value) -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
-        <circle cx={xOf(spot)} cy={yOf(currentPnl)} r="4"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="4"
                 fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
+      {/if}
+
+      <!-- Z-layer 9: Spot vertical line — rendered AFTER the curves so
+           it sits on top of them. DOTTED cyan, opacity 0.3. σ ticks
+           are dashed, BE is dashed cream, today is solid amber, expiry
+           is dashed sky-blue → spot stays visually distinct. -->
+      {#if spot > sMin && spot < sMax}
+        <line x1={spotX} x2={spotX} y1={PAD_T} y2={height - PAD_B}
+              stroke="#22d3ee" stroke-width="1" stroke-opacity="0.3"/>
+      {/if}
+
+      <!-- Z-layer 9: Y-label chips on the spot vertical (O2).
+           Each non-zero P&L tick gets an opaque navy rect + label
+           centered at spotX. Skip the zero line (chart frame does it).
+           Drawn after curves so labels float on top. -->
+      {#if spot > sMin && spot < sMax}
+        {#each yTicks as t}
+          {#if Math.abs(t.v) > 0.5}
+            {@const label = fmtMoney(t.v)}
+            {@const chipW = Math.max(56, label.length * 6.5 + 12)}
+            {@const chipH = 14}
+            <rect
+              x={spotX - chipW / 2}
+              y={t.y - chipH / 2}
+              width={chipW}
+              height={chipH}
+              rx="2"
+              fill="#0f172a"
+              stroke="rgba(125,211,252,0.30)"
+              stroke-width="0.75"/>
+            <text x={spotX} y={t.y + 4}
+                  text-anchor="middle"
+                  fill="#c8d8f0"
+                  font-size="10" font-weight="600"
+                  font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                  style="font-variant-numeric: tabular-nums">
+              {label}
+            </text>
+          {/if}
+        {/each}
+      {/if}
+
+      <!-- Z-layer 11: Spot price label — centered on the spot vertical,
+           just inside the plot area top (O3: font-size 13; O4: y=PAD_T+14).
+           Sits above the topmost Y-label chip on the same x column. -->
+      {#if spot > 0 && spot > sMin && spot < sMax}
+        <text x={spotX} y={PAD_T + 14}
+              text-anchor="middle"
+              dominant-baseline="auto"
+              fill="#22d3ee"
+              stroke="#0c1830"
+              stroke-width="3"
+              paint-order="stroke fill"
+              font-size="13" font-weight="600"
+              font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+              style="font-variant-numeric: tabular-nums">
+          {spot.toFixed(0)}
+        </text>
       {/if}
 
       <!-- Hover crosshair + tooltip. Styling mirrors the top-left
@@ -988,14 +1015,14 @@
     left: 0.6rem;
     display: grid;
     grid-template-columns: max-content max-content;
-    column-gap: 0.5rem;
-    row-gap: 0.12rem;
-    padding: 0.32rem 0.55rem;
+    column-gap: 0.45rem;
+    row-gap: 0.08rem;
+    padding: 0.26rem 0.48rem;
     border-radius: 6px;
     background: #0f172a;
     border: 1px solid rgba(125,211,252,0.30);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.65rem;
+    font-size: 0.575rem;
     line-height: 1.2;
     z-index: 1;
   }
@@ -1004,13 +1031,10 @@
     cursor: help;
   }
   .ps-k {
-    /* Amber label tier — same treatment as the OrderTicket modal's
-       .ot-label so popups across the algo theme share a label
-       colour scheme. Letter-spacing + opacity 0.85 mirror the
-       OrderTicket variant. */
+    /* Amber label tier — labels at 9px, matching the tightened overlay. */
     color: #fbbf24;
     letter-spacing: 0.08em;
-    font-size: 0.7rem;
+    font-size: 9px;
     font-weight: 700;
     opacity: 0.85;
     align-self: center;
@@ -1018,8 +1042,8 @@
   /* Inline hint after the σ glyph — small "IV" tag clarifies what
      the symbol means without giving up the canonical σ shorthand. */
   .ps-k-hint {
-    margin-left: 0.25rem;
-    font-size: 0.6rem;
+    margin-left: 0.2rem;
+    font-size: 8px;
     font-weight: 500;
     color: #fde68a;
     opacity: 0.75;
@@ -1028,6 +1052,7 @@
   .ps-v {
     text-align: right;
     font-weight: 700;
+    font-size: 10px;
     color: #e2e8f0;
     font-variant-numeric: tabular-nums;
   }

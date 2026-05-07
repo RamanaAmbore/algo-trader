@@ -81,7 +81,7 @@ _spa_fallback       = None
 _spa_root           = None
 
 if _FRONTEND_BUILD.exists():
-    _index_html = _FRONTEND_BUILD / "index.html"
+    _index_html = _FRONTEND_BUILD / "_spa.html"
 
     _static_router = create_static_files_router(
         path="/_app",

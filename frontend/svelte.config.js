@@ -11,7 +11,11 @@ const config = {
     adapter: adapter({
       pages: 'build',
       assets: 'build',
-      fallback: 'index.html', // SPA mode for (algo) routes; public routes are prerendered
+      // SPA fallback for (algo) routes. Renamed from index.html so it
+      // stops colliding with the prerendered homepage at `/` (the build
+      // step would otherwise overwrite the prerendered file with the
+      // empty SPA shell — caused PWA installs to open with a white page).
+      fallback: '_spa.html',
       precompress: false,
     }),
     prerender: {
