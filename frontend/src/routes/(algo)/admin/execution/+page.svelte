@@ -30,13 +30,25 @@
 
   // ── Mode selection ───────────────────────────────────────────────────
   /** @type {Array<'paper'|'shadow'|'live'>} */
-  const MODES = ['paper', 'shadow', 'live'];
+  const ALL_MODES = ['paper', 'shadow', 'live'];
 
   const MODE_META = {
     paper:  { label: 'PAPER',  color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.35)'  },
     shadow: { label: 'SHADOW', color: '#fb923c', bg: 'rgba(251,146,60,0.12)',  border: 'rgba(251,146,60,0.35)'  },
     live:   { label: 'LIVE',   color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.35)'  },
   };
+
+  // ── Shared state ─────────────────────────────────────────────────────
+  let branch = $state('');   // resolved after first paper-status poll
+  let prodBranch = $derived(branch === 'main');
+
+  // Branch-filtered mode list: dev shows only PAPER; prod shows all three.
+  /** @type {Array<'paper'|'shadow'|'live'>} */
+  const availableModes = $derived(prodBranch ? ALL_MODES : /** @type {Array<'paper'>} */ (['paper']));
+
+  let error  = $state('');
+  let loading = $state(true);
+  let _loadFails = 0;
 
   // Read mode from URL, default to 'paper'.
   let mode = $state(/** @type {'paper'|'shadow'|'live'} */ ('paper'));
@@ -47,6 +59,13 @@
       mode = param;
     } else {
       mode = 'paper';
+    }
+  });
+
+  // On dev branches only PAPER is available; redirect shadow/live → paper.
+  $effect(() => {
+    if (!prodBranch && (mode === 'shadow' || mode === 'live')) {
+      goto('/admin/execution?mode=paper', { replaceState: true, noScroll: true });
     }
   });
 
@@ -67,14 +86,14 @@
     if (e.key === 'Escape') { comboOpen = false; return; }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const idx = MODES.indexOf(mode);
-      const next = MODES[(idx + 1) % MODES.length];
+      const idx = availableModes.indexOf(mode);
+      const next = availableModes[(idx + 1) % availableModes.length];
       if (next) selectMode(next);
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const idx = MODES.indexOf(mode);
-      const prev = MODES[(idx - 1 + MODES.length) % MODES.length];
+      const idx = availableModes.indexOf(mode);
+      const prev = availableModes[(idx - 1 + availableModes.length) % availableModes.length];
       if (prev) selectMode(prev);
     }
     if (e.key === 'Enter' || e.key === ' ') {
@@ -91,13 +110,6 @@
       comboOpen = false;
     }
   }
-
-  // ── Shared state ─────────────────────────────────────────────────────
-  let branch = $state('');   // resolved after first paper-status poll
-  let prodBranch = $derived(branch === 'main');
-  let error  = $state('');
-  let loading = $state(true);
-  let _loadFails = 0;
 
   // Per-mode teardown handle — only one mode's poller runs at a time.
   let modeTeardown = /** @type {(() => void)|undefined} */ (undefined);
@@ -365,7 +377,7 @@
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <div class="exec-dropdown" role="listbox" id="exec-mode-list"
              aria-label="Execution modes">
-          {#each MODES as m}
+          {#each availableModes as m}
             {@const mmeta = MODE_META[m]}
             {@const isSelected = m === mode}
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->

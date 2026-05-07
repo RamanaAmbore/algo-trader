@@ -455,7 +455,7 @@
   {:else}
     {#if isZoomed}
       <button type="button" class="payoff-reset"
-              title="Reset zoom — return to the auto ±3σ range"
+              aria-label="Reset zoom"
               onclick={resetZoom}>reset zoom</button>
     {/if}
     {#if onRefresh}
@@ -463,12 +463,14 @@
            "Refresh" → "Refreshing…" text swap can never push the
            SVG / stat overlay / legend around. Width is locked to
            the wider "Refreshing…" string so the button itself also
-           stays put across state changes. -->
+           stays put across state changes.
+           No `title` attribute — the visible "↻ Refresh" label is
+           self-explanatory, and the native tooltip was reading as
+           a popup when the operator pressed the button. -->
       <button type="button"
               class="payoff-refresh"
               class:payoff-refresh-busy={loading}
               disabled={loading}
-              title="Re-fetch spot, LTPs, Greeks, and the payoff curve now"
               aria-label="Refresh prices"
               onclick={() => onRefresh && onRefresh()}>
         <span class="payoff-refresh-label">
