@@ -673,7 +673,7 @@
                threshold" rather than another σ tick. -->
           {@const beLabel = priceFmt(be)}
           {@const beAnchorX = xOf(be) + 5}
-          {@const beAnchorY = height - PAD_B - 14}
+          {@const beAnchorY = height - PAD_B - 10}
           {@const beChipW   = beLabel.length * 6.5 + 12}
           {@const beChipH   = 16}
           <g transform="rotate(-90 {beAnchorX} {beAnchorY})">
