@@ -23,7 +23,7 @@
   import {
     fetchPositions, fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
-    placeTicketOrder,
+    placeTicketOrder, fetchLiveStatus,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import OrderTicket   from '$lib/order/OrderTicket.svelte';
@@ -590,6 +590,18 @@
     const acct = _ticketAccountDefault();
     if (!acct) { basketError = 'No routable account selected.'; return; }
 
+    // Mode follows the master execution toggle, mirroring the OrderTicket
+    // path so the basket isn't a footgun (was hardcoded to 'paper' which
+    // silently routed every leg through the paper engine even when the
+    // operator had flipped to LIVE on /admin/execution).
+    let basketMode = 'paper';
+    try {
+      const live = await fetchLiveStatus();
+      if (live && live.paper_trading_mode === false && live.branch === 'main') {
+        basketMode = 'live';
+      }
+    } catch { /* fall back to paper if status fetch fails — safe default */ }
+
     basketPlacing  = true;
     basketError    = '';
     basketProgress = 0;
@@ -598,7 +610,7 @@
       try {
         const hasLimit = Number(leg.limit) > 0;
         await placeTicketOrder({
-          mode:          'paper',
+          mode:          basketMode,
           side:          leg.side,
           tradingsymbol: leg.sym,
           quantity:      leg.lots * leg.lotSize,

@@ -521,7 +521,19 @@ class OrdersController(Controller):
             except HTTPException:
                 raise
             except Exception as e:
-                logger.error(f"[LIVE-TICKET] place_order failed: {e}")
+                # Enriched failure log: include account / exchange / symbol /
+                # product / side / qty / order_type / price so the next time
+                # Kite returns a generic message ("Insufficient permission",
+                # "Margin shortfall", etc.) the operator can tell at a glance
+                # which leg + which account triggered the rejection without
+                # cross-referencing login timestamps.
+                masked_acct = mask_column(pd.Series([account]))[0]
+                logger.error(
+                    f"[LIVE-TICKET] place_order failed for {masked_acct} "
+                    f"{(data.exchange or 'NFO')}/{sym} {(data.product or 'NRML')} "
+                    f"{side} {qty} {order_type}"
+                    f"{f' @{data.price}' if data.price else ''}: {e}"
+                )
                 raise HTTPException(status_code=400, detail=str(e))
 
         # Persist AlgoOrder row first so the engine has an id to
