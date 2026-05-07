@@ -144,11 +144,34 @@ def build(size: int) -> Image.Image:
 
 
 def main() -> None:
+    # ── PWA + Google logo PNGs ─────────────────────────────────────────
     for size in (192, 512):
         out = STATIC / f"app-icon-{size}.png"
         img = build(size)
         img.save(out, format="PNG", optimize=True)
         print(f"wrote {out} ({out.stat().st_size:,} bytes)")
+
+    # ── Browser-tab favicon fallbacks (favicon.ico + favicon.png) ──────
+    # ICO embeds 16/32/48 PNG variants — Windows + older browsers pick
+    # the size that fits. PNG fallback is a single 256-px render.
+    fav_master = build(256)
+    fav_png = STATIC / "favicon.png"
+    fav_master.save(fav_png, format="PNG", optimize=True)
+    print(f"wrote {fav_png} ({fav_png.stat().st_size:,} bytes)")
+
+    fav_ico = STATIC / "favicon.ico"
+    fav_master.save(
+        fav_ico,
+        format="ICO",
+        sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+    print(f"wrote {fav_ico} ({fav_ico.stat().st_size:,} bytes)")
+
+    # ── Legacy /logo.png (kept for any external link that used it
+    # before the JSON-LD switched to /app-icon-512.png) ────────────────
+    logo = STATIC / "logo.png"
+    build(512).save(logo, format="PNG", optimize=True)
+    print(f"wrote {logo} ({logo.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":
