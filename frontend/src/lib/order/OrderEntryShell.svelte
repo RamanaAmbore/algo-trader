@@ -244,9 +244,10 @@
           aria-selected={isActive}
           aria-disabled={disabled}
           style="
-            color: {isActive ? tab.activeTxt : tab.mutedTxt};
+            color: #ffffff;
             background: {tab.activeBg};
             border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
+            font-weight: {isActive ? '800' : '600'};
             opacity: {disabled ? '0.5' : '1'};
             cursor: {disabled ? 'not-allowed' : 'pointer'};
           "

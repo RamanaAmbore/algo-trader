@@ -405,6 +405,10 @@
       _setHoverFromClientX(/** @type {SVGSVGElement} */ (tgt), e.clientX);
       return;
     }
+    // Clear any residual hover tooltip on click start so the click
+    // never has a popup flickering (operator: "popup appears and
+    // disappears when clicking under refresh").
+    hover = null;
     tgt.setPointerCapture?.(e.pointerId);
     pan = { startClientX: e.clientX, startMin: sMin, startMax: sMax };
   }
@@ -511,7 +515,7 @@
               class="payoff-refresh"
               class:payoff-refresh-busy={loading}
               disabled={loading}
-              onclick={() => onRefresh && onRefresh()}>
+              onclick={() => { hover = null; onRefresh && onRefresh(); }}>
         <span class="payoff-refresh-label">
           {#if loading}↻ refreshing{:else}↻ Refresh{/if}
         </span>
