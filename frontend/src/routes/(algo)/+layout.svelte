@@ -418,14 +418,38 @@
         {#if isDemo}
           <span class="algo-mode-badge algo-mode-demo" title="Demo mode — paper-only">DEMO</span>
         {/if}
-        <!-- Mobile mode chip — same data-mode colour as desktop; no dropdown on mobile
-             (mode changes happen via the hamburger menu → Execution page). -->
+        <!-- Mobile mode chip — same chip-as-combobox pattern as desktop. -->
         {#if $authStore.user && allowedModes.length > 0}
-          <span class="algo-mode-badge mode-trigger mode-trigger-mobile"
-                data-mode={$executionMode ?? 'paper'}
-                title="Execution mode: {($executionMode ?? 'paper').toUpperCase()}">
-            {($executionMode ?? 'paper').toUpperCase()}
-          </span>
+          <div class="mode-combo-wrap">
+            <button class="algo-mode-badge mode-trigger"
+                    data-mode={$executionMode ?? 'paper'}
+                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+                    aria-haspopup="listbox" aria-expanded={modeOpen}
+                    title="Click to change execution mode">
+              {($executionMode ?? 'paper').toUpperCase()}
+              <svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="mode-trigger-caret">
+                <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            {#if modeOpen}
+              <div class="mode-combo-overlay" role="presentation"
+                   onclick={() => { modeOpen = false; }}></div>
+              <ul class="mode-combo-dropdown" role="listbox">
+                {#each allowedModes as m}
+                  <li>
+                    <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
+                            style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
+                            role="option" aria-selected={$executionMode === m}
+                            onclick={() => pickMode(m)}>
+                      {m.toUpperCase()}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
+          </div>
         {/if}
         {#if $authStore.user && showChaseChip}
           <button
@@ -1200,7 +1224,6 @@
   }
   .mode-trigger:hover { filter: brightness(1.2); }
   .mode-trigger-caret { flex-shrink: 0; opacity: 0.7; }
-  .mode-trigger-mobile { cursor: default; }
   /* Per-mode colour override via data-mode attribute so the trigger
      matches the colour scheme previously applied via inline style. */
   .algo-mode-badge[data-mode='paper']  { color:#38bdf8; background:rgba(56,189,248,0.10);  border-color:#38bdf8; }
