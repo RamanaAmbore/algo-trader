@@ -148,13 +148,26 @@ class ExecutionController(Controller):
             _stop_drivers(exclude=target)
 
         if updates:
+            # Upsert — these rows are intentionally not in SEEDS (the seeder
+            # auto-prunes them and the navbar combobox is the only writer),
+            # so a plain UPDATE would no-op silently when the row is absent.
             async with async_session() as s:
                 for key, val in updates.items():
-                    await s.execute(
-                        sql_update(Setting)
-                        .where(Setting.key == key)
-                        .values(value=val)
+                    existing = await s.execute(
+                        select(Setting).where(Setting.key == key)
                     )
+                    row = existing.scalar_one_or_none()
+                    if row is not None:
+                        row.value = val
+                    else:
+                        s.add(Setting(
+                            category="execution",
+                            key=key,
+                            value_type="bool",
+                            value=val,
+                            default_value=val,
+                            description="Set by /api/admin/execution/mode (navbar mode chip).",
+                        ))
                 await s.commit()
             invalidate_cache()
 

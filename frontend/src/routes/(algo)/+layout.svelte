@@ -118,10 +118,11 @@
   const closeMenu = () => { menuOpen = false; };
 
   // ── Execution-mode combobox ────────────────────────────────────────
-  let modeOpen      = $state(false);
-  let modeError     = $state('');
-  let allowedModes  = $state(/** @type {string[]} */ ([]));
-  let modeBranch    = $state('');
+  let modeOpen          = $state(false);
+  let modeError         = $state('');
+  let allowedModes      = $state(/** @type {string[]} */ ([]));
+  let modeBranch        = $state('');
+  let liveConfirmOpen   = $state(false);
 
   const MODE_COLOR = {
     sim:    '#ec4899',
@@ -161,11 +162,13 @@
     modeOpen  = false;
     modeError = '';
     if (mode === 'live') {
-      const ok = window.confirm(
-        'Switch to LIVE mode? Every order placed from this session will hit the real broker.'
-      );
-      if (!ok) return;
+      liveConfirmOpen = true;
+      return;
     }
+    await _commitMode(mode);
+  }
+
+  async function _commitMode(/** @type {string} */ mode) {
     try {
       const res = await setExecutionMode(mode);
       if (res?.mode) executionMode.set(res.mode);
@@ -173,6 +176,11 @@
       modeError = /** @type {any} */ (e)?.message ?? 'Mode change failed.';
       setTimeout(() => { modeError = ''; }, 3000);
     }
+  }
+
+  async function confirmLive() {
+    liveConfirmOpen = false;
+    await _commitMode('live');
   }
 
   // ── Chase chip + timeline drawer ───────────────────────────────────
@@ -343,7 +351,7 @@
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
                     data-mode={$executionMode ?? 'paper'}
-                    onclick={(e) => { console.log('[mode-chip] click', { modeOpen, allowedModes, executionMode: $executionMode }); modeOpen = !modeOpen; modeError = ''; e.stopPropagation(); }}
+                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
               {($executionMode ?? 'paper').toUpperCase()}
@@ -423,7 +431,7 @@
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
                     data-mode={$executionMode ?? 'paper'}
-                    onclick={(e) => { console.log('[mode-chip] click', { modeOpen, allowedModes, executionMode: $executionMode }); modeOpen = !modeOpen; modeError = ''; e.stopPropagation(); }}
+                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
               {($executionMode ?? 'paper').toUpperCase()}
@@ -510,6 +518,24 @@
         </nav>
       {/if}
     </header>
+
+    {#if liveConfirmOpen}
+      <div class="live-confirm-overlay" role="presentation"
+           onclick={() => liveConfirmOpen = false}></div>
+      <div class="live-confirm-modal" role="dialog" aria-modal="true">
+        <div class="live-confirm-header">
+          <span class="live-confirm-pill">LIVE</span>
+          <h3>Switch to LIVE mode</h3>
+        </div>
+        <div class="live-confirm-body">
+          Orders placed from this session will hit the real broker.
+        </div>
+        <div class="live-confirm-actions">
+          <button class="live-cancel" onclick={() => liveConfirmOpen = false}>Cancel</button>
+          <button class="live-confirm" onclick={confirmLive}>Switch to LIVE</button>
+        </div>
+      </div>
+    {/if}
 
     {#if simStatus?.active}
       <div class="sim-banner" role="status" aria-live="polite">
@@ -1221,13 +1247,10 @@
     gap: 0.3rem;
     outline: none;
     transition: filter 0.08s;
-    pointer-events: auto;
-    position: relative;
-    z-index: 51;
   }
-  .mode-trigger:hover { filter: brightness(1.2); }
+  .mode-trigger:hover  { filter: brightness(1.2); }
   .mode-trigger:active { filter: brightness(0.85); }
-  .mode-trigger-caret { flex-shrink: 0; opacity: 0.7; pointer-events: none; }
+  .mode-trigger-caret  { flex-shrink: 0; opacity: 0.7; pointer-events: none; }
   /* Per-mode colour override via data-mode attribute so the trigger
      matches the colour scheme previously applied via inline style. */
   .algo-mode-badge[data-mode='paper']  { color:#38bdf8; background:rgba(56,189,248,0.10);  border-color:#38bdf8; }
@@ -1291,6 +1314,93 @@
     white-space: nowrap;
     z-index: 61;
   }
+
+  /* ── LIVE confirm modal — themed (algo dark navy + amber accents) ────── */
+  .live-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 6, 18, 0.65);
+    backdrop-filter: blur(2px);
+    z-index: 200;
+  }
+  .live-confirm-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(420px, 92vw);
+    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+    color: #c8d8f0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    z-index: 201;
+    overflow: hidden;
+  }
+  .live-confirm-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
+  }
+  .live-confirm-header h3 {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #fbbf24;
+    letter-spacing: 0.05em;
+  }
+  .live-confirm-pill {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid #ef4444;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+  }
+  .live-confirm-body {
+    padding: 1rem;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: #c8d8f0;
+  }
+  .live-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.7rem 1rem;
+    border-top: 1px solid rgba(251, 191, 36, 0.12);
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .live-cancel,
+  .live-confirm {
+    height: 1.9rem;
+    padding: 0 0.85rem;
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: filter 0.08s, transform 0.08s;
+  }
+  .live-cancel {
+    color: #c8d8f0;
+    background: transparent;
+    border: 1px solid rgba(200, 216, 240, 0.25);
+  }
+  .live-cancel:hover { background: rgba(255, 255, 255, 0.04); }
+  .live-confirm {
+    color: #ffffff;
+    background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%);
+    border: 1px solid #b91c1c;
+  }
+  .live-confirm:hover { filter: brightness(1.1); }
+  .live-confirm:active { transform: translateY(1px); }
 
   /* ── Chase chip ──────────────────────────────────────────────────────── */
   .chase-chip {
