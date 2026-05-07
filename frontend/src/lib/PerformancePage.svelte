@@ -143,12 +143,16 @@
 
   // AG Grid valueFormatter wrappers — receive { value } objects.
   const numFmt = ({ value }) => value == null ? '' : priceFmt(value);
-  // ≥1 lakh ⇒ "X.XXL" (Indian-market mental unit at that magnitude;
-  // keeps columns tight). Below stays plain en-IN.
+  // Indian-scale units to keep columns tight:
+  //   |v| < 1,000          → plain en-IN ("999", "-432")
+  //   |v| < 1,00,000       → rounded thousand + "K" ("50K", "99K")
+  //   |v| ≥ 1,00,000       → lakhs + 2dp + "L" ("1.50L", "150.00L")
   function _aggLakhs(/** @type {number} */ v) {
     if (!isFinite(v)) return '—';
     const n = Number(v);
-    if (Math.abs(n) < 100_000) return aggFmt(n);
+    const a = Math.abs(n);
+    if (a < 1_000)    return aggFmt(n);
+    if (a < 100_000)  return `${Math.round(n / 1_000)}K`;
     return `${(n / 100_000).toFixed(2)}L`;
   }
   const aggFmtGrid = ({ value }) => value == null ? '' : _aggLakhs(value);
