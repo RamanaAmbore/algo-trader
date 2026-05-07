@@ -621,7 +621,7 @@
                σ-line beneath was just made more subtle so these
                labels become the dominant read. -->
           {@const vx = xt.x + 5}
-          {@const vy = height - PAD_B - 4}
+          {@const vy = height - PAD_B - 20}
           <text x={vx} y={vy}
                 text-anchor="start"
                 transform="rotate(-90 {vx} {vy})"
@@ -658,15 +658,15 @@
                so the line itself is very subtle; the rotated cream
                BE-price label still pops via its halo. -->
           <line x1={xOf(be)} x2={xOf(be)} y1={PAD_T} y2={height - PAD_B}
-                stroke="rgba(253,230,138,0.30)" stroke-width="1"
-                stroke-dasharray="5 3"/>
+                stroke="rgba(253,230,138,0.55)" stroke-width="1.25"
+                stroke-dasharray="6 3"/>
           <!-- BE label anchored near the BOTTOM of the chart, same
                convention as the σ-tick price labels: away from the
                top-left stat overlay + top-right Refresh button.
                5 px gap to the right of the dashed line so the BE
                glyphs aren't sitting on the cream stroke. -->
           {@const bx = xOf(be) + 5}
-          {@const by = height - PAD_B - 4}
+          {@const by = height - PAD_B - 20}
           <text x={bx} y={by}
                 text-anchor="start"
                 transform="rotate(-90 {bx} {by})"
@@ -718,7 +718,7 @@
            Drawn after curves so labels float on top. -->
       {#if spot > sMin && spot < sMax}
         {#each yTicks as t}
-          {#if Math.abs(t.v) > 0.5}
+          {#if Math.abs(t.v) > 0.5 && t.y > PAD_T + 28}
             {@const label = fmtMoney(t.v)}
             {@const chipW = Math.max(56, label.length * 6.5 + 12)}
             {@const chipH = 14}
