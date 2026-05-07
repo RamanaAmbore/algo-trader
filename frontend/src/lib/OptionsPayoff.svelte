@@ -149,7 +149,7 @@
   // PAD_B widened from 28 → 40 so rotated σ labels (-30°) and the
   // breakeven labels stacked beneath them have the vertical room they
   // need without colliding with the chart legend.
-  const PAD_L = 50, PAD_R = 12, PAD_T = 12, PAD_B = 40;
+  const PAD_L = 14, PAD_R = 12, PAD_T = 12, PAD_B = 40;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -559,25 +559,13 @@
       <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
       <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>
 
-      <!-- Y-axis grid lines (structural frame — always rendered).
-           Tick marks on left edge are faint; the numeric P&L labels
-           render here faintly as a fallback reference, with brighter
-           chip-backed copies on the spot vertical column (O2). -->
+      <!-- Y-axis grid lines only — left-edge tick marks and faint
+           numeric labels are gone; the spot-vertical chip column is
+           the sole source of P&L axis values. PAD_L tightened so
+           the chart uses the recovered horizontal space. -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}
               stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
-        <!-- Left edge tick mark — subtle structural reference -->
-        <line x1={PAD_L} x2={PAD_L + 3} y1={t.y} y2={t.y}
-              stroke="rgba(200,216,240,0.30)" stroke-width="1"/>
-        <!-- Faint left-edge numeric label (kept behind the spot-axis
-             chips for redundancy when spot is near a chart edge). -->
-        {#if Math.abs(t.v) > 0.5}
-          <text x={PAD_L - 6} y={t.y + 3}
-                text-anchor="end"
-                font-size="9"
-                fill="rgba(200,216,240,0.30)"
-                style="font-variant-numeric: tabular-nums">{fmtMoney(t.v)}</text>
-        {/if}
       {/each}
 
       <!-- X-axis grid + labels — sigma marks at every 0.5σ across
@@ -621,7 +609,7 @@
                σ-line beneath was just made more subtle so these
                labels become the dominant read. -->
           {@const vx = xt.x + 5}
-          {@const vy = height - PAD_B - 20}
+          {@const vy = height - PAD_B - 14}
           <text x={vx} y={vy}
                 text-anchor="start"
                 transform="rotate(-90 {vx} {vy})"
@@ -666,7 +654,7 @@
                5 px gap to the right of the dashed line so the BE
                glyphs aren't sitting on the cream stroke. -->
           {@const bx = xOf(be) + 5}
-          {@const by = height - PAD_B - 20}
+          {@const by = height - PAD_B - 14}
           <text x={bx} y={by}
                 text-anchor="start"
                 transform="rotate(-90 {bx} {by})"
