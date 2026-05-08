@@ -1,6 +1,6 @@
 <script>
-  // Per-agent P&L attribution panel — extracted from /admin/pnl for
-  // embedding inside the /dashboard tab shell.
+  // Per-agent P&L attribution panel — embedded inside PnlAnalysis,
+  // which renders as the /dashboard?tab=pnl panel body.
 
   import { onMount } from 'svelte';
   import { authStore, clientTimestamp } from '$lib/stores';

@@ -72,8 +72,8 @@
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
     // ── Analyze ──
+    // P&L lives as a tab inside /dashboard — no standalone nav entry.
     { href: '/admin/options',    label: 'Options',   group: 'analyze' },
-    { href: '/dashboard?tab=pnl', label: 'P&L',      adminOnly: true, group: 'analyze' },
     // ── Modes ──
     { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
     // ── Build / extend ──
