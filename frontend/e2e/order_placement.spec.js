@@ -109,7 +109,7 @@ test.describe('Order placement — every combination', () => {
     await expect(cmdInput).toBeVisible({ timeout: 10_000 });
     await cmdInput.click();
     // Build a real order command.
-    await cmdInput.pressSequentially('buy ZG0790 NIFTY26MAY22000PE 75 limit 1', { delay: 25 });
+    await cmdInput.pressSequentially('buy ZG0790 RELIANCE 1 LIMIT 100', { delay: 25 });
     await page.waitForTimeout(300);
     const runBtn = page.locator('.sim-btn-primary, .sim-btn-danger').first();
     if (await runBtn.isVisible()) {
@@ -127,7 +127,7 @@ test.describe('Order placement — every combination', () => {
     await cmdTab.click();
     const cmdInput = page.locator('textarea').first();
     await cmdInput.click();
-    await cmdInput.pressSequentially('buy ZG0790 NIFTY26MAY22000PE 75 limit 1', { delay: 25 });
+    await cmdInput.pressSequentially('buy ZG0790 RELIANCE 1 LIMIT 100', { delay: 25 });
     await expect(page.locator('.sim-btn-primary, .sim-btn-danger').first()).toContainText(/BUY|SELL/, { timeout: 5_000 });
     const basketBtn = page.locator('.sim-btn-basket').first();
     await expect(basketBtn).toBeVisible();
