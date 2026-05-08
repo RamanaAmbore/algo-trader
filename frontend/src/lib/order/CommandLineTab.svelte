@@ -67,6 +67,10 @@
   let cmdHistory = $state([]);
   let running    = $state(false);
   let cmdVerb    = $state('');
+  // Intent set by the action button right before submit. 'place' fires
+  // onParsedOrder (switches to Ticket tab); 'basket' fires onAddToBasket.
+  /** @type {'place' | 'basket'} */
+  let _intent    = 'place';
 
   // No open-orders context needed here — the tab is for fresh orders only.
   const cmdContext = { openOrders: [] };
@@ -154,14 +158,16 @@
         const inst = getInstrument(sym);
         const lot  = Number(inst?.ls || 1);
 
-        // Basket mode: add a leg directly without switching tabs.
-        if (onAddToBasket) {
+        // Basket intent: add a leg directly without switching tabs.
+        if (_intent === 'basket' && onAddToBasket) {
+          _intent = 'place';   // reset for next submit
           const hasPrice = payload.price > 0;
           const leg = {
             key:      `cmd|${payload.transaction_type}|${sym}|${Date.now()}`,
             side:     /** @type {'BUY'|'SELL'} */ (payload.transaction_type),
             sym,
             exchange: payload.exchange || inst?.e || 'NFO',
+            account:  String(payload.account || prefillAccount || ''),
             lots:     Math.max(1, lot > 0 ? Math.round((Number(payload.quantity) || lot) / lot) : 1),
             lotSize:  lot,
             product:  payload.product || 'NRML',
@@ -228,12 +234,18 @@
       disabled={running}
     />
     <div class="absolute bottom-1 right-2 flex gap-1 z-10">
-      <button onclick={() => cmdBar?.submit()} disabled={running}
+      <button onclick={() => { _intent = 'place'; cmdBar?.submit(); }} disabled={running}
         class="sim-btn sim-btn-order
           {cmdVerb === 'SELL' ? 'sim-btn-danger' : 'sim-btn-primary'}
           disabled:opacity-40">
         {cmdVerb === 'BUY' ? 'BUY' : cmdVerb === 'SELL' ? 'SELL' : 'Run'}
       </button>
+      {#if onAddToBasket}
+        <button onclick={() => { _intent = 'basket'; cmdBar?.submit(); }}
+          disabled={running || !cmdVerb}
+          title="Add to basket — place every leg together later"
+          class="sim-btn sim-btn-order sim-btn-basket disabled:opacity-40">+ Basket</button>
+      {/if}
       <button onclick={() => { cmdBar?.clear(); cmdVerb = ''; }}
         class="sim-btn sim-btn-order sim-btn-secondary">Clear</button>
     </div>
@@ -263,6 +275,18 @@
 <style>
   .clt-root { display: flex; flex-direction: column; }
   .clt-standalone { /* no extra styles needed — caller owns layout */ }
+
+  /* + Basket button — green outline matching the basket palette. */
+  :global(.sim-btn-basket) {
+    background: rgba(74,222,128,0.10);
+    color: #4ade80;
+    border-color: rgba(74,222,128,0.55);
+    font-weight: 700;
+  }
+  :global(.sim-btn-basket:hover:not(:disabled)) {
+    background: rgba(74,222,128,0.20);
+    border-color: #4ade80;
+  }
 
   .clt-history {
     display: flex;

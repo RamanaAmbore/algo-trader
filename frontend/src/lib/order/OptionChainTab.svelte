@@ -284,6 +284,7 @@
     const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
     if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
+    if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
     if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '+1 lot'); return;
     }
@@ -292,6 +293,7 @@
     _pushToBasket({
       key:      `${sideTag}|${_quickKeyOpt(strike, optType)}|${Date.now()}`,
       side:     sideTag, sym: String(inst.s), exchange: inst.e || 'NFO',
+      account:  _account,
       lots: 1, lotSize: Number(inst.ls || 1), product: 'NRML',
       limit: Number(limit) || 0, chaseAgg: 'low',
     });
@@ -301,12 +303,14 @@
   function addFuturesToBasket(/** @type {string} */ sym, /** @type {number} */ lotSize, /** @type {'long'|'short'} */ side) {
     const inst = getInstrument(String(sym || '').toUpperCase());
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
+    if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
     if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyFut(sym), '+1 lot'); return;
     }
     _pushToBasket({
       key:      `${sideTag}|${_quickKeyFut(sym)}|${Date.now()}`,
       side:     sideTag, sym: String(sym), exchange: inst?.e || 'NFO',
+      account:  _account,
       lots: 1, lotSize: Number(lotSize || inst?.ls || 1), product: 'NRML',
       limit: 0, chaseAgg: 'low',
     });
@@ -371,7 +375,7 @@
           product: leg.product || 'NRML',
           order_type: hasLimit ? 'LIMIT' : 'MARKET',
           price: hasLimit ? Number(leg.limit) : 0,
-          variety: 'regular', account: acct,
+          variety: 'regular', account: leg.account || acct,
           chase: hasLimit, chase_aggressiveness: hasLimit ? (leg.chaseAgg || 'low') : 'low',
         });
       } catch (e) {

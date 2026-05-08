@@ -672,7 +672,7 @@ class OrdersController(Controller):
                 raise HTTPException(
                     status_code=422,
                     detail={"blocked": _pf["blocked"],
-                            "diagnostics": _pf["diagnostics"]},
+                            "diagnostics": _pf.get("diagnostics", {})},
                 )
 
             order_type = (data.order_type or "LIMIT")
@@ -762,6 +762,28 @@ class OrdersController(Controller):
                     status_code=400,
                     detail=f"{kite_msg} ({diag})"[:400],
                 )
+
+        # ── Paper preflight gate ──────────────────────────────────
+        # Catch obvious blockers (qty freeze, segment inactive)
+        # before the engine churns on an order that would never fill.
+        from backend.api.algo.actions import run_preflight as _run_pf_paper
+        _pfp = await _run_pf_paper(account, {
+            "exchange":         (data.exchange or "NFO"),
+            "tradingsymbol":    sym,
+            "quantity":         qty,
+            "order_type":       (data.order_type or "LIMIT"),
+            "product":          (data.product or "NRML"),
+            "variety":          (data.variety or "regular"),
+            "transaction_type": side,
+            "price":            data.price or 0,
+            "trigger_price":    data.trigger_price or 0,
+        })
+        if not _pfp["ok"]:
+            raise HTTPException(
+                status_code=422,
+                detail={"blocked": _pfp["blocked"],
+                        "diagnostics": _pfp.get("diagnostics", {})},
+            )
 
         # Persist AlgoOrder row first so the engine has an id to
         # reference back into.

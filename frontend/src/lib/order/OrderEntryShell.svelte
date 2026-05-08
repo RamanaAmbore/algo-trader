@@ -14,8 +14,9 @@
   // Ticket tab so existing callsites only need to swap the import
   // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
 
-  import { onMount, onDestroy } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents } from '$lib/api';
+  import { onMount } from 'svelte';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchAlgoOrdersRecent } from '$lib/api';
+  import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -95,6 +96,9 @@
   }
   let _activeTab = $state(/** @type {'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
 
+  // ── Bottom-panel tab state ───────────────────────────────────────────
+  let _bottomTab = $state(/** @type {'log'|'orders'} */ ('log'));
+
   // ── Basket state (shared across all tabs) ───────────────────────────
   // When basketMode is active (Chain tab is selected), submissions from
   // Command and Ticket tabs accumulate here instead of firing immediately.
@@ -136,7 +140,7 @@
           order_type:       hasLimit ? 'LIMIT' : 'MARKET',
           variety:          'regular',
           price:            hasLimit ? Number(leg.limit) : 0,
-          account:          leg.account || '',
+          account:          leg.account || account || '',
           chase:            hasLimit,
           chase_aggressiveness: hasLimit ? (leg.chaseAgg || 'low') : 'low',
         });
@@ -178,16 +182,25 @@
     addToBasket(leg);
   }
 
-  // ── Recent order events log ──────────────────────────────────────────
+  // ── Orders tab state ─────────────────────────────────────────────────
   let _events = $state(/** @type {any[]} */ ([]));
+  let _orders  = $state(/** @type {any[]} */ ([]));
   /** @type {ReturnType<typeof setInterval> | undefined} */
-  let _eventsPoll;
+  let _ordersPoll;
 
-  async function _loadEvents() {
+  const PENDING_STATUSES = new Set(['OPEN', 'TRIGGER PENDING', 'PENDING']);
+  const _ordersPending   = $derived(_orders.filter(o => PENDING_STATUSES.has(o.status)));
+  const _ordersCompleted = $derived(_orders.filter(o => !PENDING_STATUSES.has(o.status)));
+
+  async function _loadOrdersData() {
     try {
-      const res = await fetchOrderEvents(20, 'all');
-      _events = (Array.isArray(res) ? res : (res?.events ?? [])).slice(0, 20);
-    } catch (_) { /* silent — strip stays at last-good values */ }
+      const [evRes, ordRes] = await Promise.all([
+        fetchOrderEvents(20, 'all'),
+        fetchAlgoOrdersRecent(50, 'all'),
+      ]);
+      _events = (Array.isArray(evRes) ? evRes : (evRes?.events ?? [])).slice(0, 20);
+      _orders = (Array.isArray(ordRes) ? ordRes : (ordRes?.rows ?? ordRes ?? []));
+    } catch (_) { /* silent */ }
   }
 
   /** Format an ISO UTC timestamp string to HH:MM:SS in IST. */
@@ -203,30 +216,27 @@
     } catch (_) { return ts.slice(11, 19) || '--:--:--'; }
   }
 
-  // Close on Escape (only when the confirm overlay inside OrderTicket
-  // is NOT open — OrderTicket handles its own Escape for that).
+  // Close on Escape + always-on order-data poll (bottom panel is always visible).
   onMount(() => {
-    _loadEvents();
-    _eventsPoll = setInterval(_loadEvents, 3000);
-
     const onKey = (/** @type {KeyboardEvent} */ e) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
-
-  onDestroy(() => {
-    if (_eventsPoll) clearInterval(_eventsPoll);
+    _loadOrdersData();
+    _ordersPoll = setInterval(_loadOrdersData, 3000);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      if (_ordersPoll) { clearInterval(_ordersPoll); _ordersPoll = undefined; }
+    };
   });
 
   const TABS = /** @type {const} */ ([
-    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', mutedTxt: '#475569',
-      activeBg: 'rgba(125,211,252,0.14)', mutedBg: 'rgba(125,211,252,0.04)' },
-    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', mutedTxt: '#7e6a3b',
-      activeBg: 'rgba(251,191,36,0.14)',  mutedBg: 'rgba(251,191,36,0.04)' },
-    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', mutedTxt: '#3a604a',
-      activeBg: 'rgba(74,222,128,0.14)',   mutedBg: 'rgba(74,222,128,0.04)' },
+    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc',
+      activeBg: 'rgba(125,211,252,0.14)' },
+    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24',
+      activeBg: 'rgba(251,191,36,0.14)' },
+    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80',
+      activeBg: 'rgba(74,222,128,0.14)' },
   ]);
 
   // Effective OrderTicket props — merge _cmdOrderProps (from Command tab
@@ -276,8 +286,8 @@
           aria-selected={isActive}
           aria-disabled={disabled}
           style="
-            color: {isActive ? tab.activeTxt : '#64748b'};
-            background: {tab.activeBg};
+            color: {isActive ? tab.activeTxt : '#94a3b8'};
+            background: {isActive ? tab.activeBg : 'transparent'};
             border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
             font-weight: {isActive ? '800' : '600'};
             opacity: {disabled ? '0.5' : '1'};
@@ -298,8 +308,8 @@
     <div class="oes-body">
       {#if _activeTab === 'command'}
         <CommandLineTab
-          onParsedOrder={basketMode ? undefined : handleParsedOrder}
-          onAddToBasket={basketMode ? handleCmdAddToBasket : undefined}
+          onParsedOrder={handleParsedOrder}
+          onAddToBasket={handleCmdAddToBasket}
           prefillSide={side}
           prefillAccount={account}
           prefillSymbol={symbol}
@@ -361,6 +371,7 @@
               setTimeout(onClose, 400);
             }
           }} />
+
       {/if}
     </div>
 
@@ -380,25 +391,88 @@
       </div>
     {/if}
 
-    <!-- Recent order events log — always visible when the shell is open. -->
-    <div class="oes-eventlog">
-      <div class="oes-eventlog-head">Recent order events</div>
-      {#if _events.length}
-        <div class="oes-eventlog-body">
-          {#each _events as ev (ev.id)}
-            <div class="oes-event-row">
-              <span class="oes-event-time">{_fmtEventTime(ev.ts)}</span>
-              <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
-              <span class="oes-event-msg">
-                {ev.order_id ? `#${ev.order_id} · ` : ''}{ev.message ?? ''}
-              </span>
+    <!-- Bottom panel — Log / Orders — always visible. -->
+    <div class="oes-bottom-panel">
+      <div class="oes-bottom-tabs" role="tablist">
+        <button type="button" role="tab" class="oes-bottom-tab"
+                class:active={_bottomTab === 'log'}
+                aria-selected={_bottomTab === 'log'}
+                onclick={() => _bottomTab = 'log'}>Log</button>
+        <button type="button" role="tab" class="oes-bottom-tab"
+                class:active={_bottomTab === 'orders'}
+                aria-selected={_bottomTab === 'orders'}
+                onclick={() => _bottomTab = 'orders'}>
+          Orders
+          {#if _ordersPending.length > 0}
+            <span class="oes-bottom-badge">{_ordersPending.length}</span>
+          {/if}
+        </button>
+      </div>
+
+      <div class="oes-bottom-body">
+        {#if _bottomTab === 'log'}
+          {#if _events.length === 0}
+            <div class="oes-orders-empty">No recent events.</div>
+          {:else}
+            <div class="oes-events-list">
+              {#each _events as ev (ev.id)}
+                <div class="oes-event-row">
+                  <span class="oes-event-time">{_fmtEventTime(ev.ts)}</span>
+                  <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
+                  <span class="oes-event-msg">
+                    {#if ev.order_id}#{ev.order_id} · {/if}{ev.message ?? ''}
+                  </span>
+                </div>
+              {/each}
             </div>
-          {/each}
-        </div>
-      {:else}
-        <div class="oes-eventlog-empty">No recent order events.</div>
-      {/if}
+          {/if}
+
+        {:else}
+          <!-- PENDING orders -->
+          {#if _ordersPending.length === 0 && _ordersCompleted.length === 0}
+            <div class="oes-orders-empty">No orders yet.</div>
+          {:else}
+            {#if _ordersPending.length > 0}
+              <header class="oes-orders-head">PENDING <span class="oes-orders-count">{_ordersPending.length}</span></header>
+              {#each _ordersPending as o (o.id)}
+                <article class="oes-order-card">
+                  <div class="oes-card-head">
+                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase()}">{o.status}</span>
+                    <span class="oes-side oes-side-{(o.transaction_type ?? '').toLowerCase()}">{o.transaction_type}</span>
+                    <span class="oes-card-qty">{o.quantity}</span>
+                    <span class="oes-card-sym">{o.tradingsymbol}</span>
+                    <span class="oes-card-px">{priceFmt(o.initial_price ?? o.price ?? 0)}</span>
+                    {#if o.attempts > 0}<span class="oes-card-chase">chase #{o.attempts}</span>{/if}
+                  </div>
+                  <div class="oes-card-meta">
+                    acct={o.account ?? '—'} · #{o.id} · {_fmtEventTime(o.created_at)}
+                  </div>
+                </article>
+              {/each}
+            {/if}
+            {#if _ordersCompleted.length > 0}
+              <header class="oes-orders-head" style="margin-top: 0.3rem;">COMPLETED <span class="oes-orders-count">{_ordersCompleted.length}</span></header>
+              {#each _ordersCompleted.slice(0, 30) as o (o.id)}
+                <article class="oes-order-card oes-order-card-done">
+                  <div class="oes-card-head">
+                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase()}">{o.status}</span>
+                    <span class="oes-side oes-side-{(o.transaction_type ?? '').toLowerCase()}">{o.transaction_type}</span>
+                    <span class="oes-card-qty">{o.quantity}</span>
+                    <span class="oes-card-sym">{o.tradingsymbol}</span>
+                    <span class="oes-card-px">{priceFmt(o.fill_price ?? o.initial_price ?? 0)}</span>
+                  </div>
+                  <div class="oes-card-meta">
+                    acct={o.account ?? '—'} · #{o.id} · {_fmtEventTime(o.filled_at ?? o.created_at)}
+                    {#if o.slippage != null}· slip={priceFmt(o.slippage)}{/if}
+                  </div>
+                </article>
+              {/each}
+            {/if}
+          {/if}
+        {/if}
+      </div>
     </div>
+
   </div>
 </div>
 
@@ -628,26 +702,54 @@
     display: none !important;
   }
 
-  /* ── Recent order events log ─────────────────────────────────────── */
-  .oes-eventlog {
-    border-top: 1px solid rgba(125,211,252,0.18);
-    padding: 0.5rem 1rem 0.7rem;
+  /* ── Orders tab ──────────────────────────────────────────────────── */
+  .oes-orders-wrap {
+    max-height: 30rem;
+    overflow-y: auto;
+    padding: 0.5rem 0.75rem;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
-    background: rgba(15,23,42,0.55);
-    max-height: 9rem;
-    overflow-y: auto;
-    flex-shrink: 0;
   }
-  .oes-eventlog-head {
+  .oes-orders-section {
+    padding: 0.55rem 0;
+  }
+  .oes-orders-section + .oes-orders-section {
+    border-top: 1px solid rgba(255,255,255,0.07);
+  }
+  .oes-orders-head {
     color: #7e97b8;
     font-size: 0.55rem;
     letter-spacing: 0.08em;
     font-weight: 700;
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.35rem;
     text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
-  .oes-eventlog-body { display: flex; flex-direction: column; gap: 0.18rem; }
+  .oes-orders-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.1rem;
+    height: 1.1rem;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: rgba(192,132,252,0.2);
+    border: 1px solid rgba(192,132,252,0.5);
+    color: #c084fc;
+    font-size: 0.55rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-orders-empty {
+    color: #7e97b8;
+    font-style: italic;
+    padding: 0.3rem 0;
+  }
+
+  /* Event rows inside the Orders tab */
+  .oes-events-list { display: flex; flex-direction: column; gap: 0.18rem; }
   .oes-event-row {
     display: grid;
     grid-template-columns: 4.5rem 6rem 1fr;
@@ -675,10 +777,128 @@
   .oes-event-kind-cancel          { color: #94a3b8; }
   .oes-event-kind-postback        { color: #c084fc; }
   .oes-event-msg { color: #c8d8f0; }
-  .oes-eventlog-empty {
+
+  /* Order cards */
+  .oes-order-card {
+    background: rgba(15,23,42,0.6);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 3px;
+    padding: 0.35rem 0.55rem;
+    margin-bottom: 0.3rem;
+  }
+  .oes-order-card-done {
+    opacity: 0.75;
+  }
+  .oes-card-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.5rem;
+    font-size: 0.62rem;
+    font-weight: 700;
+  }
+  .oes-card-meta {
+    margin-top: 0.2rem;
+    font-size: 0.58rem;
     color: #7e97b8;
-    font-style: italic;
-    text-align: center;
-    padding: 0.4rem 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-card-sym  { color: #c8d8f0; font-weight: 800; }
+  .oes-card-qty  { color: #c8d8f0; font-variant-numeric: tabular-nums; }
+  .oes-card-px   { color: #c8d8f0; font-variant-numeric: tabular-nums; }
+  .oes-card-chase {
+    font-size: 0.55rem;
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,0.4);
+    padding: 0 0.3rem;
+    border-radius: 2px;
+  }
+
+  /* Status pills */
+  .oes-status {
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0.1rem 0.3rem;
+    border-radius: 2px;
+  }
+  .oes-status-open,
+  .oes-status-pending,
+  .oes-status-trigger\\ pending { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
+  .oes-status-filled            { background: rgba(34,197,94,0.12);  color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
+  .oes-status-unfilled,
+  .oes-status-rejected          { background: rgba(239,68,68,0.12);  color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
+  .oes-status-cancelled         { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+
+  /* Side pills */
+  .oes-side {
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0.1rem 0.3rem;
+    border-radius: 2px;
+  }
+  .oes-side-buy  { background: rgba(74,222,128,0.12); color: #4ade80; border: 1px solid rgba(74,222,128,0.35); }
+  .oes-side-sell { background: rgba(248,113,113,0.12); color: #f87171; border: 1px solid rgba(248,113,113,0.35); }
+
+  /* ── Bottom panel (Log / Orders) ──────────────────────────────────── */
+  .oes-bottom-panel {
+    border-top: 1px solid rgba(255,255,255,0.10);
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    flex-shrink: 0;
+  }
+  .oes-bottom-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+  }
+  .oes-bottom-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.35rem 0.65rem;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .oes-bottom-tab.active {
+    color: #c084fc;
+    border-bottom-color: #c084fc;
+    font-weight: 800;
+  }
+  .oes-bottom-tab:hover:not(.active) { color: #c8d8f0; }
+  .oes-bottom-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.0rem;
+    height: 1.0rem;
+    padding: 0 0.2rem;
+    border-radius: 999px;
+    background: rgba(192,132,252,0.22);
+    border: 1px solid rgba(192,132,252,0.55);
+    color: #c084fc;
+    font-size: 0.52rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .oes-bottom-body {
+    max-height: 14rem;
+    overflow-y: auto;
+    padding: 0.45rem 0.75rem;
   }
 </style>

@@ -169,6 +169,25 @@
   $effect(() => {
     if (_lotSize > 0) _qty = _lots * _lotSize;
   });
+
+  // When the operator flips side, reset to 1 lot (ADD direction) or
+  // restore the held qty (CLOSE direction). "ADD" = same direction as
+  // the existing position; "CLOSE" = opposite.
+  let _prevSide = _side;
+  $effect(() => {
+    if (!currentQty || currentQty === 0 || _lotSize <= 0) return;
+    const cur = _side;
+    if (cur === _prevSide) return;
+    _prevSide = cur;
+    const isAdd = (currentQty > 0 && cur === 'BUY') ||
+                  (currentQty < 0 && cur === 'SELL');
+    if (isAdd) {
+      _lots = 1;
+    } else {
+      _lots = Math.max(1, Math.round(Math.abs(currentQty) / _lotSize));
+    }
+  });
+
   function stepLots(/** @type {number} */ delta) {
     _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
   }
@@ -394,6 +413,7 @@
       side:     _side,
       sym:      symbol,
       exchange: exchange || 'NFO',
+      account:  _account,
       lots:     Math.max(1, Number(_lots) || 1),
       lotSize:  Number(_lotSize) || 1,
       product:  _product,
@@ -871,9 +891,6 @@
 
     {#if validationErr}
       <div class="ot-err">{validationErr}</div>
-    {/if}
-    {#if submitErr}
-      <div class="ot-err">{submitErr}</div>
     {/if}
     {#if submitOk}
       <div class="ot-ok">✓ {submitOk}</div>

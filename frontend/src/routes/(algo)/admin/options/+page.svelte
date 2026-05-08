@@ -1540,7 +1540,7 @@
                   account:    _ticketAccountDefault(),
                 });
               }
-            }}>OChain</button>
+            }}>Chain</button>
   </div>
 </div>
 
