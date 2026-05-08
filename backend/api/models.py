@@ -6,7 +6,7 @@ import secrets as _secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -373,6 +373,41 @@ class NewsHeadline(Base):
 # through the /admin/brokers UI and the Connections singleton reloads
 # from here without a service restart.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Daily book — per-account, per-symbol end-of-day snapshot for P&L tracking
+# ---------------------------------------------------------------------------
+
+class DailyBook(Base):
+    """Per-account, per-symbol daily snapshot — feeds the P&L
+    date-range page. One row per (date, account, kind, symbol)."""
+    __tablename__ = "daily_book"
+
+    id: Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    date: Mapped[datetime]     = mapped_column(Date, nullable=False, index=True)
+    account: Mapped[str]       = mapped_column(String(32), nullable=False, index=True)
+    segment: Mapped[str]       = mapped_column(String(16), nullable=False)   # 'equity' | 'commodity' | 'currency' | 'derivatives'
+    kind: Mapped[str]          = mapped_column(String(16), nullable=False)   # 'holdings' | 'positions' | 'trades'
+    symbol: Mapped[str]        = mapped_column(String(64), nullable=False)
+    exchange: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    qty: Mapped[int]           = mapped_column(Integer, nullable=False, default=0)
+    avg_cost: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
+    ltp: Mapped[Optional[float]]      = mapped_column(Numeric, nullable=True)
+    day_pnl: Mapped[Optional[float]]  = mapped_column(Numeric, nullable=True)
+    total_pnl: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
+    payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # raw row for forensics
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        # One snapshot per symbol per day per account per kind. Re-running
+        # the snapshot updates the row instead of duplicating.
+        UniqueConstraint("date", "account", "kind", "symbol", name="uq_daily_book_day_acct_kind_sym"),
+    )
+
 
 class BrokerAccount(Base):
     __tablename__ = "broker_accounts"

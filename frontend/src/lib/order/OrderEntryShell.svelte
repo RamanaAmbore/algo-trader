@@ -15,7 +15,7 @@
   // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
 
   import { onMount } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchOrders } from '$lib/api';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchOrders, fetchRecentAgentEvents, fetchAlgoOrdersRecent } from '$lib/api';
   import { logTime } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
@@ -184,8 +184,10 @@
   }
 
   // ── Orders tab state ─────────────────────────────────────────────────
-  let _events = $state(/** @type {any[]} */ ([]));
-  let _orders  = $state(/** @type {any[]} */ ([]));
+  let _events       = $state(/** @type {any[]} */ ([]));
+  let _agentEvents  = $state(/** @type {any[]} */ ([]));
+  let _orders       = $state(/** @type {any[]} */ ([]));
+  let _algoRejected = $state(/** @type {any[]} */ ([]));
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let _ordersPoll;
 
@@ -195,19 +197,56 @@
     'OPEN', 'TRIGGER PENDING', 'VALIDATION PENDING', 'PENDING',
   ]);
   const _ordersPending   = $derived(_orders.filter(o => PENDING_STATUSES.has(o.status)));
-  const _ordersCompleted = $derived(_orders.filter(o => !PENDING_STATUSES.has(o.status)));
+
+  // Completed section: Kite terminal orders + LOCAL REJECTED algo_orders.
+  // Local rows carry a `_local: true` flag so the template can render
+  // a "LOCAL" chip distinguishing "we blocked it" from "broker rejected".
+  const _ordersCompleted = $derived.by(() => {
+    const kite = /** @type {any[]} */ (_orders).filter(o => !PENDING_STATUSES.has(o.status));
+    const local = /** @type {any[]} */ (_algoRejected).map(o => ({ .../** @type {any} */ (o), _local: true }));
+    return [...kite, ...local]
+      .sort((a, b) => {
+        const ta = a.exchange_update_timestamp ?? a.order_timestamp ?? a.filled_at ?? a.created_at ?? '';
+        const tb = b.exchange_update_timestamp ?? b.order_timestamp ?? b.filled_at ?? b.created_at ?? '';
+        return (tb || '').localeCompare(ta || '');
+      })
+      .slice(0, 30);
+  });
+
+  // Unified log: merge algo_order events + agent events, sorted newest-first.
+  const _unifiedLog = $derived.by(() => {
+    const orderRows = /** @type {any[]} */ (_events).map(ev => ({ .../** @type {any} */ (ev), _key: 'o' + /** @type {any} */ (ev).id }));
+    const agentRows = /** @type {any[]} */ (_agentEvents).map((/** @type {any} */ ev) => ({
+      id:          ev.id,
+      ts:          ev.triggered_at ?? ev.ts ?? '',
+      kind:        ev.event_type ?? 'agent_fire',
+      message:     ev.message ?? ev.detail ?? '',
+      agent_slug:  ev.agent_slug ?? ev.slug ?? null,
+      order_id:    null,
+      _key:        'a' + ev.id,
+    }));
+    return /** @type {any[]} */ ([...orderRows, ...agentRows])
+      .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''))
+      .slice(0, 30);
+  });
 
   async function _loadOrdersData() {
     try {
-      const [evRes, ordRes] = await Promise.all([
+      const [evRes, ordRes, agentEvRes, algoRejRes] = await Promise.all([
         fetchOrderEvents(20, 'all'),
         // Real Kite broker orders — same source the /orders page uses,
         // so the operator sees every order across accounts including
         // ones placed manually via the Kite app.
         fetchOrders(),
+        fetchRecentAgentEvents(20),
+        // Local REJECTED algo_orders that never reached Kite (preflight blocks).
+        fetchAlgoOrdersRecent(20, 'live'),
       ]);
-      _events = (Array.isArray(evRes) ? evRes : (evRes?.events ?? [])).slice(0, 20);
-      _orders = (Array.isArray(ordRes) ? ordRes : (ordRes?.rows ?? ordRes ?? []));
+      _events       = (Array.isArray(evRes) ? evRes : (evRes?.events ?? [])).slice(0, 20);
+      _orders       = (Array.isArray(ordRes) ? ordRes : (ordRes?.rows ?? ordRes ?? []));
+      _agentEvents  = (Array.isArray(agentEvRes) ? agentEvRes : (agentEvRes?.events ?? [])).slice(0, 20);
+      const allAlgo = (Array.isArray(algoRejRes) ? algoRejRes : (algoRejRes?.orders ?? algoRejRes ?? []));
+      _algoRejected = allAlgo.filter((/** @type {any} */ o) => (o.status ?? '').toUpperCase() === 'REJECTED');
     } catch (_) { /* silent */ }
   }
 
@@ -417,16 +456,18 @@
 
       <div class="oes-bottom-body">
         {#if _bottomTab === 'log'}
-          {#if _events.length === 0}
+          {#if _unifiedLog.length === 0}
             <div class="oes-orders-empty">No recent events.</div>
           {:else}
             <div class="oes-events-list">
-              {#each _events as ev (ev.id)}
+              {#each _unifiedLog as ev (ev._key)}
                 <div class="oes-event-row">
                   <span class="oes-event-time">{_fmtEventTime(ev.ts)}</span>
                   <span class="oes-event-line">
                     <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
-                    <span class="oes-event-msg">{#if ev.order_id}#{ev.order_id} · {/if}{ev.message ?? ''}</span>
+                    <span class="oes-event-msg">
+                      {#if ev.order_id}#{ev.order_id} · {/if}{#if ev.agent_slug}[{ev.agent_slug}] · {/if}{ev.message ?? ''}
+                    </span>
                   </span>
                 </div>
               {/each}
@@ -458,14 +499,15 @@
             {/if}
             {#if _ordersCompleted.length > 0}
               <header class="oes-orders-head" style="margin-top: 0.3rem;">COMPLETED <span class="oes-orders-count">{_ordersCompleted.length}</span></header>
-              {#each _ordersCompleted.slice(0, 30) as o (o.order_id ?? o.id)}
+              {#each _ordersCompleted as o (o.order_id ?? o.id)}
                 <article class="oes-order-card oes-order-card-done">
                   <div class="oes-card-head">
                     <span class="oes-status oes-status-{(o.status ?? '').toLowerCase().replace(/\s+/g, '-')}">{o.status}</span>
-                    <span class="oes-side oes-side-{(o.transaction_type ?? '').toLowerCase()}">{o.transaction_type}</span>
+                    {#if o._local}<span class="oes-local-chip">LOCAL</span>{/if}
+                    <span class="oes-side oes-side-{(o.transaction_type ?? o.side ?? '').toLowerCase()}">{o.transaction_type ?? o.side}</span>
                     <span class="oes-card-qty">{o.quantity}</span>
                     <span class="oes-card-sym">{o.tradingsymbol}</span>
-                    <span class="oes-card-px">{priceFmt(o.average_price ?? o.fill_price ?? o.price ?? 0)}</span>
+                    <span class="oes-card-px">{priceFmt(o.average_price ?? o.fill_price ?? o.price ?? o.initial_price ?? 0)}</span>
                   </div>
                   <div class="oes-card-meta">
                     acct={o.account ?? '—'} · #{o.order_id ?? o.id} ·
@@ -795,6 +837,14 @@
   .oes-event-kind-preflight_block { color: #ef4444; }
   .oes-event-kind-cancel          { color: #94a3b8; }
   .oes-event-kind-postback        { color: #c084fc; }
+  /* Agent-sourced event kinds — violet/pink palette so "rule fired"
+     is instantly distinguishable from "manual order" events.         */
+  .oes-event-kind-agent_fire          { color: #e879f9; }
+  .oes-event-kind-agent_match         { color: #d946ef; }
+  .oes-event-kind-agent_action_success { color: #a855f7; }
+  .oes-event-kind-agent_action_error  { color: #f472b6; }
+  .oes-event-kind-agent_skipped       { color: #94a3b8; }
+  .oes-event-kind-agent_paused        { color: #7e97b8; }
   .oes-event-msg { color: #c8d8f0; }
 
   /* Order cards */
@@ -851,6 +901,18 @@
   .oes-status-unfilled,
   .oes-status-rejected            { background: rgba(239,68,68,0.12);  color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
   .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+  /* LOCAL chip — marks algo_order rows that never reached Kite (preflight blocks). */
+  .oes-local-chip {
+    font-size: 0.52rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.1rem 0.3rem;
+    border-radius: 2px;
+    background: rgba(251,191,36,0.12);
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,0.35);
+  }
 
   /* Side pills */
   .oes-side {

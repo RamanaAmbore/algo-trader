@@ -526,6 +526,48 @@ async def _task_expiry_check() -> None:
             logger.error(f"Background: expiry check failed: {e}")
 
 
+async def _task_daily_snapshot() -> None:
+    """
+    Capture a daily book snapshot once at startup (so a fresh deploy immediately
+    has today's data) and then every day at 15:35 IST (5 min after equity close).
+    """
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+
+    # Fire one snapshot immediately at startup so the table is populated
+    # without waiting until 15:35.
+    try:
+        result = await snapshot_daily_book()
+        logger.info(
+            f"Background: startup daily snapshot — "
+            f"accounts={result['accounts']} "
+            f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
+            f"errors={result['errors']}"
+        )
+    except Exception as e:
+        logger.error(f"Background: startup daily snapshot failed: {e}")
+
+    while True:
+        now = timestamp_indian()
+        # Schedule for 15:35 IST (5 min after NSE equity close at 15:30)
+        snap_time = now.replace(hour=15, minute=35, second=0, microsecond=0)
+        if now >= snap_time:
+            snap_time += timedelta(days=1)
+        sleep_s = (snap_time - now).total_seconds()
+        logger.info(f"Background: daily snapshot sleeping {sleep_s/3600:.1f}h until 15:35 IST")
+        await asyncio.sleep(sleep_s)
+
+        try:
+            result = await snapshot_daily_book()
+            logger.info(
+                f"Background: daily snapshot complete — "
+                f"accounts={result['accounts']} "
+                f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
+                f"errors={result['errors']}"
+            )
+        except Exception as e:
+            logger.error(f"Background: daily snapshot failed: {e}")
+
+
 async def _task_instruments() -> None:
     """Warm the Kite instrument cache once at startup and daily at 08:00 IST."""
     from backend.api.routes.instruments import _fetch_instruments
@@ -562,11 +604,12 @@ async def on_startup(app) -> None:
     from backend.api.routes.algo import start_persist_flush
     start_persist_flush()
     app.state.bg_tasks = [
-        asyncio.create_task(_task_market(state),      name="bg-market"),
-        asyncio.create_task(_task_performance(state), name="bg-performance"),
-        asyncio.create_task(_task_close(state),       name="bg-close"),
-        asyncio.create_task(_task_expiry_check(),     name="bg-expiry"),
-        asyncio.create_task(_task_instruments(),      name="bg-instruments"),
+        asyncio.create_task(_task_market(state),        name="bg-market"),
+        asyncio.create_task(_task_performance(state),   name="bg-performance"),
+        asyncio.create_task(_task_close(state),         name="bg-close"),
+        asyncio.create_task(_task_expiry_check(),       name="bg-expiry"),
+        asyncio.create_task(_task_instruments(),        name="bg-instruments"),
+        asyncio.create_task(_task_daily_snapshot(),     name="bg-daily-snapshot"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes
@@ -593,10 +636,10 @@ async def on_startup(app) -> None:
                                 name="bg-paper-chase")
         )
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, paper-chase)")
+                    "expiry, instruments, daily-snapshot, paper-chase)")
     else:
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments) — live agent engine + paper engine OFF on non-main")
+                    "expiry, instruments, daily-snapshot) — live agent engine + paper engine OFF on non-main")
 
 
 async def on_shutdown(app) -> None:

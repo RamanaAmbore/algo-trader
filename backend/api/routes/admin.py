@@ -39,6 +39,18 @@ def _resolve_log() -> Path:
 # Schemas (msgspec)
 # ---------------------------------------------------------------------------
 
+class SnapshotRequest(msgspec.Struct):
+    date: str  # ISO format: YYYY-MM-DD or 'today'
+
+
+class SnapshotResponse(msgspec.Struct):
+    accounts: list[str]
+    holdings_rows: int
+    positions_rows: int
+    trades_rows: int
+    errors: list[str]
+
+
 class ExecRequest(msgspec.Struct):
     command: str
 
@@ -280,6 +292,47 @@ class AdminController(Controller):
             await session.commit()
         logger.info(f"Admin: updated user {username!r}")
         return {"detail": f"User {username!r} updated"}
+
+    @post("/pnl/snapshot", status_code=200)
+    async def trigger_pnl_snapshot(self, data: SnapshotRequest) -> SnapshotResponse:
+        """
+        Manually trigger a daily book snapshot for the given date.
+
+        Body: {"date": "YYYY-MM-DD"} or {"date": "today"}.
+
+        NOTE: trades are only available for today's IST date. Passing a past
+        date captures holdings + positions only; trades rows will be zero.
+        """
+        from datetime import date as dt_date
+        from backend.api.algo.daily_snapshot import snapshot_daily_book
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+
+        date_str = (data.date or "").strip()
+        if not date_str or date_str.lower() == "today":
+            target = timestamp_indian().date()
+        else:
+            try:
+                target = dt_date.fromisoformat(date_str)
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"Invalid date: {date_str!r} — use YYYY-MM-DD")
+
+        try:
+            result = await snapshot_daily_book(target_date=target)
+        except Exception as e:
+            logger.error(f"Admin: pnl snapshot failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        logger.info(
+            f"Admin: pnl snapshot triggered for {target} — "
+            f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']}"
+        )
+        return SnapshotResponse(
+            accounts=result["accounts"],
+            holdings_rows=result["holdings_rows"],
+            positions_rows=result["positions_rows"],
+            trades_rows=result["trades_rows"],
+            errors=result["errors"],
+        )
 
     @delete("/users/{username:str}", status_code=200)
     async def delete_user(self, username: str) -> dict:

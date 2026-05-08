@@ -51,19 +51,32 @@ def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
     return m
 
 
+def _radial_face(size: int) -> Image.Image:
+    """Navy face with a subtle radial highlight: #101e35 at centre, #0d1829 at edge."""
+    img = Image.new("RGBA", (size, size), (13, 24, 41, 255))
+    # Composite a centre-brighter ellipse (16,30,53) at ~30 % alpha over the inner 60 %.
+    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    cx = cy = size / 2
+    r = size * 0.30  # inner 60 % diameter
+    od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(16, 30, 53, 77))  # ~30 % alpha
+    img = Image.alpha_composite(img, overlay)
+    return img
+
+
 def build(size: int, source: Image.Image) -> Image.Image:
-    canvas = Image.new("RGBA", (size, size), NAVY)
+    canvas = _radial_face(size)
     bull_size = int(round(size * BULL_INSET))
     bull = source.resize((bull_size, bull_size), Image.LANCZOS)
     cx_px = cy_px = size / 2
     bx = int(cx_px - bull_size / 2)
     by = int(cy_px - bull_size / 2)
 
-    # Amber halo — matches navbar brand-logo intensity (α 0.45 outer / 0.75 inner).
+    # Amber halo — bumped intensity (α 0.55 outer / 0.85 inner).
     outer_std = 12 * size / 512
     inner_std = 6 * size / 512
-    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.45), (bx, by))
-    canvas.alpha_composite(_glow_layer(bull, inner_std, 0.75), (bx, by))
+    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.55), (bx, by))
+    canvas.alpha_composite(_glow_layer(bull, inner_std, 0.85), (bx, by))
     canvas.alpha_composite(bull, (bx, by))
 
     # 3D beveled gold ring — vertical gradient masked to an annulus +
@@ -74,10 +87,10 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        (0.00, (0xfd, 0xe6, 0x8a)),  # bright top
-        (0.35, (0xfb, 0xbf, 0x24)),  # mid amber
-        (0.65, (0xd4, 0x92, 0x0c)),  # deep amber
-        (1.00, (0x7c, 0x2d, 0x12)),  # burnt umber bottom
+        (0.00, (0xff, 0xf7, 0xc2)),  # bright champagne top
+        (0.35, (0xfa, 0xcc, 0x15)),  # mid amber
+        (0.65, (0xb4, 0x53, 0x09)),  # deep amber-brown
+        (1.00, (0x45, 0x1a, 0x03)),  # near-black umber bottom
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -86,7 +99,7 @@ def build(size: int, source: Image.Image) -> Image.Image:
     # Drop shadow under the ring — push it off the navy face.
     shadow_alpha = annulus.filter(ImageFilter.GaussianBlur(radius=size * 0.012))
     shadow_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    shadow_color = Image.new("RGBA", (size, size), (0, 0, 0, 130))
+    shadow_color = Image.new("RGBA", (size, size), (10, 10, 10, 153))  # flood-opacity 0.6
     shadow_layer = Image.composite(shadow_color, shadow_layer, shadow_alpha)
     offset = int(round(size * (4 / 512)))
     shifted = Image.new("RGBA", (size, size), (0, 0, 0, 0))
