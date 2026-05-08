@@ -73,6 +73,7 @@
     { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
     // ── Analyze ──
     { href: '/admin/options',    label: 'Options',   group: 'analyze' },
+    { href: '/admin/pnl',        label: 'P&L',       adminOnly: true, group: 'analyze' },
     // ── Modes ──
     { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
     // ── Build / extend ──

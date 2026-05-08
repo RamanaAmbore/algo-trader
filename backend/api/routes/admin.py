@@ -5,18 +5,26 @@ GET  /api/admin/logs               — tail the app log file (last N lines)
 POST /api/admin/exec               — run a shell command and return output
 GET  /api/admin/users              — list all users (no password hashes)
 DELETE /api/admin/users/{username}  — deactivate a user
+GET  /api/admin/pnl/range          — date-range P&L breakdown
+POST /api/admin/pnl/upload-csv     — backfill daily_book from Kite Console CSV
 
 All routes require admin JWT via admin_guard.
 """
 
+import io
 import os
 import subprocess
+from datetime import date as dt_date
 from pathlib import Path
+from typing import Any
 
 import msgspec
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import UploadFile
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
-from sqlalchemy import select
+from litestar.params import Body
+from sqlalchemy import select, text
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session
@@ -38,6 +46,29 @@ def _resolve_log() -> Path:
 # ---------------------------------------------------------------------------
 # Schemas (msgspec)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# P&L range schemas
+# ---------------------------------------------------------------------------
+
+class PnlRangeResponse(msgspec.Struct):
+    from_date: str
+    to_date: str
+    segment: str
+    kind: str
+    by_segment: list[dict]    # [{segment, total_pnl, day_pnl, n_rows}]
+    by_account: list[dict]    # [{account, segment, kind, total_pnl, day_pnl, n_rows}]
+    by_symbol:  list[dict]    # [{symbol, segment, total_pnl, day_pnl, n_rows}] top-50
+    daily_series: list[dict]  # [{date, total_pnl, day_pnl}]
+    summary: dict             # {total_pnl, day_pnl, n_dates, n_accounts}
+
+
+class PnlCsvUploadResponse(msgspec.Struct):
+    inserted: int
+    updated: int
+    skipped: int
+    sample: list[dict]
+
 
 class SnapshotRequest(msgspec.Struct):
     date: str  # ISO format: YYYY-MM-DD or 'today'
@@ -292,6 +323,372 @@ class AdminController(Controller):
             await session.commit()
         logger.info(f"Admin: updated user {username!r}")
         return {"detail": f"User {username!r} updated"}
+
+    # ------------------------------------------------------------------
+    # P&L range endpoint
+    # ------------------------------------------------------------------
+
+    @get("/pnl/range")
+    async def pnl_range(
+        self,
+        from_date: str | None = None,
+        to_date:   str | None = None,
+        segment:   str = "all",
+        kind:      str = "all",
+    ) -> PnlRangeResponse:
+        """
+        Date-range P&L breakdown from the daily_book table.
+
+        Query params:
+          from=YYYY-MM-DD   (default: today IST)
+          to=YYYY-MM-DD     (default: today IST)
+          segment=all|equity|commodity|currency|derivatives
+          kind=all|holdings|positions
+        """
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+
+        today_str = timestamp_indian().date().isoformat()
+        from_str = (from_date or "").strip() or today_str
+        to_str   = (to_date   or "").strip() or today_str
+
+        try:
+            d_from = dt_date.fromisoformat(from_str)
+            d_to   = dt_date.fromisoformat(to_str)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid date format: {exc}")
+
+        if d_from > d_to:
+            raise HTTPException(
+                status_code=422,
+                detail=f"from ({from_str}) must be <= to ({to_str})",
+            )
+
+        seg_filter  = segment.strip().lower()
+        kind_filter = kind.strip().lower()
+
+        # Build optional WHERE clauses
+        seg_clause  = " AND segment = :segment"  if seg_filter  != "all" else ""
+        kind_clause = " AND kind = :kind"         if kind_filter != "all" else ""
+        base_where  = f"date BETWEEN :d_from AND :d_to{seg_clause}{kind_clause}"
+        # Exclude 'trades' kind from P&L aggregations (no pnl columns)
+        pnl_where   = f"{base_where} AND kind != 'trades'"
+
+        params: dict[str, Any] = {"d_from": d_from, "d_to": d_to}
+        if seg_filter  != "all": params["segment"] = seg_filter
+        if kind_filter != "all": params["kind"]    = kind_filter
+
+        # ------------------------------------------------------------------
+        # Helper: cast to float safely
+        # ------------------------------------------------------------------
+        def _f(v: Any) -> float:
+            try:
+                return float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
+        async with async_session() as session:
+
+            # 1 — by_segment
+            seg_sql = text(f"""
+                SELECT segment,
+                       SUM(total_pnl) AS total_pnl,
+                       SUM(day_pnl)   AS day_pnl,
+                       COUNT(*)       AS n_rows
+                FROM daily_book
+                WHERE {pnl_where}
+                GROUP BY segment
+                ORDER BY segment
+            """)
+            seg_rows = (await session.execute(seg_sql, params)).fetchall()
+            by_segment = [
+                {
+                    "segment":   r[0],
+                    "total_pnl": _f(r[1]),
+                    "day_pnl":   _f(r[2]),
+                    "n_rows":    int(r[3]),
+                }
+                for r in seg_rows
+            ]
+
+            # 2 — by_account  (latest-snapshot total_pnl per (account,symbol)
+            #                  + sum of day_pnl across the range)
+            acct_sql = text(f"""
+                SELECT account,
+                       segment,
+                       kind,
+                       SUM(total_pnl) AS total_pnl,
+                       SUM(day_pnl)   AS day_pnl,
+                       COUNT(*)       AS n_rows
+                FROM daily_book
+                WHERE {pnl_where}
+                GROUP BY account, segment, kind
+                ORDER BY account, segment, kind
+            """)
+            acct_rows = (await session.execute(acct_sql, params)).fetchall()
+            by_account = [
+                {
+                    "account":   r[0],
+                    "segment":   r[1],
+                    "kind":      r[2],
+                    "total_pnl": _f(r[3]),
+                    "day_pnl":   _f(r[4]),
+                    "n_rows":    int(r[5]),
+                }
+                for r in acct_rows
+            ]
+
+            # 3 — by_symbol  top-50 by abs(total_pnl)
+            sym_sql = text(f"""
+                SELECT symbol,
+                       segment,
+                       SUM(total_pnl) AS total_pnl,
+                       SUM(day_pnl)   AS day_pnl,
+                       COUNT(*)       AS n_rows
+                FROM daily_book
+                WHERE {pnl_where}
+                GROUP BY symbol, segment
+                ORDER BY ABS(SUM(total_pnl)) DESC
+                LIMIT 50
+            """)
+            sym_rows = (await session.execute(sym_sql, params)).fetchall()
+            by_symbol = [
+                {
+                    "symbol":    r[0],
+                    "segment":   r[1],
+                    "total_pnl": _f(r[2]),
+                    "day_pnl":   _f(r[3]),
+                    "n_rows":    int(r[4]),
+                }
+                for r in sym_rows
+            ]
+
+            # 4 — daily_series  one row per date
+            daily_sql = text(f"""
+                SELECT date,
+                       SUM(total_pnl) AS total_pnl,
+                       SUM(day_pnl)   AS day_pnl
+                FROM daily_book
+                WHERE {pnl_where}
+                GROUP BY date
+                ORDER BY date
+            """)
+            daily_rows = (await session.execute(daily_sql, params)).fetchall()
+            daily_series = [
+                {
+                    "date":      str(r[0]),
+                    "total_pnl": _f(r[1]),
+                    "day_pnl":   _f(r[2]),
+                }
+                for r in daily_rows
+            ]
+
+            # 5 — summary
+            summ_sql = text(f"""
+                SELECT SUM(total_pnl)           AS total_pnl,
+                       SUM(day_pnl)             AS day_pnl,
+                       COUNT(DISTINCT date)     AS n_dates,
+                       COUNT(DISTINCT account)  AS n_accounts
+                FROM daily_book
+                WHERE {pnl_where}
+            """)
+            summ = (await session.execute(summ_sql, params)).fetchone()
+
+        summary: dict[str, Any] = {
+            "total_pnl":  _f(summ[0]) if summ else 0.0,
+            "day_pnl":    _f(summ[1]) if summ else 0.0,
+            "n_dates":    int(summ[2]) if summ and summ[2] else 0,
+            "n_accounts": int(summ[3]) if summ and summ[3] else 0,
+        }
+
+        return PnlRangeResponse(
+            from_date=from_str,
+            to_date=to_str,
+            segment=seg_filter,
+            kind=kind_filter,
+            by_segment=by_segment,
+            by_account=by_account,
+            by_symbol=by_symbol,
+            daily_series=daily_series,
+            summary=summary,
+        )
+
+    # ------------------------------------------------------------------
+    # P&L CSV upload  (Kite Console P&L Statement)
+    # ------------------------------------------------------------------
+
+    @post("/pnl/upload-csv", status_code=200)
+    async def pnl_upload_csv(
+        self,
+        data: Body(media_type=RequestEncodingType.MULTI_PART),  # type: ignore[valid-type]
+    ) -> PnlCsvUploadResponse:
+        """
+        Upload a Kite Console P&L Statement CSV to backfill daily_book.
+
+        Form fields:
+          account  — broker account code this CSV belongs to
+          date     — as-of date (YYYY-MM-DD or 'today')  [default: today IST]
+          file     — the CSV file
+        """
+        import csv as csv_mod
+        from backend.api.algo.daily_snapshot import kite_seg_from_exchange, _UPSERT_SQL
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        from datetime import datetime, timezone
+
+        account_val: str = data.get("account", "") if isinstance(data, dict) else ""
+        date_val:    str = data.get("date",    "") if isinstance(data, dict) else ""
+        file_upload: UploadFile | None = data.get("file") if isinstance(data, dict) else None
+
+        # Litestar delivers multipart as a dict-like object; handle both dict and
+        # attribute access depending on Litestar version.
+        if not isinstance(data, dict):
+            account_val = getattr(data, "account", "") or ""
+            date_val    = getattr(data, "date",    "") or ""
+            file_upload = getattr(data, "file",    None)
+
+        account_val = (account_val or "").strip()
+        date_val    = (date_val    or "").strip()
+
+        if not account_val:
+            raise HTTPException(status_code=422, detail="account field is required")
+        if file_upload is None:
+            raise HTTPException(status_code=422, detail="file field is required")
+
+        today_str = timestamp_indian().date().isoformat()
+        if not date_val or date_val.lower() == "today":
+            target = dt_date.fromisoformat(today_str)
+        else:
+            try:
+                target = dt_date.fromisoformat(date_val)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422, detail=f"Invalid date: {date_val!r} — use YYYY-MM-DD"
+                )
+
+        raw_bytes = await file_upload.read()
+        if not raw_bytes:
+            raise HTTPException(status_code=422, detail="Uploaded file is empty")
+
+        # Kite CSV may be UTF-8 or Windows-1252
+        try:
+            text_content = raw_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text_content = raw_bytes.decode("cp1252", errors="replace")
+
+        reader = csv_mod.DictReader(io.StringIO(text_content))
+        if reader.fieldnames is None:
+            raise HTTPException(status_code=422, detail="CSV has no header row")
+
+        # Normalise fieldnames to stripped lower-case
+        lower_fields = {f.strip().lower() for f in reader.fieldnames}
+
+        # The symbol column has two common aliases; exchange must be present.
+        # Use alias resolution to check: at least one of the tradingsymbol
+        # aliases AND the exchange column must exist in the header.
+        _TS_ALIASES  = {"tradingsymbol", "trading symbol", "symbol"}
+        has_symbol   = bool(lower_fields & _TS_ALIASES)
+        has_exchange = "exchange" in lower_fields
+        missing: list[str] = []
+        if not has_symbol:
+            missing.append("tradingsymbol (or 'Trading Symbol' / 'Symbol')")
+        if not has_exchange:
+            missing.append("exchange")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"CSV missing required columns: {missing}"
+            )
+
+        # Column aliases (Kite Console column names vary by report type)
+        _COL = {
+            "tradingsymbol": ["tradingsymbol", "trading symbol", "symbol"],
+            "exchange":      ["exchange"],
+            "qty":           ["open quantity", "quantity", "open_quantity"],
+            "avg_cost":      ["open average", "open average price", "average_price", "buy average"],
+            "ltp":           ["previous closing price", "last price", "ltp"],
+            "day_pnl":       ["unrealized p&l", "unrealized pnl", "day_pnl"],
+            "total_pnl":     ["realized p&l", "realized pnl", "total_pnl"],
+        }
+
+        def _col_val(row: dict, aliases: list[str]) -> str | None:
+            for alias in aliases:
+                for k, v in row.items():
+                    if k.strip().lower() == alias:
+                        return v
+            return None
+
+        def _float_or_none(s: str | None) -> float | None:
+            if not s:
+                return None
+            try:
+                return float(str(s).replace(",", "").strip())
+            except ValueError:
+                return None
+
+        rows_to_upsert: list[dict] = []
+        skipped = 0
+        now_utc = datetime.now(timezone.utc)
+
+        for raw_row in reader:
+            symbol = (_col_val(raw_row, _COL["tradingsymbol"]) or "").strip()
+            exchange = (_col_val(raw_row, _COL["exchange"])   or "").strip().upper()
+            if not symbol or not exchange:
+                skipped += 1
+                continue
+            qty_raw = _float_or_none(_col_val(raw_row, _COL["qty"]))
+            rows_to_upsert.append({
+                "date":         target,
+                "account":      account_val,
+                "segment":      kite_seg_from_exchange(exchange),
+                "kind":         "holdings",
+                "symbol":       symbol,
+                "exchange":     exchange,
+                "qty":          int(qty_raw) if qty_raw is not None else 0,
+                "avg_cost":     _float_or_none(_col_val(raw_row, _COL["avg_cost"])),
+                "ltp":          _float_or_none(_col_val(raw_row, _COL["ltp"])),
+                "day_pnl":      _float_or_none(_col_val(raw_row, _COL["day_pnl"])),
+                "total_pnl":    _float_or_none(_col_val(raw_row, _COL["total_pnl"])),
+                "payload_json": None,
+                "captured_at":  now_utc,
+            })
+
+        if not rows_to_upsert:
+            return PnlCsvUploadResponse(inserted=0, updated=0, skipped=skipped, sample=[])
+
+        # Count pre-existing rows for this account+date to separate
+        # insert vs update counts.
+        async with async_session() as session:
+            pre_count_res = await session.execute(
+                text(
+                    "SELECT COUNT(*) FROM daily_book "
+                    "WHERE date = :d AND account = :a AND kind = 'holdings'"
+                ),
+                {"d": target, "a": account_val},
+            )
+            pre_count = int(pre_count_res.scalar() or 0)
+
+            await session.execute(_UPSERT_SQL, rows_to_upsert)
+            await session.commit()
+
+        inserted = max(0, len(rows_to_upsert) - pre_count)
+        updated  = len(rows_to_upsert) - inserted
+
+        sample = [
+            {k: (str(v) if not isinstance(v, (int, float, type(None))) else v)
+             for k, v in r.items()
+             if k not in ("payload_json", "captured_at")}
+            for r in rows_to_upsert[:3]
+        ]
+
+        logger.info(
+            f"Admin: pnl csv upload account={account_val} date={target} "
+            f"inserted={inserted} updated={updated} skipped={skipped}"
+        )
+        return PnlCsvUploadResponse(
+            inserted=inserted,
+            updated=updated,
+            skipped=skipped,
+            sample=sample,
+        )
 
     @post("/pnl/snapshot", status_code=200)
     async def trigger_pnl_snapshot(self, data: SnapshotRequest) -> SnapshotResponse:

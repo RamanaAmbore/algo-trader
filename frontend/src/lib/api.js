@@ -543,6 +543,41 @@ export const fetchOrderEvents = (limit = 50, status = null) => {
   return _get(`/orders/events/recent?${p}`, { auth: true });
 };
 
+// ── Admin: P&L date-range ────────────────────────────────────────────
+/**
+ * GET /api/admin/pnl/range
+ * Params: { from_date, to_date, segment, kind }
+ */
+export function fetchPnlRange(params = {}) {
+  const p = new URLSearchParams();
+  if (params.from_date) p.set('from_date', String(params.from_date));
+  if (params.to_date)   p.set('to_date',   String(params.to_date));
+  if (params.segment)   p.set('segment',   String(params.segment));
+  if (params.kind)      p.set('kind',      String(params.kind));
+  return _get(`/admin/pnl/range?${p}`, { auth: true });
+}
+
+/**
+ * POST /api/admin/pnl/upload-csv  (multipart/form-data)
+ * Caller builds and passes the FormData directly — not routed through
+ * _request because multipart requires no Content-Type header override.
+ */
+export async function uploadPnlCsv(formData) {
+  const token = /** @type {any} */ (typeof sessionStorage !== 'undefined'
+    ? sessionStorage.getItem('ramboq_token')
+    : null);
+  const res = await fetch(`${BASE}/admin/pnl/upload-csv`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(_friendlyError(res.status, body?.detail ?? null));
+  }
+  return res.json();
+}
+
 // ── Admin: Per-agent P&L attribution ─────────────────────────────────
 /**
  * GET /api/admin/pnl/by-agent — P&L attribution grouped by agent.
