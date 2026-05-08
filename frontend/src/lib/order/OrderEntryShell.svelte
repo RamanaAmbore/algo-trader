@@ -424,9 +424,9 @@
               {#each _events as ev (ev.id)}
                 <div class="oes-event-row">
                   <span class="oes-event-time">{_fmtEventTime(ev.ts)}</span>
-                  <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
-                  <span class="oes-event-msg">
-                    {#if ev.order_id}#{ev.order_id} · {/if}{ev.message ?? ''}
+                  <span class="oes-event-line">
+                    <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
+                    <span class="oes-event-msg">{#if ev.order_id}#{ev.order_id} · {/if}{ev.message ?? ''}</span>
                   </span>
                 </div>
               {/each}
@@ -755,25 +755,36 @@
   }
 
   /* Event rows inside the Orders tab */
-  .oes-events-list { display: flex; flex-direction: column; gap: 0.18rem; }
+  .oes-events-list { display: flex; flex-direction: column; gap: 0.42rem; }
+  /* Stacked row: time on its own subtle line, kind + message below.
+     Time block widened beyond grid cells caused the kind / message
+     to disappear off-screen on narrow modals — the dual IST|EDT
+     format is ~58 chars wide. Stacking is the only layout that
+     handles every viewport width without truncation. */
   .oes-event-row {
-    display: grid;
-    grid-template-columns: 16rem 6rem 1fr;
-    gap: 0.4rem;
-    align-items: baseline;
+    display: flex;
+    flex-direction: column;
+    gap: 0.08rem;
     color: #c8d8f0;
   }
   .oes-event-time {
     color: #7e97b8;
     font-variant-numeric: tabular-nums;
-    font-size: 0.55rem;
-    white-space: nowrap;
+    font-size: 0.5rem;
+    letter-spacing: 0.02em;
+  }
+  .oes-event-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    flex-wrap: wrap;
   }
   .oes-event-kind {
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     font-size: 0.55rem;
+    flex-shrink: 0;
   }
   .oes-event-kind-placed          { color: #38bdf8; }
   .oes-event-kind-chase_modify    { color: #fbbf24; }
