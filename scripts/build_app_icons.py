@@ -10,11 +10,13 @@ BULL_SRC = STATIC / "bull.png"
 NAVY = (13, 24, 41, 255)
 BULL_INSET = 333 / 512  # bull width as fraction of canvas (matches app-icon.svg)
 GLOW_COLOR = (251, 191, 36)  # #fbbf24 — same amber as the navbar bull glow
-RING_RGBA = (255, 255, 255, 56)  # white @ alpha 0.22, matching the SVG
-# Ring radius as a fraction of canvas — sits just outside the bull image
-# bounds (bull is BULL_INSET wide, so its half-width is BULL_INSET/2).
-# Add a small margin so the ring doesn't graze the silhouette.
-RING_RADIUS_FRAC = (333 / 512) / 2 + 8 / 512   # ≈ 0.341 → r=175 at 512
+RING_RGBA = (255, 255, 255, 140)  # white @ alpha 0.55, matches SVG
+# Ring radius as a fraction of canvas — sits 3 px outside the bull image
+# bounds at 512 (tight wrap, not far away). Bull half-width is
+# BULL_INSET/2 ≈ 0.325; add a small margin.
+RING_RADIUS_FRAC = (333 / 512) / 2 + 3 / 512   # ≈ 0.331 → r=170 at 512
+# Stroke width as a fraction (4 px on 512 canvas).
+RING_WIDTH_FRAC  = 4 / 512
 
 
 def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
@@ -41,8 +43,10 @@ def build(size: int, source: Image.Image) -> Image.Image:
     # across canvas sizes (12 / 6 px on the 512 canvas).
     outer_std = 12 * size / 512
     inner_std = 6 * size / 512
-    outer = _glow_layer(bull, outer_std, opacity=0.20)
-    inner = _glow_layer(bull, inner_std, opacity=0.35)
+    # Glow alphas match the navbar brand-logo recipe so the icon reads
+    # as "lit" the same way at any size.
+    outer = _glow_layer(bull, outer_std, opacity=0.45)
+    inner = _glow_layer(bull, inner_std, opacity=0.75)
 
     canvas.alpha_composite(outer, (bx, by))
     canvas.alpha_composite(inner, (bx, by))
@@ -52,7 +56,7 @@ def build(size: int, source: Image.Image) -> Image.Image:
     cx_px  = size / 2
     cy_px  = size / 2
     ring_r = size * RING_RADIUS_FRAC
-    ring_w = max(1, int(round(size * (2 / 512))))
+    ring_w = max(1, int(round(size * RING_WIDTH_FRAC)))
     overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(overlay).ellipse(
         (cx_px - ring_r, cy_px - ring_r, cx_px + ring_r, cy_px + ring_r),
