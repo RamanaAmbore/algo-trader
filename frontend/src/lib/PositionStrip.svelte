@@ -92,8 +92,8 @@
   }
 </script>
 
-<a class="ps-strip" href="/dashboard"
-   aria-label="Open the dashboard — full positions, holdings, and funds grids">
+<a class="ps-strip" href="/performance"
+   aria-label="Open performance — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions P/L — open + closed intraday">
     <span class="ps-agg-k">Pos</span>
     <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat')}>

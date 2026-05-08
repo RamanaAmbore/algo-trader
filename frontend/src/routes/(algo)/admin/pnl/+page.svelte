@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { aggCompact, pctFmt } from '$lib/format.js';
+  import PnlPanel from '$lib/PnlPanel.svelte';
   import { fetchPnlBenchmarks } from '$lib/api.js';
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -19,6 +20,9 @@
   // Drilldown — click a by_account row to filter the other tables.
   /** @type {string|null} */
   let filterAccount = $state(null);
+
+  // By-agent section — collapsed by default
+  let agentExpanded = $state(false);
 
   // CSV upload — collapsed by default
   let csvExpanded   = $state(false);
@@ -625,6 +629,21 @@
   </div>
 {/if}
 
+<!-- ── By agent — collapsible ─────────────────────────────────────── -->
+<div class="card">
+  <button class="upload-toggle" onclick={() => agentExpanded = !agentExpanded}>
+    <span class="section-head" style="pointer-events:none">
+      By agent
+    </span>
+    <span class="chevron {agentExpanded ? 'open' : ''}">▸</span>
+  </button>
+  {#if agentExpanded}
+    <div class="agent-pnl-wrap">
+      <PnlPanel active={agentExpanded} />
+    </div>
+  {/if}
+</div>
+
 <!-- ── CSV upload card — collapsible ──────────────────────────────── -->
 <div class="card upload-card">
   <button class="upload-toggle" onclick={() => csvExpanded = !csvExpanded}>
@@ -1002,6 +1021,15 @@
     border-color: rgba(200,216,240,0.2);
     background: rgba(200,216,240,0.05);
     color: #7e97b8;
+  }
+
+  /* ── By-agent embed ────────────────────────────────────────────── */
+  .agent-pnl-wrap {
+    margin-top: 0.45rem;
+    /* PnlPanel ships with its own internal padding; strip the outer
+       horizontal padding so its content lines up with the card edges. */
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
   }
 
   /* ── Upload card / collapsible ─────────────────────────────────── */

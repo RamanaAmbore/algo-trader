@@ -73,7 +73,7 @@
                 platform without a login.
               - anonymous on dev → redirects to /signin via the algo
                 layout's auth guard. -->
-        <button onclick={() => goto('/dashboard')} class="pub-nav-algo-btn">
+        <button onclick={() => goto('/performance')} class="pub-nav-algo-btn">
           {$authStore.user?.role === 'admin' ? 'Algo Site' : 'Algo Site Demo'} ↗
         </button>
 
@@ -139,7 +139,7 @@
             >{link.label}</button>
           {/each}
           <button
-            onclick={() => { goto('/dashboard'); closeMenu(); }}
+            onclick={() => { goto('/performance'); closeMenu(); }}
             class="pub-mobile-item pub-mobile-algo"
           >{$authStore.user?.role === 'admin' ? 'Algo Site' : 'Algo Site Demo'} ↗</button>
           {#if $authStore.user}
