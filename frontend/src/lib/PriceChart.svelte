@@ -7,6 +7,7 @@
 
   import { onDestroy, onMount } from 'svelte';
   import { fetchChartPriceHistory } from '$lib/api';
+  import { priceFmt } from '$lib/format';
 
   let {
     /** @type {'sim'|'paper'|'live'} */ mode,
@@ -307,7 +308,7 @@
 
   function fmtPrice(/** @type {number|null} */ v) {
     if (v == null) return '—';
-    return `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+    return `₹${priceFmt(v)}`;
   }
   function fmtTime(/** @type {string} */ ts) {
     try { return new Date(ts).toLocaleTimeString('en-IN', { hour12: false }); }
@@ -390,7 +391,7 @@
               stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
         <text x={PAD_L - 4} y={t.y + 3} text-anchor="end"
               fill="#7e97b8" font-size="9" font-family="monospace">
-          {t.v.toFixed(2)}
+          {priceFmt(t.v)}
         </text>
       {/each}
       <!-- X-axis grid + labels — verticals at 4 evenly spaced times so

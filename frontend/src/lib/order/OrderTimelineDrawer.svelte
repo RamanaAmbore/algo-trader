@@ -9,6 +9,7 @@
    *   onClose    {Function}  — called when the drawer should be dismissed
    */
   import { onMount, onDestroy } from 'svelte';
+  import { priceFmt } from '$lib/format';
 
   const { open = false, orders = [], onClose } = $props();
 
@@ -182,7 +183,7 @@
                         style="color:{KIND_COLOR[ev.kind] ?? '#94a3b8'};background:{KIND_BG[ev.kind] ?? 'rgba(148,163,184,0.1)'}"
                   >{ev.kind ?? ''}</span>
                   {#if ev.price != null || ev.limit_price != null}
-                    <span class="otd-ev-price">₹{(ev.price ?? ev.limit_price ?? 0).toLocaleString('en-IN', {maximumFractionDigits: 2})}</span>
+                    <span class="otd-ev-price">₹{priceFmt(ev.price ?? ev.limit_price)}</span>
                   {/if}
                 </div>
               {/each}

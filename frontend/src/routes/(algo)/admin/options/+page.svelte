@@ -810,14 +810,7 @@
   onDestroy(() => {
     if (chainQuotesPoll) clearInterval(chainQuotesPoll);
   });
-  function _fmtLtp(/** @type {number|null|undefined} */ v) {
-    if (v == null || !Number.isFinite(v)) return '—';
-    return v >= 100
-      ? v.toFixed(0)
-      : v >= 10
-        ? v.toFixed(1)
-        : v.toFixed(2);
-  }
+  const _fmtLtp = priceFmt;
 
   /** Spot for the chain underlying. Prefers the strategy response's
    *  spot when chainUnderlying matches the page's primary underlying

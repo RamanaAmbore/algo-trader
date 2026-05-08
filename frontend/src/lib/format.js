@@ -10,20 +10,27 @@
  *   - Indian-style en-IN grouping (1,50,432 not 150,432).
  *   - Returns '—' for null / undefined / NaN / ±Infinity.
  *
- * Helpers:
- *   priceFmt    — per-share prices (LTP, avg, fill, slippage). 2 dp under
- *                 ₹100, 0 dp at/above (decimals add noise on big spots).
- *   pctFmt      — percentages / ratios (2 dp, caller appends '%').
- *   aggFmt      — ₹ aggregates with full digits (P&L, margins, cash).
- *                 Used when columns aren't tight on space.
- *   aggCompact  — Indian-scale compact ₹ aggregates for tight columns.
- *                 < 1,000 → plain; < 1,00,000 → "K"; ≥ 1,00,000 → "X.XXL".
- *                 Use this for /performance / /dashboard / strip / log.
- *   qtyFmt      — share/lot counts (alias of aggFmt — full digits).
+ * The single decimal-presentation rule (used by every helper that can
+ * render a fractional value):
+ *   |v| <  100 → 2 decimals  (option premiums, sub-rupee tickers,
+ *                             percentages, slippage)
+ *   |v| ≥  100 → 0 decimals  (NIFTY ~22k, equities, P&L aggregates —
+ *                             decimals are noise at that magnitude and
+ *                             steal column width)
  *
- * To change the K/L thresholds, decimal counts, or any prefix rule —
- * edit this file. Do NOT add `₹` / `+` / lakh-conversion logic at
- * call sites; the call sites should consume these helpers verbatim.
+ * Helpers:
+ *   priceFmt    — per-share prices (LTP, avg, fill, slippage)
+ *   pctFmt      — percentages / ratios (caller appends '%')
+ *   aggFmt      — ₹ aggregates (P&L, margins, cash) when columns aren't tight
+ *   aggCompact  — Indian-scale compact ₹ aggregates for tight columns.
+ *                 < 1,000 → decimal-rule; < 1,00,000 → "K"; ≥ 1,00,000 → "X.XXL".
+ *                 K/L suffix logic is intentionally separate from the
+ *                 decimal rule.
+ *   qtyFmt      — share/lot counts (always integer — shares are whole)
+ *
+ * To change the K/L thresholds, the decimal threshold, or any prefix
+ * rule — edit this file. Do NOT add `₹` / `+` / lakh-conversion logic
+ * at call sites; the call sites should consume these helpers verbatim.
  */
 
 const _IN2 = new Intl.NumberFormat('en-IN', {
@@ -36,43 +43,26 @@ const _IN0 = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 0,
 });
 
-/** Live quotes / order prices.
- *  |v| < 100 → 2 decimals  (option premiums, slippage, sub-rupee tickers)
- *  |v| ≥ 100 → 0 decimals  (NIFTY ~22k, equities, futures — decimals are
- *                           noise at that magnitude and steal column width).
- *  Examples: 0.05 → "0.05", 1234.5 → "1,235", 22156.7 → "22,157" */
-export function priceFmt(v) {
+function _decFmt(v) {
   if (v == null || !isFinite(v)) return '—';
   const n = Number(v);
   return Math.abs(n) >= 100 ? _IN0.format(Math.round(n)) : _IN2.format(n);
 }
 
-/** 2 dp fixed — for percentages and ratios (caller appends % if needed). */
-export function pctFmt(v) {
-  if (v == null || !isFinite(v)) return '—';
-  return Number(v).toFixed(2);
-}
+export const priceFmt = _decFmt;
+export const pctFmt   = _decFmt;
+export const aggFmt   = _decFmt;
 
-/** 0 dp, Indian grouping — for ₹ aggregates (P&L, margins, cash). */
-export function aggFmt(v) {
-  if (v == null || !isFinite(v)) return '—';
-  return _IN0.format(Math.round(Number(v)));
-}
-
-/** Compact Indian-scale format for ₹ aggregates in tight columns:
- *    |v| < 1,000     → plain en-IN ("999", "-432")
- *    |v| < 1,00,000  → rounded thousand + "K" ("50K", "100K")
- *    |v| ≥ 1,00,000  → lakhs + 2dp + "L" ("1.50L", "150.00L")
- *  Single source of truth — change here to reformat every grid + strip
- *  + log surface that uses it. */
 export function aggCompact(v) {
   if (v == null || !isFinite(v)) return '—';
   const n = Number(v);
   const a = Math.abs(n);
-  if (a < 1_000)    return _IN0.format(Math.round(n));
+  if (a < 1_000)    return _decFmt(n);
   if (a < 100_000)  return `${Math.round(n / 1_000)}K`;
   return `${(n / 100_000).toFixed(2)}L`;
 }
 
-/** Alias of aggFmt — for share/lot counts. */
-export const qtyFmt = aggFmt;
+export function qtyFmt(v) {
+  if (v == null || !isFinite(v)) return '—';
+  return _IN0.format(Math.round(Number(v)));
+}

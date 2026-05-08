@@ -86,8 +86,11 @@
   /** @param {number|null} v */
   function fmt(v) { return v == null ? '—' : aggCompact(v); }
 
-  /** @param {number} v */
-  function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+  /** @param {number|null|undefined} v */
+  function fmtPct(v) {
+    if (v == null || !isFinite(v)) return '—';
+    return (v >= 0 ? '+' : '') + pctFmt(v) + '%';
+  }
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   async function load() {
