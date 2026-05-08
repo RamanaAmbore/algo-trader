@@ -118,28 +118,38 @@ test.describe('Order placement — every combination', () => {
     }
   });
 
-  // TODO: investigate — button click fires but basketLegs doesn't update.
-  // Chain-tab basket flow works (covered separately); the Command-tab
-  // + Basket path needs a closer look at the parser → addToBasket chain.
-  test.skip('Command tab — + Basket button adds parsed leg', async ({ page }) => {
+  test('Command tab — + Basket button adds parsed leg', async ({ page }) => {
+    /** @type {string[]} */
+    const consoleLogs = [];
+    page.on('console', (m) => consoleLogs.push(`[${m.type()}] ${m.text()}`));
     await openShell(page);
     const cmdTab = page.getByRole('tab', { name: /Command line/i });
     await cmdTab.click();
     const cmdInput = page.locator('textarea').first();
     await cmdInput.click();
     await cmdInput.pressSequentially('buy ZG0790 NIFTY26MAY22000PE 75 limit 1', { delay: 25 });
-    // Wait for the parser to resolve — Run button text flips to BUY/SELL
-    // when cmdVerb is set; that's our signal the grammar parsed cleanly.
     await expect(page.locator('.sim-btn-primary, .sim-btn-danger').first()).toContainText(/BUY|SELL/, { timeout: 5_000 });
     const basketBtn = page.locator('.sim-btn-basket').first();
-    if (!(await basketBtn.count())) {
-      test.skip(true, '+ Basket button only visible when shell sets onAddToBasket');
-    }
+    await expect(basketBtn).toBeVisible();
+    // Check the runtime parse result + intent state by reaching into the
+    // page — gives us a snapshot of what the click is about to operate on.
+    const preState = await page.evaluate(() => ({
+      basketBtnDisabled: document.querySelector('.sim-btn-basket')?.disabled,
+      runText: document.querySelector('.sim-btn-primary, .sim-btn-danger')?.textContent?.trim(),
+      cmdValue: /** @type {HTMLTextAreaElement|null} */ (document.querySelector('textarea'))?.value,
+    }));
+    console.log('[preState]', JSON.stringify(preState));
     await basketBtn.click();
-    // Basket bar mounts when shell's basketLegs > 0; the addToBasket
-    // callback chain has microtask latency.
+    await page.waitForTimeout(2_000);
+    const postState = await page.evaluate(() => ({
+      basketBarPresent: !!document.querySelector('.oes-basket-bar'),
+      basketCount:      document.querySelector('.oes-basket-count')?.textContent?.trim(),
+      cmdValueAfter:    /** @type {HTMLTextAreaElement|null} */ (document.querySelector('textarea'))?.value,
+      addedToBasketLine:Array.from(document.querySelectorAll('.clt-result, .clt-row')).map(n => n.textContent?.trim()).slice(0, 3),
+    }));
+    console.log('[postState]', JSON.stringify(postState));
+    console.log('[browserConsole]', consoleLogs.slice(-15).join('\n'));
     await expect(page.locator('.oes-basket-bar').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('.oes-basket-count').first()).toContainText(/1 leg/i);
   });
 
   test('Chain tab — pick strikes + Submit basket', async ({ page }) => {

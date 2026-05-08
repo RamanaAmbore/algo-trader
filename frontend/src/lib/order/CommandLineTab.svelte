@@ -48,19 +48,27 @@
   // Compose the initial command line from known context. Format follows
   // orderGrammar: `<verb> <account> <symbol> <qty> [<order_type> <price>]`.
   // Trailing space ensures the next token slot opens immediately.
+  // Only pre-fills when the caller has supplied a *symbol* — without
+  // a symbol the verb alone collides with whatever the operator types
+  // (e.g. shell default `side='BUY'` → 'buy ' → operator types
+  // 'buy NIFTY…' → bar reads 'buy buy NIFTY…' and the parser barfs).
+  // Symbol-driven opens (chain pill / position-row click) carry context
+  // worth pre-filling; symbol-less opens (Terminal / generic shell)
+  // start the bar empty.
   const initialValue = (() => {
+    if (!prefillSymbol) return '';
     const parts = [];
     const verb = String(prefillSide || '').toLowerCase();
     if (verb === 'buy' || verb === 'sell') parts.push(verb);
     if (prefillAccount) parts.push(String(prefillAccount));
-    if (prefillSymbol)  parts.push(String(prefillSymbol).toUpperCase());
+    parts.push(String(prefillSymbol).toUpperCase());
     if (prefillQty > 0) parts.push(String(prefillQty));
     if (prefillOrderType && prefillOrderType.toUpperCase() !== 'LIMIT' &&
         prefillOrderType.toUpperCase() !== 'MARKET') {
       parts.push(prefillOrderType.toUpperCase());
     }
     if (prefillPrice > 0) parts.push(String(prefillPrice));
-    return parts.length ? parts.join(' ') + ' ' : '';
+    return parts.join(' ') + ' ';
   })();
 
   /** @type {Array<{cmd: string, result: string, time: string}>} */
