@@ -11,12 +11,12 @@ NAVY = (13, 24, 41, 255)
 BULL_INSET = 333 / 512  # bull width as fraction of canvas (matches app-icon.svg)
 GLOW_COLOR = (251, 191, 36)  # #fbbf24 — same amber as the navbar bull glow
 RING_RGBA = (255, 255, 255, 140)  # white @ alpha 0.55, matches SVG
-# Ring radius as a fraction of canvas — sits 3 px outside the bull image
-# bounds at 512 (tight wrap, not far away). Bull half-width is
-# BULL_INSET/2 ≈ 0.325; add a small margin.
-RING_RADIUS_FRAC = (333 / 512) / 2 + 3 / 512   # ≈ 0.331 → r=170 at 512
-# Stroke width as a fraction (4 px on 512 canvas).
-RING_WIDTH_FRAC  = 4 / 512
+# Ring radius as a fraction of canvas — pushes 33 px outside the bull
+# image bounds at 512 so horns + legs don't graze the stroke. Bull
+# half-width is BULL_INSET/2 ≈ 0.325; ring sits at ~0.39 of canvas.
+RING_RADIUS_FRAC = (333 / 512) / 2 + 33 / 512  # ≈ 0.391 → r=200 at 512
+# Stroke width as a fraction (8 px on 512 canvas — frame-thickness).
+RING_WIDTH_FRAC  = 8 / 512
 
 
 def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
