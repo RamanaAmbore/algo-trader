@@ -667,18 +667,64 @@ class OrdersController(Controller):
             # SHADOW / SIM (paper engine uses basket_margin internally;
             # shadow validates its own way).
             from backend.api.algo.actions import run_preflight as _run_preflight
-            _pf = await _run_preflight(account, {
-                "exchange":         (data.exchange or "NFO"),
-                "tradingsymbol":    sym,
-                "quantity":         qty,
-                "order_type":       (data.order_type or "LIMIT"),
-                "product":          (data.product or "NRML"),
-                "variety":          (data.variety or "regular"),
-                "transaction_type": side,
-                "price":            data.price or 0,
-                "trigger_price":    data.trigger_price or 0,
-            })
+            try:
+                _pf = await _run_preflight(account, {
+                    "exchange":         (data.exchange or "NFO"),
+                    "tradingsymbol":    sym,
+                    "quantity":         qty,
+                    "order_type":       (data.order_type or "LIMIT"),
+                    "product":          (data.product or "NRML"),
+                    "variety":          (data.variety or "regular"),
+                    "transaction_type": side,
+                    "price":            data.price or 0,
+                    "trigger_price":    data.trigger_price or 0,
+                })
+            except Exception as _pf_err:
+                # Preflight itself blew up (Kite hung / SDK error / etc).
+                # Surface it explicitly so the operator sees something.
+                logger.error(f"[LIVE-TICKET] preflight raised for {account} "
+                             f"{sym}: {_pf_err}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Preflight check failed: {str(_pf_err)[:240]} — "
+                           "broker may be unreachable. Try again.",
+                ) from _pf_err
+            logger.info(
+                f"[LIVE-TICKET] preflight {('ok' if _pf['ok'] else 'BLOCKED')} "
+                f"acct={account} {sym} {side} qty={qty}"
+                + ("" if _pf["ok"]
+                   else f" — {len(_pf['blocked'])} blocker(s): "
+                        f"{', '.join(b.get('code','?') for b in _pf['blocked'])}")
+            )
             if not _pf["ok"]:
+                # Persist a REJECTED AlgoOrder + preflight_block event so
+                # the operator's Log + Orders panels surface the rejection
+                # (instead of silently 422-ing into the void).
+                try:
+                    from backend.api.algo.order_events import write_event as _write_ev
+                    async with async_session() as _s:
+                        _row = AlgoOrder(
+                            account=account, symbol=sym,
+                            exchange=(data.exchange or "NFO"),
+                            transaction_type=side, quantity=qty,
+                            initial_price=(float(data.price)
+                                           if data.price is not None else None),
+                            status="REJECTED", engine="live", mode="live",
+                            detail=f"preflight blocked: "
+                                   f"{', '.join(b.get('code','?') for b in _pf['blocked'])}",
+                        )
+                        _s.add(_row)
+                        await _s.commit()
+                        _algo_id = _row.id
+                    await _write_ev(
+                        _algo_id, "preflight_block",
+                        f"{', '.join(b.get('reason','?') for b in _pf['blocked'])[:300]}",
+                        payload={"blocked": _pf["blocked"],
+                                 "diagnostics": _pf.get("diagnostics", {})},
+                    )
+                except Exception as _ev_err:
+                    logger.warning(f"[LIVE-TICKET] preflight_block log failed: "
+                                   f"{_ev_err}")
                 raise HTTPException(
                     status_code=422,
                     detail={"blocked": _pf["blocked"],

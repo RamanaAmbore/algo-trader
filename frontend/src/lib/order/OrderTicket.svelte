@@ -892,6 +892,12 @@
     {#if validationErr}
       <div class="ot-err">{validationErr}</div>
     {/if}
+    {#if submitErr}
+      <!-- Surface backend rejections (preflight 422, 503, broker errors)
+           inline. Silent failure was causing operators to believe orders
+           had been placed when they hadn't. -->
+      <div class="ot-err">{submitErr}</div>
+    {/if}
     {#if submitOk}
       <div class="ot-ok">✓ {submitOk}</div>
     {/if}
