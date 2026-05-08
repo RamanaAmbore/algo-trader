@@ -343,34 +343,23 @@
   <h1 class="page-title-chip">P&L <span class="title-sub">· date range</span></h1>
 </div>
 
-<!-- ── Filter bar ─────────────────────────────────────────────────── -->
+<!-- ── Filter bar — single-line, no over-labels ──────────────────── -->
 <div class="filter-bar">
-  <label class="fb-label">
-    From
-    <input type="date" class="field-input fb-date" bind:value={fromDate} />
-  </label>
-  <label class="fb-label">
-    To
-    <input type="date" class="field-input fb-date" bind:value={toDate} />
-  </label>
-  <label class="fb-label">
-    Segment
-    <select class="field-input fb-select" bind:value={segment}>
-      <option value="all">All</option>
-      <option value="equity">Equity</option>
-      <option value="derivatives">Derivatives</option>
-      <option value="commodity">Commodity</option>
-      <option value="currency">Currency</option>
-    </select>
-  </label>
-  <label class="fb-label">
-    Kind
-    <select class="field-input fb-select" bind:value={kind}>
-      <option value="all">All</option>
-      <option value="holdings">Holdings</option>
-      <option value="positions">Positions</option>
-    </select>
-  </label>
+  <input type="date" class="field-input fb-date" title="From date" bind:value={fromDate} />
+  <span class="fb-sep" aria-hidden="true">→</span>
+  <input type="date" class="field-input fb-date" title="To date" bind:value={toDate} />
+  <select class="field-input fb-select" title="Segment" bind:value={segment}>
+    <option value="all">All Segments</option>
+    <option value="equity">Equity</option>
+    <option value="derivatives">Derivatives</option>
+    <option value="commodity">Commodity</option>
+    <option value="currency">Currency</option>
+  </select>
+  <select class="field-input fb-select" title="Kind" bind:value={kind}>
+    <option value="all">All Kinds</option>
+    <option value="holdings">Holdings</option>
+    <option value="positions">Positions</option>
+  </select>
   <button class="algo-btn" onclick={() => { load(); loadBenchmarks(); }} disabled={loading}>
     {loading ? 'Loading…' : 'Apply'}
   </button>
@@ -756,14 +745,16 @@
     margin: 0.4rem 0 0.35rem;
   }
 
-  /* ── Filter bar ────────────────────────────────────────────────── */
+  /* ── Filter bar — single-line, baseline-aligned ────────────────── */
   .filter-bar {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     flex-wrap: wrap;
     gap: 0.4rem;
     margin-bottom: 0.6rem;
   }
+  /* Inline form labels still used inside the CSV modal — keep the
+     stacked label-on-top variant alive for that surface. */
   .fb-label {
     display: flex;
     flex-direction: column;
@@ -774,9 +765,15 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .fb-date   { width: 8.5rem; font-size: 0.7rem; padding: 0.2rem 0.38rem; }
+  .fb-date   { width: 8rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
   .fb-text   { width: 8rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
   .fb-select { width: 9rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
+  .fb-sep {
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    padding: 0 0.05rem;
+  }
   .csv-btn   { margin-left: auto; }
 
   /* ── Error banner ──────────────────────────────────────────────── */
