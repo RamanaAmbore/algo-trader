@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import PerformancePage from '$lib/PerformancePage.svelte';
-  import PnlPanel from '$lib/PnlPanel.svelte';
+  import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import { clientTimestamp, authStore } from '$lib/stores';
   import { fetchPaperStatus } from '$lib/api';
 
@@ -90,7 +90,7 @@
 {#if tab === 'performance'}
   <PerformancePage theme="ag-theme-algo" allowOrders={true} maskAccounts={false} compactHeader={true} enableOptionsLink={true} />
 {:else}
-  <PnlPanel active={tab === 'pnl'} />
+  <PnlAnalysis />
 {/if}
 
 <style>
