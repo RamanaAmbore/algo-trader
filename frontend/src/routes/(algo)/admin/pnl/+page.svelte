@@ -392,7 +392,12 @@
 
 <!-- ── Today's book — live ───────────────────────────────────────── -->
 <header class="page-section-head">Today's book <span class="section-sub">— live</span></header>
-<PerformancePage compactHeader={true} />
+<PerformancePage
+  theme="ag-theme-algo"
+  compactHeader={true}
+  allowOrders={true}
+  maskAccounts={false}
+  enableOptionsLink={true} />
 
 {#if data}
   <!-- ── Summary strip — 2 KVs (Total + Day) + subtitle ─────────── -->
