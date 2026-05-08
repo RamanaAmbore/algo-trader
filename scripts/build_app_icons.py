@@ -11,7 +11,10 @@ NAVY = (13, 24, 41, 255)
 BULL_INSET = 333 / 512  # bull width as fraction of canvas (matches app-icon.svg)
 GLOW_COLOR = (251, 191, 36)  # #fbbf24 — same amber as the navbar bull glow
 RING_RGBA = (255, 255, 255, 56)  # white @ alpha 0.22, matching the SVG
-RING_INSET = 11 / 512  # distance from canvas edge to ring (matches r=245 at 512)
+# Ring radius as a fraction of canvas — sits just outside the bull image
+# bounds (bull is BULL_INSET wide, so its half-width is BULL_INSET/2).
+# Add a small margin so the ring doesn't graze the silhouette.
+RING_RADIUS_FRAC = (333 / 512) / 2 + 8 / 512   # ≈ 0.341 → r=175 at 512
 
 
 def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
@@ -45,12 +48,14 @@ def build(size: int, source: Image.Image) -> Image.Image:
     canvas.alpha_composite(inner, (bx, by))
     canvas.alpha_composite(bull,  (bx, by))
 
-    # Subtle white ring just inside the canvas edge.
-    ring_pad = max(2, int(round(size * RING_INSET)))
-    ring_w   = max(1, int(round(size * (2 / 512))))
+    # Subtle white ring around the bull silhouette (not the canvas edge).
+    cx_px  = size / 2
+    cy_px  = size / 2
+    ring_r = size * RING_RADIUS_FRAC
+    ring_w = max(1, int(round(size * (2 / 512))))
     overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(overlay).ellipse(
-        (ring_pad, ring_pad, size - ring_pad, size - ring_pad),
+        (cx_px - ring_r, cy_px - ring_r, cx_px + ring_r, cy_px + ring_r),
         outline=RING_RGBA,
         width=ring_w,
     )
