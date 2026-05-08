@@ -8,10 +8,10 @@ STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
 NAVY = (13, 24, 41, 255)
-BULL_INSET = 280 / 512   # bull width as fraction of canvas
+BULL_INSET = 260 / 512   # bull width as fraction of canvas
 GLOW_COLOR = (251, 191, 36)
-RING_RADIUS_FRAC = 200 / 512  # ring centre radius (gap from bull bounds = 60 px)
-RING_WIDTH_FRAC  = 24 / 512   # 24 px stroke at 512 — full beveled frame
+RING_RADIUS_FRAC = 200 / 512  # ring centre radius (gap from bull bounds = 70 px)
+RING_WIDTH_FRAC  = 16 / 512   # 16 px stroke at 512 — leaner bevel
 
 
 def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
