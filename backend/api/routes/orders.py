@@ -640,14 +640,24 @@ class OrdersController(Controller):
         #   chase=False or non-LIMIT → single-shot kite.place_order
         #     (the existing direct-broker path; preserved for MARKET/
         #     SL-M and for operators who explicitly opted out).
-        from backend.shared.helpers.utils import is_prod_branch
+        from backend.shared.helpers.utils import is_prod_branch, config
         from backend.shared.helpers.settings import get_bool
+
+        # Diagnostic so we can see the resolved values when an operator
+        # reports "I picked LIVE but orders are paper".
+        _ptm_now = get_bool("execution.paper_trading_mode", True)
+        _shadow_now = get_bool("execution.shadow_mode", False)
+        logger.info(
+            f"[ticket-mode] requested={data.mode!r} "
+            f"paper_trading_mode={_ptm_now} shadow_mode={_shadow_now} "
+            f"branch={config.get('deploy_branch','?')!r}"
+        )
 
         if data.mode == "live":
             if not is_prod_branch():
                 raise HTTPException(status_code=403,
                     detail="LIVE mode is disabled on non-prod branches; use PAPER on dev.")
-            if get_bool("execution.paper_trading_mode", True):
+            if _ptm_now:
                 raise HTTPException(status_code=403,
                     detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/execution (LIVE mode).")
 

@@ -16,6 +16,7 @@
 
   import { onMount } from 'svelte';
   import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchAlgoOrdersRecent } from '$lib/api';
+  import { logTime } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
@@ -203,20 +204,15 @@
     } catch (_) { /* silent */ }
   }
 
-  /** Format an ISO UTC timestamp to HH:MM:SS in IST. Returns '--:--:--'
-   *  for any non-string, empty string, or unparseable value so the
-   *  literal "Invalid Date" string never reaches the UI. */
+  /** Format an ISO UTC timestamp to dual IST | EDT (DD-MMM HH:MM:SS).
+   *  Reuses the canonical logTime helper from $lib/stores so this
+   *  surface matches the /orders LogPanel + alerts pages. Returns '—'
+   *  for any non-string / unparseable value so "Invalid Date" can't
+   *  reach the UI. */
   function _fmtEventTime(/** @type {unknown} */ ts) {
-    if (!ts || typeof ts !== 'string') return '--:--:--';
-    try {
-      const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
-      if (isNaN(d.getTime())) return '--:--:--';
-      return d.toLocaleTimeString('en-IN', {
-        timeZone: 'Asia/Kolkata',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        hour12: false,
-      });
-    } catch (_) { return '--:--:--'; }
+    if (!ts || typeof ts !== 'string') return '—';
+    const out = logTime(ts.endsWith('Z') ? ts : ts + 'Z');
+    return out || '—';
   }
 
   // Close on Escape + always-on order-data poll (bottom panel is always visible).
@@ -755,7 +751,7 @@
   .oes-events-list { display: flex; flex-direction: column; gap: 0.18rem; }
   .oes-event-row {
     display: grid;
-    grid-template-columns: 4.5rem 6rem 1fr;
+    grid-template-columns: 16rem 6rem 1fr;
     gap: 0.4rem;
     align-items: baseline;
     color: #c8d8f0;
@@ -763,6 +759,8 @@
   .oes-event-time {
     color: #7e97b8;
     font-variant-numeric: tabular-nums;
+    font-size: 0.55rem;
+    white-space: nowrap;
   }
   .oes-event-kind {
     font-weight: 800;
