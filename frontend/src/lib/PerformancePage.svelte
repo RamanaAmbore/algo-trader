@@ -145,8 +145,6 @@
   const numFmt = ({ value }) => value == null ? '' : priceFmt(value);
   const aggFmtGrid = ({ value }) => value == null ? '' : aggCompact(value);
   const pctFmtGrid = ({ value }) => value == null ? '' : `${pctFmt(value)}%`;
-  const maskAcct = ({ value }) =>
-    maskAccounts && value ? String(value).replace(/\d/g, '#') : value;
   // Theme-aware P&L colors — actual colors live in app.css keyed to the grid theme.
   // Include 'ag-right-aligned-cell' because user-provided cellClass overrides the
   // class AG Grid adds via type: 'numericColumn'.
@@ -178,7 +176,58 @@
     return '';
   };
 
-  const acctFill = 'ag-col-fill';
+  // ── Per-account colour identity ─────────────────────────────────────────
+  // djb2 hash → stable index into an 8-hue palette. TOTAL rows receive no
+  // colour so they read as neutral aggregates. Palette chosen for mutual
+  // distinctness + visibility on both dark (algo) and light (ramboq) grids.
+  const ACCT_PALETTE = [
+    '#a78bfa', // violet
+    '#5eead4', // teal
+    '#fda4af', // rose
+    '#7dd3fc', // sky
+    '#bef264', // lime
+    '#fcd34d', // amber
+    '#a5b4fc', // indigo
+    '#f0abfc', // fuchsia
+  ];
+
+  function acctColor(/** @type {string|null|undefined} */ account) {
+    if (!account || account === 'TOTAL') return null;
+    let h = 5381;
+    for (let i = 0; i < account.length; i++) {
+      h = ((h << 5) + h) ^ account.charCodeAt(i);
+      h = h >>> 0; // force unsigned 32-bit
+    }
+    return ACCT_PALETTE[h % ACCT_PALETTE.length];
+  }
+
+  // cellRenderer for the account column — returns a span with a coloured
+  // dot prepended. TOTAL rows get a plain slate dot (no colour).
+  function acctCellRenderer(params) {
+    const raw     = params.value || '';
+    const display = maskAccounts && raw ? String(raw).replace(/\d/g, '#') : raw;
+    const color   = acctColor(raw);
+    const span    = document.createElement('span');
+    span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
+    const dot = document.createElement('span');
+    dot.className = 'acct-dot';
+    dot.style.background = color ?? '#94a3b8'; // slate for TOTAL
+    span.appendChild(dot);
+    const txt = document.createTextNode(display);
+    span.appendChild(txt);
+    return span;
+  }
+
+  // cellStyle for account column — injects a CSS custom property that the
+  // `.ag-col-acct` rule uses as the left-border colour. Totals row → no
+  // stripe (transparent). Each account → hash-derived hue.
+  const acctCellStyle = (params) => {
+    const raw = params.value || '';
+    const color = acctColor(raw);
+    return color ? { '--acct-stripe': color } : { '--acct-stripe': 'transparent' };
+  };
+
+  const acctFill = 'ag-col-fill ag-col-acct';
   // Symbol cells carry an extra `ag-col-sym` class so the long/short
   // indicator can paint a left+right border on the symbol cell only,
   // not the entire row.
@@ -201,7 +250,7 @@
     // follows, current/inv totals trail. Widths fixed (not flex) so the
     // big aggregate numbers (₹X,XX,XXX or crore-level) stop getting
     // truncated on the summary row.
-    { field: 'account',               headerName: 'Account',  width: 70,  minWidth: 70,  cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'account',               headerName: 'Account',  width: 70,  minWidth: 70,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -214,7 +263,7 @@
   // Day cols promoted from index 7-8 to 5-6 so they read in the visible scan
   // column on narrow viewports (operator was scrolling to find them).
   const holdingsCols = [
-    { field: 'account',               headerName: 'Account',  width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'account',               headerName: 'Account',  width: 70, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 105, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'close_price',           headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
@@ -230,7 +279,7 @@
   // Day P&L / Day % / P&L % columns deferred — PositionsSummaryRow schema
   // doesn't carry those fields yet; backend change pending operator sign-off.
   const positionsSummaryCols = [
-    { field: 'account', headerName: 'Account', width: 70,  cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'account', headerName: 'Account', width: 70,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'pnl',     headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
@@ -264,18 +313,20 @@
     : { field: 'tradingsymbol', headerName: 'Symbol', width: 130, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
-    { field: 'account',       headerName: 'Account',   width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'account',       headerName: 'Account',   width: 70, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
-    { field: 'close_price',   headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price', headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'pnl',           headerName: 'P&L',       width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'quantity',      headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
+    { field: 'close_price',          headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'average_price',        headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                  headerName: 'P&L',       width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
   ]);
 
   const fundsCols = [
-    { field: 'account',      headerName: 'Account',      width: 70, cellClass: acctFill, headerClass: acctFill, valueFormatter: maskAcct },
+    { field: 'account',      headerName: 'Account',      width: 70, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
@@ -830,5 +881,23 @@
   :global(.perf-opts-link:hover) {
     background: rgba(251,191,36,0.28);
     color: #fde68a;
+  }
+
+  /* ── Account identity stripe + dot ──────────────────────────────────────
+     The left-border colour is injected per-cell via cellStyle as
+     --acct-stripe. TOTAL rows receive --acct-stripe:transparent (no stripe).
+     Both rules are :global because they target elements produced by the
+     AG Grid cellRenderer (outside Svelte's scoped DOM).  */
+  :global(.ag-col-acct) {
+    border-left: 3px solid var(--acct-stripe, transparent) !important;
+  }
+  :global(.acct-dot) {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    margin-right: 4px;
+    flex-shrink: 0;
+    vertical-align: middle;
   }
 </style>

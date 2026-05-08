@@ -12,7 +12,7 @@
  *
  * Helpers:
  *   priceFmt    — per-share prices (LTP, avg, fill, slippage). 2 dp under
- *                 ₹500, 0 dp at/above (decimals add noise on big spots).
+ *                 ₹100, 0 dp at/above (decimals add noise on big spots).
  *   pctFmt      — percentages / ratios (2 dp, caller appends '%').
  *   aggFmt      — ₹ aggregates with full digits (P&L, margins, cash).
  *                 Used when columns aren't tight on space.
@@ -37,14 +37,14 @@ const _IN0 = new Intl.NumberFormat('en-IN', {
 });
 
 /** Live quotes / order prices.
- *  |v| < 500 → 2 decimals  (option premiums, slippage, sub-rupee tickers)
- *  |v| ≥ 500 → 0 decimals  (NIFTY ~22k, gold, futures — decimals are noise
- *                           at that magnitude and steal column width).
+ *  |v| < 100 → 2 decimals  (option premiums, slippage, sub-rupee tickers)
+ *  |v| ≥ 100 → 0 decimals  (NIFTY ~22k, equities, futures — decimals are
+ *                           noise at that magnitude and steal column width).
  *  Examples: 0.05 → "0.05", 1234.5 → "1,235", 22156.7 → "22,157" */
 export function priceFmt(v) {
   if (v == null || !isFinite(v)) return '—';
   const n = Number(v);
-  return Math.abs(n) >= 500 ? _IN0.format(Math.round(n)) : _IN2.format(n);
+  return Math.abs(n) >= 100 ? _IN0.format(Math.round(n)) : _IN2.format(n);
 }
 
 /** 2 dp fixed — for percentages and ratios (caller appends % if needed). */

@@ -396,6 +396,28 @@
   color: #7e97b8;
 }
 
+/* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
+   A 3px left-edge stripe on the account cell only (never the symbol cell).
+   The colour is injected as --acct-stripe via cellStyle in PerformancePage;
+   falls back to transparent so the stripe is invisible for TOTAL rows and
+   any row that doesn't carry a hue mapping. Works across both themes. */
+:global(.ag-col-acct) {
+  border-left: 3px solid var(--acct-stripe, transparent) !important;
+}
+
+/* Coloured dot that sits before the account text inside the cellRenderer.
+   Defined globally so the renderer's document.createElement path can use
+   the class name without a scoped hash prefix. */
+:global(.acct-dot) {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  margin-right: 4px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
 /* ── Log panel styles ────────────────────────────────────────────────────── */
 .log-panel {
   padding: 0.75rem;
