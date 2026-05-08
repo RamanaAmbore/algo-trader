@@ -23,6 +23,7 @@ class HoldingRow(msgspec.Struct):
     cur_val: float
     pnl: float
     pnl_percentage: float
+    last_price: float = 0.0
     day_change: float = 0.0
     day_change_val: float = 0.0
     day_change_percentage: float = 0.0
@@ -59,6 +60,8 @@ class PositionRow(msgspec.Struct):
     average_price: float
     close_price: float
     pnl: float
+    last_price: float = 0.0
+    pnl_percentage: float = 0.0
     unrealised: float = 0.0
     realised: float = 0.0
     day_change: float = 0.0

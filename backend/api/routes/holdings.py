@@ -29,7 +29,7 @@ def _is_broker_outage(err: Exception) -> bool:
 
 _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'quantity',
-    'average_price', 'close_price', 'inv_val', 'cur_val',
+    'average_price', 'close_price', 'last_price', 'inv_val', 'cur_val',
     'pnl', 'pnl_percentage', 'day_change', 'day_change_val', 'day_change_percentage',
 ]
 

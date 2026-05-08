@@ -17,8 +17,8 @@ logger = get_logger(__name__)
 
 _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'product',
-    'quantity', 'average_price', 'close_price',
-    'pnl', 'unrealised', 'realised',
+    'quantity', 'average_price', 'close_price', 'last_price',
+    'pnl', 'pnl_percentage', 'unrealised', 'realised',
     'day_change', 'day_change_val', 'day_change_percentage',
 ]
 
@@ -48,24 +48,34 @@ def _fetch() -> PositionsResponse:
     row_cols = [c for c in _ROW_COLS if c in df.columns]
     df_rows = df.select(row_cols)
 
-    sum_cols = [c for c in ('pnl', 'day_change_val') if c in df.columns]
+    # Compute prev_val per row so we can sum it per account and derive a
+    # meaningful day_change_percentage on the summary (sum Δ / sum prev).
+    df = df.with_columns(
+        (pl.col('close_price') * pl.col('quantity')).abs().alias('_prev_val')
+    )
+    sum_cols = [c for c in ('pnl', 'day_change_val', '_prev_val') if c in df.columns]
     if sum_cols:
         grouped = df.group_by('account').agg([pl.col(c).sum() for c in sum_cols])
     else:
         grouped = pl.DataFrame({'account': []})
-    # Ensure both sum columns exist even when absent from the broker frame
-    for col in ('pnl', 'day_change_val'):
+    # Ensure all sum columns exist even when absent from the broker frame
+    for col in ('pnl', 'day_change_val', '_prev_val'):
         if col not in grouped.columns:
             grouped = grouped.with_columns(pl.lit(0.0).alias(col))
     totals = pl.DataFrame([{
         'account': 'TOTAL',
         'pnl': grouped['pnl'].sum(),
         'day_change_val': grouped['day_change_val'].sum(),
+        '_prev_val': grouped['_prev_val'].sum(),
     }])
     summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
-    # Recompute day_change_percentage from summed day_change_val
-    # We don't have summed prev_val here so carry 0 — per-row pct is on PositionRow.
-    summary_df = summary_df.with_columns(pl.lit(0.0).alias('day_change_percentage'))
+    # day_change_percentage = Σ day_change_val / Σ |close × qty|, per-row's
+    # absolute denominator captured above. Drop the helper column afterwards.
+    summary_df = summary_df.with_columns(
+        (pl.col('day_change_val') / pl.col('_prev_val').replace(0, None) * 100)
+        .fill_nan(0).fill_null(0)
+        .alias('day_change_percentage')
+    ).drop('_prev_val')
 
     rows = [
         PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})

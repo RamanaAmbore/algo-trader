@@ -401,14 +401,14 @@
    The colour is injected as --acct-stripe via cellStyle in PerformancePage;
    falls back to transparent so the stripe is invisible for TOTAL rows and
    any row that doesn't carry a hue mapping. Works across both themes. */
-:global(.ag-col-acct) {
+.ag-col-acct {
   border-left: 3px solid var(--acct-stripe, transparent) !important;
 }
 
 /* Coloured dot that sits before the account text inside the cellRenderer.
-   Defined globally so the renderer's document.createElement path can use
-   the class name without a scoped hash prefix. */
-:global(.acct-dot) {
+   Plain CSS rule (app.css is already global) so the document.createElement
+   path can use the class name without a scoped hash prefix. */
+.acct-dot {
   display: inline-block;
   width: 6px;
   height: 6px;

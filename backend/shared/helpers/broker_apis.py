@@ -68,6 +68,14 @@ def fetch_positions(connections=Connections, account=None, kite=None):
         df_positions['day_change_val'] / prev_val.replace(0, pd.NA) * 100
     ).fillna(0)
 
+    # P&L % — pnl over the cost basis (avg × |qty|). Holdings get this
+    # natively from Kite as `inv_val`; for positions we compute it the
+    # same way to keep the column meaningful across both grids.
+    cost_basis = (df_positions['average_price'] * df_positions['quantity']).abs()
+    df_positions['pnl_percentage'] = (
+        df_positions['pnl'] / cost_basis.replace(0, pd.NA) * 100
+    ).fillna(0)
+
     return df_positions
 
 
