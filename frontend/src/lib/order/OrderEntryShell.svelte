@@ -15,12 +15,13 @@
   // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
 
   import { onMount } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchOrders, fetchRecentAgentEvents, fetchAlgoOrdersRecent } from '$lib/api';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import { logTime } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
+  import UnifiedLog       from '$lib/UnifiedLog.svelte';
 
   /** @type {{
    *   defaultTab?:     'command' | 'ticket' | 'chain',
@@ -184,8 +185,6 @@
   }
 
   // ── Orders tab state ─────────────────────────────────────────────────
-  let _events       = $state(/** @type {any[]} */ ([]));
-  let _agentEvents  = $state(/** @type {any[]} */ ([]));
   let _orders       = $state(/** @type {any[]} */ ([]));
   let _algoRejected = $state(/** @type {any[]} */ ([]));
   /** @type {ReturnType<typeof setInterval> | undefined} */
@@ -213,48 +212,21 @@
       .slice(0, 30);
   });
 
-  // Unified log: merge algo_order events + agent events, sorted newest-first.
-  const _unifiedLog = $derived.by(() => {
-    const orderRows = /** @type {any[]} */ (_events).map(ev => ({ .../** @type {any} */ (ev), _key: 'o' + /** @type {any} */ (ev).id }));
-    const agentRows = /** @type {any[]} */ (_agentEvents).map((/** @type {any} */ ev) => ({
-      id:          ev.id,
-      ts:          ev.triggered_at ?? ev.ts ?? '',
-      kind:        ev.event_type ?? 'agent_fire',
-      message:     ev.message ?? ev.detail ?? '',
-      agent_slug:  ev.agent_slug ?? ev.slug ?? null,
-      order_id:    null,
-      _key:        'a' + ev.id,
-    }));
-    return /** @type {any[]} */ ([...orderRows, ...agentRows])
-      .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''))
-      .slice(0, 30);
-  });
-
   async function _loadOrdersData() {
     try {
-      const [evRes, ordRes, agentEvRes, algoRejRes] = await Promise.all([
-        fetchOrderEvents(20, 'all'),
-        // Real Kite broker orders — same source the /orders page uses,
-        // so the operator sees every order across accounts including
-        // ones placed manually via the Kite app.
+      const [ordRes, algoRejRes] = await Promise.all([
+        // Real Kite broker orders — same source the /orders page uses.
         fetchOrders(),
-        fetchRecentAgentEvents(20),
         // Local REJECTED algo_orders that never reached Kite (preflight blocks).
         fetchAlgoOrdersRecent(20, 'live'),
       ]);
-      _events       = (Array.isArray(evRes) ? evRes : (evRes?.events ?? [])).slice(0, 20);
       _orders       = (Array.isArray(ordRes) ? ordRes : (ordRes?.rows ?? ordRes ?? []));
-      _agentEvents  = (Array.isArray(agentEvRes) ? agentEvRes : (agentEvRes?.events ?? [])).slice(0, 20);
       const allAlgo = (Array.isArray(algoRejRes) ? algoRejRes : (algoRejRes?.orders ?? algoRejRes ?? []));
       _algoRejected = allAlgo.filter((/** @type {any} */ o) => (o.status ?? '').toUpperCase() === 'REJECTED');
     } catch (_) { /* silent */ }
   }
 
-  /** Format an ISO UTC timestamp to dual IST | EDT (DD-MMM HH:MM:SS).
-   *  Reuses the canonical logTime helper from $lib/stores so this
-   *  surface matches the /orders LogPanel + alerts pages. Returns '—'
-   *  for any non-string / unparseable value so "Invalid Date" can't
-   *  reach the UI. */
+  /** Format an ISO UTC timestamp to HH:MM:SS for order-card meta lines. */
   function _fmtEventTime(/** @type {unknown} */ ts) {
     if (!ts || typeof ts !== 'string') return '—';
     const out = logTime(ts.endsWith('Z') ? ts : ts + 'Z');
@@ -456,23 +428,12 @@
 
       <div class="oes-bottom-body">
         {#if _bottomTab === 'log'}
-          {#if _unifiedLog.length === 0}
-            <div class="oes-orders-empty">No recent events.</div>
-          {:else}
-            <div class="oes-events-list">
-              {#each _unifiedLog as ev (ev._key)}
-                <div class="oes-event-row">
-                  <span class="oes-event-time">{_fmtEventTime(ev.ts)}</span>
-                  <span class="oes-event-line">
-                    <span class="oes-event-kind oes-event-kind-{ev.kind}">{ev.kind}</span>
-                    <span class="oes-event-msg">
-                      {#if ev.order_id}#{ev.order_id} · {/if}{#if ev.agent_slug}[{ev.agent_slug}] · {/if}{ev.message ?? ''}
-                    </span>
-                  </span>
-                </div>
-              {/each}
-            </div>
-          {/if}
+          <UnifiedLog
+            filter={{}}
+            pollMs={3000}
+            maxRows={30}
+            heightClass="oes-bottom-scroll"
+          />
 
         {:else}
           <!-- PENDING orders -->
@@ -983,5 +944,10 @@
     max-height: 14rem;
     overflow-y: auto;
     padding: 0.45rem 0.75rem;
+  }
+  /* Height class passed to UnifiedLog inside the bottom panel. */
+  :global(.oes-bottom-scroll) {
+    max-height: 13rem;
+    padding: 0.1rem 0.25rem;
   }
 </style>

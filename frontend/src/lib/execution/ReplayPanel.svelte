@@ -318,11 +318,6 @@
   heightClass="h-[40vh]"
   initialTab="order"
   cmdHistory={[]}
-  orderLog={[]}
-  orderRows={orders}
-  agentLog={[]}
-  systemLog={[]}
-  simLog={[]}
 />
 
 <style>

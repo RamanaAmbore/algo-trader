@@ -9,7 +9,7 @@
   import {
     fetchSimScenarios, fetchSimStatus, startSim, stopSim, stepSim,
     runSimCycle, clearSimArtefacts, seedSimLive, fetchSimEvents,
-    fetchSimTicks, fetchAgents, fetchAlgoOrdersRecent,
+    fetchSimTicks, fetchAgents,
     fetchChartSymbols, fetchChartBatch, fetchAdminLogs,
   } from '$lib/api';
   import LogPanel    from '$lib/LogPanel.svelte';
@@ -52,13 +52,6 @@
   let simLog    = $state(/** @type {any[]} */ ([]));
   let systemLog = $state(/** @type {string[]} */ ([]));
   let logTab    = $state('simulator');
-  const orderLog  = $derived(events);
-  let   orderRows = $state(/** @type {any[]} */ ([]));
-
-  async function loadOrderRows() {
-    try { orderRows = await fetchAlgoOrdersRecent(100, 'all') || []; }
-    catch (_) { /* ignore */ }
-  }
 
   async function loadSimLog() {
     try { simLog = await fetchSimTicks(100) || []; }
@@ -71,9 +64,9 @@
     } catch (_) { /* ignore */ }
   }
   function loadCurrentLog() {
+    // 'order' tab is now self-fetching via UnifiedLog in LogPanel.
     if (logTab === 'simulator') loadSimLog();
     else if (logTab === 'system') loadSystemLog();
-    else if (logTab === 'order')  loadOrderRows();
   }
 
   async function loadHot() {
@@ -209,14 +202,13 @@
     loadAll();
     loadSimLog();
     loadSystemLog();
-    loadOrderRows();
     (async () => {
       try {
         liveSnap = await seedSimLive();
         if (seedMode === 'scripted') seedMode = 'live';
       } catch (_) { /* ignore */ }
     })();
-    refreshTeardown = visibleInterval(() => { loadHot(); loadOrderRows(); loadCurrentLog(); }, 3000);
+    refreshTeardown = visibleInterval(() => { loadHot(); loadCurrentLog(); }, 3000);
   });
   onDestroy(() => { refreshTeardown?.(); });
 </script>
@@ -510,8 +502,6 @@
   heightClass="h-[40vh]"
   initialTab={logTab}
   cmdHistory={[]}
-  {orderLog}
-  {orderRows}
   agentLog={events}
   {systemLog}
   {simLog}

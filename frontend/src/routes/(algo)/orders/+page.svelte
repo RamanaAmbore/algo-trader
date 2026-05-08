@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { clientTimestamp, logTime, visibleInterval } from '$lib/stores';
-  import { fetchOrders, cancelOrder, modifyOrder, fetchRecentAgentEvents, fetchAdminLogs } from '$lib/api';
+  import { fetchOrders, cancelOrder, modifyOrder, fetchAdminLogs } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
@@ -21,8 +21,6 @@
   let cmdVerb       = $state('');
   let running       = $state(false);
   let logTab        = $state('order');
-  let orderLog      = $state([]);
-  let agentLog      = $state([]);
   let systemLog     = $state([]);
   let cmdHistory    = $state([]);
   let selectedOrder = $state(/** @type {any|null} */(null));
@@ -130,15 +128,6 @@
     }
   }
 
-  async function loadOrderLog() {
-    try { orderLog = await fetchRecentAgentEvents(100); }
-    catch (e) { /* ignore */ }
-  }
-  // agentLog is intentionally kept empty on the Orders page — it is the
-  // same data source as orderLog (fetchRecentAgentEvents), so populating
-  // both causes the Terminal tab to render every event twice. The Orders
-  // page LogPanel only needs orderLog (for filteredOrder + Terminal) and
-  // orderRows (for the structured Order tab). The Agent tab is idle here.
   async function loadSystemLog() {
     try {
       const d = await fetchAdminLogs(100);
@@ -146,8 +135,8 @@
     } catch (e) { /* ignore */ }
   }
   function loadCurrentLog() {
-    if (logTab === 'order') loadOrderLog();
-    else if (logTab === 'system') loadSystemLog();
+    // 'order' tab is now self-fetching via UnifiedLog — only system needs manual load.
+    if (logTab === 'system') loadSystemLog();
   }
 
   function orderEnrichPairs(pairs, ctx) {
@@ -340,8 +329,6 @@
   heightClass="flex-1 min-h-0"
   initialTab={logTab}
   {cmdHistory}
-  {orderLog}
-  {agentLog}
   {systemLog}
   onTabChange={(id) => { logTab = id; loadCurrentLog(); }}
 />

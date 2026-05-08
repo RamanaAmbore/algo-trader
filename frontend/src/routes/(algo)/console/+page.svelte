@@ -10,8 +10,6 @@
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
 
   let logLines = $state(/** @type {any[]} */ ([]));
-  let agentLog = $state(/** @type {any[]} */ ([]));
-  let orderLog = $state(/** @type {any[]} */ ([]));
   let logTab   = $state('terminal');
   let logTeardown;
 
@@ -28,24 +26,9 @@
     } catch (_) { /* ignore */ }
   }
 
-  async function loadAgentLog() {
-    try {
-      const res = await fetch('/api/agents/events/recent?n=100', { headers: authHeaders() });
-      agentLog = await res.json().catch(() => []);
-    } catch (_) { /* ignore */ }
-  }
-
-  async function loadOrderLog() {
-    try {
-      const res = await fetch('/api/agents/events/recent?n=100', { headers: authHeaders() });
-      orderLog = await res.json().catch(() => []);
-    } catch (_) { /* ignore */ }
-  }
-
   function loadCurrentLog() {
-    if (logTab === 'system')      loadSystemLog();
-    else if (logTab === 'agent')  loadAgentLog();
-    else if (logTab === 'order')  loadOrderLog();
+    // 'order' tab is now self-fetching via UnifiedLog in LogPanel.
+    if (logTab === 'system') loadSystemLog();
   }
 
   onMount(() => {
@@ -80,8 +63,6 @@
     <LogPanel
       heightClass="flex-1 min-h-0"
       initialTab={logTab}
-      orderLog={orderLog}
-      {agentLog}
       systemLog={logLines}
       onTabChange={(id) => { logTab = id; loadCurrentLog(); }}
     />

@@ -578,6 +578,19 @@ export async function uploadPnlCsv(formData) {
   return res.json();
 }
 
+// ── Unified log feed ──────────────────────────────────────────────────
+/**
+ * GET /api/logs/unified — merged order-event + agent-event stream.
+ * filter: { kinds?: string[], accounts?: string[], since?: string }
+ */
+export const fetchUnifiedLog = (filter = {}, limit = 50) => {
+  const p = new URLSearchParams({ limit: String(limit) });
+  if (filter.kinds?.length)    p.set('kinds',    filter.kinds.join(','));
+  if (filter.accounts?.length) p.set('accounts', filter.accounts.join(','));
+  if (filter.since)            p.set('since',    filter.since);
+  return _get(`/logs/unified?${p}`, { auth: true });
+};
+
 // ── Admin: Per-agent P&L attribution ─────────────────────────────────
 /**
  * GET /api/admin/pnl/by-agent — P&L attribution grouped by agent.

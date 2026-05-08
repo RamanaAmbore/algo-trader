@@ -4,7 +4,7 @@
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent,
     fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
-    startSimForAgent, fetchAlgoOrdersRecent, fetchAdminLogs,
+    startSimForAgent, fetchAdminLogs,
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
 
@@ -14,12 +14,6 @@
   let error       = $state('');
   let logTab      = $state('agent');
   let systemLog   = $state([]);
-  let orderLog    = $state([]);
-  // Structured algo-order rows (mode=sim|live) for the Order tab of the
-  // LogPanel. Refreshed alongside the rest of the logs; the panel shows
-  // side / qty / symbol / price / account for every paper-traded or live
-  // order an agent action created.
-  let orderRows   = $state(/** @type {any[]} */ ([]));
   let simLog      = $state(/** @type {any[]} */ ([]));
   // Global simulator status — when active, the Agent-events panel swaps to
   // the simulator's event stream so operators only see sim results in the
@@ -84,20 +78,6 @@
     } catch (e) { /* ignore */ }
   }
 
-  async function loadOrderLog() {
-    // orderLog = raw agent events (kept for the Terminal-tab fallback).
-    // orderRows = structured AlgoOrder rows (mode=live or sim) — this is
-    // what the Order tab renders. Fetches both so the two tabs stay in
-    // sync on a single refresh tick.
-    try {
-      const [ev, algo] = await Promise.all([
-        fetchRecentAgentEvents(100),
-        fetchAlgoOrdersRecent(100, 'all'),
-      ]);
-      orderLog  = ev;
-      orderRows = algo;
-    } catch (e) { /* ignore */ }
-  }
 
   async function loadSimLog() {
     // Polled every few seconds while the Simulator tab is visible so the
@@ -110,16 +90,15 @@
   }
 
   function loadCurrentLog() {
+    // 'order' tab is now self-fetching via UnifiedLog in LogPanel.
     if (logTab === 'agent') loadAgentLog();
     else if (logTab === 'system') loadSystemLog();
-    else if (logTab === 'order') loadOrderLog();
     else if (logTab === 'simulator') loadSimLog();
   }
 
   async function loadAll() {
     loading = true;
-    await Promise.all([loadAgents(), loadAgentLog(), loadSystemLog(),
-                       loadSimLog()]);
+    await Promise.all([loadAgents(), loadAgentLog(), loadSystemLog(), loadSimLog()]);
     loading = false;
   }
 
@@ -847,8 +826,6 @@
   heightClass="h-[50vh]"
   initialTab={logTab}
   cmdHistory={[]}
-  {orderLog}
-  {orderRows}
   agentLog={agentEvents}
   {systemLog}
   {simLog}

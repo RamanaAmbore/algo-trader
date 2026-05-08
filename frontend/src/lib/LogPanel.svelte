@@ -3,6 +3,7 @@
   import { parseLogLineTime } from '$lib/stores';
   import { fetchNews } from '$lib/api';
   import { priceFmt, aggCompact } from '$lib/format';
+  import UnifiedLog from '$lib/UnifiedLog.svelte';
 
   /** @type {{
    *   heightClass?: string,
@@ -306,8 +307,19 @@
       <div class="log-debug">No headlines.</div>
     {/if}
   </div>
+{:else if logTab === 'order'}
+  <!-- Order tab — canonical unified log via UnifiedLog.svelte.
+       Both order-lifecycle events (placed/chase/fill) and agent-fire
+       events (agent_fire/agent_action_success) appear here with the
+       same chip palette so operators see one coherent stream. -->
+  <UnifiedLog
+    filter={{}}
+    pollMs={3000}
+    maxRows={50}
+    heightClass="log-panel log-unified {heightClass}"
+  />
 {:else}
-<pre class="log-panel {heightClass}">{#if logTab === 'order'}{@html _orderLogHtml()}{:else if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
+<pre class="log-panel {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
   const t = _shortTime(e.timestamp);
   const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
             : e.event_type === 'action_success' ? 'log-agent-success'
@@ -360,6 +372,13 @@
     text-transform: lowercase;
     letter-spacing: 0.08em;
     user-select: none;
+  }
+
+  /* Unified-log container inside the LogPanel — matches the <pre>
+     visual context (same background, same overflow) but is a <div>
+     so UnifiedLog can use flex layout internally. */
+  :global(.log-unified) {
+    padding: 0.3rem 0.5rem !important;
   }
 
   /* Mode pills — amber SIM / emerald LIVE. Consistent across Simulator
