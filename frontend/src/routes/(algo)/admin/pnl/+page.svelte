@@ -39,6 +39,23 @@
     { id: 'NIFTY MIDCAP 100',   color: '#f43f5e', label: 'MIDCAP 100'         },
     { id: 'NIFTY SMALLCAP 100', color: '#4ade80', label: 'SMALLCAP 100'       },
   ];
+
+  // Portfolio series — always shown when pct_change_from_start data exists
+  const PORTFOLIO_COLOR = '#fbbf24';
+
+  /** @returns {{ symbol: string, name: string, closes: Array<{date:string, pct_change_from_start:number}> }} */
+  const portfolioSeries = $derived.by(() => {
+    const ds = /** @type {any[]} */ (data?.daily_series ?? []);
+    return {
+      symbol: 'PORTFOLIO',
+      name: 'Portfolio',
+      closes: ds
+        .filter(r => r.pct_change_from_start != null)
+        .map(r => ({ date: r.date, pct_change_from_start: r.pct_change_from_start })),
+    };
+  });
+
+  const portfolioActive = $derived(portfolioSeries.closes.length > 0);
   /** @type {Set<string>} */
   let bmActive = $state(new Set(['NIFTY 50']));
   /** @type {any[] | null} */
@@ -177,30 +194,35 @@
   const CW = W - PAD_L - PAD_R;
   const CH = H - PAD_T - PAD_B;
 
-  // Merge all visible series into a unified set of dates + pct values
+  // Merge all visible series (benchmarks + portfolio) into a unified set of
+  // dates + pct values.  Portfolio is always included when data exists.
   const chartData = $derived.by(() => {
-    if (!bmSeries || bmSeries.length === 0) return null;
-    const visible = bmSeries.filter(s => bmActive.has(s.symbol) && s.closes?.length > 0);
-    if (visible.length === 0) return null;
+    const bmVisible = (bmSeries ?? []).filter(
+      /** @param {any} s */ s => bmActive.has(s.symbol) && s.closes?.length > 0
+    );
+    const portVisible = portfolioActive ? [portfolioSeries] : [];
+    const allSeries = [...bmVisible, ...portVisible];
+
+    if (allSeries.length === 0) return null;
 
     // Combine all dates (sorted)
-    const dateSet = new Set(visible.flatMap(s => s.closes.map(c => c.date)));
+    const dateSet = new Set(allSeries.flatMap(s => s.closes.map(c => c.date)));
     const dates = [...dateSet].sort();
     if (dates.length === 0) return null;
 
     // Build per-series lookup
-    const lookup = new Map(visible.map(s => [
+    const lookup = new Map(allSeries.map(s => [
       s.symbol,
       new Map(s.closes.map(c => [c.date, c.pct_change_from_start])),
     ]));
 
-    // Y domain from all pct values
-    const allPct = visible.flatMap(s => s.closes.map(c => c.pct_change_from_start));
+    // Y domain from all pct values across benchmarks + portfolio
+    const allPct = allSeries.flatMap(s => s.closes.map(c => c.pct_change_from_start));
     const yMin = Math.min(0, ...allPct);
     const yMax = Math.max(0, ...allPct);
     const ySpan = yMax - yMin || 1;
 
-    return { visible, dates, lookup, yMin, yMax, ySpan };
+    return { visible: bmVisible, portVisible, allSeries, dates, lookup, yMin, yMax, ySpan };
   });
 
   function xOf(/** @type {number} */ i, /** @type {number} */ total) {
@@ -269,10 +291,10 @@
 
   const hovValues = $derived.by(() => {
     if (hovIdx == null || !chartData || hovDate == null) return [];
-    return chartData.visible.map(s => ({
+    return chartData.allSeries.map(s => ({
       symbol: s.symbol,
-      color: BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0',
-      label: BENCHMARKS.find(b => b.id === s.symbol)?.label ?? s.symbol,
+      color: s.symbol === 'PORTFOLIO' ? PORTFOLIO_COLOR : (BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0'),
+      label: s.symbol === 'PORTFOLIO' ? 'Portfolio' : (BENCHMARKS.find(b => b.id === s.symbol)?.label ?? s.symbol),
       pct: chartData.lookup.get(s.symbol)?.get(hovDate) ?? null,
     }));
   });
@@ -281,16 +303,23 @@
     ? xOf(hovIdx, chartData.dates.length)
     : null);
 
-  // Latest % for each visible series (legend chips)
+  // Latest % for each visible series (legend chips) — portfolio always first
   const legendValues = $derived.by(() => {
     if (!chartData) return [];
-    return chartData.visible.map(s => {
+    const bmChips = chartData.visible.map(s => {
       const closes = s.closes;
       const last = closes.length > 0 ? closes[closes.length - 1].pct_change_from_start : null;
       const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0';
       const label = BENCHMARKS.find(b => b.id === s.symbol)?.label ?? s.symbol;
-      return { symbol: s.symbol, label, color, pct: last };
+      return { symbol: s.symbol, label, color, pct: last, isPortfolio: false };
     });
+    if (!portfolioActive) return bmChips;
+    const portCloses = portfolioSeries.closes;
+    const portLast = portCloses.length > 0 ? portCloses[portCloses.length - 1].pct_change_from_start : null;
+    return [
+      { symbol: 'PORTFOLIO', label: 'Portfolio', color: PORTFOLIO_COLOR, pct: portLast, isPortfolio: true },
+      ...bmChips,
+    ];
   });
 </script>
 
@@ -388,6 +417,12 @@
       </div>
     </div>
 
+    {#if !portfolioActive && data && !data.start_capital}
+      <div class="no-capital-hint">
+        Portfolio % requires capital data on the from-date — pick a date with snapshot rows.
+      </div>
+    {/if}
+
     {#if bmError}
       <div class="err-banner" style="margin-top:0.3rem">{bmError}</div>
     {:else if bmLoading}
@@ -423,7 +458,7 @@
           <text x={x.toFixed(1)} y={H - 4} font-size="9" fill="#7e97b8"
                 text-anchor="middle" font-family="ui-monospace,monospace">{label}</text>
         {/each}
-        <!-- series lines -->
+        <!-- benchmark series lines -->
         {#each chartData.visible as s}
           {@const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0'}
           <path d={buildLinePath(s.symbol)}
@@ -433,6 +468,15 @@
                 stroke-linejoin="round"
                 stroke-linecap="round" />
         {/each}
+        <!-- portfolio line — amber, 2px, always on top of benchmarks -->
+        {#if portfolioActive}
+          <path d={buildLinePath('PORTFOLIO')}
+                fill="none"
+                stroke={PORTFOLIO_COLOR}
+                stroke-width="2"
+                stroke-linejoin="round"
+                stroke-linecap="round" />
+        {/if}
         <!-- hover crosshair -->
         {#if hovLineX != null && hovDate}
           <line x1={hovLineX.toFixed(1)} y1={PAD_T}
@@ -821,6 +865,17 @@
     font-family: ui-monospace, monospace;
     padding: 1.5rem 0;
     text-align: center;
+  }
+
+  .no-capital-hint {
+    font-size: 0.6rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    background: rgba(126,151,184,0.06);
+    border: 1px solid rgba(126,151,184,0.18);
+    border-radius: 3px;
+    padding: 0.22rem 0.55rem;
+    margin-bottom: 0.35rem;
   }
 
   /* Hover tooltip */

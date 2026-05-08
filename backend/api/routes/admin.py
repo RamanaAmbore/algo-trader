@@ -59,8 +59,9 @@ class PnlRangeResponse(msgspec.Struct):
     by_segment: list[dict]    # [{segment, total_pnl, day_pnl, n_rows}]
     by_account: list[dict]    # [{account, segment, kind, total_pnl, day_pnl, n_rows}]
     by_symbol:  list[dict]    # [{symbol, segment, total_pnl, day_pnl, n_rows}] top-50
-    daily_series: list[dict]  # [{date, total_pnl, day_pnl}]
+    daily_series: list[dict]  # [{date, total_pnl, day_pnl, pct_change_from_start}]
     summary: dict             # {total_pnl, day_pnl, n_dates, n_accounts}
+    start_capital: float | None = None  # sum |qty*avg_cost| on from_date; None if no rows
 
 
 class PnlCsvUploadResponse(msgspec.Struct):
@@ -384,6 +385,13 @@ class AdminController(Controller):
           to=YYYY-MM-DD     (default: today IST)
           segment=all|equity|commodity|currency|derivatives
           kind=all|holdings|positions
+
+        Each daily_series row carries pct_change_from_start: cumulative
+        day_pnl as a % of start_capital (sum of |qty*avg_cost| across
+        holdings+positions rows on from_date).  Both fields are None when
+        from_date has no daily_book rows (e.g. the date is a weekend or
+        predates the snapshot history) — the frontend silently omits the
+        portfolio line in that case.
         """
         from backend.shared.helpers.date_time_utils import timestamp_indian
 
@@ -513,14 +521,43 @@ class AdminController(Controller):
                 ORDER BY date
             """)
             daily_rows = (await session.execute(daily_sql, params)).fetchall()
-            daily_series = [
-                {
-                    "date":      str(r[0]),
-                    "total_pnl": _f(r[1]),
-                    "day_pnl":   _f(r[2]),
-                }
-                for r in daily_rows
-            ]
+
+            # 4b — start_capital: sum of |qty * avg_cost| on from_date for
+            #       holdings + positions rows (trades excluded).  Applied
+            #       after segment/kind filters so it reflects the same slice
+            #       the user is viewing.  Falls back to None when no rows
+            #       exist on from_date (weekend, pre-history, etc.).
+            cap_seg_clause  = " AND segment = :segment" if seg_filter  != "all" else ""
+            cap_kind_clause = " AND kind = :kind"        if kind_filter != "all" else ""
+            cap_kind_base   = f" AND kind IN ('holdings','positions')"
+            cap_sql = text(f"""
+                SELECT SUM(ABS(COALESCE(qty, 0) * COALESCE(avg_cost, 0)))
+                FROM daily_book
+                WHERE date = :d_from
+                  {cap_kind_base}
+                  {cap_seg_clause}
+                  {cap_kind_clause}
+            """)
+            cap_row = (await session.execute(cap_sql, params)).fetchone()
+            raw_cap = cap_row[0] if cap_row else None
+            start_capital: float | None = float(raw_cap) if raw_cap is not None else None
+
+            # 4c — derive pct_change_from_start via cumulative day_pnl / start_capital
+            daily_series: list[dict] = []
+            cum: float = 0.0
+            for r in daily_rows:
+                day_pnl_val = _f(r[2])
+                cum += day_pnl_val
+                if start_capital and start_capital > 0:
+                    pct: float | None = round((cum / start_capital) * 100, 4)
+                else:
+                    pct = None
+                daily_series.append({
+                    "date":                   str(r[0]),
+                    "total_pnl":              _f(r[1]),
+                    "day_pnl":                day_pnl_val,
+                    "pct_change_from_start":  pct,
+                })
 
             # 5 — summary
             summ_sql = text(f"""
@@ -550,6 +587,7 @@ class AdminController(Controller):
             by_symbol=by_symbol,
             daily_series=daily_series,
             summary=summary,
+            start_capital=start_capital,
         )
 
     # ------------------------------------------------------------------
