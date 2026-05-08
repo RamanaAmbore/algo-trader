@@ -22,13 +22,15 @@
   /** @type {string|null} */
   let filterAccount = $state(null);
 
-  // Live snapshot section — open by default
-  let snapshotExpanded = $state(true);
   // By-agent section — closed by default
   let agentExpanded    = $state(false);
 
-  // CSV upload — collapsed by default
-  let csvExpanded   = $state(false);
+  // Range-breakdown tabs
+  /** @type {'segment'|'account'|'symbol'|'daily'} */
+  let breakTab = $state('segment');
+
+  // CSV upload modal
+  let csvOpen       = $state(false);
   let csvAccount    = $state('');
   let csvDate       = $state('');
   /** @type {File|null} */
@@ -341,36 +343,6 @@
   <h1 class="page-title-chip">P&L <span class="title-sub">· date range</span></h1>
 </div>
 
-<!-- ── Section A: Live snapshot ───────────────────────────────────── -->
-<div class="card upload-card">
-  <button class="upload-toggle" onclick={() => snapshotExpanded = !snapshotExpanded}>
-    <span class="section-head" style="pointer-events:none">
-      Live snapshot <span class="section-sub">— positions + holdings</span>
-    </span>
-    <span class="chevron {snapshotExpanded ? 'open' : ''}">▸</span>
-  </button>
-  {#if snapshotExpanded}
-    <div style="margin-top:0.75rem">
-      <PerformancePage compactHeader={true} />
-    </div>
-  {/if}
-</div>
-
-<!-- ── Section B: By agent ─────────────────────────────────────────── -->
-<div class="card upload-card">
-  <button class="upload-toggle" onclick={() => agentExpanded = !agentExpanded}>
-    <span class="section-head" style="pointer-events:none">
-      By agent <span class="section-sub">— P&L attribution</span>
-    </span>
-    <span class="chevron {agentExpanded ? 'open' : ''}">▸</span>
-  </button>
-  {#if agentExpanded}
-    <div style="margin-top:0.75rem">
-      <PnlPanel active={agentExpanded} />
-    </div>
-  {/if}
-</div>
-
 <!-- ── Filter bar ─────────────────────────────────────────────────── -->
 <div class="filter-bar">
   <label class="fb-label">
@@ -407,14 +379,23 @@
       Clear: {filterAccount}
     </button>
   {/if}
+  <button class="algo-btn algo-btn-dim csv-btn"
+          title="Backfill historical P&L from a Kite Console CSV export"
+          onclick={() => csvOpen = true}>
+    ↑ Backfill CSV
+  </button>
 </div>
 
 {#if error}
   <div class="err-banner">{error}</div>
 {/if}
 
+<!-- ── Today's book — live ───────────────────────────────────────── -->
+<header class="page-section-head">Today's book <span class="section-sub">— live</span></header>
+<PerformancePage compactHeader={true} />
+
 {#if data}
-  <!-- ── Summary card — 5 KVs in a single row ──────────────────── -->
+  <!-- ── Summary strip — 2 KVs (Total + Day) + subtitle ─────────── -->
   <div class="card summary-row">
     <div class="kv">
       <span class="kv-lbl">Total P&L</span>
@@ -425,20 +406,8 @@
       <span class="kv-lbl">Day P&L</span>
       <span class="kv-val {pnlClass(data.summary.day_pnl)}">{fmt(data.summary.day_pnl)}</span>
     </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Dates</span>
-      <span class="kv-val">{data.summary.n_dates}</span>
-    </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Accounts</span>
-      <span class="kv-val">{data.summary.n_accounts}</span>
-    </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Range</span>
-      <span class="kv-val range-val">{data.from_date} → {data.to_date}</span>
+    <div class="summary-meta">
+      {data.summary.n_dates} dates · {data.summary.n_accounts} accounts · {data.from_date} → {data.to_date}
     </div>
   </div>
 
@@ -552,131 +521,149 @@
     {/if}
   </div>
 
-  <!-- ── By segment ──────────────────────────────────────────────── -->
+  <!-- ── Range breakdown — tabbed (Segment / Account / Symbol / Daily) ── -->
   <div class="card">
-    <header class="section-head">By segment</header>
-    {#if data.by_segment.length === 0}
-      <p class="empty-hint">No data in range.</p>
-    {:else}
-      <div class="tbl-wrap">
-        <table class="pnl-tbl">
-          <thead>
-            <tr><th>Segment</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
-          </thead>
-          <tbody>
-            {#each data.by_segment as row}
-              <tr>
-                <td><span class="seg-pill">{row.segment}</span></td>
-                <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
-                <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
-                <td class="num muted">{row.n_rows}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-  </div>
+    <div class="tab-strip" role="tablist" aria-label="Range breakdown">
+      <button class="tab {breakTab === 'segment' ? 'tab-on' : ''}"
+              role="tab" aria-selected={breakTab === 'segment'}
+              onclick={() => breakTab = 'segment'}>Segment</button>
+      <button class="tab {breakTab === 'account' ? 'tab-on' : ''}"
+              role="tab" aria-selected={breakTab === 'account'}
+              onclick={() => breakTab = 'account'}>Account</button>
+      <button class="tab {breakTab === 'symbol' ? 'tab-on' : ''}"
+              role="tab" aria-selected={breakTab === 'symbol'}
+              onclick={() => breakTab = 'symbol'}>Symbol</button>
+      <button class="tab {breakTab === 'daily' ? 'tab-on' : ''}"
+              role="tab" aria-selected={breakTab === 'daily'}
+              onclick={() => breakTab = 'daily'}>Daily</button>
+    </div>
 
-  <!-- ── By account ──────────────────────────────────────────────── -->
-  <div class="card">
-    <header class="section-head">By account</header>
-    {#if data.by_account.length === 0}
-      <p class="empty-hint">No data in range.</p>
-    {:else}
-      <div class="tbl-wrap">
-        <table class="pnl-tbl">
-          <thead>
-            <tr><th>Account</th><th>Segment</th><th>Kind</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
-          </thead>
-          <tbody>
-            {#each data.by_account as row}
-              <tr
-                class="clickable {filterAccount === row.account ? 'row-active' : ''}"
-                onclick={() => filterAccount = filterAccount === row.account ? null : row.account}
-                title="Click to filter by {row.account}"
-              >
-                <td class="mono">{row.account}</td>
-                <td><span class="seg-pill">{row.segment}</span></td>
-                <td class="muted">{row.kind}</td>
-                <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
-                <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
-                <td class="num muted">{row.n_rows}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-  </div>
-
-  <!-- ── Top 50 symbols ──────────────────────────────────────────── -->
-  <div class="card">
-    <header class="section-head">
-      Top symbols <span class="section-sub">(by |total P&L|, max 50)</span>
-    </header>
-    {#if visibleSymbols.length === 0}
-      <p class="empty-hint">No data in range.</p>
-    {:else}
-      <div class="tbl-wrap">
-        <table class="pnl-tbl">
-          <thead>
-            <tr><th>Symbol</th><th>Segment</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
-          </thead>
-          <tbody>
-            {#each visibleSymbols as row}
-              <tr>
-                <td class="mono sym">{row.symbol}</td>
-                <td><span class="seg-pill">{row.segment}</span></td>
-                <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
-                <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
-                <td class="num muted">{row.n_rows}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-  </div>
-
-  <!-- ── Daily series ────────────────────────────────────────────── -->
-  <div class="card">
-    <header class="section-head">Daily series</header>
-    {#if visibleDaily.length === 0}
-      <p class="empty-hint">No daily data in range.</p>
-    {:else}
-      <div class="tbl-wrap">
-        <table class="pnl-tbl">
-          <thead>
-            <tr><th>Date</th><th>Total P&L</th><th>Day P&L</th></tr>
-          </thead>
-          <tbody>
-            {#each visibleDaily as row}
-              <tr>
-                <td class="mono">{row.date}</td>
-                <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
-                <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+    {#if breakTab === 'segment'}
+      {#if data.by_segment.length === 0}
+        <p class="empty-hint">No data in range.</p>
+      {:else}
+        <div class="tbl-wrap">
+          <table class="pnl-tbl">
+            <thead>
+              <tr><th>Segment</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
+            </thead>
+            <tbody>
+              {#each data.by_segment as row}
+                <tr>
+                  <td><span class="seg-pill">{row.segment}</span></td>
+                  <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
+                  <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
+                  <td class="num muted">{row.n_rows}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    {:else if breakTab === 'account'}
+      {#if data.by_account.length === 0}
+        <p class="empty-hint">No data in range.</p>
+      {:else}
+        <div class="tbl-wrap">
+          <table class="pnl-tbl">
+            <thead>
+              <tr><th>Account</th><th>Segment</th><th>Kind</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
+            </thead>
+            <tbody>
+              {#each data.by_account as row}
+                <tr
+                  class="clickable {filterAccount === row.account ? 'row-active' : ''}"
+                  onclick={() => filterAccount = filterAccount === row.account ? null : row.account}
+                  title="Click to filter by {row.account}"
+                >
+                  <td class="mono">{row.account}</td>
+                  <td><span class="seg-pill">{row.segment}</span></td>
+                  <td class="muted">{row.kind}</td>
+                  <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
+                  <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
+                  <td class="num muted">{row.n_rows}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    {:else if breakTab === 'symbol'}
+      {#if visibleSymbols.length === 0}
+        <p class="empty-hint">No data in range.</p>
+      {:else}
+        <p class="tab-hint">Top by |total P&L|, max 50.</p>
+        <div class="tbl-wrap">
+          <table class="pnl-tbl">
+            <thead>
+              <tr><th>Symbol</th><th>Segment</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
+            </thead>
+            <tbody>
+              {#each visibleSymbols as row}
+                <tr>
+                  <td class="mono sym">{row.symbol}</td>
+                  <td><span class="seg-pill">{row.segment}</span></td>
+                  <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
+                  <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
+                  <td class="num muted">{row.n_rows}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    {:else if breakTab === 'daily'}
+      {#if visibleDaily.length === 0}
+        <p class="empty-hint">No daily data in range.</p>
+      {:else}
+        <div class="tbl-wrap">
+          <table class="pnl-tbl">
+            <thead>
+              <tr><th>Date</th><th>Total P&L</th><th>Day P&L</th></tr>
+            </thead>
+            <tbody>
+              {#each visibleDaily as row}
+                <tr>
+                  <td class="mono">{row.date}</td>
+                  <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
+                  <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
     {/if}
   </div>
 {/if}
 
-<!-- ── CSV upload card — collapsible ──────────────────────────────── -->
-<div class="card upload-card">
-  <button class="upload-toggle" onclick={() => csvExpanded = !csvExpanded}>
+<!-- ── By agent — collapsible (default closed) ─────────────────────── -->
+<div class="card">
+  <button class="upload-toggle" onclick={() => agentExpanded = !agentExpanded}>
     <span class="section-head" style="pointer-events:none">
-      Upload Kite P&L CSV <span class="section-sub">(backfill)</span>
+      By agent <span class="section-sub">— P&L attribution</span>
     </span>
-    <span class="chevron {csvExpanded ? 'open' : ''}">▸</span>
+    <span class="chevron {agentExpanded ? 'open' : ''}">▸</span>
   </button>
+  {#if agentExpanded}
+    <div style="margin-top:0.75rem">
+      <PnlPanel active={agentExpanded} />
+    </div>
+  {/if}
+</div>
 
-  {#if csvExpanded}
+<!-- ── CSV upload modal ─────────────────────────────────────────────── -->
+{#if csvOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="modal-backdrop" onclick={() => csvOpen = false}></div>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="csv-modal-title">
+    <div class="modal-head">
+      <h2 id="csv-modal-title" class="modal-title">Backfill Kite P&L CSV</h2>
+      <button class="modal-x" aria-label="Close" onclick={() => csvOpen = false}>×</button>
+    </div>
     <p class="upload-hint">
-      Export from Kite Console → Reports → P&amp;L Statement → CSV, then upload here to backfill historical data.
+      Export from Kite Console → Reports → P&amp;L Statement → CSV, then upload here.
     </p>
     <div class="upload-row">
       <label class="fb-label">
@@ -689,7 +676,6 @@
         <input type="date" class="field-input fb-date" bind:value={csvDate} />
       </label>
     </div>
-    <!-- Drop zone -->
     <div
       class="drop-zone {dragging ? 'drag-over' : ''} {csvFile ? 'has-file' : ''}"
       role="button"
@@ -715,6 +701,7 @@
       <button class="algo-btn" onclick={uploadCsv} disabled={csvLoading}>
         {csvLoading ? 'Uploading…' : 'Upload'}
       </button>
+      <button class="algo-btn algo-btn-dim" onclick={() => csvOpen = false}>Close</button>
     </div>
 
     {#if csvError}
@@ -744,13 +731,25 @@
         </div>
       {/if}
     {/if}
-  {/if}
-</div>
+  </div>
+{/if}
 
 <style>
   /* ── Page title ────────────────────────────────────────────────── */
   .page-title-chip { font-size: 0.9rem; font-weight: 700; color: #fbbf24; margin: 0; }
   .title-sub { font-weight: 400; color: #7e97b8; font-size: 0.75rem; }
+
+  /* Standalone section header (no card wrapper around the live book) */
+  .page-section-head {
+    display: block;
+    font-size: 0.55rem;
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    margin: 0.4rem 0 0.35rem;
+  }
 
   /* ── Filter bar ────────────────────────────────────────────────── */
   .filter-bar {
@@ -773,6 +772,7 @@
   .fb-date   { width: 8.5rem; font-size: 0.7rem; padding: 0.2rem 0.38rem; }
   .fb-text   { width: 8rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
   .fb-select { width: 9rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
+  .csv-btn   { margin-left: auto; }
 
   /* ── Error banner ──────────────────────────────────────────────── */
   .err-banner {
@@ -814,7 +814,7 @@
     letter-spacing: 0;
   }
 
-  /* ── Summary row — 5 KVs horizontal ───────────────────────────── */
+  /* ── Summary row — 2 KVs + meta line ──────────────────────────── */
   .summary-row {
     display: flex;
     flex-wrap: wrap;
@@ -843,7 +843,7 @@
     letter-spacing: 0.06em;
   }
   .kv-val {
-    font-size: 0.82rem;
+    font-size: 0.95rem;
     font-weight: 700;
     font-family: ui-monospace, monospace;
     color: #c8d8f0;
@@ -851,7 +851,13 @@
   }
   .kv-val.pos { color: #4ade80; }
   .kv-val.neg { color: #f87171; }
-  .range-val  { font-size: 0.68rem; font-weight: 400; }
+  .summary-meta {
+    margin-left: auto;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    color: #7e97b8;
+    padding-right: 0.3rem;
+  }
 
   /* ── Chart card ────────────────────────────────────────────────── */
   .chart-card { padding: 0.5rem 0.75rem 0.55rem; }
@@ -966,6 +972,40 @@
     opacity: 0.9;
   }
 
+  /* ── Tab strip (range breakdown) ───────────────────────────────── */
+  .tab-strip {
+    display: flex;
+    gap: 0.05rem;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    margin-bottom: 0.45rem;
+  }
+  .tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    padding: 0.28rem 0.7rem;
+    font-size: 0.6rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .tab:hover { color: #c8d8f0; }
+  .tab.tab-on {
+    color: #fbbf24;
+    border-bottom-color: #fbbf24;
+  }
+  .tab-hint {
+    font-size: 0.6rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    margin: 0 0 0.35rem;
+  }
+
   /* ── Table ─────────────────────────────────────────────────────── */
   .tbl-wrap { overflow-x: auto; }
   .pnl-tbl {
@@ -1044,7 +1084,7 @@
     color: #7e97b8;
   }
 
-  /* ── Upload card / collapsible ─────────────────────────────────── */
+  /* ── By-agent collapsible (kept) ───────────────────────────────── */
   .upload-toggle {
     display: flex;
     align-items: center;
@@ -1063,6 +1103,52 @@
   }
   .chevron.open { transform: rotate(90deg); }
 
+  /* ── CSV upload modal ──────────────────────────────────────────── */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 49;
+  }
+  .modal {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
+    border: 1px solid rgba(251,191,36,0.35);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+    width: min(28rem, 92vw);
+    max-height: 90vh;
+    overflow-y: auto;
+    z-index: 50;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+  }
+  .modal-title {
+    font-size: 0.75rem;
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    margin: 0;
+  }
+  .modal-x {
+    background: transparent;
+    border: none;
+    color: #7e97b8;
+    font-size: 1.1rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 0.2rem;
+  }
+  .modal-x:hover { color: #fbbf24; }
+
   .upload-hint {
     font-size: 0.62rem;
     color: #7e97b8;
@@ -1075,7 +1161,11 @@
     gap: 0.45rem;
     margin-bottom: 0.5rem;
   }
-  .upload-actions { margin-top: 0.5rem; }
+  .upload-actions {
+    margin-top: 0.5rem;
+    display: flex;
+    gap: 0.4rem;
+  }
 
   /* Drop zone */
   .drop-zone {
