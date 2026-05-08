@@ -256,7 +256,7 @@
   // Day cols promoted from index 7-8 to 5-6 so they read in the visible scan
   // column on narrow viewports (operator was scrolling to find them).
   const holdingsCols = [
-    { field: 'account',               headerName: 'Account',  width: 70, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',               headerName: 'Account',  width: 70, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 105, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
@@ -306,7 +306,7 @@
     : { field: 'tradingsymbol', headerName: 'Symbol', width: 130, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
-    { field: 'account',       headerName: 'Account',   width: 70, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',       headerName: 'Account',   width: 70, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
