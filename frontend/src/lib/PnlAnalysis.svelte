@@ -5,6 +5,8 @@
   import PnlPanel from '$lib/PnlPanel.svelte';
 
   // ── State ──────────────────────────────────────────────────────────────────
+  /** @type {'today'|'5d'|'1m'|'3m'|'1y'|'ytd'|'custom'} */
+  let preset = $state('today');
   /** @type {string} */
   let fromDate   = $state('');
   /** @type {string} */
@@ -21,8 +23,12 @@
   /** @type {string|null} */
   let filterAccount = $state(null);
 
-  // By-agent section — closed by default
-  let agentExpanded    = $state(false);
+  // By-agent section — open by default; the user wants P&L attribution
+  // visible at a glance, not behind a chevron.
+  let agentExpanded    = $state(true);
+
+  /** Debounce ID for auto-apply on filter change. */
+  let _applyTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 
   // Range-breakdown tabs
   /** @type {'segment'|'account'|'symbol'|'daily'} */
@@ -141,6 +147,49 @@
     loadBenchmarks();
   }
 
+  /** Resolve a preset key to {from, to} ISO date strings. */
+  function presetRange(/** @type {typeof preset} */ p) {
+    const today = todayIST();
+    if (p === 'today') return { from: today, to: today };
+    if (p === 'ytd')   return { from: today.slice(0, 4) + '-01-01', to: today };
+    const t = new Date(today + 'T00:00:00');
+    if (p === '5d') t.setDate(t.getDate() - 5);
+    if (p === '1m') t.setMonth(t.getMonth() - 1);
+    if (p === '3m') t.setMonth(t.getMonth() - 3);
+    if (p === '1y') t.setFullYear(t.getFullYear() - 1);
+    return { from: t.toISOString().slice(0, 10), to: today };
+  }
+
+  /** Apply a range preset. 'custom' leaves dates alone so the operator
+   *  can pick anything in the From / To inputs. */
+  function applyPreset(/** @type {typeof preset} */ p) {
+    preset = p;
+    if (p !== 'custom') {
+      const r = presetRange(p);
+      fromDate = r.from;
+      toDate   = r.to;
+    }
+    scheduleApply(0);
+  }
+
+  /** Auto-apply on filter mutation — debounced so rapid typing in date
+   *  inputs collapses to a single fetch. */
+  function scheduleApply(/** @type {number} */ ms = 300) {
+    if (_applyTimer != null) clearTimeout(_applyTimer);
+    _applyTimer = setTimeout(() => {
+      _applyTimer = null;
+      load();
+      loadBenchmarks();
+    }, ms);
+  }
+
+  /** When the operator types in a date input directly, switch the preset
+   *  to 'custom' so the chip strip doesn't lie about the active range. */
+  function onDateChange() {
+    preset = 'custom';
+    scheduleApply();
+  }
+
   onMount(() => {
     const today = todayIST();
     fromDate = today;
@@ -198,6 +247,46 @@
     if (!data?.daily_series) return [];
     return data.daily_series;
   });
+
+  // Latest portfolio % over the range — the last daily_series row's
+  // pct_change_from_start. Null when no rows or no start_capital.
+  const portfolioPct = $derived.by(() => {
+    const ds = visibleDaily;
+    if (!ds.length) return null;
+    const last = ds[ds.length - 1];
+    return last?.pct_change_from_start ?? null;
+  });
+
+  // Latest NIFTY 50 % over the range from the benchmarks payload.
+  const nifty50Pct = $derived.by(() => {
+    const series = (bmSeries ?? []).find(/** @param {any} s */ s => s.symbol === 'NIFTY 50');
+    if (!series?.closes?.length) return null;
+    return series.closes[series.closes.length - 1].pct_change_from_start;
+  });
+
+  // Alpha: portfolio % - NIFTY 50 % over the same range. Null when
+  // either side is missing.
+  const vsNifty = $derived.by(() => {
+    if (portfolioPct == null || nifty50Pct == null) return null;
+    return portfolioPct - nifty50Pct;
+  });
+
+  // Best / worst day = max/min of day_pnl across daily_series. Returns
+  // {pnl, date} or null.
+  const bestDay = $derived.by(() => {
+    const ds = visibleDaily.filter(r => r.day_pnl != null);
+    if (!ds.length) return null;
+    return ds.reduce((a, b) => (a.day_pnl >= b.day_pnl ? a : b));
+  });
+  const worstDay = $derived.by(() => {
+    const ds = visibleDaily.filter(r => r.day_pnl != null);
+    if (!ds.length) return null;
+    return ds.reduce((a, b) => (a.day_pnl <= b.day_pnl ? a : b));
+  });
+
+  // True when the snapshot table is empty for this range — used to
+  // render the "no data" banner instead of empty cards.
+  const hasNoData = $derived(data != null && data.summary?.n_rows === 0);
 
   // ── Benchmark SVG chart ────────────────────────────────────────────────────
   const W = 560, H = 160, PAD_L = 42, PAD_R = 12, PAD_T = 12, PAD_B = 24;
@@ -323,26 +412,40 @@
   });
 </script>
 
-<!-- ── Filter bar — single-line, no over-labels ──────────────────── -->
+<!-- ── Range presets + filters ───────────────────────────────────── -->
 <div class="filter-bar">
-  <input type="date" class="field-input fb-date" title="From date" bind:value={fromDate} />
-  <span class="fb-sep" aria-hidden="true">→</span>
-  <input type="date" class="field-input fb-date" title="To date" bind:value={toDate} />
-  <select class="field-input fb-select" title="Segment" bind:value={segment}>
+  <div class="preset-strip" role="tablist" aria-label="Range preset">
+    {#each [['today','Today'], ['5d','5D'], ['1m','1M'], ['3m','3M'], ['1y','1Y'], ['ytd','YTD'], ['custom','Custom']] as [val, label]}
+      <button class="preset-chip {preset === val ? 'preset-on' : ''}"
+              role="tab"
+              aria-selected={preset === val}
+              onclick={() => applyPreset(/** @type {any} */ (val))}>
+        {label}
+      </button>
+    {/each}
+  </div>
+  {#if preset === 'custom'}
+    <input type="date" class="field-input fb-date" title="From date"
+           bind:value={fromDate} onchange={onDateChange} />
+    <span class="fb-sep" aria-hidden="true">→</span>
+    <input type="date" class="field-input fb-date" title="To date"
+           bind:value={toDate} onchange={onDateChange} />
+  {/if}
+  <select class="field-input fb-select" title="Segment"
+          bind:value={segment} onchange={() => scheduleApply()}>
     <option value="all">All Segments</option>
     <option value="equity">Equity</option>
     <option value="derivatives">Derivatives</option>
     <option value="commodity">Commodity</option>
     <option value="currency">Currency</option>
   </select>
-  <select class="field-input fb-select" title="Kind" bind:value={kind}>
+  <select class="field-input fb-select" title="Kind"
+          bind:value={kind} onchange={() => scheduleApply()}>
     <option value="all">All Kinds</option>
     <option value="holdings">Holdings</option>
     <option value="positions">Positions</option>
   </select>
-  <button class="algo-btn" onclick={() => { load(); loadBenchmarks(); }} disabled={loading}>
-    {loading ? 'Loading…' : 'Apply'}
-  </button>
+  {#if loading}<span class="filter-spinner">Loading…</span>{/if}
   {#if filterAccount}
     <button class="algo-btn algo-btn-dim" onclick={() => filterAccount = null}>
       Clear: {filterAccount}
@@ -359,8 +462,17 @@
   <div class="err-banner">{error}</div>
 {/if}
 
+{#if data && hasNoData}
+  <div class="no-data-banner">
+    <strong>No P&L snapshots in this date range.</strong>
+    Snapshots run automatically at 15:35 IST every trading day. Try a wider
+    range, or use <button type="button" class="link-btn" onclick={() => csvOpen = true}>↑ Backfill CSV</button>
+    to import historical Kite Console data.
+  </div>
+{/if}
+
 {#if data}
-  <!-- Summary strip -->
+  <!-- Headline KVs — Total / Day / Portfolio % / vs NIFTY 50 / Best day / Worst day -->
   <div class="card summary-row">
     <div class="kv">
       <span class="kv-lbl">Total P&L</span>
@@ -370,6 +482,36 @@
     <div class="kv">
       <span class="kv-lbl">Day P&L</span>
       <span class="kv-val {pnlClass(data.summary.day_pnl)}">{fmt(data.summary.day_pnl)}</span>
+    </div>
+    <div class="kv-div"></div>
+    <div class="kv">
+      <span class="kv-lbl">Portfolio %</span>
+      <span class="kv-val {pnlClass(portfolioPct)}">{fmtPct(portfolioPct)}</span>
+    </div>
+    <div class="kv-div"></div>
+    <div class="kv">
+      <span class="kv-lbl">vs NIFTY 50</span>
+      <span class="kv-val {pnlClass(vsNifty)}">{fmtPct(vsNifty)}</span>
+    </div>
+    <div class="kv-div"></div>
+    <div class="kv">
+      <span class="kv-lbl">Best day</span>
+      {#if bestDay}
+        <span class="kv-val {pnlClass(bestDay.day_pnl)}">{fmt(bestDay.day_pnl)}</span>
+        <span class="kv-sub">{bestDay.date}</span>
+      {:else}
+        <span class="kv-val muted">—</span>
+      {/if}
+    </div>
+    <div class="kv-div"></div>
+    <div class="kv">
+      <span class="kv-lbl">Worst day</span>
+      {#if worstDay}
+        <span class="kv-val {pnlClass(worstDay.day_pnl)}">{fmt(worstDay.day_pnl)}</span>
+        <span class="kv-sub">{worstDay.date}</span>
+      {:else}
+        <span class="kv-val muted">—</span>
+      {/if}
     </div>
     <div class="summary-meta">
       {data.summary.n_dates} dates · {data.summary.n_accounts} accounts · {data.from_date} → {data.to_date}
@@ -698,6 +840,70 @@
     gap: 0.4rem;
     margin-bottom: 0.6rem;
   }
+  .preset-strip {
+    display: inline-flex;
+    gap: 0;
+    border: 1px solid rgba(251,191,36,0.25);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .preset-chip {
+    background: transparent;
+    border: none;
+    padding: 0.22rem 0.55rem;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    color: #7e97b8;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    cursor: pointer;
+    border-right: 1px solid rgba(251,191,36,0.18);
+    transition: background 0.1s, color 0.1s;
+  }
+  .preset-chip:last-child { border-right: none; }
+  .preset-chip:hover { color: #c8d8f0; background: rgba(251,191,36,0.06); }
+  .preset-chip.preset-on {
+    background: rgba(251,191,36,0.18);
+    color: #fbbf24;
+  }
+  .filter-spinner {
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    color: #7e97b8;
+    padding: 0 0.3rem;
+  }
+  .no-data-banner {
+    background: rgba(126,151,184,0.06);
+    border: 1px solid rgba(126,151,184,0.25);
+    border-radius: 4px;
+    color: #c8d8f0;
+    font-size: 0.65rem;
+    font-family: ui-monospace, monospace;
+    padding: 0.45rem 0.7rem;
+    margin-bottom: 0.55rem;
+    line-height: 1.5;
+  }
+  .no-data-banner strong { color: #fbbf24; font-weight: 700; }
+  .link-btn {
+    background: transparent;
+    border: none;
+    color: #fbbf24;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .link-btn:hover { color: #fcd34d; }
+  .kv-sub {
+    font-size: 0.55rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    margin-top: 0.05rem;
+  }
+  .muted { color: #4e6080 !important; }
   .fb-label {
     display: flex;
     flex-direction: column;
