@@ -15,7 +15,7 @@
   // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
 
   import { onMount } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchAlgoOrdersRecent } from '$lib/api';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrderEvents, fetchOrders } from '$lib/api';
   import { logTime } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
@@ -189,7 +189,11 @@
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let _ordersPoll;
 
-  const PENDING_STATUSES = new Set(['OPEN', 'TRIGGER PENDING', 'PENDING']);
+  // Kite statuses: OPEN / TRIGGER PENDING / VALIDATION PENDING are
+  // pending; COMPLETE / REJECTED / CANCELLED / UNFILLED are terminal.
+  const PENDING_STATUSES = new Set([
+    'OPEN', 'TRIGGER PENDING', 'VALIDATION PENDING', 'PENDING',
+  ]);
   const _ordersPending   = $derived(_orders.filter(o => PENDING_STATUSES.has(o.status)));
   const _ordersCompleted = $derived(_orders.filter(o => !PENDING_STATUSES.has(o.status)));
 
@@ -197,7 +201,10 @@
     try {
       const [evRes, ordRes] = await Promise.all([
         fetchOrderEvents(20, 'all'),
-        fetchAlgoOrdersRecent(50, 'all'),
+        // Real Kite broker orders — same source the /orders page uses,
+        // so the operator sees every order across accounts including
+        // ones placed manually via the Kite app.
+        fetchOrders(),
       ]);
       _events = (Array.isArray(evRes) ? evRes : (evRes?.events ?? [])).slice(0, 20);
       _orders = (Array.isArray(ordRes) ? ordRes : (ordRes?.rows ?? ordRes ?? []));
@@ -433,36 +440,36 @@
           {:else}
             {#if _ordersPending.length > 0}
               <header class="oes-orders-head">PENDING <span class="oes-orders-count">{_ordersPending.length}</span></header>
-              {#each _ordersPending as o (o.id)}
+              {#each _ordersPending as o (o.order_id ?? o.id)}
                 <article class="oes-order-card">
                   <div class="oes-card-head">
-                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase()}">{o.status}</span>
+                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase().replace(/\s+/g, '-')}">{o.status}</span>
                     <span class="oes-side oes-side-{(o.transaction_type ?? '').toLowerCase()}">{o.transaction_type}</span>
                     <span class="oes-card-qty">{o.quantity}</span>
                     <span class="oes-card-sym">{o.tradingsymbol}</span>
-                    <span class="oes-card-px">{priceFmt(o.initial_price ?? o.price ?? 0)}</span>
-                    {#if o.attempts > 0}<span class="oes-card-chase">chase #{o.attempts}</span>{/if}
+                    <span class="oes-card-px">{priceFmt(o.price ?? o.initial_price ?? 0)}</span>
                   </div>
                   <div class="oes-card-meta">
-                    acct={o.account ?? '—'} · #{o.id} · {_fmtEventTime(o.created_at)}
+                    acct={o.account ?? '—'} · #{o.order_id ?? o.id} ·
+                    {_fmtEventTime(o.order_timestamp ?? o.created_at)}
                   </div>
                 </article>
               {/each}
             {/if}
             {#if _ordersCompleted.length > 0}
               <header class="oes-orders-head" style="margin-top: 0.3rem;">COMPLETED <span class="oes-orders-count">{_ordersCompleted.length}</span></header>
-              {#each _ordersCompleted.slice(0, 30) as o (o.id)}
+              {#each _ordersCompleted.slice(0, 30) as o (o.order_id ?? o.id)}
                 <article class="oes-order-card oes-order-card-done">
                   <div class="oes-card-head">
-                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase()}">{o.status}</span>
+                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase().replace(/\s+/g, '-')}">{o.status}</span>
                     <span class="oes-side oes-side-{(o.transaction_type ?? '').toLowerCase()}">{o.transaction_type}</span>
                     <span class="oes-card-qty">{o.quantity}</span>
                     <span class="oes-card-sym">{o.tradingsymbol}</span>
-                    <span class="oes-card-px">{priceFmt(o.fill_price ?? o.initial_price ?? 0)}</span>
+                    <span class="oes-card-px">{priceFmt(o.average_price ?? o.fill_price ?? o.price ?? 0)}</span>
                   </div>
                   <div class="oes-card-meta">
-                    acct={o.account ?? '—'} · #{o.id} · {_fmtEventTime(o.filled_at ?? o.created_at)}
-                    {#if o.slippage != null}· slip={priceFmt(o.slippage)}{/if}
+                    acct={o.account ?? '—'} · #{o.order_id ?? o.id} ·
+                    {_fmtEventTime(o.exchange_update_timestamp ?? o.order_timestamp ?? o.filled_at ?? o.created_at)}
                   </div>
                 </article>
               {/each}
@@ -826,11 +833,13 @@
   }
   .oes-status-open,
   .oes-status-pending,
-  .oes-status-trigger\\ pending { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
-  .oes-status-filled            { background: rgba(34,197,94,0.12);  color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
+  .oes-status-trigger-pending,
+  .oes-status-validation-pending  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
+  .oes-status-complete,
+  .oes-status-filled              { background: rgba(34,197,94,0.12);  color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
   .oes-status-unfilled,
-  .oes-status-rejected          { background: rgba(239,68,68,0.12);  color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
-  .oes-status-cancelled         { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+  .oes-status-rejected            { background: rgba(239,68,68,0.12);  color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
+  .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
 
   /* Side pills */
   .oes-side {
