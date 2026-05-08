@@ -591,6 +591,21 @@ export const fetchUnifiedLog = (filter = {}, limit = 50) => {
   return _get(`/logs/unified?${p}`, { auth: true });
 };
 
+// ── Admin: P&L benchmarks ────────────────────────────────────────────
+/**
+ * GET /api/admin/pnl/benchmarks
+ * Params: { from_date, to_date, symbols }
+ * symbols is a comma-separated list, e.g. "NIFTY 50,SENSEX"
+ * Returns PnlBenchmarkResponse: { from_date, to_date, series: [...] }
+ */
+export function fetchPnlBenchmarks(params = {}) {
+  const p = new URLSearchParams();
+  if (params.from_date) p.set('from_date', String(params.from_date));
+  if (params.to_date)   p.set('to_date',   String(params.to_date));
+  if (params.symbols)   p.set('symbols',   String(params.symbols));
+  return _get(`/admin/pnl/benchmarks?${p}`, { auth: true });
+}
+
 // ── Admin: Per-agent P&L attribution ─────────────────────────────────
 /**
  * GET /api/admin/pnl/by-agent — P&L attribution grouped by agent.

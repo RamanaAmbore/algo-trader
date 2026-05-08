@@ -70,6 +70,46 @@ class PnlCsvUploadResponse(msgspec.Struct):
     sample: list[dict]
 
 
+# ---------------------------------------------------------------------------
+# Benchmark series schemas
+# ---------------------------------------------------------------------------
+
+class PnlBenchmarkSeries(msgspec.Struct):
+    symbol: str
+    name: str
+    closes: list[dict]   # [{date, close, pct_change_from_start}]
+
+
+class PnlBenchmarkResponse(msgspec.Struct):
+    from_date: str
+    to_date: str
+    series: list[PnlBenchmarkSeries]
+
+
+# Map of user-facing name → (kite_symbol_label, instrument_token).
+# Tokens verified against Kite's NSE/BSE index instrument dump (2025).
+# NSE indices: NIFTY 50 = 256265, BANK NIFTY = 260105,
+#              NIFTY MIDCAP 100 = 259849, NIFTY SMALLCAP 100 = 256777
+# BSE index:   SENSEX = 265
+BENCHMARK_TOKENS: dict[str, tuple[str, int]] = {
+    "NIFTY 50":           ("NSE:NIFTY 50",           256265),
+    "BANK NIFTY":         ("NSE:NIFTY BANK",          260105),
+    "NIFTY MIDCAP 100":   ("NSE:NIFTY MIDCAP 100",    259849),
+    "NIFTY SMALLCAP 100": ("NSE:NIFTY SMALLCAP 100",  256777),
+    "SENSEX":             ("BSE:SENSEX",               265),
+}
+
+# In-process daily cache: (symbol, from_date, to_date) → list[dict]
+# Purged at midnight — keyed by today's date so stale entries auto-miss.
+_BENCHMARK_CACHE: dict[tuple[str, str, str, str], list[dict]] = {}
+
+
+def _benchmark_cache_key(symbol: str, from_str: str, to_str: str) -> tuple[str, str, str, str]:
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    today = timestamp_indian().date().isoformat()
+    return (symbol, from_str, to_str, today)
+
+
 class SnapshotRequest(msgspec.Struct):
     date: str  # ISO format: YYYY-MM-DD or 'today'
 
@@ -511,6 +551,111 @@ class AdminController(Controller):
             daily_series=daily_series,
             summary=summary,
         )
+
+    # ------------------------------------------------------------------
+    # P&L benchmark series
+    # ------------------------------------------------------------------
+
+    @get("/pnl/benchmarks")
+    async def pnl_benchmarks(
+        self,
+        from_date: str | None = None,
+        to_date:   str | None = None,
+        symbols:   str = "NIFTY 50",
+    ) -> PnlBenchmarkResponse:
+        """
+        Daily closing prices for Indian benchmark indices, normalised to
+        % change from the first available close in the requested range.
+
+        Query params:
+          from=YYYY-MM-DD   (default: 30 days ago)
+          to=YYYY-MM-DD     (default: today IST)
+          symbols=NIFTY 50,SENSEX,...  (comma-separated; default: NIFTY 50)
+
+        Each series: { symbol, name, closes: [{date, close, pct_change_from_start}] }
+        """
+        import asyncio
+        from datetime import timedelta
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+
+        today_str  = timestamp_indian().date().isoformat()
+        to_str     = (to_date   or "").strip() or today_str
+        from_str   = (from_date or "").strip() or (
+            dt_date.fromisoformat(to_str) - timedelta(days=30)
+        ).isoformat()
+
+        try:
+            d_from = dt_date.fromisoformat(from_str)
+            d_to   = dt_date.fromisoformat(to_str)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid date: {exc}")
+
+        if d_from > d_to:
+            raise HTTPException(
+                status_code=422,
+                detail=f"from ({from_str}) must be <= to ({to_str})",
+            )
+
+        requested = [s.strip() for s in symbols.split(",") if s.strip()]
+        unknown   = [s for s in requested if s not in BENCHMARK_TOKENS]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown benchmark(s): {', '.join(unknown)}. "
+                       f"Valid: {', '.join(BENCHMARK_TOKENS)}",
+            )
+
+        from backend.shared.brokers.registry import get_price_broker
+
+        def _fetch_one(symbol: str) -> PnlBenchmarkSeries:
+            cache_key = _benchmark_cache_key(symbol, from_str, to_str)
+            if cache_key in _BENCHMARK_CACHE:
+                closes = _BENCHMARK_CACHE[cache_key]
+                return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=closes)
+
+            _, token = BENCHMARK_TOKENS[symbol]
+            try:
+                broker = get_price_broker()
+                kite   = broker.kite  # type: ignore[attr-defined]
+                raw    = kite.historical_data(
+                    token,
+                    d_from,
+                    d_to,
+                    "day",
+                ) or []
+            except Exception as exc:
+                logger.warning(f"pnl_benchmarks: {symbol} fetch failed: {exc}")
+                return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=[])
+
+            if not raw:
+                return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=[])
+
+            base_close = float(raw[0].get("close") or raw[0].get("close_price") or 0)
+            closes: list[dict] = []
+            for bar in raw:
+                c = float(bar.get("close") or bar.get("close_price") or 0)
+                d = bar.get("date")
+                date_str = d.date().isoformat() if hasattr(d, "date") else str(d)[:10]
+                pct = ((c / base_close) - 1.0) * 100.0 if base_close else 0.0
+                closes.append({"date": date_str, "close": c, "pct_change_from_start": round(pct, 4)})
+
+            _BENCHMARK_CACHE[cache_key] = closes
+            return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=closes)
+
+        # Run each symbol fetch in a thread so sync Kite HTTP doesn't block the loop
+        loop = asyncio.get_event_loop()
+        tasks = [loop.run_in_executor(None, _fetch_one, s) for s in requested]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        series: list[PnlBenchmarkSeries] = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.warning(f"pnl_benchmarks: gather error for {requested[i]}: {res}")
+                series.append(PnlBenchmarkSeries(symbol=requested[i], name=requested[i], closes=[]))
+            else:
+                series.append(res)  # type: ignore[arg-type]
+
+        return PnlBenchmarkResponse(from_date=from_str, to_date=to_str, series=series)
 
     # ------------------------------------------------------------------
     # P&L CSV upload  (Kite Console P&L Statement)
