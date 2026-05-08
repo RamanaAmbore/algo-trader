@@ -57,11 +57,13 @@
     return 'rgba(148,163,184,0.15)';
   }
 
-  /** Short HH:MM:SS from an ISO timestamp string (IST). */
+  /** Short HH:MM:SS from an ISO timestamp string (IST). Returns ''
+   *  for any unparseable value so "Invalid Date" never leaks. */
   function shortTime(iso) {
-    if (!iso) return '';
+    if (!iso || typeof iso !== 'string') return '';
     try {
       const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
       return d.toLocaleTimeString('en-GB', {
         hour: '2-digit', minute: '2-digit', second: '2-digit',
         hour12: false, timeZone: 'Asia/Kolkata',

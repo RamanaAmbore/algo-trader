@@ -203,17 +203,20 @@
     } catch (_) { /* silent */ }
   }
 
-  /** Format an ISO UTC timestamp string to HH:MM:SS in IST. */
-  function _fmtEventTime(/** @type {string} */ ts) {
-    if (!ts) return '--:--:--';
+  /** Format an ISO UTC timestamp to HH:MM:SS in IST. Returns '--:--:--'
+   *  for any non-string, empty string, or unparseable value so the
+   *  literal "Invalid Date" string never reaches the UI. */
+  function _fmtEventTime(/** @type {unknown} */ ts) {
+    if (!ts || typeof ts !== 'string') return '--:--:--';
     try {
       const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+      if (isNaN(d.getTime())) return '--:--:--';
       return d.toLocaleTimeString('en-IN', {
         timeZone: 'Asia/Kolkata',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
         hour12: false,
       });
-    } catch (_) { return ts.slice(11, 19) || '--:--:--'; }
+    } catch (_) { return '--:--:--'; }
   }
 
   // Close on Escape + always-on order-data poll (bottom panel is always visible).
