@@ -400,15 +400,27 @@
   function makePositionsTotals(rows) {
     if (!rows?.length) return null;
     const sum = (f) => rows.reduce((s, r) => s + (Number(r[f]) || 0), 0);
+    // Aggregate denominators are absolute (qty can be ±) — short and
+    // long positions both contribute to capital deployed.
+    const total_pnl        = sum('pnl');
+    const total_day_change = sum('day_change_val');
+    const total_cost_basis = rows.reduce(
+      (s, r) => s + Math.abs(Number(r.average_price) || 0) * Math.abs(Number(r.quantity) || 0), 0);
+    const total_prev_val   = rows.reduce(
+      (s, r) => s + Math.abs(Number(r.close_price) || 0)   * Math.abs(Number(r.quantity) || 0), 0);
     return {
       account: '',
       tradingsymbol: 'TOTAL',
-      pnl:        sum('pnl'),
-      unrealised: sum('unrealised'),
-      realised:   sum('realised'),
-      quantity:   sum('quantity'),
+      pnl:                   total_pnl,
+      pnl_percentage:        total_cost_basis ? (total_pnl        / total_cost_basis * 100) : 0,
+      day_change_val:        total_day_change,
+      day_change_percentage: total_prev_val   ? (total_day_change / total_prev_val   * 100) : 0,
+      unrealised:    sum('unrealised'),
+      realised:      sum('realised'),
+      quantity:      sum('quantity'),
       average_price: null,
       close_price:   null,
+      last_price:    null,
     };
   }
 
