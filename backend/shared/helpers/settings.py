@@ -262,7 +262,18 @@ async def seed_settings() -> None:
         # is the source of truth for what settings exist. Custom tokens on
         # the Tokens page have their own lifecycle; this is specifically
         # for retired system-seeded keys.
-        retired_keys = [k for k in existing_by_key if k not in seed_keys]
+        # EXCEPTION: keys owned by route handlers outside SEEDS (e.g.
+        # execution.paper_trading_mode + execution.shadow_mode are upserted
+        # by /api/admin/execution/mode whenever the navbar chip flips
+        # mode). Pruning those would mean every service restart resets
+        # the operator's last-picked execution mode. Match by prefix so
+        # any future "owned-outside-SEEDS" key follows the same pattern.
+        OWNED_OUTSIDE_SEEDS_PREFIXES = ("execution.",)
+        retired_keys = [
+            k for k in existing_by_key
+            if k not in seed_keys
+            and not any(k.startswith(p) for p in OWNED_OUTSIDE_SEEDS_PREFIXES)
+        ]
         removed = 0
         if retired_keys:
             await session.execute(sql_delete(Setting).where(Setting.key.in_(retired_keys)))
