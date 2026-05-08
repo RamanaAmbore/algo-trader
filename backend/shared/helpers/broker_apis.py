@@ -20,7 +20,13 @@ def fetch_holdings(connections=Connections, account=None, kite=None):
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch holdings: {e}")
 
-        # Add calculated columns
+    # Calculated columns — guard against an empty / fetch-failed frame
+    # (Kite 502 / 503 outages leave df_holdings empty and skipping the
+    # math here is the difference between an empty response and a 500
+    # KeyError on 'average_price').
+    if df_holdings.empty:
+        return df_holdings
+
     df_holdings["inv_val"] = df_holdings["average_price"] * df_holdings["opening_quantity"]
     df_holdings["cur_val"] = df_holdings["inv_val"] + df_holdings["pnl"]
     df_holdings["price_change"] = df_holdings["close_price"] - df_holdings["average_price"]
@@ -28,7 +34,6 @@ def fetch_holdings(connections=Connections, account=None, kite=None):
 
     # Δ calculation (delta value)
     df_holdings["day_change_val"] = df_holdings["day_change"] * df_holdings["opening_quantity"]
-    # print(df_holdings["day_change", "quantity", "day_change_val"])
     # Format Date column
     df_holdings["authorised_date"] = pd.to_datetime(df_holdings["authorised_date"]).dt.strftime("%d%b%y")
 
