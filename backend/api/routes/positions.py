@@ -19,6 +19,7 @@ _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'product',
     'quantity', 'average_price', 'close_price',
     'pnl', 'unrealised', 'realised',
+    'day_change', 'day_change_val', 'day_change_percentage',
 ]
 
 _TTL = 30
@@ -47,10 +48,24 @@ def _fetch() -> PositionsResponse:
     row_cols = [c for c in _ROW_COLS if c in df.columns]
     df_rows = df.select(row_cols)
 
-    grouped = df.group_by('account').agg(pl.col('pnl').sum()) if 'pnl' in df.columns \
-              else pl.DataFrame({'account': [], 'pnl': []})
-    totals = pl.DataFrame([{'account': 'TOTAL', 'pnl': grouped['pnl'].sum()}])
+    sum_cols = [c for c in ('pnl', 'day_change_val') if c in df.columns]
+    if sum_cols:
+        grouped = df.group_by('account').agg([pl.col(c).sum() for c in sum_cols])
+    else:
+        grouped = pl.DataFrame({'account': []})
+    # Ensure both sum columns exist even when absent from the broker frame
+    for col in ('pnl', 'day_change_val'):
+        if col not in grouped.columns:
+            grouped = grouped.with_columns(pl.lit(0.0).alias(col))
+    totals = pl.DataFrame([{
+        'account': 'TOTAL',
+        'pnl': grouped['pnl'].sum(),
+        'day_change_val': grouped['day_change_val'].sum(),
+    }])
     summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
+    # Recompute day_change_percentage from summed day_change_val
+    # We don't have summed prev_val here so carry 0 — per-row pct is on PositionRow.
+    summary_df = summary_df.with_columns(pl.lit(0.0).alias('day_change_percentage'))
 
     rows = [
         PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})

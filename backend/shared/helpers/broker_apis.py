@@ -53,6 +53,20 @@ def fetch_positions(connections=Connections, account=None, kite=None):
             df_positions["type"] = "P"
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch positions: {e}")
+        return df_positions
+
+    if df_positions.empty:
+        return df_positions
+
+    # Derive day-change. Kite gives last_price + close_price (yesterday's
+    # close) per position row. Day change ₹ = (last - close) * qty.
+    # Day change % = day_change_val / |close * qty| — guarded against zero.
+    df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
+    df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
+    prev_val = (df_positions['close_price'] * df_positions['quantity']).abs()
+    df_positions['day_change_percentage'] = (
+        df_positions['day_change_val'] / prev_val.replace(0, pd.NA) * 100
+    ).fillna(0)
 
     return df_positions
 

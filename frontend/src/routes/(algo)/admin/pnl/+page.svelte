@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { aggCompact, pctFmt } from '$lib/format.js';
   import { fetchPnlBenchmarks } from '$lib/api.js';
+  import PerformancePage from '$lib/PerformancePage.svelte';
+  import PnlPanel from '$lib/PnlPanel.svelte';
 
   // ── State ──────────────────────────────────────────────────────────────────
   /** @type {string} */
@@ -19,6 +21,11 @@
   // Drilldown — click a by_account row to filter the other tables.
   /** @type {string|null} */
   let filterAccount = $state(null);
+
+  // Live snapshot section — open by default
+  let snapshotExpanded = $state(true);
+  // By-agent section — closed by default
+  let agentExpanded    = $state(false);
 
   // CSV upload — collapsed by default
   let csvExpanded   = $state(false);
@@ -329,6 +336,36 @@
 
 <div class="page-header">
   <h1 class="page-title-chip">P&L <span class="title-sub">· date range</span></h1>
+</div>
+
+<!-- ── Section A: Live snapshot ───────────────────────────────────── -->
+<div class="card upload-card">
+  <button class="upload-toggle" onclick={() => snapshotExpanded = !snapshotExpanded}>
+    <span class="section-head" style="pointer-events:none">
+      Live snapshot <span class="section-sub">— positions + holdings</span>
+    </span>
+    <span class="chevron {snapshotExpanded ? 'open' : ''}">▸</span>
+  </button>
+  {#if snapshotExpanded}
+    <div style="margin-top:0.75rem">
+      <PerformancePage compactHeader={true} />
+    </div>
+  {/if}
+</div>
+
+<!-- ── Section B: By agent ─────────────────────────────────────────── -->
+<div class="card upload-card">
+  <button class="upload-toggle" onclick={() => agentExpanded = !agentExpanded}>
+    <span class="section-head" style="pointer-events:none">
+      By agent <span class="section-sub">— P&L attribution</span>
+    </span>
+    <span class="chevron {agentExpanded ? 'open' : ''}">▸</span>
+  </button>
+  {#if agentExpanded}
+    <div style="margin-top:0.75rem">
+      <PnlPanel active={agentExpanded} />
+    </div>
+  {/if}
 </div>
 
 <!-- ── Filter bar ─────────────────────────────────────────────────── -->

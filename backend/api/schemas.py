@@ -61,11 +61,16 @@ class PositionRow(msgspec.Struct):
     pnl: float
     unrealised: float = 0.0
     realised: float = 0.0
+    day_change: float = 0.0
+    day_change_val: float = 0.0
+    day_change_percentage: float = 0.0
 
 
 class PositionsSummaryRow(msgspec.Struct):
     account: str
     pnl: float
+    day_change_val: float = 0.0
+    day_change_percentage: float = 0.0
 
 
 class PositionsResponse(msgspec.Struct):
