@@ -169,9 +169,9 @@
   const getRowClass = (params) => {
     const d = params.data || {};
     if (d.tradingsymbol === 'TOTAL' || d.account === 'TOTAL') return 'totals-row';
-    // Tag position rows so the operator can tell longs from shorts at a
-    // glance. Only applied when `quantity` is present (positions grid);
-    // holdings rows never carry a sign.
+    // pos-long / pos-short tinting only on positions (which carry
+    // a `product` field). Holdings are always long — no decoration.
+    if (d.product == null) return '';
     const q = d.quantity;
     if (typeof q === 'number' && q < 0) return 'pos-short';
     if (typeof q === 'number' && q > 0) return 'pos-long';
@@ -203,21 +203,12 @@
     return ACCT_PALETTE[h % ACCT_PALETTE.length];
   }
 
-  // cellRenderer for the account column — returns a span with a coloured
-  // dot prepended. TOTAL rows get a plain slate dot (no colour).
+  // cellRenderer for the account column — handles maskAccounts only.
+  // The per-account stripe lives on the cell's left border (via
+  // cellStyle injecting --acct-stripe); no dot decoration anymore.
   function acctCellRenderer(params) {
     const raw     = params.value || '';
-    const display = maskAccounts && raw ? String(raw).replace(/\d/g, '#') : raw;
-    const color   = acctColor(raw);
-    const span    = document.createElement('span');
-    span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
-    const dot = document.createElement('span');
-    dot.className = 'acct-dot';
-    dot.style.background = color ?? '#94a3b8'; // slate for TOTAL
-    span.appendChild(dot);
-    const txt = document.createTextNode(display);
-    span.appendChild(txt);
-    return span;
+    return maskAccounts && raw ? String(raw).replace(/\d/g, '#') : raw;
   }
 
   // cellStyle for account column — injects a CSS custom property that the

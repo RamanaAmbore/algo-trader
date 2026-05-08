@@ -405,19 +405,6 @@
   border-left: 3px solid var(--acct-stripe, transparent) !important;
 }
 
-/* Coloured dot that sits before the account text inside the cellRenderer.
-   Plain CSS rule (app.css is already global) so the document.createElement
-   path can use the class name without a scoped hash prefix. */
-.acct-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  margin-right: 4px;
-  flex-shrink: 0;
-  vertical-align: middle;
-}
-
 /* ── Log panel styles ────────────────────────────────────────────────────── */
 .log-panel {
   padding: 0.75rem;
