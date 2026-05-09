@@ -4,6 +4,7 @@
   import { goto } from '$app/navigation';
   import PerformancePage from '$lib/PerformancePage.svelte';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
+  import DashboardTopStrip from '$lib/DashboardTopStrip.svelte';
   import { clientTimestamp, authStore } from '$lib/stores';
   import { fetchPaperStatus } from '$lib/api';
 
@@ -67,6 +68,9 @@
   <h1 class="algo-page-title">Dashboard</h1>
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
+
+<!-- Live intraday strip — visible on both Performance and P&L tabs. -->
+<DashboardTopStrip />
 
 <!-- Tab strip — sits below the page header, above the panel. -->
 <div class="dash-tabs-row">
