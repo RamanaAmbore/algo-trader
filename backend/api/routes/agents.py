@@ -147,6 +147,7 @@ class AIDraftResponse(msgspec.Struct):
     errors:       list[str]
     warnings:     list[str]
     why_summary:  str
+    prompt:       str = ""    # original NL prompt — echoed for the UI
     success: bool = True
 
 
@@ -158,6 +159,31 @@ class AIDraftResponse(msgspec.Struct):
 
 
 _VALID_TRADE_MODES = {"paper", "live"}
+
+_AI_PROMPT_PREFIX = "[AI prompt] "
+_AI_WHY_PREFIX    = "[AI why] "
+
+
+def _compose_ai_description(prompt: str, why: str, llm_desc: str | None) -> str:
+    """Build a structured description for AI-generated agents.
+
+    Format:
+      [AI prompt] <original NL prompt>
+      [AI why] <LLM one-line summary>
+      <optional LLM-provided description>
+
+    The [AI ...] prefix makes provenance detectable from the frontend
+    without a schema change. The expanded /agents row renders the
+    prompt as a violet chip and surfaces 'why' as the short description.
+    """
+    parts = []
+    if prompt:
+        parts.append(f"{_AI_PROMPT_PREFIX}{prompt}")
+    if why:
+        parts.append(f"{_AI_WHY_PREFIX}{why}")
+    if llm_desc and llm_desc.strip() and llm_desc.strip() != why.strip():
+        parts.append(llm_desc.strip())
+    return "\n".join(parts) if parts else (llm_desc or "")
 
 
 def _agent_to_info(a: Agent) -> AgentInfo:
@@ -220,6 +246,7 @@ class AgentController(Controller):
             errors=d.errors,
             warnings=d.warnings,
             why_summary=d.why_summary,
+            prompt=d.prompt,
         )
 
     @post("/validate-condition", guards=[admin_guard])
@@ -602,7 +629,11 @@ class AgentController(Controller):
             agent = Agent(
                 slug=slug,
                 name=draft.get("name") or "AI agent",
-                description=draft.get("description") or d.why_summary,
+                # Description carries the original NL prompt + LLM why_summary
+                # in a structured prefix so /agents can detect AI provenance.
+                description=_compose_ai_description(
+                    prompt, d.why_summary, draft.get("description")
+                ),
                 conditions=draft.get("conditions") or {},
                 events=draft.get("events") or ["telegram", "email"],
                 actions=draft.get("actions") or [],
@@ -738,16 +769,26 @@ class AgentController(Controller):
             row = result.scalar_one_or_none()
             if not row:
                 return InterpretResponse(output=f"Agent '{slug}' disappeared", success=False)
+            # Stricter PATCH — only setattr fields that genuinely DIFFER
+            # from the existing value. Preserves any field the LLM
+            # reproduced verbatim and reports the diff so the operator
+            # sees exactly what changed.
+            changed: list[str] = []
             for fld in ("name", "description", "conditions", "events", "actions",
                         "scope", "schedule", "cooldown_minutes",
                         "lifespan_type", "trade_mode"):
-                if fld in new and new[fld] is not None:
+                if fld not in new or new[fld] is None:
+                    continue
+                if getattr(row, fld) != new[fld]:
                     setattr(row, fld, new[fld])
+                    changed.append(fld)
             await session.commit()
         warn_block = ("\n  ⚠ ".join(d.warnings)) if d.warnings else "(none)"
+        diff_block = (", ".join(changed)) if changed else "(no changes — refinement was a no-op)"
         return InterpretResponse(
             output=(f"✓ Agent '{slug}' refined\n"
                     f"  Why: {d.why_summary}\n"
+                    f"  Changed: {diff_block}\n"
                     f"  Warnings:\n  ⚠ {warn_block}")
         )
 

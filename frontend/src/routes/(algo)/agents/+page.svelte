@@ -238,6 +238,26 @@
     catch (e) { return { ok: false, error: e.message }; }
   });
 
+  /** Detect AI provenance in agent.description and split into chips.
+   *  Backend's _compose_ai_description writes the lines:
+   *    [AI prompt] <prompt>
+   *    [AI why] <why_summary>
+   *    <optional remaining description>
+   *  We round-trip those into structured fields here. Returns {prompt, why, rest}. */
+  function parseAIDescription(/** @type {string|null|undefined} */ desc) {
+    const out = { prompt: '', why: '', rest: '' };
+    if (!desc) return out;
+    const lines = String(desc).split('\n');
+    const restLines = [];
+    for (const line of lines) {
+      if (line.startsWith('[AI prompt] '))      out.prompt = line.slice(12).trim();
+      else if (line.startsWith('[AI why] '))    out.why    = line.slice(9).trim();
+      else if (line.trim())                     restLines.push(line);
+    }
+    out.rest = restLines.join('\n').trim();
+    return out;
+  }
+
   function leafLabel(/** @type {any} */ node) {
     if (!node || !node.metric || !node.scope) return JSON.stringify(node);
     const v = typeof node.value === 'number' && Math.abs(node.value) >= 1000
@@ -747,9 +767,26 @@
               </div>
             </div>
           {:else}
+            {@const _aiMeta = parseAIDescription(agent.description)}
             <!-- ──────── Normal expanded view ──────── -->
             <div class="px-2 pb-2 border-t border-white/5">
-              {#if agent.description}
+              {#if _aiMeta.prompt || _aiMeta.why}
+                <div class="ai-meta-box">
+                  <span class="ai-meta-pill" title="Created by AI">✦ AI</span>
+                  {#if _aiMeta.why}
+                    <span class="ai-meta-why">{_aiMeta.why}</span>
+                  {/if}
+                  {#if _aiMeta.prompt}
+                    <details class="ai-meta-prompt">
+                      <summary>prompt</summary>
+                      <span>{_aiMeta.prompt}</span>
+                    </details>
+                  {/if}
+                  {#if _aiMeta.rest}
+                    <span class="ai-meta-rest">{_aiMeta.rest}</span>
+                  {/if}
+                </div>
+              {:else if agent.description}
                 <div class="text-[0.6rem] text-[#c8d8f0]/60 italic mt-1.5 mb-1">{agent.description}</div>
               {/if}
 
@@ -944,6 +981,44 @@
     overflow: auto;
     max-height: 18rem;
   }
+
+  /* AI-provenance meta box on the expanded agent row.
+     Shows the violet "✦ AI" pill, the LLM's why_summary, and a
+     foldable prompt details element. Mirrors the .ai-pill palette. */
+  .ai-meta-box {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0.4rem 0 0.5rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+  }
+  .ai-meta-pill {
+    border: 1px solid rgba(167,139,250,0.45);
+    background: rgba(167,139,250,0.10);
+    color: #a78bfa;
+    padding: 0.08rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
+  .ai-meta-why { color: #c8d8f0; flex: 1; min-width: 12rem; }
+  .ai-meta-prompt { font-size: 0.6rem; color: #7e97b8; }
+  .ai-meta-prompt summary { cursor: pointer; color: #a78bfa; }
+  .ai-meta-prompt summary:hover { color: #c4b5fd; }
+  .ai-meta-prompt span {
+    display: block;
+    margin-top: 0.2rem;
+    color: #c8d8f0;
+    background: rgba(167,139,250,0.06);
+    padding: 0.3rem 0.5rem;
+    border-left: 2px solid #a78bfa;
+    border-radius: 2px;
+  }
+  .ai-meta-rest { color: #c8d8f0aa; font-style: italic; flex-basis: 100%; }
 
   /* Live-preview styling — compact, dense, matches algo dark palette. */
   .agent-preview {

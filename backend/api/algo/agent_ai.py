@@ -54,24 +54,70 @@ class AgentDraft:
     errors: list[str]          # validation errors (empty → ok to save)
     warnings: list[str]        # operator-visible safety notes
     why_summary: str           # one-line LLM summary of what this agent does
+    prompt: str = ""           # original NL prompt — preserved for audit + UI
+
+
+def _summarise_token(token, kind: str) -> str:
+    """Render a single registry token as a one-line summary that the LLM
+    can read — surfaces value_type / units / enum_values / params_schema
+    so the LLM knows what each token needs WITHOUT having to guess."""
+    bits = []
+    if token.value_type:
+        v = token.value_type
+        if token.units:
+            v = f"{v} {token.units}"
+        bits.append(v)
+    if token.enum_values:
+        bits.append("∈ {" + ", ".join(map(str, token.enum_values)) + "}")
+    if kind == "action_type" and token.params_schema:
+        # params_schema is a JSON Schema — surface required keys so the
+        # LLM knows e.g. place_order needs {account, symbol, qty, …}.
+        ps = token.params_schema or {}
+        req = ps.get("required") or []
+        props = ps.get("properties") or {}
+        keys = [(f"{k}*" if k in req else k) for k in props.keys()]
+        if keys:
+            bits.append("params: {" + ", ".join(keys) + "}")
+    suffix = f" — {' · '.join(bits)}" if bits else ""
+    desc = (token.description or "").strip()
+    if desc:
+        suffix = (suffix + f" — {desc}") if suffix else f" — {desc}"
+    return f"{token.token}{suffix}"
 
 
 def _grammar_snapshot() -> dict[str, list[str]]:
-    """Pull active tokens from the registry — drives the system prompt."""
+    """Pull active tokens from the registry — drives the system prompt.
+
+    For each token slot, returns a list of one-line summaries that
+    include value_type / units / enum_values / params_schema so the LLM
+    sees not just the names but what each token expects.
+    """
     from backend.api.algo.grammar_registry import REGISTRY
     snap = {"metrics": [], "scopes": [], "operators": [], "channels": [], "actions": []}
+    raw_tokens = {"metrics": [], "scopes": [], "operators": [], "channels": [], "actions": []}
     for token in REGISTRY.tokens.values():
         if not token.is_active:
             continue
-        gk = token.grammar_kind
-        tk = token.token_kind
-        if gk == "condition" and tk == "metric":   snap["metrics"].append(token.token)
-        elif gk == "condition" and tk == "scope":  snap["scopes"].append(token.token)
-        elif gk == "condition" and tk == "operator": snap["operators"].append(token.token)
-        elif gk == "notify"    and tk == "channel": snap["channels"].append(token.token)
-        elif gk == "action"    and tk == "action_type": snap["actions"].append(token.token)
+        gk, tk = token.grammar_kind, token.token_kind
+        if gk == "condition" and tk == "metric":
+            snap["metrics"].append(_summarise_token(token, tk))
+            raw_tokens["metrics"].append(token.token)
+        elif gk == "condition" and tk == "scope":
+            snap["scopes"].append(_summarise_token(token, tk))
+            raw_tokens["scopes"].append(token.token)
+        elif gk == "condition" and tk == "operator":
+            snap["operators"].append(_summarise_token(token, tk))
+            raw_tokens["operators"].append(token.token)
+        elif gk == "notify" and tk == "channel":
+            snap["channels"].append(_summarise_token(token, tk))
+            raw_tokens["channels"].append(token.token)
+        elif gk == "action" and tk == "action_type":
+            snap["actions"].append(_summarise_token(token, tk))
+            raw_tokens["actions"].append(token.token)
     for k in snap:
         snap[k].sort()
+        raw_tokens[k].sort()
+    snap["_raw"] = raw_tokens   # used by the unknown-token diagnostic
     return snap
 
 
@@ -127,17 +173,52 @@ Rules:
 """
 
 
-def _build_prompt(user_prompt: str, grammar: dict[str, list[str]]) -> str:
-    """Compose the user message — operator request + the live grammar."""
+def _build_prompt(user_prompt: str, grammar: dict[str, Any]) -> str:
+    """Compose the user message — operator request + the live grammar.
+
+    Each token slot is rendered as a multi-line block with one summary
+    per token (value_type, units, enum, params_schema) so the LLM sees
+    not just names but what each token expects.
+    """
+    def _block(items: list[str]) -> str:
+        return "\n".join(f"  - {it}" for it in items) if items else "  (none)"
     return (
         f"Operator request: {user_prompt.strip()}\n\n"
-        f"Live grammar registry — use ONLY these tokens:\n"
-        f"  metrics:   {', '.join(grammar['metrics'])  or '(none)'}\n"
-        f"  scopes:    {', '.join(grammar['scopes'])   or '(none)'}\n"
-        f"  operators: {', '.join(grammar['operators']) or '(none)'}\n"
-        f"  channels:  {', '.join(grammar['channels']) or '(none)'}\n"
-        f"  actions:   {', '.join(grammar['actions'])  or '(none)'}\n"
+        f"Live grammar registry — use ONLY these tokens (* = required):\n"
+        f"\nmetrics:\n{_block(grammar['metrics'])}\n"
+        f"\nscopes:\n{_block(grammar['scopes'])}\n"
+        f"\noperators:\n{_block(grammar['operators'])}\n"
+        f"\nchannels:\n{_block(grammar['channels'])}\n"
+        f"\nactions:\n{_block(grammar['actions'])}\n"
     )
+
+
+_UNKNOWN_TOKEN_RE = re.compile(
+    r"unknown\s+(metric|scope|operator)\s+token\s+'(?P<tok>[^']+)'", re.IGNORECASE
+)
+
+
+def _enrich_unknown_token_errors(errors: list[str], raw: dict[str, list[str]]) -> None:
+    """For each 'unknown <kind> token X' error, append a hint listing the
+    closest registered tokens so the operator knows whether to (a) re-prompt
+    with a different name, or (b) register the missing token at /admin/tokens.
+
+    Mutates `errors` in place."""
+    if not errors:
+        return
+    KIND_TO_SLOT = {"metric": "metrics", "scope": "scopes", "operator": "operators"}
+    enriched = []
+    for e in errors:
+        m = _UNKNOWN_TOKEN_RE.search(e)
+        if m:
+            kind = m.group(1).lower()
+            slot = KIND_TO_SLOT.get(kind)
+            if slot and raw.get(slot):
+                avail = ", ".join(raw[slot][:8]) + ("…" if len(raw[slot]) > 8 else "")
+                e = (f"{e}. Available {kind}s: {avail}. "
+                     f"Add a custom {kind} at /admin/tokens if needed.")
+        enriched.append(e)
+    errors[:] = enriched
 
 
 def _strip_fences(s: str) -> str:
@@ -235,21 +316,22 @@ def draft_agent_from_prompt(prompt: str) -> AgentDraft:
     """
     prompt = (prompt or "").strip()
     if not prompt:
-        return AgentDraft({}, ["Empty prompt"], [], "")
+        return AgentDraft({}, ["Empty prompt"], [], "", "")
 
     if not is_enabled("genai"):
         return AgentDraft(
             {}, ["GenAI is disabled in this environment — enable in backend_config.yaml"],
-            [], "",
+            [], "", prompt,
         )
 
     try:
         from google import genai  # local import — keeps non-prod deploys fast
         from google.genai import types
     except ImportError:
-        return AgentDraft({}, ["google-genai package not installed"], [], "")
+        return AgentDraft({}, ["google-genai package not installed"], [], "", prompt)
 
     grammar = _grammar_snapshot()
+    raw_tokens = grammar.pop("_raw", {})
     user_msg = _build_prompt(prompt, grammar)
 
     try:
@@ -269,16 +351,16 @@ def draft_agent_from_prompt(prompt: str) -> AgentDraft:
         raw = (response.text or "").strip()
     except Exception as e:
         logger.warning(f"Gemini call failed in agent_ai: {e}")
-        return AgentDraft({}, [f"LLM unavailable: {e}"], [], "")
+        return AgentDraft({}, [f"LLM unavailable: {e}"], [], "", prompt)
 
     if not raw:
-        return AgentDraft({}, ["LLM returned empty response"], [], "")
+        return AgentDraft({}, ["LLM returned empty response"], [], "", prompt)
 
     try:
         parsed = json.loads(_strip_fences(raw))
     except json.JSONDecodeError as e:
         logger.warning(f"AI draft JSON parse failed: {e}; raw[:200]={raw[:200]!r}")
-        return AgentDraft({}, [f"LLM produced invalid JSON: {e}"], [], "")
+        return AgentDraft({}, [f"LLM produced invalid JSON: {e}"], [], "", prompt)
 
     draft = parsed.get("draft") or {}
     why   = parsed.get("why_summary") or ""
@@ -286,10 +368,14 @@ def draft_agent_from_prompt(prompt: str) -> AgentDraft:
     warnings: list[str] = []
 
     if not isinstance(draft, dict):
-        return AgentDraft({}, ["LLM 'draft' field is not a dict"], [], why)
+        return AgentDraft({}, ["LLM 'draft' field is not a dict"], [], why, prompt)
 
     _clamp_safety(draft, warnings)
     _scan_thresholds(draft, warnings)
     _validate_against_registry(draft, errors)
+    _enrich_unknown_token_errors(errors, raw_tokens)
 
-    return AgentDraft(draft=draft, errors=errors, warnings=warnings, why_summary=why)
+    return AgentDraft(
+        draft=draft, errors=errors, warnings=warnings,
+        why_summary=why, prompt=prompt,
+    )
