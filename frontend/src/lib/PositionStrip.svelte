@@ -137,7 +137,7 @@
     </span>
   </span>
   <span class="ps-agg" title="Positions — today's mark-to-market move (day_change_val)">
-    <span class="ps-agg-k ps-agg-k-long">Pos Day Delta</span>
+    <span class="ps-agg-k">P∆</span>
     <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(positionsToday)}
     </span>
@@ -182,10 +182,6 @@
     font-weight: 700;
     text-transform: uppercase;
   }
-  /* Pos Day Delta — only label that's a full descriptive phrase rather
-     than a 1-2 char abbreviation. Keep the same visual weight, drop
-     the upper-case so the words read naturally. */
-  .ps-agg-k.ps-agg-k-long { text-transform: none; letter-spacing: 0.02em; }
   .ps-agg-v {
     font-size: 0.7rem;
     font-weight: 700;
