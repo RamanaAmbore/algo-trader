@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
-NAVY = (13, 24, 41, 255)
+NAVY = (12, 24, 48, 255)            # #0c1830 — matches the investor navbar
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
-GLOW_COLOR = (251, 191, 36)
+GLOW_COLOR = (200, 168, 75)         # #c8a84b — champagne-gold, public-site palette
 RING_RADIUS_FRAC = 200 / 512  # ring centre radius (gap from bull bounds = 70 px)
 RING_WIDTH_FRAC  = 16 / 512   # 16 px stroke at 512 — leaner bevel
 
@@ -52,14 +52,15 @@ def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
 
 
 def _radial_face(size: int) -> Image.Image:
-    """Navy face with a subtle radial highlight: #101e35 at centre, #0d1829 at edge."""
-    img = Image.new("RGBA", (size, size), (13, 24, 41, 255))
-    # Composite a centre-brighter ellipse (16,30,53) at ~30 % alpha over the inner 60 %.
+    """Navy face with a subtle radial highlight — investor navbar navy
+    (#0c1830) at the edge, slightly brighter (#10223e) at the centre."""
+    img = Image.new("RGBA", (size, size), NAVY)            # #0c1830 edge
+    # Centre-brighter ellipse — same investor navy, lifted a few stops.
     overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
     cx = cy = size / 2
-    r = size * 0.30  # inner 60 % diameter
-    od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(16, 30, 53, 77))  # ~30 % alpha
+    r = size * 0.30
+    od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(16, 34, 62, 77))
     img = Image.alpha_composite(img, overlay)
     return img
 
@@ -92,10 +93,13 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        (0.00, (0xff, 0xf7, 0xc2)),  # bright champagne top
-        (0.35, (0xfa, 0xcc, 0x15)),  # mid amber
-        (0.65, (0xb4, 0x53, 0x09)),  # deep amber-brown
-        (1.00, (0x45, 0x1a, 0x03)),  # near-black umber bottom
+        # Champagne palette — matches the investor site's goldGrad
+        # (#c8a84b → #f0d070 → #c8a84b) plus a warm-cream highlight on
+        # top and a deep umber shadow on bottom for the bevel.
+        (0.00, (0xe8, 0xd9, 0xa8)),  # warm-champagne highlight
+        (0.35, (0xf0, 0xd0, 0x70)),  # soft warm gold (matches goldGrad mid)
+        (0.65, (0x9a, 0x7e, 0x38)),  # champagne deep
+        (1.00, (0x5a, 0x40, 0x10)),  # warm umber bottom
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))

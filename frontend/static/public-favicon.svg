@@ -2,10 +2,10 @@
   <defs>
     <filter id="bull-glow" x="-15%" y="-15%" width="130%" height="130%">
       <feGaussianBlur in="SourceAlpha" stdDeviation="1.5" result="halo-outer-blur"/>
-      <feFlood flood-color="#fbbf24" flood-opacity="0.55" result="halo-outer-color"/>
+      <feFlood flood-color="#c8a84b" flood-opacity="0.55" result="halo-outer-color"/>
       <feComposite in="halo-outer-color" in2="halo-outer-blur" operator="in" result="halo-outer"/>
       <feGaussianBlur in="SourceAlpha" stdDeviation="0.75" result="halo-inner-blur"/>
-      <feFlood flood-color="#fbbf24" flood-opacity="0.85" result="halo-inner-color"/>
+      <feFlood flood-color="#c8a84b" flood-opacity="0.85" result="halo-inner-color"/>
       <feComposite in="halo-inner-color" in2="halo-inner-blur" operator="in" result="halo-inner"/>
       <feMerge>
         <feMergeNode in="halo-outer"/>
@@ -14,14 +14,14 @@
       </feMerge>
     </filter>
     <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff7c2"/>
-      <stop offset="35%"  stop-color="#facc15"/>
-      <stop offset="65%"  stop-color="#b45309"/>
-      <stop offset="100%" stop-color="#451a03"/>
+      <stop offset="0%"   stop-color="#e8d9a8"/>
+      <stop offset="35%"  stop-color="#f0d070"/>
+      <stop offset="65%"  stop-color="#9a7e38"/>
+      <stop offset="100%" stop-color="#5a4010"/>
     </linearGradient>
     <radialGradient id="face-radial" cx="50%" cy="50%" r="55%">
-      <stop offset="0%"   stop-color="#101e35"/>
-      <stop offset="100%" stop-color="#0d1829"/>
+      <stop offset="0%"   stop-color="#10223e"/>
+      <stop offset="100%" stop-color="#0c1830"/>
     </radialGradient>
   </defs>
   <rect width="64" height="64" fill="url(#face-radial)"/>
