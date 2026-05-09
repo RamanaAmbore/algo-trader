@@ -4,7 +4,6 @@
   import { goto } from '$app/navigation';
   import PerformancePage from '$lib/PerformancePage.svelte';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
-  import DashboardTopStrip from '$lib/DashboardTopStrip.svelte';
   import { clientTimestamp, authStore } from '$lib/stores';
   import { fetchPaperStatus } from '$lib/api';
 
@@ -62,10 +61,6 @@
     <button onclick={dismissBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
   </div>
 {/if}
-
-<!-- Per-account summary strip — sits just below the navbar / demo
-     banner, above the page header. Visible across both tabs. -->
-<DashboardTopStrip />
 
 <!-- Page header -->
 <div class="page-header">

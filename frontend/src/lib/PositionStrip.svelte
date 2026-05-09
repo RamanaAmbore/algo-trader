@@ -53,15 +53,21 @@
   });
   onDestroy(() => { teardown?.(); });
 
-  // Pos    = intraday positions P&L (open + closed contributions).
-  // Day    = today's mark-to-market move on holdings (day_change_val).
-  // Hold   = total unrealised P&L on holdings since entry.
-  // P&L    = combined total P&L = Pos + Hold (positions + holdings carry).
-  // Cash   = free balance summed across accounts (negative = margin debt).
-  // M      = available margin summed across accounts.
+  // P              = intraday positions P&L (open + closed contributions).
+  // H∆             = today's mark-to-market move on holdings (day_change_val).
+  // H              = total unrealised P&L on holdings since entry.
+  // P&L            = combined total P&L = P + H (positions + holdings carry).
+  // C              = free balance summed across accounts (negative = margin debt).
+  // M              = available margin summed across accounts.
+  // Pos Day Delta  = today's mark-to-market move on positions (day_change_val).
   const positionsPnl = $derived.by(() => {
     let s = 0;
     for (const p of positions) s += Number(p?.pnl || 0);
+    return s;
+  });
+  const positionsToday = $derived.by(() => {
+    let s = 0;
+    for (const p of positions) s += Number(p?.day_change_val || 0);
     return s;
   });
   const holdingsToday = $derived.by(() => {
@@ -95,7 +101,7 @@
 <a class="ps-strip" href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions P/L — open + closed intraday">
-    <span class="ps-agg-k">Pos</span>
+    <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(positionsPnl)}
     </span>
@@ -107,19 +113,19 @@
     </span>
   </span>
   <span class="ps-agg" title="Cash — free balance summed across accounts">
-    <span class="ps-agg-k">Cash</span>
+    <span class="ps-agg-k">C</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(cashTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings — today's mark-to-market move (day_change_val)">
-    <span class="ps-agg-k">Day</span>
+    <span class="ps-agg-k">H∆</span>
     <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(holdingsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
-    <span class="ps-agg-k">Hold</span>
+    <span class="ps-agg-k">H</span>
     <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(holdingsTotal)}
     </span>
@@ -128,6 +134,12 @@
     <span class="ps-agg-k">P&L</span>
     <span class={'ps-agg-v ' + (totalPnl > 0 ? 'ps-pos' : totalPnl < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(totalPnl)}
+    </span>
+  </span>
+  <span class="ps-agg" title="Positions — today's mark-to-market move (day_change_val)">
+    <span class="ps-agg-k ps-agg-k-long">Pos Day Delta</span>
+    <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
+      {fmtMoney(positionsToday)}
     </span>
   </span>
 </a>
@@ -170,6 +182,10 @@
     font-weight: 700;
     text-transform: uppercase;
   }
+  /* Pos Day Delta — only label that's a full descriptive phrase rather
+     than a 1-2 char abbreviation. Keep the same visual weight, drop
+     the upper-case so the words read naturally. */
+  .ps-agg-k.ps-agg-k-long { text-transform: none; letter-spacing: 0.02em; }
   .ps-agg-v {
     font-size: 0.7rem;
     font-weight: 700;
