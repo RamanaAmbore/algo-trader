@@ -246,6 +246,12 @@ export const createAgent      = (payload) => _post('/agents/', payload, { auth: 
 export const validateAgentCondition = (condTree) =>
   _post('/agents/validate-condition', condTree, { auth: true });
 
+// Draft an agent JSON from a natural-language prompt — the operator
+// reviews the resulting draft + warnings before saving. Returns
+// { draft, errors[], warnings[], why_summary }.
+export const aiDraftAgent = (prompt) =>
+  _post('/agents/ai-draft', { prompt }, { auth: true });
+
 // ── Market simulator control plane (/api/simulator/*) ─────────────────
 // Gated by cap_in_<branch>.simulator in backend_config.yaml. Default:
 // dev on, prod off. Server returns 400 when the flag is off.

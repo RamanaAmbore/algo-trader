@@ -13,6 +13,7 @@ POST /api/agents/interpret      — terminal command parser
 """
 
 import json
+import re
 from datetime import datetime, timezone
 
 import msgspec
@@ -135,6 +136,17 @@ class InterpretRequest(msgspec.Struct):
 
 class InterpretResponse(msgspec.Struct):
     output: str
+
+
+class AIDraftRequest(msgspec.Struct):
+    prompt: str
+
+
+class AIDraftResponse(msgspec.Struct):
+    draft:        dict
+    errors:       list[str]
+    warnings:     list[str]
+    why_summary:  str
     success: bool = True
 
 
@@ -187,6 +199,28 @@ class AgentController(Controller):
             result = await session.execute(select(Agent).order_by(Agent.id))
             agents = result.scalars().all()
         return [_agent_to_info(a) for a in agents]
+
+    @post("/ai-draft", guards=[admin_guard])
+    async def ai_draft(self, data: AIDraftRequest) -> AIDraftResponse:
+        """
+        Convert a natural-language prompt into an agent JSON draft.
+
+        Operator describes what they want; Gemini produces a candidate
+        agent definition that's been validated against the live grammar
+        registry and clamped to safe defaults (paper, inactive,
+        one_shot lifespan). Operator reviews and saves via POST /.
+
+        Failure modes return non-empty `errors`; soft risks land in
+        `warnings`. Both render in the UI; operator decides.
+        """
+        from backend.api.algo.agent_ai import draft_agent_from_prompt
+        d = draft_agent_from_prompt(data.prompt or "")
+        return AIDraftResponse(
+            draft=d.draft,
+            errors=d.errors,
+            warnings=d.warnings,
+            why_summary=d.why_summary,
+        )
 
     @post("/validate-condition", guards=[admin_guard])
     async def validate_condition(self, data: dict) -> dict:
@@ -415,6 +449,29 @@ class AgentController(Controller):
             return await self._cmd_events(parts[2])
         elif action == "config" and len(parts) > 2:
             return await self._cmd_config(parts[2:])
+        elif action == "ai":
+            # Form: agent ai create "<prompt>"
+            sub = parts[2].lower() if len(parts) > 2 else ""
+            if sub != "create":
+                return InterpretResponse(
+                    output="Usage: agent ai create \"<natural language prompt>\"",
+                    success=False,
+                )
+            # Reconstruct the prompt from the rest of the original input,
+            # not the split parts (preserves quoted whitespace).
+            raw = data.command.strip()
+            # Drop the leading 'agent ai create' prefix; trim quotes if any.
+            prefix_match = re.match(r"^agent\s+ai\s+create\s+", raw, re.IGNORECASE)
+            prompt = raw[prefix_match.end():].strip() if prefix_match else ""
+            if (prompt.startswith('"') and prompt.endswith('"')) or \
+               (prompt.startswith("'") and prompt.endswith("'")):
+                prompt = prompt[1:-1].strip()
+            if not prompt:
+                return InterpretResponse(
+                    output="Usage: agent ai create \"<natural language prompt>\"",
+                    success=False,
+                )
+            return await self._cmd_ai_create(prompt)
         elif action == "help":
             return InterpretResponse(output=self._help_text())
         else:
@@ -500,6 +557,55 @@ class AgentController(Controller):
 
         return InterpretResponse(output=f"Agent '{slug}' config updated")
 
+    async def _cmd_ai_create(self, prompt: str) -> InterpretResponse:
+        """Build an agent draft from an NL prompt and persist it (inactive,
+        paper, one_shot). Operator activates / widens via /agents."""
+        from backend.api.algo.agent_ai import draft_agent_from_prompt
+        d = draft_agent_from_prompt(prompt)
+        if d.errors:
+            err_block = "\n  ".join(d.errors)
+            return InterpretResponse(
+                output=f"AI draft failed:\n  {err_block}", success=False,
+            )
+        draft = d.draft
+        # Slug — kebab-case the LLM-given name; uniquify with a counter.
+        base = re.sub(r"[^a-z0-9]+", "-",
+                      (draft.get("name") or "ai-agent").lower()).strip("-") or "ai-agent"
+        slug = base
+        async with async_session() as session:
+            n = 1
+            while True:
+                existing = await session.execute(select(Agent).where(Agent.slug == slug))
+                if not existing.scalar_one_or_none():
+                    break
+                n += 1
+                slug = f"{base}-{n}"
+            agent = Agent(
+                slug=slug,
+                name=draft.get("name") or "AI agent",
+                description=draft.get("description") or d.why_summary,
+                conditions=draft.get("conditions") or {},
+                events=draft.get("events") or ["telegram", "email"],
+                actions=draft.get("actions") or [],
+                scope=draft.get("scope") or "total",
+                schedule=draft.get("schedule") or "market_hours",
+                cooldown_minutes=int(draft.get("cooldown_minutes") or 30),
+                lifespan_type=draft.get("lifespan_type") or "one_shot",
+                trade_mode="paper",            # AI agents always paper
+                status="inactive",             # AI agents always inactive
+            )
+            session.add(agent)
+            await session.commit()
+        # Format the response with the verdict.
+        warn_block = ("\n  ⚠ ".join(d.warnings)) if d.warnings else "(none)"
+        out = (
+            f"✓ Agent '{slug}' created (inactive · paper · {agent.lifespan_type})\n"
+            f"  Why: {d.why_summary}\n"
+            f"  Warnings:\n  ⚠ {warn_block}\n"
+            f"  Activate via: agent activate {slug}"
+        )
+        return InterpretResponse(output=out)
+
     def _help_text(self) -> str:
         return """Agent Commands:
   agent list                        — list all agents
@@ -508,4 +614,6 @@ class AgentController(Controller):
   agent deactivate <slug>           — deactivate agent
   agent events <slug>               — recent events
   agent config <slug> key=value     — update condition params
+  agent ai create "<prompt>"        — draft an agent from natural language
+                                      (lands inactive · paper · one_shot)
   agent help                        — this help"""

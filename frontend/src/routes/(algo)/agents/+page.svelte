@@ -4,7 +4,7 @@
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent,
     fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
-    startSimForAgent, fetchAdminLogs,
+    startSimForAgent, fetchAdminLogs, aiDraftAgent,
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
 
@@ -15,6 +15,60 @@
   let logTab      = $state('agent');
   let systemLog   = $state([]);
   let simLog      = $state(/** @type {any[]} */ ([]));
+
+  // ── Ask AI form ────────────────────────────────────────────────────
+  let aiOpen     = $state(false);
+  let aiPrompt   = $state('');
+  let aiBusy     = $state(false);
+  let aiDraft    = $state(/** @type {any} */ (null));
+  let aiErrors   = $state(/** @type {string[]} */ ([]));
+  let aiWarnings = $state(/** @type {string[]} */ ([]));
+  let aiWhy      = $state('');
+  let aiSlug     = $state('');
+
+  async function runAIDraft() {
+    if (!aiPrompt.trim()) return;
+    aiBusy = true; aiErrors = []; aiWarnings = []; aiDraft = null; aiWhy = '';
+    try {
+      const r = await aiDraftAgent(aiPrompt.trim());
+      aiDraft    = r?.draft || null;
+      aiErrors   = r?.errors || [];
+      aiWarnings = r?.warnings || [];
+      aiWhy      = r?.why_summary || '';
+    } catch (e) {
+      aiErrors = [e.message || 'AI draft failed'];
+    } finally { aiBusy = false; }
+  }
+
+  /** Save the AI draft as a new agent — paper, inactive, one_shot. */
+  async function saveAIDraft() {
+    if (!aiDraft || aiErrors.length) return;
+    aiBusy = true;
+    try {
+      const slug = (aiSlug.trim()) || (aiDraft.name || 'ai-agent')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const { createAgent } = await import('$lib/api');
+      await createAgent({
+        slug,
+        name: aiDraft.name || 'AI agent',
+        description: aiDraft.description || aiWhy,
+        conditions: aiDraft.conditions || {},
+        events: aiDraft.events || ['telegram', 'email'],
+        actions: aiDraft.actions || [],
+        scope: aiDraft.scope || 'total',
+        schedule: aiDraft.schedule || 'market_hours',
+        cooldown_minutes: Number(aiDraft.cooldown_minutes ?? 30),
+        lifespan_type: aiDraft.lifespan_type || 'one_shot',
+        trade_mode: 'paper',
+      });
+      // Reset + reload.
+      aiOpen = false; aiPrompt = ''; aiDraft = null; aiSlug = '';
+      aiErrors = []; aiWarnings = []; aiWhy = '';
+      await loadAgents();
+    } catch (e) {
+      aiErrors = [e.message || 'Save failed'];
+    } finally { aiBusy = false; }
+  }
   // Global simulator status — when active, the Agent-events panel swaps to
   // the simulator's event stream so operators only see sim results in the
   // algo pages while the sim is running.
@@ -378,11 +432,64 @@
       </span>
     {/if}
   </h1>
-  <span class="algo-ts">{clientTimestamp()}</span>
+  <span class="ml-auto flex items-center gap-2">
+    <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
+      {aiOpen ? '× Close AI' : '✦ Ask AI'}
+    </button>
+    <span class="algo-ts">{clientTimestamp()}</span>
+  </span>
 </div>
 
 {#if error}
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
+{/if}
+
+{#if aiOpen}
+  <!-- AI agent draft form — operator describes the rule in plain English,
+       Gemini produces a draft. Lands paper + inactive + one_shot by default. -->
+  <div class="ai-card">
+    <div class="ai-head">
+      <span class="ai-title">✦ Describe the agent</span>
+      <span class="ai-hint">Lands paper · inactive · one_shot — review before activating.</span>
+    </div>
+    <textarea
+      class="ai-prompt"
+      bind:value={aiPrompt}
+      placeholder='e.g. "Alert me when total positions P&L drops below -50000 — paper auto-close at -100000"'
+      rows="2"
+    ></textarea>
+    <div class="ai-actions">
+      <button class="ai-btn" onclick={runAIDraft} disabled={aiBusy || !aiPrompt.trim()}>
+        {aiBusy ? 'Drafting…' : 'Draft'}
+      </button>
+      {#if aiDraft && !aiErrors.length}
+        <input class="ai-slug" bind:value={aiSlug}
+               placeholder={(aiDraft.name || 'ai-agent').toLowerCase().replace(/[^a-z0-9]+/g, '-')} />
+        <button class="ai-btn ai-btn-save" onclick={saveAIDraft} disabled={aiBusy}>
+          Save (paper · inactive)
+        </button>
+      {/if}
+    </div>
+    {#if aiWhy}
+      <div class="ai-why">{aiWhy}</div>
+    {/if}
+    {#if aiWarnings.length}
+      <ul class="ai-warns">
+        {#each aiWarnings as w}<li>⚠ {w}</li>{/each}
+      </ul>
+    {/if}
+    {#if aiErrors.length}
+      <ul class="ai-errs">
+        {#each aiErrors as e}<li>✗ {e}</li>{/each}
+      </ul>
+    {/if}
+    {#if aiDraft}
+      <details class="ai-json">
+        <summary>Draft JSON</summary>
+        <pre>{JSON.stringify(aiDraft, null, 2)}</pre>
+      </details>
+    {/if}
+  </div>
 {/if}
 
 <!-- Recursive tree renderer used by both the normal expanded view and the
@@ -721,6 +828,123 @@
 {/each}
 
 <style>
+  /* ── Ask-AI form ─────────────────────────────────────────────────── */
+  .ai-pill {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.18rem 0.55rem;
+    border-radius: 4px;
+    border: 1px solid rgba(167,139,250,0.45);
+    background: rgba(167,139,250,0.10);
+    color: #a78bfa;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .ai-pill:hover { background: rgba(167,139,250,0.20); }
+  .ai-card {
+    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
+    border: 1px solid rgba(167,139,250,0.30);
+    border-radius: 5px;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+  .ai-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
+  .ai-title {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #a78bfa;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .ai-hint { font-size: 0.55rem; color: #7e97b8; font-family: ui-monospace, monospace; }
+  .ai-prompt {
+    width: 100%;
+    background: rgba(0,0,0,0.30);
+    border: 1px solid rgba(167,139,250,0.20);
+    border-radius: 4px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    padding: 0.4rem 0.55rem;
+    resize: vertical;
+  }
+  .ai-prompt:focus { outline: none; border-color: rgba(167,139,250,0.55); }
+  .ai-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; align-items: center; flex-wrap: wrap; }
+  .ai-btn {
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.22rem 0.65rem;
+    border-radius: 3px;
+    border: 1px solid rgba(167,139,250,0.45);
+    background: rgba(167,139,250,0.12);
+    color: #a78bfa;
+    cursor: pointer;
+  }
+  .ai-btn:hover:not(:disabled) { background: rgba(167,139,250,0.22); }
+  .ai-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .ai-btn-save {
+    border-color: rgba(74,222,128,0.45);
+    background: rgba(74,222,128,0.10);
+    color: #4ade80;
+  }
+  .ai-btn-save:hover:not(:disabled) { background: rgba(74,222,128,0.20); }
+  .ai-slug {
+    background: rgba(0,0,0,0.30);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 3px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    padding: 0.18rem 0.45rem;
+    width: 12rem;
+  }
+  .ai-why {
+    margin-top: 0.45rem;
+    font-size: 0.65rem;
+    color: #c8d8f0;
+    background: rgba(167,139,250,0.06);
+    border-left: 2px solid #a78bfa;
+    padding: 0.32rem 0.55rem;
+    font-family: ui-monospace, monospace;
+  }
+  .ai-warns, .ai-errs { margin: 0.4rem 0 0; padding-left: 0.4rem; list-style: none; }
+  .ai-warns li {
+    color: #fbbf24;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    padding: 0.08rem 0;
+  }
+  .ai-errs li {
+    color: #f87171;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    padding: 0.08rem 0;
+  }
+  .ai-json {
+    margin-top: 0.45rem;
+    font-size: 0.6rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+  }
+  .ai-json summary { cursor: pointer; }
+  .ai-json pre {
+    margin-top: 0.3rem;
+    background: rgba(0,0,0,0.30);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 3px;
+    padding: 0.4rem 0.55rem;
+    color: #c8d8f0;
+    overflow: auto;
+    max-height: 18rem;
+  }
+
   /* Live-preview styling — compact, dense, matches algo dark palette. */
   .agent-preview {
     font-size: 0.65rem;
