@@ -1,4 +1,4 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
@@ -10,17 +10,32 @@ export default defineConfig({
 
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174',
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
   },
 
+  // Three viewport projects — every spec runs against all three by
+  // default. Override via `--project=mobile-portrait` etc.
+  // Names use the short `chromium-*` prefix to match the existing
+  // smoke spec convention.
   projects: [
-    { name: 'chromium-desktop', use: { ...devices['Desktop Chrome'] } },
-    { name: 'mobile', use: { ...devices['iPhone 13'] } },
+    {
+      name: 'chromium-desktop',
+      use: { viewport: { width: 1400, height: 900 }, browserName: 'chromium' },
+    },
+    {
+      name: 'mobile-portrait',
+      use: { viewport: { width: 360,  height: 800 }, browserName: 'chromium', isMobile: true },
+    },
+    {
+      name: 'mobile-landscape',
+      use: { viewport: { width: 800,  height: 360 }, browserName: 'chromium', isMobile: true },
+    },
   ],
 
   // Skip the local dev server when running against an external URL
-  // (e.g. PLAYWRIGHT_BASE_URL=https://ramboq.com for prod diagnostics).
+  // (e.g. PLAYWRIGHT_BASE_URL=https://dev.ramboq.com for cloud diagnostics).
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER || process.env.PLAYWRIGHT_BASE_URL
     ? undefined
     : {
