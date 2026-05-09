@@ -110,13 +110,33 @@
     } catch (e) { error = e.message; }
   }
 
-  /** Flip the agent's trade mode between paper and live in-place. */
+  /** Flip the agent's trade mode between paper and live in-place.
+   *  Confirms before going LIVE so a stray click can't enable real
+   *  broker execution on a destructive agent. Optimistic update so
+   *  the chip flips instantly on the slow link. */
   async function toggleTradeMode(/** @type {any} */ agent) {
+    const cur = agent.trade_mode || 'paper';
+    const next = cur === 'live' ? 'paper' : 'live';
+    if (next === 'live') {
+      const ok = window.confirm(
+        `Set "${agent.name}" to LIVE trade mode?\n\n`
+        + `Every action this agent fires will hit the real Kite broker `
+        + `(subject to the master execution.paper_trading_mode kill-switch).`
+      );
+      if (!ok) return;
+    }
+    // Optimistic update — flip the chip immediately.
+    agent.trade_mode = next;
+    agents = [...agents];
     try {
-      const next = (agent.trade_mode || 'paper') === 'live' ? 'paper' : 'live';
       await updateAgent(agent.slug, { trade_mode: next });
       await loadAgents();
-    } catch (e) { error = e.message; }
+    } catch (e) {
+      error = e.message;
+      // Roll back if the PATCH failed.
+      agent.trade_mode = cur;
+      agents = [...agents];
+    }
   }
 
   function startEdit(/** @type {any} */ agent) {

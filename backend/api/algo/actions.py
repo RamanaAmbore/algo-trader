@@ -1070,21 +1070,27 @@ async def _action_place_order(context: dict, params: dict):
         except Exception:
             pass
         try:
-            from backend.shared.helpers.alert_utils import _dispatch
-            import asyncio as _aio
+            # Send a Telegram + email so the operator sees a LIVE agent-
+            # initiated order that Kite's basket_margin would have rejected.
+            # The earlier path tried `asyncio.create_task(_dispatch(...))`
+            # but _dispatch is sync and the arg count was wrong; the outer
+            # try/except swallowed both errors silently.
+            from backend.shared.helpers.alert_utils       import _dispatch
+            from backend.shared.helpers.date_time_utils   import timestamp_display
             lines = [f"• [{b['code']}] {b['reason']} — {b['fix']}"
                      for b in pf["blocked"]]
-            msg_lines = (
-                [f"🚫 Order preflight BLOCKED: {side} {qty} {symbol} [{account}]"]
-                + lines
+            header = f"🚫 Order preflight BLOCKED: {side} {qty} {symbol} [{account}]"
+            tg_body    = f"<code>{header}\n" + "\n".join(lines) + "</code>"
+            email_body = (
+                f"<pre style='font-family:monospace;color:#c0392b'>"
+                f"{header}\n" + "\n".join(lines) + "</pre>"
             )
-            _aio.create_task(_dispatch(
-                "\n".join(msg_lines),
-                f"RamboQuant: Order blocked — {symbol}",
-                "\n".join(msg_lines),
-            ))
-        except Exception:
-            pass
+            _dispatch(
+                'alert', timestamp_display(), tg_body, email_body,
+                f"Order blocked — {symbol}",
+            )
+        except Exception as _e:
+            logger.warning(f"Preflight-block notification failed: {_e}")
         return  # abort without placing
 
     # Emit preflight_ok event (fire-and-forget).

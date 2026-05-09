@@ -31,6 +31,12 @@
   } = $props();
 
   let logTab = $state(initialTab);
+  // Re-sync logTab whenever the parent updates initialTab (e.g. /agents
+  // calling runInSim flips initialTab to 'simulator'). Without this the
+  // tab strip silently ignores parent-driven tab switches.
+  $effect(() => {
+    if (initialTab && initialTab !== logTab) logTab = initialTab;
+  });
   let newsItems = $state(/** @type {Array<{title:string,link:string,source:string,timestamp:string}>} */ ([]));
   let newsRefresh = $state('');
   let newsLoading = $state(false);

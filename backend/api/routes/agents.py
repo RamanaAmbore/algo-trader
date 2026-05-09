@@ -188,7 +188,7 @@ class AgentController(Controller):
             agents = result.scalars().all()
         return [_agent_to_info(a) for a in agents]
 
-    @post("/validate-condition")
+    @post("/validate-condition", guards=[admin_guard])
     async def validate_condition(self, data: dict) -> dict:
         """
         Dry-check a condition tree against the live Grammar Registry.
@@ -265,8 +265,7 @@ class AgentController(Controller):
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
             for field in ('name', 'description', 'conditions', 'events', 'actions',
-                          'scope', 'schedule', 'cooldown_minutes',
-                          'lifespan_max_fires'):
+                          'scope', 'schedule', 'cooldown_minutes'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
@@ -276,6 +275,18 @@ class AgentController(Controller):
                     raise HTTPException(status_code=400,
                         detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
                 agent.trade_mode = tm
+            # lifespan_max_fires can legitimately be cleared back to NULL
+            # (e.g. switching off n_fires). The msgspec.Struct default is
+            # None and we can't distinguish "omitted" from "explicit null",
+            # so the convention is: when lifespan_type is being changed
+            # AWAY from n_fires, clear max_fires unless the payload also
+            # supplied a fresh value. When lifespan_type is unchanged, an
+            # explicit null in the payload is honoured.
+            new_lt = (data.lifespan_type or '').lower() if data.lifespan_type else None
+            if new_lt is not None and new_lt != 'n_fires':
+                agent.lifespan_max_fires = data.lifespan_max_fires  # may be None
+            elif data.lifespan_max_fires is not None:
+                agent.lifespan_max_fires = data.lifespan_max_fires
             # Validate + normalise lifespan_type when supplied.
             if data.lifespan_type is not None:
                 lt = data.lifespan_type.lower()
