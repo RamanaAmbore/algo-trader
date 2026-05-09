@@ -284,6 +284,16 @@
     return ds.reduce((a, b) => (a.day_pnl <= b.day_pnl ? a : b));
   });
 
+  // Day P&L scoped to positions only (intraday on F&O book). Derived
+  // from by_account rows with kind='positions'; returns null when no
+  // position rows exist in range so the cell renders '—' instead of 0.
+  const dayPosPnl = $derived.by(() => {
+    if (!data?.by_account) return null;
+    const posRows = data.by_account.filter(r => r.kind === 'positions');
+    if (!posRows.length) return null;
+    return posRows.reduce((s, r) => s + (Number(r.day_pnl) || 0), 0);
+  });
+
   // True when the snapshot table is empty for this range — used to
   // render the "no data" banner instead of empty cards.
   const hasNoData = $derived(data != null && data.summary?.n_rows === 0);
@@ -472,49 +482,47 @@
 {/if}
 
 {#if data}
-  <!-- Headline KVs — Total / Day / Portfolio % / vs NIFTY 50 / Best day / Worst day -->
+  <!-- Headline KVs — short labels (1-2 chars) so the strip stays one line
+       on mobile. Long form lives in title= for hover/long-press. -->
   <div class="card summary-row">
-    <div class="kv">
-      <span class="kv-lbl">Total P&L</span>
+    <div class="kv" title="Total P&L (range)">
+      <span class="kv-lbl">T</span>
       <span class="kv-val {pnlClass(data.summary.total_pnl)}">{fmt(data.summary.total_pnl)}</span>
     </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Day P&L</span>
+    <div class="kv" title="Day P&L (today, all kinds)">
+      <span class="kv-lbl">D</span>
       <span class="kv-val {pnlClass(data.summary.day_pnl)}">{fmt(data.summary.day_pnl)}</span>
     </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Portfolio %</span>
+    <div class="kv" title="Day Pos P&L (positions intraday)">
+      <span class="kv-lbl">DP</span>
+      <span class="kv-val {pnlClass(dayPosPnl)}">{dayPosPnl == null ? '—' : fmt(dayPosPnl)}</span>
+    </div>
+    <div class="kv" title="Portfolio % (return over range)">
+      <span class="kv-lbl">P%</span>
       <span class="kv-val {pnlClass(portfolioPct)}">{fmtPct(portfolioPct)}</span>
     </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">vs NIFTY 50</span>
+    <div class="kv" title="vs NIFTY 50 (alpha over range)">
+      <span class="kv-lbl">vN</span>
       <span class="kv-val {pnlClass(vsNifty)}">{fmtPct(vsNifty)}</span>
     </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Best day</span>
+    <div class="kv" title={bestDay ? `Best day · ${bestDay.date}` : 'Best day'}>
+      <span class="kv-lbl">B↑</span>
       {#if bestDay}
         <span class="kv-val {pnlClass(bestDay.day_pnl)}">{fmt(bestDay.day_pnl)}</span>
-        <span class="kv-sub">{bestDay.date}</span>
       {:else}
         <span class="kv-val muted">—</span>
       {/if}
     </div>
-    <div class="kv-div"></div>
-    <div class="kv">
-      <span class="kv-lbl">Worst day</span>
+    <div class="kv" title={worstDay ? `Worst day · ${worstDay.date}` : 'Worst day'}>
+      <span class="kv-lbl">W↓</span>
       {#if worstDay}
         <span class="kv-val {pnlClass(worstDay.day_pnl)}">{fmt(worstDay.day_pnl)}</span>
-        <span class="kv-sub">{worstDay.date}</span>
       {:else}
         <span class="kv-val muted">—</span>
       {/if}
     </div>
     <div class="summary-meta">
-      {data.summary.n_dates} dates · {data.summary.n_accounts} accounts · {data.from_date} → {data.to_date}
+      {data.summary.n_dates}d · {data.summary.n_accounts}a · {data.from_date} → {data.to_date}
     </div>
   </div>
 
@@ -897,12 +905,6 @@
     text-underline-offset: 2px;
   }
   .link-btn:hover { color: #fcd34d; }
-  .kv-sub {
-    font-size: 0.55rem;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    margin-top: 0.05rem;
-  }
   .muted { color: #4e6080 !important; }
   .fb-label {
     display: flex;
@@ -966,44 +968,53 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.3rem 0;
-    padding: 0.45rem 0.75rem;
+    gap: 0;
+    padding: 0.4rem 0.55rem;
   }
   .kv {
     display: flex;
     flex-direction: column;
-    gap: 0.08rem;
-    padding: 0 0.75rem;
-    min-width: 6rem;
+    align-items: flex-start;
+    gap: 0.05rem;
+    padding: 0 0.45rem;
+    min-width: 0;
+    border-right: 1px solid rgba(255,255,255,0.08);
+    cursor: help;
   }
-  .kv-div {
-    width: 1px;
-    height: 1.8rem;
-    background: rgba(255,255,255,0.1);
-    flex-shrink: 0;
-  }
+  .kv:last-of-type { border-right: none; }
   .kv-lbl {
     font-size: 0.55rem;
     color: #7e97b8;
     font-family: ui-monospace, monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
   }
   .kv-val {
-    font-size: 0.95rem;
+    font-size: 0.78rem;
     font-weight: 700;
     font-family: ui-monospace, monospace;
     color: #c8d8f0;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .kv-val.pos { color: #4ade80; }
   .kv-val.neg { color: #f87171; }
+  .kv-val.muted { color: #4e6080; }
   .summary-meta {
     margin-left: auto;
-    font-size: 0.6rem;
+    font-size: 0.55rem;
     font-family: ui-monospace, monospace;
     color: #7e97b8;
-    padding-right: 0.3rem;
+    padding-left: 0.5rem;
+    white-space: nowrap;
+  }
+  /* Mobile: drop padding, allow wrap of the meta line only. KVs stay
+     on one row down to ~340px viewport. */
+  @media (max-width: 640px) {
+    .summary-row { padding: 0.35rem 0.4rem; }
+    .kv { padding: 0 0.32rem; }
+    .kv-val { font-size: 0.7rem; }
+    .summary-meta { width: 100%; margin-left: 0; padding-left: 0; padding-top: 0.2rem; }
   }
 
   .chart-card { padding: 0.5rem 0.75rem 0.55rem; }
