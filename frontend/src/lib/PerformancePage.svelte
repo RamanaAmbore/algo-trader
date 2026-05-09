@@ -808,6 +808,21 @@
     gap: 0.5rem;
     flex-wrap: nowrap;
   }
+
+  /* Light-theme (public /performance) tab background — matches the
+     dark-theme treatment in shape: amber tint on active, faint
+     hover tint on inactive, both with rounded top corners so the
+     active tab reads as a panel header. */
+  .tabs-row :global(button[class*="border-primary"]) {
+    background: rgba(212,146,12,0.10);
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+  }
+  .tabs-row :global(button[class*="text-muted"]:hover) {
+    background: rgba(212,146,12,0.04);
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+  }
   /* Account + Symbol dropdown wrappers. Same width + min-width so the
      two sit side-by-side as equal-footprint fields. Theme + colour are
      handled inside Select / MultiSelect. Both live right after the
@@ -851,10 +866,23 @@
   /* ── Dark (algo) overrides ─────────────────────────────────────────────── */
   .perf-dark :global(.section-heading) { color: #fbbf24; }
 
-  /* Tabs */
-  .perf-dark :global(button[class*="border-primary"])    { border-color: #d97706 !important; color: #fbbf24 !important; }
+  /* Tabs — active gets an amber tint + slight top-corner round so the
+     selected tab reads as a panel header, not just an underlined word.
+     Hover on inactive lifts text + adds the faintest tint. */
+  .perf-dark :global(button[class*="border-primary"])    {
+    border-color: #d97706 !important;
+    color: #fbbf24 !important;
+    background: rgba(251,191,36,0.12) !important;
+    border-top-left-radius: 4px !important;
+    border-top-right-radius: 4px !important;
+  }
   .perf-dark :global(button[class*="text-muted"])        { color: rgba(180,200,230,0.6) !important; }
-  .perf-dark :global(button[class*="text-muted"]:hover)  { color: rgba(210,225,250,0.9) !important; }
+  .perf-dark :global(button[class*="text-muted"]:hover)  {
+    color: rgba(210,225,250,0.9) !important;
+    background: rgba(251,191,36,0.05) !important;
+    border-top-left-radius: 4px !important;
+    border-top-right-radius: 4px !important;
+  }
 
   /* Refresh button */
   .perf-dark :global(.btn-secondary) {
