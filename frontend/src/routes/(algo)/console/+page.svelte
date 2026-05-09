@@ -62,9 +62,9 @@
   <div class="flex flex-col flex-1 min-h-0 mt-2">
     <LogPanel
       heightClass="flex-1 min-h-0"
-      initialTab={logTab}
-      systemLog={logLines}
-      onTabChange={(id) => { logTab = id; loadCurrentLog(); }}
+      defaultTab={logTab}
+      tabs={['terminal','system','news']}
+      onTabChange={(id) => { logTab = id; }}
     />
   </div>
 </div>

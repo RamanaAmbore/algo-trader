@@ -327,10 +327,9 @@
 
 <LogPanel
   heightClass="flex-1 min-h-0"
-  initialTab={logTab}
+  defaultTab={logTab}
   {cmdHistory}
-  {systemLog}
-  onTabChange={(id) => { logTab = id; loadCurrentLog(); }}
+  onTabChange={(id) => { logTab = id; }}
 />
 </div>
 

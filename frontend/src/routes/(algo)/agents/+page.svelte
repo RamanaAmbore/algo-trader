@@ -862,10 +862,7 @@
 
 <LogPanel
   heightClass="h-[50vh]"
-  initialTab={logTab}
-  cmdHistory={[]}
-  agentLog={agentEvents}
-  {systemLog}
-  {simLog}
-  onTabChange={(id) => { logTab = id; loadCurrentLog(); }}
+  defaultTab={logTab}
+  simScope={simActive}
+  onTabChange={(id) => { logTab = id; }}
 />

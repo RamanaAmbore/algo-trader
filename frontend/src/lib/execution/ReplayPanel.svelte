@@ -316,8 +316,7 @@
 
 <LogPanel
   heightClass="h-[40vh]"
-  initialTab="order"
-  cmdHistory={[]}
+  defaultTab="order"
 />
 
 <style>

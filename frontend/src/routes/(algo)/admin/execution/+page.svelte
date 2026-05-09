@@ -505,13 +505,7 @@
 
   <LogPanel
     heightClass="h-[40vh]"
-    initialTab={paperLogTab}
-    cmdHistory={[]}
-    orderLog={[]}
-    orderRows={paperOrderRows}
-    agentLog={[]}
-    systemLog={[]}
-    simLog={[]}
+    defaultTab={paperLogTab}
     onTabChange={(id) => { paperLogTab = id; }}
   />
 {/if}
@@ -732,13 +726,7 @@
 
   <LogPanel
     heightClass="h-[40vh]"
-    initialTab="order"
-    cmdHistory={[]}
-    orderLog={[]}
-    orderRows={liveOrders}
-    agentLog={[]}
-    systemLog={[]}
-    simLog={[]}
+    defaultTab="order"
   />
 {/if}
 

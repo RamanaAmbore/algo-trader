@@ -1,42 +1,100 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { parseLogLineTime } from '$lib/stores';
-  import { fetchNews } from '$lib/api';
+  import {
+    fetchNews,
+    fetchRecentAgentEvents, fetchSimEvents,
+    fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
+  } from '$lib/api';
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
 
   /** @type {{
    *   heightClass?: string,
+   *   tabs?: string[],            // restrict visible tabs (default = all)
+   *   defaultTab?: string,        // initial tab (default 'order')
+   *   simScope?: boolean,         // when true, agent tab pulls sim_mode events
+   *   pollMs?: number,            // poll cadence for the internal streams
    *   cmdHistory?: Array<{status: string, message: string, fields?: Record<string,string>, time: string}>,
-   *   orderLog?: Array<any>,
-   *   orderRows?: Array<{id:number, account:string, symbol:string, transaction_type:string,
-   *                       quantity:number, initial_price:number|null, status:string,
-   *                       engine:string, mode:string, detail:string|null, created_at:string}>,
-   *   agentLog?: Array<any>,
-   *   systemLog?: string[],
-   *   simLog?: Array<any>,
-   *   initialTab?: string,
    *   onTabChange?: (tab: string) => void,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
-    cmdHistory = [],
-    orderLog = [],
-    orderRows = [],
-    agentLog = [],
-    systemLog = [],
-    simLog = [],
-    initialTab = 'order',
+    tabs        = ['order','terminal','agent','simulator','system','news'],
+    defaultTab  = 'order',
+    simScope    = false,
+    pollMs      = 3000,
+    cmdHistory  = [],
     onTabChange = () => {},
   } = $props();
 
-  let logTab = $state(initialTab);
-  // Re-sync logTab whenever the parent updates initialTab (e.g. /agents
-  // calling runInSim flips initialTab to 'simulator'). Without this the
+  let logTab = $state(defaultTab);
+  // Re-sync logTab whenever the parent updates defaultTab (e.g. /agents
+  // calling runInSim flips defaultTab to 'simulator'). Without this the
   // tab strip silently ignores parent-driven tab switches.
   $effect(() => {
-    if (initialTab && initialTab !== logTab) logTab = initialTab;
+    if (defaultTab && defaultTab !== logTab) logTab = defaultTab;
   });
+
+  // ── Internally-fetched data streams ──────────────────────────────────
+  // Each callsite previously polled these endpoints itself and passed the
+  // arrays in as props — we now fetch once per LogPanel instance, on the
+  // same cadence (`pollMs`), so a page mounting a LogPanel doesn't have to
+  // wire up four independent loaders. Order tab still uses UnifiedLog
+  // (already centralised).
+  let orderRows = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
+  let agentLog  = $state(/** @type {any[]} */ ([]));
+  let systemLog = $state(/** @type {string[]} */ ([]));
+  let simLog    = $state(/** @type {any[]} */ ([]));
+
+  /** @type {Array<ReturnType<typeof setInterval>>} */
+  const _intervals = [];
+  function _every(/** @type {() => Promise<void> | void} */ fn) {
+    fn();
+    if (pollMs > 0) {
+      const id = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        fn();
+      }, pollMs);
+      _intervals.push(id);
+    }
+  }
+
+  async function _loadAgents() {
+    try {
+      // Sim-scoped surfaces (e.g. /admin/simulator) want the sim-only
+      // event stream; everywhere else gets the real-mode stream.
+      const data = simScope ? await fetchSimEvents(100)
+                            : await fetchRecentAgentEvents(100);
+      agentLog = Array.isArray(data) ? data : [];
+    } catch (_) { /* keep last-good */ }
+  }
+  async function _loadSystem() {
+    try {
+      const d = await fetchAdminLogs(200);
+      systemLog = d?.lines || [];
+    } catch (_) {}
+  }
+  async function _loadSim() {
+    try {
+      const data = await fetchSimTicks(100);
+      simLog = Array.isArray(data) ? data : [];
+    } catch (_) {}
+  }
+  async function _loadOrders() {
+    try {
+      const data = await fetchAlgoOrdersRecent(100, 'all');
+      orderRows = Array.isArray(data) ? data : [];
+    } catch (_) {}
+  }
+
+  onMount(() => {
+    if (tabs.includes('agent'))     _every(_loadAgents);
+    if (tabs.includes('system'))    _every(_loadSystem);
+    if (tabs.includes('simulator')) _every(_loadSim);
+    if (tabs.includes('terminal'))  _every(_loadOrders);  // Terminal tab embeds order rows
+  });
+  onDestroy(() => { for (const id of _intervals) clearInterval(id); });
   let newsItems = $state(/** @type {Array<{title:string,link:string,source:string,timestamp:string}>} */ ([]));
   let newsRefresh = $state('');
   let newsLoading = $state(false);
@@ -58,7 +116,7 @@
     return () => { if (newsInterval) clearInterval(newsInterval); };
   });
 
-  const TABS = [
+  const _ALL_TABS = [
     ['order',     'Order'],
     ['terminal',  'Terminal'],
     ['agent',     'Agent'],
@@ -66,6 +124,27 @@
     ['system',    'System'],
     ['news',      'News'],
   ];
+  // Filter to the per-page subset (defaults to all six). Lets /console
+  // hide Order / Simulator / Agent that don't apply.
+  const VISIBLE_TABS = $derived(_ALL_TABS.filter(([id]) => tabs.includes(id)));
+
+  // ── Order-tab mode filter ───────────────────────────────────────────
+  // [All] uses the unified merged feed (orders + agent fires); the
+  // mode-specific filters fall back to the order-only rendering so
+  // operators can scope to "what paper orders did I just place" or
+  // "what live orders did Kite take" without agent-fire noise.
+  /** @type {'all'|'paper'|'live'|'sim'} */
+  let orderModeFilter = $state('all');
+  const _ORDER_MODE_TABS = [
+    ['all',   'All'],
+    ['paper', 'Paper'],
+    ['live',  'Live'],
+    ['sim',   'Sim'],
+  ];
+  const filteredOrderRows = $derived.by(() => {
+    if (orderModeFilter === 'all') return orderRows;
+    return (orderRows || []).filter(o => (o?.mode || 'live') === orderModeFilter);
+  });
 
   // ── Shared helpers so every tab renders the same way ─────────────────
   // All log rows show timestamps as HH:MM:SS (8 chars). logTime() in
@@ -173,14 +252,6 @@
     return `<span class="${cls}"><span class="log-ts">${ts}</span> ${SIM_PILL}${head} ${diffs || '(no changes)'}</span>`;
   }
 
-  const ORDER_TYPES = new Set(['order_placed','order_cancelled','order_rejected','order_filled']);
-
-  function orderClass(t) {
-    return t?.includes('success') ? 'log-agent-success'
-         : t?.includes('fail')    ? 'log-agent-failed'
-         : 'log-agent-triggered';
-  }
-
   function stripTs(l) {
     return String(l ?? '').replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s*-?\s*/, '');
   }
@@ -188,12 +259,6 @@
   function sysClass(l) {
     const s = String(l ?? '');
     return s.includes('ERROR') ? 'log-error' : s.includes('WARNING') ? 'log-warning' : 'log-info';
-  }
-
-  function filteredOrder() {
-    return orderLog.filter(e =>
-      ORDER_TYPES.has(e.event_type) ||
-      (e.event_type?.startsWith('action_') && /place_order|close_position|chase_close/i.test(e.trigger_condition || '')));
   }
 
   function _cmdEntryHtml(h) {
@@ -232,12 +297,24 @@
     const attemptChip = (o.attempts != null && o.attempts > 0)
       ? ` <span class="log-chip"><span class="log-chip-key">chase:</span>#${o.attempts}</span>`
       : '';
+    // Preflight verdict — a tiny ✓/✗ chip whose title= carries the
+    // detail. ✓ when the order made it past preflight (FILLED / OPEN
+    // / SHADOW_OK / FILLED-on-live). ✗ when REJECTED / SHADOW_REJECTED
+    // (basket_margin pushed back). The chip is invisible for ambiguous
+    // states so it doesn't cry wolf on transient OPEN rows.
+    let preflightChip = '';
+    if (status === 'REJECTED' || status === 'SHADOW_REJECTED') {
+      const t = (o.detail || 'preflight blocked').replace(/"/g, '&quot;');
+      preflightChip = ` <span class="log-pf log-pf-bad" title="${t}">✗</span>`;
+    } else if (status === 'FILLED' || status === 'SHADOW_OK') {
+      preflightChip = ` <span class="log-pf log-pf-ok" title="Preflight OK">✓</span>`;
+    }
     const engine = o.engine ? ` <span class="log-chip"><span class="log-chip-key">engine:</span>${o.engine}</span>` : '';
     // Agent-id chip — links back to the firing agent on /agents.
     const agentChip = o.agent_id
       ? ` <a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
-    return `<span class="${rowCls}"><span class="log-ts">${t}</span> ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${statusChip}${attemptChip}${engine}${agentChip}</span>`;
+    return `<span class="${rowCls}"><span class="log-ts">${t}</span> ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${statusChip}${attemptChip}${engine}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -252,11 +329,12 @@
 
   function _terminalHtml() {
     const cmdLines = cmdHistory.map(h => ({ ts: h.time, html: _cmdEntryHtml(h) }));
-    const orderLines = filteredOrder().map(e => {
-      const t = _shortTime(e.timestamp);
-      return { ts: t, html: `<span class="${orderClass(e.event_type)}"><span class="log-ts">${t}</span> ${e.event_type||''} ${e.trigger_condition||''}</span>` };
-    });
-    const agentLines = agentLog.map(e => {
+    // Order rows from the internal stream — the Terminal tab interleaves
+    // operator commands with the order lifecycle they produced.
+    const orderLines = (orderRows || []).map(o => ({
+      ts: _shortTime(o.created_at), html: _orderRowHtml(o),
+    }));
+    const agentLines = (agentLog || []).map(e => {
       const t = _shortTime(e.timestamp);
       return { ts: t, html: `<span class="log-agent-default"><span class="log-ts">${t}</span> ${e.event_type||''} ${e.trigger_condition||''}</span>` };
     });
@@ -278,7 +356,7 @@
   <span class="log-section-wrap" aria-hidden="true">
     <span class="log-section-text">Log</span>
   </span>
-  {#each TABS as [id, label]}
+  {#each VISIBLE_TABS as [id, label]}
     <button onclick={() => setTab(id)}
       class="log-tab-btn border-b-2 transition-colors
         {logTab === id ? 'border-[#d97706] text-[#fbbf24]' : 'border-transparent text-[#b4c8e6] hover:text-[#fbbf24]'}"
@@ -314,16 +392,28 @@
     {/if}
   </div>
 {:else if logTab === 'order'}
-  <!-- Order tab — canonical unified log via UnifiedLog.svelte.
-       Both order-lifecycle events (placed/chase/fill) and agent-fire
-       events (agent_fire/agent_action_success) appear here with the
-       same chip palette so operators see one coherent stream. -->
-  <UnifiedLog
-    filter={{}}
-    pollMs={3000}
-    maxRows={50}
-    heightClass="log-panel log-unified {heightClass}"
-  />
+  <!-- Order tab — [All] uses the unified merged feed (orders + agent
+       fires). Paper / Live / Sim filter to mode-specific algo_orders
+       rows so operators can isolate "did my paper test order land?"
+       or "what did live place?" without agent-fire interleaving. -->
+  <div class="om-bar">
+    {#each _ORDER_MODE_TABS as [val, label]}
+      <button class="om-chip {orderModeFilter === val ? 'om-on' : ''} om-chip-{val}"
+              onclick={() => orderModeFilter = /** @type {any} */ (val)}>
+        {label}
+      </button>
+    {/each}
+  </div>
+  {#if orderModeFilter === 'all'}
+    <UnifiedLog
+      filter={{}}
+      pollMs={pollMs}
+      maxRows={50}
+      heightClass="log-panel log-unified {heightClass}"
+    />
+  {:else}
+    <pre class="log-panel {heightClass}">{#if filteredOrderRows.length}{@html filteredOrderRows.map(_orderRowHtml).join('\n')}{:else}<span class="log-debug">No {orderModeFilter} orders.</span>{/if}</pre>
+  {/if}
 {:else}
 <pre class="log-panel {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
   const t = _shortTime(e.timestamp);
@@ -440,5 +530,53 @@
   :global(.log-order-cancelled) { color: #94a3b8; }
   :global(.log-order-rejected)  { color: #dc2626; }
   :global(.log-order-shadow-ok) { color: #fb923c; }
+
+  /* Order-tab mode subnav — [All / Paper / Live / Sim] chip strip.
+     Colours mirror the .mode-pill-* tokens so the subnav reads as the
+     same vocabulary the mode pills inside the rows already use. */
+  .om-bar {
+    display: inline-flex;
+    gap: 0;
+    padding: 0.18rem 0;
+    margin-bottom: 0.2rem;
+    border-bottom: 1px dashed rgba(251,191,36,0.12);
+  }
+  .om-chip {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-right-width: 0;
+    padding: 0.1rem 0.55rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: rgba(200,216,240,0.55);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+  .om-chip:first-child { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+  .om-chip:last-child  { border-right-width: 1px; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+  .om-chip:hover { color: #c8d8f0; }
+  .om-chip.om-on.om-chip-all   { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+  .om-chip.om-on.om-chip-paper { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
+  .om-chip.om-on.om-chip-live  { background: rgba(16,185,129,0.14); color: #6ee7b7; border-color: rgba(16,185,129,0.45); }
+  .om-chip.om-on.om-chip-sim   { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+
+  /* Preflight verdict chip — ✓ when basket_margin / Kite preflight
+     accepted the order, ✗ when it pushed back. Hover the chip to see
+     the broker's reason in the title attribute. */
+  :global(.log-pf) {
+    display: inline-block;
+    margin: 0 0.15rem;
+    padding: 0 0.25rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 800;
+    border-radius: 2px;
+    cursor: help;
+  }
+  :global(.log-pf-ok)  { color: #4ade80; background: rgba(74,222,128,0.10); }
+  :global(.log-pf-bad) { color: #f87171; background: rgba(248,113,113,0.12); }
 
 </style>
