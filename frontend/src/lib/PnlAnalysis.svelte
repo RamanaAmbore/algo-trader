@@ -280,16 +280,6 @@
     return ds.reduce((a, b) => (a.day_pnl <= b.day_pnl ? a : b));
   });
 
-  // Day P&L scoped to positions only (intraday on F&O book). Derived
-  // from by_account rows with kind='positions'; returns null when no
-  // position rows exist in range so the cell renders '—' instead of 0.
-  const dayPosPnl = $derived.by(() => {
-    if (!data?.by_account) return null;
-    const posRows = data.by_account.filter(r => r.kind === 'positions');
-    if (!posRows.length) return null;
-    return posRows.reduce((s, r) => s + (Number(r.day_pnl) || 0), 0);
-  });
-
   // True when the snapshot table is empty for this range — used to
   // render the "no data" banner instead of empty cards.
   const hasNoData = $derived(data != null && data.summary?.n_dates === 0);
@@ -473,21 +463,11 @@
 {/if}
 
 {#if data}
-  <!-- Headline KVs — short labels (1-2 chars) so the strip stays one line
-       on mobile. Long form lives in title= for hover/long-press. -->
+  <!-- Headline KVs — only metrics that aren't already in the global
+       PositionStrip. T / D / DP are redundant with PositionStrip's
+       P&L / H∆+P∆ / P∆ on the Today preset; on multi-day ranges they'd
+       sum but the breakdown tabs below already show the raw rows. -->
   <div class="card summary-row">
-    <div class="kv" title="Total P&L (range)">
-      <span class="kv-lbl">T</span>
-      <span class="kv-val {pnlClass(data.summary.total_pnl)}">{fmt(data.summary.total_pnl)}</span>
-    </div>
-    <div class="kv" title="Day P&L (sum across range)">
-      <span class="kv-lbl">D</span>
-      <span class="kv-val {pnlClass(data.summary.day_pnl)}">{fmt(data.summary.day_pnl)}</span>
-    </div>
-    <div class="kv" title="Day Pos P&L (positions only, sum across range)">
-      <span class="kv-lbl">DP</span>
-      <span class="kv-val {pnlClass(dayPosPnl)}">{dayPosPnl == null ? '—' : fmt(dayPosPnl)}</span>
-    </div>
     <div class="kv" title="Portfolio % (return over range)">
       <span class="kv-lbl">P%</span>
       <span class="kv-val {pnlClass(portfolioPct)}">{fmtPct(portfolioPct)}</span>
