@@ -36,7 +36,20 @@ export async function loginAsAdmin(page, opts = {}) {
   // Navigate to the origin first so the sessionStorage write lands
   // in the right window. Subsequent goto() calls keep the session.
   await page.goto('/');
-  await page.evaluate(t => sessionStorage.setItem('ramboq_token', t), j.access_token);
+  // The (algo) layout's redirect logic gates on $authStore.user (not
+  // just the token). Stash both keys so the auth store re-reads a
+  // populated session on the next route load — otherwise dev-branch
+  // routes redirect to /signin.
+  const userRecord = {
+    user_id: j.username || user,
+    username: j.username || user,
+    role: j.role || 'admin',
+    display_name: j.display_name || user,
+  };
+  await page.evaluate(({ tok, usr }) => {
+    sessionStorage.setItem('ramboq_token', tok);
+    sessionStorage.setItem('ramboq_user', JSON.stringify(usr));
+  }, { tok: j.access_token, usr: userRecord });
   return { user_id: user, token: j.access_token };
 }
 
