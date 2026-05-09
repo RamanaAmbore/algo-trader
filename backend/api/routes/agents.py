@@ -449,29 +449,48 @@ class AgentController(Controller):
             return await self._cmd_events(parts[2])
         elif action == "config" and len(parts) > 2:
             return await self._cmd_config(parts[2:])
+        elif action == "fire" and len(parts) > 2:
+            return await self._cmd_fire(parts[2])
         elif action == "ai":
-            # Form: agent ai create "<prompt>"
+            # Forms:
+            #   agent ai create "<natural language prompt>"
+            #   agent ai refine <slug> "<natural language refinement>"
             sub = parts[2].lower() if len(parts) > 2 else ""
-            if sub != "create":
-                return InterpretResponse(
-                    output="Usage: agent ai create \"<natural language prompt>\"",
-                    success=False,
-                )
-            # Reconstruct the prompt from the rest of the original input,
-            # not the split parts (preserves quoted whitespace).
             raw = data.command.strip()
-            # Drop the leading 'agent ai create' prefix; trim quotes if any.
-            prefix_match = re.match(r"^agent\s+ai\s+create\s+", raw, re.IGNORECASE)
-            prompt = raw[prefix_match.end():].strip() if prefix_match else ""
-            if (prompt.startswith('"') and prompt.endswith('"')) or \
-               (prompt.startswith("'") and prompt.endswith("'")):
-                prompt = prompt[1:-1].strip()
-            if not prompt:
+            if sub == "create":
+                prefix_match = re.match(r"^agent\s+ai\s+create\s+", raw, re.IGNORECASE)
+                prompt = raw[prefix_match.end():].strip() if prefix_match else ""
+                if (prompt.startswith('"') and prompt.endswith('"')) or \
+                   (prompt.startswith("'") and prompt.endswith("'")):
+                    prompt = prompt[1:-1].strip()
+                if not prompt:
+                    return InterpretResponse(
+                        output="Usage: agent ai create \"<prompt>\"",
+                        success=False,
+                    )
+                return await self._cmd_ai_create(prompt)
+            elif sub == "refine" and len(parts) > 3:
+                slug = parts[3]
+                # Strip 'agent ai refine <slug>' to recover the prompt verbatim.
+                pat = re.compile(r"^agent\s+ai\s+refine\s+\S+\s+", re.IGNORECASE)
+                m = pat.match(raw)
+                prompt = raw[m.end():].strip() if m else ""
+                if (prompt.startswith('"') and prompt.endswith('"')) or \
+                   (prompt.startswith("'") and prompt.endswith("'")):
+                    prompt = prompt[1:-1].strip()
+                if not prompt:
+                    return InterpretResponse(
+                        output="Usage: agent ai refine <slug> \"<refinement prompt>\"",
+                        success=False,
+                    )
+                return await self._cmd_ai_refine(slug, prompt)
+            else:
                 return InterpretResponse(
-                    output="Usage: agent ai create \"<natural language prompt>\"",
+                    output=("Usage:\n"
+                            "  agent ai create \"<prompt>\"\n"
+                            "  agent ai refine <slug> \"<prompt>\""),
                     success=False,
                 )
-            return await self._cmd_ai_create(prompt)
         elif action == "help":
             return InterpretResponse(output=self._help_text())
         else:
@@ -606,14 +625,142 @@ class AgentController(Controller):
         )
         return InterpretResponse(output=out)
 
+    async def _cmd_fire(self, slug: str) -> InterpretResponse:
+        """Manually fire an agent right now — bypasses cooldown / schedule /
+        baseline / suppression. Forces paper mode regardless of agent.trade_mode
+        so a stray fire can never hit the broker. Returns whether the
+        condition matched and any actions executed."""
+        async with async_session() as session:
+            result = await session.execute(select(Agent).where(Agent.slug == slug))
+            agent = result.scalar_one_or_none()
+        if not agent:
+            return InterpretResponse(output=f"Agent '{slug}' not found", success=False)
+        # Build context from current live data (or stub on broker outage).
+        # Re-uses the same fetch + summarise plumbing the background task
+        # uses each tick so the manual fire sees identical inputs to a
+        # natural fire.
+        try:
+            from backend.api.background import (
+                _fetch_holdings_direct, _fetch_positions_direct,
+                _fetch_margins_direct,
+            )
+            from backend.shared.helpers.summarise import (
+                summarise_holdings as _sum_h, summarise_positions as _sum_p,
+            )
+            df_h, sum_h_raw = _fetch_holdings_direct()
+            df_p, _         = _fetch_positions_direct()
+            df_m            = _fetch_margins_direct()
+            sum_h = _sum_h(df_h, sum_h_raw, None)
+            sum_p = _sum_p(df_p)
+        except Exception as e:
+            return InterpretResponse(
+                output=f"Could not fetch live book: {e}", success=False,
+            )
+        from datetime import datetime, timezone
+        ctx = {
+            "now": datetime.now(timezone.utc),
+            "sum_holdings":  sum_h,
+            "sum_positions": sum_p,
+            "df_margins":    df_m,
+            "alert_state":   {},
+            "force_paper":   True,           # never hits the real broker
+            "manual_fire":   True,           # surfaces on AgentEvent.detail
+        }
+        from backend.api.algo.agent_engine import run_cycle
+        await run_cycle(
+            ctx,
+            broadcast_fn=None,
+            only_agent_ids=[agent.id],
+            bypass_schedule=True,
+            bypass_suppression=True,
+        )
+        # Read the latest event for this agent so the output reports the
+        # actual outcome (matched/skipped/action executed).
+        async with async_session() as session:
+            from backend.api.models import AgentEvent
+            r = await session.execute(
+                select(AgentEvent)
+                .where(AgentEvent.agent_id == agent.id)
+                .order_by(AgentEvent.timestamp.desc())
+                .limit(1)
+            )
+            ev = r.scalar_one_or_none()
+        verdict = (
+            f"event={ev.event_type} · {ev.detail or ''}".strip(' ·')
+            if ev else "no event recorded"
+        )
+        return InterpretResponse(
+            output=(f"Fired '{slug}' (paper) — {verdict}\n"
+                    f"View events: agent events {slug}")
+        )
+
+    async def _cmd_ai_refine(self, slug: str, prompt: str) -> InterpretResponse:
+        """Apply a natural-language refinement to an existing agent.
+
+        Loads the current agent JSON, asks the LLM to produce an updated
+        version that incorporates the operator's instruction, validates,
+        and PATCHes the row in place. Slug + status + trigger_count are
+        preserved; only conditions / events / actions / scope / schedule /
+        cooldown / lifespan / trade_mode can change."""
+        async with async_session() as session:
+            result = await session.execute(select(Agent).where(Agent.slug == slug))
+            agent = result.scalar_one_or_none()
+        if not agent:
+            return InterpretResponse(output=f"Agent '{slug}' not found", success=False)
+        # Compose a refinement prompt that hands the LLM the current JSON.
+        current = {
+            "name":             agent.name,
+            "description":      agent.description,
+            "conditions":       agent.conditions,
+            "events":           agent.events,
+            "actions":          agent.actions,
+            "scope":            agent.scope,
+            "schedule":         agent.schedule,
+            "cooldown_minutes": agent.cooldown_minutes,
+            "lifespan_type":    agent.lifespan_type,
+            "trade_mode":       agent.trade_mode,
+        }
+        refinement = (
+            f"Refine this existing agent JSON. Apply the operator's instruction "
+            f"as a minimal diff — only change what's necessary, preserve everything else.\n\n"
+            f"Existing agent:\n{json.dumps(current, indent=2)}\n\n"
+            f"Operator instruction: {prompt}"
+        )
+        from backend.api.algo.agent_ai import draft_agent_from_prompt
+        d = draft_agent_from_prompt(refinement)
+        if d.errors:
+            return InterpretResponse(
+                output="Refine failed:\n  " + "\n  ".join(d.errors), success=False,
+            )
+        new = d.draft
+        async with async_session() as session:
+            result = await session.execute(select(Agent).where(Agent.slug == slug))
+            row = result.scalar_one_or_none()
+            if not row:
+                return InterpretResponse(output=f"Agent '{slug}' disappeared", success=False)
+            for fld in ("name", "description", "conditions", "events", "actions",
+                        "scope", "schedule", "cooldown_minutes",
+                        "lifespan_type", "trade_mode"):
+                if fld in new and new[fld] is not None:
+                    setattr(row, fld, new[fld])
+            await session.commit()
+        warn_block = ("\n  ⚠ ".join(d.warnings)) if d.warnings else "(none)"
+        return InterpretResponse(
+            output=(f"✓ Agent '{slug}' refined\n"
+                    f"  Why: {d.why_summary}\n"
+                    f"  Warnings:\n  ⚠ {warn_block}")
+        )
+
     def _help_text(self) -> str:
         return """Agent Commands:
   agent list                        — list all agents
   agent status <slug>               — detailed agent info
   agent activate <slug>             — activate agent
   agent deactivate <slug>           — deactivate agent
+  agent fire <slug>                 — fire once now (paper · bypasses gates)
   agent events <slug>               — recent events
   agent config <slug> key=value     — update condition params
   agent ai create "<prompt>"        — draft an agent from natural language
                                       (lands inactive · paper · one_shot)
+  agent ai refine <slug> "<prompt>" — apply an NL refinement to an agent
   agent help                        — this help"""

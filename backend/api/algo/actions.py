@@ -62,6 +62,10 @@ def _resolve_mode(_action_type: str, agent, context: dict) -> str:
     # agent to paper from /admin/live regardless of per-agent settings.
     if get_bool("execution.paper_trading_mode", True):
         return "paper"
+    # Manual one-shot triggers (agent fire / Test Fire) set this so the
+    # single fire stays paper regardless of the agent's trade_mode.
+    if context.get("force_paper"):
+        return "paper"
     # Per-agent decides: 'live' goes to the broker, anything else paper.
     return "live" if getattr(agent, "trade_mode", "paper") == "live" else "paper"
 
