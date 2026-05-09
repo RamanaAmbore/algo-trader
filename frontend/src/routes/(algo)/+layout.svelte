@@ -125,19 +125,23 @@
   let modeBranch        = $state('');
   let liveConfirmOpen   = $state(false);
 
+  // Mode colors — keep aligned with the .mode-pill-* CSS in
+  // LogPanel.svelte and the .algo-mode-* badges below. SIM uses
+  // pink/rose (#fb7185), PAPER sky-blue (#7dd3fc), LIVE emerald
+  // (#6ee7b7) — NOT alt-Tailwind variants.
   const MODE_COLOR = {
-    sim:    '#ec4899',
-    replay: '#22c55e',
-    paper:  '#0ea5e9',
-    shadow: '#f97316',
-    live:   '#ef4444',
+    sim:    '#fb7185',   // rose-400 — matches .algo-mode-sim
+    replay: '#4ade80',   // pos-green — matches .algo-mode-replay
+    paper:  '#7dd3fc',   // info-sky — matches .algo-mode-paper
+    shadow: '#fb923c',   // short-orange — matches .algo-mode-shadow
+    live:   '#6ee7b7',   // live-emerald — matches .algo-mode-live
   };
   const MODE_BG = {
-    sim:    'rgba(236,72,153,0.12)',
-    replay: 'rgba(34,197,94,0.12)',
-    paper:  'rgba(14,165,233,0.12)',
-    shadow: 'rgba(249,115,22,0.12)',
-    live:   'rgba(239,68,68,0.12)',
+    sim:    'rgba(251,113,133,0.12)',
+    replay: 'rgba(74,222,128,0.12)',
+    paper:  'rgba(125,211,252,0.12)',
+    shadow: 'rgba(251,146,60,0.12)',
+    live:   'rgba(110,231,183,0.12)',
   };
 
   async function loadMode() {

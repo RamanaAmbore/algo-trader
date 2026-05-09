@@ -197,7 +197,7 @@
 </div>
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
-{#if success}<div class="mb-1 p-1.5 rounded bg-green-50 text-green-700 text-xs border border-green-200">{success}</div>{/if}
+{#if success}<div class="mb-1 p-1.5 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>{/if}
 
 <!-- Order Entry -->
 <div class="mt-1 mb-2 relative">

@@ -895,10 +895,11 @@
   /* Dashboard timestamp — yellow to match log and algo-ts timestamps */
   .perf-dark :global(.perf-ts) { color: #fde047 !important; }
 
-  /* Options deep-link pill — amber accent, scoped to positions rows in
-     the algo /dashboard (enableOptionsLink=true). Appears after the
-     symbol text as a small "→" arrow. Absent on public /performance. */
-  :global(.perf-opts-link) {
+  /* Options deep-link pill — amber accent, scoped to .perf-dark so the
+     algo-amber palette can't leak onto the public /performance grid
+     even if a future caller flips enableOptionsLink=true on the light
+     theme. Appears as a small "→" arrow after the symbol text. */
+  .perf-dark :global(.perf-opts-link) {
     display: inline-block;
     font-size: 0.55rem;
     font-weight: 600;
@@ -912,7 +913,7 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  :global(.perf-opts-link:hover) {
+  .perf-dark :global(.perf-opts-link:hover) {
     background: rgba(251,191,36,0.28);
     color: #fde68a;
   }

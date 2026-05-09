@@ -527,8 +527,8 @@
      CANCELLED: muted slate — the order is gone but not an error.
      REJECTED: stronger red than UNFILLED — broker hard-rejected.
      SHADOW_OK: orange — matches the SHADOW mode pill, not a fill. */
-  :global(.log-order-cancelled) { color: #94a3b8; }
-  :global(.log-order-rejected)  { color: #dc2626; }
+  :global(.log-order-cancelled) { color: #7e97b8; }
+  :global(.log-order-rejected)  { color: #f87171; }
   :global(.log-order-shadow-ok) { color: #fb923c; }
 
   /* Order-tab mode subnav — [All / Paper / Live / Sim] chip strip.

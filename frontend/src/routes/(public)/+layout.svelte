@@ -190,13 +190,17 @@
   /* ── Viewport / card shell ─────────────────────────────────────────────── */
   .pub-viewport {
     min-height: 100vh;
-    background-color: #b8bcc8;
+    /* Body cream — matches the public site palette so the side
+       gutters don't read as a cool-grey frame around a champagne card.
+       The diagonal stripe overlay (rgba below) is now a subtle warm
+       hatch instead of a cool-on-cool wash. */
+    background-color: #f0ece3;
     background-image: repeating-linear-gradient(
       135deg,
       transparent,
       transparent 40px,
-      rgba(255,255,255,0.05) 40px,
-      rgba(255,255,255,0.05) 41px
+      rgba(154,126,56,0.05) 40px,
+      rgba(154,126,56,0.05) 41px
     );
     display: flex;
     flex-direction: column;

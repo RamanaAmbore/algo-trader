@@ -33,12 +33,17 @@
   /** @type {Array<'sim'|'replay'|'paper'|'shadow'|'live'>} */
   const ALL_MODES = ['sim', 'replay', 'paper', 'shadow', 'live'];
 
+  // Mode colours — single source of truth across the algo site lives in
+  // LogPanel's .mode-pill-* CSS + the navbar's .algo-mode-* badges.
+  // SIM = rose, REPLAY = pos-green, PAPER = sky, SHADOW = short-orange,
+  // LIVE = live-emerald. Tailwind defaults (`#ec4899`, `#22c55e`, etc.)
+  // do not match the rest of the algo palette — keep these aligned.
   const MODE_META = {
-    sim:    { label: 'SIM',    color: '#ec4899', bg: 'rgba(236,72,153,0.12)',  border: 'rgba(236,72,153,0.35)'  },
-    replay: { label: 'REPLAY', color: '#22c55e', bg: 'rgba(34,197,94,0.12)',   border: 'rgba(34,197,94,0.35)'   },
-    paper:  { label: 'PAPER',  color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.35)'  },
+    sim:    { label: 'SIM',    color: '#fb7185', bg: 'rgba(251,113,133,0.12)', border: 'rgba(251,113,133,0.35)' },
+    replay: { label: 'REPLAY', color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.35)'  },
+    paper:  { label: 'PAPER',  color: '#7dd3fc', bg: 'rgba(125,211,252,0.12)', border: 'rgba(125,211,252,0.35)' },
     shadow: { label: 'SHADOW', color: '#fb923c', bg: 'rgba(251,146,60,0.12)',  border: 'rgba(251,146,60,0.35)'  },
-    live:   { label: 'LIVE',   color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  border: 'rgba(74,222,128,0.35)'  },
+    live:   { label: 'LIVE',   color: '#6ee7b7', bg: 'rgba(110,231,183,0.12)', border: 'rgba(110,231,183,0.35)' },
   };
 
   // ── Shared state ─────────────────────────────────────────────────────
@@ -1072,8 +1077,12 @@
     border-radius: 9999px;
     transition: left 0.2s, background 0.2s;
   }
-  .master-dot.dot-paper  { left: 3px; background: #38bdf8; box-shadow: 0 0 8px rgba(56,189,248,0.6); }
-  .master-dot.dot-live   { left: calc(100% - 1.1rem - 3px); background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.6); }
+  /* Dots use the canonical PAPER (sky #7dd3fc) and LIVE (emerald
+     #6ee7b7) palette tokens — the danger affordance for LIVE comes
+     from the confirm-modal flow, not by overloading the dot with
+     error-red which conflicts with LIVE = emerald everywhere else. */
+  .master-dot.dot-paper  { left: 3px; background: #7dd3fc; box-shadow: 0 0 8px rgba(125,211,252,0.6); }
+  .master-dot.dot-live   { left: calc(100% - 1.1rem - 3px); background: #6ee7b7; box-shadow: 0 0 8px rgba(110,231,183,0.6); }
   .master-dot-saving {
     left: 50%;
     transform: translate(-50%, -50%);
