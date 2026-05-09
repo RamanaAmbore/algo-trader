@@ -53,13 +53,13 @@
   });
   onDestroy(() => { teardown?.(); });
 
-  // P              = intraday positions P&L (open + closed contributions).
-  // H∆             = today's mark-to-market move on holdings (day_change_val).
-  // H              = total unrealised P&L on holdings since entry.
-  // P&L            = combined total P&L = P + H (positions + holdings carry).
-  // C              = free balance summed across accounts (negative = margin debt).
-  // M              = available margin summed across accounts.
-  // Pos Day Delta  = today's mark-to-market move on positions (day_change_val).
+  // P    = positions P&L lifetime (open + closed intraday).
+  // M    = available margin summed across accounts.
+  // C    = free cash summed across accounts (negative = margin debt).
+  // HD∆  = today's mark-to-market move on holdings (day_change_val).
+  // Hld  = total unrealised P&L on holdings since entry.
+  // H    = current holding value (cur_val sum across holdings).
+  // P∆   = today's mark-to-market move on positions (day_change_val).
   const positionsPnl = $derived.by(() => {
     let s = 0;
     for (const p of positions) s += Number(p?.pnl || 0);
@@ -80,7 +80,11 @@
     for (const h of holdings)  s += Number(h?.pnl || 0);
     return s;
   });
-  const totalPnl = $derived(positionsPnl + holdingsTotal);
+  const holdingsValue = $derived.by(() => {
+    let s = 0;
+    for (const h of holdings)  s += Number(h?.cur_val || 0);
+    return s;
+  });
   const cashTotal = $derived.by(() => {
     let s = 0;
     for (const f of funds) s += Number(f?.cash || 0);
@@ -118,8 +122,8 @@
       {fmtMoney(cashTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Holdings Day — today's mark-to-market move on holdings (day_change_val)">
-    <span class="ps-agg-k">HD</span>
+  <span class="ps-agg" title="Holdings Day delta — today's mark-to-market move on holdings (day_change_val)">
+    <span class="ps-agg-k">HD∆</span>
     <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(holdingsToday)}
     </span>
@@ -130,14 +134,12 @@
       {fmtMoney(holdingsTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Total P/L — positions + holdings combined">
-    <span class="ps-agg-k">Tot</span>
-    <span class={'ps-agg-v ' + (totalPnl > 0 ? 'ps-pos' : totalPnl < 0 ? 'ps-neg' : 'ps-flat')}>
-      {fmtMoney(totalPnl)}
-    </span>
+  <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
+    <span class="ps-agg-k">H</span>
+    <span class="ps-agg-v ps-cash">{fmtMoney(holdingsValue)}</span>
   </span>
-  <span class="ps-agg" title="Positions Day — today's mark-to-market move on positions (day_change_val)">
-    <span class="ps-agg-k">PD</span>
+  <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
+    <span class="ps-agg-k">P∆</span>
     <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(positionsToday)}
     </span>
