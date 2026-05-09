@@ -54,15 +54,19 @@ def _fetch() -> HoldingsResponse:
         df.group_by('account')
           .agg([pl.col(c).sum() for c in sum_cols])
     )
+    # day_change_percentage uses YESTERDAY's value (cur_val - day_change_val)
+    # as the denominator — Kite's convention for "today moved X% off the
+    # previous close". Using cur_val (which already includes today's gain)
+    # would understate the move on positive days and overstate on negative.
     grouped = grouped.with_columns([
-        (pl.col('pnl')            / pl.col('inv_val')  * 100).alias('pnl_percentage'),
-        (pl.col('day_change_val') / pl.col('cur_val')  * 100).alias('day_change_percentage'),
+        (pl.col('pnl')            / pl.col('inv_val')                                * 100).alias('pnl_percentage'),
+        (pl.col('day_change_val') / (pl.col('cur_val') - pl.col('day_change_val'))   * 100).alias('day_change_percentage'),
     ])
 
     totals = grouped.select(sum_cols).sum().with_columns([
         pl.lit('TOTAL').alias('account'),
-        (pl.col('pnl')            / pl.col('inv_val')  * 100).alias('pnl_percentage'),
-        (pl.col('day_change_val') / pl.col('cur_val')  * 100).alias('day_change_percentage'),
+        (pl.col('pnl')            / pl.col('inv_val')                                * 100).alias('pnl_percentage'),
+        (pl.col('day_change_val') / (pl.col('cur_val') - pl.col('day_change_val'))   * 100).alias('day_change_percentage'),
     ])
     summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
 

@@ -2,7 +2,6 @@
   // Per-agent P&L attribution panel — embedded inside PnlAnalysis,
   // which renders as the /dashboard?tab=pnl panel body.
 
-  import { onMount } from 'svelte';
   import { authStore, clientTimestamp } from '$lib/stores';
   import { fetchAgentPnL } from '$lib/api';
   import { priceFmt, pctFmt, aggFmt, qtyFmt } from '$lib/format';
@@ -54,9 +53,9 @@
     }
   }
 
-  onMount(() => { if (active) load(); });
-
-  // Re-load when the tab becomes active for the first time.
+  // First-time fetch when the panel becomes active. The $effect handles
+  // both the default-active case (one fire on mount) and the deferred
+  // case (fires when the panel is first expanded).
   let _loaded = $state(false);
   $effect(() => {
     if (active && !_loaded) {

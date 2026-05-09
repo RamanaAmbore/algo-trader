@@ -19,10 +19,6 @@
   let loading    = $state(false);
   let error      = $state('');
 
-  // Drilldown — click a by_account row to filter the other tables.
-  /** @type {string|null} */
-  let filterAccount = $state(null);
-
   // By-agent section — open by default; the user wants P&L attribution
   // visible at a glance, not behind a chevron.
   let agentExpanded    = $state(true);
@@ -96,7 +92,7 @@
   /** @param {number|null|undefined} v */
   function fmtPct(v) {
     if (v == null || !isFinite(v)) return '—';
-    return (v >= 0 ? '+' : '') + pctFmt(v) + '%';
+    return pctFmt(v) + '%';
   }
 
   // ── Data fetching ──────────────────────────────────────────────────────────
@@ -296,7 +292,7 @@
 
   // True when the snapshot table is empty for this range — used to
   // render the "no data" banner instead of empty cards.
-  const hasNoData = $derived(data != null && data.summary?.n_rows === 0);
+  const hasNoData = $derived(data != null && data.summary?.n_dates === 0);
 
   // ── Benchmark SVG chart ────────────────────────────────────────────────────
   const W = 560, H = 160, PAD_L = 42, PAD_R = 12, PAD_T = 12, PAD_B = 24;
@@ -456,11 +452,6 @@
     <option value="positions">Positions</option>
   </select>
   {#if loading}<span class="filter-spinner">Loading…</span>{/if}
-  {#if filterAccount}
-    <button class="algo-btn algo-btn-dim" onclick={() => filterAccount = null}>
-      Clear: {filterAccount}
-    </button>
-  {/if}
   <button class="algo-btn algo-btn-dim csv-btn"
           title="Backfill historical P&L from a Kite Console CSV export"
           onclick={() => csvOpen = true}>
@@ -489,11 +480,11 @@
       <span class="kv-lbl">T</span>
       <span class="kv-val {pnlClass(data.summary.total_pnl)}">{fmt(data.summary.total_pnl)}</span>
     </div>
-    <div class="kv" title="Day P&L (today, all kinds)">
+    <div class="kv" title="Day P&L (sum across range)">
       <span class="kv-lbl">D</span>
       <span class="kv-val {pnlClass(data.summary.day_pnl)}">{fmt(data.summary.day_pnl)}</span>
     </div>
-    <div class="kv" title="Day Pos P&L (positions intraday)">
+    <div class="kv" title="Day Pos P&L (positions only, sum across range)">
       <span class="kv-lbl">DP</span>
       <span class="kv-val {pnlClass(dayPosPnl)}">{dayPosPnl == null ? '—' : fmt(dayPosPnl)}</span>
     </div>
@@ -677,11 +668,7 @@
             </thead>
             <tbody>
               {#each data.by_account as row}
-                <tr
-                  class="clickable {filterAccount === row.account ? 'row-active' : ''}"
-                  onclick={() => filterAccount = filterAccount === row.account ? null : row.account}
-                  title="Click to filter by {row.account}"
-                >
+                <tr>
                   <td class="mono">{row.account}</td>
                   <td><span class="seg-pill">{row.segment}</span></td>
                   <td class="muted">{row.kind}</td>
@@ -981,7 +968,11 @@
     border-right: 1px solid rgba(255,255,255,0.08);
     cursor: help;
   }
-  .kv:last-of-type { border-right: none; }
+  /* The 7th .kv sits before .summary-meta — drop its right border so
+     it doesn't paint a stray separator next to the meta tail.
+     :last-of-type would target .summary-meta (last <div> of any type)
+     instead of the last .kv element, hence :has(+ .summary-meta). */
+  .kv:has(+ .summary-meta) { border-right: none; }
   .kv-lbl {
     font-size: 0.55rem;
     color: #7e97b8;
@@ -999,7 +990,6 @@
   }
   .kv-val.pos { color: #4ade80; }
   .kv-val.neg { color: #f87171; }
-  .kv-val.muted { color: #4e6080; }
   .summary-meta {
     margin-left: auto;
     font-size: 0.55rem;
@@ -1199,8 +1189,6 @@
     padding: 0.25rem 0;
     margin: 0;
   }
-  .clickable { cursor: pointer; }
-  .row-active td { background: rgba(251,191,36,0.08) !important; }
 
   .seg-pill {
     display: inline-block;

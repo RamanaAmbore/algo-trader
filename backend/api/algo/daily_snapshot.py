@@ -126,6 +126,16 @@ def _positions_rows(account: str, target_date: date, raw: list[dict]) -> list[di
         if not symbol:
             continue
         exchange = r.get("exchange", "NFO")
+        last_price  = r.get("last_price")
+        close_price = r.get("close_price")
+        qty         = r.get("quantity") or 0
+        # Kite's net positions don't expose a day-only pnl field, but the
+        # math is unambiguous: (last - close) × qty captures the move
+        # from yesterday's close to now. Same formula broker_apis uses
+        # for live data — keeping the snapshot in sync.
+        day_pnl = None
+        if last_price is not None and close_price is not None:
+            day_pnl = float((last_price - close_price) * qty)
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -133,10 +143,10 @@ def _positions_rows(account: str, target_date: date, raw: list[dict]) -> list[di
             "kind":         "positions",
             "symbol":       symbol,
             "exchange":     exchange,
-            "qty":          int(r.get("quantity") or 0),
+            "qty":          int(qty),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          float(r["last_price"])    if r.get("last_price")    is not None else None,
-            "day_pnl":      None,   # Kite net positions don't carry a day-only pnl field
+            "ltp":          float(last_price)         if last_price             is not None else None,
+            "day_pnl":      day_pnl,
             "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
             "payload_json": json.dumps(r),
         })
