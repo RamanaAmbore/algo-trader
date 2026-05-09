@@ -78,6 +78,10 @@ class AgentInfo(msgspec.Struct):
     lifespan_type:        str        = "persistent"
     lifespan_max_fires:   int | None = None
     lifespan_expires_at:  str | None = None
+    # Per-agent trade routing — 'paper' or 'live'. Resolved by
+    # actions._resolve_mode AFTER dev/shadow gates and the master
+    # execution.paper_trading_mode kill-switch.
+    trade_mode:           str        = "paper"
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -96,6 +100,8 @@ class AgentCreateRequest(msgspec.Struct):
     lifespan_type:        str        = "persistent"
     lifespan_max_fires:   int | None = None
     lifespan_expires_at:  str | None = None  # ISO datetime
+    # null = inherit from execution.default_agent_trade_mode setting.
+    trade_mode:           str | None = None
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -110,6 +116,7 @@ class AgentUpdateRequest(msgspec.Struct):
     lifespan_type:        str | None = None
     lifespan_max_fires:   int | None = None
     lifespan_expires_at:  str | None = None
+    trade_mode:           str | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -138,6 +145,9 @@ class InterpretResponse(msgspec.Struct):
 # and extensible at runtime. See backend/api/algo/grammar_registry.py.
 
 
+_VALID_TRADE_MODES = {"paper", "live"}
+
+
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
         id=a.id, slug=a.slug, name=a.name, description=a.description,
@@ -154,6 +164,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
             a.lifespan_expires_at.isoformat()
             if getattr(a, "lifespan_expires_at", None) else None
         ),
+        trade_mode=getattr(a, "trade_mode", "paper") or "paper",
     )
 
 
@@ -220,6 +231,17 @@ class AgentController(Controller):
             if lifespan_type not in _LIFESPAN_TYPES:
                 raise HTTPException(status_code=400,
                     detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
+            # trade_mode: null in payload → inherit from setting; explicit
+            # value must be paper/live or 400.
+            tm = (data.trade_mode or "").lower() or None
+            if tm is not None and tm not in _VALID_TRADE_MODES:
+                raise HTTPException(status_code=400,
+                    detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
+            if tm is None:
+                from backend.shared.helpers.settings import get_string
+                tm = get_string("execution.default_agent_trade_mode", "paper")
+                if tm not in _VALID_TRADE_MODES:
+                    tm = "paper"
             agent = Agent(
                 slug=data.slug, name=data.name, description=data.description,
                 conditions=data.conditions, events=data.events, actions=data.actions,
@@ -228,6 +250,7 @@ class AgentController(Controller):
                 lifespan_type=lifespan_type,
                 lifespan_max_fires=data.lifespan_max_fires,
                 lifespan_expires_at=_parse_iso_dt(data.lifespan_expires_at),
+                trade_mode=tm,
             )
             session.add(agent)
             await session.commit()
@@ -247,6 +270,12 @@ class AgentController(Controller):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
+            if data.trade_mode is not None:
+                tm = data.trade_mode.lower()
+                if tm not in _VALID_TRADE_MODES:
+                    raise HTTPException(status_code=400,
+                        detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
+                agent.trade_mode = tm
             # Validate + normalise lifespan_type when supplied.
             if data.lifespan_type is not None:
                 lt = data.lifespan_type.lower()

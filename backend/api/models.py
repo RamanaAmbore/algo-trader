@@ -170,6 +170,13 @@ class Agent(Base):
     schedule: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="market_hours")
     cooldown_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
 
+    # Per-agent trade routing — paper / live. Per-agent override
+    # consulted by actions._resolve_mode AFTER the dev / shadow gates;
+    # default seeded from execution.default_agent_trade_mode at create
+    # time. Keeps the master execution.paper_trading_mode kill-switch
+    # working as a global "force paper" override.
+    trade_mode: Mapped[str]      = mapped_column(String(8), nullable=False, default="paper")
+
     # Runtime state. `status` ∈ active / inactive / cooldown / completed.
     # `completed` is the terminal state for lifespan-bounded agents
     # (one_shot, n_fires, until_date). Engine skips `completed` rows

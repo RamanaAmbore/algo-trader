@@ -188,14 +188,21 @@ SEEDS: list[tuple] = [
      "Re-scan interval (min) on expiry day for new ITM positions.",
      "min", {"min": 1, "max": 120, "step": 1}),
 
-    # execution.* flags are owned by /api/admin/execution/mode (navbar
-    # combobox) — single source of truth. Seeding them here would create
-    # a second editable surface and foot-gun the operator into thinking
-    # they can toggle paper/live from the Settings page. The get_bool()
-    # readers fall back to the in-code default (True for paper_trading_mode,
-    # False for shadow_mode) when no DB row exists, so removing them from
-    # SEEDS breaks nothing at runtime. The seeder auto-prunes any existing
-    # execution.* rows from the DB on next startup.
+    # execution.paper_trading_mode + execution.shadow_mode are owned by
+    # /api/admin/execution/mode (navbar combobox) — single source of
+    # truth. Seeding those here would create a second editable surface
+    # and foot-gun the operator into thinking they can toggle paper/live
+    # from the Settings page. The get_bool() readers fall back to the
+    # in-code default (True for paper_trading_mode, False for shadow_mode)
+    # when no DB row exists. The seeder auto-prunes those rows from the DB.
+
+    # execution.default_agent_trade_mode IS seeded — it's a default for
+    # newly-created agents, not a runtime mode toggle. Settings page
+    # surfaces it; agent CRUD reads it when no per-agent value is given.
+    ("execution",   "execution.default_agent_trade_mode", "enum", "paper",
+     "Default trade mode for newly-created agents (paper or live). "
+     "Existing agents keep their per-row trade_mode.",
+     None, {"enum": ["paper", "live"]}),
 
     # ── Replay / Backtest ────────────────────────────────────────��─────
     ("replay",      "replay.max_days",           "int",  60,

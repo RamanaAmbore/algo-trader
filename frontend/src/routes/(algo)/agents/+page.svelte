@@ -110,6 +110,15 @@
     } catch (e) { error = e.message; }
   }
 
+  /** Flip the agent's trade mode between paper and live in-place. */
+  async function toggleTradeMode(/** @type {any} */ agent) {
+    try {
+      const next = (agent.trade_mode || 'paper') === 'live' ? 'paper' : 'live';
+      await updateAgent(agent.slug, { trade_mode: next });
+      await loadAgents();
+    } catch (e) { error = e.message; }
+  }
+
   function startEdit(/** @type {any} */ agent) {
     editing = agent.slug;
     // Keep the agent's row expanded so the inline editor actually renders
@@ -406,6 +415,15 @@
           class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
           <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
           <span class="text-xs text-[#fbbf24] flex-1 truncate">{agent.name}</span>
+          <button type="button"
+            onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
+            title={`Trade mode: ${(agent.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
+            class="text-[0.55rem] px-1.5 py-0 rounded font-bold border flex-shrink-0
+              {(agent.trade_mode || 'paper') === 'live'
+                ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                : 'bg-sky-500/15 text-sky-400 border-sky-500/40'}">
+            {(agent.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
+          </button>
           <button type="button"
             onclick={(e) => { e.stopPropagation(); toggle(agent); }}
             class="text-[0.55rem] px-1.5 py-0 rounded font-medium border flex-shrink-0

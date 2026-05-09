@@ -117,6 +117,13 @@ async def init_db() -> None:
             "ALTER TABLE agents ADD COLUMN IF NOT EXISTS "
             "lifespan_expires_at TIMESTAMP WITH TIME ZONE"
         ))
+        # Per-agent trade routing — defaults to 'paper' so existing rows
+        # stay safe after the column add. The /agents UI exposes a
+        # PAPER / LIVE toggle that flips this per-row.
+        await conn.execute(text(
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS trade_mode VARCHAR(8) "
+            "NOT NULL DEFAULT 'paper'"
+        ))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

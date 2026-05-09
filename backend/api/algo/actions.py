@@ -24,7 +24,7 @@ BROKER_ACTIONS = {
 }
 
 
-def _resolve_mode(_action_type: str, context: dict) -> str:
+def _resolve_mode(_action_type: str, agent, context: dict) -> str:
     """
     Decide how this action should be executed:
       * 'sim'    — agent was fired by the simulator → route to the sim
@@ -33,15 +33,18 @@ def _resolve_mode(_action_type: str, context: dict) -> str:
                    paper-trade writer (informational only)
       * 'shadow' — real data, log-only: captures exact Kite payload +
                    basket_margin validation without executing. Prod only.
-      * 'paper'  — mode 2: real data, paper order. Default on prod when
-                   `execution.paper_trading_mode` is True (the default),
-                   and always on dev regardless of the setting.
-      * 'live'   — mode 3: real data, real order. Only reachable on
-                   main AND `execution.paper_trading_mode` is False.
+      * 'paper'  — mode 2: real data, paper order. Reached on dev for
+                   every action, on prod when execution.paper_trading_mode
+                   is True (master kill-switch) OR agent.trade_mode='paper'.
+      * 'live'   — mode 3: real data, real order. Reached on prod when
+                   execution.paper_trading_mode is False AND
+                   agent.trade_mode='live'.
       * 'noop'   — non-broker action (no gate); the existing handler
                    (send_summary, emit_log, …) runs as-is
 
-    Precedence: sim > replay > (prod branch check) > shadow > paper_trading_mode > live
+    Precedence:
+      sim > replay > (prod-branch check) > shadow >
+      execution.paper_trading_mode (master kill-switch) > agent.trade_mode
     """
     if context.get("sim_mode"):
         return "sim"
@@ -55,9 +58,12 @@ def _resolve_mode(_action_type: str, context: dict) -> str:
         return "paper"                         # dev never hits broker
     if get_bool("execution.shadow_mode", False):
         return "shadow"
+    # Master kill-switch wins over per-agent — operator can force every
+    # agent to paper from /admin/live regardless of per-agent settings.
     if get_bool("execution.paper_trading_mode", True):
         return "paper"
-    return "live"
+    # Per-agent decides: 'live' goes to the broker, anything else paper.
+    return "live" if getattr(agent, "trade_mode", "paper") == "live" else "paper"
 
 
 async def execute(agent, actions: list, context: dict):
@@ -77,7 +83,7 @@ async def execute(agent, actions: list, context: dict):
     for action in actions:
         action_type = action.get("type", "")
         params = action.get("params", {})
-        mode = _resolve_mode(action_type, context)
+        mode = _resolve_mode(action_type, agent, context)
         tag  = {"sim": "[SIM] ", "replay": "[REPLAY] ", "shadow": "[SHADOW] ",
                 "paper": "[PAPER] ", "live": "", "noop": ""}.get(mode, "")
 
