@@ -72,11 +72,16 @@ def build(size: int, source: Image.Image) -> Image.Image:
     bx = int(cx_px - bull_size / 2)
     by = int(cy_px - bull_size / 2)
 
-    # Amber halo — bumped intensity (α 0.55 outer / 0.85 inner).
+    # Amber halo — three-layer bloom: an extra-wide low-alpha outer
+    # bloom plus the main outer/inner glow layers at higher intensity
+    # than before. The bull is the focal point; the gold glow should
+    # read like emitted light, not a faint halo.
+    bloom_std = 22 * size / 512
     outer_std = 12 * size / 512
-    inner_std = 6 * size / 512
-    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.55), (bx, by))
-    canvas.alpha_composite(_glow_layer(bull, inner_std, 0.85), (bx, by))
+    inner_std = 6  * size / 512
+    canvas.alpha_composite(_glow_layer(bull, bloom_std, 0.40), (bx, by))
+    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.75), (bx, by))
+    canvas.alpha_composite(_glow_layer(bull, inner_std, 1.00), (bx, by))
     canvas.alpha_composite(bull, (bx, by))
 
     # 3D beveled gold ring — vertical gradient masked to an annulus +
@@ -95,6 +100,12 @@ def build(size: int, source: Image.Image) -> Image.Image:
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ring_layer = Image.composite(grad, ring_layer, annulus)
+    # Mute the ring's overall presence so the bull's amber bloom stays
+    # the focal point. We keep the bevel hue but drop the alpha to ~60 %
+    # so the navy face shows through and the ring reads as a quiet
+    # frame, not a competing colour mass.
+    r, g, b, a = ring_layer.split()
+    ring_layer = Image.merge("RGBA", (r, g, b, a.point(lambda v: int(v * 0.60))))
 
     # Drop shadow under the ring — push it off the navy face.
     shadow_alpha = annulus.filter(ImageFilter.GaussianBlur(radius=size * 0.012))
@@ -107,12 +118,14 @@ def build(size: int, source: Image.Image) -> Image.Image:
     canvas.alpha_composite(shifted)
     canvas.alpha_composite(ring_layer)
 
-    # Inner highlight — 1 px line just inside the bevel.
+    # Inner highlight — 1 px line just inside the bevel. Alpha tuned
+    # down (140 → 90) so it reads as a quiet bevel cue, not a second
+    # bright ring competing with the muted main ring.
     hl = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     hd = ImageDraw.Draw(hl)
     r_hl = r_inner - 1
     hd.ellipse((cx_px - r_hl, cy_px - r_hl, cx_px + r_hl, cy_px + r_hl),
-               outline=(255, 236, 160, 140), width=max(1, size // 512))
+               outline=(255, 236, 160, 90), width=max(1, size // 512))
     canvas.alpha_composite(hl)
     return canvas
 
