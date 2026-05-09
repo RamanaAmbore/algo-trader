@@ -170,11 +170,11 @@
   /* ── Order-event kind chips ─────────────────────────────────── */
   .ul-kind-placed          { color: #38bdf8; }
   .ul-kind-chase_modify    { color: #fbbf24; }
-  .ul-kind-fill            { color: #22c55e; }
+  .ul-kind-fill            { color: #4ade80; }
   .ul-kind-unfill          { color: #f87171; }
-  .ul-kind-reject          { color: #ef4444; }
+  .ul-kind-reject          { color: #f87171; }
   .ul-kind-preflight_ok    { color: #94a3b8; }
-  .ul-kind-preflight_block { color: #ef4444; }
+  .ul-kind-preflight_block { color: #f87171; }
   .ul-kind-cancel          { color: #94a3b8; }
   .ul-kind-postback        { color: #c084fc; }
   .ul-kind-error           { color: #f87171; }

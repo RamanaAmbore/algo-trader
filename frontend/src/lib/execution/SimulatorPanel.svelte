@@ -638,7 +638,7 @@
   }
   :global(.sim-btn-secondary) {
     background: rgba(148,163,184,0.12);
-    color: #e2e8f0;
+    color: #c8d8f0;
     border-color: rgba(148,163,184,0.45);
   }
   :global(.sim-btn-secondary:hover:not(:disabled)) {
@@ -664,7 +664,7 @@
     background: rgba(251,191,36,0.25); border-color: #fbbf24;
   }
   :global(.sim-btn-danger) {
-    background: rgba(248,113,113,0.1); color: #fca5a5; border-color: rgba(248,113,113,0.5);
+    background: rgba(248,113,113,0.1); color: #f87171; border-color: rgba(248,113,113,0.5);
   }
   :global(.sim-btn-danger:hover) {
     background: rgba(248,113,113,0.2); border-color: #f87171;
@@ -692,7 +692,7 @@
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.12);
     background: rgba(13,22,42,0.55);
-    color: #e2e8f0;
+    color: #c8d8f0;
     white-space: nowrap;
   }
   .sim-pill-side {
@@ -709,7 +709,7 @@
   .sim-pill-short .sim-pill-side { background: rgba(251,146,60,0.22); color: #fb923c; }
   .sim-pill-chase { border-color: rgba(251,191,36,0.45); background: rgba(251,191,36,0.06); }
   .sim-pill-side-buy  { background: rgba(110,231,183,0.22); color: #6ee7b7; }
-  .sim-pill-side-sell { background: rgba(244,63,94,0.22);  color: #fda4af; }
+  .sim-pill-side-sell { background: rgba(248,113,113,0.22);  color: #fda4af; }
   .sim-pill-sym { color: #fde68a; font-weight: 600; }
   .sim-pill-qty { color: #c8d8f0; }
   .sim-pill-limit { color: #7dd3fc; }

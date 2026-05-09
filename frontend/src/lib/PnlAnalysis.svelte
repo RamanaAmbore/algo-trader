@@ -895,10 +895,10 @@
   .csv-btn   { margin-left: auto; }
 
   .err-banner {
-    background: rgba(239,68,68,0.12);
-    border: 1px solid rgba(239,68,68,0.4);
+    background: rgba(248,113,113,0.12);
+    border: 1px solid rgba(248,113,113,0.4);
     border-radius: 4px;
-    color: #fca5a5;
+    color: #f87171;
     font-size: 0.65rem;
     padding: 0.3rem 0.6rem;
     margin-bottom: 0.45rem;

@@ -36,7 +36,7 @@
   // Mode colours — single source of truth across the algo site lives in
   // LogPanel's .mode-pill-* CSS + the navbar's .algo-mode-* badges.
   // SIM = rose, REPLAY = pos-green, PAPER = sky, SHADOW = short-orange,
-  // LIVE = live-emerald. Tailwind defaults (`#ec4899`, `#22c55e`, etc.)
+  // LIVE = live-emerald. Tailwind defaults (`#ec4899`, `#4ade80`, etc.)
   // do not match the rest of the algo palette — keep these aligned.
   const MODE_META = {
     sim:    { label: 'SIM',    color: '#fb7185', bg: 'rgba(251,113,133,0.12)', border: 'rgba(251,113,133,0.35)' },
@@ -953,7 +953,7 @@
   .shadow-status-row { display: flex; gap: 2rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
   .shadow-stat       { display: flex; flex-direction: column; gap: 0.15rem; }
   .sim-label         { font-size: 0.6rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
-  .shadow-val        { font-size: 0.85rem; color: #e2e8f0; font-weight: 600; }
+  .shadow-val        { font-size: 0.85rem; color: #c8d8f0; font-weight: 600; }
   .shadow-on         { color: #fb923c !important; }
   .shadow-off        { color: #94a3b8 !important; }
   .shadow-hint       { font-size: 0.7rem; color: #64748b; margin-top: 0.5rem; }
@@ -971,8 +971,8 @@
     transition: all 0.15s;
   }
   .sim-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .sim-btn-promote   { background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.3); }
-  .sim-btn-promote:hover:not(:disabled) { background: rgba(239,68,68,0.25); }
+  .sim-btn-promote   { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.3); }
+  .sim-btn-promote:hover:not(:disabled) { background: rgba(248,113,113,0.25); }
   .sim-btn-clear     { background: rgba(148,163,184,0.10); color: #94a3b8; border-color: rgba(148,163,184,0.2); }
   .sim-btn-xs {
     font-size: 0.6rem;
@@ -985,17 +985,17 @@
   }
 
   .sim-section        { margin-bottom: 1.5rem; }
-  .sim-section h3     { font-size: 0.85rem; font-weight: 600; color: #cbd5e1; margin-bottom: 0.5rem; }
+  .sim-section h3     { font-size: 0.85rem; font-weight: 600; color: #c8d8f0; margin-bottom: 0.5rem; }
   .sim-table-wrap     { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .sim-table          { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
   .sim-table th       { text-align: left; padding: 0.35rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(148,163,184,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.6rem; }
-  .sim-table td       { padding: 0.3rem 0.5rem; color: #e2e8f0; border-bottom: 1px solid rgba(148,163,184,0.06); }
+  .sim-table td       { padding: 0.3rem 0.5rem; color: #c8d8f0; border-bottom: 1px solid rgba(148,163,184,0.06); }
   .sim-td-mono        { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; }
   .sim-buy            { color: #38bdf8; }
   .sim-sell           { color: #fb923c; }
   .sim-pill           { font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
   .sim-pill-ok        { color: #4ade80; background: rgba(74,222,128,0.12); }
-  .sim-pill-rej       { color: #f87171; background: rgba(239,68,68,0.12); }
+  .sim-pill-rej       { color: #f87171; background: rgba(248,113,113,0.12); }
   .sim-pill-live      { color: #4ade80; background: rgba(74,222,128,0.12); }
   .sim-empty          { font-size: 0.75rem; color: #64748b; text-align: center; padding: 2rem; }
   .sim-empty-charts   { font-size: 0.65rem; color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
@@ -1013,7 +1013,7 @@
 
   .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; margin-bottom: 0.75rem; }
   .sim-banner-warn   { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.20); }
-  .sim-banner-note   { background: rgba(74,222,128,0.08); color: #86efac; border: 1px solid rgba(74,222,128,0.25); }
+  .sim-banner-note   { background: rgba(74,222,128,0.08); color: #4ade80; border: 1px solid rgba(74,222,128,0.25); }
 
   /* ── LIVE sub-section ───────────────────────────────────────────────── */
   .exec-banner {
@@ -1027,13 +1027,13 @@
     gap: 0.35rem;
     flex-wrap: wrap;
   }
-  .exec-banner-safe { background: rgba(74,222,128,0.08); color: #86efac; border-color: rgba(74,222,128,0.25); }
-  .exec-banner-live { background: rgba(239,68,68,0.10); color: #fca5a5; border-color: rgba(239,68,68,0.30); }
+  .exec-banner-safe { background: rgba(74,222,128,0.08); color: #4ade80; border-color: rgba(74,222,128,0.25); }
+  .exec-banner-live { background: rgba(248,113,113,0.10); color: #f87171; border-color: rgba(248,113,113,0.30); }
   .exec-warn-icon   { font-style: normal; font-weight: 700; }
 
   .live-grid  { display: flex; gap: 2rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
   .live-stat  { display: flex; flex-direction: column; gap: 0.15rem; }
-  .live-val   { font-size: 0.85rem; color: #e2e8f0; font-weight: 600; }
+  .live-val   { font-size: 0.85rem; color: #c8d8f0; font-weight: 600; }
 
   /* Hero master toggle */
   .master-toggle-wrap {
@@ -1047,10 +1047,10 @@
     border: 1px solid rgba(148,163,184,0.12);
   }
   .master-toggle-label { display: flex; flex-direction: column; gap: 0.3rem; }
-  .master-toggle-title { font-size: 0.85rem; font-weight: 700; color: #cbd5e1; letter-spacing: 0.02em; }
+  .master-toggle-title { font-size: 0.85rem; font-weight: 700; color: #c8d8f0; letter-spacing: 0.02em; }
   .master-toggle-sub   { font-size: 0.72rem; font-weight: 600; display: flex; align-items: center; gap: 0.25rem; }
-  .sub-paper  { color: #86efac; }
-  .sub-live   { color: #fca5a5; }
+  .sub-paper  { color: #4ade80; }
+  .sub-live   { color: #f87171; }
   .sub-icon   { font-style: normal; }
 
   .master-toggle-btn {
@@ -1065,7 +1065,7 @@
     flex-shrink: 0;
   }
   .master-toggle-btn.toggle-paper { background: rgba(56,189,248,0.12); border-color: rgba(56,189,248,0.35); }
-  .master-toggle-btn.toggle-live  { background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.50); }
+  .master-toggle-btn.toggle-live  { background: rgba(248,113,113,0.18); border-color: rgba(248,113,113,0.50); }
   .master-toggle-btn:disabled     { opacity: 0.40; cursor: not-allowed; }
 
   .master-dot {

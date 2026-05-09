@@ -1032,7 +1032,7 @@
     padding: 0.3rem 0.75rem;
     font-size: 0.7rem;
     font-weight: 600;
-    color: #86efac;
+    color: #4ade80;
     background: rgba(22,101,52,0.25);
     border-bottom: 1px solid rgba(74,222,128,0.2);
   }
@@ -1148,7 +1148,7 @@
   :global(.algo-content .field-input) {
     background: #152033;
     border-color: rgba(255,255,255,0.12);
-    color: #e2e8f0;
+    color: #c8d8f0;
     color-scheme: dark;
     accent-color: #fbbf24;
   }
@@ -1200,7 +1200,7 @@
   :global(.algo-content select.field-input option),
   :global(.algo-content select option) {
     background-color: #1d2a44;
-    color: #e2e8f0;
+    color: #c8d8f0;
     padding: 0.35rem 0.5rem;
   }
   :global(.algo-content select.field-input option:checked),
@@ -1358,9 +1358,9 @@
     letter-spacing: 0.05em;
   }
   .live-confirm-pill {
-    color: #ef4444;
+    color: #f87171;
     background: rgba(239, 68, 68, 0.12);
-    border: 1px solid #ef4444;
+    border: 1px solid #f87171;
     padding: 2px 8px;
     border-radius: 3px;
     font-size: 0.6rem;
@@ -1401,8 +1401,8 @@
   .live-cancel:hover { background: rgba(255, 255, 255, 0.04); }
   .live-confirm {
     color: #ffffff;
-    background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%);
-    border: 1px solid #b91c1c;
+    background: linear-gradient(180deg, #f87171 0%, #f87171 100%);
+    border: 1px solid #f87171;
   }
   .live-confirm:hover { filter: brightness(1.1); }
   .live-confirm:active { transform: translateY(1px); }
@@ -1465,7 +1465,7 @@
     border-color: rgba(251,191,36,0.4);
   }
   :global(.algo-status-card[data-status="error"]) {
-    border-color: rgba(220,38,38,0.85);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(220,38,38,0.28);
+    border-color: rgba(248,113,113,0.85);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.28);
   }
 </style>

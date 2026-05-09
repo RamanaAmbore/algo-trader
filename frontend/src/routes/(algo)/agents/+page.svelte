@@ -1153,7 +1153,7 @@
   .action-add-place:hover  { background: rgba(16,185,129,0.25); border-color: #10b981; }
   .action-add-chase  { background: rgba(251,191,36,0.12);  color: #fbbf24; border-color: rgba(251,191,36,0.4); }
   .action-add-chase:hover  { background: rgba(251,191,36,0.25); border-color: #fbbf24; }
-  .action-add-cancel { background: rgba(148,163,184,0.12); color: #cbd5e1; border-color: rgba(148,163,184,0.35); }
+  .action-add-cancel { background: rgba(148,163,184,0.12); color: #c8d8f0; border-color: rgba(148,163,184,0.35); }
   .action-add-cancel:hover { background: rgba(148,163,184,0.25); border-color: #94a3b8; }
   .action-add-log    { background: rgba(125,211,252,0.12); color: #7dd3fc; border-color: rgba(125,211,252,0.4); }
   .action-add-log:hover    { background: rgba(125,211,252,0.25); border-color: #7dd3fc; }

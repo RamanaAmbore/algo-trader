@@ -997,7 +997,7 @@
   .ot-symbol-text {
     font-size: 0.9rem;
     font-weight: 700;
-    color: #e2e8f0;
+    color: #c8d8f0;
     display: block;
   }
   .ot-symbol-meta {
@@ -1182,7 +1182,7 @@
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
     padding: 0.3rem 0.45rem;
-    color: #e2e8f0;
+    color: #c8d8f0;
     font-size: 0.7rem;
     font-family: monospace;
   }
@@ -1330,7 +1330,7 @@
   .ot-err {
     background: rgba(248,113,113,0.10);
     border: 1px solid rgba(248,113,113,0.4);
-    color: #fca5a5;
+    color: #f87171;
     padding: 0.35rem 0.55rem;
     border-radius: 3px;
     font-size: 0.62rem;
@@ -1478,7 +1478,7 @@
     transform: translate(-50%, -50%);
     z-index: 111;
     background: linear-gradient(180deg, #1e2d45 0%, #152033 100%);
-    border: 1px solid rgba(239,68,68,0.45);
+    border: 1px solid rgba(248,113,113,0.45);
     border-radius: 8px;
     padding: 1rem 1.1rem;
     width: min(26rem, calc(100vw - 2rem));
@@ -1493,9 +1493,9 @@
     margin-bottom: 0.75rem;
   }
   .ot-confirm-mode-pill {
-    color: #ef4444;
-    background: rgba(239,68,68,0.12);
-    border: 1px solid #ef4444;
+    color: #f87171;
+    background: rgba(248,113,113,0.12);
+    border: 1px solid #f87171;
     border-radius: 3px;
     padding: 2px 7px;
     font-size: 0.6rem;
@@ -1505,7 +1505,7 @@
   .ot-confirm-title {
     font-size: 0.82rem;
     font-weight: 700;
-    color: #e2e8f0;
+    color: #c8d8f0;
     margin: 0;
   }
   .ot-confirm-body {
@@ -1524,7 +1524,7 @@
   }
   .ot-confirm-warn {
     font-size: 0.65rem;
-    color: #fca5a5;
+    color: #f87171;
     margin: 0;
   }
   .ot-confirm-actions {
@@ -1541,7 +1541,7 @@
     font-weight: 700;
     cursor: pointer;
     border: 1px solid transparent;
-    background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%);
+    background: linear-gradient(180deg, #f87171 0%, #f87171 100%);
     color: white;
   }
   .ot-submit-live-btn:hover:not(:disabled) {

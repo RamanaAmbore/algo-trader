@@ -538,7 +538,7 @@
   .oes-title {
     font-size: 0.75rem;
     font-weight: 700;
-    color: #e2e8f0;
+    color: #c8d8f0;
     letter-spacing: 0.04em;
   }
   .oes-close {
@@ -668,11 +668,11 @@
   .oes-basket-clear:hover:not(:disabled) { background: rgba(163,185,208,0.08); }
   .oes-basket-submit {
     color: #fff;
-    background: #22c55e;
-    border-color: #22c55e;
+    background: #4ade80;
+    border-color: #4ade80;
     font-weight: 800;
   }
-  .oes-basket-submit:hover:not(:disabled) { background: #16a34a; border-color: #16a34a; }
+  .oes-basket-submit:hover:not(:disabled) { background: #4ade80; border-color: #4ade80; }
   .oes-basket-clear:disabled,
   .oes-basket-submit:disabled { opacity: 0.45; cursor: progress; }
 
@@ -791,11 +791,11 @@
   }
   .oes-event-kind-placed          { color: #38bdf8; }
   .oes-event-kind-chase_modify    { color: #fbbf24; }
-  .oes-event-kind-fill            { color: #22c55e; }
+  .oes-event-kind-fill            { color: #4ade80; }
   .oes-event-kind-unfill          { color: #f87171; }
-  .oes-event-kind-reject          { color: #ef4444; }
+  .oes-event-kind-reject          { color: #f87171; }
   .oes-event-kind-preflight_ok    { color: #94a3b8; }
-  .oes-event-kind-preflight_block { color: #ef4444; }
+  .oes-event-kind-preflight_block { color: #f87171; }
   .oes-event-kind-cancel          { color: #94a3b8; }
   .oes-event-kind-postback        { color: #c084fc; }
   /* Agent-sourced event kinds — violet/pink palette so "rule fired"
@@ -858,9 +858,9 @@
   .oes-status-trigger-pending,
   .oes-status-validation-pending  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
   .oes-status-complete,
-  .oes-status-filled              { background: rgba(34,197,94,0.12);  color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
+  .oes-status-filled              { background: rgba(74,222,128,0.12);  color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
   .oes-status-unfilled,
-  .oes-status-rejected            { background: rgba(239,68,68,0.12);  color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
+  .oes-status-rejected            { background: rgba(248,113,113,0.12);  color: #f87171; border: 1px solid rgba(248,113,113,0.4); }
   .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
   /* LOCAL chip — marks algo_order rows that never reached Kite (preflight blocks). */
   .oes-local-chip {

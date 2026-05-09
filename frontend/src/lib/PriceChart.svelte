@@ -464,7 +464,7 @@
                 font-size="10" font-weight="700" font-family="monospace">
             {hover.kind.toUpperCase()} · {hover.side}
           </text>
-          <text x={tx + 6} y={ty + 28} fill="#e2e8f0"
+          <text x={tx + 6} y={ty + 28} fill="#c8d8f0"
                 font-size="9" font-family="monospace">
             {fmtPrice(hover.price)} @ {fmtTime(hover.ts)}
           </text>

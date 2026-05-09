@@ -658,7 +658,7 @@
           <text x={vx} y={vy}
                 text-anchor="start"
                 transform="rotate(-90 {vx} {vy})"
-                fill="#e2e8f0"
+                fill="#c8d8f0"
                 stroke="#152033"
                 stroke-width="4"
                 paint-order="stroke fill"
@@ -1085,7 +1085,7 @@
     text-align: right;
     font-weight: 700;
     font-size: 10px;
-    color: #e2e8f0;
+    color: #c8d8f0;
     font-variant-numeric: tabular-nums;
   }
   .ps-v.ps-spot { color: #7dd3fc; }

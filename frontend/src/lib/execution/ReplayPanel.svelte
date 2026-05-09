@@ -322,14 +322,14 @@
 <style>
   .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; margin-bottom: 0.75rem; }
   .sim-banner-warn   { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.20); }
-  .sim-banner-error  { background: rgba(239,68,68,0.10); color: #f87171; border: 1px solid rgba(239,68,68,0.20); }
+  .sim-banner-error  { background: rgba(248,113,113,0.10); color: #f87171; border: 1px solid rgba(248,113,113,0.20); }
 
   .sim-controls      { background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.12);
                         border-radius: 0.5rem; padding: 1rem; }
   .sim-form-row      { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; align-items: flex-end; }
   .sim-label         { display: block; font-size: 0.65rem; color: #94a3b8; margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.04em; }
   .sim-input         { background: rgba(15,23,42,0.8); border: 1px solid rgba(148,163,184,0.20);
-                        border-radius: 0.375rem; padding: 0.35rem 0.5rem; color: #e2e8f0;
+                        border-radius: 0.375rem; padding: 0.35rem 0.5rem; color: #c8d8f0;
                         font-size: 0.8rem; min-width: 10rem; }
   .sim-input-sm      { min-width: 6rem; }
   .sim-input:focus   { outline: none; border-color: rgba(74,222,128,0.5); }
@@ -360,7 +360,7 @@
   .sim-btn:disabled  { opacity: 0.4; cursor: not-allowed; }
   .sim-btn-start     { background: rgba(74,222,128,0.15); color: #4ade80; border-color: rgba(74,222,128,0.3); }
   .sim-btn-start:hover:not(:disabled) { background: rgba(74,222,128,0.25); }
-  .sim-btn-stop      { background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.3); }
+  .sim-btn-stop      { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.3); }
   .sim-btn-clear     { background: rgba(148,163,184,0.10); color: #94a3b8; border-color: rgba(148,163,184,0.2); }
 
   .sim-progress      { margin-bottom: 0; }
@@ -376,11 +376,11 @@
   }
 
   .sim-section       { margin-bottom: 1.5rem; }
-  .sim-section h3    { font-size: 0.85rem; font-weight: 600; color: #cbd5e1; margin-bottom: 0.5rem; }
+  .sim-section h3    { font-size: 0.85rem; font-weight: 600; color: #c8d8f0; margin-bottom: 0.5rem; }
   .sim-table-wrap    { overflow-x: auto; }
   .sim-table         { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
   .sim-table th      { text-align: left; padding: 0.35rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(148,163,184,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.6rem; }
-  .sim-table td      { padding: 0.3rem 0.5rem; color: #e2e8f0; border-bottom: 1px solid rgba(148,163,184,0.06); }
+  .sim-table td      { padding: 0.3rem 0.5rem; color: #c8d8f0; border-bottom: 1px solid rgba(148,163,184,0.06); }
   .sim-td-mono       { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; }
   .sim-td-detail     { max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sim-buy           { color: #38bdf8; }
