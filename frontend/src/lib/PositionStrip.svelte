@@ -122,6 +122,12 @@
       {fmtMoney(cashTotal)}
     </span>
   </span>
+  <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
+    <span class="ps-agg-k">P∆</span>
+    <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
+      {fmtMoney(positionsToday)}
+    </span>
+  </span>
   <span class="ps-agg" title="Holdings Day delta — today's mark-to-market move on holdings (day_change_val)">
     <span class="ps-agg-k">HD∆</span>
     <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
@@ -129,7 +135,7 @@
     </span>
   </span>
   <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
-    <span class="ps-agg-k">Hld</span>
+    <span class="ps-agg-k">H∆</span>
     <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(holdingsTotal)}
     </span>
@@ -137,12 +143,6 @@
   <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
     <span class="ps-agg-k">H</span>
     <span class="ps-agg-v ps-cash">{fmtMoney(holdingsValue)}</span>
-  </span>
-  <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
-    <span class="ps-agg-k">P∆</span>
-    <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
-      {fmtMoney(positionsToday)}
-    </span>
   </span>
 </a>
 
