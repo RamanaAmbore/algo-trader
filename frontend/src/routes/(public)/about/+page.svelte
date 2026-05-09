@@ -52,21 +52,21 @@
 </div>
 
 <style>
-  /* ── Card shell ─────────────────────────────────────────────────────────── */
+  /* ── Card shell — public palette tokens ────────────────────────────────── */
   .about-card {
-    background: white;
+    background: #fffdf8;
     border-radius: 0.5rem;
-    border: 1px solid #e2e8f0;
+    border: 1px solid #ddd8ce;
     box-shadow: 0 1px 4px rgba(0,0,0,0.07);
     overflow: hidden;
   }
 
-  /* ── Stat strip — full-width inside card ───────────────────────────────── */
+  /* ── Stat strip — warm tint, cream border, champagne divider ───────────── */
   .stat-strip {
     display: flex;
     align-items: stretch;
-    background: #f0f3f8;
-    border-bottom: 1px solid #d8e0ee;
+    background: #f5f2eb;
+    border-bottom: 1px solid #e7e0cf;
     padding: 0 1.75rem;
   }
   .stat-item {
@@ -76,7 +76,7 @@
   }
   .stat-divider {
     width: 1px;
-    background: #ccd4e4;
+    background: #ddd8ce;
     margin: 1rem 0;
   }
   .stat-num {

@@ -35,7 +35,7 @@
   <h1 style="font-size: 1.6rem; font-weight: 900; color: #0c1830; letter-spacing: -0.01em; margin-bottom: 0.5rem;">
     RamboQuant Analytics LLP
   </h1>
-  <p style="font-size: 1rem; color: #4a6080; margin-bottom: 1.5rem; line-height: 1.6;">
+  <p style="font-size: 1rem; color: #1a1e35; margin-bottom: 1.5rem; line-height: 1.6;">
     Quantitative investment analytics for Indian markets — systematic, transparent portfolios for partner-investors.
   </p>
   <p style="font-size: 0.9rem; color: #1e3050; line-height: 1.75; margin-bottom: 1rem;">

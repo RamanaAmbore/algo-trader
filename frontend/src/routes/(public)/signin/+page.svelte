@@ -73,8 +73,8 @@
       <div class="signin-header-title">Partner Portal</div>
     </div>
     <div class="signin-body">
-      <!-- Tab selector -->
-      <div class="flex border-b border-gray-200 mb-4">
+      <!-- Tab selector — cream divider matches the public-card border. -->
+      <div class="flex pub-divider border-b mb-4">
         <button
           onclick={() => { tab = 'signin'; error = ''; }}
           class="flex-1 py-2 text-xs font-semibold border-b-2 transition-colors
@@ -88,7 +88,7 @@
       </div>
 
       {#if error}
-        <div class="mb-3 p-2 rounded bg-red-50 text-red-700 text-xs border border-red-200">{error}</div>
+        <div class="pub-banner-error mb-3 p-2 rounded text-xs">{error}</div>
       {/if}
 
       {#if tab === 'signin'}
@@ -170,7 +170,7 @@
     text-transform: uppercase;
   }
   .signin-body {
-    background: #fff;
+    background: #fffdf8;        /* card-cream — matches .pub-card */
     padding: 1.25rem 1.5rem 1.5rem;
   }
   /* Override browser autofill yellow background */

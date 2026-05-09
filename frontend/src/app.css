@@ -711,4 +711,34 @@
     margin-bottom: 1.25rem;
     letter-spacing: -0.01em;
   }
+
+  /* ── Public-site palette utilities ────────────────────────────────
+     Single source of truth for cards / banners / borders / dividers
+     on the investor (public) site. Replaces ad-hoc Tailwind defaults
+     (bg-white / bg-green-50 / border-gray-200 etc.) with
+     champagne-cream tokens that match the rest of the public theme. */
+  .pub-card {
+    background-color: #fffdf8;
+    border: 1px solid #ddd8ce;
+  }
+  .pub-card-soft {
+    /* Subtle warm tint — for stat strips, flow card headers, etc. */
+    background-color: #f5f2eb;
+    border: 1px solid #e7e0cf;
+  }
+  .pub-divider {
+    border-color: #ddd8ce;
+  }
+  /* Champagne success banner — warm cream, deep gold text. */
+  .pub-banner-success {
+    background-color: #f4ead4;
+    color: #5a4010;
+    border: 1px solid #ead7a6;
+  }
+  /* Public error banner — uses the canonical pnl-loss tone family. */
+  .pub-banner-error {
+    background-color: rgba(192,57,43,0.06);
+    color: #c0392b;
+    border: 1px solid #e8a3a3;
+  }
 }

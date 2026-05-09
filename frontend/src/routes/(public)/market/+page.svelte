@@ -169,7 +169,7 @@
   </div>
 </div>
 
-<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5 pt-4">
+<div class="pub-card rounded-lg shadow-sm p-5 pt-4">
   <!-- Refreshed-at line — matches the PerformancePage timestamp style
        (text-[0.65rem] text-muted perf-ts) so the operator sees a
        consistent stamp shape across the whole public site. nowrap so
@@ -183,7 +183,7 @@
 
   {#if tab === 'summary'}
     {#if error}
-      <div class="p-3 rounded bg-red-50 text-red-700 text-sm mb-4 border border-red-200">{error}</div>
+      <div class="pub-banner-error p-3 rounded text-sm mb-4">{error}</div>
     {/if}
     {#if !content && loading}
       <div class="text-center text-text/40 text-sm animate-pulse py-8">
@@ -198,7 +198,7 @@
     {/if}
   {:else}
     {#if newsError}
-      <div class="p-2 rounded bg-red-50 text-red-700 text-xs mb-2 border border-red-200">
+      <div class="pub-banner-error p-2 rounded text-xs mb-2">
         {newsError}
       </div>
     {/if}
@@ -241,7 +241,7 @@
   :global(.market-report .md-p)  { font-size: 0.875rem; color: #1e3050; line-height: 1.65; margin: 0.25rem 0; }
   :global(.market-report .md-ul) { margin: 0.25rem 0 0.5rem 1.25rem; list-style: disc; }
   :global(.market-report .md-li) { font-size: 0.875rem; color: #1e3050; line-height: 1.6; margin: 0.15rem 0; }
-  :global(.market-report .md-hr) { border: none; border-top: 1px solid #dde4f0; margin: 0.75rem 0; }
+  :global(.market-report .md-hr) { border: none; border-top: 1px solid #ddd8ce; margin: 0.75rem 0; }
   :global(.market-report .md-gap){ height: 0.4rem; }
   :global(.market-report strong) { font-weight: 700; color: #1a2744; }
   :global(.market-report em)     { font-style: italic; color: #1e3050; }
@@ -282,7 +282,7 @@
     font-weight: 700;
     border-bottom-color: #d4920c;
   }
-  .market-tabs-row + .bg-white {
+  .market-tabs-row + .pub-card {
     margin-top: 0.6rem;
   }
   .market-tabs-meta {
@@ -316,7 +316,7 @@
     align-items: baseline;
     gap: 0.6rem;
     padding: 0.45rem 0;
-    border-bottom: 1px solid #f0f3f8;
+    border-bottom: 1px solid #e7e0cf;
     font-size: 0.85rem;
     color: #1e3050;
     line-height: 1.5;

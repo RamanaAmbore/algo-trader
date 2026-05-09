@@ -42,13 +42,13 @@
 </svelte:head>
 
 <div class="max-w-sm mx-auto">
-  <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5 pt-4">
+  <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
   <h1 class="page-heading">Contact</h1>
   {#if success}
-    <div class="mb-4 p-3 rounded bg-green-50 text-green-700 text-sm border border-green-200">{success}</div>
+    <div class="pub-banner-success mb-4 p-3 rounded text-sm">{success}</div>
   {/if}
   {#if error}
-    <div class="mb-4 p-3 rounded bg-red-50 text-red-700 text-sm border border-red-200">{error}</div>
+    <div class="pub-banner-error mb-4 p-3 rounded text-sm">{error}</div>
   {/if}
 
   <div class="space-y-4">

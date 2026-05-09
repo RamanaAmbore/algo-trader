@@ -158,7 +158,7 @@
 
 <div class="text-[0.65rem] text-muted mb-2">{clientTimestamp()}</div>
 
-<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-5 pt-4">
+<div class="pub-card rounded-lg shadow-sm p-5 pt-4">
 <h1 class="page-heading">Frequently Asked Questions</h1>
 
 <div class="faq-list mb-10">
@@ -204,8 +204,8 @@
 
 <style>
   /* FAQ list */
-  .faq-list { border-top: 1px solid #dde4f0; }
-  .faq-item { border-bottom: 1px solid #dde4f0; }
+  .faq-list { border-top: 1px solid #ddd8ce; }
+  .faq-item { border-bottom: 1px solid #ddd8ce; }
   .faq-question {
     width: 100%;
     text-align: left;
@@ -241,14 +241,14 @@
 
   /* Flow diagrams */
   .flow-card {
-    border: 1px solid #dde4f0;
+    border: 1px solid #ddd8ce;
     border-radius: 4px;
     overflow: hidden;
   }
   .flow-card-header {
     padding: 0.65rem 1rem;
-    border-bottom: 1px solid #dde4f0;
-    background: #f0f3f8;
+    border-bottom: 1px solid #ddd8ce;
+    background: #f5f2eb;
   }
   .flow-card-title {
     font-size: 0.78rem;
