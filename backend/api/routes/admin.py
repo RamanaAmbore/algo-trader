@@ -368,7 +368,12 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._check_action(request, user, admin_self_ok=True)
+            # Admin can edit own profile + partner profiles. The
+            # field-level gates further down still block admin from
+            # changing role or flipping email_verified on a non-partner
+            # target, so opening up the route doesn't grant a
+            # privilege-escalation surface.
+            self._check_action(request, user, admin_self_ok=True, admin_partner_ok=True)
             # `role` only flows through this endpoint for designated
             # actors. An admin self-editing their own row would otherwise
             # be able to PATCH role to 'designated' (self-elevation) or
