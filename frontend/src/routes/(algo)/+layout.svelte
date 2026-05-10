@@ -410,6 +410,11 @@
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
+            {#if $authStore.user.is_super}
+              <span class="algo-user-role algo-user-role-super">super</span>
+            {:else if $authStore.user.role === 'admin'}
+              <span class="algo-user-role">admin</span>
+            {/if}
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {:else if isDemo}
@@ -480,6 +485,11 @@
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
+            {#if $authStore.user.is_super}
+              <span class="algo-user-role algo-user-role-super">super</span>
+            {:else if $authStore.user.role === 'admin'}
+              <span class="algo-user-role">admin</span>
+            {/if}
           </span>
         {/if}
         <button
@@ -871,6 +881,8 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
+  /* Super tier — violet, matches the SUPER badge in /admin user-mgmt. */
+  .algo-user-role.algo-user-role-super { color: #c4b5fd; }
 
   /* Hamburger */
   .algo-hamburger {
