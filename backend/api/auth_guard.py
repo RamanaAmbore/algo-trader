@@ -48,6 +48,7 @@ async def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> No
             select(
                 User.token_version, User.role,
                 User.is_active, User.terminated_at, User.suspended_at,
+                User.must_change_password,
             ).where(User.username == sub)
         )
         row = result.first()
@@ -62,6 +63,22 @@ async def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> No
         raise NotAuthorizedException("Account inactive")
     if (row.token_version or 1) != tv:
         raise NotAuthorizedException("Session invalidated; please sign in again")
+
+    # Force-password-change wall: when the must_change_password flag is
+    # set (admin-issued reset), the user can ONLY hit the change-password
+    # / me / logout paths. Every other route is rejected with a
+    # specific 401 so the frontend redirects to /auth/change-password.
+    if row.must_change_password:
+        path = connection.scope.get("path", "") or ""
+        ALLOWED = (
+            "/api/auth/change-password",
+            "/api/auth/me",
+            "/api/auth/logout",
+        )
+        if path not in ALLOWED:
+            raise NotAuthorizedException(
+                "Password change required — complete it at /auth/change-password",
+            )
 
     # Refresh role from DB so a demoted designated can't keep using
     # designated rights via a stale claim. The remaining payload fields

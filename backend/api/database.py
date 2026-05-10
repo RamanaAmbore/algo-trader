@@ -139,6 +139,8 @@ async def init_db() -> None:
             "TIMESTAMP WITH TIME ZONE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN "
             "NOT NULL DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN "
+            "NOT NULL DEFAULT FALSE",
         ):
             await conn.execute(text(stmt))
         # Collapse `is_super` into role='designated' and drop the column.

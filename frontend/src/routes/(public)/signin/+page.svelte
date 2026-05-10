@@ -34,6 +34,15 @@
         role:         data.role,
         display_name: data.display_name,
       });
+      // Admin-issued password resets force a change on first login.
+      // The backend rejects every protected route except
+      // /api/auth/change-password until the flag clears, so the only
+      // sensible UX is an immediate redirect to the change-password
+      // page; the operator can't reach /dashboard anyway.
+      if (data.must_change_password) {
+        goto('/auth/change-password');
+        return;
+      }
       const isAdmin = data.role === 'admin' || data.role === 'designated';
       goto(isAdmin ? '/dashboard' : '/performance');
     } catch (e) {

@@ -74,6 +74,11 @@ class User(Base):
     #   - admin rows receive alerts only when this is True.
     #   - partner rows never receive alerts.
     receive_alerts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set when an admin/designated resets the user's password via the
+    # /admin/users/{u}/reset-password endpoint. The user is forced to
+    # set their own password on next login (admin-supplied passwords
+    # are throwaway). Cleared by /api/auth/change-password.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Email verification — required before admin can flip is_approved=True
     # for self-registered users. Populated when /api/auth/verify-email
     # consumes a one-time token.

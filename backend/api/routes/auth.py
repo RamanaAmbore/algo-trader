@@ -253,6 +253,7 @@ class LoginResponse(msgspec.Struct):
     username: str
     role: str
     display_name: str
+    must_change_password: bool = False
     token_type: str = "bearer"
     expires_in: int = _TOKEN_TTL_SECONDS
 
@@ -285,6 +286,14 @@ class ForgotPasswordRequest(msgspec.Struct):
 
 class ResetPasswordRequest(msgspec.Struct):
     token: str
+    password: str
+
+
+class ChangePasswordRequest(msgspec.Struct):
+    """Used by the post-admin-reset force-change flow. The current JWT
+    is the only credential — the user JUST signed in with the
+    admin-supplied password and the auth_guard let them through to
+    /change-password specifically because must_change_password=True."""
     password: str
 
 
@@ -346,6 +355,7 @@ class AuthController(Controller):
             username=user.username,
             role=user.role,
             display_name=user.display_name,
+            must_change_password=bool(user.must_change_password),
         )
 
     @post("/register", guards=[_register_rate_limit])
@@ -524,3 +534,43 @@ class AuthController(Controller):
             await session.commit()
         logger.info(f"Auth: password reset for {user.username!r}")
         return {"detail": "Password reset. Sign in with your new password."}
+
+    @post("/change-password", guards=[jwt_guard])
+    async def change_password(self, data: ChangePasswordRequest, request: Request) -> LoginResponse:
+        """Force-change-password endpoint used after an admin reset.
+
+        The user is authenticated via the JWT they got from /login —
+        and that JWT is THE ONLY thing they can do while the
+        must_change_password flag is set (auth_guard rejects every
+        other path). This endpoint:
+          1. Validates the new password against the standard.
+          2. Hashes + writes it.
+          3. Clears must_change_password.
+          4. Bumps token_version so any other device the user might
+             have left signed in gets bounced.
+          5. Mints a fresh JWT carrying the new tv and returns it,
+             so the client can replace the now-invalid one in
+             sessionStorage and continue.
+        """
+        ok, msg = validate_password_standard(data.password)
+        if not ok:
+            raise HTTPException(status_code=422, detail=msg)
+        sub = (getattr(request.state, "token_payload", {}) or {}).get("sub", "")
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == sub))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            user.password_hash         = hash_password(data.password)
+            user.must_change_password  = False
+            user.token_version         = (user.token_version or 1) + 1
+            await session.commit()
+        new_token = _make_token(user)
+        logger.info(f"Auth: change_password completed for {user.username!r}")
+        return LoginResponse(
+            access_token=new_token,
+            username=user.username,
+            role=user.role,
+            display_name=user.display_name,
+            must_change_password=False,
+        )

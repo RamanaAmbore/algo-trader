@@ -591,9 +591,19 @@ class AdminController(Controller):
             self._check_action(request, user, admin_partner_ok=True, block_self=True)
             user.password_hash = hash_password(new_pw)
             user.token_version = (user.token_version or 1) + 1
+            # Force-change on next login. Admin-supplied passwords are
+            # throwaway — the user picks their own on first sign-in,
+            # which clears this flag via /api/auth/change-password.
+            user.must_change_password = True
             await session.commit()
-        logger.info(f"Admin: reset password for {username!r}")
-        return {"detail": f"Password reset for {username!r}"}
+        # Audit log includes the actor so the operator can see who
+        # initiated the reset, not just the target.
+        actor = (getattr(request.state, "token_payload", {}) or {}).get("sub", "?")
+        logger.info(
+            f"Admin: password reset for {username!r} by {actor!r} "
+            f"(must_change_password=True; target tv bumped to {user.token_version})"
+        )
+        return {"detail": f"Password reset for {username!r}; user must set their own on next login"}
 
     @post("/users/{username:str}/resend-verification", status_code=200)
     async def resend_verification(self, username: str, request: Request) -> dict:

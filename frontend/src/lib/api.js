@@ -199,6 +199,10 @@ export const forgotPassword = (identifier) =>
 export const resetPassword = (token, password) =>
   _post('/auth/reset-password', { token, password });
 
+/** POST /api/auth/change-password — force-change after an admin-issued reset. */
+export const changePassword = (password) =>
+  _post('/auth/change-password', { password }, { auth: true });
+
 // ── Public data endpoints (read-only — no JWT required) ──────────────────────
 // Pass auth header if available — backend masks accounts for non-admin
 // Pass `fresh=true` to make the server bypass its 30-second cache and
