@@ -80,9 +80,6 @@
         {#if $authStore.user}
           <span class="pub-user-pill">
             {$authStore.user.username}
-            {#if $authStore.user.role === 'admin'}
-              <span class="pub-user-role">admin</span>
-            {/if}
           </span>
           <button onclick={signOut} class="pub-nav-btn">Sign Out</button>
         {:else}
@@ -105,9 +102,6 @@
           {#if $authStore.user}
             <span class="pub-user-pill text-[0.6rem]">
               {$authStore.user.username}
-              {#if $authStore.user.role === 'admin'}
-                <span class="pub-user-role">admin</span>
-              {/if}
             </span>
           {/if}
           <button

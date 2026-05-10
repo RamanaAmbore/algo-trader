@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import msgspec
-from litestar import Controller, delete, get, post, put
+from litestar import Controller, Request, delete, get, post, put
 from litestar.datastructures import UploadFile
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
@@ -259,9 +259,18 @@ class AdminController(Controller):
             raise HTTPException(status_code=500, detail=str(e))
 
     @get("/users")
-    async def list_users(self) -> UsersResponse:
+    async def list_users(self, request: Request) -> UsersResponse:
+        # Non-super admins don't see super-admin rows. Visibility lattice:
+        # super → all rows. admin → all rows except is_super=True.
+        # This keeps a regular admin from learning about super accounts at
+        # all (no row, no row-level actions); the corresponding action
+        # routes (terminate / toggle-super) are also super-guarded.
+        is_super = bool(getattr(request.state, "token_payload", {}).get("is_super", False))
         async with async_session() as session:
-            result = await session.execute(select(User).order_by(User.id))
+            q = select(User).order_by(User.id)
+            if not is_super:
+                q = q.where(User.is_super.is_(False))
+            result = await session.execute(q)
             users = result.scalars().all()
         def _to_info(u):
             return UserInfo(
@@ -346,7 +355,7 @@ class AdminController(Controller):
         return {"detail": f"User {username!r} rejected"}
 
     @put("/users/{username:str}")
-    async def update_user(self, username: str, data: UpdateUserRequest) -> dict:
+    async def update_user(self, username: str, data: UpdateUserRequest, request: Request) -> dict:
         async with async_session() as session:
             result = await session.execute(
                 select(User).where(User.username == username)
@@ -354,6 +363,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._block_if_target_super(request, user)
             # Apply all non-None fields from the request
             for field in (
                 'display_name', 'role', 'email', 'phone', 'pan',
@@ -375,8 +385,18 @@ class AdminController(Controller):
         logger.info(f"Admin: updated user {username!r}")
         return {"detail": f"User {username!r} updated"}
 
+    @staticmethod
+    def _block_if_target_super(request: Request, target: User) -> None:
+        """Backstop the list-view visibility filter — even though the
+        admin doesn't see super rows in the listing, the username might
+        still be guessable / leaked. Block every mutating action on a
+        super target unless the actor is super themselves."""
+        is_super = bool(getattr(request.state, "token_payload", {}).get("is_super", False))
+        if target.is_super and not is_super:
+            raise HTTPException(status_code=403, detail="Super-admin row — super access required")
+
     @put("/users/{username:str}/suspend", status_code=200)
-    async def suspend_user(self, username: str) -> dict:
+    async def suspend_user(self, username: str, request: Request) -> dict:
         """Suspend a user — reversible. Sets suspended_at + bumps
         token_version so any live JWTs are invalidated. is_active stays
         True so the row remains addressable; login will reject with
@@ -387,6 +407,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._block_if_target_super(request, user)
             user.suspended_at = _dt.now(_tz.utc)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -394,7 +415,7 @@ class AdminController(Controller):
         return {"detail": f"User {username!r} suspended"}
 
     @put("/users/{username:str}/reinstate", status_code=200)
-    async def reinstate_user(self, username: str) -> dict:
+    async def reinstate_user(self, username: str, request: Request) -> dict:
         """Clear suspended_at — user can log in again. token_version
         already bumped at suspend time; any old JWTs stay invalid until
         the user requests a new one."""
@@ -403,6 +424,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._block_if_target_super(request, user)
             user.suspended_at = None
             await session.commit()
         logger.info(f"Admin: reinstated user {username!r}")
@@ -446,7 +468,7 @@ class AdminController(Controller):
         return {"detail": f"User {username!r} is_super = {new_val}"}
 
     @put("/users/{username:str}/reset-password", status_code=200)
-    async def reset_password(self, username: str, data: dict) -> dict:
+    async def reset_password(self, username: str, data: dict, request: Request) -> dict:
         """Admin-issued password reset. Validates the new password
         against the standard, hashes with a fresh os.urandom salt,
         bumps token_version to invalidate every live JWT for the user.
@@ -462,6 +484,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._block_if_target_super(request, user)
             user.password_hash = hash_password(new_pw)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -1018,7 +1041,7 @@ class AdminController(Controller):
         )
 
     @delete("/users/{username:str}", status_code=200)
-    async def delete_user(self, username: str) -> dict:
+    async def delete_user(self, username: str, request: Request) -> dict:
         async with async_session() as session:
             result = await session.execute(
                 select(User).where(User.username == username)
@@ -1026,6 +1049,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._block_if_target_super(request, user)
             user.is_active = False
             await session.commit()
         return {"detail": f"User {username!r} deactivated"}

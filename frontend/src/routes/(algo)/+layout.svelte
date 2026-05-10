@@ -410,7 +410,6 @@
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
-            <span class="algo-user-role">admin</span>
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {:else if isDemo}
@@ -481,7 +480,6 @@
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
-            <span class="algo-user-role">admin</span>
           </span>
         {/if}
         <button
