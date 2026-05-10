@@ -31,6 +31,7 @@ from sqlalchemy import or_, select, update
 from backend.api.auth_guard import jwt_guard
 from backend.api.database import async_session
 from backend.api.models import AuthToken, User
+from backend.api.rate_limit import make_rate_limit_guard
 from backend.shared.helpers.mail_utils import send_email
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import (
@@ -44,6 +45,18 @@ logger = get_logger(__name__)
 
 _JWT_ALGORITHM = "HS256"
 _TOKEN_TTL_SECONDS = 24 * 3600  # 24 hours
+
+# Rate-limit thresholds — slow brute-force credential stuffing without
+# locking out a typo'd legit user. Per (client_ip, route) sliding
+# window. /login: 5 attempts/min covers genuine wrong-password retries
+# but stops automated guessing dead. /forgot-password and
+# /reset-password: 3/min — these issue tokens + dispatch emails so the
+# cost of every hit is non-trivial.
+_login_rate_limit         = make_rate_limit_guard(limit=5, window_seconds=60)
+_forgot_pw_rate_limit     = make_rate_limit_guard(limit=3, window_seconds=60)
+_reset_pw_rate_limit      = make_rate_limit_guard(limit=3, window_seconds=60)
+_register_rate_limit      = make_rate_limit_guard(limit=3, window_seconds=300)
+_verify_email_rate_limit  = make_rate_limit_guard(limit=10, window_seconds=60)
 
 
 def _jwt_secret() -> str:
@@ -282,7 +295,7 @@ class ResetPasswordRequest(msgspec.Struct):
 class AuthController(Controller):
     path = "/api/auth"
 
-    @post("/login")
+    @post("/login", guards=[_login_rate_limit])
     async def login(self, data: LoginRequest) -> LoginResponse:
         async with async_session() as session:
             result = await session.execute(
@@ -335,7 +348,7 @@ class AuthController(Controller):
             display_name=user.display_name,
         )
 
-    @post("/register")
+    @post("/register", guards=[_register_rate_limit])
     async def register(self, data: RegisterRequest) -> dict:
         # Stronger validation than the original len>=8 check: enforce the
         # password standard from /admin/settings, require a valid email
@@ -412,7 +425,7 @@ class AuthController(Controller):
     # Email verification + password reset
     # ------------------------------------------------------------------
 
-    @get("/verify-email")
+    @get("/verify-email", guards=[_verify_email_rate_limit])
     async def verify_email(self, token: str = "") -> Redirect:
         """Click-target for the email verification link.
 
@@ -446,7 +459,7 @@ class AuthController(Controller):
         logger.info(f"Auth: verified email for {user.username!r}")
         return Redirect(path="/signin?verified=1")
 
-    @post("/forgot-password")
+    @post("/forgot-password", guards=[_forgot_pw_rate_limit])
     async def forgot_password(self, data: ForgotPasswordRequest) -> dict:
         """Always returns 200 with the same message — prevents account
         enumeration. The email send is dispatched off the event loop so
@@ -477,7 +490,7 @@ class AuthController(Controller):
                 logger.info(f"Auth: reset for unknown identifier {ident!r}")
         return {"detail": "If the account exists, a reset link has been emailed."}
 
-    @post("/reset-password")
+    @post("/reset-password", guards=[_reset_pw_rate_limit])
     async def reset_password(self, data: ResetPasswordRequest) -> dict:
         """Atomic consume — single conditional UPDATE on auth_tokens marks
         the token used only if it's still un-used + not expired. After

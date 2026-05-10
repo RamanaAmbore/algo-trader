@@ -137,6 +137,8 @@ async def init_db() -> None:
             "TIMESTAMP WITH TIME ZONE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS terminated_at "
             "TIMESTAMP WITH TIME ZONE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN "
+            "NOT NULL DEFAULT FALSE",
         ):
             await conn.execute(text(stmt))
         # Collapse `is_super` into role='designated' and drop the column.
@@ -173,6 +175,11 @@ async def init_db() -> None:
     # overrides on subsequent boots).
     from backend.shared.helpers.settings import seed_settings
     await seed_settings()
+
+    # Warm the alert-recipient cache from the users table so the very
+    # first alert after a restart already routes to the right addresses.
+    from backend.shared.helpers.alert_utils import refresh_alert_recipients
+    await refresh_alert_recipients()
 
 
 async def get_session() -> AsyncSession:

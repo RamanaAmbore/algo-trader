@@ -67,6 +67,13 @@ class User(Base):
     # ── Status ────────────────────────────────────────────────────────────────
     is_approved: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool]     = mapped_column(Boolean, nullable=False, default=True)
+    # Per-admin opt-in for getting platform alerts (loss thresholds,
+    # market summaries, agent fires, deploy notifications).
+    #   - designated rows always receive alerts (this flag is ignored
+    #     for them; designated email is broadcast on every event).
+    #   - admin rows receive alerts only when this is True.
+    #   - partner rows never receive alerts.
+    receive_alerts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Email verification — required before admin can flip is_approved=True
     # for self-registered users. Populated when /api/auth/verify-email
     # consumes a one-time token.

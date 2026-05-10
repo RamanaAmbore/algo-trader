@@ -43,10 +43,11 @@ class ContactController(Controller):
             raise HTTPException(status_code=429, detail="Please wait before submitting again")
 
         try:
+            from backend.shared.helpers.alert_utils import get_alert_recipients
             from backend.shared.helpers.mail_utils import send_email
             from backend.shared.helpers.utils import secrets
 
-            recipients = secrets.get("alert_emails") or [secrets.get("smtp_user", "")]
+            recipients = get_alert_recipients() or [secrets.get("smtp_user", "")]
             to_email = recipients[0] if isinstance(recipients, list) else recipients
 
             subject = f"RamboQuant Contact: {data.name}"

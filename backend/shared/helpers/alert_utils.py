@@ -32,6 +32,7 @@ Message type prefixes
 """
 
 from datetime import datetime, timedelta
+from threading import Lock
 
 import requests
 
@@ -43,6 +44,72 @@ urllib3.util.connection.HAS_IPV6 = False  # Server IPv6 outbound hangs
 from backend.shared.helpers.utils import secrets, config, is_enabled
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Alert recipient resolution — merges DB-derived emails with static config.
+#
+# The recipient list is the union of:
+#   - every designated user's email (always — designated has no opt-out)
+#   - every admin user with receive_alerts=True
+#   - secrets.alert_emails (legacy static list, kept as a fallback so an
+#     operator can still receive alerts when the DB has no rows yet)
+#
+# We cache the DB part so the sync `_dispatch` path doesn't have to query
+# the database on every alert. The cache is refreshed on startup, on
+# every user-mutation that could affect routing (admin endpoints), and
+# periodically by a background task as a safety net.
+# ---------------------------------------------------------------------------
+
+_alert_recipients_cache: list[str] = []
+_alert_recipients_lock = Lock()
+
+
+def get_alert_recipients() -> list[str]:
+    """Sync — returns the current merged recipient list (designated +
+    opted-in admins + secrets fallback), deduped. Used by every alert
+    dispatch path."""
+    with _alert_recipients_lock:
+        db_part = list(_alert_recipients_cache)
+    static_part = secrets.get('alert_emails', []) or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for e in db_part + static_part:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+
+async def refresh_alert_recipients() -> None:
+    """Async — re-query the users table for active, non-terminated rows
+    that should receive alerts: every designated user plus every admin
+    with receive_alerts=True. Updates the in-process cache."""
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import User
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(User.email).where(
+                    User.is_active.is_(True),
+                    User.terminated_at.is_(None),
+                    User.suspended_at.is_(None),
+                    User.email.is_not(None),
+                    (
+                        (User.role == "designated")
+                        | ((User.role == "admin") & (User.receive_alerts.is_(True)))
+                    ),
+                )
+            )
+            emails = [e for (e,) in result.fetchall() if e]
+    except Exception as exc:  # noqa: BLE001 — defensive; never break alert path
+        logger.warning(f"Alert recipient refresh failed: {exc}")
+        return
+    with _alert_recipients_lock:
+        _alert_recipients_cache.clear()
+        _alert_recipients_cache.extend(emails)
+    logger.info(f"Alert recipients refreshed: {len(emails)} from DB")
 
 _MSG_TYPES = {
     'open':  ('Open Summary',  'RamboQuant Open Summary: '),
@@ -180,7 +247,7 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
     )
     _send_telegram(telegram_msg)
 
-    alert_emails = secrets.get('alert_emails', [])
+    alert_emails = get_alert_recipients()
     if alert_emails:
         subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
         subject = f"{subj_pfx}{subject_detail}" if (branch_tag or mode_tag) else f"{email_prefix_full}{subject_detail}"

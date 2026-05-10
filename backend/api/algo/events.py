@@ -145,11 +145,11 @@ async def _send_telegram(message: str):
 
 async def _send_email_raw(subject: str, html_body: str):
     """Send an HTML email to all alert recipients."""
+    from backend.shared.helpers.alert_utils import get_alert_recipients
     from backend.shared.helpers.mail_utils import send_email
-    from backend.shared.helpers.utils import secrets
     import asyncio
 
-    alert_emails = secrets.get("alert_emails", [])
+    alert_emails = get_alert_recipients()
     loop = asyncio.get_running_loop()
     for email in alert_emails:
         try:

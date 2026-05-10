@@ -29,6 +29,7 @@ from sqlalchemy import select, text
 from backend.api.auth_guard import admin_guard, designated_guard
 from backend.api.database import async_session
 from backend.api.models import User
+from backend.shared.helpers.alert_utils import refresh_alert_recipients
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
 
@@ -165,6 +166,7 @@ class UserInfo(msgspec.Struct):
     nominee_phone: str | None = None
     is_approved: bool = False
     is_active: bool = True
+    receive_alerts: bool = False
     email_verified: bool = False
     suspended_at: str | None = None
     terminated_at: str | None = None
@@ -186,11 +188,13 @@ class CreateUserRequest(msgspec.Struct):
     contribution: float = 0.0
     share_pct: float = 0.0
     is_approved: bool = True
+    receive_alerts: bool = False
 
 
 class UpdateUserRequest(msgspec.Struct):
     display_name: str | None = None
     role: str | None = None
+    receive_alerts: bool | None = None
     email: str | None = None
     phone: str | None = None
     pan: str | None = None
@@ -281,6 +285,7 @@ class AdminController(Controller):
                 nominee_name=u.nominee_name, nominee_relation=u.nominee_relation,
                 nominee_phone=u.nominee_phone,
                 is_approved=u.is_approved, is_active=u.is_active,
+                receive_alerts=getattr(u, 'receive_alerts', False),
                 email_verified=getattr(u, 'email_verified', False),
                 suspended_at=u.suspended_at.isoformat() if getattr(u, 'suspended_at', None) else None,
                 terminated_at=u.terminated_at.isoformat() if getattr(u, 'terminated_at', None) else None,
@@ -312,9 +317,11 @@ class AdminController(Controller):
                 contribution=data.contribution,
                 share_pct=data.share_pct,
                 is_approved=data.is_approved,
+                receive_alerts=data.receive_alerts,
             )
             session.add(user)
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: created user {data.username!r} role={data.role}")
         return {"detail": f"User {data.username!r} created"}
 
@@ -330,6 +337,7 @@ class AdminController(Controller):
             self._check_action(request, user, designated_only=True)
             user.is_approved = True
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: approved user {username!r}")
         return {"detail": f"User {username!r} approved"}
 
@@ -346,6 +354,7 @@ class AdminController(Controller):
             user.is_approved = False
             user.is_active = False
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: rejected user {username!r}")
         return {"detail": f"User {username!r} rejected"}
 
@@ -370,7 +379,8 @@ class AdminController(Controller):
 
             # Apply all non-None fields from the request
             for field in (
-                'display_name', 'role', 'email', 'phone', 'pan',
+                'display_name', 'role', 'receive_alerts',
+                'email', 'phone', 'pan',
                 'kyc_verified', 'address_line1', 'address_line2',
                 'city', 'state', 'pincode', 'contribution', 'contribution_date',
                 'share_pct', 'bank_name', 'bank_account', 'bank_ifsc',
@@ -402,6 +412,7 @@ class AdminController(Controller):
             if data.role is not None and allowed_role_change:
                 user.token_version = (user.token_version or 1) + 1
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: updated user {username!r}")
         return {"detail": f"User {username!r} updated"}
 
@@ -474,6 +485,7 @@ class AdminController(Controller):
             user.suspended_at = _dt.now(_tz.utc)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: suspended user {username!r}")
         return {"detail": f"User {username!r} suspended"}
 
@@ -490,6 +502,7 @@ class AdminController(Controller):
             self._check_action(request, user, designated_only=True)
             user.suspended_at = None
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: reinstated user {username!r}")
         return {"detail": f"User {username!r} reinstated"}
 
@@ -512,6 +525,7 @@ class AdminController(Controller):
             user.is_active = False
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: terminated user {username!r}")
         return {"detail": f"User {username!r} terminated"}
 
@@ -538,6 +552,7 @@ class AdminController(Controller):
             user.role = "designated" if make_designated else "admin"
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
+        await refresh_alert_recipients()
         logger.info(f"Admin: set role={user.role!r} on {username!r}")
         return {"detail": f"User {username!r} role = {user.role!r}"}
 
@@ -1126,4 +1141,5 @@ class AdminController(Controller):
             self._check_action(request, user, designated_only=True, block_self=True)
             user.is_active = False
             await session.commit()
+        await refresh_alert_recipients()
         return {"detail": f"User {username!r} deactivated"}

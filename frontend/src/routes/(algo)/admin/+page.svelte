@@ -92,6 +92,7 @@
     editForm = {
       display_name:    user.display_name,
       role:            user.role,
+      receive_alerts:  user.receive_alerts ?? false,
       email:           user.email ?? '',
       phone:           user.phone ?? '',
       pan:             user.pan ?? '',
@@ -223,6 +224,9 @@
               {#if user.kyc_verified}
                 <span class="px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 text-[0.6rem] font-semibold uppercase border border-green-500/40">KYC</span>
               {/if}
+              {#if user.role === 'designated' || (user.role === 'admin' && user.receive_alerts)}
+                <span class="px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 text-[0.6rem] font-semibold uppercase border border-yellow-500/40" title="Receives platform alerts (loss / agent / summary)">🔔 Alerts</span>
+              {/if}
             </div>
             <div class="flex gap-1.5 flex-wrap justify-end">
               <!-- Approve / Reject — designated only, on partner-grade pending rows. -->
@@ -286,6 +290,21 @@
                     <label class="field-label">KYC Verified</label>
                     <input type="checkbox" bind:checked={editForm.kyc_verified} class="mt-1" />
                   </div>
+                  <!-- receive_alerts only meaningful for admin/designated;
+                       for partner rows the backend ignores the value, but
+                       hide the field anyway to keep the form tidy. The
+                       designated tier always receives alerts and can't
+                       opt out, so the checkbox is shown disabled+checked
+                       as a visual hint. -->
+                  {#if user.role !== 'partner'}
+                    <div class="flex items-end gap-2">
+                      <label class="field-label" title="Send platform alerts (loss, agent fires, summaries) to this user's email.">Receive Alerts</label>
+                      <input type="checkbox"
+                             bind:checked={editForm.receive_alerts}
+                             disabled={user.role === 'designated'}
+                             class="mt-1" />
+                    </div>
+                  {/if}
                 </div>
               </div>
               <div>
