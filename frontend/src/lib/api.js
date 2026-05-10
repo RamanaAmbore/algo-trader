@@ -342,6 +342,8 @@ export const adminResetPassword = (username, password) =>
   _put(`/admin/users/${username}/reset-password`,  { password },                        { auth: true });
 export const resendVerification = (username) =>
   _post(`/admin/users/${username}/resend-verification`, {},                              { auth: true });
+export const markVerified      = (username) =>
+  _put(`/admin/users/${username}`, { email_verified: true },                              { auth: true });
 
 export const cancelOrder = (orderId, account, variety = 'regular') => {
   const params = new URLSearchParams({ account, variety });

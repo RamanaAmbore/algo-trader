@@ -5,7 +5,7 @@
   import {
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
-    resendVerification,
+    resendVerification, markVerified,
   } from '$lib/api';
 
   let users    = $state([]);
@@ -80,6 +80,15 @@
     try {
       const r = await resendVerification(username);
       success = r?.detail || `Verification email re-sent to ${username}`;
+    } catch (e) { error = e.message; }
+  }
+
+  async function markVerifiedNow(/** @type {string} */ username) {
+    if (!confirm(`Mark ${username} as email-verified directly (no email)?`)) return;
+    try {
+      await markVerified(username);
+      success = `${username} marked verified`;
+      await load();
     } catch (e) { error = e.message; }
   }
 
@@ -261,6 +270,10 @@
               <!-- Resend verify — only for unverified rows; same gate as Reset PW. -->
               {#if !user.terminated_at && !isSelf && !user.email_verified && user.email && (iAmDesignated || targetIsPartner)}
                 <button onclick={() => resendVerify(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-sky-400/50 text-sky-300">Resend Verify</button>
+              {/if}
+              <!-- Mark verified directly — designated only, no email. -->
+              {#if iAmDesignated && !user.terminated_at && !isSelf && !user.email_verified}
+                <button onclick={() => markVerifiedNow(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-emerald-400/50 text-emerald-300">Mark Verified</button>
               {/if}
               <!-- Terminate — designated only, never self, target must not already be designated. -->
               {#if iAmDesignated && user.role !== 'designated' && !user.terminated_at && !isSelf}
