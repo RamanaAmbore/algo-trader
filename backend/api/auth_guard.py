@@ -12,41 +12,88 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.handlers.base import BaseRouteHandler
 
 
-def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
-    """Raise NotAuthorizedException if request carries no valid JWT."""
+async def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
+    """Validate the bearer JWT signature + expiry, then validate the
+    user's live state from the DB:
+
+    - User must exist and not be terminated / suspended / inactive.
+    - JWT's `tv` claim must match the user's current `token_version`.
+    - The role written into request.state is read fresh from the DB so
+      a demoted designated can't keep using designated rights.
+
+    The DB hit is one indexed SELECT keyed on `username`; ~1 ms each
+    request. Bumping `User.token_version` invalidates every JWT that
+    carries the old `tv` on the very next request that hits a guard.
+    """
     auth_header = connection.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise NotAuthorizedException("Missing or invalid Authorization header")
     token = auth_header.removeprefix("Bearer ").strip()
+
     from backend.api.routes.auth import verify_token
     payload = verify_token(token)
     if not payload:
         raise NotAuthorizedException("Token invalid or expired")
-    # Stash payload so route handlers can read user info without re-decoding
+
+    # Live state check — defends against the "JWT is still valid for
+    # 24h after the user was suspended/terminated/demoted" gap.
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import User
+
+    sub = payload.get("sub", "")
+    tv  = int(payload.get("tv", 1))
+    async with async_session() as session:
+        result = await session.execute(
+            select(
+                User.token_version, User.role,
+                User.is_active, User.terminated_at, User.suspended_at,
+            ).where(User.username == sub)
+        )
+        row = result.first()
+
+    if not row:
+        raise NotAuthorizedException("User no longer exists")
+    if row.terminated_at is not None:
+        raise NotAuthorizedException("Account terminated")
+    if row.suspended_at is not None:
+        raise NotAuthorizedException("Account suspended")
+    if not row.is_active:
+        raise NotAuthorizedException("Account inactive")
+    if (row.token_version or 1) != tv:
+        raise NotAuthorizedException("Session invalidated; please sign in again")
+
+    # Refresh role from DB so a demoted designated can't keep using
+    # designated rights via a stale claim. The remaining payload fields
+    # (sub, display_name, etc.) stay as-is since they're identity-only.
+    payload["role"] = row.role
     connection.state.token_payload = payload
 
 
-def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
+async def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
     """Require a valid JWT with role in ('admin', 'designated'). The
     designated tier inherits everything an admin can do."""
-    jwt_guard(connection, handler)
+    await jwt_guard(connection, handler)
     payload = getattr(connection.state, "token_payload", {})
     if payload.get("role") not in ("admin", "designated"):
         raise NotAuthorizedException("Admin access required")
 
 
-def designated_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
+async def designated_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
     """Require a JWT with role='designated' — strictly above admin. Used
     for actions that touch other admins (terminate, change role, etc.)."""
-    jwt_guard(connection, handler)
+    await jwt_guard(connection, handler)
     payload = getattr(connection.state, "token_payload", {})
     if payload.get("role") != "designated":
         raise NotAuthorizedException("Designated-admin access required")
 
 
 def is_admin_request(connection: ASGIConnection) -> bool:
-    """Check if the request has a valid admin (or designated) JWT. Does
-    NOT raise — returns False if not."""
+    """Check if the request has a valid admin (or designated) JWT.
+    Signature-and-expiry check only — does NOT validate token_version
+    or live user state. Used by demo-mode chokepoints where the cost
+    of a per-request DB hit isn't justified; treat the result as 'has
+    a credible-looking JWT' rather than 'is currently authorised'."""
     try:
         auth_header = connection.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -62,7 +109,8 @@ def is_admin_request(connection: ASGIConnection) -> bool:
 
 
 def is_designated_request(connection: ASGIConnection) -> bool:
-    """Check if the request has a valid designated-admin JWT. Does NOT raise."""
+    """Check if the request has a valid designated-admin JWT. Same caveat
+    as `is_admin_request`: signature/expiry only, no live-state check."""
     try:
         auth_header = connection.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -108,7 +156,7 @@ def is_demo_request(connection: ASGIConnection) -> bool:
     return not is_admin_request(connection)
 
 
-def auth_or_demo_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
+async def auth_or_demo_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
     """
     Soft authentication guard for endpoints that serve both authenticated
     admins AND anonymous demo visitors (the algo UI's data endpoints).
@@ -131,17 +179,14 @@ def auth_or_demo_guard(connection: ASGIConnection, handler: BaseRouteHandler) ->
 
     if not is_prod_branch():
         # No demo mode on dev — fall through to the strict guard.
-        jwt_guard(connection, handler)
+        await jwt_guard(connection, handler)
         connection.state.is_demo = False
         return
 
     if is_admin_request(connection):
-        # Admin login on prod — populate token_payload so handlers can
-        # read it (mirrors what jwt_guard would have set).
-        auth_header = connection.headers.get("Authorization", "")
-        token = auth_header.removeprefix("Bearer ").strip()
-        from backend.api.routes.auth import verify_token
-        connection.state.token_payload = verify_token(token) or {}
+        # Admin login on prod — run the strict guard so live-state
+        # checks fire (suspended/terminated rejection, role refresh).
+        await jwt_guard(connection, handler)
         connection.state.is_demo = False
         return
 

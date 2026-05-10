@@ -128,7 +128,8 @@
   }
 
   onMount(() => {
-    if (!$authStore.user || $authStore.user.role !== 'admin') { goto('/signin'); return; }
+    const r = $authStore.user?.role;
+    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
     load();
   });
 </script>

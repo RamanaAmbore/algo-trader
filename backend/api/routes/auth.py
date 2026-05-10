@@ -11,8 +11,10 @@ On first startup with an empty DB, any non-empty credentials are accepted (stub 
 so you can sign in immediately and create real users.
 """
 
+import asyncio
 import base64
 import hashlib
+import hmac as _hmac
 import os
 import secrets as _stdlib_secrets
 import time
@@ -24,7 +26,7 @@ import msgspec
 from litestar import Controller, Request, get, post
 from litestar.exceptions import HTTPException
 from litestar.response import Redirect
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from backend.api.auth_guard import jwt_guard
 from backend.api.database import async_session
@@ -94,10 +96,15 @@ def hash_password(password: str) -> str:
 
 
 def _check_password(password: str, stored: str) -> bool:
+    """Constant-time PBKDF2 verification. The earlier implementation used
+    Python's `==` on the base64 strings, which short-circuits on the
+    first differing byte and creates a timing oracle for password
+    guessing. `hmac.compare_digest` runs in time linear to the input
+    length regardless of where the mismatch is."""
     try:
         _, iterations, salt, stored_b64 = stored.split("$", 3)
         dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iterations))
-        return base64.b64encode(dk).decode() == stored_b64
+        return _hmac.compare_digest(base64.b64encode(dk).decode(), stored_b64)
     except Exception:
         return False
 
@@ -128,6 +135,29 @@ async def _issue_auth_token(session, user_id: int, purpose: str, ttl_minutes: in
     )
     session.add(row)
     return token
+
+
+def _dispatch_async(callable_, /, *args, **kwargs) -> None:
+    """Fire-and-forget an SMTP send so the request handler returns at
+    the same speed regardless of whether an email actually goes out.
+
+    Two reasons for this:
+    1. Closes the timing side-channel on /forgot-password — both miss
+       and hit return in <50 ms instead of <50 ms vs ~3 s (Gmail TLS).
+    2. Avoids blocking the response on a flaky SMTP path; failures land
+       in the log and don't 500 the user-facing flow.
+
+    `asyncio.to_thread` runs the sync `send_email` off the event loop;
+    `asyncio.create_task` schedules it without awaiting. If the loop
+    isn't running (CLI / tests), we fall back to a synchronous call.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop (CLI). Fire synchronously.
+        callable_(*args, **kwargs)
+        return
+    loop.create_task(asyncio.to_thread(callable_, *args, **kwargs))
 
 
 def _send_verify_email(display_name: str, email: str, token: str) -> None:
@@ -350,10 +380,10 @@ class AuthController(Controller):
 
         logger.info(f"Auth: registered {data.username!r} email={data.email!r}")
 
-        # Best-effort notifications — both calls swallow errors internally
-        # so a flaky SMTP path can't 500 a successful registration.
-        _send_verify_email(user.display_name, user.email, verify_token)
-        _notify_admins_new_registration(user)
+        # Fire emails off the event loop so SMTP latency doesn't block
+        # the response. Each helper swallows its own errors internally.
+        _dispatch_async(_send_verify_email, user.display_name, user.email, verify_token)
+        _dispatch_async(_notify_admins_new_registration, user)
 
         return {
             "detail": (
@@ -386,41 +416,43 @@ class AuthController(Controller):
     async def verify_email(self, token: str = "") -> Redirect:
         """Click-target for the email verification link.
 
-        Looks up the token (purpose='verify', not used, not expired),
-        flips email_verified=True, marks the token used, and redirects
-        the user to /signin?verified=1. Bad/expired tokens redirect to
-        /signin?verified=0 — the page renders a clear failure state.
+        Atomic consume — a single conditional UPDATE marks the token used
+        only if it's still un-used and not expired. Two parallel clicks
+        on the same link can't both succeed (TOCTOU-safe).
         """
         if not token:
             return Redirect(path="/signin?verified=0")
+        now = datetime.now(timezone.utc)
         async with async_session() as session:
-            row = await session.execute(
-                select(AuthToken).where(
+            result = await session.execute(
+                update(AuthToken)
+                .where(
                     AuthToken.token == token,
                     AuthToken.purpose == "verify",
+                    AuthToken.used_at.is_(None),
+                    AuthToken.expires_at > now,
                 )
+                .values(used_at=now)
+                .returning(AuthToken.user_id)
             )
-            tok = row.scalar_one_or_none()
-            if (
-                not tok
-                or tok.used_at is not None
-                or tok.expires_at <= datetime.now(timezone.utc)
-            ):
+            row = result.first()
+            if not row:
                 return Redirect(path="/signin?verified=0")
-            user = await session.get(User, tok.user_id)
+            user = await session.get(User, row[0])
             if not user:
                 return Redirect(path="/signin?verified=0")
             user.email_verified = True
-            tok.used_at = datetime.now(timezone.utc)
             await session.commit()
         logger.info(f"Auth: verified email for {user.username!r}")
         return Redirect(path="/signin?verified=1")
 
     @post("/forgot-password")
     async def forgot_password(self, data: ForgotPasswordRequest) -> dict:
-        """Always returns 200 with the same message regardless of whether
-        the account exists — prevents account enumeration. If the account
-        does exist we issue a reset token and dispatch the email."""
+        """Always returns 200 with the same message — prevents account
+        enumeration. The email send is dispatched off the event loop so
+        the response time is identical for hit + miss (closes the
+        timing side-channel that the earlier dummy-hash pad only
+        crudely approximated)."""
         ident = (data.identifier or "").strip()
         if not ident:
             raise HTTPException(status_code=422, detail="Username or email required")
@@ -434,50 +466,48 @@ class AuthController(Controller):
                     session, user.id, "reset", _RESET_TTL_MINUTES,
                 )
                 await session.commit()
-                _send_reset_email(user.display_name, user.email or "", tok)
+                _dispatch_async(_send_reset_email, user.display_name, user.email or "", tok)
                 logger.info(f"Auth: reset link issued for {user.username!r}")
+            elif user:
+                logger.info(
+                    f"Auth: reset suppressed for inactive/terminated "
+                    f"user {user.username!r}"
+                )
             else:
-                # Constant-time-ish: still spend a bit of work so the
-                # response timing doesn't leak existence. (Crude — a real
-                # constant-time path would hash a dummy password.)
-                hashlib.pbkdf2_hmac("sha256", b"x", b"x", 260_000)
-                if user:
-                    logger.info(
-                        f"Auth: reset suppressed for inactive/terminated "
-                        f"user {user.username!r}"
-                    )
-                else:
-                    logger.info(f"Auth: reset for unknown identifier {ident!r}")
+                logger.info(f"Auth: reset for unknown identifier {ident!r}")
         return {"detail": "If the account exists, a reset link has been emailed."}
 
     @post("/reset-password")
     async def reset_password(self, data: ResetPasswordRequest) -> dict:
-        """Consume a reset token + set a new password. Bumps token_version
-        so any live JWTs the user holds are invalidated, forcing them to
-        sign in again with the new password."""
+        """Atomic consume — single conditional UPDATE on auth_tokens marks
+        the token used only if it's still un-used + not expired. After
+        that the password is set and `token_version` is bumped so the
+        next request from any device with an old JWT gets bounced by
+        jwt_guard."""
         ok, msg = validate_password_standard(data.password)
         if not ok:
             raise HTTPException(status_code=422, detail=msg)
+        now = datetime.now(timezone.utc)
         async with async_session() as session:
-            row = await session.execute(
-                select(AuthToken).where(
+            result = await session.execute(
+                update(AuthToken)
+                .where(
                     AuthToken.token == data.token,
                     AuthToken.purpose == "reset",
+                    AuthToken.used_at.is_(None),
+                    AuthToken.expires_at > now,
                 )
+                .values(used_at=now)
+                .returning(AuthToken.user_id)
             )
-            tok = row.scalar_one_or_none()
-            if (
-                not tok
-                or tok.used_at is not None
-                or tok.expires_at <= datetime.now(timezone.utc)
-            ):
+            row = result.first()
+            if not row:
                 raise HTTPException(status_code=400, detail="Reset link is invalid or expired")
-            user = await session.get(User, tok.user_id)
+            user = await session.get(User, row[0])
             if not user or not user.is_active or user.terminated_at is not None:
                 raise HTTPException(status_code=400, detail="Reset link is invalid or expired")
             user.password_hash = hash_password(data.password)
             user.token_version = (user.token_version or 1) + 1
-            tok.used_at = datetime.now(timezone.utc)
             await session.commit()
         logger.info(f"Auth: password reset for {user.username!r}")
         return {"detail": "Password reset. Sign in with your new password."}

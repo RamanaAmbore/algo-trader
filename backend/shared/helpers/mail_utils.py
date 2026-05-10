@@ -19,6 +19,9 @@ class _IPv4SMTP(smtplib.SMTP):
         raise OSError(f"Could not connect to {host}:{port} via IPv4")
 
 from backend.shared.helpers.utils import secrets, is_enabled
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def send_email(name, email_id, subject, html_body):
@@ -56,7 +59,12 @@ def send_email(name, email_id, subject, html_body):
                 server.sendmail(smtp_user, recipients, msg.as_string())  # ✅ send to both To & CC
             return True, '✅ Your message has been sent successfully!'
         else:
-            print(msg.as_string())
+            # Capability disabled — never log the body. The body of a
+            # verify-email or password-reset message contains a live
+            # one-time link; printing it to stdout (which is captured
+            # by the systemd journal + api_error_file) would leak that
+            # link to anyone with log access. Surface only metadata.
+            logger.info(f"Email suppressed (mail capability off): to={email_id} subject={subject!r}")
             return True, "Non-prod mode only"
 
     except Exception as e:

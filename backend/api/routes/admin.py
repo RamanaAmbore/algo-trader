@@ -319,7 +319,7 @@ class AdminController(Controller):
         return {"detail": f"User {data.username!r} created"}
 
     @put("/users/{username:str}/approve", status_code=200)
-    async def approve_user(self, username: str) -> dict:
+    async def approve_user(self, username: str, request: Request) -> dict:
         async with async_session() as session:
             result = await session.execute(
                 select(User).where(User.username == username)
@@ -327,13 +327,14 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._check_action(request, user, designated_only=True)
             user.is_approved = True
             await session.commit()
         logger.info(f"Admin: approved user {username!r}")
         return {"detail": f"User {username!r} approved"}
 
     @put("/users/{username:str}/reject", status_code=200)
-    async def reject_user(self, username: str) -> dict:
+    async def reject_user(self, username: str, request: Request) -> dict:
         async with async_session() as session:
             result = await session.execute(
                 select(User).where(User.username == username)
@@ -341,6 +342,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._check_action(request, user, designated_only=True)
             user.is_approved = False
             user.is_active = False
             await session.commit()
@@ -357,6 +359,15 @@ class AdminController(Controller):
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
             self._check_action(request, user, admin_self_ok=True)
+            # `role` only flows through this endpoint for designated
+            # actors. An admin self-editing their own row would otherwise
+            # be able to PATCH role to 'designated' (self-elevation) or
+            # to 'partner' (self-demote). Promote/Demote between admin
+            # and designated has its own audited route (toggle-designated).
+            payload = getattr(request.state, "token_payload", {}) or {}
+            actor_role = payload.get("role", "")
+            allowed_role_change = (actor_role == "designated")
+
             # Apply all non-None fields from the request
             for field in (
                 'display_name', 'role', 'email', 'phone', 'pan',
@@ -367,13 +378,29 @@ class AdminController(Controller):
                 'join_date', 'notes',
             ):
                 val = getattr(data, field, None)
-                if val is not None:
-                    if field == 'pan':
-                        val = val.upper()
-                    if field == 'date_of_birth' or field == 'join_date':
-                        from datetime import date as dt_date
-                        val = dt_date.fromisoformat(val) if isinstance(val, str) else val
-                    setattr(user, field, val)
+                if val is None:
+                    continue
+                if field == 'role':
+                    # Privilege-changing field — designated only.
+                    if not allowed_role_change:
+                        continue
+                    if val not in ("partner", "admin", "designated"):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="role must be 'partner', 'admin', or 'designated'",
+                        )
+                if field == 'pan':
+                    val = val.upper()
+                if field == 'date_of_birth' or field == 'join_date':
+                    from datetime import date as dt_date
+                    val = dt_date.fromisoformat(val) if isinstance(val, str) else val
+                setattr(user, field, val)
+            # Bump token_version when role or username flow could grant
+            # new privileges; safest is to bump on any role mutation so
+            # any active JWT for the affected user gets re-issued on the
+            # next request via jwt_guard.
+            if data.role is not None and allowed_role_change:
+                user.token_version = (user.token_version or 1) + 1
             await session.commit()
         logger.info(f"Admin: updated user {username!r}")
         return {"detail": f"User {username!r} updated"}
