@@ -200,6 +200,7 @@
       {#each users as user}
         {@const isSelf = user.username === $authStore.user?.username}
         {@const iAmDesignated = $authStore.user?.role === 'designated'}
+        {@const iAmAdmin = $authStore.user?.role === 'admin'}
         {@const targetIsPartner = user.role === 'partner'}
         <div class="algo-status-card p-3" data-status={user.is_active ? (user.is_approved ? 'active' : 'running') : 'error'}>
           <!-- Header row -->
@@ -244,8 +245,9 @@
                 <button onclick={() => approve(user.username)} class="btn-primary text-[0.65rem] py-1 px-2">Approve</button>
                 <button onclick={() => reject(user.username)}  class="btn-secondary text-[0.65rem] py-1 px-2">Reject</button>
               {/if}
-              <!-- Suspend / Reinstate — designated only, never self. -->
-              {#if iAmDesignated && !user.terminated_at && !isSelf}
+              <!-- Suspend / Reinstate — designated on anyone, admin
+                   on partners only, never self. -->
+              {#if !user.terminated_at && !isSelf && (iAmDesignated || targetIsPartner)}
                 {#if user.suspended_at}
                   <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-orange-400/50 text-orange-300">Reinstate</button>
                 {:else}
@@ -304,17 +306,16 @@
                     <label class="field-label">KYC Verified</label>
                     <input type="checkbox" bind:checked={editForm.kyc_verified} class="mt-1" />
                   </div>
-                  <!-- Email Verified — designated only (mirrors the
-                       backend's `allowed_role_change` gate). Surfaced
-                       to admin actors as a disabled checkbox so they
-                       see the state but can't toggle it; the field is
-                       silently dropped server-side anyway if they
-                       try. -->
+                  <!-- Email Verified — designated on anyone, admin
+                       on partner targets only. Disabled when the
+                       actor can't toggle this row's flag (server-side
+                       drops the field silently in that case anyway).
+                  -->
                   <div class="flex items-end gap-2">
-                    <label class="field-label" title="Designated only — manually flips email_verified without going through the email-token flow.">Email Verified</label>
+                    <label class="field-label" title="Manually flip email_verified without going through the email-token flow.">Email Verified</label>
                     <input type="checkbox"
                            bind:checked={editForm.email_verified}
-                           disabled={!iAmDesignated}
+                           disabled={!iAmDesignated && !(iAmAdmin && targetIsPartner)}
                            class="mt-1" />
                   </div>
                   <!-- receive_alerts only meaningful for admin/designated;

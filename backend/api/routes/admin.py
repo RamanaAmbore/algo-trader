@@ -402,10 +402,18 @@ class AdminController(Controller):
                         )
                 if field == 'email_verified':
                     # Manually flipping email_verified bypasses the
-                    # email-token flow — designated only so an admin
-                    # can't approve a partner's account by toggling
-                    # this for them and then approving.
-                    if not allowed_role_change:
+                    # email-token flow. Designated → any target;
+                    # admin → only when the target is a partner. Other
+                    # combinations (admin → admin / admin → designated)
+                    # are silently dropped without raising — keeps the
+                    # update endpoint forgiving when the actor sends a
+                    # mixed body that includes fields they're not
+                    # allowed to touch.
+                    if actor_role == "designated":
+                        pass
+                    elif actor_role == "admin" and user.role == "partner":
+                        pass
+                    else:
                         continue
                 if field == 'pan':
                     val = val.upper()
@@ -489,7 +497,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._check_action(request, user, designated_only=True, block_self=True)
+            self._check_action(request, user, admin_partner_ok=True, block_self=True)
             user.suspended_at = _dt.now(_tz.utc)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -507,7 +515,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._check_action(request, user, designated_only=True)
+            self._check_action(request, user, admin_partner_ok=True)
             user.suspended_at = None
             await session.commit()
         await refresh_alert_recipients()
