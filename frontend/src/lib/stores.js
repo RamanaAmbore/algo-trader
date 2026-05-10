@@ -17,12 +17,37 @@ import { isMarketOpen } from '$lib/marketHours';
 // Auth store
 // ---------------------------------------------------------------------------
 
+function _decodeJwt(/** @type {string|null} */ tok) {
+  // Decode the payload of a JWT without verification — we only consume
+  // claims that downstream UI code already trusts because the JWT was
+  // server-signed and accepted at login. Used to refresh `is_super` on
+  // every session read, so a stale `ramboq_user` blob (from a login
+  // that pre-dated the is_super claim) can't pin the role chip wrong.
+  if (!tok) return null;
+  try {
+    const part = tok.split('.')[1];
+    if (!part) return null;
+    const padded = part + '='.repeat((4 - part.length % 4) % 4);
+    const json   = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(json);
+  } catch { return null; }
+}
+
 function _readSession() {
   if (!browser) return { token: null, user: null };
   try {
     const token = sessionStorage.getItem('ramboq_token');
     const raw   = sessionStorage.getItem('ramboq_user');
     const user  = raw ? JSON.parse(raw) : null;
+    if (token && user) {
+      const claims = _decodeJwt(token);
+      if (claims) {
+        // JWT wins for role + is_super so a session minted before the
+        // is_super claim landed gets the correct flag on next page load.
+        user.role     = claims.role     ?? user.role;
+        user.is_super = !!claims.is_super;
+      }
+    }
     return { token, user };
   } catch {
     return { token: null, user: null };
