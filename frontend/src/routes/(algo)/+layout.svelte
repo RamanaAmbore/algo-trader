@@ -310,7 +310,11 @@
       goto('/signin');
       return;
     }
-    if ($authStore.user && $authStore.user.role !== 'admin') {
+    if (
+      $authStore.user
+      && $authStore.user.role !== 'admin'
+      && $authStore.user.role !== 'designated'
+    ) {
       goto('/signin');
     }
   });
