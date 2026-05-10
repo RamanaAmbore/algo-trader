@@ -401,7 +401,7 @@ class AdminController(Controller):
                         )
                 if field == 'pan':
                     val = val.upper()
-                if field == 'date_of_birth' or field == 'join_date':
+                if field in ('date_of_birth', 'join_date', 'contribution_date'):
                     from datetime import date as dt_date
                     val = dt_date.fromisoformat(val) if isinstance(val, str) else val
                 setattr(user, field, val)

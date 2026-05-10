@@ -35,13 +35,24 @@ class _Limiter:
         self._lock = Lock()
 
     def hit(self, key: tuple[str, str], limit: int, window: float) -> tuple[bool, int]:
-        """Record an attempt. Returns (allowed, retry_after_seconds)."""
+        """Record an attempt. Returns (allowed, retry_after_seconds).
+
+        Empty deques are evicted from the dict on each hit so a long
+        scanner sweep across many IPs doesn't accumulate dead keys
+        forever — `_buckets` stays bounded by the active set, not the
+        all-time set."""
         now = time.monotonic()
         cutoff = now - window
         with self._lock:
             bucket = self._buckets[key]
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
+            if not bucket:
+                # Drop the empty deque; it'll be re-created via
+                # defaultdict on the next hit if traffic resumes.
+                del self._buckets[key]
+                self._buckets[key].append(now)
+                return True, 0
             if len(bucket) >= limit:
                 retry = max(1, int(bucket[0] + window - now))
                 return False, retry
@@ -53,16 +64,23 @@ _limiter = _Limiter()
 
 
 def _client_ip(connection: ASGIConnection) -> str:
-    """Same fallback chain `_log_visitor` uses — CF header first, then
-    XFF, then peer. Anonymous fallback shares one bucket across all
-    unidentifiable clients which is the safest default."""
+    """Resolve the client IP. On prod (behind Cloudflare) the
+    CF-Connecting-IP header is set by the proxy and trustworthy. On dev
+    (no Cloudflare) any client can spoof the header to share buckets,
+    so we ignore it and use the peer IP only — this prevents a
+    malicious dev client from bypassing per-IP throttling by rotating
+    a fake CF header value."""
+    from backend.shared.helpers.utils import is_prod_branch
     headers = connection.headers
-    return (
-        headers.get("CF-Connecting-IP")
-        or (headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-        or (connection.client.host if connection.client else "")
-        or "anon"
-    )
+    if is_prod_branch():
+        return (
+            headers.get("CF-Connecting-IP")
+            or (headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            or (connection.client.host if connection.client else "")
+            or "anon"
+        )
+    # dev: trust only the peer.
+    return (connection.client.host if connection.client else "anon")
 
 
 def make_rate_limit_guard(limit: int, window_seconds: int):
