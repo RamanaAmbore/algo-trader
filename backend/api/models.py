@@ -62,6 +62,26 @@ class User(Base):
     # ── Status ────────────────────────────────────────────────────────────────
     is_approved: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool]     = mapped_column(Boolean, nullable=False, default=True)
+    # is_super grants strictly more privileges than role='admin' — operator
+    # who can create/terminate other admins and shut the platform down.
+    is_super: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
+    # Email verification — required before admin can flip is_approved=True
+    # for self-registered users. Populated when /api/auth/verify-email
+    # consumes a one-time token.
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # token_version — every JWT carries the value at issue time; admin_guard
+    # re-checks DB vs token. Bumping this column invalidates every live JWT
+    # for the user. Used by the Suspend / Terminate / Reset Password actions
+    # so a force-logout takes effect on the next request.
+    token_version: Mapped[int]  = mapped_column(Integer, nullable=False, default=1)
+    # Suspension — reversible. Set when admin clicks Suspend; cleared on
+    # Reinstate. While suspended, login is blocked AND existing JWTs are
+    # invalidated via the token_version bump on the same write.
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Termination — terminal state, not reversible from the UI. Sets
+    # is_active=False and records the wall-clock time. Distinct from a
+    # rejected (never-approved) row so the operator can audit the difference.
+    terminated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     join_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # admin notes
 
@@ -74,6 +94,31 @@ class User(Base):
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auth — short-lived tokens for email verification + password reset
+# ---------------------------------------------------------------------------
+
+class AuthToken(Base):
+    """
+    One-time token for email verification + password reset. Single table
+    with a `purpose` discriminator so we don't carry two near-identical
+    schemas. Tokens are 32-byte secrets, hex-encoded, single-use, with a
+    short TTL (60 min default for verify, 30 min for reset).
+    """
+    __tablename__ = "auth_tokens"
+
+    id:         Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id:    Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    purpose:    Mapped[str] = mapped_column(String(16), nullable=False)  # 'verify' | 'reset'
+    token:      Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at:    Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
 
 

@@ -191,6 +191,14 @@ export const login = (username, password) =>
 export const register = (payload) =>
   _post('/auth/register', payload);
 
+/** POST /api/auth/forgot-password */
+export const forgotPassword = (identifier) =>
+  _post('/auth/forgot-password', { identifier });
+
+/** POST /api/auth/reset-password */
+export const resetPassword = (token, password) =>
+  _post('/auth/reset-password', { token, password });
+
 // ── Public data endpoints (read-only — no JWT required) ──────────────────────
 // Pass auth header if available — backend masks accounts for non-admin
 // Pass `fresh=true` to make the server bypass its 30-second cache and
@@ -322,9 +330,16 @@ export const modifyOrder = (orderId, payload) => _put(`/orders/${orderId}`, payl
 export const fetchUsers = () => _get('/admin/users', { auth: true });
 export const createUser = (payload) => _post('/admin/users', payload, { auth: true });
 
-export const approveUser = (username) => _put(`/admin/users/${username}/approve`, undefined, { auth: true });
-export const rejectUser  = (username) => _put(`/admin/users/${username}/reject`,  undefined, { auth: true });
-export const updateUser  = (username, payload) => _put(`/admin/users/${username}`, payload, { auth: true });
+export const approveUser    = (username) => _put(`/admin/users/${username}/approve`,   undefined, { auth: true });
+export const rejectUser     = (username) => _put(`/admin/users/${username}/reject`,    undefined, { auth: true });
+export const updateUser     = (username, payload) => _put(`/admin/users/${username}`, payload, { auth: true });
+export const suspendUser    = (username) => _put(`/admin/users/${username}/suspend`,   undefined,           { auth: true });
+export const reinstateUser  = (username) => _put(`/admin/users/${username}/reinstate`, undefined,           { auth: true });
+export const terminateUser  = (username) => _put(`/admin/users/${username}/terminate`, undefined,           { auth: true });
+export const toggleSuper    = (username, isSuper) =>
+  _put(`/admin/users/${username}/toggle-super`,    { is_super: !!isSuper },             { auth: true });
+export const adminResetPassword = (username, password) =>
+  _put(`/admin/users/${username}/reset-password`,  { password },                        { auth: true });
 
 export const cancelOrder = (orderId, account, variety = 'regular') => {
   const params = new URLSearchParams({ account, variety });

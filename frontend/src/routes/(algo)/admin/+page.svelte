@@ -2,7 +2,10 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp } from '$lib/stores';
-  import { fetchUsers, approveUser, rejectUser, updateUser, createUser } from '$lib/api';
+  import {
+    fetchUsers, approveUser, rejectUser, updateUser, createUser,
+    suspendUser, reinstateUser, terminateUser, toggleSuper, adminResetPassword,
+  } from '$lib/api';
 
   let users    = $state([]);
   let loading  = $state(true);
@@ -31,6 +34,40 @@
 
   async function reject(/** @type {string} */ username) {
     try { await rejectUser(username); success = `${username} rejected`; await load(); }
+    catch (e) { error = e.message; }
+  }
+
+  // Suspend / reinstate / terminate / toggle-super / reset-password.
+  // Each is a single PUT; the table reloads after success so the new
+  // pills + status badges flow in without a manual refresh.
+  async function suspend(/** @type {string} */ username) {
+    if (!confirm(`Suspend ${username}? They'll be locked out until reinstated.`)) return;
+    try { await suspendUser(username); success = `${username} suspended`; await load(); }
+    catch (e) { error = e.message; }
+  }
+
+  async function reinstate(/** @type {string} */ username) {
+    try { await reinstateUser(username); success = `${username} reinstated`; await load(); }
+    catch (e) { error = e.message; }
+  }
+
+  async function terminate(/** @type {string} */ username) {
+    if (!confirm(`Terminate ${username}? This is logged + reversible only via DB.`)) return;
+    try { await terminateUser(username); success = `${username} terminated`; await load(); }
+    catch (e) { error = e.message; }
+  }
+
+  async function flipSuper(/** @type {any} */ user) {
+    const next = !user.is_super;
+    if (!confirm(`Set is_super=${next} on ${user.username}?`)) return;
+    try { await toggleSuper(user.username, next); success = `${user.username} is_super=${next}`; await load(); }
+    catch (e) { error = e.message; }
+  }
+
+  async function resetPw(/** @type {string} */ username) {
+    const pw = prompt(`Set a new password for ${username}. They'll be force-logged-out.`);
+    if (!pw) return;
+    try { await adminResetPassword(username, pw); success = `Password reset for ${username}`; }
     catch (e) { error = e.message; }
   }
 
@@ -157,22 +194,47 @@
                 {user.role === 'admin' ? 'bg-amber-500/15 text-amber-300 border-amber-500/40' : 'bg-teal-500/15 text-teal-300 border-teal-500/40'}">
                 {user.role}
               </span>
-              {#if !user.is_approved}
-                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Pending</span>
+              {#if user.is_super}
+                <span class="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 text-[0.6rem] font-semibold uppercase border border-violet-500/40">Super</span>
               {/if}
-              {#if !user.is_active}
+              {#if user.terminated_at}
+                <span class="px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-300 text-[0.6rem] font-semibold uppercase border border-zinc-500/50">Terminated</span>
+              {:else if user.suspended_at}
+                <span class="px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 text-[0.6rem] font-semibold uppercase border border-orange-500/40">Suspended</span>
+              {:else if !user.is_approved}
+                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Pending</span>
+              {:else if !user.is_active}
                 <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 text-[0.6rem] font-semibold uppercase border border-red-500/40">Inactive</span>
+              {/if}
+              {#if user.email_verified}
+                <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40" title="Email verified">✉ Verified</span>
               {/if}
               {#if user.kyc_verified}
                 <span class="px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 text-[0.6rem] font-semibold uppercase border border-green-500/40">KYC</span>
               {/if}
             </div>
-            <div class="flex gap-1.5">
-              {#if !user.is_approved && user.is_active && user.role !== 'admin'}
+            <div class="flex gap-1.5 flex-wrap justify-end">
+              {#if !user.is_approved && user.is_active && !user.terminated_at && user.role !== 'admin'}
                 <button onclick={() => approve(user.username)} class="btn-primary text-[0.65rem] py-1 px-2">Approve</button>
-                <button onclick={() => reject(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Reject</button>
+                <button onclick={() => reject(user.username)}  class="btn-secondary text-[0.65rem] py-1 px-2">Reject</button>
               {/if}
-              {#if editing !== user.username}
+              {#if !user.terminated_at}
+                {#if user.suspended_at}
+                  <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-orange-400/50 text-orange-300">Reinstate</button>
+                {:else}
+                  <button onclick={() => suspend(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Suspend</button>
+                {/if}
+                <button onclick={() => resetPw(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Reset PW</button>
+              {/if}
+              {#if $authStore.user?.is_super && !user.is_super && !user.terminated_at}
+                <button onclick={() => terminate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-red-400/50 text-red-300">Terminate</button>
+              {/if}
+              {#if $authStore.user?.is_super && user.username !== $authStore.user.username}
+                <button onclick={() => flipSuper(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-violet-300">
+                  {user.is_super ? 'Demote' : 'Promote'}
+                </button>
+              {/if}
+              {#if editing !== user.username && !user.terminated_at}
                 <button onclick={() => startEdit(user)} class="btn-secondary text-[0.65rem] py-1 px-2">Edit</button>
               {/if}
             </div>

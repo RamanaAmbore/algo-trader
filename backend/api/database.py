@@ -124,6 +124,23 @@ async def init_db() -> None:
             "ALTER TABLE agents ADD COLUMN IF NOT EXISTS trade_mode VARCHAR(8) "
             "NOT NULL DEFAULT 'paper'"
         ))
+        # User-management v2 — super-admin role, email verification,
+        # token versioning for force-logout, suspend / terminate stamps.
+        # Columns added with explicit defaults so existing rows backfill
+        # safely without the migration breaking.
+        for stmt in (
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN "
+            "NOT NULL DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN "
+            "NOT NULL DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER "
+            "NOT NULL DEFAULT 1",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at "
+            "TIMESTAMP WITH TIME ZONE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS terminated_at "
+            "TIMESTAMP WITH TIME ZONE",
+        ):
+            await conn.execute(text(stmt))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

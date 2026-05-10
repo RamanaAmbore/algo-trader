@@ -26,7 +26,7 @@ from litestar.exceptions import HTTPException
 from litestar.params import Body
 from sqlalchemy import select, text
 
-from backend.api.auth_guard import admin_guard
+from backend.api.auth_guard import admin_guard, super_guard
 from backend.api.database import async_session
 from backend.api.models import User
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -165,6 +165,10 @@ class UserInfo(msgspec.Struct):
     nominee_phone: str | None = None
     is_approved: bool = False
     is_active: bool = True
+    is_super: bool = False
+    email_verified: bool = False
+    suspended_at: str | None = None
+    terminated_at: str | None = None
     join_date: str | None = None
     notes: str | None = None
 
@@ -274,6 +278,10 @@ class AdminController(Controller):
                 nominee_name=u.nominee_name, nominee_relation=u.nominee_relation,
                 nominee_phone=u.nominee_phone,
                 is_approved=u.is_approved, is_active=u.is_active,
+                is_super=getattr(u, 'is_super', False),
+                email_verified=getattr(u, 'email_verified', False),
+                suspended_at=u.suspended_at.isoformat() if getattr(u, 'suspended_at', None) else None,
+                terminated_at=u.terminated_at.isoformat() if getattr(u, 'terminated_at', None) else None,
                 join_date=str(u.join_date) if u.join_date else None, notes=u.notes,
             )
         return UsersResponse(users=[_to_info(u) for u in users])
@@ -282,8 +290,10 @@ class AdminController(Controller):
     async def create_user(self, data: CreateUserRequest) -> dict:
         """Admin creates a user (pre-approved). Share password via other channel."""
         from backend.api.routes.auth import hash_password
-        if len(data.password) < 8:
-            raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+        from backend.shared.helpers.utils import validate_password_standard
+        ok, msg = validate_password_standard(data.password)
+        if not ok:
+            raise HTTPException(status_code=422, detail=msg)
         async with async_session() as session:
             existing = await session.execute(
                 select(User).where(User.username == data.username)
@@ -364,6 +374,99 @@ class AdminController(Controller):
             await session.commit()
         logger.info(f"Admin: updated user {username!r}")
         return {"detail": f"User {username!r} updated"}
+
+    @put("/users/{username:str}/suspend", status_code=200)
+    async def suspend_user(self, username: str) -> dict:
+        """Suspend a user — reversible. Sets suspended_at + bumps
+        token_version so any live JWTs are invalidated. is_active stays
+        True so the row remains addressable; login will reject with
+        403 'Account suspended' until reinstated."""
+        from datetime import datetime as _dt, timezone as _tz
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == username))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            user.suspended_at = _dt.now(_tz.utc)
+            user.token_version = (user.token_version or 1) + 1
+            await session.commit()
+        logger.info(f"Admin: suspended user {username!r}")
+        return {"detail": f"User {username!r} suspended"}
+
+    @put("/users/{username:str}/reinstate", status_code=200)
+    async def reinstate_user(self, username: str) -> dict:
+        """Clear suspended_at — user can log in again. token_version
+        already bumped at suspend time; any old JWTs stay invalid until
+        the user requests a new one."""
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == username))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            user.suspended_at = None
+            await session.commit()
+        logger.info(f"Admin: reinstated user {username!r}")
+        return {"detail": f"User {username!r} reinstated"}
+
+    @put("/users/{username:str}/terminate", status_code=200, guards=[super_guard])
+    async def terminate_user(self, username: str) -> dict:
+        """Terminal — sets terminated_at + is_active=False + bumps
+        token_version. Distinct from reject: rejected users were never
+        approved; terminated users were active and have been removed.
+        Row is preserved for audit; admin must restore via DB to undo."""
+        from datetime import datetime as _dt, timezone as _tz
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == username))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            if user.is_super:
+                raise HTTPException(status_code=403, detail="Cannot terminate a super-admin")
+            user.terminated_at = _dt.now(_tz.utc)
+            user.is_active = False
+            user.token_version = (user.token_version or 1) + 1
+            await session.commit()
+        logger.info(f"Admin: terminated user {username!r}")
+        return {"detail": f"User {username!r} terminated"}
+
+    @put("/users/{username:str}/toggle-super", status_code=200, guards=[super_guard])
+    async def toggle_super(self, username: str, data: dict) -> dict:
+        """Super-admin only — flip a user's is_super flag. Promoting an
+        admin to super is a deliberate, audited action. Body: {is_super: bool}."""
+        new_val = bool((data or {}).get("is_super", False))
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == username))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            user.is_super = new_val
+            user.token_version = (user.token_version or 1) + 1
+            await session.commit()
+        logger.info(f"Admin: set is_super={new_val} on {username!r}")
+        return {"detail": f"User {username!r} is_super = {new_val}"}
+
+    @put("/users/{username:str}/reset-password", status_code=200)
+    async def reset_password(self, username: str, data: dict) -> dict:
+        """Admin-issued password reset. Validates the new password
+        against the standard, hashes with a fresh os.urandom salt,
+        bumps token_version to invalidate every live JWT for the user.
+        Body: {password: <new>}."""
+        from backend.api.routes.auth import hash_password
+        from backend.shared.helpers.utils import validate_password_standard
+        new_pw = (data or {}).get("password") or ""
+        ok, msg = validate_password_standard(new_pw)
+        if not ok:
+            raise HTTPException(status_code=422, detail=msg)
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == username))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            user.password_hash = hash_password(new_pw)
+            user.token_version = (user.token_version or 1) + 1
+            await session.commit()
+        logger.info(f"Admin: reset password for {username!r}")
+        return {"detail": f"Password reset for {username!r}"}
 
     # ------------------------------------------------------------------
     # P&L range endpoint

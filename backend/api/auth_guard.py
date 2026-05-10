@@ -27,15 +27,26 @@ def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  #
 
 
 def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
-    """Require a valid JWT with role=admin."""
+    """Require a valid JWT with role=admin OR is_super=True. Super users
+    are admins by definition."""
     jwt_guard(connection, handler)
     payload = getattr(connection.state, "token_payload", {})
-    if payload.get("role") != "admin":
+    if payload.get("role") != "admin" and not payload.get("is_super"):
         raise NotAuthorizedException("Admin access required")
 
 
+def super_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
+    """Require a JWT with is_super=True — strictly above admin. Used for
+    actions that touch other admins (terminate, change role, etc.)."""
+    jwt_guard(connection, handler)
+    payload = getattr(connection.state, "token_payload", {})
+    if not payload.get("is_super"):
+        raise NotAuthorizedException("Super-admin access required")
+
+
 def is_admin_request(connection: ASGIConnection) -> bool:
-    """Check if the request has a valid admin JWT. Does NOT raise — returns False if not."""
+    """Check if the request has a valid admin (or super) JWT. Does NOT
+    raise — returns False if not."""
     try:
         auth_header = connection.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -43,7 +54,23 @@ def is_admin_request(connection: ASGIConnection) -> bool:
         token = auth_header.removeprefix("Bearer ").strip()
         from backend.api.routes.auth import verify_token
         payload = verify_token(token)
-        return bool(payload and payload.get("role") == "admin")
+        if not payload:
+            return False
+        return bool(payload.get("role") == "admin" or payload.get("is_super"))
+    except Exception:
+        return False
+
+
+def is_super_request(connection: ASGIConnection) -> bool:
+    """Check if the request has a valid super-admin JWT. Does NOT raise."""
+    try:
+        auth_header = connection.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return False
+        token = auth_header.removeprefix("Bearer ").strip()
+        from backend.api.routes.auth import verify_token
+        payload = verify_token(token)
+        return bool(payload and payload.get("is_super"))
     except Exception:
         return False
 
