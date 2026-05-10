@@ -340,6 +340,8 @@ export const toggleDesignated = (username, makeDesignated) =>
   _put(`/admin/users/${username}/toggle-designated`, { designated: !!makeDesignated }, { auth: true });
 export const adminResetPassword = (username, password) =>
   _put(`/admin/users/${username}/reset-password`,  { password },                        { auth: true });
+export const resendVerification = (username) =>
+  _post(`/admin/users/${username}/resend-verification`, {},                              { auth: true });
 
 export const cancelOrder = (orderId, account, variety = 'regular') => {
   const params = new URLSearchParams({ account, variety });

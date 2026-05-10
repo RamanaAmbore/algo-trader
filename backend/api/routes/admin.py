@@ -195,6 +195,7 @@ class UpdateUserRequest(msgspec.Struct):
     display_name: str | None = None
     role: str | None = None
     receive_alerts: bool | None = None
+    email_verified: bool | None = None
     email: str | None = None
     phone: str | None = None
     pan: str | None = None
@@ -379,7 +380,7 @@ class AdminController(Controller):
 
             # Apply all non-None fields from the request
             for field in (
-                'display_name', 'role', 'receive_alerts',
+                'display_name', 'role', 'receive_alerts', 'email_verified',
                 'email', 'phone', 'pan',
                 'kyc_verified', 'address_line1', 'address_line2',
                 'city', 'state', 'pincode', 'contribution', 'contribution_date',
@@ -399,6 +400,13 @@ class AdminController(Controller):
                             status_code=422,
                             detail="role must be 'partner', 'admin', or 'designated'",
                         )
+                if field == 'email_verified':
+                    # Manually flipping email_verified bypasses the
+                    # email-token flow — designated only so an admin
+                    # can't approve a partner's account by toggling
+                    # this for them and then approving.
+                    if not allowed_role_change:
+                        continue
                 if field == 'pan':
                     val = val.upper()
                 if field in ('date_of_birth', 'join_date', 'contribution_date'):
@@ -579,6 +587,53 @@ class AdminController(Controller):
             await session.commit()
         logger.info(f"Admin: reset password for {username!r}")
         return {"detail": f"Password reset for {username!r}"}
+
+    @post("/users/{username:str}/resend-verification", status_code=200)
+    async def resend_verification(self, username: str, request: Request) -> dict:
+        """Mint a fresh verify-email token for `username` and dispatch
+        the email. Useful when a user lost the original link or the
+        token expired (60-min TTL). Permission gate matches the rest:
+
+          - designated → can resend for anyone
+          - admin      → can resend only for partners
+          - never on self (block_self prevents an admin re-issuing
+            their own verify, which would be pointless anyway since
+            admin/designated bypass the email-verify gate)
+        """
+        from datetime import datetime, timedelta, timezone
+        import secrets as _s
+        from backend.api.models import AuthToken
+        from backend.api.routes.auth import (
+            _send_verify_email, _VERIFY_TTL_MINUTES, _dispatch_async,
+        )
+
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.username == username))
+            user = result.scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User {username!r} not found")
+            self._check_action(request, user, admin_partner_ok=True, block_self=True)
+            if not user.email:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"User {username!r} has no email on file",
+                )
+            if user.email_verified:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"User {username!r} is already verified",
+                )
+            tok = _s.token_hex(32)
+            session.add(AuthToken(
+                user_id=user.id, purpose="verify", token=tok,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=_VERIFY_TTL_MINUTES),
+            ))
+            await session.commit()
+            email = user.email
+            display_name = user.display_name
+        _dispatch_async(_send_verify_email, display_name, email, tok)
+        logger.info(f"Admin: verify email re-sent to {email} for {username!r}")
+        return {"detail": f"Verification email sent to {email}"}
 
     # ------------------------------------------------------------------
     # P&L range endpoint

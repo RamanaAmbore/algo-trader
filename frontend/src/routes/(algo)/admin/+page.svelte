@@ -5,6 +5,7 @@
   import {
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
+    resendVerification,
   } from '$lib/api';
 
   let users    = $state([]);
@@ -74,6 +75,14 @@
     catch (e) { error = e.message; }
   }
 
+  async function resendVerify(/** @type {string} */ username) {
+    if (!confirm(`Resend verification email to ${username}?`)) return;
+    try {
+      const r = await resendVerification(username);
+      success = r?.detail || `Verification email re-sent to ${username}`;
+    } catch (e) { error = e.message; }
+  }
+
   async function doCreate() {
     creating = true; error = '';
     if (createForm.password.length < 8) { error = 'Password must be at least 8 characters'; creating = false; return; }
@@ -93,6 +102,7 @@
       display_name:    user.display_name,
       role:            user.role,
       receive_alerts:  user.receive_alerts ?? false,
+      email_verified:  user.email_verified ?? false,
       email:           user.email ?? '',
       phone:           user.phone ?? '',
       pan:             user.pan ?? '',
@@ -246,6 +256,10 @@
               {#if !user.terminated_at && !isSelf && (iAmDesignated || targetIsPartner)}
                 <button onclick={() => resetPw(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Reset PW</button>
               {/if}
+              <!-- Resend verify — only for unverified rows; same gate as Reset PW. -->
+              {#if !user.terminated_at && !isSelf && !user.email_verified && user.email && (iAmDesignated || targetIsPartner)}
+                <button onclick={() => resendVerify(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-sky-400/50 text-sky-300">Resend Verify</button>
+              {/if}
               <!-- Terminate — designated only, never self, target must not already be designated. -->
               {#if iAmDesignated && user.role !== 'designated' && !user.terminated_at && !isSelf}
                 <button onclick={() => terminate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-red-400/50 text-red-300">Terminate</button>
@@ -289,6 +303,19 @@
                   <div class="flex items-end gap-2">
                     <label class="field-label">KYC Verified</label>
                     <input type="checkbox" bind:checked={editForm.kyc_verified} class="mt-1" />
+                  </div>
+                  <!-- Email Verified — designated only (mirrors the
+                       backend's `allowed_role_change` gate). Surfaced
+                       to admin actors as a disabled checkbox so they
+                       see the state but can't toggle it; the field is
+                       silently dropped server-side anyway if they
+                       try. -->
+                  <div class="flex items-end gap-2">
+                    <label class="field-label" title="Designated only — manually flips email_verified without going through the email-token flow.">Email Verified</label>
+                    <input type="checkbox"
+                           bind:checked={editForm.email_verified}
+                           disabled={!iAmDesignated}
+                           class="mt-1" />
                   </div>
                   <!-- receive_alerts only meaningful for admin/designated;
                        for partner rows the backend ignores the value, but
