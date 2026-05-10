@@ -407,18 +407,12 @@ class AdminController(Controller):
                         )
                 if field == 'email_verified':
                     # Manually flipping email_verified bypasses the
-                    # email-token flow. Designated → any target;
-                    # admin → only when the target is a partner. Other
-                    # combinations (admin → admin / admin → designated)
-                    # are silently dropped without raising — keeps the
-                    # update endpoint forgiving when the actor sends a
-                    # mixed body that includes fields they're not
-                    # allowed to touch.
-                    if actor_role == "designated":
-                        pass
-                    elif actor_role == "admin" and user.role == "partner":
-                        pass
-                    else:
+                    # email-token flow — designated only. Admin can
+                    # trigger a verification email via the dedicated
+                    # /resend-verification endpoint but cannot mark a
+                    # user verified directly. Field is silently dropped
+                    # for non-designated actors.
+                    if not allowed_role_change:
                         continue
                 if field == 'pan':
                     val = val.upper()

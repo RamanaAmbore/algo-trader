@@ -306,16 +306,18 @@
                     <label class="field-label">KYC Verified</label>
                     <input type="checkbox" bind:checked={editForm.kyc_verified} class="mt-1" />
                   </div>
-                  <!-- Email Verified — designated on anyone, admin
-                       on partner targets only. Disabled when the
-                       actor can't toggle this row's flag (server-side
-                       drops the field silently in that case anyway).
+                  <!-- Email Verified — designated only. Admin actors
+                       see the state but can't toggle (server-side
+                       drops the field silently for non-designated).
+                       Admin's path to mark a partner verified is the
+                       Resend Verify button + the user clicking the
+                       email link.
                   -->
                   <div class="flex items-end gap-2">
-                    <label class="field-label" title="Manually flip email_verified without going through the email-token flow.">Email Verified</label>
+                    <label class="field-label" title="Designated only — manually flips email_verified without going through the email-token flow.">Email Verified</label>
                     <input type="checkbox"
                            bind:checked={editForm.email_verified}
-                           disabled={!iAmDesignated && !(iAmAdmin && targetIsPartner)}
+                           disabled={!iAmDesignated}
                            class="mt-1" />
                   </div>
                   <!-- receive_alerts only meaningful for admin/designated;
