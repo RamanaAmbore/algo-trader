@@ -183,12 +183,16 @@
   {:else}
     <div class="space-y-3">
       {#each users as user}
+        {@const isSelf = user.username === $authStore.user?.username}
         <div class="algo-status-card p-3" data-status={user.is_active ? (user.is_approved ? 'active' : 'running') : 'error'}>
           <!-- Header row -->
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center flex-wrap gap-1.5">
               <span class="font-semibold text-xs text-[#fbbf24]">{user.display_name}</span>
               <span class="text-xs text-[#c8d8f0]/70">@{user.username}</span>
+              {#if isSelf}
+                <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40">You</span>
+              {/if}
               <span class="text-[0.6rem] text-[#7e97b8] font-mono">{user.account_id}</span>
               <span class="px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase border
                 {user.role === 'admin' ? 'bg-amber-500/15 text-amber-300 border-amber-500/40' : 'bg-teal-500/15 text-teal-300 border-teal-500/40'}">
@@ -218,7 +222,7 @@
                 <button onclick={() => approve(user.username)} class="btn-primary text-[0.65rem] py-1 px-2">Approve</button>
                 <button onclick={() => reject(user.username)}  class="btn-secondary text-[0.65rem] py-1 px-2">Reject</button>
               {/if}
-              {#if !user.terminated_at}
+              {#if !user.terminated_at && !isSelf}
                 {#if user.suspended_at}
                   <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-orange-400/50 text-orange-300">Reinstate</button>
                 {:else}
@@ -226,10 +230,10 @@
                 {/if}
                 <button onclick={() => resetPw(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Reset PW</button>
               {/if}
-              {#if $authStore.user?.is_super && !user.is_super && !user.terminated_at}
+              {#if $authStore.user?.is_super && !user.is_super && !user.terminated_at && !isSelf}
                 <button onclick={() => terminate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-red-400/50 text-red-300">Terminate</button>
               {/if}
-              {#if $authStore.user?.is_super && user.username !== $authStore.user.username}
+              {#if $authStore.user?.is_super && !isSelf}
                 <button onclick={() => flipSuper(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-violet-300">
                   {user.is_super ? 'Demote' : 'Promote'}
                 </button>

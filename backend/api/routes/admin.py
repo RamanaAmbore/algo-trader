@@ -260,16 +260,24 @@ class AdminController(Controller):
 
     @get("/users")
     async def list_users(self, request: Request) -> UsersResponse:
-        # Non-super admins don't see super-admin rows. Visibility lattice:
-        # super → all rows. admin → all rows except is_super=True.
-        # This keeps a regular admin from learning about super accounts at
-        # all (no row, no row-level actions); the corresponding action
-        # routes (terminate / toggle-super) are also super-guarded.
-        is_super = bool(getattr(request.state, "token_payload", {}).get("is_super", False))
+        # Visibility lattice:
+        #   super → all rows.
+        #   admin → only partners + self. Other admins + supers are
+        #           hidden so a regular admin can't even discover their
+        #           usernames; combined with the action gate, this means
+        #           admins are scoped to managing partner accounts only.
+        payload  = getattr(request.state, "token_payload", {}) or {}
+        is_super = bool(payload.get("is_super", False))
+        actor    = payload.get("sub", "")
         async with async_session() as session:
             q = select(User).order_by(User.id)
             if not is_super:
-                q = q.where(User.is_super.is_(False))
+                # role != 'admin' AND not is_super  → partners.
+                # OR username = actor               → admin's own row.
+                q = q.where(
+                    (User.username == actor)
+                    | ((User.role != "admin") & (User.is_super.is_(False)))
+                )
             result = await session.execute(q)
             users = result.scalars().all()
         def _to_info(u):
@@ -363,7 +371,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_if_target_super(request, user)
+            self._block_unauthorized_target(request, user, destructive=False)
             # Apply all non-None fields from the request
             for field in (
                 'display_name', 'role', 'email', 'phone', 'pan',
@@ -386,14 +394,41 @@ class AdminController(Controller):
         return {"detail": f"User {username!r} updated"}
 
     @staticmethod
-    def _block_if_target_super(request: Request, target: User) -> None:
-        """Backstop the list-view visibility filter — even though the
-        admin doesn't see super rows in the listing, the username might
-        still be guessable / leaked. Block every mutating action on a
-        super target unless the actor is super themselves."""
-        is_super = bool(getattr(request.state, "token_payload", {}).get("is_super", False))
-        if target.is_super and not is_super:
-            raise HTTPException(status_code=403, detail="Super-admin row — super access required")
+    def _block_unauthorized_target(
+        request: Request, target: User, *, destructive: bool = False,
+    ) -> None:
+        """Backstop the list-view visibility filter. Three rules:
+
+        1. If `target` is super or admin, only super can act on it.
+           Admins can manage partner accounts; admin-on-admin and
+           admin-on-super are forbidden so admins can't escalate by
+           hijacking another admin's row.
+        2. If `destructive=True` (suspend / terminate / reset-pw /
+           delete), the actor cannot target themselves — closes the
+           "I'll lock myself out and confuse the system" foot-gun and
+           keeps super from accidentally suspending the only super
+           account.
+        3. Super can act on partners and other supers freely; the
+           destructive self-block above still applies.
+        """
+        payload  = getattr(request.state, "token_payload", {}) or {}
+        is_super = bool(payload.get("is_super", False))
+        actor    = payload.get("sub", "")
+
+        # Rule 1 — admin can't touch admin/super rows.
+        if not is_super and (target.is_super or target.role == "admin"):
+            if target.username != actor:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Admin / super-admin row — super access required",
+                )
+
+        # Rule 2 — no destructive self-action by anyone.
+        if destructive and target.username == actor:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot perform destructive actions on your own account",
+            )
 
     @put("/users/{username:str}/suspend", status_code=200)
     async def suspend_user(self, username: str, request: Request) -> dict:
@@ -407,7 +442,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_if_target_super(request, user)
+            self._block_unauthorized_target(request, user, destructive=True)
             user.suspended_at = _dt.now(_tz.utc)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -424,14 +459,14 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_if_target_super(request, user)
+            self._block_unauthorized_target(request, user, destructive=False)
             user.suspended_at = None
             await session.commit()
         logger.info(f"Admin: reinstated user {username!r}")
         return {"detail": f"User {username!r} reinstated"}
 
     @put("/users/{username:str}/terminate", status_code=200, guards=[super_guard])
-    async def terminate_user(self, username: str) -> dict:
+    async def terminate_user(self, username: str, request: Request) -> dict:
         """Terminal — sets terminated_at + is_active=False + bumps
         token_version. Distinct from reject: rejected users were never
         approved; terminated users were active and have been removed.
@@ -444,6 +479,7 @@ class AdminController(Controller):
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
             if user.is_super:
                 raise HTTPException(status_code=403, detail="Cannot terminate a super-admin")
+            self._block_unauthorized_target(request, user, destructive=True)
             user.terminated_at = _dt.now(_tz.utc)
             user.is_active = False
             user.token_version = (user.token_version or 1) + 1
@@ -484,7 +520,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_if_target_super(request, user)
+            self._block_unauthorized_target(request, user, destructive=True)
             user.password_hash = hash_password(new_pw)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -1049,7 +1085,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_if_target_super(request, user)
+            self._block_unauthorized_target(request, user, destructive=True)
             user.is_active = False
             await session.commit()
         return {"detail": f"User {username!r} deactivated"}
