@@ -52,8 +52,9 @@ def _jwt_secret() -> str:
 
 
 def _make_token(user: User) -> str:
-    """Encode every claim future guards may need: role, is_super,
-    email_verified, token_version (tv). Bumping User.token_version
+    """Encode every claim future guards may need: role, email_verified,
+    token_version (tv). The legacy `is_super` claim was retired —
+    role='designated' is the new top tier. Bumping User.token_version
     invalidates every JWT that carries the old tv on the next request
     that hits a guard performing the DB check."""
     payload = {
@@ -61,7 +62,6 @@ def _make_token(user: User) -> str:
         "role":           user.role,
         "display_name":   user.display_name,
         "contribution":   user.contribution or 0,
-        "is_super":       bool(user.is_super),
         "email_verified": bool(user.email_verified),
         "tv":             int(user.token_version or 1),
         "iat":            int(time.time()),
@@ -210,7 +210,6 @@ class LoginResponse(msgspec.Struct):
     username: str
     role: str
     display_name: str
-    is_super: bool = False
     token_type: str = "bearer"
     expires_in: int = _TOKEN_TTL_SECONDS
 
@@ -279,9 +278,10 @@ class AuthController(Controller):
             raise HTTPException(status_code=403, detail="Account suspended — contact admin")
         if not user.is_active:
             raise HTTPException(status_code=401, detail=AUTH_FAIL)
-        # Admin / super bypass approval+verification gates so a freshly-seeded
-        # admin can log in without going through the email-verify dance.
-        is_privileged = user.is_super or user.role == "admin"
+        # Admin / designated bypass approval+verification gates so a
+        # freshly-seeded admin can log in without going through the
+        # email-verify dance.
+        is_privileged = user.role in ("admin", "designated")
         if not is_privileged:
             if not user.email_verified:
                 raise HTTPException(
@@ -296,14 +296,13 @@ class AuthController(Controller):
         token = _make_token(user)
         logger.info(
             f"Auth: login OK {data.username!r} role={user.role} "
-            f"super={user.is_super} tv={user.token_version}"
+            f"tv={user.token_version}"
         )
         return LoginResponse(
             access_token=token,
             username=user.username,
             role=user.role,
             display_name=user.display_name,
-            is_super=bool(user.is_super),
         )
 
     @post("/register")

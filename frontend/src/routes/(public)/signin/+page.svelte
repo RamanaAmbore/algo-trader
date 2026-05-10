@@ -33,9 +33,9 @@
         username:     data.username,
         role:         data.role,
         display_name: data.display_name,
-        is_super:     !!data.is_super,
       });
-      goto(data.role === 'admin' ? '/dashboard' : '/performance');
+      const isAdmin = data.role === 'admin' || data.role === 'designated';
+      goto(isAdmin ? '/dashboard' : '/performance');
     } catch (e) {
       error = e.message;
     } finally { loading = false; }

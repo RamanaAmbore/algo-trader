@@ -336,8 +336,8 @@ export const updateUser     = (username, payload) => _put(`/admin/users/${userna
 export const suspendUser    = (username) => _put(`/admin/users/${username}/suspend`,   undefined,           { auth: true });
 export const reinstateUser  = (username) => _put(`/admin/users/${username}/reinstate`, undefined,           { auth: true });
 export const terminateUser  = (username) => _put(`/admin/users/${username}/terminate`, undefined,           { auth: true });
-export const toggleSuper    = (username, isSuper) =>
-  _put(`/admin/users/${username}/toggle-super`,    { is_super: !!isSuper },             { auth: true });
+export const toggleDesignated = (username, makeDesignated) =>
+  _put(`/admin/users/${username}/toggle-designated`, { designated: !!makeDesignated }, { auth: true });
 export const adminResetPassword = (username, password) =>
   _put(`/admin/users/${username}/reset-password`,  { password },                        { auth: true });
 

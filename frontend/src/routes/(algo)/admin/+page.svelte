@@ -4,7 +4,7 @@
   import { authStore, clientTimestamp } from '$lib/stores';
   import {
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
-    suspendUser, reinstateUser, terminateUser, toggleSuper, adminResetPassword,
+    suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
   } from '$lib/api';
 
   let users    = $state([]);
@@ -57,11 +57,14 @@
     catch (e) { error = e.message; }
   }
 
-  async function flipSuper(/** @type {any} */ user) {
-    const next = !user.is_super;
-    if (!confirm(`Set is_super=${next} on ${user.username}?`)) return;
-    try { await toggleSuper(user.username, next); success = `${user.username} is_super=${next}`; await load(); }
-    catch (e) { error = e.message; }
+  async function flipDesignated(/** @type {any} */ user) {
+    const next = user.role !== 'designated';
+    if (!confirm(`${next ? 'Promote' : 'Demote'} ${user.username} ${next ? 'to' : 'from'} designated?`)) return;
+    try {
+      await toggleDesignated(user.username, next);
+      success = `${user.username} role=${next ? 'designated' : 'admin'}`;
+      await load();
+    } catch (e) { error = e.message; }
   }
 
   async function resetPw(/** @type {string} */ username) {
@@ -184,6 +187,8 @@
     <div class="space-y-3">
       {#each users as user}
         {@const isSelf = user.username === $authStore.user?.username}
+        {@const iAmDesignated = $authStore.user?.role === 'designated'}
+        {@const targetIsPartner = user.role === 'partner'}
         <div class="algo-status-card p-3" data-status={user.is_active ? (user.is_approved ? 'active' : 'running') : 'error'}>
           <!-- Header row -->
           <div class="flex items-center justify-between mb-2">
@@ -195,12 +200,13 @@
               {/if}
               <span class="text-[0.6rem] text-[#7e97b8] font-mono">{user.account_id}</span>
               <span class="px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase border
-                {user.role === 'admin' ? 'bg-amber-500/15 text-amber-300 border-amber-500/40' : 'bg-teal-500/15 text-teal-300 border-teal-500/40'}">
+                {user.role === 'designated'
+                  ? 'bg-violet-500/15 text-violet-300 border-violet-500/40'
+                  : user.role === 'admin'
+                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                    : 'bg-teal-500/15 text-teal-300 border-teal-500/40'}">
                 {user.role}
               </span>
-              {#if user.is_super}
-                <span class="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 text-[0.6rem] font-semibold uppercase border border-violet-500/40">Super</span>
-              {/if}
               {#if user.terminated_at}
                 <span class="px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-300 text-[0.6rem] font-semibold uppercase border border-zinc-500/50">Terminated</span>
               {:else if user.suspended_at}
@@ -218,27 +224,35 @@
               {/if}
             </div>
             <div class="flex gap-1.5 flex-wrap justify-end">
-              {#if !user.is_approved && user.is_active && !user.terminated_at && user.role !== 'admin'}
+              <!-- Approve / Reject — designated only, on partner-grade pending rows. -->
+              {#if iAmDesignated && !user.is_approved && user.is_active && !user.terminated_at && targetIsPartner}
                 <button onclick={() => approve(user.username)} class="btn-primary text-[0.65rem] py-1 px-2">Approve</button>
                 <button onclick={() => reject(user.username)}  class="btn-secondary text-[0.65rem] py-1 px-2">Reject</button>
               {/if}
-              {#if !user.terminated_at && !isSelf}
+              <!-- Suspend / Reinstate — designated only, never self. -->
+              {#if iAmDesignated && !user.terminated_at && !isSelf}
                 {#if user.suspended_at}
                   <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-orange-400/50 text-orange-300">Reinstate</button>
                 {:else}
                   <button onclick={() => suspend(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Suspend</button>
                 {/if}
+              {/if}
+              <!-- Reset PW — designated on anyone (not self), admin on partners only. -->
+              {#if !user.terminated_at && !isSelf && (iAmDesignated || targetIsPartner)}
                 <button onclick={() => resetPw(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Reset PW</button>
               {/if}
-              {#if $authStore.user?.is_super && !user.is_super && !user.terminated_at && !isSelf}
+              <!-- Terminate — designated only, never self, target must not already be designated. -->
+              {#if iAmDesignated && user.role !== 'designated' && !user.terminated_at && !isSelf}
                 <button onclick={() => terminate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-red-400/50 text-red-300">Terminate</button>
               {/if}
-              {#if $authStore.user?.is_super && !isSelf}
-                <button onclick={() => flipSuper(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-violet-300">
-                  {user.is_super ? 'Demote' : 'Promote'}
+              <!-- Promote / Demote between admin and designated — designated only, never self, never partner. -->
+              {#if iAmDesignated && !isSelf && user.role !== 'partner'}
+                <button onclick={() => flipDesignated(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-violet-300">
+                  {user.role === 'designated' ? 'Demote' : 'Promote'}
                 </button>
               {/if}
-              {#if editing !== user.username && !user.terminated_at}
+              <!-- Edit profile — designated on anyone, admin on self only. -->
+              {#if editing !== user.username && !user.terminated_at && (iAmDesignated || isSelf)}
                 <button onclick={() => startEdit(user)} class="btn-secondary text-[0.65rem] py-1 px-2">Edit</button>
               {/if}
             </div>

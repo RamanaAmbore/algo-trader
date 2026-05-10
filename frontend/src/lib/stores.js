@@ -42,10 +42,11 @@ function _readSession() {
     if (token && user) {
       const claims = _decodeJwt(token);
       if (claims) {
-        // JWT wins for role + is_super so a session minted before the
-        // is_super claim landed gets the correct flag on next page load.
-        user.role     = claims.role     ?? user.role;
-        user.is_super = !!claims.is_super;
+        // JWT wins for role so a stale `ramboq_user` blob can't pin the
+        // role chip wrong. role values: 'partner' | 'admin' | 'designated'.
+        user.role = claims.role ?? user.role;
+        // Defensive: legacy sessions persisted is_super; drop it.
+        delete user.is_super;
       }
     }
     return { token, user };

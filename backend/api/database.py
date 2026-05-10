@@ -129,8 +129,6 @@ async def init_db() -> None:
         # Columns added with explicit defaults so existing rows backfill
         # safely without the migration breaking.
         for stmt in (
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super BOOLEAN "
-            "NOT NULL DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN "
             "NOT NULL DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER "
@@ -141,6 +139,18 @@ async def init_db() -> None:
             "TIMESTAMP WITH TIME ZONE",
         ):
             await conn.execute(text(stmt))
+        # Collapse `is_super` into role='designated' and drop the column.
+        # Idempotent: the IF EXISTS guards skip on subsequent boots.
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name='users' AND column_name='is_super') THEN
+                UPDATE users SET role = 'designated' WHERE is_super = true;
+                ALTER TABLE users DROP COLUMN is_super;
+              END IF;
+            END$$;
+        """))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

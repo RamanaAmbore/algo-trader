@@ -410,8 +410,8 @@
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
-            {#if $authStore.user.is_super}
-              <span class="algo-user-role algo-user-role-super">super</span>
+            {#if $authStore.user.role === 'designated'}
+              <span class="algo-user-role algo-user-role-designated">designated</span>
             {:else if $authStore.user.role === 'admin'}
               <span class="algo-user-role">admin</span>
             {/if}
@@ -485,8 +485,8 @@
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
-            {#if $authStore.user.is_super}
-              <span class="algo-user-role algo-user-role-super">super</span>
+            {#if $authStore.user.role === 'designated'}
+              <span class="algo-user-role algo-user-role-designated">designated</span>
             {:else if $authStore.user.role === 'admin'}
               <span class="algo-user-role">admin</span>
             {/if}
@@ -881,8 +881,8 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  /* Super tier — violet, matches the SUPER badge in /admin user-mgmt. */
-  .algo-user-role.algo-user-role-super { color: #c4b5fd; }
+  /* Designated tier — violet, matches the DESIGNATED badge in /admin. */
+  .algo-user-role.algo-user-role-designated { color: #c4b5fd; }
 
   /* Hamburger */
   .algo-hamburger {

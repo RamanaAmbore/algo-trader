@@ -26,6 +26,11 @@ class User(Base):
     account_id: Mapped[str]     = mapped_column(String(16), unique=True, nullable=False, default=_gen_account_id, index=True)
     username: Mapped[str]       = mapped_column(String(64), unique=True, nullable=False, index=True)
     password_hash: Mapped[str]  = mapped_column(Text, nullable=False)
+    # Role tiers — single source of truth for privilege:
+    #   'partner'    — basic user, no admin pages.
+    #   'admin'      — can reset partner passwords. Read-only otherwise.
+    #   'designated' — top tier, can do everything (was the legacy
+    #                  `is_super=True` flag, now collapsed into role).
     role: Mapped[str]           = mapped_column(String(16), nullable=False, default="partner")
     display_name: Mapped[str]   = mapped_column(String(128), nullable=False, default="")
     email: Mapped[Optional[str]]       = mapped_column(String(128), nullable=True)
@@ -62,9 +67,6 @@ class User(Base):
     # ── Status ────────────────────────────────────────────────────────────────
     is_approved: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool]     = mapped_column(Boolean, nullable=False, default=True)
-    # is_super grants strictly more privileges than role='admin' — operator
-    # who can create/terminate other admins and shut the platform down.
-    is_super: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
     # Email verification — required before admin can flip is_approved=True
     # for self-registered users. Populated when /api/auth/verify-email
     # consumes a one-time token.

@@ -80,8 +80,8 @@
         {#if $authStore.user}
           <span class="pub-user-pill">
             {$authStore.user.username}
-            {#if $authStore.user.is_super}
-              <span class="pub-user-role pub-user-role-super">super</span>
+            {#if $authStore.user.role === 'designated'}
+              <span class="pub-user-role pub-user-role-designated">designated</span>
             {:else if $authStore.user.role === 'admin'}
               <span class="pub-user-role">admin</span>
             {/if}
@@ -107,8 +107,8 @@
           {#if $authStore.user}
             <span class="pub-user-pill text-[0.6rem]">
               {$authStore.user.username}
-              {#if $authStore.user.is_super}
-                <span class="pub-user-role pub-user-role-super">super</span>
+              {#if $authStore.user.role === 'designated'}
+                <span class="pub-user-role pub-user-role-designated">designated</span>
               {:else if $authStore.user.role === 'admin'}
                 <span class="pub-user-role">admin</span>
               {/if}
@@ -418,8 +418,8 @@
     text-transform: uppercase;
     margin-left: 0.3rem;
   }
-  /* Super tier — violet, matches the SUPER badge in /admin user-mgmt. */
-  .pub-user-role.pub-user-role-super { color: #c4b5fd; }
+  /* Designated tier — violet, matches the DESIGNATED badge in /admin. */
+  .pub-user-role.pub-user-role-designated { color: #c4b5fd; }
 
   /* Hamburger */
   .pub-hamburger {

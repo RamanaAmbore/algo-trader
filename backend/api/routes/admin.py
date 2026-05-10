@@ -26,7 +26,7 @@ from litestar.exceptions import HTTPException
 from litestar.params import Body
 from sqlalchemy import select, text
 
-from backend.api.auth_guard import admin_guard, super_guard
+from backend.api.auth_guard import admin_guard, designated_guard
 from backend.api.database import async_session
 from backend.api.models import User
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -165,7 +165,6 @@ class UserInfo(msgspec.Struct):
     nominee_phone: str | None = None
     is_approved: bool = False
     is_active: bool = True
-    is_super: bool = False
     email_verified: bool = False
     suspended_at: str | None = None
     terminated_at: str | None = None
@@ -259,26 +258,13 @@ class AdminController(Controller):
             raise HTTPException(status_code=500, detail=str(e))
 
     @get("/users")
-    async def list_users(self, request: Request) -> UsersResponse:
-        # Visibility lattice:
-        #   super → all rows.
-        #   admin → only partners + self. Other admins + supers are
-        #           hidden so a regular admin can't even discover their
-        #           usernames; combined with the action gate, this means
-        #           admins are scoped to managing partner accounts only.
-        payload  = getattr(request.state, "token_payload", {}) or {}
-        is_super = bool(payload.get("is_super", False))
-        actor    = payload.get("sub", "")
+    async def list_users(self) -> UsersResponse:
+        # Both admin and designated see every user row. The action gate
+        # (_check_action) restricts what each tier can DO — not what they
+        # can SEE. Admins need full visibility to know which partners
+        # exist when running password-reset support.
         async with async_session() as session:
-            q = select(User).order_by(User.id)
-            if not is_super:
-                # role != 'admin' AND not is_super  → partners.
-                # OR username = actor               → admin's own row.
-                q = q.where(
-                    (User.username == actor)
-                    | ((User.role != "admin") & (User.is_super.is_(False)))
-                )
-            result = await session.execute(q)
+            result = await session.execute(select(User).order_by(User.id))
             users = result.scalars().all()
         def _to_info(u):
             return UserInfo(
@@ -295,7 +281,6 @@ class AdminController(Controller):
                 nominee_name=u.nominee_name, nominee_relation=u.nominee_relation,
                 nominee_phone=u.nominee_phone,
                 is_approved=u.is_approved, is_active=u.is_active,
-                is_super=getattr(u, 'is_super', False),
                 email_verified=getattr(u, 'email_verified', False),
                 suspended_at=u.suspended_at.isoformat() if getattr(u, 'suspended_at', None) else None,
                 terminated_at=u.terminated_at.isoformat() if getattr(u, 'terminated_at', None) else None,
@@ -371,7 +356,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_unauthorized_target(request, user, destructive=False)
+            self._check_action(request, user, admin_self_ok=True)
             # Apply all non-None fields from the request
             for field in (
                 'display_name', 'role', 'email', 'phone', 'pan',
@@ -394,41 +379,57 @@ class AdminController(Controller):
         return {"detail": f"User {username!r} updated"}
 
     @staticmethod
-    def _block_unauthorized_target(
-        request: Request, target: User, *, destructive: bool = False,
+    def _check_action(
+        request: Request,
+        target: User,
+        *,
+        designated_only: bool = False,
+        admin_partner_ok: bool = False,
+        admin_self_ok: bool = False,
+        block_self: bool = False,
     ) -> None:
-        """Backstop the list-view visibility filter. Three rules:
+        """Centralized permission gate. Flags pick the policy for each
+        route — see the action matrix in the controller doc string.
 
-        1. If `target` is super or admin, only super can act on it.
-           Admins can manage partner accounts; admin-on-admin and
-           admin-on-super are forbidden so admins can't escalate by
-           hijacking another admin's row.
-        2. If `destructive=True` (suspend / terminate / reset-pw /
-           delete), the actor cannot target themselves — closes the
-           "I'll lock myself out and confuse the system" foot-gun and
-           keeps super from accidentally suspending the only super
-           account.
-        3. Super can act on partners and other supers freely; the
-           destructive self-block above still applies.
+        - designated_only=True  → only role='designated' can perform.
+        - admin_partner_ok=True → admin can perform on partner targets.
+        - admin_self_ok=True    → admin can perform on their own row.
+        - block_self=True       → reject if target == actor (used for
+                                  every destructive action so the actor
+                                  can't lock themselves out).
+
+        Designated bypasses every check except `block_self`. Admin gets
+        through only when one of the admin_* flags lets it. Anyone else
+        (shouldn't happen — admin_guard already filters partners) gets
+        a blanket 403.
         """
-        payload  = getattr(request.state, "token_payload", {}) or {}
-        is_super = bool(payload.get("is_super", False))
-        actor    = payload.get("sub", "")
+        payload = getattr(request.state, "token_payload", {}) or {}
+        role    = payload.get("role", "partner")
+        actor   = payload.get("sub", "")
+        is_self = (target.username == actor)
 
-        # Rule 1 — admin can't touch admin/super rows.
-        if not is_super and (target.is_super or target.role == "admin"):
-            if target.username != actor:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Admin / super-admin row — super access required",
-                )
-
-        # Rule 2 — no destructive self-action by anyone.
-        if destructive and target.username == actor:
+        if block_self and is_self:
             raise HTTPException(
                 status_code=403,
-                detail="Cannot perform destructive actions on your own account",
+                detail="Cannot perform this action on your own account",
             )
+
+        if role == "designated":
+            return  # designated does everything (subject to block_self above)
+
+        if role == "admin":
+            if designated_only:
+                raise HTTPException(status_code=403, detail="Designated-admin access required")
+            if admin_self_ok and is_self:
+                return
+            if admin_partner_ok and target.role == "partner":
+                return
+            raise HTTPException(
+                status_code=403,
+                detail="Admin cannot perform this action on this target",
+            )
+
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     @put("/users/{username:str}/suspend", status_code=200)
     async def suspend_user(self, username: str, request: Request) -> dict:
@@ -442,7 +443,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_unauthorized_target(request, user, destructive=True)
+            self._check_action(request, user, designated_only=True, block_self=True)
             user.suspended_at = _dt.now(_tz.utc)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -459,13 +460,13 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_unauthorized_target(request, user, destructive=False)
+            self._check_action(request, user, designated_only=True)
             user.suspended_at = None
             await session.commit()
         logger.info(f"Admin: reinstated user {username!r}")
         return {"detail": f"User {username!r} reinstated"}
 
-    @put("/users/{username:str}/terminate", status_code=200, guards=[super_guard])
+    @put("/users/{username:str}/terminate", status_code=200, guards=[designated_guard])
     async def terminate_user(self, username: str, request: Request) -> dict:
         """Terminal — sets terminated_at + is_active=False + bumps
         token_version. Distinct from reject: rejected users were never
@@ -477,9 +478,9 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            if user.is_super:
-                raise HTTPException(status_code=403, detail="Cannot terminate a super-admin")
-            self._block_unauthorized_target(request, user, destructive=True)
+            if user.role == "designated":
+                raise HTTPException(status_code=403, detail="Cannot terminate a designated-admin")
+            self._check_action(request, user, designated_only=True, block_self=True)
             user.terminated_at = _dt.now(_tz.utc)
             user.is_active = False
             user.token_version = (user.token_version or 1) + 1
@@ -487,21 +488,31 @@ class AdminController(Controller):
         logger.info(f"Admin: terminated user {username!r}")
         return {"detail": f"User {username!r} terminated"}
 
-    @put("/users/{username:str}/toggle-super", status_code=200, guards=[super_guard])
-    async def toggle_super(self, username: str, data: dict) -> dict:
-        """Super-admin only — flip a user's is_super flag. Promoting an
-        admin to super is a deliberate, audited action. Body: {is_super: bool}."""
-        new_val = bool((data or {}).get("is_super", False))
+    @put("/users/{username:str}/toggle-designated", status_code=200, guards=[designated_guard])
+    async def toggle_designated(self, username: str, data: dict, request: Request) -> dict:
+        """Designated-admin only — flip a user's role between admin and
+        designated. Promoting an admin to designated is a deliberate,
+        audited action. Body: {designated: bool}.
+        - True  → role = 'designated'
+        - False → role = 'admin'  (caller cannot demote a partner this way)
+        """
+        make_designated = bool((data or {}).get("designated", False))
         async with async_session() as session:
             result = await session.execute(select(User).where(User.username == username))
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            user.is_super = new_val
+            self._check_action(request, user, designated_only=True, block_self=True)
+            if user.role == "partner":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Promote a partner to admin via the role field on /users/{u} first",
+                )
+            user.role = "designated" if make_designated else "admin"
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
-        logger.info(f"Admin: set is_super={new_val} on {username!r}")
-        return {"detail": f"User {username!r} is_super = {new_val}"}
+        logger.info(f"Admin: set role={user.role!r} on {username!r}")
+        return {"detail": f"User {username!r} role = {user.role!r}"}
 
     @put("/users/{username:str}/reset-password", status_code=200)
     async def reset_password(self, username: str, data: dict, request: Request) -> dict:
@@ -520,7 +531,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_unauthorized_target(request, user, destructive=True)
+            self._check_action(request, user, admin_partner_ok=True, block_self=True)
             user.password_hash = hash_password(new_pw)
             user.token_version = (user.token_version or 1) + 1
             await session.commit()
@@ -1085,7 +1096,7 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            self._block_unauthorized_target(request, user, destructive=True)
+            self._check_action(request, user, designated_only=True, block_self=True)
             user.is_active = False
             await session.commit()
         return {"detail": f"User {username!r} deactivated"}

@@ -5,7 +5,7 @@ Admin / user CLI for RamboQuant.
 Run on the server with the app's venv activated:
 
     python -m scripts.manage bootstrap-admin --username ambore \
-        --display-name "Ramana Ambore" --email ramboquant@gmail.com --super
+        --display-name "Ramana Ambore" --email ramboquant@gmail.com --designated
 
     python -m scripts.manage create-user --username rambo --role admin \
         --display-name "Rambo" --email ramboquant@gmail.com
@@ -69,10 +69,10 @@ async def _bootstrap(args: argparse.Namespace) -> None:
                 f"✗ User {args.username!r} already exists. "
                 f"Pass --update to overwrite the password / role."
             )
+        target_role = "designated" if args.designated else "admin"
         if user:
             user.password_hash    = hash_password(password)
-            user.role             = "admin"
-            user.is_super         = bool(args.super)
+            user.role             = target_role
             user.is_active        = True
             user.is_approved      = True
             user.email_verified   = True
@@ -86,10 +86,9 @@ async def _bootstrap(args: argparse.Namespace) -> None:
             user = User(
                 username       = args.username,
                 password_hash  = hash_password(password),
-                role           = "admin",
+                role           = target_role,
                 display_name   = args.display_name or args.username,
                 email          = args.email,
-                is_super       = bool(args.super),
                 is_active      = True,
                 is_approved    = True,
                 email_verified = True,
@@ -98,10 +97,7 @@ async def _bootstrap(args: argparse.Namespace) -> None:
             session.add(user)
             verb = "created"
         await session.commit()
-    print(
-        f"✓ {verb} {args.username!r} (role=admin, is_super={bool(args.super)}, "
-        f"email={args.email})"
-    )
+    print(f"✓ {verb} {args.username!r} (role={target_role}, email={args.email})")
 
 
 async def _create(args: argparse.Namespace) -> None:
@@ -146,8 +142,8 @@ def main() -> None:
     boot.add_argument("--username",     required=True)
     boot.add_argument("--email",        required=True)
     boot.add_argument("--display-name", default="")
-    boot.add_argument("--super",        action="store_true",
-                      help="Set is_super=True (highest privilege)")
+    boot.add_argument("--designated",   action="store_true",
+                      help="Set role=designated (highest privilege)")
     boot.add_argument("--update",       action="store_true",
                       help="Overwrite the existing row instead of failing")
 
