@@ -409,7 +409,7 @@
         {/if}
         {#if $authStore.user}
           <span class="algo-user-pill">
-            {$authStore.user.display_name?.toLowerCase() ?? ''}
+            {$authStore.user.username ?? ''}
             <span class="algo-user-role">admin</span>
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
@@ -480,7 +480,7 @@
         {/if}
         {#if $authStore.user}
           <span class="algo-user-pill">
-            {$authStore.user.display_name?.toLowerCase() ?? ''}
+            {$authStore.user.username ?? ''}
             <span class="algo-user-role">admin</span>
           </span>
         {/if}

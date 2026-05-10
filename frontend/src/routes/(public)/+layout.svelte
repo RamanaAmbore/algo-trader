@@ -79,7 +79,7 @@
 
         {#if $authStore.user}
           <span class="pub-user-pill">
-            {$authStore.user.display_name.toLowerCase()}
+            {$authStore.user.username}
             {#if $authStore.user.role === 'admin'}
               <span class="pub-user-role">admin</span>
             {/if}
@@ -104,7 +104,7 @@
         <div class="flex items-center gap-2">
           {#if $authStore.user}
             <span class="pub-user-pill text-[0.6rem]">
-              {$authStore.user.display_name.toLowerCase()}
+              {$authStore.user.username}
               {#if $authStore.user.role === 'admin'}
                 <span class="pub-user-role">admin</span>
               {/if}
