@@ -285,8 +285,10 @@
                   {user.role === 'designated' ? 'Demote' : 'Promote'}
                 </button>
               {/if}
-              <!-- Edit profile — designated on anyone, admin on self only. -->
-              {#if editing !== user.username && !user.terminated_at && (iAmDesignated || isSelf)}
+              <!-- Edit profile — designated on anyone, admin on self
+                   or partner targets. Mirrors the backend gate
+                   _check_action(admin_self_ok=True, admin_partner_ok=True). -->
+              {#if editing !== user.username && !user.terminated_at && (iAmDesignated || isSelf || (iAmAdmin && targetIsPartner))}
                 <button onclick={() => startEdit(user)} class="btn-secondary text-[0.65rem] py-1 px-2">Edit</button>
               {/if}
             </div>

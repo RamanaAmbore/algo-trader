@@ -13,6 +13,13 @@
   let regForm    = $state({ username: '', password: '', confirm: '', display_name: '', email: '', phone: '' });
   let forgotForm = $state({ identifier: '' });
 
+  // Per-field show-password state. The eye button toggles the input's
+  // `type` between 'password' and 'text' so the user can verify what
+  // they typed — common on mobile where typos are easy.
+  let showSigninPw  = $state(false);
+  let showRegPw     = $state(false);
+  let showRegConfirm = $state(false);
+
   // Read ?verified=1|0 / ?reset=1 / ?registered=1 / ?pending_verify=1 once
   // on mount and surface a one-line banner. The query string is the
   // backend's only way to talk to this page (verify-email redirects
@@ -135,12 +142,18 @@
           <div>
             <label class="field-label" for="s-user">Username</label>
             <input id="s-user" bind:value={signinForm.username} class="field-input" placeholder="Username"
+              autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="username"
               onkeydown={(e) => e.key === 'Enter' && signin()} />
           </div>
           <div>
             <label class="field-label" for="s-pass">Password</label>
-            <input id="s-pass" type="password" bind:value={signinForm.password} class="field-input" placeholder="Password"
-              onkeydown={(e) => e.key === 'Enter' && signin()} />
+            <div class="pw-wrap">
+              <input id="s-pass" type={showSigninPw ? 'text' : 'password'} bind:value={signinForm.password}
+                class="field-input pw-input" placeholder="Password" autocomplete="current-password"
+                onkeydown={(e) => e.key === 'Enter' && signin()} />
+              <button type="button" class="pw-toggle" tabindex="-1"
+                onclick={() => showSigninPw = !showSigninPw}>{showSigninPw ? 'Hide' : 'Show'}</button>
+            </div>
           </div>
           <button
             onclick={signin}
@@ -180,7 +193,8 @@
         <div class="space-y-3">
           <div>
             <label class="field-label" for="r-user">Username</label>
-            <input id="r-user" bind:value={regForm.username} class="field-input" placeholder="Choose a username" />
+            <input id="r-user" bind:value={regForm.username} class="field-input" placeholder="Choose a username"
+              autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="username" />
           </div>
           <div>
             <label class="field-label" for="r-name">Full Name</label>
@@ -196,11 +210,22 @@
           </div>
           <div>
             <label class="field-label" for="r-pass">Password</label>
-            <input id="r-pass" type="password" bind:value={regForm.password} class="field-input" placeholder="Min 8 chars, mixed case + digit + symbol" />
+            <div class="pw-wrap">
+              <input id="r-pass" type={showRegPw ? 'text' : 'password'} bind:value={regForm.password}
+                class="field-input pw-input" placeholder="Min 8 chars, mixed case + digit + symbol"
+                autocomplete="new-password" />
+              <button type="button" class="pw-toggle" tabindex="-1"
+                onclick={() => showRegPw = !showRegPw}>{showRegPw ? 'Hide' : 'Show'}</button>
+            </div>
           </div>
           <div>
             <label class="field-label" for="r-confirm">Confirm Password</label>
-            <input id="r-confirm" type="password" bind:value={regForm.confirm} class="field-input" placeholder="Repeat password" />
+            <div class="pw-wrap">
+              <input id="r-confirm" type={showRegConfirm ? 'text' : 'password'} bind:value={regForm.confirm}
+                class="field-input pw-input" placeholder="Repeat password" autocomplete="new-password" />
+              <button type="button" class="pw-toggle" tabindex="-1"
+                onclick={() => showRegConfirm = !showRegConfirm}>{showRegConfirm ? 'Hide' : 'Show'}</button>
+            </div>
           </div>
 
           <p class="text-[0.6rem] text-muted mt-2">
@@ -240,6 +265,33 @@
   .signin-body {
     background: #fffdf8;        /* card-cream — matches .pub-card */
     padding: 1.25rem 1.5rem 1.5rem;
+  }
+  /* Password show/hide affordance — small text button overlaid on the
+     right edge of the input. Stays neutral with the cream palette
+     (subtle muted text on hover-darker), no icon to keep the bundle
+     thin. */
+  .pw-wrap {
+    position: relative;
+  }
+  .pw-input {
+    padding-right: 3.2rem;   /* room for the Show / Hide button */
+  }
+  .pw-toggle {
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: #6b7a8c;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0.15rem 0.35rem;
+  }
+  .pw-toggle:hover {
+    color: #1e3050;
   }
   /* Green success banner — sage-leaning so it sits with the cream palette. */
   .pub-banner-info {

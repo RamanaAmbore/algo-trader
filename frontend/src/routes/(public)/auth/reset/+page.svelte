@@ -3,11 +3,13 @@
   import { page } from '$app/stores';
   import { resetPassword } from '$lib/api';
 
-  let token   = $state('');
-  let pw      = $state('');
-  let confirm = $state('');
-  let loading = $state(false);
-  let error   = $state('');
+  let token       = $state('');
+  let pw          = $state('');
+  let confirm     = $state('');
+  let loading     = $state(false);
+  let error       = $state('');
+  let showPw      = $state(false);
+  let showConfirm = $state(false);
 
   $effect(() => {
     token = $page.url.searchParams.get('token') || '';
@@ -53,15 +55,27 @@
       <div class="space-y-3">
         <div>
           <label class="field-label" for="new-pw">New password</label>
-          <input id="new-pw" type="password" bind:value={pw} class="field-input"
-            placeholder="Min 8 chars, mixed case + digit + symbol"
-            onkeydown={(e) => e.key === 'Enter' && submit()} />
+          <div class="pw-wrap">
+            <input id="new-pw" type={showPw ? 'text' : 'password'} bind:value={pw}
+              class="field-input pw-input"
+              placeholder="Min 8 chars, mixed case + digit + symbol"
+              autocomplete="new-password"
+              onkeydown={(e) => e.key === 'Enter' && submit()} />
+            <button type="button" class="pw-toggle" tabindex="-1"
+              onclick={() => showPw = !showPw}>{showPw ? 'Hide' : 'Show'}</button>
+          </div>
         </div>
         <div>
           <label class="field-label" for="confirm-pw">Confirm password</label>
-          <input id="confirm-pw" type="password" bind:value={confirm} class="field-input"
-            placeholder="Repeat password"
-            onkeydown={(e) => e.key === 'Enter' && submit()} />
+          <div class="pw-wrap">
+            <input id="confirm-pw" type={showConfirm ? 'text' : 'password'} bind:value={confirm}
+              class="field-input pw-input"
+              placeholder="Repeat password"
+              autocomplete="new-password"
+              onkeydown={(e) => e.key === 'Enter' && submit()} />
+            <button type="button" class="pw-toggle" tabindex="-1"
+              onclick={() => showConfirm = !showConfirm}>{showConfirm ? 'Hide' : 'Show'}</button>
+          </div>
         </div>
         <button onclick={submit} disabled={loading || !token || !pw || !confirm}
           class="btn-primary w-full disabled:opacity-50 mt-1">
@@ -80,4 +94,13 @@
   .signin-header-title { font-size: 1rem; font-weight: 800; color: #fff;
     letter-spacing: 0.05em; text-transform: uppercase; }
   .signin-body { background: #fffdf8; padding: 1.25rem 1.5rem 1.5rem; }
+  .pw-wrap { position: relative; }
+  .pw-input { padding-right: 3.2rem; }
+  .pw-toggle {
+    position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%);
+    font-size: 0.65rem; font-weight: 600; letter-spacing: 0.03em;
+    color: #6b7a8c; background: transparent; border: none; cursor: pointer;
+    padding: 0.15rem 0.35rem;
+  }
+  .pw-toggle:hover { color: #1e3050; }
 </style>
