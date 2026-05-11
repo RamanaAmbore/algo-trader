@@ -27,6 +27,17 @@
  *                 K/L suffix logic is intentionally separate from the
  *                 decimal rule.
  *   qtyFmt      — share/lot counts (always integer — shares are whole)
+ *   directional — sign-adjust an unsigned market move (Day change ₹ or %,
+ *                 per-share or per-row) by the operator's net position
+ *                 direction. For a short, a +1% market move is a -1%
+ *                 loss; long / no-position rows pass through. Use this
+ *                 wherever a per-share market metric is displayed next
+ *                 to a position so the sign matches the operator's P&L
+ *                 perspective. Backend aggregate fields (day_change_val,
+ *                 day_change_percentage from /api/positions) already
+ *                 carry the sign correctly — only the per-share market
+ *                 values from /api/quote need this helper at the UI
+ *                 layer.
  *
  * To change the K/L thresholds, the decimal threshold, or any prefix
  * rule — edit this file. Do NOT add `₹` / `+` / lakh-conversion logic
@@ -65,4 +76,18 @@ export function aggCompact(v) {
 export function qtyFmt(v) {
   if (v == null || !isFinite(v)) return '—';
   return _IN0.format(Math.round(Number(v)));
+}
+
+/**
+ * Negate `value` when `netQty` is negative (net-short position) so an
+ * unsigned market move displays from the operator's P&L perspective.
+ *
+ *   Long  / no-position (netQty ≥ 0): +1% market move → +1% display
+ *   Short                (netQty <  0): +1% market move → -1% display
+ *
+ * Pass null through unchanged.
+ */
+export function directional(value, netQty) {
+  if (value == null || !isFinite(value)) return value;
+  return Number(netQty) < 0 ? -Number(value) : Number(value);
 }

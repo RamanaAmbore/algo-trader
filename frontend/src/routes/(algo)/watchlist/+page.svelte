@@ -17,7 +17,7 @@
     fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
   } from '$lib/api';
   import { authStore, visibleInterval, clientTimestamp } from '$lib/stores';
-  import { priceFmt, pctFmt, aggCompact, qtyFmt } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
 
   // AG Grid valueFormatter wrappers — the canonical idiom every other
   // algo grid (PerformancePage etc.) uses. Single source of truth for
@@ -455,11 +455,19 @@
     // positions.day_change_val, holdings.pnl, holdings.day_change_val
     // — same fields the dashboard's grids surface). Rows with no
     // contribution stay null and render as '—'.
+    //
+    // day_pct is the per-share market move from the batch-quote, which
+    // arrives unsigned-relative-to-position. Apply directional() so
+    // a net-short row inverts the sign — operator sees -2% for a 2 %
+    // price rise that hurt their short, matching the dashboard
+    // positions grid's behaviour.
     for (const row of Object.values(byKey)) {
       if (row.qty_pos !== 0) {
         row.avg_pos = row._avg_num / row.qty_pos;
       }
       delete row._avg_num;
+      const netQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
+      row.day_pct = directional(row.change_pct, netQty);
     }
 
     // ── Sort ──────────────────────────────────────────────────────
@@ -657,7 +665,7 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      { field: 'change_pct', headerName: 'Day %', width: 68,
+      { field: 'day_pct', headerName: 'Day %', width: 68,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: pctFmtGrid },
@@ -683,8 +691,17 @@
         // Match PerformancePage's idiom — no flex cellStyle so
         // type:'numericColumn' delivers its built-in right-aligned
         // .ag-right-aligned-cell class without override.
+        // suppressHeaderMenuButton hides ag-Grid's column-menu
+        // button (the small square ≡ icon that otherwise appears
+        // at the right edge of a header on click / sort) — same
+        // setting PerformancePage uses.
         resizable: true, sortable: true, suppressMovable: true,
+        suppressHeaderMenuButton: true,
       },
+      // Three-state sort cycle: ASC → DESC → no-sort. Same idiom
+      // as PerformancePage so column-header clicks behave the
+      // same across every ag-Grid in the app.
+      sortingOrder: ['asc', 'desc', null],
       overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">No rows — add symbols to your watchlist or load positions/holdings</span>',
       domLayout: 'autoHeight',
       getRowClass,

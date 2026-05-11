@@ -338,6 +338,10 @@
       columnDefs: colDefs,
       rowData,
       defaultColDef: defaultCol,
+      // Three-state sort cycle: ASC → DESC → no-sort (back to the
+      // original row order). Applied at the grid level — same idiom
+      // across every ag-Grid in the app.
+      sortingOrder: ['asc', 'desc', null],
       // ag-Grid v33 forbids overriding built-in column types like
       // `numericColumn` (warning #34). The built-in already adds
       // `ag-right-aligned-cell` + `ag-right-aligned-header` classes
