@@ -1,12 +1,17 @@
 <script>
-  // Watchlist page — algo dark theme. Tabs across the top for the user's
-  // named watchlists; the active list's quotes refresh every 5 s. Add
-  // symbol via typeahead from the IndexedDB instruments cache.
+  // Unified market-pulse page — algo dark theme.
+  //
+  // A single ag-Grid lists every symbol the operator is tracking, with
+  // per-row source badges (W=watchlist, H=holding, P=position,
+  // U=option-underlying) so the same symbol never appears twice. The
+  // watchlist tab strip stays on top for picking which named list
+  // feeds the W flag.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { goto } from '$app/navigation';
+  import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import {
-    fetchWatchlists, fetchWatchlist, createWatchlist, renameWatchlist,
+    fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, batchQuote,
@@ -14,13 +19,17 @@
   import { authStore, visibleInterval, clientTimestamp } from '$lib/stores';
   import { aggFmt, priceFmt, qtyFmt } from '$lib/format';
 
-  let lists      = $state(/** @type {any[]} */ ([]));
-  let activeId   = $state(/** @type {number | null} */ (null));
-  let active     = $state(/** @type {any} */ (null));   // {id,name,items:[…]}
-  let quotes     = $state(/** @type {Record<number, any>} */ ({}));
+  ModuleRegistry.registerModules([AllCommunityModule]);
+
+  let lists       = $state(/** @type {any[]} */ ([]));
+  let activeId    = $state(/** @type {number | null} */ (null));
+  let active      = $state(/** @type {any} */ (null));
+  let watchQuotes = $state(/** @type {Record<number, any>} */ ({}));
+  let positions   = $state(/** @type {any[]} */ ([]));
+  let holdings    = $state(/** @type {any[]} */ ([]));
+  let underlyingQuotes = $state(/** @type {Record<string, any>} */ ({}));
   let refreshedAt = $state('');
-  let error      = $state('');
-  let loading    = $state(false);
+  let error       = $state('');
 
   // Add-symbol form state.
   let symInput   = $state('');
@@ -32,31 +41,54 @@
   let newListName = $state('');
   let showCreate  = $state(false);
 
-  // Market-pulse sections — pulled once on mount + refreshed every 10 s.
-  let positions  = $state(/** @type {any[]} */ ([]));   // raw position rows
-  let holdings   = $state(/** @type {any[]} */ ([]));   // raw holding rows
-  // Live quotes for option underlyings (NIFTY 50 spot etc.) — derived
-  // from positions where kind=opt, then batch-quoted.
-  let underlyingQuotes = $state(/** @type {Record<string, any>} */ ({}));
-  let pulseRefreshed   = $state('');
-
-  let stopPoll;
-  let stopPulsePoll;
+  let stopPoll, stopPulsePoll;
+  let gridEl;
+  let grid;
 
   onMount(async () => {
     if (!$authStore.user) { goto('/signin'); return; }
     await loadLists();
     if (activeId != null) {
       await loadActive(activeId);
-      stopPoll = visibleInterval(loadQuotes, 5000);
     }
     await loadPulse();
-    stopPulsePoll = visibleInterval(loadPulse, 10000);
+    await tick();
+    mountGrid();
+    stopPoll      = visibleInterval(async () => { await loadQuotes(); refreshGrid(); }, 5000);
+    stopPulsePoll = visibleInterval(async () => { await loadPulse(); refreshGrid(); }, 10000);
   });
 
-  onDestroy(() => { stopPoll?.(); stopPulsePoll?.(); });
+  onDestroy(() => { stopPoll?.(); stopPulsePoll?.(); grid?.destroy?.(); });
 
-  // ── Market-pulse sections (positions / holdings / underlyings) ────
+  async function loadLists() {
+    try {
+      lists = await fetchWatchlists();
+      if (!lists.length) return;
+      const def = lists.find(l => l.is_default) ?? lists[0];
+      if (activeId == null) activeId = def.id;
+    } catch (e) { error = e.message; }
+  }
+
+  async function loadActive(/** @type {number} */ id) {
+    error = '';
+    try {
+      active = await fetchWatchlist(id);
+      await loadQuotes();
+    } catch (e) { error = e.message; }
+  }
+
+  async function loadQuotes() {
+    if (activeId == null) return;
+    try {
+      const r = await fetchWatchlistQuotes(activeId);
+      const map = /** @type {Record<number, any>} */ ({});
+      for (const q of (r?.items || [])) map[q.item_id] = q;
+      watchQuotes = map;
+      refreshedAt = r?.refreshed_at || '';
+    } catch (e) {
+      error = `Quote refresh: ${e.message}`;
+    }
+  }
 
   async function loadPulse() {
     try {
@@ -66,9 +98,7 @@
       ]);
       positions = (p?.rows || []).slice();
       holdings  = (h?.rows || []).slice();
-      // Derive distinct option underlyings — try to map a contract
-      // symbol to its underlying via the instrument cache. Skip rows
-      // where the cache miss to avoid a guessed-wrong quote.
+      // Derive underlyings (for option positions only).
       const underlyings = new Set();
       try {
         const { loadInstruments, getInstrument } = await import('$lib/data/instruments');
@@ -76,12 +106,11 @@
         for (const r of positions) {
           const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
           const inst = getInstrument(sym);
-          if (inst && inst.u && /^(opt|fut)$/i.test(String(inst.t || '').slice(0, 3))) {
+          if (inst && inst.u && String(inst.t || '').toUpperCase() !== 'EQ') {
             underlyings.add(inst.u);
           }
         }
-      } catch (_) { /* instruments cache cold — skip underlyings section */ }
-
+      } catch (_) { /* instruments cold */ }
       if (underlyings.size) {
         const keys = [...underlyings].map(u => `NSE:${u}`);
         try {
@@ -93,123 +122,152 @@
       } else {
         underlyingQuotes = {};
       }
-      pulseRefreshed = new Date().toISOString().slice(0, 19);
-    } catch (e) {
-      // Non-fatal — the user's watchlist tab still works.
-    }
+    } catch (_) { /* nothing fatal */ }
   }
 
-  // Distinct option underlyings (NIFTY / BANKNIFTY / RELIANCE / …) inferred
-  // from positions for the Underlyings section. Sorted alphabetically.
-  const underlyingList = $derived(Object.keys(underlyingQuotes).sort());
+  /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
+   *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
+  const unifiedRows = $derived(buildUnified(
+    active, watchQuotes, positions, holdings, underlyingQuotes
+  ));
 
-  /** Add a row from one of the non-watchlist sections to the default
-   *  watchlist with one click. Uses the user's is_default list; falls
-   *  back to "Default" by name. */
+  function buildUnified(activeList, wq, pos, hold, uq) {
+    const byKey = /** @type {Record<string, any>} */ ({});
+    const get = (key) => byKey[key] || (byKey[key] = { key, src: { w:false, h:false, p:false, u:false } });
+
+    // 1. Watchlist (active list)
+    for (const it of (activeList?.items || [])) {
+      const q = wq[it.id];
+      const key = `${it.exchange}:${q?.quote_symbol || it.tradingsymbol}`;
+      const row = get(key);
+      row.exchange      = it.exchange;
+      row.tradingsymbol = q?.quote_symbol || it.tradingsymbol;
+      row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
+      row.watchlist_item_id = it.id;
+      row.src.w  = true;
+      row.ltp    = q?.ltp    ?? row.ltp    ?? null;
+      row.bid    = q?.bid    ?? row.bid    ?? null;
+      row.ask    = q?.ask    ?? row.ask    ?? null;
+      row.change = q?.change ?? row.change ?? null;
+      row.change_pct = q?.change_pct ?? row.change_pct ?? null;
+    }
+
+    // 2. Positions
+    for (const r of pos) {
+      const exch = r.exchange || 'NFO';
+      const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const key = `${exch}:${sym}`;
+      const row = get(key);
+      row.exchange      = exch;
+      row.tradingsymbol = sym;
+      row.src.p = true;
+      row.ltp = r.last_price ?? row.ltp ?? null;
+      row.qty_pos = Number(r.quantity) || 0;
+      row.avg_pos = Number(r.average_price) || 0;
+      row.pnl     = Number(r.pnl) || 0;
+    }
+
+    // 3. Holdings
+    for (const r of hold) {
+      const exch = r.exchange || 'NSE';
+      const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const key = `${exch}:${sym}`;
+      const row = get(key);
+      row.exchange      = exch;
+      row.tradingsymbol = sym;
+      row.src.h = true;
+      row.ltp = r.last_price ?? row.ltp ?? null;
+      row.qty_hold = Number(r.quantity) || 0;
+      // Holdings day-change wins over a watchlist read (more accurate).
+      if (r.day_change != null)            row.change = Number(r.day_change);
+      if (r.day_change_percentage != null) row.change_pct = Number(r.day_change_percentage);
+    }
+
+    // 4. Option underlyings — quoted on NSE.
+    for (const [u, q] of Object.entries(uq)) {
+      const key = `NSE:${u}`;
+      const row = get(key);
+      row.exchange      = 'NSE';
+      row.tradingsymbol = u;
+      row.src.u = true;
+      row.ltp        = q.ltp        ?? row.ltp        ?? null;
+      row.bid        = q.bid        ?? row.bid        ?? null;
+      row.ask        = q.ask        ?? row.ask        ?? null;
+      // Only fill change/change_pct from underlying when nothing else
+      // has supplied them.
+      if (row.change == null)     row.change     = q.change ?? null;
+      if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
+    }
+
+    // Sort by source priority (P/H first, then W, then U) then symbol.
+    const out = Object.values(byKey);
+    out.sort((a, b) => {
+      const rank = (r) => (r.src.p ? 0 : r.src.h ? 1 : r.src.w ? 2 : 3);
+      if (rank(a) !== rank(b)) return rank(a) - rank(b);
+      return (a.tradingsymbol || '').localeCompare(b.tradingsymbol || '');
+    });
+    return out;
+  }
+
+  // ── Add / remove ─────────────────────────────────────────────────
+
+  async function searchSymbols(q) {
+    if (!q || q.length < 2) { typeahead = []; return; }
+    try {
+      const { searchByPrefix } = await import('$lib/data/instruments');
+      typeahead = await searchByPrefix(q.toUpperCase(), 12);
+    } catch { typeahead = []; }
+  }
+
+  async function addRow() {
+    if (!symInput.trim() || activeId == null) return;
+    try {
+      await addWatchlistItem(activeId, symInput.trim().toUpperCase(), exchInput);
+      symInput = ''; typeahead = []; typeaheadOpen = false;
+      await loadActive(activeId);
+      refreshGrid();
+    } catch (e) { error = e.message; }
+  }
+
+  async function pickFromTypeahead(inst) {
+    try {
+      await addWatchlistItem(activeId, inst.s, inst.e);
+      symInput = ''; typeahead = []; typeaheadOpen = false;
+      await loadActive(activeId);
+      refreshGrid();
+    } catch (e) { error = e.message; }
+  }
+
   async function addToWatchlist(/** @type {string} */ tradingsymbol,
                                  /** @type {string} */ exchange) {
-    const def = (lists || []).find(l => l.is_default) || (lists || []).find(l => l.name === 'Default');
-    if (!def) return;
+    if (activeId == null) return;
     try {
-      await addWatchlistItem(def.id, tradingsymbol, exchange);
-      await loadLists();
-      if (def.id === activeId) await loadActive(activeId);
+      await addWatchlistItem(activeId, tradingsymbol, exchange);
+      await loadActive(activeId);
+      refreshGrid();
     } catch (e) {
       if (!/already/i.test(e?.message || '')) error = e.message;
     }
   }
 
-  /** Colour chip class per exchange — colour-coded markets so the
-   *  operator can scan rows by venue at a glance. */
-  function exchClass(/** @type {string} */ exch) {
-    switch ((exch || '').toUpperCase()) {
-      case 'NSE': return 'exch-nse';
-      case 'NFO': return 'exch-nfo';
-      case 'BSE': return 'exch-bse';
-      case 'MCX': return 'exch-mcx';
-      case 'CDS': return 'exch-cds';
-      default:    return 'exch-other';
-    }
-  }
-
-  async function loadLists() {
-    try {
-      lists = await fetchWatchlists();
-      if (!lists.length) return;
-      // Prefer the user's default list; fall back to first.
-      const def = lists.find(l => l.is_default) ?? lists[0];
-      if (activeId == null) activeId = def.id;
-    } catch (e) { error = e.message; }
-  }
-
-  async function loadActive(/** @type {number} */ id) {
-    loading = true; error = '';
-    try {
-      active = await fetchWatchlist(id);
-      await loadQuotes();
-    } catch (e) { error = e.message; } finally { loading = false; }
-  }
-
-  async function loadQuotes() {
+  async function removeFromWatchlist(/** @type {number} */ itemId) {
     if (activeId == null) return;
     try {
-      const r = await fetchWatchlistQuotes(activeId);
-      const map = /** @type {Record<number, any>} */ ({});
-      for (const q of (r?.items || [])) map[q.item_id] = q;
-      quotes = map;
-      refreshedAt = r?.refreshed_at || '';
-    } catch (e) {
-      // Don't blow up — broker may be off-hours / unreachable. Surface
-      // a one-line muted error; the table renders stale.
-      error = `Quote refresh: ${e.message}`;
-    }
+      await removeWatchlistItem(activeId, itemId);
+      await loadActive(activeId);
+      refreshGrid();
+    } catch (e) { error = e.message; }
   }
 
   function pickList(/** @type {number} */ id) {
     activeId = id;
-    loadActive(id);
-  }
-
-  // Typeahead — searches the client-side instrument cache.
-  async function searchSymbols(q) {
-    if (!q || q.length < 2) { typeahead = []; return; }
-    try {
-      const { searchByPrefix } = await import('$lib/data/instruments');
-      const rows = await searchByPrefix(q.toUpperCase(), 12);
-      typeahead = rows;
-    } catch { typeahead = []; }
-  }
-
-  async function addRow() {
-    if (!symInput.trim()) return;
-    error = '';
-    try {
-      await addWatchlistItem(activeId, symInput.trim().toUpperCase(), exchInput);
-      symInput = ''; typeahead = []; typeaheadOpen = false;
-      await loadActive(activeId);
-    } catch (e) { error = e.message; }
-  }
-
-  async function pickFromTypeahead(/** @type {any} */ inst) {
-    error = '';
-    try {
-      await addWatchlistItem(activeId, inst.s, inst.e);
-      symInput = ''; typeahead = []; typeaheadOpen = false;
-      await loadActive(activeId);
-    } catch (e) { error = e.message; }
-  }
-
-  async function removeRow(/** @type {number} */ itemId) {
-    error = '';
-    try {
-      await removeWatchlistItem(activeId, itemId);
-      await loadActive(activeId);
-    } catch (e) { error = e.message; }
+    loadActive(id).then(refreshGrid);
   }
 
   async function makeList() {
     if (!newListName.trim()) return;
-    error = '';
     try {
       const w = await createWatchlist(newListName.trim());
       newListName = ''; showCreate = false;
@@ -220,13 +278,136 @@
 
   async function dropList(/** @type {number} */ id) {
     if (!confirm('Delete this watchlist?')) return;
-    error = '';
     try {
       await deleteWatchlist(id);
       if (activeId === id) activeId = null;
       await loadLists();
       if (activeId == null && lists.length) pickList(lists[0].id);
     } catch (e) { error = e.message; }
+  }
+
+  // ── Grid setup ────────────────────────────────────────────────────
+
+  /** Source-badge renderer — W/H/P/U pills in the leftmost cell. */
+  function srcRenderer(params) {
+    const s = params.value || { w:false, h:false, p:false, u:false };
+    const make = (letter, cls) =>
+      `<span class="src-pill ${cls}">${letter}</span>`;
+    const parts = [];
+    if (s.w) parts.push(make('W', 'src-w'));
+    if (s.h) parts.push(make('H', 'src-h'));
+    if (s.p) parts.push(make('P', 'src-p'));
+    if (s.u) parts.push(make('U', 'src-u'));
+    return parts.join('');
+  }
+
+  function exchRenderer(params) {
+    const v = String(params.value || '').toUpperCase();
+    return `<span class="exch-chip exch-${v.toLowerCase()}">${v}</span>`;
+  }
+
+  function symRenderer(params) {
+    const row = params.data || {};
+    const alias = row.alias ? `<span class="sym-alias"> → ${row.tradingsymbol}</span>` : '';
+    const main  = row.alias || row.tradingsymbol || '';
+    return `<span class="sym-main">${main}</span>${alias}`;
+  }
+
+  function dirCls(v) {
+    if (v == null) return 'cell-flat';
+    if (v > 0) return 'cell-pos';
+    if (v < 0) return 'cell-neg';
+    return 'cell-flat';
+  }
+
+  /** Action column — `+W` when not in watchlist, `×` to remove. */
+  function actionRenderer(params) {
+    const r = params.data;
+    if (r.src.w) {
+      return `<button class="grid-btn grid-btn-rm" data-action="rm" title="Remove from watchlist">×</button>`;
+    }
+    return `<button class="grid-btn grid-btn-add" data-action="add" title="Add to watchlist">+W</button>`;
+  }
+
+  function getRowClass(params) {
+    const s = params.data?.src || {};
+    // Row tint priority: position > holding > watchlist > underlying.
+    if (s.p) return 'row-pos';
+    if (s.h) return 'row-hold';
+    if (s.w) return 'row-watch';
+    if (s.u) return 'row-und';
+    return '';
+  }
+
+  function mountGrid() {
+    if (!gridEl) return;
+    const colDefs = [
+      { field: 'src', headerName: 'Src', width: 90,
+        cellRenderer: srcRenderer, sortable: false },
+      { field: 'exchange', headerName: 'Exch', width: 64,
+        cellRenderer: exchRenderer, sortable: true },
+      { field: 'tradingsymbol', headerName: 'Symbol', flex: 1.4,
+        cellRenderer: symRenderer, sortable: true },
+      { field: 'ltp', headerName: 'LTP', flex: 0.8,
+        type: 'numericColumn',
+        valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
+      { field: 'change', headerName: 'Day Δ ₹', flex: 0.8,
+        type: 'numericColumn',
+        cellClass: (p) => dirCls(p.value),
+        valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + priceFmt(p.value) },
+      { field: 'change_pct', headerName: 'Day Δ %', flex: 0.8,
+        type: 'numericColumn',
+        cellClass: (p) => dirCls(p.value),
+        valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + Number(p.value).toFixed(2) + '%' },
+      { field: 'bid', headerName: 'Bid', flex: 0.7,
+        type: 'numericColumn', cellClass: 'cell-muted',
+        valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
+      { field: 'ask', headerName: 'Ask', flex: 0.7,
+        type: 'numericColumn', cellClass: 'cell-muted',
+        valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
+      { field: 'qty_pos', headerName: 'Pos Qty', flex: 0.7,
+        type: 'numericColumn', cellClass: 'cell-muted',
+        valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
+      { field: 'qty_hold', headerName: 'Hold Qty', flex: 0.7,
+        type: 'numericColumn', cellClass: 'cell-muted',
+        valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
+      { field: 'pnl', headerName: 'P&L', flex: 0.9,
+        type: 'numericColumn',
+        cellClass: (p) => dirCls(p.value),
+        valueFormatter: (p) => p.value ? aggFmt(p.value) : '—' },
+      { field: 'actions', headerName: '', width: 64,
+        cellRenderer: actionRenderer, sortable: false,
+        onCellClicked: handleActionClick },
+    ];
+
+    grid = createGrid(gridEl, {
+      theme: 'legacy',
+      columnDefs: colDefs,
+      rowData: unifiedRows,
+      defaultColDef: {
+        resizable: true, sortable: true, suppressMovable: true,
+        cellStyle: { display: 'flex', alignItems: 'center' },
+      },
+      overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">No rows — add symbols to your watchlist or load positions/holdings</span>',
+      domLayout: 'autoHeight',
+      getRowClass,
+      rowHeight: 28,
+      headerHeight: 28,
+    });
+  }
+
+  function refreshGrid() {
+    if (!grid) return;
+    grid.setGridOption('rowData', unifiedRows);
+  }
+
+  function handleActionClick(ev) {
+    const btn = ev.event?.target?.closest?.('button.grid-btn');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const r = ev.data;
+    if (action === 'add') addToWatchlist(r.tradingsymbol, r.exchange);
+    else if (action === 'rm' && r.watchlist_item_id) removeFromWatchlist(r.watchlist_item_id);
   }
 </script>
 
@@ -235,14 +416,14 @@
     <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">Watchlist</h1>
     <span class="algo-ts">{refreshedAt || clientTimestamp()}</span>
   </div>
-  <div class="border-b border-[rgba(251,191,36,0.25)] mb-4"></div>
+  <div class="border-b border-[rgba(251,191,36,0.25)] mb-3"></div>
 
   {#if error}
-    <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
+    <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
   {/if}
 
-  <!-- Tab strip — one button per list. -->
-  <div class="flex flex-wrap items-center gap-1 mb-3">
+  <!-- Tab strip + new/delete -->
+  <div class="flex flex-wrap items-center gap-1 mb-2">
     {#each lists as l}
       <button onclick={() => pickList(l.id)}
         class="px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded
@@ -266,7 +447,7 @@
   </div>
 
   {#if showCreate}
-    <div class="flex items-center gap-2 mb-3">
+    <div class="flex items-center gap-2 mb-2">
       <input bind:value={newListName} class="field-input flex-1" placeholder="New watchlist name"
         onkeydown={(e) => e.key === 'Enter' && makeList()} />
       <button onclick={makeList} class="btn-primary text-[0.65rem] py-1 px-3">Create</button>
@@ -275,18 +456,14 @@
     </div>
   {/if}
 
-  <!-- Add-symbol row. -->
-  <div class="flex items-center gap-2 mb-3 relative">
+  <!-- Add-symbol row -->
+  <div class="flex items-center gap-2 mb-2 relative">
     <input bind:value={symInput}
       oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
       onfocus={() => typeaheadOpen = true}
-      class="field-input flex-1" placeholder="Add symbol — type 2+ chars" />
+      class="field-input flex-1" placeholder="Add symbol to {active?.name ?? 'list'} — type 2+ chars" />
     <select bind:value={exchInput} class="field-input w-24">
-      <option>NSE</option>
-      <option>BSE</option>
-      <option>NFO</option>
-      <option>MCX</option>
-      <option>CDS</option>
+      <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>
     </select>
     <button onclick={addRow} disabled={!symInput.trim()}
       class="btn-primary text-[0.65rem] py-1 px-3 disabled:opacity-50">Add</button>
@@ -304,210 +481,84 @@
     {/if}
   </div>
 
-  <!-- Quote table. -->
-  {#if !active || !active.items?.length}
-    <p class="text-xs text-[#7e97b8] py-4">No symbols in this watchlist.</p>
-  {:else}
-    <div class="w-full overflow-x-auto">
-      <table class="w-full text-xs">
-        <thead class="text-[0.55rem] uppercase tracking-wider text-[#7e97b8] border-b border-[rgba(251,191,36,0.2)]">
-          <tr>
-            <th class="text-left py-1.5 px-2">Symbol</th>
-            <th class="text-left py-1.5 px-2">Exch</th>
-            <th class="text-right py-1.5 px-2">LTP</th>
-            <th class="text-right py-1.5 px-2">Bid</th>
-            <th class="text-right py-1.5 px-2">Ask</th>
-            <th class="text-right py-1.5 px-2">Day Δ ₹</th>
-            <th class="text-right py-1.5 px-2">Day Δ %</th>
-            <th class="text-right py-1.5 px-2">Volume</th>
-            <th class="text-right py-1.5 px-2"></th>
-          </tr>
-        </thead>
-        <tbody class="font-mono">
-          {#each active.items as it}
-            {@const q = quotes[it.id]}
-            {@const dir = q?.change > 0 ? 'pos' : q?.change < 0 ? 'neg' : 'flat'}
-            <tr class="border-b border-[rgba(200,216,240,0.06)] hover:bg-[#fbbf24]/5">
-              <td class="py-1 px-2">
-                <span class="exch-chip {exchClass(it.exchange)}">{it.exchange}</span>
-                <span class="text-[#fbbf24] ml-1">{it.tradingsymbol}</span>
-                {#if q?.quote_symbol && q.quote_symbol !== it.tradingsymbol}<span class="text-[0.55rem] text-[#7e97b8] ml-1">→ {q.quote_symbol}</span>{/if}
-              </td>
-              <td class="py-1 px-2 text-[0.6rem] text-[#7e97b8]"></td>
-              <td class="py-1 px-2 text-right tabular-nums">{q?.ltp ? priceFmt(q.ltp) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums text-[#c8d8f0]/70">{q?.bid ? priceFmt(q.bid) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums text-[#c8d8f0]/70">{q?.ask ? priceFmt(q.ask) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">
-                {q?.change != null ? (q.change > 0 ? '+' : '') + priceFmt(q.change) : '—'}
-              </td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">
-                {q?.change_pct != null ? (q.change_pct > 0 ? '+' : '') + q.change_pct.toFixed(2) + '%' : '—'}
-              </td>
-              <td class="py-1 px-2 text-right tabular-nums text-[#c8d8f0]/60">{q?.volume ? qtyFmt(q.volume) : '—'}</td>
-              <td class="py-1 px-2 text-right">
-                <button onclick={() => removeRow(it.id)}
-                  class="text-[0.7rem] text-[#7e97b8] hover:text-red-300" title="Remove">×</button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-    <p class="text-[0.55rem] text-[#7e97b8] mt-2">
-      Auto-refresh every 5 s · {active.items.length} symbol{active.items.length === 1 ? '' : 's'}
-    </p>
-  {/if}
-
-  <!-- ── Underlyings section ── -->
-  {#if underlyingList.length}
-    <h2 class="pulse-section-title">📈 Option Underlyings <span class="text-[0.55rem] text-[#7e97b8] ml-2">{underlyingList.length}</span></h2>
-    <div class="w-full overflow-x-auto">
-      <table class="w-full text-xs">
-        <thead class="text-[0.55rem] uppercase tracking-wider text-[#7e97b8] border-b border-[rgba(251,191,36,0.2)]">
-          <tr>
-            <th class="text-left py-1 px-2">Underlying</th>
-            <th class="text-right py-1 px-2">LTP</th>
-            <th class="text-right py-1 px-2">Day Δ ₹</th>
-            <th class="text-right py-1 px-2">Day Δ %</th>
-            <th class="text-right py-1 px-2"></th>
-          </tr>
-        </thead>
-        <tbody class="font-mono">
-          {#each underlyingList as u}
-            {@const q = underlyingQuotes[u]}
-            {@const dir = q?.change > 0 ? 'pos' : q?.change < 0 ? 'neg' : 'flat'}
-            <tr class="border-b border-[rgba(200,216,240,0.06)] hover:bg-[#fbbf24]/5">
-              <td class="py-1 px-2"><span class="exch-chip exch-nse">NSE</span> <span class="text-[#fbbf24] ml-1">{u}</span></td>
-              <td class="py-1 px-2 text-right tabular-nums">{q?.ltp ? priceFmt(q.ltp) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">{q?.change != null ? (q.change > 0 ? '+' : '') + priceFmt(q.change) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">{q?.change_pct != null ? (q.change_pct > 0 ? '+' : '') + q.change_pct.toFixed(2) + '%' : '—'}</td>
-              <td class="py-1 px-2 text-right">
-                <button class="exch-add" onclick={() => addToWatchlist(u, 'NSE')} title="Add to default watchlist">+W</button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-
-  <!-- ── Positions section ── -->
-  {#if positions.length}
-    <h2 class="pulse-section-title">📊 Positions <span class="text-[0.55rem] text-[#7e97b8] ml-2">{positions.length}</span></h2>
-    <div class="w-full overflow-x-auto">
-      <table class="w-full text-xs">
-        <thead class="text-[0.55rem] uppercase tracking-wider text-[#7e97b8] border-b border-[rgba(251,191,36,0.2)]">
-          <tr>
-            <th class="text-left py-1 px-2">Symbol</th>
-            <th class="text-left py-1 px-2">Account</th>
-            <th class="text-right py-1 px-2">Qty</th>
-            <th class="text-right py-1 px-2">LTP</th>
-            <th class="text-right py-1 px-2">Avg</th>
-            <th class="text-right py-1 px-2">P&L</th>
-            <th class="text-right py-1 px-2"></th>
-          </tr>
-        </thead>
-        <tbody class="font-mono">
-          {#each positions as r}
-            {@const exch = r.exchange || 'NFO'}
-            {@const pnl = Number(r.pnl) || 0}
-            {@const dir = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'flat'}
-            <tr class="border-b border-[rgba(200,216,240,0.06)] hover:bg-[#fbbf24]/5">
-              <td class="py-1 px-2"><span class="exch-chip {exchClass(exch)}">{exch}</span> <span class="text-[#fbbf24] ml-1">{r.symbol || r.tradingsymbol}</span></td>
-              <td class="py-1 px-2 text-[0.6rem] text-[#c8d8f0]/70">{r.account}</td>
-              <td class="py-1 px-2 text-right tabular-nums">{qtyFmt(r.quantity || 0)}</td>
-              <td class="py-1 px-2 text-right tabular-nums">{r.last_price ? priceFmt(r.last_price) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums text-[#c8d8f0]/60">{r.average_price ? priceFmt(r.average_price) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">{aggFmt(pnl)}</td>
-              <td class="py-1 px-2 text-right">
-                <button class="exch-add" onclick={() => addToWatchlist(r.symbol || r.tradingsymbol, exch)} title="Add to default watchlist">+W</button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-
-  <!-- ── Holdings section ── -->
-  {#if holdings.length}
-    <h2 class="pulse-section-title">💼 Holdings <span class="text-[0.55rem] text-[#7e97b8] ml-2">{holdings.length}</span></h2>
-    <div class="w-full overflow-x-auto">
-      <table class="w-full text-xs">
-        <thead class="text-[0.55rem] uppercase tracking-wider text-[#7e97b8] border-b border-[rgba(251,191,36,0.2)]">
-          <tr>
-            <th class="text-left py-1 px-2">Symbol</th>
-            <th class="text-left py-1 px-2">Account</th>
-            <th class="text-right py-1 px-2">Qty</th>
-            <th class="text-right py-1 px-2">LTP</th>
-            <th class="text-right py-1 px-2">Day Δ ₹</th>
-            <th class="text-right py-1 px-2">Day Δ %</th>
-            <th class="text-right py-1 px-2"></th>
-          </tr>
-        </thead>
-        <tbody class="font-mono">
-          {#each holdings as r}
-            {@const exch = r.exchange || 'NSE'}
-            {@const chg = Number(r.day_change) || 0}
-            {@const chgPct = Number(r.day_change_percentage) || 0}
-            {@const dir = chg > 0 ? 'pos' : chg < 0 ? 'neg' : 'flat'}
-            <tr class="border-b border-[rgba(200,216,240,0.06)] hover:bg-[#fbbf24]/5">
-              <td class="py-1 px-2"><span class="exch-chip {exchClass(exch)}">{exch}</span> <span class="text-[#fbbf24] ml-1">{r.symbol || r.tradingsymbol}</span></td>
-              <td class="py-1 px-2 text-[0.6rem] text-[#c8d8f0]/70">{r.account}</td>
-              <td class="py-1 px-2 text-right tabular-nums">{qtyFmt(r.quantity || 0)}</td>
-              <td class="py-1 px-2 text-right tabular-nums">{r.last_price ? priceFmt(r.last_price) : '—'}</td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">{aggFmt(chg)}</td>
-              <td class="py-1 px-2 text-right tabular-nums {dir==='pos' ? 'text-[#4ade80]' : dir==='neg' ? 'text-[#f87171]' : 'text-[#7e97b8]'}">{(chgPct > 0 ? '+' : '') + chgPct.toFixed(2)}%</td>
-              <td class="py-1 px-2 text-right">
-                <button class="exch-add" onclick={() => addToWatchlist(r.symbol || r.tradingsymbol, exch)} title="Add to default watchlist">+W</button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-
-  {#if pulseRefreshed}
-    <p class="text-[0.55rem] text-[#7e97b8] mt-4">Sections auto-refresh every 10 s · last update {pulseRefreshed}</p>
-  {/if}
+  <!-- Unified grid -->
+  <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
 </div>
 
 <style>
-  .pulse-section-title {
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #c8d8f0;
-    margin: 1.5rem 0 0.5rem;
-    padding-bottom: 0.25rem;
-    border-bottom: 1px solid rgba(251,191,36,0.2);
-  }
-  .exch-chip {
+  /* Source pills — leftmost column letters. */
+  :global(.src-pill) {
     display: inline-block;
-    padding: 1px 5px;
+    padding: 0 5px;
+    margin-right: 2px;
+    border-radius: 3px;
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    border: 1px solid;
+    line-height: 14px;
+    min-width: 14px;
+    text-align: center;
+  }
+  :global(.src-w) { color: #fbbf24; border-color: rgba(251,191,36,0.6); background: rgba(251,191,36,0.12); }
+  :global(.src-h) { color: #4ade80; border-color: rgba(74,222,128,0.6); background: rgba(74,222,128,0.12); }
+  :global(.src-p) { color: #7dd3fc; border-color: rgba(125,211,252,0.6); background: rgba(125,211,252,0.12); }
+  :global(.src-u) { color: #c4b5fd; border-color: rgba(196,181,253,0.6); background: rgba(196,181,253,0.12); }
+
+  /* Exchange chip — same palette as the row's underlying market. */
+  :global(.exch-chip) {
+    display: inline-block;
+    padding: 0 5px;
     border-radius: 3px;
     font-size: 0.5rem;
     font-weight: 700;
     letter-spacing: 0.05em;
     border: 1px solid;
+    line-height: 14px;
   }
-  .exch-nse  { color: #7dd3fc; border-color: rgba(125,211,252,0.4); background: rgba(125,211,252,0.08); }
-  .exch-nfo  { color: #fbbf24; border-color: rgba(251,191,36,0.4);  background: rgba(251,191,36,0.08); }
-  .exch-bse  { color: #c4b5fd; border-color: rgba(196,181,253,0.4); background: rgba(196,181,253,0.08); }
-  .exch-mcx  { color: #fb923c; border-color: rgba(251,146,60,0.4);  background: rgba(251,146,60,0.08); }
-  .exch-cds  { color: #a78bfa; border-color: rgba(167,139,250,0.4); background: rgba(167,139,250,0.08); }
-  .exch-other{ color: #7e97b8; border-color: rgba(126,151,184,0.4); background: rgba(126,151,184,0.08); }
-  .exch-add {
-    padding: 1px 6px;
-    font-size: 0.55rem;
+  :global(.exch-nse) { color: #7dd3fc; border-color: rgba(125,211,252,0.5); background: rgba(125,211,252,0.10); }
+  :global(.exch-nfo) { color: #fbbf24; border-color: rgba(251,191,36,0.5);  background: rgba(251,191,36,0.10); }
+  :global(.exch-bse) { color: #c4b5fd; border-color: rgba(196,181,253,0.5); background: rgba(196,181,253,0.10); }
+  :global(.exch-mcx) { color: #fb923c; border-color: rgba(251,146,60,0.5);  background: rgba(251,146,60,0.10); }
+  :global(.exch-cds) { color: #a78bfa; border-color: rgba(167,139,250,0.5); background: rgba(167,139,250,0.10); }
+
+  /* Symbol cell — main + alias. */
+  :global(.sym-main)  { color: #fbbf24; font-weight: 600; }
+  :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
+
+  /* Day Δ / P&L cells. */
+  :global(.cell-pos)  { color: #4ade80; }
+  :global(.cell-neg)  { color: #f87171; }
+  :global(.cell-flat) { color: #7e97b8; }
+  :global(.cell-muted){ color: rgba(200,216,240,0.6); }
+
+  /* Row background tint by source. Same alpha (0.08) across all four
+     so no row dominates; the Src pills are what tell you which is
+     which. The colour identifies the row's primary classification. */
+  :global(.unified-grid .ag-row.row-watch) { background: rgba(251,191,36,0.07) !important; }
+  :global(.unified-grid .ag-row.row-hold)  { background: rgba(74,222,128,0.07) !important; }
+  :global(.unified-grid .ag-row.row-pos)   { background: rgba(125,211,252,0.07) !important; }
+  :global(.unified-grid .ag-row.row-und)   { background: rgba(196,181,253,0.06) !important; }
+
+  /* Action column buttons. */
+  :global(.grid-btn) {
+    padding: 0 6px;
+    font-size: 0.6rem;
     font-weight: 700;
-    color: #fbbf24;
     background: transparent;
-    border: 1px solid rgba(251,191,36,0.3);
+    border: 1px solid;
     border-radius: 3px;
     cursor: pointer;
+    line-height: 18px;
   }
-  .exch-add:hover { background: rgba(251,191,36,0.1); }
+  :global(.grid-btn-add) { color: #fbbf24; border-color: rgba(251,191,36,0.4); }
+  :global(.grid-btn-add:hover) { background: rgba(251,191,36,0.10); }
+  :global(.grid-btn-rm)  { color: #f87171; border-color: rgba(248,113,113,0.4); }
+  :global(.grid-btn-rm:hover)  { background: rgba(248,113,113,0.10); }
+
+  /* Grid container */
+  .unified-grid {
+    width: 100%;
+    min-height: 60px;
+  }
 </style>
