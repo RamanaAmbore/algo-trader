@@ -911,6 +911,10 @@ class SimDriver:
                 "sum_holdings":   sum_h,
                 "sum_positions":  sum_p,
                 "df_margins":     df_m,
+                # Watchlist rows from the sim driver flow through to
+                # the agent evaluator's Context.watchlist_rows field so
+                # agents conditioning on `watchlist.*` scopes can fire.
+                "watchlist_rows": list(self._watchlist_rows),
                 "now":            timestamp_indian(),
                 "ist_display":    timestamp_display(),
                 "seg_state":      {},

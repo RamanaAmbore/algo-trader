@@ -157,6 +157,33 @@ def _scope_funds_any_acct(ctx):
     return [r.to_dict() for _, r in df[mask].iterrows()]
 
 
+# ── Watchlist scopes ─────────────────────────────────────────────────────
+# Each scope returns rows from ctx.watchlist_rows. The `account` slot on
+# each row carries the watchlist NAME so we filter by list name.
+
+def _scope_watchlist_all(ctx):
+    """Every row across every watchlist the user owns."""
+    return list(getattr(ctx, 'watchlist_rows', []) or [])
+
+def _scope_watchlist_default(ctx):
+    """Rows in the user's 'Default' watchlist."""
+    rows = getattr(ctx, 'watchlist_rows', []) or []
+    return [r for r in rows if str(r.get('account', '')) == 'Default']
+
+def _scope_watchlist_markets(ctx):
+    """Rows in the auto-seeded 'Markets' watchlist (indices + commodities)."""
+    rows = getattr(ctx, 'watchlist_rows', []) or []
+    return [r for r in rows if str(r.get('account', '')) == 'Markets']
+
+
+# ── Watchlist-specific metrics ───────────────────────────────────────────
+
+def _metric_ltp(ctx, row):
+    """Last-traded price for a watchlist row. Reused for any row that
+    carries a `last_price` column — works on positions rows too."""
+    return float(row.get('last_price', 0) or 0)
+
+
 # ── Operators — binary comparators (leaf-level) ──────────────────────────
 
 OPERATORS = {
@@ -286,6 +313,26 @@ SYSTEM_TOKENS: list[dict] = [
      'value_type': 'array',
      'description': 'Every non-TOTAL account row of the funds dataframe (leaf is OR-combined).',
      'resolver': 'backend.api.algo.grammar._scope_funds_any_acct'},
+
+    # ── Watchlist metric ─────────────────────────────────────────────
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'ltp',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Last-traded price of a watchlist row (or any row with a last_price column).',
+     'resolver': 'backend.api.algo.grammar._metric_ltp'},
+
+    # ── Watchlist scopes ─────────────────────────────────────────────
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'watchlist.all',
+     'value_type': 'array',
+     'description': 'Every row across every watchlist the operator owns (leaf is OR-combined per row).',
+     'resolver': 'backend.api.algo.grammar._scope_watchlist_all'},
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'watchlist.default',
+     'value_type': 'array',
+     'description': "Rows in the operator's Default watchlist.",
+     'resolver': 'backend.api.algo.grammar._scope_watchlist_default'},
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'watchlist.markets',
+     'value_type': 'array',
+     'description': "Rows in the auto-seeded Markets watchlist (indices + MCX commodities).",
+     'resolver': 'backend.api.algo.grammar._scope_watchlist_markets'},
 
     # ══════════════════════════════════════════════════════════════════════
     #  CONDITION — OPERATORS (leaf comparators)
