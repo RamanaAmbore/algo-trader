@@ -23,11 +23,12 @@ operator never has to update them month-over-month. Index symbols
 MARKETS_DEFAULT: list[tuple[str, str]] = [
     # Indices — quote endpoint maps these via the broker.quote() key
     # form `NSE:NIFTY 50` etc. Stable across months.
-    ("NIFTY 50",          "NSE"),
-    ("NIFTY BANK",        "NSE"),
-    ("NIFTY MIDCAP 100",  "NSE"),
-    ("INDIA VIX",         "NSE"),
-    ("SENSEX",            "BSE"),
+    ("NIFTY 50",            "NSE"),
+    ("NIFTY BANK",          "NSE"),
+    ("NIFTY MIDCAP 100",    "NSE"),
+    ("NIFTY SMALLCAP 100",  "NSE"),
+    ("INDIA VIX",           "NSE"),
+    ("SENSEX",              "BSE"),
 
     # MCX commodities — stored as bare commodity name; the quote
     # endpoint resolves to the near-month future at fetch time.

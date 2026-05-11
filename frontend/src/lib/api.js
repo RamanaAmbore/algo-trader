@@ -332,6 +332,21 @@ export const modifyOrder = (orderId, payload) => _put(`/orders/${orderId}`, payl
 
 // ── Admin endpoints (require admin JWT) ──────────────────────────────────────
 export const fetchUsers = () => _get('/admin/users', { auth: true });
+
+// ── Watchlist (any logged-in user) ───────────────────────────────────────────
+export const fetchWatchlists      = ()      => _get('/watchlist/', { auth: true });
+export const fetchWatchlist       = (id)    => _get(`/watchlist/${id}`, { auth: true });
+export const createWatchlist      = (name)  => _post('/watchlist/', { name }, { auth: true });
+export const renameWatchlist      = (id, payload) =>
+  _patch(`/watchlist/${id}`, payload, { auth: true });
+export const deleteWatchlist      = (id)    => _del(`/watchlist/${id}`, { auth: true });
+export const addWatchlistItem     = (id, tradingsymbol, exchange) =>
+  _post(`/watchlist/${id}/items`, { tradingsymbol, exchange }, { auth: true });
+export const removeWatchlistItem  = (wlId, itemId) =>
+  _del(`/watchlist/${wlId}/items/${itemId}`, { auth: true });
+export const reorderWatchlistItem = (wlId, itemId, sortOrder) =>
+  _patch(`/watchlist/${wlId}/items/${itemId}`, { sort_order: sortOrder }, { auth: true });
+export const fetchWatchlistQuotes = (id)    => _get(`/watchlist/${id}/quotes`, { auth: true });
 export const createUser = (payload) => _post('/admin/users', payload, { auth: true });
 
 export const approveUser    = (username) => _put(`/admin/users/${username}/approve`,   undefined, { auth: true });

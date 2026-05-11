@@ -91,9 +91,136 @@ class ReorderItemRequest(msgspec.Struct):
     sort_order: int
 
 
+class WatchlistQuote(msgspec.Struct):
+    """Live market quote for a single watchlist item."""
+    item_id: int
+    tradingsymbol: str       # the symbol the user stored (e.g. "GOLD")
+    quote_symbol: str        # the symbol we resolved + fetched (e.g. "GOLDM25APRFUT")
+    exchange: str
+    ltp: float
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None   # prior-day close — used for day change
+    change: float = 0.0              # ltp - close (signed ₹)
+    change_pct: float = 0.0          # (ltp - close) / close × 100
+    volume: int = 0
+    stale: bool = False              # true when broker returned no quote
+
+
+class WatchlistQuotes(msgspec.Struct):
+    watchlist_id: int
+    refreshed_at: str
+    items: list[WatchlistQuote]
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+# In-process quote cache. Keyed by watchlist_id. The 5s TTL matches the
+# paper engine tick + the simulator default rate, so we share one batch
+# across multiple polls from the same UI session.
+_QUOTE_CACHE: dict[int, tuple[float, WatchlistQuotes]] = {}
+_QUOTE_TTL_SECONDS = 5.0
+
+
+def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
+    """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
+    future tradingsymbol. Looks up the instrument cache. Returns None
+    when no MCX FUT is found for that commodity."""
+    try:
+        from backend.api.routes.instruments import _CACHE  # type: ignore
+        items = (_CACHE.get("items") or []) if isinstance(_CACHE, dict) else []
+    except Exception:
+        items = []
+    if not items:
+        return None
+    candidates = []
+    target_u = commodity_name.upper()
+    for inst in items:
+        if (
+            getattr(inst, "e", "") == "MCX"
+            and getattr(inst, "t", "") == "FUT"
+            and (getattr(inst, "u", "") or "").upper() == target_u
+            and getattr(inst, "x", None)
+        ):
+            candidates.append(inst)
+    if not candidates:
+        return None
+    # Earliest expiry first — that's the near-month future.
+    candidates.sort(key=lambda i: i.x or "")
+    return candidates[0].s
+
+
+def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
+    """Returns (broker_key, quote_symbol). MCX bare commodity names get
+    resolved to the near-month future; everything else passes through."""
+    sym, exch = item.tradingsymbol, item.exchange
+    # Heuristic: MCX commodity names are short + uppercase + no digits.
+    # Real futures look like GOLDM25APRFUT / CRUDEOILM25MAY etc.
+    if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+        resolved = _resolve_mcx_commodity(sym)
+        if resolved:
+            return f"MCX:{resolved}", resolved
+    return f"{exch}:{sym}", sym
+
+
+async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
+    """One batched broker.quote() call for every distinct key. asyncio
+    runs the sync broker call in a thread so the event loop isn't
+    blocked on the network round-trip."""
+    import asyncio
+    from backend.shared.brokers.registry import get_price_broker
+
+    key_map: dict[int, tuple[str, str]] = {}
+    for it in items:
+        broker_key, quote_sym = _build_quote_key(it)
+        key_map[it.id] = (broker_key, quote_sym)
+
+    distinct_keys = sorted({k[0] for k in key_map.values() if k[0]})
+    quote_data: dict = {}
+    if distinct_keys:
+        try:
+            broker = get_price_broker()
+            quote_data = await asyncio.to_thread(broker.quote, distinct_keys) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Watchlist quote fetch failed: {exc}")
+            quote_data = {}
+
+    out: list[WatchlistQuote] = []
+    for it in items:
+        broker_key, quote_sym = key_map[it.id]
+        q = quote_data.get(broker_key) or {}
+        ltp    = float(q.get("last_price") or 0.0)
+        ohlc   = q.get("ohlc") or {}
+        close  = float(ohlc.get("close") or 0.0) or None
+        depth  = q.get("depth") or {}
+        buys   = depth.get("buy") or []
+        sells  = depth.get("sell") or []
+        bid    = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
+        ask    = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
+        change = (ltp - close) if (close and ltp) else 0.0
+        chg_pct = (change / close * 100.0) if close else 0.0
+        out.append(WatchlistQuote(
+            item_id=it.id,
+            tradingsymbol=it.tradingsymbol,
+            quote_symbol=quote_sym,
+            exchange=it.exchange,
+            ltp=ltp,
+            bid=bid, ask=ask,
+            open=(float(ohlc.get("open"))  if ohlc.get("open")  else None),
+            high=(float(ohlc.get("high"))  if ohlc.get("high")  else None),
+            low =(float(ohlc.get("low"))   if ohlc.get("low")   else None),
+            close=close,
+            change=change, change_pct=chg_pct,
+            volume=int(q.get("volume") or 0),
+            stale=(not q),
+        ))
+    return out
 
 def _actor_sub(request) -> str:
     payload = getattr(request.state, "token_payload", {}) or {}
@@ -403,6 +530,50 @@ class WatchlistController(Controller):
             it.sort_order = int(data.sort_order)
             await session.commit()
         return _item_info(it)
+
+    @get("/{wl_id:int}/quotes")
+    async def quotes(self, wl_id: int, request: Request) -> WatchlistQuotes:
+        """Batched live quotes for every item in the watchlist. 5-second
+        in-process cache so multiple concurrent polls share one Kite
+        round-trip. The cache is keyed on watchlist_id only — adds /
+        removes will be reflected on the next refresh (max 5s lag)."""
+        import time
+        from datetime import datetime, timezone
+        username = _actor_sub(request)
+        async with async_session() as session:
+            user_id = await _resolve_user_id(session, username)
+            wl_row = await session.execute(
+                select(Watchlist).where(
+                    Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                )
+            )
+            wl = wl_row.scalar_one_or_none()
+            if not wl:
+                raise HTTPException(status_code=404, detail="Watchlist not found")
+            items_row = await session.execute(
+                select(WatchlistItem).where(WatchlistItem.watchlist_id == wl_id)
+                .order_by(WatchlistItem.sort_order, WatchlistItem.id)
+            )
+            items = list(items_row.scalars().all())
+
+        # Cache check — same watchlist hit within TTL returns cached.
+        now = time.monotonic()
+        cached = _QUOTE_CACHE.get(wl_id)
+        if cached and (now - cached[0]) < _QUOTE_TTL_SECONDS:
+            # Defensive: if the item set changed (operator added/removed
+            # between polls), recompute the keys but reuse the broker
+            # data we already have.
+            if {q.item_id for q in cached[1].items} == {it.id for it in items}:
+                return cached[1]
+
+        quotes = await _fetch_quotes(items)
+        out = WatchlistQuotes(
+            watchlist_id=wl_id,
+            refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            items=quotes,
+        )
+        _QUOTE_CACHE[wl_id] = (now, out)
+        return out
 
     @delete("/{wl_id:int}/items/{item_id:int}", status_code=200)
     async def remove_item(

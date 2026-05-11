@@ -216,6 +216,31 @@ export function getInstrument(tradingsymbol) {
   return _byTradingsymbol.get(tradingsymbol.toUpperCase()) || null;
 }
 
+/**
+ * Search instruments by tradingsymbol prefix (case-insensitive).
+ * Equity / index symbols are surfaced first (shorter); contracts
+ * (CE/PE/FUT) come second. Returns up to `limit` matches.
+ * Used by the watchlist add-symbol typeahead.
+ */
+export async function searchByPrefix(prefix, limit = 12) {
+  await loadInstruments();
+  if (!_byTradingsymbol) return [];
+  const p = String(prefix || '').toUpperCase();
+  if (!p) return [];
+  const eq = [];   // equities / indices first
+  const ct = [];   // contracts after
+  for (const [sym, inst] of _byTradingsymbol) {
+    if (!sym.startsWith(p)) continue;
+    if (inst.t === 'EQ' || inst.t === '') {
+      eq.push(inst);
+    } else {
+      ct.push(inst);
+    }
+    if (eq.length + ct.length >= limit * 3) break;  // bound the walk
+  }
+  return [...eq, ...ct].slice(0, limit);
+}
+
 /** List option contracts for an underlying + type (CE/PE). Returns sorted by expiry then strike. */
 export function listOptions(underlying, type) {
   if (!_byUnderlyingType) return [];
