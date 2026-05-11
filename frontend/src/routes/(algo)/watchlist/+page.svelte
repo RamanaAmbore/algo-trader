@@ -603,7 +603,7 @@
     if (row.src?.u) {
       badges.push(`<span class="sym-badge badge-u" title="Option underlying">U</span>`);
     }
-    const badgeHtml = badges.length ? ` <span class="sym-badges">${badges.join('')}</span>` : '';
+    const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
     return `<span class="sym-main">${main}</span>${alias}${badgeHtml}`;
   }
 
@@ -838,7 +838,7 @@
   :global(.sym-badges) {
     display: inline-flex;
     gap: 2px;
-    margin-left: 4px;
+    margin-left: 2px;
     vertical-align: middle;
   }
   :global(.sym-badge) {
