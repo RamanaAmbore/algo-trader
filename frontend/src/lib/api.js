@@ -347,6 +347,8 @@ export const removeWatchlistItem  = (wlId, itemId) =>
 export const reorderWatchlistItem = (wlId, itemId, sortOrder) =>
   _patch(`/watchlist/${wlId}/items/${itemId}`, { sort_order: sortOrder }, { auth: true });
 export const fetchWatchlistQuotes = (id)    => _get(`/watchlist/${id}/quotes`, { auth: true });
+/** POST /api/quote/batch — fetch LTP/bid/ask/day-change for arbitrary keys. */
+export const batchQuote           = (keys)  => _post('/quote/batch', { keys }, { auth: _hasToken() });
 export const createUser = (payload) => _post('/admin/users', payload, { auth: true });
 
 export const approveUser    = (username) => _put(`/admin/users/${username}/approve`,   undefined, { auth: true });
