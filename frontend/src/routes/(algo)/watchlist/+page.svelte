@@ -14,10 +14,11 @@
     fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
-    fetchPositions, fetchHoldings, batchQuote,
+    fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
   } from '$lib/api';
   import { authStore, visibleInterval, clientTimestamp } from '$lib/stores';
   import { aggFmt, priceFmt, qtyFmt } from '$lib/format';
+  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -28,6 +29,15 @@
   let positions   = $state(/** @type {any[]} */ ([]));
   let holdings    = $state(/** @type {any[]} */ ([]));
   let underlyingQuotes = $state(/** @type {Record<string, any>} */ ({}));
+  // Contract-level live quotes (option / future positions) — keyed
+  // by `${exchange}:${tradingsymbol}` so the row merge step below
+  // can pick them up in O(1). Refreshed every 10 s via the chunked
+  // batch-quote path.
+  let contractQuotes   = $state(/** @type {Record<string, any>} */ ({}));
+  // Wall-clock of the last successful pulse refresh. Drives the
+  // "Last updated Xs ago" indicator so stalls are visible.
+  let pulseLastUpdate  = $state(/** @type {number | null} */ (null));
+  let agoTick          = $state(0);                       // forces ago string rerender
   let refreshedAt = $state('');
   let error       = $state('');
 
@@ -55,6 +65,13 @@
   // the page red. Show the banner only after 3 consecutive failures.
   let quoteFailStreak = 0;
 
+  // Order-ticket integration — row click opens the OrderEntryShell
+  // pre-filled with the row's symbol / exchange / lot size. Stays
+  // null when no ticket is open. Real broker accounts (unmasked
+  // account_id) fetched once on mount so the operator can pick.
+  let ticketProps     = $state(/** @type {any} */ (null));
+  let realAccounts    = $state(/** @type {string[]} */ ([]));
+
   onMount(async () => {
     if (!$authStore.user) { goto('/signin'); return; }
     // Warm the instruments cache + capture the sync lookup so
@@ -64,6 +81,15 @@
       await mod.loadInstruments();
       getInstrument = mod.getInstrument;
     } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
+    // Real broker accounts for the OrderTicket — same fetch the
+    // /admin/options page does so the ticket picks the right Kite
+    // handle to route through.
+    try {
+      const r = await fetchAccounts();
+      realAccounts = (r?.accounts || [])
+        .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
+        .filter(Boolean);
+    } catch (_) { realAccounts = []; }
     await loadLists();
     if (activeId != null) {
       await loadActive(activeId);
@@ -117,6 +143,26 @@
     }
   }
 
+  /** Chunked batch-quote — splits keys into ~50-sized chunks so Kite's
+   *  /quote endpoint doesn't time out on huge baskets, and runs them
+   *  in parallel for throughput. Wraps each call in a 5 s timeout so
+   *  a slow Kite round-trip doesn't stall the next 10 s tick. */
+  async function batchQuoteChunked(keys) {
+    if (!keys || !keys.length) return [];
+    const CHUNK = 50;
+    const TIMEOUT_MS = 5000;
+    const chunks = [];
+    for (let i = 0; i < keys.length; i += CHUNK) chunks.push(keys.slice(i, i + CHUNK));
+    const withTimeout = (p) => Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('quote timeout')), TIMEOUT_MS)),
+    ]);
+    const results = await Promise.all(chunks.map(c =>
+      withTimeout(batchQuote(c)).catch(() => ({ items: [] }))
+    ));
+    return results.flatMap(r => (r?.items || []));
+  }
+
   async function loadPulse() {
     try {
       const [p, h] = await Promise.all([
@@ -125,37 +171,55 @@
       ]);
       positions = (p?.rows || []).slice();
       holdings  = (h?.rows || []).slice();
-      // Derive underlyings (for option positions only).
+      // Derive underlyings (for option positions only) PLUS every
+      // option/future tradingsymbol — quote them all in one chunked
+      // batch so the grid LTPs are live every 10 s, not stuck on the
+      // 5-min /api/positions cache.
       const underlyings = new Set();
+      const contractKeys = new Set();
       try {
         const { loadInstruments, getInstrument } = await import('$lib/data/instruments');
         await loadInstruments();
         for (const r of positions) {
           const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+          const exch = r.exchange || 'NFO';
           const inst = getInstrument(sym);
           if (inst && inst.u && String(inst.t || '').toUpperCase() !== 'EQ') {
             underlyings.add(inst.u);
           }
+          if (sym) contractKeys.add(`${exch}:${sym}`);
         }
       } catch (_) { /* instruments cold */ }
-      if (underlyings.size) {
-        const keys = [...underlyings].map(u => `NSE:${u}`);
-        try {
-          const r = await batchQuote(keys);
-          const map = {};
-          for (const q of (r?.items || [])) map[q.tradingsymbol] = q;
-          underlyingQuotes = map;
-        } catch (_) { underlyingQuotes = {}; }
+
+      const allKeys = [
+        ...[...underlyings].map(u => `NSE:${u}`),
+        ...contractKeys,
+      ];
+      if (allKeys.length) {
+        const items = await batchQuoteChunked(allKeys);
+        const uMap = {};
+        const cMap = {};
+        for (const q of items) {
+          // The underlying-quote path stores by tradingsymbol (NIFTY etc.);
+          // contract quotes store by `EXCHANGE:SYMBOL` for fast position
+          // merge below.
+          if (underlyings.has(q.tradingsymbol)) uMap[q.tradingsymbol] = q;
+          cMap[`${q.exchange}:${q.tradingsymbol}`] = q;
+        }
+        underlyingQuotes = uMap;
+        contractQuotes  = cMap;
       } else {
         underlyingQuotes = {};
+        contractQuotes  = {};
       }
+      pulseLastUpdate = Date.now();
     } catch (_) { /* nothing fatal */ }
   }
 
   /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
    *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
   const unifiedRows = $derived(buildUnified(
-    active, watchQuotes, positions, holdings, underlyingQuotes, getInstrument
+    active, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument
   ));
 
   /** Best-effort tradingsymbol parser using the IndexedDB instrument
@@ -176,9 +240,22 @@
     return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
   }
 
-  function buildUnified(activeList, wq, pos, hold, uq, getInst) {
+  function buildUnified(activeList, wq, pos, hold, uq, cq, getInst) {
+    // Key on tradingsymbol alone (case-normalised). If the same
+    // symbol exists in multiple accounts or across exchanges, we
+    // collapse to one row with net qty + summed P&L — the operator
+    // sees one canonical row per instrument.
     const byKey = /** @type {Record<string, any>} */ ({});
-    const get = (key) => byKey[key] || (byKey[key] = { key, src: { w:false, h:false, p:false, u:false } });
+    const get = (key) => byKey[key] || (byKey[key] = {
+      key,
+      src: { w:false, h:false, p:false, u:false },
+      // Accumulators initialised to 0 so the += in the position /
+      // holding loops below works without an explicit null guard.
+      qty_pos: 0, qty_hold: 0, pnl: 0,
+      // Weighted-avg numerator for avg_pos (sum of qty × avg);
+      // divided by total qty at render time.
+      _avg_num: 0,
+    });
 
     function fill(row, sym) {
       const p = parseSymbol(sym, getInst);
@@ -192,10 +269,9 @@
     // 1. Watchlist (active list)
     for (const it of (activeList?.items || [])) {
       const q = wq[it.id];
-      const sym = q?.quote_symbol || it.tradingsymbol;
-      const key = `${it.exchange}:${sym}`;
-      const row = get(key);
-      row.exchange      = it.exchange;
+      const sym = String(q?.quote_symbol || it.tradingsymbol).toUpperCase();
+      const row = get(sym);
+      row.exchange      = row.exchange || it.exchange;
       row.tradingsymbol = sym;
       row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
       row.watchlist_item_id = it.id;
@@ -208,37 +284,61 @@
       fill(row, sym);
     }
 
-    // 2. Positions
+    // 2. Positions — same symbol across multiple accounts accumulates
+    // into a single row with net qty + weighted-average avg_price.
     for (const r of pos) {
       const exch = r.exchange || 'NFO';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const key = `${exch}:${sym}`;
-      const row = get(key);
-      row.exchange      = exch;
+      const row = get(sym);
+      row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.p = true;
-      row.ltp = r.last_price ?? row.ltp ?? null;
-      row.qty_pos = Number(r.quantity) || 0;
-      row.avg_pos = Number(r.average_price) || 0;
-      row.pnl     = Number(r.pnl) || 0;
+      const q   = Number(r.quantity) || 0;
+      const avg = Number(r.average_price) || 0;
+      row.qty_pos  += q;
+      row._avg_num += avg * q;
+      // Live contract quote wins over the /api/positions snapshot
+      // (cached server-side for 5 min). Set LTP once — same symbol
+      // shares the same live price across accounts.
+      const liveQ = cq?.[`${exch}:${sym}`];
+      if (liveQ?.ltp) {
+        row.ltp        = liveQ.ltp;
+        row.bid        = liveQ.bid ?? row.bid ?? null;
+        row.ask        = liveQ.ask ?? row.ask ?? null;
+        row.change     = liveQ.change     ?? row.change     ?? null;
+        row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
+      } else if (row.ltp == null) {
+        row.ltp = r.last_price ?? null;
+      }
+      row.pnl += Number(r.pnl) || 0;
       fill(row, sym);
     }
 
-    // 3. Holdings
+    // 3. Holdings — same accumulation rule as positions.
     for (const r of hold) {
       const exch = r.exchange || 'NSE';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const key = `${exch}:${sym}`;
-      const row = get(key);
-      row.exchange      = exch;
+      const row = get(sym);
+      row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.h = true;
-      row.ltp = r.last_price ?? row.ltp ?? null;
-      row.qty_hold = Number(r.quantity) || 0;
-      if (r.day_change != null)            row.change = Number(r.day_change);
-      if (r.day_change_percentage != null) row.change_pct = Number(r.day_change_percentage);
+      row.qty_hold += Number(r.quantity) || 0;
+      // Live contract quote wins; otherwise fall back to the
+      // holdings snapshot's last_price.
+      const liveQ = cq?.[`${exch}:${sym}`];
+      if (liveQ?.ltp) {
+        row.ltp        = liveQ.ltp;
+        row.change     = liveQ.change     ?? row.change     ?? null;
+        row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
+      } else {
+        if (row.ltp == null) row.ltp = r.last_price ?? null;
+        if (r.day_change != null && row.change == null)
+          row.change = Number(r.day_change);
+        if (r.day_change_percentage != null && row.change_pct == null)
+          row.change_pct = Number(r.day_change_percentage);
+      }
       fill(row, sym);
     }
 
@@ -246,9 +346,8 @@
     // of their underlying group so the sort below pins them to the
     // top of the group.
     for (const [u, q] of Object.entries(uq)) {
-      const key = `NSE:${u}`;
-      const row = get(key);
-      row.exchange      = 'NSE';
+      const row = get(u);
+      row.exchange      = row.exchange || 'NSE';
       row.tradingsymbol = u;
       row.src.u = true;
       row.underlying    = u;     // group key — same as the option's parsed underlying
@@ -281,6 +380,15 @@
         row.underlying = tag;
         row.kind       = 'spot';
       }
+    }
+
+    // Finalise per-row aggregates: weighted-avg avg_pos from the
+    // sum-of-(qty × avg) accumulator. qty_pos === 0 keeps avg at 0.
+    for (const row of Object.values(byKey)) {
+      if (row.qty_pos !== 0) {
+        row.avg_pos = row._avg_num / row.qty_pos;
+      }
+      delete row._avg_num;
     }
 
     // ── Sort ──────────────────────────────────────────────────────
@@ -426,9 +534,17 @@
   }
 
   function getRowClass(params) {
-    const s = params.data?.src || {};
-    // Row tint priority: position > holding > watchlist > underlying.
-    if (s.p) return 'row-pos';
+    const r = params.data || {};
+    const s = r.src || {};
+    // Position rows: cyan-long / orange-short symbol stripe, same as
+    // PerformancePage. Falls back to the source-priority tint for
+    // non-position rows.
+    if (s.p) {
+      const q = Number(r.qty_pos) || 0;
+      if (q < 0) return 'pos-short';
+      if (q > 0) return 'pos-long';
+      return 'row-pos';  // qty=0 — closed mid-day
+    }
     if (s.h) return 'row-hold';
     if (s.w) return 'row-watch';
     if (s.u) return 'row-und';
@@ -445,39 +561,37 @@
     // symbol cell (cyan=position, green=holding, amber=watchlist,
     // violet=underlying) — no separate Src column needed.
     const colDefs = /** @type {any[]} */ ([
-      { field: 'exchange', headerName: 'Exch', width: 50,
-        cellRenderer: exchRenderer, sortable: true },
-      { field: 'tradingsymbol', headerName: 'Symbol', width: 220, pinned: 'left',
+      { field: 'tradingsymbol', headerName: 'Symbol', width: 160, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
-        cellClass: 'col-sym-tint' },
-      { field: 'ltp', headerName: 'LTP', width: 78,
+        cellClass: 'ag-col-sym ag-col-fill' },
+      { field: 'ltp', headerName: 'LTP', width: 70,
         type: 'numericColumn',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'change', headerName: 'Day Δ ₹', width: 88,
+      { field: 'change', headerName: 'Day Δ ₹', width: 78,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
         valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + priceFmt(p.value) },
-      { field: 'change_pct', headerName: 'Day %', width: 72,
+      { field: 'change_pct', headerName: 'Day %', width: 56,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
         valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + Number(p.value).toFixed(2) + '%' },
-      { field: 'bid', headerName: 'Bid', width: 72,
+      { field: 'bid', headerName: 'Bid', width: 62,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'ask', headerName: 'Ask', width: 72,
+      { field: 'ask', headerName: 'Ask', width: 62,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'qty_pos', headerName: 'Pos Qty', width: 70,
+      { field: 'qty_pos', headerName: 'Pos Qty', width: 56,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
-      { field: 'qty_hold', headerName: 'Hold Qty', width: 72,
+      { field: 'qty_hold', headerName: 'Hold Qty', width: 56,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
-      { field: 'pnl', headerName: 'P&L', width: 88,
+      { field: 'pnl', headerName: 'P&L', width: 78,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
         valueFormatter: (p) => p.value ? aggFmt(p.value) : '—' },
-      { field: 'actions', headerName: '', width: 56,
+      { field: 'actions', headerName: '', width: 44,
         cellRenderer: actionRenderer, sortable: false,
         onCellClicked: handleActionClick, pinned: 'right' },
     ]);
@@ -495,6 +609,7 @@
       getRowClass,
       rowHeight: 28,
       headerHeight: 28,
+      onRowClicked: handleRowClick,
     });
   }
 
@@ -511,6 +626,38 @@
     if (action === 'add') addToWatchlist(r.tradingsymbol, r.exchange);
     else if (action === 'rm' && r.watchlist_item_id) removeFromWatchlist(r.watchlist_item_id);
   }
+
+  /** Click handler for any non-action row cell — opens the
+   *  OrderEntryShell pre-filled with the row's symbol so the
+   *  operator can place an order without leaving /watchlist. */
+  function handleRowClick(ev) {
+    if (!ev.data) return;
+    // Ignore clicks on the actions cell — those have their own
+    // handler that mutates the watchlist.
+    const target = ev.event?.target;
+    if (target?.closest?.('button.grid-btn')) return;
+    const r = ev.data;
+    const inst = getInstrument?.(r.tradingsymbol);
+    const lot = Number(inst?.ls || 1);
+    // Pre-fill side based on the row's position direction if any —
+    // long position → SELL (square off), short position → BUY (cover);
+    // for non-position rows default to BUY.
+    let side = 'BUY';
+    if (r.src?.p && r.qty_pos < 0) side = 'BUY';
+    else if (r.src?.p && r.qty_pos > 0) side = 'SELL';
+    openTicket({
+      symbol:   r.tradingsymbol,
+      exchange: r.exchange,
+      side,
+      qty:      Math.abs(Number(r.qty_pos) || lot),
+      lotSize:  lot,
+      accounts: realAccounts.length ? realAccounts : [],
+      account:  realAccounts[0] || '',
+    });
+  }
+
+  function openTicket(p) { ticketProps = { defaultTab: 'ticket', ...p }; }
+  function closeTicket() { ticketProps = null; }
 </script>
 
 <div class="algo-status-card p-5 pt-4" data-status="inactive">
@@ -586,6 +733,17 @@
   <!-- Unified grid -->
   <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
 </div>
+
+<!-- Order-ticket modal — opens when the operator clicks any non-action
+     row. Pre-filled with the row's symbol; operator picks side / qty /
+     mode / price. DRAFT lands locally, PAPER / LIVE go through the
+     existing ticket submit path. -->
+{#if ticketProps}
+  <OrderEntryShell
+    {...ticketProps}
+    onSubmit={() => { closeTicket(); }}
+    onClose={closeTicket} />
+{/if}
 
 <style>
   /* Exchange tag — text-only, no chrome. Lets the row breathe. */
