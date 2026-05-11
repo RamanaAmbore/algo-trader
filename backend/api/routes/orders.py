@@ -1105,12 +1105,16 @@ class AccountsController(Controller):
     guards = [jwt_guard]
 
     @get("/")
-    async def list_accounts(self) -> AccountsResponse:
+    async def list_accounts(self, request: Request) -> AccountsResponse:
+        # display = real account_id for admin/designated callers,
+        # masked (ZG####) for any other signed-in caller. Symmetric
+        # with mask_column() in row endpoints (positions/holdings/funds).
         conn = Connections().conn
+        do_mask = not is_admin_request(request)
         accounts = [
             AccountInfo(
                 account_id=account,
-                display=mask_column(pd.Series([account]))[0],
+                display=(mask_column(pd.Series([account]))[0] if do_mask else account),
             )
             for account in conn
         ]
