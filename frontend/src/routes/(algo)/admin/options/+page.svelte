@@ -24,6 +24,7 @@
     fetchPositions, fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
+    fetchWatchlists, addWatchlistItem,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
@@ -1144,6 +1145,15 @@
   /** @type {string[]} */
   let realAccounts = $state([]);
 
+  /** ID of the user's default watchlist — populated on mount so chain
+   *  rows can drop a "+W" button that adds the strike to the right
+   *  list with zero extra clicks. Stays null on demo / unauthenticated
+   *  sessions and the button hides. */
+  let defaultWatchlistId = $state(/** @type {number | null} */ (null));
+  /** Per-strike|optType toast confirming the watchlist add. Keyed
+   *  by `${strike}|${CE|PE}` so each chain row tracks its own. */
+  let watchToast = $state(/** @type {{ key: string, msg: string } | null} */ (null));
+
   async function loadRealAccounts() {
     try {
       const r = await fetchAccounts();
@@ -1156,6 +1166,43 @@
       // empty; the ticket falls back to the masked accountChoices.
       realAccounts = [];
     }
+  }
+
+  async function loadDefaultWatchlist() {
+    try {
+      const lists = await fetchWatchlists();
+      const def = (lists || []).find(/** @param {any} l */ (l) => l?.is_default)
+                ?? (lists || [])[0];
+      if (def) defaultWatchlistId = Number(def.id);
+    } catch (_) {
+      // Demo / unauthenticated — leave null; the "+W" button hides.
+      defaultWatchlistId = null;
+    }
+  }
+
+  /** Add a chain row to the user's default watchlist. Resolves the
+   *  contract via the instrument cache so the tradingsymbol matches
+   *  exactly what the broker knows. */
+  async function addOptionToWatchlist(
+    /** @type {number} */ strike,
+    /** @type {'CE'|'PE'} */ optType,
+  ) {
+    if (defaultWatchlistId == null) return;
+    if (!chainUnderlying || !chainExpiry) return;
+    const inst = findOption(
+      chainUnderlying.toUpperCase(), optType, strike, chainExpiry,
+    );
+    if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
+    const key = `${strike}|${optType}`;
+    try {
+      await addWatchlistItem(defaultWatchlistId, String(inst.s), inst.e || 'NFO');
+      watchToast = { key, msg: '+ Watch' };
+    } catch (e) {
+      // 409 = already in list — show a friendlier confirmation rather
+      // than a red error, since the operator's intent was met.
+      watchToast = { key, msg: /already/i.test(e?.message || '') ? 'in list' : 'err' };
+    }
+    setTimeout(() => { if (watchToast?.key === key) watchToast = null; }, 1200);
   }
 
   /** Account list to feed the OrderTicket — prefers the unmasked
@@ -1397,6 +1444,10 @@
     // the account field for non-admin signed-in users; /accounts
     // returns unmasked account_ids to any authenticated user.
     loadRealAccounts();
+    // Resolve the user's default watchlist id once, so the chain rows
+    // can drop a "+W" button. Demo / unauthenticated sessions just
+    // leave defaultWatchlistId null and the button hides.
+    loadDefaultWatchlist();
     // Load the instruments cache so the option-chain picker has data.
     // Already cached in IndexedDB after the first /console autocomplete
     // load — most operators will see this resolve from cache instantly.
@@ -1727,9 +1778,17 @@
                             <button type="button" class="chain-btn chain-btn-info"
                                     title="Open full ticket for {k} CE (edit qty / price / mode)"
                                     onclick={() => addChainDraft(k, 'CE', 'long')}>i</button>
+                            {#if defaultWatchlistId != null}
+                            <button type="button" class="chain-btn chain-btn-watch"
+                                    title="Add to watchlist"
+                                    onclick={() => addOptionToWatchlist(k, 'CE')}>W</button>
+                            {/if}
                           </span>
                           {#if quickToast?.key === ceKey}
                             <span class="chain-quick-toast">{quickToast.msg}</span>
+                          {/if}
+                          {#if watchToast?.key === `${k}|CE`}
+                            <span class="chain-quick-toast" style="color:#fbbf24;border-color:#fbbf24">{watchToast.msg}</span>
                           {/if}
                         </span>
                         <span class="chain-cell-quote">
@@ -1760,9 +1819,17 @@
                             <button type="button" class="chain-btn chain-btn-info"
                                     title="Open full ticket for {k} PE (edit qty / price / mode)"
                                     onclick={() => addChainDraft(k, 'PE', 'long')}>i</button>
+                            {#if defaultWatchlistId != null}
+                            <button type="button" class="chain-btn chain-btn-watch"
+                                    title="Add to watchlist"
+                                    onclick={() => addOptionToWatchlist(k, 'PE')}>W</button>
+                            {/if}
                           </span>
                           {#if quickToast?.key === peKey}
                             <span class="chain-quick-toast">{quickToast.msg}</span>
+                          {/if}
+                          {#if watchToast?.key === `${k}|PE`}
+                            <span class="chain-quick-toast" style="color:#fbbf24;border-color:#fbbf24">{watchToast.msg}</span>
                           {/if}
                         </span>
                       </span>
@@ -1783,9 +1850,17 @@
                             <button type="button" class="chain-btn chain-btn-info"
                                     title="Open full ticket for {k} CE (edit qty / price / mode)"
                                     onclick={() => addChainDraft(k, 'CE', 'long')}>i</button>
+                            {#if defaultWatchlistId != null}
+                            <button type="button" class="chain-btn chain-btn-watch"
+                                    title="Add to watchlist"
+                                    onclick={() => addOptionToWatchlist(k, 'CE')}>W</button>
+                            {/if}
                           </span>
                           {#if quickToast?.key === ceKey}
                             <span class="chain-quick-toast">{quickToast.msg}</span>
+                          {/if}
+                          {#if watchToast?.key === `${k}|CE`}
+                            <span class="chain-quick-toast" style="color:#fbbf24;border-color:#fbbf24">{watchToast.msg}</span>
                           {/if}
                         </span>
                         <span class="chain-cell-quote">
@@ -1814,9 +1889,17 @@
                             <button type="button" class="chain-btn chain-btn-info"
                                     title="Open full ticket for {k} PE (edit qty / price / mode)"
                                     onclick={() => addChainDraft(k, 'PE', 'long')}>i</button>
+                            {#if defaultWatchlistId != null}
+                            <button type="button" class="chain-btn chain-btn-watch"
+                                    title="Add to watchlist"
+                                    onclick={() => addOptionToWatchlist(k, 'PE')}>W</button>
+                            {/if}
                           </span>
                           {#if quickToast?.key === peKey}
                             <span class="chain-quick-toast">{quickToast.msg}</span>
+                          {/if}
+                          {#if watchToast?.key === `${k}|PE`}
+                            <span class="chain-quick-toast" style="color:#fbbf24;border-color:#fbbf24">{watchToast.msg}</span>
                           {/if}
                         </span>
                       </span>
@@ -3200,6 +3283,14 @@
     padding: 1px 5px;
   }
   .chain-btn-info:hover { background: rgba(125,211,252,0.10); }
+  /* Watchlist button — amber, sits next to the "i" info button.
+     One click adds the contract to the user's default watchlist. */
+  .chain-btn-watch {
+    color: #fbbf24;
+    padding: 1px 5px;
+    font-weight: 700;
+  }
+  .chain-btn-watch:hover { background: rgba(251,191,36,0.10); }
   /* Brief "✓ added" toast that flashes alongside a strike row's
      button cluster (or a futures pill) the moment the operator's
      click landed in the basket. Auto-fades. */
