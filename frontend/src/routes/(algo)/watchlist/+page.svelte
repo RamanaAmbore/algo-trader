@@ -45,8 +45,20 @@
   let gridEl;
   let grid;
 
+  // Instrument-cache lookup function. Loaded once at mount, kept as
+  // module-scope so buildUnified() can parse tradingsymbols
+  // synchronously (kind, strike, opt_type) for the group/sort logic.
+  let getInstrument = $state(/** @type {((s: string) => any) | null} */ (null));
+
   onMount(async () => {
     if (!$authStore.user) { goto('/signin'); return; }
+    // Warm the instruments cache + capture the sync lookup so
+    // buildUnified() can group rows by parsed underlying.
+    try {
+      const mod = await import('$lib/data/instruments');
+      await mod.loadInstruments();
+      getInstrument = mod.getInstrument;
+    } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
     await loadLists();
     if (activeId != null) {
       await loadActive(activeId);
@@ -128,20 +140,48 @@
   /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
    *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
   const unifiedRows = $derived(buildUnified(
-    active, watchQuotes, positions, holdings, underlyingQuotes
+    active, watchQuotes, positions, holdings, underlyingQuotes, getInstrument
   ));
 
-  function buildUnified(activeList, wq, pos, hold, uq) {
+  /** Best-effort tradingsymbol parser using the IndexedDB instrument
+   *  cache. Returns { underlying, kind, strike, opt_type } when the
+   *  cache has the symbol, falls back to nulls. Safe to call before
+   *  the cache loads (just returns nulls). */
+  function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
+    if (!instCache) return { underlying: null, kind: null, strike: null, opt_type: null };
+    const inst = instCache(sym);
+    if (!inst) return { underlying: null, kind: null, strike: null, opt_type: null };
+    const t = String(inst.t || '').toUpperCase();
+    const k = inst.k != null ? Number(inst.k) : null;
+    let optType = null;
+    if (t === 'CE' || t === 'PE') optType = t;
+    else if (/CE$/i.test(sym)) optType = 'CE';
+    else if (/PE$/i.test(sym)) optType = 'PE';
+    const kind = optType ? 'opt' : (t === 'FUT' ? 'fut' : (t === 'EQ' ? 'eq' : null));
+    return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
+  }
+
+  function buildUnified(activeList, wq, pos, hold, uq, getInst) {
     const byKey = /** @type {Record<string, any>} */ ({});
     const get = (key) => byKey[key] || (byKey[key] = { key, src: { w:false, h:false, p:false, u:false } });
+
+    function fill(row, sym) {
+      const p = parseSymbol(sym, getInst);
+      // Don't overwrite parse fields already set by another source.
+      if (row.underlying == null) row.underlying = p.underlying;
+      if (row.kind       == null) row.kind       = p.kind;
+      if (row.strike     == null) row.strike     = p.strike;
+      if (row.opt_type   == null) row.opt_type   = p.opt_type;
+    }
 
     // 1. Watchlist (active list)
     for (const it of (activeList?.items || [])) {
       const q = wq[it.id];
-      const key = `${it.exchange}:${q?.quote_symbol || it.tradingsymbol}`;
+      const sym = q?.quote_symbol || it.tradingsymbol;
+      const key = `${it.exchange}:${sym}`;
       const row = get(key);
       row.exchange      = it.exchange;
-      row.tradingsymbol = q?.quote_symbol || it.tradingsymbol;
+      row.tradingsymbol = sym;
       row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
       row.watchlist_item_id = it.id;
       row.src.w  = true;
@@ -150,6 +190,7 @@
       row.ask    = q?.ask    ?? row.ask    ?? null;
       row.change = q?.change ?? row.change ?? null;
       row.change_pct = q?.change_pct ?? row.change_pct ?? null;
+      fill(row, sym);
     }
 
     // 2. Positions
@@ -166,6 +207,7 @@
       row.qty_pos = Number(r.quantity) || 0;
       row.avg_pos = Number(r.average_price) || 0;
       row.pnl     = Number(r.pnl) || 0;
+      fill(row, sym);
     }
 
     // 3. Holdings
@@ -180,32 +222,84 @@
       row.src.h = true;
       row.ltp = r.last_price ?? row.ltp ?? null;
       row.qty_hold = Number(r.quantity) || 0;
-      // Holdings day-change wins over a watchlist read (more accurate).
       if (r.day_change != null)            row.change = Number(r.day_change);
       if (r.day_change_percentage != null) row.change_pct = Number(r.day_change_percentage);
+      fill(row, sym);
     }
 
-    // 4. Option underlyings — quoted on NSE.
+    // 4. Option underlyings — quoted on NSE. Mark them as the spot row
+    // of their underlying group so the sort below pins them to the
+    // top of the group.
     for (const [u, q] of Object.entries(uq)) {
       const key = `NSE:${u}`;
       const row = get(key);
       row.exchange      = 'NSE';
       row.tradingsymbol = u;
       row.src.u = true;
+      row.underlying    = u;     // group key — same as the option's parsed underlying
+      row.kind          = 'spot';
       row.ltp        = q.ltp        ?? row.ltp        ?? null;
       row.bid        = q.bid        ?? row.bid        ?? null;
       row.ask        = q.ask        ?? row.ask        ?? null;
-      // Only fill change/change_pct from underlying when nothing else
-      // has supplied them.
       if (row.change == null)     row.change     = q.change ?? null;
       if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
     }
 
-    // Sort by source priority (P/H first, then W, then U) then symbol.
+    // 5. Indices already in the watchlist (e.g. "NIFTY 50", "NIFTY BANK")
+    //    should ALSO be tagged as the spot for their option-chain
+    //    underlying so the sort groups them with their derivatives.
+    //    The Markets watchlist uses Kite's index keys with a space,
+    //    while option underlyings parse to bare names — map between
+    //    them so a watched "NIFTY 50" sits at the top of the NIFTY
+    //    options block.
+    const INDEX_TO_UNDERLYING = {
+      'NIFTY 50':         'NIFTY',
+      'NIFTY BANK':       'BANKNIFTY',
+      'NIFTY FIN SERVICE':'FINNIFTY',
+      'NIFTY MID SELECT': 'MIDCPNIFTY',
+      'NIFTY NXT 50':     'NIFTYNXT50',
+      'SENSEX':           'SENSEX',
+    };
+    for (const row of Object.values(byKey)) {
+      const tag = INDEX_TO_UNDERLYING[String(row.tradingsymbol || '').toUpperCase()];
+      if (tag) {
+        row.underlying = tag;
+        row.kind       = 'spot';
+      }
+    }
+
+    // ── Sort ──────────────────────────────────────────────────────
+    //
+    // Group every row under its underlying. Each group is laid out as:
+    //   1. The spot row (underlying.kind === 'spot') first.
+    //   2. Futures next, sorted by expiry.
+    //   3. Options next, sorted by strike ASC, then CE before PE.
+    //   4. Anything else (equity holdings of that name, …) last
+    //      within the group.
+    //
+    // Groups themselves are ordered alphabetically by underlying.
+    // Rows with no `underlying` parsed (cache miss / non-derivative
+    // equities without a chain) fall into a single trailing group
+    // sorted alphabetically by symbol.
     const out = Object.values(byKey);
+    const groupKey = (r) => r.underlying || `~~${r.tradingsymbol || ''}`;
+    const tierRank = (r) => {
+      if (r.kind === 'spot')                 return 0;
+      if (r.kind === 'fut')                  return 1;
+      if (r.kind === 'opt')                  return 2;
+      return 3;
+    };
+    const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
     out.sort((a, b) => {
-      const rank = (r) => (r.src.p ? 0 : r.src.h ? 1 : r.src.w ? 2 : 3);
-      if (rank(a) !== rank(b)) return rank(a) - rank(b);
+      const ga = groupKey(a), gb = groupKey(b);
+      if (ga !== gb) return ga.localeCompare(gb);
+      const ta = tierRank(a), tb = tierRank(b);
+      if (ta !== tb) return ta - tb;
+      if (a.kind === 'opt' && b.kind === 'opt') {
+        const sa = a.strike ?? 0, sb = b.strike ?? 0;
+        if (sa !== sb) return sa - sb;
+        return optTypeRank(a) - optTypeRank(b);
+      }
       return (a.tradingsymbol || '').localeCompare(b.tradingsymbol || '');
     });
     return out;
