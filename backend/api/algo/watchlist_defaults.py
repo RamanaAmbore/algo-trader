@@ -26,7 +26,7 @@ MARKETS_DEFAULT: list[tuple[str, str]] = [
     ("NIFTY 50",            "NSE"),
     ("NIFTY BANK",          "NSE"),
     ("NIFTY MIDCAP 100",    "NSE"),
-    ("NIFTY SMALLCAP 100",  "NSE"),
+    ("NIFTY SMLCAP 100",    "NSE"),   # Kite's abbreviated key (not "SMALLCAP")
     ("INDIA VIX",           "NSE"),
     ("SENSEX",              "BSE"),
 

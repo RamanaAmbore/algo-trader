@@ -247,6 +247,20 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
     from the seed list that aren't already present (additive only —
     never re-adds a symbol the user explicitly removed, since this
     only fires on the full original seed-list count match)."""
+    # One-off rename: an early seed shipped "NIFTY SMALLCAP 100" but
+    # Kite's quote key is the abbreviated "NIFTY SMLCAP 100". Migrate
+    # any rows that still carry the wrong name. Idempotent.
+    from sqlalchemy import update
+    await session.execute(
+        update(WatchlistItem)
+        .where(
+            WatchlistItem.tradingsymbol == "NIFTY SMALLCAP 100",
+            WatchlistItem.exchange == "NSE",
+        )
+        .values(tradingsymbol="NIFTY SMLCAP 100")
+    )
+    await session.commit()
+
     row = await session.execute(
         select(Watchlist.id, Watchlist.name).where(Watchlist.user_id == user_id)
     )
@@ -264,7 +278,9 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
                 select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
                 .where(WatchlistItem.watchlist_id == markets)
             )
-            cur_pairs = set(cur_row.all())
+            # Cast each Row to a plain tuple so the set difference
+            # against seed_pairs (also tuples) works correctly.
+            cur_pairs = {(r[0], r[1]) for r in cur_row.all()}
             missing = seed_pairs - cur_pairs
             # Only top up if the existing list has at least as many of
             # the OTHER seed entries as expected (i.e. user hasn't been
