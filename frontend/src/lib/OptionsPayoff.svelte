@@ -28,9 +28,6 @@
    *   onRefresh?:   (() => void) | null,
    *   loading?:     boolean,
    *   prevClose?:   number|null,
-   *   netCost?:     number|null,
-   *   maxProfit?:   number|null,
-   *   maxLoss?:     number|null,
    * }} */
   let {
     payoff = [],
@@ -60,15 +57,6 @@
     onRefresh  = /** @type {(() => void) | null} */ (null),
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
-    // Strategy-wide aggregates (formerly rendered as separate chips
-    // above the chart by the parent). Folded into the on-chart
-    // overlay so they share a render path with TDAY / EXP / σ — the
-    // parent's strip header had a perceptible lag when `strategy`
-    // reassigned because the chips and the chart re-rendered in
-    // different microtasks; one overlay box eliminates the gap.
-    netCost    = /** @type {number|null|undefined} */ (null),
-    maxProfit  = /** @type {number|null|undefined} */ (null),
-    maxLoss    = /** @type {number|null|undefined} */ (null),
   } = $props();
 
   // Day's direction — flag the SPOT readout green when trading above
@@ -609,33 +597,6 @@
         <div class="ps-row" title="Number of legs in the strategy basket">
           <span class="ps-k">LEGS</span>
           <span class="ps-v">{legCount}</span>
-        </div>
-      {/if}
-      {#if netCost != null}
-        <!-- Net debit / credit — positive = operator pays the
-             premium (DR); negative = operator receives net credit
-             (CR). Sign-tinted so DR reads as cost (red) and CR as
-             received (green). -->
-        <div class="ps-row"
-             title={netCost > 0
-               ? 'Net DEBIT — premium paid to open this basket'
-               : 'Net CREDIT — premium received to open this basket'}>
-          <span class="ps-k">{netCost > 0 ? 'NET DR' : netCost < 0 ? 'NET CR' : 'NET'}</span>
-          <span class={'ps-v ' + (netCost > 0 ? 'ps-neg' : netCost < 0 ? 'ps-pos' : '')}>
-            {fmtMoney(Math.abs(netCost))}
-          </span>
-        </div>
-      {/if}
-      {#if maxProfit != null}
-        <div class="ps-row" title="Maximum profit at expiry across the entire payoff curve">
-          <span class="ps-k">MAX P</span>
-          <span class="ps-v ps-pos">{fmtMoney(maxProfit)}</span>
-        </div>
-      {/if}
-      {#if maxLoss != null}
-        <div class="ps-row" title="Maximum loss at expiry across the entire payoff curve">
-          <span class="ps-k">MAX L</span>
-          <span class="ps-v ps-neg">{fmtMoney(maxLoss)}</span>
         </div>
       {/if}
     </div>

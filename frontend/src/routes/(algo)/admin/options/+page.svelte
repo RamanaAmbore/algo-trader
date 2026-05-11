@@ -2007,15 +2007,26 @@
 
 {#if strategy}
   <div class="opt-payoff opt-payoff-full mb-3">
-    <!-- Header collapsed to just the title — NET DR/CR / MAX P /
-         MAX L moved INTO the on-chart stat overlay so they share a
-         render path with TDAY / EXP / σ. The strip-vs-overlay
-         refresh lag operators reported (overlay updated faster than
-         the strip when `strategy` reassigned) is eliminated by
-         putting every strategy-derived stat in one box. -->
+    <!-- Single-row header — title + Net debit/credit + Max profit /
+         Max loss chips. SPOT / TDAY / EXP / DTE / σ / LEGS live in
+         the on-chart stat overlay. Both the chips and the overlay
+         read from the same `strategy` $state so Svelte 5 batches
+         their DOM updates into a single render flush when
+         loadStrategy reassigns — no microtask gap between the two
+         surfaces. -->
     <div class="opt-section-h opt-section-h-grid">
       <div class="opt-section-row">
         <span class="opt-section-title">Payoff</span>
+        <span class="opt-section-tag tag-{strategy.net_cost > 0 ? 'long' : strategy.net_cost < 0 ? 'short' : 'long'}">
+          {strategy.net_cost > 0 ? 'NET DR' : strategy.net_cost < 0 ? 'NET CR' : 'FREE'}
+          {fmtMoney(Math.abs(strategy.net_cost), false)}
+        </span>
+        <span class="opt-section-tag tag-long" title="Max profit">
+          MAX P {fmtMoney(strategy.risk.max_profit, false)}
+        </span>
+        <span class="opt-section-tag tag-short" title="Max loss">
+          MAX L {fmtMoney(strategy.risk.max_loss, false)}
+        </span>
       </div>
     </div>
     <OptionsPayoff
@@ -2029,9 +2040,6 @@
       dte={strategy.days_to_expiry}
       ivProxy={strategy.iv_proxy}
       legCount={strategy.legs.length}
-      netCost={strategy.net_cost}
-      maxProfit={strategy.risk.max_profit}
-      maxLoss={strategy.risk.max_loss}
       realizedPnl={chartPnlOffset}
       loading={loading}
       onRefresh={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
