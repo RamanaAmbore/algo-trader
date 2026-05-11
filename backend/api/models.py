@@ -137,6 +137,63 @@ class AuthToken(Base):
 
 
 # ---------------------------------------------------------------------------
+# Watchlist — per-user named symbol groups for monitoring
+# ---------------------------------------------------------------------------
+
+class Watchlist(Base):
+    """
+    Per-user named watchlist (e.g. 'Default', 'Markets', 'NIFTY watch').
+    Each user starts with a 'Markets' watchlist auto-seeded with major
+    Indian indices + MCX commodities so the operator never stares at
+    an empty page on first login.
+    """
+    __tablename__ = "watchlists"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_watchlist_user_name"),)
+
+    id:         Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id:    Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name:       Mapped[str] = mapped_column(String(64), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # is_default flags the user's primary watchlist. UI uses this to pick
+    # which list a "+ Watch" affordance on /admin/options adds to.
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class WatchlistItem(Base):
+    """
+    Single symbol inside a watchlist. Market data only — no qty / pnl
+    fields; the quotes endpoint fetches LTP / bid / ask / day-change
+    on demand via the broker.
+    """
+    __tablename__ = "watchlist_items"
+    __table_args__ = (UniqueConstraint(
+        "watchlist_id", "exchange", "tradingsymbol",
+        name="uq_watchlist_item_unique",
+    ),)
+
+    id:            Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    watchlist_id:  Mapped[int] = mapped_column(
+        Integer, ForeignKey("watchlists.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    tradingsymbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange:      Mapped[str] = mapped_column(String(8),  nullable=False)
+    sort_order:    Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    added_at:      Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Algo — chase orders and events
 # ---------------------------------------------------------------------------
 

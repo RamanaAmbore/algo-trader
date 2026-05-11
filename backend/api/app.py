@@ -48,6 +48,7 @@ from backend.api.routes.shadow import ShadowController
 from backend.api.routes.live import LiveController
 from backend.api.routes.execution import ExecutionController
 from backend.api.routes.logs import LogsController
+from backend.api.routes.watchlist import WatchlistController
 from backend.api.routes.ws import performance_ws_handler
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -162,6 +163,7 @@ _route_handlers = [
     ChartsController,
     OptionsController,
     BrokersController,
+    WatchlistController,
     performance_ws_handler,
     algo_ws_handler,
 ]

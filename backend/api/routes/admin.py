@@ -322,7 +322,15 @@ class AdminController(Controller):
             )
             session.add(user)
             await session.commit()
+            new_user_id = user.id
         await refresh_alert_recipients()
+        # Seed Default + Markets watchlists eagerly. Idempotent — re-
+        # creating an existing user (CLI --update path) won't double-seed.
+        from backend.api.routes.watchlist import seed_default_watchlists_for_user
+        try:
+            await seed_default_watchlists_for_user(new_user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Admin: watchlist seed failed for {data.username!r}: {exc}")
         logger.info(f"Admin: created user {data.username!r} role={data.role}")
         return {"detail": f"User {data.username!r} created"}
 

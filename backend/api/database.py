@@ -46,7 +46,7 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     """Create all tables (idempotent)."""
     async with engine.begin() as conn:
-        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook  # noqa: F401 — ensure model registered
+        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem  # noqa: F401 — ensure model registered
         await conn.run_sync(Base.metadata.create_all)
 
         # Idempotent column additions for tables that pre-date the column.

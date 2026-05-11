@@ -97,6 +97,12 @@ async def _bootstrap(args: argparse.Namespace) -> None:
             session.add(user)
             verb = "created"
         await session.commit()
+        seed_uid = user.id
+    # Seed Default + Markets watchlists for the new admin/designated.
+    # Idempotent; --update on an existing user is a no-op for watchlist
+    # seeding if they already have lists.
+    from backend.api.routes.watchlist import seed_default_watchlists_for_user
+    await seed_default_watchlists_for_user(seed_uid)
     print(f"✓ {verb} {args.username!r} (role={target_role}, email={args.email})")
 
 
@@ -125,6 +131,9 @@ async def _create(args: argparse.Namespace) -> None:
         )
         session.add(user)
         await session.commit()
+        seed_uid = user.id
+    from backend.api.routes.watchlist import seed_default_watchlists_for_user
+    await seed_default_watchlists_for_user(seed_uid)
     print(
         f"✓ created {args.username!r} (role={args.role}, "
         f"approved={bool(args.approve)}, email_verified={bool(args.verify)})"

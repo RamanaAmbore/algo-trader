@@ -400,6 +400,17 @@ class AuthController(Controller):
                 session, user.id, "verify", _VERIFY_TTL_MINUTES,
             )
             await session.commit()
+            new_user_id = user.id
+
+        # Seed Default + Markets watchlists for the new partner. Lazy
+        # path in /api/watchlist also handles this — eager seeding here
+        # just means the user's first /watchlist call returns populated
+        # rows immediately instead of triggering an inline seed write.
+        from backend.api.routes.watchlist import seed_default_watchlists_for_user
+        try:
+            await seed_default_watchlists_for_user(new_user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Auth: watchlist seed failed for {data.username!r}: {exc}")
 
         logger.info(f"Auth: registered {data.username!r} email={data.email!r}")
 
