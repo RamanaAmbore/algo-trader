@@ -28,6 +28,9 @@
    *   onRefresh?:   (() => void) | null,
    *   loading?:     boolean,
    *   prevClose?:   number|null,
+   *   netCost?:     number|null,
+   *   maxProfit?:   number|null,
+   *   maxLoss?:     number|null,
    * }} */
   let {
     payoff = [],
@@ -57,6 +60,15 @@
     onRefresh  = /** @type {(() => void) | null} */ (null),
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
+    // Strategy-wide aggregates (formerly rendered as separate chips
+    // above the chart by the parent). Folded into the on-chart
+    // overlay so they share a render path with TDAY / EXP / σ — the
+    // parent's strip header had a perceptible lag when `strategy`
+    // reassigned because the chips and the chart re-rendered in
+    // different microtasks; one overlay box eliminates the gap.
+    netCost    = /** @type {number|null|undefined} */ (null),
+    maxProfit  = /** @type {number|null|undefined} */ (null),
+    maxLoss    = /** @type {number|null|undefined} */ (null),
   } = $props();
 
   // Day's direction — flag the SPOT readout green when trading above
@@ -529,9 +541,20 @@
          the abbreviated keys; we override per-row with a `title=` so a
          hover/long-press surfaces the meaning of each label
          (operator: "what is meaning of σ"). -->
-    <!-- O3: SPOT row removed — the top-of-chart SVG label (O2) carries
-         the spot value; duplicating it here added noise to a compact box. -->
+    <!-- SPOT is the first row of the overlay so every other value
+         (TDAY / EXP / DTE / σ) is anchored to the price they're
+         derived from. Sign-tinted by day direction (green above
+         yesterday's close, red below, cyan when prev_close is
+         unknown). Mirrors the top-of-chart SVG SPOT label and the
+         dashboard's directional palette. -->
     <div class="payoff-stats">
+      {#if spot != null}
+        <div class="ps-row"
+             title="Current spot price for the underlying — anchor for every other stat in this overlay">
+          <span class="ps-k">SPOT</span>
+          <span class={'ps-v ps-spot-' + spotDir}>{fmtSpot(spot)}</span>
+        </div>
+      {/if}
       {#if curveAtSpot}
         <div class="ps-row"
              title={realizedPnl !== 0
@@ -586,6 +609,33 @@
         <div class="ps-row" title="Number of legs in the strategy basket">
           <span class="ps-k">LEGS</span>
           <span class="ps-v">{legCount}</span>
+        </div>
+      {/if}
+      {#if netCost != null}
+        <!-- Net debit / credit — positive = operator pays the
+             premium (DR); negative = operator receives net credit
+             (CR). Sign-tinted so DR reads as cost (red) and CR as
+             received (green). -->
+        <div class="ps-row"
+             title={netCost > 0
+               ? 'Net DEBIT — premium paid to open this basket'
+               : 'Net CREDIT — premium received to open this basket'}>
+          <span class="ps-k">{netCost > 0 ? 'NET DR' : netCost < 0 ? 'NET CR' : 'NET'}</span>
+          <span class={'ps-v ' + (netCost > 0 ? 'ps-neg' : netCost < 0 ? 'ps-pos' : '')}>
+            {fmtMoney(Math.abs(netCost))}
+          </span>
+        </div>
+      {/if}
+      {#if maxProfit != null}
+        <div class="ps-row" title="Maximum profit at expiry across the entire payoff curve">
+          <span class="ps-k">MAX P</span>
+          <span class="ps-v ps-pos">{fmtMoney(maxProfit)}</span>
+        </div>
+      {/if}
+      {#if maxLoss != null}
+        <div class="ps-row" title="Maximum loss at expiry across the entire payoff curve">
+          <span class="ps-k">MAX L</span>
+          <span class="ps-v ps-neg">{fmtMoney(maxLoss)}</span>
         </div>
       {/if}
     </div>
