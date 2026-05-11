@@ -441,7 +441,8 @@
       { field: 'exchange', headerName: 'Exch', width: 64,
         cellRenderer: exchRenderer, sortable: true },
       { field: 'tradingsymbol', headerName: 'Symbol', flex: 1.4,
-        cellRenderer: symRenderer, sortable: true },
+        cellRenderer: symRenderer, sortable: true,
+        cellClass: 'col-sym-tint' },
       { field: 'ltp', headerName: 'LTP', flex: 0.8,
         type: 'numericColumn',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
@@ -580,59 +581,60 @@
 </div>
 
 <style>
-  /* Source pills — leftmost column letters. */
+  /* Source pills — leftmost column letters. Aligned to the
+     PerformancePage algo palette: amber accent, cyan/orange for
+     long/short equivalents, green/red for gain/loss. */
   :global(.src-pill) {
     display: inline-block;
-    padding: 0 5px;
+    padding: 0 4px;
     margin-right: 2px;
-    border-radius: 3px;
+    border-radius: 2px;
     font-size: 0.55rem;
-    font-weight: 800;
+    font-weight: 700;
     letter-spacing: 0.06em;
-    border: 1px solid;
     line-height: 14px;
     min-width: 14px;
     text-align: center;
   }
-  :global(.src-w) { color: #fbbf24; border-color: rgba(251,191,36,0.6); background: rgba(251,191,36,0.12); }
-  :global(.src-h) { color: #4ade80; border-color: rgba(74,222,128,0.6); background: rgba(74,222,128,0.12); }
-  :global(.src-p) { color: #7dd3fc; border-color: rgba(125,211,252,0.6); background: rgba(125,211,252,0.12); }
-  :global(.src-u) { color: #c4b5fd; border-color: rgba(196,181,253,0.6); background: rgba(196,181,253,0.12); }
+  :global(.src-w) { color: #fbbf24; background: rgba(251,191,36,0.16); }
+  :global(.src-h) { color: #4ade80; background: rgba(74,222,128,0.16); }
+  :global(.src-p) { color: #38bdf8; background: rgba(56,189,248,0.16); }
+  :global(.src-u) { color: #c4b5fd; background: rgba(196,181,253,0.16); }
 
-  /* Exchange chip — same palette as the row's underlying market. */
+  /* Exchange tag — text-only, no chrome. Lets the row breathe. */
   :global(.exch-chip) {
     display: inline-block;
-    padding: 0 5px;
-    border-radius: 3px;
-    font-size: 0.5rem;
+    font-size: 0.52rem;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    border: 1px solid;
-    line-height: 14px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
-  :global(.exch-nse) { color: #7dd3fc; border-color: rgba(125,211,252,0.5); background: rgba(125,211,252,0.10); }
-  :global(.exch-nfo) { color: #fbbf24; border-color: rgba(251,191,36,0.5);  background: rgba(251,191,36,0.10); }
-  :global(.exch-bse) { color: #c4b5fd; border-color: rgba(196,181,253,0.5); background: rgba(196,181,253,0.10); }
-  :global(.exch-mcx) { color: #fb923c; border-color: rgba(251,146,60,0.5);  background: rgba(251,146,60,0.10); }
-  :global(.exch-cds) { color: #a78bfa; border-color: rgba(167,139,250,0.5); background: rgba(167,139,250,0.10); }
+  :global(.exch-nse) { color: #94a3b8; }
+  :global(.exch-nfo) { color: #fbbf24; }
+  :global(.exch-bse) { color: #c4b5fd; }
+  :global(.exch-mcx) { color: #fb923c; }
+  :global(.exch-cds) { color: #a78bfa; }
 
   /* Symbol cell — main + alias. */
-  :global(.sym-main)  { color: #fbbf24; font-weight: 600; }
+  :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
   :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
 
-  /* Day Δ / P&L cells. */
-  :global(.cell-pos)  { color: #4ade80; }
-  :global(.cell-neg)  { color: #f87171; }
-  :global(.cell-flat) { color: #7e97b8; }
-  :global(.cell-muted){ color: rgba(200,216,240,0.6); }
+  /* Day Δ / P&L cells — same green/red as PerformancePage pnl-gain / pnl-loss. */
+  :global(.cell-pos)  { color: #4ade80 !important; }
+  :global(.cell-neg)  { color: #f87171 !important; }
+  :global(.cell-flat) { color: #94a3b8 !important; }
+  :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
 
-  /* Row background tint by source. Same alpha (0.08) across all four
-     so no row dominates; the Src pills are what tell you which is
-     which. The colour identifies the row's primary classification. */
-  :global(.unified-grid .ag-row.row-watch) { background: rgba(251,191,36,0.07) !important; }
-  :global(.unified-grid .ag-row.row-hold)  { background: rgba(74,222,128,0.07) !important; }
-  :global(.unified-grid .ag-row.row-pos)   { background: rgba(125,211,252,0.07) !important; }
-  :global(.unified-grid .ag-row.row-und)   { background: rgba(196,181,253,0.06) !important; }
+  /* Row tinting mirrors the /dashboard PerformancePage approach —
+     keep the alternating navy from the base ag-theme-algo, paint
+     only the SYMBOL cell (.col-sym-tint) so the row reads as
+     "navy with a coloured spine of identity." Single-source rows
+     (only W, only H, only P, only U) get one colour; multi-source
+     rows pick the highest-priority source (P > H > W > U). */
+  :global(.unified-grid .ag-row.row-pos)   .col-sym-tint { box-shadow: inset 3px 0 0 #38bdf8; background: rgba(56,189,248,0.10) !important; }
+  :global(.unified-grid .ag-row.row-hold)  .col-sym-tint { box-shadow: inset 3px 0 0 #4ade80; background: rgba(74,222,128,0.10) !important; }
+  :global(.unified-grid .ag-row.row-watch) .col-sym-tint { box-shadow: inset 3px 0 0 #fbbf24; background: rgba(251,191,36,0.10) !important; }
+  :global(.unified-grid .ag-row.row-und)   .col-sym-tint { box-shadow: inset 3px 0 0 #c4b5fd; background: rgba(196,181,253,0.10) !important; }
 
   /* Action column buttons. */
   :global(.grid-btn) {
