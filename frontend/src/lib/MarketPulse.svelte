@@ -1086,21 +1086,28 @@
     </div>
   {/if}
 
-  {#if showSummary}
-    <!-- Per-account summary strip (dashboard mode). Renders empty
-         until loadPulse populates the .summary arrays; ag-Grid shows
-         its empty overlay in the meantime. -->
-    <div bind:this={summaryEl} class="ag-theme-algo summary-grid mb-2"></div>
-  {/if}
-
-  <!-- Unified grid -->
-  <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
-
   {#if showFunds}
-    <!-- Funds strip (dashboard mode). Per-account margins below the
-         main grid. -->
-    <div bind:this={fundsEl} class="ag-theme-algo funds-grid mt-3"></div>
+    <!-- Funds strip — per-account Cash / Avail Margin / Used Margin /
+         Collateral. Same first-impression order as the previous
+         PerformancePage-driven /dashboard ("what's my cash" answers
+         before "what's my P&L"). -->
+    <div class="mp-section-label">Funds</div>
+    <div bind:this={fundsEl} class="ag-theme-algo funds-grid mb-3"></div>
   {/if}
+
+  {#if showSummary}
+    <!-- Per-account Day P&L + P&L + Cur Val totals (positions +
+         holdings combined). Body filters by account picker; TOTAL
+         pinned at the bottom. -->
+    <div class="mp-section-label">Summary</div>
+    <div bind:this={summaryEl} class="ag-theme-algo summary-grid mb-3"></div>
+  {/if}
+
+  {#if showSummary || showFunds}
+    <div class="mp-section-label">Holdings / Positions / Watchlist</div>
+  {/if}
+  <!-- Unified grid — the per-symbol detail view. -->
+  <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
 </div>
 
 {#if allowOrders && ticketProps}
@@ -1170,5 +1177,18 @@
   .funds-grid {
     width: 100%;
     min-height: 40px;
+  }
+
+  /* Section labels above each grid in dashboard mode. Small muted
+     amber so they read as section headings without competing with
+     the data rows or the toolbar. */
+  .mp-section-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(251,191,36,0.7);
+    margin-bottom: 0.25rem;
   }
 </style>
