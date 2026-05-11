@@ -32,9 +32,21 @@
   ModuleRegistry.registerModules([AllCommunityModule]);
 
   let lists       = $state(/** @type {any[]} */ ([]));
-  let activeId    = $state(/** @type {number | null} */ (null));
-  let active      = $state(/** @type {any} */ (null));
+  // Multi-select model — the operator can include any combination of
+  // their saved watchlists in the unified view. `activeIds` is the
+  // SOURCE OF TRUTH: clicking a tab toggles its id in/out. The fetched
+  // list contents are stored in `activeLists` (parallel array of
+  // {id, name, items[], is_default}) so buildUnified can iterate
+  // every selected list. `watchQuotes` stays a flat itemId→quote map
+  // (item ids are globally unique) populated by unioning the per-list
+  // /quotes responses.
+  let activeIds   = $state(/** @type {Set<number>} */ (new Set()));
+  let activeLists = $state(/** @type {any[]} */ ([]));
   let watchQuotes = $state(/** @type {Record<number, any>} */ ({}));
+  // The "target" list for add / rename / delete operations. Defaults
+  // to the first selected list; updated when the operator clicks a
+  // tab (we set focus AND toggle inclusion in one click).
+  let focusedListId = $state(/** @type {number | null} */ (null));
   let positions   = $state(/** @type {any[]} */ ([]));
   let holdings    = $state(/** @type {any[]} */ ([]));
   let underlyingQuotes = $state(/** @type {Record<string, any>} */ ({}));
@@ -129,8 +141,8 @@
         .filter(Boolean);
     } catch (_) { realAccounts = []; }
     await loadLists();
-    if (activeId != null) {
-      await loadActive(activeId);
+    if (activeIds.size > 0) {
+      await loadActive();
     }
     await loadPulse();
     // Auto-refresh: each poll just mutates state; the $effect below
@@ -157,27 +169,67 @@
     try {
       lists = await fetchWatchlists();
       if (!lists.length) return;
-      const def = lists.find(l => l.is_default) ?? lists[0];
-      if (activeId == null) activeId = def.id;
+      // First mount: select ALL watchlists (multi-select default).
+      // Subsequent loadLists() calls (after create / delete) preserve
+      // the operator's current selection — only auto-select new lists
+      // that the operator hasn't seen yet.
+      if (activeIds.size === 0) {
+        activeIds = new Set(lists.map(l => l.id));
+      } else {
+        // After a delete, prune stale ids from the selection so we
+        // don't try to fetch a list that no longer exists.
+        const valid = new Set(lists.map(l => l.id));
+        const trimmed = new Set([...activeIds].filter(id => valid.has(id)));
+        if (trimmed.size !== activeIds.size) activeIds = trimmed;
+      }
+      if (focusedListId == null || !activeIds.has(focusedListId)) {
+        const def = lists.find(l => l.is_default) ?? lists[0];
+        focusedListId = def?.id ?? null;
+      }
     } catch (e) { error = e.message; }
   }
 
-  async function loadActive(/** @type {number} */ id) {
+  async function loadActive() {
     error = '';
+    const ids = [...activeIds];
+    if (ids.length === 0) {
+      activeLists = [];
+      watchQuotes = {};
+      return;
+    }
     try {
-      active = await fetchWatchlist(id);
+      const results = await Promise.all(
+        ids.map(id => fetchWatchlist(id).catch(() => null))
+      );
+      activeLists = results.filter(Boolean);
       await loadQuotes();
     } catch (e) { error = e.message; }
   }
 
   async function loadQuotes() {
-    if (activeId == null) return;
+    const ids = [...activeIds];
+    if (ids.length === 0) {
+      watchQuotes = {};
+      return;
+    }
     try {
-      const r = await fetchWatchlistQuotes(activeId);
+      const results = await Promise.all(
+        ids.map(id => fetchWatchlistQuotes(id).catch(() => null))
+      );
+      // Union every selected list's quotes into one flat itemId → quote
+      // map. item ids are globally unique in the DB, so collisions are
+      // not a concern.
       const map = /** @type {Record<number, any>} */ ({});
-      for (const q of (r?.items || [])) map[q.item_id] = q;
+      let latestRefreshed = '';
+      for (const r of results) {
+        if (!r) continue;
+        for (const q of (r.items || [])) map[q.item_id] = q;
+        if (r.refreshed_at && r.refreshed_at > latestRefreshed) {
+          latestRefreshed = r.refreshed_at;
+        }
+      }
       watchQuotes = map;
-      refreshedAt = r?.refreshed_at || '';
+      refreshedAt = latestRefreshed;
       // Successful fetch — clear streak + any lingering banner.
       if (quoteFailStreak > 0) {
         quoteFailStreak = 0;
@@ -348,7 +400,7 @@
   /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
    *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
   const unifiedRows = $derived(buildUnified(
-    active, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument,
+    activeLists, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument,
     showPositions, showHoldings,
   ));
 
@@ -370,7 +422,7 @@
     return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
   }
 
-  function buildUnified(activeList, wq, pos, hold, uq, cq, getInst, includePos, includeHold) {
+  function buildUnified(actLists, wq, pos, hold, uq, cq, getInst, includePos, includeHold) {
     // Key on tradingsymbol alone (case-normalised). If the same
     // symbol exists in multiple accounts or across exchanges, we
     // collapse to one row with net qty + summed P&L — the operator
@@ -399,22 +451,33 @@
       if (row.opt_type   == null) row.opt_type   = p.opt_type;
     }
 
-    // 1. Watchlist (active list)
-    for (const it of (activeList?.items || [])) {
-      const q = wq[it.id];
-      const sym = String(q?.quote_symbol || it.tradingsymbol).toUpperCase();
-      const row = get(sym);
-      row.exchange      = row.exchange || it.exchange;
-      row.tradingsymbol = sym;
-      row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
-      row.watchlist_item_id = it.id;
-      row.src.w  = true;
-      row.ltp    = q?.ltp    ?? row.ltp    ?? null;
-      row.bid    = q?.bid    ?? row.bid    ?? null;
-      row.ask    = q?.ask    ?? row.ask    ?? null;
-      row.change = q?.change ?? row.change ?? null;
-      row.change_pct = q?.change_pct ?? row.change_pct ?? null;
-      fill(row, sym);
+    // 1. Watchlist (all selected lists). Each list contributes its
+    // items; a symbol appearing in multiple selected lists merges
+    // into one row (keyed on tradingsymbol) and carries the
+    // watchlist_item_id of the FIRST occurrence — that's the id the
+    // remove × in the symbol cell calls removeWatchlistItem against.
+    // We also store the parent list id so the remove call knows
+    // which watchlist owns the item.
+    for (const list of (actLists || [])) {
+      for (const it of (list?.items || [])) {
+        const q = wq[it.id];
+        const sym = String(q?.quote_symbol || it.tradingsymbol).toUpperCase();
+        const row = get(sym);
+        row.exchange      = row.exchange || it.exchange;
+        row.tradingsymbol = sym;
+        row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
+        if (row.watchlist_item_id == null) {
+          row.watchlist_item_id = it.id;
+          row.watchlist_list_id = list.id;
+        }
+        row.src.w  = true;
+        row.ltp    = q?.ltp    ?? row.ltp    ?? null;
+        row.bid    = q?.bid    ?? row.bid    ?? null;
+        row.ask    = q?.ask    ?? row.ask    ?? null;
+        row.change = q?.change ?? row.change ?? null;
+        row.change_pct = q?.change_pct ?? row.change_pct ?? null;
+        fill(row, sym);
+      }
     }
 
     // 2. Positions — same symbol across multiple accounts accumulates
@@ -600,11 +663,24 @@
     };
     const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
 
+    // Index group names — these float to the top regardless of
+    // whether they have positions / holdings / watchlist entries,
+    // matching the operator's mental model: "show me the index
+    // surface first, then everything else." Mirrors INDEX_LTP_KEY.
+    const INDEX_UNDERLYINGS = new Set([
+      'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
+    ]);
     // Precompute per-group bucket so the comparator stays O(1).
+    //   0 = index group (always first)
+    //   1 = positions / holdings (operator's active book)
+    //   2 = watchlist-only
+    //   3 = bare underlying / fallback
     const groupBucket = /** @type {Record<string, number>} */ ({});
     for (const r of out) {
       const g = String(groupKey(r));
-      const bucket = (r.src?.p || r.src?.h) ? 0 : r.src?.w ? 1 : 2;
+      const u = String(r.underlying || '').toUpperCase();
+      const isIdx = INDEX_UNDERLYINGS.has(u);
+      const bucket = isIdx ? 0 : (r.src?.p || r.src?.h) ? 1 : r.src?.w ? 2 : 3;
       if (groupBucket[g] == null || bucket < groupBucket[g]) {
         groupBucket[g] = bucket;
       }
@@ -638,25 +714,44 @@
   }
 
   async function addRow() {
-    if (!symInput.trim() || activeId == null) return;
+    // Adds always target the focused list (the most-recently clicked
+    // tab). If nothing is focused yet, fall back to the first selected
+    // list so the operator can't accidentally lose typing.
+    const targetId = focusedListId ?? [...activeIds][0];
+    if (!symInput.trim() || targetId == null) return;
     try {
-      await addWatchlistItem(activeId, symInput.trim().toUpperCase(), exchInput);
+      await addWatchlistItem(targetId, symInput.trim().toUpperCase(), exchInput);
       symInput = ''; typeahead = []; typeaheadOpen = false;
-      await loadActive(activeId);
+      await loadActive();
     } catch (e) { error = e.message; }
   }
 
   async function pickFromTypeahead(inst) {
+    const targetId = focusedListId ?? [...activeIds][0];
+    if (targetId == null) return;
     try {
-      await addWatchlistItem(activeId, inst.s, inst.e);
+      await addWatchlistItem(targetId, inst.s, inst.e);
       symInput = ''; typeahead = []; typeaheadOpen = false;
-      await loadActive(activeId);
+      await loadActive();
     } catch (e) { error = e.message; }
   }
 
+  /** Tab-click: toggle the list's membership in activeIds AND set
+   *  focus. Single-list behaviour: clicking an already-selected
+   *  isolated tab does nothing (we keep at least one list visible);
+   *  clicking a different tab toggles + focuses. */
   function pickList(/** @type {number} */ id) {
-    activeId = id;
-    loadActive(id);
+    const next = new Set(activeIds);
+    if (next.has(id)) {
+      // Don't allow deselecting the last selected list — operator
+      // would lose the watchlist surface entirely.
+      if (next.size > 1) next.delete(id);
+    } else {
+      next.add(id);
+    }
+    activeIds = next;
+    focusedListId = id;
+    loadActive();
   }
 
   async function makeList() {
@@ -664,8 +759,12 @@
     try {
       const w = await createWatchlist(newListName.trim());
       newListName = ''; showCreate = false;
+      // Auto-include the new list in the selection so the operator
+      // immediately sees their fresh empty list in the grid.
+      activeIds = new Set([...activeIds, w.id]);
+      focusedListId = w.id;
       await loadLists();
-      pickList(w.id);
+      await loadActive();
     } catch (e) { error = e.message; }
   }
 
@@ -673,9 +772,18 @@
     if (!confirm('Delete this watchlist?')) return;
     try {
       await deleteWatchlist(id);
-      if (activeId === id) activeId = null;
+      const next = new Set(activeIds);
+      next.delete(id);
+      activeIds = next;
+      if (focusedListId === id) {
+        focusedListId = [...next][0] ?? null;
+      }
       await loadLists();
-      if (activeId == null && lists.length) pickList(lists[0].id);
+      if (activeIds.size === 0 && lists.length) {
+        activeIds = new Set([lists[0].id]);
+        focusedListId = lists[0].id;
+      }
+      await loadActive();
     } catch (e) { error = e.message; }
   }
 
@@ -853,14 +961,22 @@
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
   {/if}
 
-  <!-- Tab strip + new/delete -->
+  <!-- Tab strip — multi-select. Each tab is a toggle; click adds /
+       removes the list from the active set AND focuses it (focus =
+       the target for add-symbol / delete-list operations). Selected
+       tabs render filled, unselected outlined-muted. The focused tab
+       carries a slightly stronger border tint so the operator can
+       see which list a new symbol will land in. -->
   <div class="flex flex-wrap items-center gap-1 mb-2">
     {#each lists as l}
+      {@const selected = activeIds.has(l.id)}
+      {@const focused  = focusedListId === l.id}
       <button onclick={() => pickList(l.id)}
-        class="px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded
-               border border-[rgba(251,191,36,0.3)]
-               {activeId === l.id ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'bg-transparent text-[#c8d8f0]/70 hover:bg-[#fbbf24]/10'}">
-        {l.name}
+        title={selected ? 'Selected — click to deselect' : 'Click to include'}
+        class="px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded transition
+               border {focused ? 'border-[#fbbf24]' : 'border-[rgba(251,191,36,0.3)]'}
+               {selected ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'bg-transparent text-[#c8d8f0]/40 hover:bg-[#fbbf24]/10 hover:text-[#fbbf24]/70'}">
+        <span class="mr-1 text-[0.55rem]">{selected ? '✓' : '○'}</span>{l.name}
         <span class="ml-1 text-[0.55rem] text-[#7e97b8]">({l.item_count})</span>
         {#if l.is_default}<span class="ml-1 text-[0.5rem] text-[#4ade80]">★</span>{/if}
       </button>
@@ -869,8 +985,8 @@
       class="px-2 py-1 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
       + New
     </button>
-    {#if active && !active.is_default && lists.length > 1}
-      <button onclick={() => dropList(active.id)}
+    {#if focusedListId != null && lists.find(l => l.id === focusedListId)?.is_default !== true && lists.length > 1}
+      <button onclick={() => dropList(focusedListId)}
         class="px-2 py-1 text-[0.65rem] text-red-300 border border-red-400/40 rounded hover:bg-red-500/10">
         Delete list
       </button>
@@ -919,7 +1035,7 @@
         if (e.key === 'Enter')      { e.preventDefault(); addRow(); }
         else if (e.key === 'Escape') { typeaheadOpen = false; }
       }}
-      class="field-input flex-1" placeholder="Add symbol to {active?.name ?? 'list'} — type 2+ chars" />
+      class="field-input flex-1" placeholder="Add symbol to {lists.find(l => l.id === focusedListId)?.name ?? 'list'} — type 2+ chars" />
     <select bind:value={exchInput} class="field-input w-24">
       <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>
     </select>
