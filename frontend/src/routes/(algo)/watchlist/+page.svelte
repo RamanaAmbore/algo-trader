@@ -60,62 +60,6 @@
   let newListName = $state('');
   let showCreate  = $state(false);
 
-  // ── Expand / collapse state ───────────────────────────────────
-  //
-  // Two independent layers:
-  //
-  //   1. `collapsedSections` — top-level buckets the grid is split
-  //      into: Positions / Holdings / Indices / Watchlist / Other.
-  //      Click the chevron on a section-header row to hide every
-  //      data row in that bucket (only the header remains).
-  //
-  //   2. `collapsedGroups` — per-underlying option-chain folding
-  //      INSIDE a section. Click the ▼/▶ chevron on a group-leader
-  //      row (spot/fut at the top of an underlying chain) to hide
-  //      just the option strikes below it; the spot/fut stays
-  //      visible so the operator keeps the chain anchor on screen.
-  //
-  // Both are Set<string> so toggling produces a new reference and
-  // Svelte 5's $state proxy picks up the change; both flow through
-  // `unifiedRows` via the buildUnified $derived.
-  let collapsedSections = $state(/** @type {Set<string>} */ (new Set()));
-  let collapsedGroups   = $state(/** @type {Set<string>} */ (new Set()));
-
-  function toggleSection(/** @type {string} */ name) {
-    if (!name) return;
-    const next = new Set(collapsedSections);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
-    collapsedSections = next;
-  }
-
-  function toggleGroup(/** @type {string} */ name) {
-    if (!name) return;
-    const next = new Set(collapsedGroups);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
-    collapsedGroups = next;
-  }
-
-  // Underlying names treated as indices for sectioning. Mirrors the
-  // INDEX_LTP_KEY map used for quote resolution.
-  const INDEX_NAMES = new Set([
-    'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
-  ]);
-  // Ordered section labels + ranks. Lower rank = closer to the top
-  // of the grid. Operator priority: active book first, then holdings,
-  // then index references, then bare watchlist.
-  const SECTION_LABEL = {
-    positions: 'Positions',
-    holdings:  'Holdings',
-    indices:   'Indices',
-    watchlist: 'Watchlist',
-    other:     'Other',
-  };
-  const SECTION_RANK = {
-    positions: 0, holdings: 1, indices: 2, watchlist: 3, other: 4,
-  };
-
   let stopPoll, stopPulsePoll;
   let gridEl;
   let grid;
@@ -388,8 +332,7 @@
   /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
    *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
   const unifiedRows = $derived(buildUnified(
-    active, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument,
-    collapsedGroups, collapsedSections,
+    active, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument
   ));
 
   /** Best-effort tradingsymbol parser using the IndexedDB instrument
@@ -410,7 +353,7 @@
     return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
   }
 
-  function buildUnified(activeList, wq, pos, hold, uq, cq, getInst, collapsed, collapsedSec) {
+  function buildUnified(activeList, wq, pos, hold, uq, cq, getInst) {
     // Key on tradingsymbol alone (case-normalised). If the same
     // symbol exists in multiple accounts or across exchanges, we
     // collapse to one row with net qty + summed P&L — the operator
@@ -605,20 +548,25 @@
       row.day_pct = directional(row.change_pct, netQty);
     }
 
-    // ── Section assignment ────────────────────────────────────────
+    // ── Sort ──────────────────────────────────────────────────────
     //
-    // Each UNDERLYING-GROUP is mapped to one of five sections —
-    // positions / holdings / indices / watchlist / other. The
-    // strongest signal across all rows in the group wins, so an
-    // option chain with a real position lands in Positions even if
-    // its underlying is also on the watchlist.
+    // Two-level ordering:
     //
-    //   has any src.p in group → 'positions'
-    //   has any src.h in group → 'holdings'
-    //   underlying is an index → 'indices'      (NIFTY, SENSEX, …)
-    //   has any src.u in group → 'indices'      (MCX commodity chain)
-    //   has any src.w in group → 'watchlist'
-    //   otherwise               → 'other'
+    //   Level 1 — which UNDERLYING-GROUP comes first?
+    //     groupBucket(g) =
+    //       0 if any row in the group has a position or holding
+    //         (operator's active book — most urgent)
+    //       1 if any row in the group is on the watchlist
+    //       2 otherwise (option-underlying-only / equity passthroughs)
+    //     Ties broken alphabetically by underlying name.
+    //
+    //   Level 2 — within a group:
+    //     spot row first → futures → options (strike ASC, CE then PE)
+    //     → anything else (alphabetical fallback).
+    //
+    // Effect: positions and holdings cluster at the top alongside any
+    // option underlyings / chain rows that share their group; pure
+    // watchlist entries follow; bare option-underlying-only rows trail.
     const out = Object.values(byKey);
     const groupKey = (r) => r.underlying || `~~${r.tradingsymbol || ''}`;
     const tierRank = (r) => {
@@ -629,100 +577,31 @@
     };
     const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
 
-    function rowSection(r) {
-      if (r.src?.p) return 'positions';
-      if (r.src?.h) return 'holdings';
-      const u = String(r.underlying || '').toUpperCase();
-      if (INDEX_NAMES.has(u)) return 'indices';
-      if (r.src?.u) return 'indices';
-      if (r.src?.w) return 'watchlist';
-      return 'other';
-    }
-
-    const groupSection = /** @type {Record<string, string>} */ ({});
+    // Precompute per-group bucket so the comparator stays O(1).
+    const groupBucket = /** @type {Record<string, number>} */ ({});
     for (const r of out) {
-      const gk = String(groupKey(r));
-      const sec = rowSection(r);
-      const prev = groupSection[gk];
-      if (prev == null || SECTION_RANK[sec] < SECTION_RANK[prev]) {
-        groupSection[gk] = sec;
+      const g = String(groupKey(r));
+      const bucket = (r.src?.p || r.src?.h) ? 0 : r.src?.w ? 1 : 2;
+      if (groupBucket[g] == null || bucket < groupBucket[g]) {
+        groupBucket[g] = bucket;
       }
     }
 
-    // ── Sort ──────────────────────────────────────────────────────
-    //
-    //   Level 1: section rank (positions → holdings → indices →
-    //            watchlist → other)
-    //   Level 2: alphabetical by underlying within the section
-    //   Level 3: tier within the underlying group (spot → fut → opt)
-    //   Level 4: option strike ASC, CE before PE
     out.sort((a, b) => {
-      const sa = groupSection[String(groupKey(a))] || 'other';
-      const sb = groupSection[String(groupKey(b))] || 'other';
-      if (sa !== sb) return SECTION_RANK[sa] - SECTION_RANK[sb];
       const ga = String(groupKey(a)), gb = String(groupKey(b));
+      const ba = groupBucket[ga] ?? 2, bb = groupBucket[gb] ?? 2;
+      if (ba !== bb) return ba - bb;
       if (ga !== gb) return ga.localeCompare(gb);
       const ta = tierRank(a), tb = tierRank(b);
       if (ta !== tb) return ta - tb;
       if (a.kind === 'opt' && b.kind === 'opt') {
-        const sa2 = a.strike ?? 0, sb2 = b.strike ?? 0;
-        if (sa2 !== sb2) return sa2 - sb2;
+        const sa = a.strike ?? 0, sb = b.strike ?? 0;
+        if (sa !== sb) return sa - sb;
         return optTypeRank(a) - optTypeRank(b);
       }
       return (a.tradingsymbol || '').localeCompare(b.tradingsymbol || '');
     });
-
-    // ── Group leader / chain-collapse tags ───────────────────────
-    // First non-option row of each group (spot for indices+stocks,
-    // fut for MCX commodities) is tagged as the leader. The symbol
-    // cell renders a ▶/▼ chevron on tagged rows; clicking toggles
-    // the per-underlying `collapsedGroups` set (handled in
-    // handleRowClick).
-    const seenGroup = new Set();
-    const groupHasOptions = /** @type {Record<string, boolean>} */ ({});
-    for (const r of out) {
-      if (r.kind === 'opt') groupHasOptions[String(groupKey(r))] = true;
-    }
-    for (const r of out) {
-      const gk = String(groupKey(r));
-      if (r.kind !== 'opt' && !seenGroup.has(gk) && groupHasOptions[gk]) {
-        r._isGroupLeader = true;
-        r._collapsed = !!(collapsed && collapsed.has(r.underlying));
-        seenGroup.add(gk);
-      }
-    }
-
-    // ── Section-header injection + dual filtering ────────────────
-    // Walk the sorted rows; whenever the section changes, push a
-    // synthetic section-header row first. Skip data rows whose
-    // section is collapsed; skip option rows whose chain is
-    // collapsed. The header still renders even when the section is
-    // collapsed (so the operator can re-expand).
-    const sectionCounts = /** @type {Record<string, number>} */ ({});
-    for (const r of out) {
-      const sec = groupSection[String(groupKey(r))] || 'other';
-      sectionCounts[sec] = (sectionCounts[sec] || 0) + 1;
-    }
-
-    const result = [];
-    let lastSection = null;
-    for (const r of out) {
-      const sec = groupSection[String(groupKey(r))] || 'other';
-      if (sec !== lastSection) {
-        result.push({
-          _isSection: true,
-          _section: sec,
-          _count: sectionCounts[sec],
-          _collapsed: !!(collapsedSec && collapsedSec.has(sec)),
-          tradingsymbol: SECTION_LABEL[sec],
-        });
-        lastSection = sec;
-      }
-      if (collapsedSec && collapsedSec.has(sec)) continue;
-      if (r.kind === 'opt' && collapsed && collapsed.has(r.underlying)) continue;
-      result.push(r);
-    }
-    return result;
+    return out;
   }
 
   // ── Add / remove ─────────────────────────────────────────────────
@@ -781,29 +660,8 @@
 
   function symRenderer(params) {
     const row = params.data || {};
-    // Section-header row — fills the symbol cell with a clickable
-    // header strip. Other columns render empty (data rows handle
-    // those; this row carries no per-symbol data). Class `.section-row`
-    // on the parent (via getRowClass) styles the rest of the row.
-    if (row._isSection) {
-      const arrow = row._collapsed ? '▶' : '▼';
-      return `<span class="section-toggle" data-section="${row._section}">${arrow}</span>` +
-             `<span class="section-name">${row.tradingsymbol}</span>` +
-             `<span class="section-count">${row._count}</span>`;
-    }
     const alias = row.alias ? `<span class="sym-alias"> → ${row.tradingsymbol}</span>` : '';
     const main  = row.alias || row.tradingsymbol || '';
-    // Group expand/collapse chevron — only on group-leader rows
-    // (the spot/fut at the top of an underlying group that has
-    // options below it). Click handling is intercepted by
-    // handleRowClick which detects `.group-toggle` clicks and
-    // toggles `collapsedGroups` without firing the order-ticket.
-    let toggle = '';
-    if (row._isGroupLeader) {
-      const arrow = row._collapsed ? '▶' : '▼';
-      const title = row._collapsed ? 'Expand' : 'Collapse';
-      toggle = `<span class="group-toggle" data-group="${row.underlying || ''}" title="${title} ${row.underlying} chain">${arrow}</span>`;
-    }
     // Source badges: P / H always show qty inline (even when qty=0,
     // which happens on mirror-net positions or intraday-closed
     // contracts — `P 0` is more honest than a bare `P` chip that
@@ -824,7 +682,7 @@
       badges.push(`<span class="sym-badge badge-u" title="Option underlying">U</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
-    return `${toggle}<span class="sym-main">${main}</span>${alias}${badgeHtml}`;
+    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}`;
   }
 
   function dirCls(v) {
@@ -836,7 +694,6 @@
 
   function getRowClass(params) {
     const r = params.data || {};
-    if (r._isSection) return 'section-row';
     const s = r.src || {};
     // Position rows: cyan-long / orange-short symbol stripe, same as
     // PerformancePage. Falls back to the source-priority tint for
@@ -935,25 +792,9 @@
 
   /** Row-click → open the OrderEntryShell pre-filled with the row's
    *  symbol so the operator can place an order without leaving
-   *  /watchlist. Chevron clicks on group-leader rows are intercepted
-   *  here so they toggle expand/collapse instead of opening the
-   *  ticket. */
+   *  /watchlist. */
   function handleRowClick(ev) {
     if (!ev.data) return;
-    // Section header row click → toggle section collapse.
-    if (ev.data._isSection) {
-      toggleSection(ev.data._section);
-      return;
-    }
-    // Intercept per-underlying chevron clicks (.group-toggle) BEFORE
-    // the order-ticket path. ev.event is the underlying MouseEvent;
-    // .closest() walks the DOM from the click target up.
-    const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
-    const tog = target?.closest?.('.group-toggle');
-    if (tog) {
-      toggleGroup(tog.getAttribute('data-group') || '');
-      return;
-    }
     const r = ev.data;
     const inst = getInstrument?.(r.tradingsymbol);
     const lot = Number(inst?.ls || 1);
@@ -1067,63 +908,6 @@
   /* Symbol cell — main + alias. */
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
   :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
-
-  /* Group expand/collapse chevron — sits left of the symbol on
-     group-leader rows (spot/fut at the top of an underlying chain).
-     Low-emphasis cool-blue resting state, amber on hover for the
-     click affordance. Click toggles the collapse state via
-     handleRowClick → toggleGroup(). */
-  :global(.group-toggle) {
-    display: inline-block;
-    width: 12px;
-    margin-right: 3px;
-    color: #7e97b8;
-    font-size: 0.6rem;
-    cursor: pointer;
-    user-select: none;
-    transition: color 0.12s ease;
-  }
-  :global(.group-toggle:hover) { color: #fbbf24; }
-
-  /* Section-header rows (Positions / Holdings / Indices / Watchlist).
-     Whole row is the toggle target. The data cells (LTP, Day P&L, …)
-     render empty for this row; the symbol cell carries the chevron +
-     label + count. Subtle amber band so it reads as a heading without
-     stealing focus from the data rows it separates. */
-  :global(.ag-theme-algo .ag-row.section-row) {
-    background-color: rgba(251,191,36,0.07) !important;
-    border-top: 1px solid rgba(251,191,36,0.30) !important;
-    cursor: pointer;
-    font-weight: 700;
-  }
-  :global(.ag-theme-algo .ag-row.section-row .ag-cell) {
-    background-color: transparent !important;
-    box-shadow: none !important;
-  }
-  :global(.ag-theme-algo .ag-row.section-row.ag-row-hover) {
-    background-color: rgba(251,191,36,0.14) !important;
-  }
-  :global(.section-toggle) {
-    display: inline-block;
-    width: 12px;
-    margin-right: 6px;
-    color: #fbbf24;
-    font-size: 0.65rem;
-    user-select: none;
-  }
-  :global(.section-name) {
-    color: #fbbf24;
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  :global(.section-count) {
-    margin-left: 6px;
-    color: #7e97b8;
-    font-size: 0.55rem;
-    font-weight: 600;
-  }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. Compact:
      borderless coloured chips so the symbol column can stay narrow.
