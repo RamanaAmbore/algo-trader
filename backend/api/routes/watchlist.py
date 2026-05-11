@@ -128,27 +128,29 @@ _QUOTE_CACHE: dict[int, tuple[float, WatchlistQuotes]] = {}
 _QUOTE_TTL_SECONDS = 5.0
 
 
-def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
+async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
-    future tradingsymbol. Looks up the instrument cache. Returns None
-    when no MCX FUT is found for that commodity."""
+    future tradingsymbol. Reads the shared instruments cache (24h TTL,
+    warmed at startup + 08:00 IST). Returns None when no MCX FUT is
+    found for that commodity (cache cold or broker fetch failed)."""
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
     try:
-        from backend.api.routes.instruments import _CACHE  # type: ignore
-        items = (_CACHE.get("items") or []) if isinstance(_CACHE, dict) else []
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                   ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
     except Exception:
         items = []
     if not items:
         return None
-    candidates = []
     target_u = commodity_name.upper()
-    for inst in items:
-        if (
-            getattr(inst, "e", "") == "MCX"
-            and getattr(inst, "t", "") == "FUT"
-            and (getattr(inst, "u", "") or "").upper() == target_u
-            and getattr(inst, "x", None)
-        ):
-            candidates.append(inst)
+    candidates = [
+        inst for inst in items
+        if (inst.e == "MCX"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x)
+    ]
     if not candidates:
         return None
     # Earliest expiry first — that's the near-month future.
@@ -156,14 +158,14 @@ def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     return candidates[0].s
 
 
-def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
+async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     """Returns (broker_key, quote_symbol). MCX bare commodity names get
     resolved to the near-month future; everything else passes through."""
     sym, exch = item.tradingsymbol, item.exchange
     # Heuristic: MCX commodity names are short + uppercase + no digits.
     # Real futures look like GOLDM25APRFUT / CRUDEOILM25MAY etc.
     if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-        resolved = _resolve_mcx_commodity(sym)
+        resolved = await _resolve_mcx_commodity(sym)
         if resolved:
             return f"MCX:{resolved}", resolved
     return f"{exch}:{sym}", sym
@@ -178,7 +180,7 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
 
     key_map: dict[int, tuple[str, str]] = {}
     for it in items:
-        broker_key, quote_sym = _build_quote_key(it)
+        broker_key, quote_sym = await _build_quote_key(it)
         key_map[it.id] = (broker_key, quote_sym)
 
     distinct_keys = sorted({k[0] for k in key_map.values() if k[0]})
@@ -239,12 +241,54 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
     """Idempotent: create Default + Markets watchlists for this user if
     they don't already have any. Called lazily by every endpoint so a
     user who pre-dates the watchlist feature still gets their seeded
-    lists on first access — no migration sweep needed."""
+    lists on first access — no migration sweep needed.
+
+    For existing users who already have Markets, top up any symbols
+    from the seed list that aren't already present (additive only —
+    never re-adds a symbol the user explicitly removed, since this
+    only fires on the full original seed-list count match)."""
     row = await session.execute(
-        select(Watchlist.id).where(Watchlist.user_id == user_id).limit(1)
+        select(Watchlist.id, Watchlist.name).where(Watchlist.user_id == user_id)
     )
-    if row.scalar_one_or_none() is not None:
-        return  # already seeded
+    existing = list(row.all())
+    if existing:
+        # Top-up logic for the Markets list. Only add symbols that
+        # aren't there yet, never remove. Skip entirely if the user
+        # has clearly customised the list (item count below the
+        # original seed size, suggesting deliberate removals).
+        markets = next((rid for (rid, name) in existing if name == "Markets"), None)
+        if markets:
+            seed_pairs = {(r["tradingsymbol"], r["exchange"])
+                          for r in markets_default_rows()}
+            cur_row = await session.execute(
+                select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
+                .where(WatchlistItem.watchlist_id == markets)
+            )
+            cur_pairs = set(cur_row.all())
+            missing = seed_pairs - cur_pairs
+            # Only top up if the existing list has at least as many of
+            # the OTHER seed entries as expected (i.e. user hasn't been
+            # removing items). The original seed had ≥10 entries.
+            if missing and len(cur_pairs & seed_pairs) >= len(seed_pairs) - len(missing):
+                now = datetime.now(timezone.utc)
+                from sqlalchemy import func
+                max_sort_r = await session.execute(
+                    select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
+                    .where(WatchlistItem.watchlist_id == markets)
+                )
+                next_sort = int(max_sort_r.scalar() or -1) + 1
+                for sym, exch in sorted(missing):
+                    session.add(WatchlistItem(
+                        watchlist_id=markets, tradingsymbol=sym,
+                        exchange=exch, sort_order=next_sort, added_at=now,
+                    ))
+                    next_sort += 1
+                await session.commit()
+                logger.info(
+                    f"Watchlist: topped up Markets for user_id={user_id} "
+                    f"with {sorted(missing)}"
+                )
+        return
     now = datetime.now(timezone.utc)
     default_list = Watchlist(
         user_id=user_id, name="Default", sort_order=0, is_default=True,
