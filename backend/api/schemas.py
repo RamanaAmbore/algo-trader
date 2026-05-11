@@ -27,6 +27,12 @@ class HoldingRow(msgspec.Struct):
     day_change: float = 0.0
     day_change_val: float = 0.0
     day_change_percentage: float = 0.0
+    # opening_quantity is what we had at start of day — stays stable
+    # through intraday sells while `quantity` drops to 0 after a full
+    # sell. Day-P&L and inv_val are computed against opening_quantity
+    # in the broker layer, so callers (watchlist) that surface
+    # per-symbol qty should prefer this when quantity has gone to 0.
+    opening_quantity: int = 0
 
 
 class HoldingsSummaryRow(msgspec.Struct):

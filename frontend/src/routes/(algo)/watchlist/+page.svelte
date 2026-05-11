@@ -293,9 +293,12 @@
     const get = (key) => byKey[key] || (byKey[key] = {
       key,
       src: { w:false, h:false, p:false, u:false },
-      // Accumulators initialised to 0 so the += in the position /
-      // holding loops below works without an explicit null guard.
-      qty_pos: 0, qty_hold: 0, pnl: 0,
+      qty_pos: 0, qty_hold: 0,
+      // pnl and day_pnl start as null so watchlist-only / underlying-only
+      // rows render '—' rather than 0 in the P&L / Day P&L columns.
+      // The position + holdings loops switch them to numeric on first
+      // contribution and accumulate from there.
+      pnl: null, day_pnl: null,
       // Weighted-avg numerator for avg_pos (sum of qty × avg);
       // divided by total qty at render time.
       _avg_num: 0,
@@ -355,11 +358,21 @@
       } else if (row.ltp == null) {
         row.ltp = r.last_price ?? null;
       }
-      row.pnl += Number(r.pnl) || 0;
+      // Accumulate broker-provided pnl + day_change_val (same fields
+      // the dashboard's positions grid uses) so the P&L / Day P&L
+      // columns in the watchlist match the dashboard semantics.
+      row.pnl     = (row.pnl     ?? 0) + (Number(r.pnl)            || 0);
+      row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
       fill(row, sym);
     }
 
-    // 3. Holdings — same accumulation rule as positions.
+    // 3. Holdings — same accumulation rule as positions. Use
+    // opening_quantity (start-of-day) rather than `quantity` for the
+    // qty so an intraday-fully-sold position still surfaces in the
+    // book at its starting size — the broker layer already uses
+    // opening_quantity for inv_val / day_change_val, and `quantity`
+    // drops to 0 after a full sell which would otherwise blank the
+    // H badge.
     for (const r of hold) {
       const exch = r.exchange || 'NSE';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
@@ -368,7 +381,8 @@
       row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.h = true;
-      row.qty_hold += Number(r.quantity) || 0;
+      const heldQty = Number(r.opening_quantity) || Number(r.quantity) || 0;
+      row.qty_hold += heldQty;
       // Live contract quote wins; otherwise fall back to the
       // holdings snapshot's last_price.
       const liveQ = cq?.[`${exch}:${sym}`];
@@ -385,6 +399,11 @@
         if (r.day_change_percentage != null && row.change_pct == null)
           row.change_pct = Number(r.day_change_percentage);
       }
+      // Accumulate broker-provided pnl + day_change_val — matches the
+      // dashboard Holdings grid's columns. For positions+holdings on
+      // the same symbol both contributions stack into one row.
+      row.pnl     = (row.pnl     ?? 0) + (Number(r.pnl)            || 0);
+      row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
       fill(row, sym);
     }
 
@@ -428,23 +447,19 @@
       }
     }
 
-    // Finalise per-row aggregates: weighted-avg avg_pos from the
-    // sum-of-(qty × avg) accumulator. qty_pos === 0 keeps avg at 0.
+    // Finalise weighted-avg avg_pos from the sum-of-(qty × avg)
+    // accumulator. qty_pos === 0 keeps avg at 0.
     //
-    // Also derive `day_pnl` — aggregate today's P&L (qty × per-share
-    // change). For watchlist-only / underlying-only rows (no qty),
-    // null so the column renders '—' rather than a misleading 0.
-    // The aggregate is what surfaces the K/L suffix the operator
-    // expects on this page.
+    // pnl + day_pnl are already correct: the positions and holdings
+    // loops accumulated the broker-provided values (positions.pnl,
+    // positions.day_change_val, holdings.pnl, holdings.day_change_val
+    // — same fields the dashboard's grids surface). Rows with no
+    // contribution stay null and render as '—'.
     for (const row of Object.values(byKey)) {
       if (row.qty_pos !== 0) {
         row.avg_pos = row._avg_num / row.qty_pos;
       }
       delete row._avg_num;
-      const totalQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
-      row.day_pnl = (totalQty !== 0 && row.change != null)
-        ? row.change * totalQty
-        : null;
     }
 
     // ── Sort ──────────────────────────────────────────────────────
