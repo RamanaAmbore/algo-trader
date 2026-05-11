@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get, post
+from litestar import Controller, Request, get, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import delete as sql_delete, desc, select
 
@@ -256,17 +256,27 @@ class SimulatorController(Controller):
             raise HTTPException(status_code=400, detail=str(e))
 
     @post("/seed-live")
-    async def seed_live(self) -> dict:
+    async def seed_live(self, request: Request) -> dict:
         """
         Snapshot live holdings + positions + margins into the driver's
         `_live_snapshot` field so the next `start(seed_mode=live|live+scenario)`
-        uses the real book as the starting state. Bypasses the in-process
-        cache so the snapshot is fresh at the moment of the call.
+        uses the real book as the starting state. Also seeds the
+        operator's watchlist items as zero-qty rows so sim move
+        primitives can drive watchlist symbol prices. Bypasses the
+        in-process cache so the snapshot is fresh.
         """
-        import asyncio
+        from sqlalchemy import select
+        from backend.api.database import async_session
+        from backend.api.models import User
+        payload  = getattr(request.state, "token_payload", {}) or {}
+        username = payload.get("sub", "")
+        user_id: int | None = None
+        if username:
+            async with async_session() as session:
+                r = await session.execute(select(User.id).where(User.username == username))
+                user_id = r.scalar_one_or_none()
         try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, get_driver().seed_live)
+            return await get_driver().seed_live_async(user_id=user_id)
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))
 

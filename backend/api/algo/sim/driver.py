@@ -299,6 +299,60 @@ def _normalise_custom_positions(rows: list[dict]) -> list[dict]:
 #  Glob scope matching — section.account.tradingsymbol
 # ═════════════════════════════════════════════════════════════════════════
 
+async def _fetch_user_watchlist_rows(user_id: int) -> list[dict]:
+    """Fetch every watchlist item the user owns + batch-quote them.
+    Builds zero-qty rows tagged section='watchlist', account=<list name>
+    ready to drop into SimDriver._watchlist_rows."""
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import Watchlist, WatchlistItem
+    from backend.api.routes.watchlist import _fetch_quotes
+
+    async with async_session() as session:
+        wl_row = await session.execute(
+            select(Watchlist.id, Watchlist.name)
+            .where(Watchlist.user_id == user_id)
+        )
+        wls = list(wl_row.all())
+        if not wls:
+            return []
+        wl_map = {wid: wname for (wid, wname) in wls}
+        items_row = await session.execute(
+            select(WatchlistItem)
+            .where(WatchlistItem.watchlist_id.in_(list(wl_map.keys())))
+            .order_by(WatchlistItem.watchlist_id, WatchlistItem.sort_order)
+        )
+        items = list(items_row.scalars().all())
+
+    if not items:
+        return []
+    quotes = await _fetch_quotes(items)
+    qmap = {q.item_id: q for q in quotes}
+
+    rows: list[dict] = []
+    for it in items:
+        q = qmap.get(it.id)
+        ltp = float(q.ltp if q else 0.0) or 0.0
+        rows.append({
+            "section":       "watchlist",
+            "account":       wl_map.get(it.watchlist_id, "Default"),
+            "tradingsymbol": (q.quote_symbol if q else it.tradingsymbol),
+            "exchange":      it.exchange,
+            "quantity":      0,
+            "average_price": 0.0,
+            "last_price":    ltp,
+            "close_price":   float(q.close if (q and q.close) else 0.0),
+            "bid":           float(q.bid)  if (q and q.bid)  else 0.0,
+            "ask":           float(q.ask)  if (q and q.ask)  else 0.0,
+            "pnl":           0.0,
+            "day_change":    float(q.change     if q else 0.0),
+            "day_change_percentage": float(q.change_pct if q else 0.0) / 100.0,
+            "_watchlist_id": it.watchlist_id,
+            "_watchlist_item_id": it.id,
+        })
+    return rows
+
+
 def _match_glob(glob: str, section: str, account: str, symbol: str) -> bool:
     """
     Match a glob like `holdings.**` / `holdings.ZG*.*` / `positions.*.NIFTY*`
@@ -365,8 +419,14 @@ class SimDriver:
         # Running per-symbol state. Holdings is deliberately unused (empty
         # forever) — positions-only sim. Kept here so `dataframes()` can
         # still return a valid empty sum_holdings frame.
-        self._holdings_rows: list[dict] = []
+        self._holdings_rows:  list[dict] = []
         self._positions_rows: list[dict] = []
+        # Watchlist rows — zero-qty market-data-only entries. Move
+        # primitives (pct / abs / random_walk / underlying_*) apply to
+        # them the same as positions; agents can later condition on
+        # `watchlist.<list>.<symbol>` scopes. Account-equivalent slot
+        # carries the watchlist name (e.g. "Markets") for scoping.
+        self._watchlist_rows: list[dict] = []
         self._margins_rows: list[dict] = []
 
         # Cached snapshot of the most recently fetched live book — lets the
@@ -673,6 +733,7 @@ class SimDriver:
         # simulated alongside positions (was positions-only) so day_pct /
         # day_rate_abs / day_rate_pct agents become testable too.
         self._holdings_rows = []
+        self._watchlist_rows = []
         if seed_mode in ("live", "live+scenario"):
             if not self._live_snapshot:
                 try:
@@ -686,6 +747,7 @@ class SimDriver:
             self._positions_rows = copy.deepcopy(self._live_snapshot["positions"])
             self._margins_rows   = copy.deepcopy(self._live_snapshot["margins"])
             self._holdings_rows  = copy.deepcopy(self._live_snapshot.get("holdings", []))
+            self._watchlist_rows = copy.deepcopy(self._live_snapshot.get("watchlist", []))
 
         if seed_mode in ("scripted", "live+scenario"):
             initial = scen.get("initial") or {}
@@ -929,6 +991,8 @@ class SimDriver:
             return self._positions_rows
         if section == "margins":
             return self._margins_rows
+        if section == "watchlist":
+            return self._watchlist_rows
         return []
 
     def _apply_moves(self, moves: list[dict]) -> list[dict]:
@@ -1421,6 +1485,18 @@ class SimDriver:
             _recompute_position_row(row, self.spread_pct)
         elif section == "holdings":
             _recompute_holding_row(row)
+        elif section == "watchlist":
+            # Watchlist rows: just refresh bid/ask from the new
+            # last_price + spread. Day-change derives from close_price
+            # the same way holdings does.
+            lp    = float(row.get("last_price") or 0)
+            close = float(row.get("close_price") or 0) or None
+            half  = max(0.0, float(self.spread_pct)) / 2.0
+            row["bid"] = lp * (1.0 - half) if lp else 0.0
+            row["ask"] = lp * (1.0 + half) if lp else 0.0
+            if close:
+                row["day_change"]            = lp - close
+                row["day_change_percentage"] = (lp - close) / close
 
     # ── Paper-trade chase engine (delegated to PaperTradeEngine) ─────
 
@@ -1534,12 +1610,23 @@ class SimDriver:
 
     # ── Live-book seeding ────────────────────────────────────────────
 
-    def seed_live(self) -> dict:
+    def seed_live(self, user_id: int | None = None) -> dict:
         """
         Snapshot holdings + positions + margins from the real book into
         the driver's `_live_snapshot` field. Holdings are included so
         the simulator can exercise day_pct / day_rate_abs / day_rate_pct
         agents that condition on holdings P&L.
+
+        When `user_id` is given, additionally fetches that user's
+        watchlists and seeds zero-qty rows for every watchlist item so
+        the sim can drive watchlist symbol prices independent of the
+        operator's actual book. Watchlist rows live in their own
+        `watchlist` section; move primitives address them via
+        `watchlist.<list_name>.<symbol>` scopes.
+
+        Note: when called from sync paths (e.g. SimDriver.start auto-
+        seed), user_id should be left None — only the async route
+        handlers pass user_id and call seed_live_async() instead.
         """
         assert_enabled()
         from backend.shared.helpers import broker_apis
@@ -1565,26 +1652,54 @@ class SimDriver:
         for row in holdings:
             _recompute_holding_row(row)
 
+        # Watchlist rows are seeded via the async path
+        # `seed_live_async(user_id)` from the route handler — the sync
+        # path leaves them empty to avoid blocking on the async DB
+        # session inside a sync caller.
+        watchlist_rows: list[dict] = []
+
         self._live_snapshot = {
             "holdings":    holdings,
             "positions":   positions,
             "margins":     margins,
+            "watchlist":   watchlist_rows,
             "snapshot_at": datetime.now().isoformat(timespec="seconds"),
         }
         logger.info(
-            f"[SIM] seed-live: {len(positions)} positions / "
-            f"{len(margins)} margins snapshotted (holdings skipped — positions-only sim)"
+            f"[SIM] seed-live: {len(positions)} positions · {len(margins)} margins · "
+            f"{len(holdings)} holdings"
         )
         return {
             "snapshot_at":     self._live_snapshot["snapshot_at"],
             "positions_count": len(positions),
             "margins_count":   len(margins),
+            "watchlist_count": len(self._live_snapshot.get("watchlist", []) or []),
             "accounts":        sorted({str(r.get("account", "")) for r in positions + margins if r.get("account")}),
             # Distinct tradingsymbols in the snapshot — populates the
             # Symbol picker on /admin/simulator.
             "symbols":         sorted({str(r.get("tradingsymbol", ""))
                                        for r in positions if r.get("tradingsymbol")}),
         }
+
+    async def seed_live_async(self, user_id: int | None = None) -> dict:
+        """Async wrapper around `seed_live()` that additionally fetches
+        the user's watchlist items + quotes. The sync core (broker
+        fetches via @for_all_accounts) runs the same as before; the
+        watchlist fetch runs in the same event loop without blocking.
+        """
+        # Run the sync seed first — its broker calls are wrapped in a
+        # ThreadPoolExecutor by Connections() / broker_apis, so the
+        # event loop isn't blocked.
+        manifest = self.seed_live(user_id=None)
+        if user_id is not None:
+            try:
+                watchlist_rows = await _fetch_user_watchlist_rows(user_id)
+                self._live_snapshot["watchlist"] = watchlist_rows
+                manifest["watchlist_count"] = len(watchlist_rows)
+                logger.info(f"[SIM] seed-live watchlist: {len(watchlist_rows)} rows for user_id={user_id}")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[SIM] watchlist seed failed for user_id={user_id}: {exc}")
+        return manifest
 
     # ── Tick log ─────────────────────────────────────────────────────
 
