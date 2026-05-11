@@ -49,12 +49,14 @@
   let focusedListId = $state(/** @type {number | null} */ (null));
   let positions   = $state(/** @type {any[]} */ ([]));
   let holdings    = $state(/** @type {any[]} */ ([]));
-  let underlyingQuotes = $state(/** @type {Record<string, any>} */ ({}));
-  // Contract-level live quotes (option / future positions) — keyed
-  // by `${exchange}:${tradingsymbol}` so the row merge step below
-  // can pick them up in O(1). Refreshed every 10 s via the chunked
-  // batch-quote path.
-  let contractQuotes   = $state(/** @type {Record<string, any>} */ ({}));
+  // Pulse quote bag — bundles BOTH the option-underlying quotes
+  // (keyed by logical underlying name, each value carries a
+  // `_resolved` info block from resolveUnderlying) AND the contract
+  // quotes (keyed by `${exchange}:${tradingsymbol}`). Bundled into
+  // one $state object so a single assignment in loadPulse triggers
+  // exactly one buildUnified recomputation per tick (previously two
+  // separate writes ran buildUnified twice per tick).
+  let pulseQuotes = $state(/** @type {{underlyings: Record<string, any>, contracts: Record<string, any>}} */ ({ underlyings: {}, contracts: {} }));
   // Wall-clock of the last successful pulse refresh. Drives the
   // "Last updated Xs ago" indicator so stalls are visible.
   let pulseLastUpdate  = $state(/** @type {number | null} */ (null));
@@ -98,10 +100,13 @@
   // synchronously).
   let gridReady = $state(false);
 
-  // Instrument-cache lookup function. Loaded once at mount, kept as
-  // module-scope so buildUnified() can parse tradingsymbols
-  // synchronously (kind, strike, opt_type) for the group/sort logic.
-  let getInstrument = $state(/** @type {((s: string) => any) | null} */ (null));
+  // Instrument-cache lookup functions. Loaded once at mount and
+  // cached as module-scope state so buildUnified() can parse
+  // tradingsymbols synchronously and loadPulse can resolve MCX
+  // commodities to their near-month future without re-importing
+  // the module on every 10 s tick.
+  let getInstrument     = $state(/** @type {((s: string) => any) | null} */ (null));
+  let findNearestFuture = $state(/** @type {((u: string) => any) | null} */ (null));
 
   // Transient-error suppression. Quote-refresh polls fire every 5 s
   // and can blip on broker hiccups; one failed call shouldn't paint
@@ -124,12 +129,14 @@
     await tick();
     mountGrid();
 
-    // Warm the instruments cache + capture the sync lookup so
-    // buildUnified() can group rows by parsed underlying.
+    // Warm the instruments cache + capture the sync lookups so the
+    // 10 s loadPulse tick doesn't have to re-import and re-check
+    // IndexedDB freshness on every iteration.
     try {
       const mod = await import('$lib/data/instruments');
       await mod.loadInstruments();
-      getInstrument = mod.getInstrument;
+      getInstrument     = mod.getInstrument;
+      findNearestFuture = mod.findNearestFuture;
     } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
     // Real broker accounts for the OrderTicket — same fetch the
     // /admin/options page does so the ticket picks the right Kite
@@ -345,29 +352,32 @@
       // 5-min /api/positions cache.
       const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
       const contractKeys = new Set();
-      try {
-        const { loadInstruments, getInstrument, findNearestFuture } =
-          await import('$lib/data/instruments');
-        await loadInstruments();
-        for (const r of positions) {
-          const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
-          const exch = r.exchange || 'NFO';
-          const inst = getInstrument(sym);
+      // Use the cached lookups captured in onMount — no per-tick
+      // re-import or IndexedDB round-trip. When the cache is cold
+      // (lookups still null) we fall through with empty underlyings;
+      // contract keys still get collected for the batch quote.
+      const lookup = getInstrument;
+      const nearestFut = findNearestFuture;
+      for (const r of positions) {
+        const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+        const exch = r.exchange || 'NFO';
+        if (lookup) {
+          const inst = lookup(sym);
           if (inst?.u && String(inst.t || '').toUpperCase() !== 'EQ' &&
               !underlyingInfos.has(inst.u)) {
-            const info = resolveUnderlying(inst.u, findNearestFuture);
+            const info = resolveUnderlying(inst.u, nearestFut);
             if (info) underlyingInfos.set(inst.u, info);
           }
-          if (sym) contractKeys.add(`${exch}:${sym}`);
         }
-        // Holdings also need live bid/ask + day-change, not just the
-        // 5-min cached snapshot — fold them into the same batch.
-        for (const r of holdings) {
-          const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
-          const exch = r.exchange || 'NSE';
-          if (sym) contractKeys.add(`${exch}:${sym}`);
-        }
-      } catch (_) { /* instruments cold */ }
+        if (sym) contractKeys.add(`${exch}:${sym}`);
+      }
+      // Holdings also need live bid/ask + day-change, not just the
+      // 5-min cached snapshot — fold them into the same batch.
+      for (const r of holdings) {
+        const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+        const exch = r.exchange || 'NSE';
+        if (sym) contractKeys.add(`${exch}:${sym}`);
+      }
 
       const allKeys = new Set(contractKeys);
       for (const info of underlyingInfos.values()) allKeys.add(info.quoteKey);
@@ -378,20 +388,20 @@
         for (const q of items) {
           cMap[`${q.exchange}:${q.tradingsymbol}`] = q;
         }
-        contractQuotes = cMap;
-        // Build the per-underlying quote bag, keyed by the LOGICAL
-        // underlying name (NIFTY / CRUDEOIL / RELIANCE) so the
-        // buildUnified() step 4 can drop one synthetic row per
-        // underlying carrying the resolved info + live quote.
+        // Per-underlying quote bag, keyed by the LOGICAL underlying
+        // name (NIFTY / CRUDEOIL / RELIANCE) so buildUnified() step
+        // 4 can drop one synthetic row per underlying carrying the
+        // resolved info + live quote.
         const uMap = {};
         for (const [name, info] of underlyingInfos.entries()) {
           const q = cMap[info.quoteKey];
           if (q) uMap[name] = { ...q, _resolved: info };
         }
-        underlyingQuotes = uMap;
+        // Single $state write — exactly one buildUnified rerun per
+        // tick instead of two from sequential assignments.
+        pulseQuotes = { underlyings: uMap, contracts: cMap };
       } else {
-        underlyingQuotes = {};
-        contractQuotes  = {};
+        pulseQuotes = { underlyings: {}, contracts: {} };
       }
       pulseLastUpdate = Date.now();
     } catch (_) { /* nothing fatal */ }
@@ -400,7 +410,7 @@
   /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
    *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
   const unifiedRows = $derived(buildUnified(
-    activeLists, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument,
+    activeLists, watchQuotes, positions, holdings, pulseQuotes, getInstrument,
     showPositions, showHoldings,
   ));
 
@@ -422,7 +432,9 @@
     return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
   }
 
-  function buildUnified(actLists, wq, pos, hold, uq, cq, getInst, includePos, includeHold) {
+  function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold) {
+    const uq = pq?.underlyings || {};
+    const cq = pq?.contracts   || {};
     // Key on tradingsymbol alone (case-normalised). If the same
     // symbol exists in multiple accounts or across exchanges, we
     // collapse to one row with net qty + summed P&L — the operator
@@ -440,6 +452,12 @@
       // Weighted-avg numerator for avg_pos (sum of qty × avg);
       // divided by total qty at render time.
       _avg_num: 0,
+      // Set of broker accounts that contributed positions or holdings
+      // to this row. handleRowClick uses this to pre-fill the
+      // OrderEntryShell with the right account when there's exactly
+      // one contributor; multi-account rows leave the field blank so
+      // the operator picks explicitly.
+      accounts: /** @type {Set<string>} */ (new Set()),
     });
 
     function fill(row, sym) {
@@ -497,6 +515,7 @@
       const avg = Number(r.average_price) || 0;
       row.qty_pos  += q;
       row._avg_num += avg * q;
+      if (r.account) row.accounts.add(String(r.account));
       // Live contract quote wins over the /api/positions snapshot
       // (cached server-side for 5 min). Set LTP once — same symbol
       // shares the same live price across accounts.
@@ -538,6 +557,7 @@
       row.src.h = true;
       const heldQty = Number(r.opening_quantity) || Number(r.quantity) || 0;
       row.qty_hold += heldQty;
+      if (r.account) row.accounts.add(String(r.account));
       // Live contract quote wins; otherwise fall back to the
       // holdings snapshot's last_price.
       const liveQ = cq?.[`${exch}:${sym}`];
@@ -813,7 +833,15 @@
       badges.push(`<span class="sym-badge badge-u" title="Option underlying">U</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
-    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}`;
+    // Remove-from-watchlist × — appears at the END of the cell for
+    // any row that came from a watchlist (src.w + watchlist_item_id +
+    // watchlist_list_id set in buildUnified). Clicking it routes
+    // through handleRowClick which intercepts .sym-remove before the
+    // order-ticket path.
+    const removeBtn = (row.src?.w && row.watchlist_item_id != null)
+      ? `<span class="sym-remove" data-item="${row.watchlist_item_id}" data-list="${row.watchlist_list_id ?? ''}" title="Remove from watchlist">×</span>`
+      : '';
+    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}`;
   }
 
   function dirCls(v) {
@@ -926,6 +954,18 @@
    *  /watchlist. */
   function handleRowClick(ev) {
     if (!ev.data) return;
+    // Intercept clicks on the inline × remove button. Walks the DOM
+    // from the click target up to find .sym-remove. Stops the
+    // order-ticket open path so removing a symbol doesn't also
+    // pop a ticket modal.
+    const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
+    const rmBtn = target?.closest?.('.sym-remove');
+    if (rmBtn) {
+      const itemId = Number(rmBtn.getAttribute('data-item'));
+      const listId = Number(rmBtn.getAttribute('data-list'));
+      if (itemId && listId) removeItem(listId, itemId);
+      return;
+    }
     const r = ev.data;
     const inst = getInstrument?.(r.tradingsymbol);
     const lot = Number(inst?.ls || 1);
@@ -935,6 +975,14 @@
     let side = 'BUY';
     if (r.src?.p && r.qty_pos < 0) side = 'BUY';
     else if (r.src?.p && r.qty_pos > 0) side = 'SELL';
+    // Account pre-fill: if exactly one broker account contributed the
+    // position / holding to this row, pre-fill the ticket with it.
+    // For multi-account rows or rows with no broker contribution
+    // (pure watchlist / underlying), leave blank so the operator
+    // explicitly picks — avoids accidentally routing an order to the
+    // wrong account.
+    const rowAccts = r.accounts instanceof Set ? [...r.accounts] : [];
+    const preAccount = rowAccts.length === 1 ? rowAccts[0] : '';
     openTicket({
       symbol:   r.tradingsymbol,
       exchange: r.exchange,
@@ -942,12 +990,21 @@
       qty:      Math.abs(Number(r.qty_pos) || lot),
       lotSize:  lot,
       accounts: realAccounts.length ? realAccounts : [],
-      account:  realAccounts[0] || '',
+      account:  preAccount,
     });
   }
 
   function openTicket(p) { ticketProps = { defaultTab: 'ticket', ...p }; }
   function closeTicket() { ticketProps = null; }
+
+  /** Remove a watchlist item by id, refresh the active lists, and
+   *  let the existing $effect push the new rowData into ag-Grid. */
+  async function removeItem(/** @type {number} */ listId, /** @type {number} */ itemId) {
+    try {
+      await removeWatchlistItem(listId, itemId);
+      await loadActive();
+    } catch (e) { error = e.message; }
+  }
 </script>
 
 <div class="algo-status-card p-5 pt-4" data-status="inactive">
@@ -1098,6 +1155,28 @@
   :global(.badge-h) { color: #4ade80; background: rgba(74,222,128,0.18); }
   :global(.badge-w) { color: #fbbf24; background: rgba(251,191,36,0.18); }
   :global(.badge-u) { color: #c4b5fd; background: rgba(196,181,253,0.18); }
+
+  /* Inline remove-from-watchlist button — only renders when a row
+     came from a watchlist (src.w + watchlist_item_id). Sits at the
+     end of the symbol cell, low-emphasis until hover. Red on hover
+     to telegraph the destructive action. */
+  :global(.sym-remove) {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 4px;
+    color: rgba(248,113,113,0.45);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 12px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 2px;
+    transition: color 0.12s ease, background 0.12s ease;
+  }
+  :global(.sym-remove:hover) {
+    color: #f87171;
+    background: rgba(248,113,113,0.12);
+  }
 
   /* Day Δ / P&L cells — same green/red as PerformancePage pnl-gain / pnl-loss. */
   :global(.cell-pos)  { color: #4ade80 !important; }
