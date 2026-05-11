@@ -63,6 +63,15 @@
   let stopPoll, stopPulsePoll;
   let gridEl;
   let grid;
+  // Sentinel that flips to true once createGrid runs — used by the
+  // $effect below so it can push unifiedRows into ag-Grid the moment
+  // both (a) the grid is mounted and (b) the derived row set has
+  // populated. Without this the manual refreshGrid() calls inside
+  // polls would race: $derived is lazy, and the first auto-refresh
+  // after data lands could miss the grid because it wasn't created
+  // yet (or because the new array reference wasn't propagated
+  // synchronously).
+  let gridReady = $state(false);
 
   // Instrument-cache lookup function. Loaded once at mount, kept as
   // module-scope so buildUnified() can parse tradingsymbols
@@ -83,6 +92,13 @@
 
   onMount(async () => {
     if (!$authStore.user) { goto('/signin'); return; }
+    // Mount the grid FIRST so the operator sees column headers /
+    // empty-state overlay immediately. The $effect below pushes
+    // unifiedRows into the live grid as each fetch below resolves —
+    // no more 2-5 s blank box while broker calls drain.
+    await tick();
+    mountGrid();
+
     // Warm the instruments cache + capture the sync lookup so
     // buildUnified() can group rows by parsed underlying.
     try {
@@ -104,10 +120,22 @@
       await loadActive(activeId);
     }
     await loadPulse();
-    await tick();
-    mountGrid();
-    stopPoll      = visibleInterval(async () => { await loadQuotes(); refreshGrid(); }, 5000);
-    stopPulsePoll = visibleInterval(async () => { await loadPulse(); refreshGrid(); }, 10000);
+    // Auto-refresh: each poll just mutates state; the $effect below
+    // reactively pushes the updated unifiedRows into ag-Grid.
+    stopPoll      = visibleInterval(async () => { await loadQuotes(); }, 5000);
+    stopPulsePoll = visibleInterval(async () => { await loadPulse(); }, 10000);
+  });
+
+  // Reactively sync unifiedRows → ag-Grid. Runs whenever:
+  //   - gridReady flips true (after mountGrid)
+  //   - unifiedRows recomputes (positions / holdings / quotes / etc.)
+  // This replaces the earlier manual refreshGrid() chain inside polls
+  // and add/remove handlers, which had races against $derived laziness
+  // on initial mount.
+  $effect(() => {
+    const rows = unifiedRows;            // track unifiedRows as a dep
+    if (!gridReady || !grid) return;
+    grid.setGridOption('rowData', rows);
   });
 
   onDestroy(() => { stopPoll?.(); stopPulsePoll?.(); grid?.destroy?.(); });
@@ -481,7 +509,6 @@
       await addWatchlistItem(activeId, symInput.trim().toUpperCase(), exchInput);
       symInput = ''; typeahead = []; typeaheadOpen = false;
       await loadActive(activeId);
-      refreshGrid();
     } catch (e) { error = e.message; }
   }
 
@@ -490,13 +517,12 @@
       await addWatchlistItem(activeId, inst.s, inst.e);
       symInput = ''; typeahead = []; typeaheadOpen = false;
       await loadActive(activeId);
-      refreshGrid();
     } catch (e) { error = e.message; }
   }
 
   function pickList(/** @type {number} */ id) {
     activeId = id;
-    loadActive(id).then(refreshGrid);
+    loadActive(id);
   }
 
   async function makeList() {
@@ -630,11 +656,7 @@
       headerHeight: 28,
       onRowClicked: handleRowClick,
     });
-  }
-
-  function refreshGrid() {
-    if (!grid) return;
-    grid.setGridOption('rowData', unifiedRows);
+    gridReady = true;
   }
 
   /** Row-click → open the OrderEntryShell pre-filled with the row's
