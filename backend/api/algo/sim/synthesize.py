@@ -301,9 +301,79 @@ def _synth_margin_negative(leaf: dict) -> tuple[dict, list]:
     return {"positions": [], "margins": margins}, ticks
 
 
-# Positions + funds only. Holdings metrics (day_pct, day_rate_abs,
-# day_rate_pct) are intentionally absent — those agents can't be
-# simulated in a positions-only sim and will surface a clear error.
+def _default_holding_row(account: str, *, qty: int = 50,
+                          avg: float = 200.0, last: float = 200.0,
+                          close: float = 200.0) -> dict:
+    """Minimal Kite-shape holding row. close_price drives the day_change /
+    day_change_percentage fields the holdings agents read."""
+    return {
+        "account":         account,
+        "tradingsymbol":   "TESTHOLD",
+        "exchange":        "NSE",
+        "quantity":        qty,
+        "average_price":   avg,
+        "last_price":      last,
+        "close_price":     close,
+        "pnl":             (last - avg) * qty,
+        "day_change":      (last - close) * qty,
+        "day_change_percentage": (last - close) / close if close else 0.0,
+    }
+
+
+def _synth_day_pct(leaf: dict) -> tuple[dict, list]:
+    """
+    day_pct ≤ value%. Drive the holding's last_price down so
+    (last - close)/close crosses the threshold. Implemented via three
+    pct ticks on the holdings row (~40% / 70% / 100% of the move).
+    """
+    pct      = float(leaf.get("value") or 0)
+    accounts = _scope_accounts(leaf.get("scope", ""))
+    target   = pct * 1.2   # 20% past threshold
+    holdings = [_default_holding_row(a) for a in accounts]
+    ticks = []
+    # Total move needed across the 3 ticks (as a fraction of close).
+    # Each tick gets ~33% of the total geometric move.
+    per_tick = (1.0 + target / 100.0) ** (1.0 / 3.0) - 1.0
+    for i in range(3):
+        moves = [{"type": "pct", "scope": "holdings.**", "value": per_tick}]
+        ticks.append({"at": i, "moves": moves})
+    return {"holdings": holdings, "positions": [], "margins": []}, ticks
+
+
+def _synth_day_rate_abs(leaf: dict) -> tuple[dict, list]:
+    """day_rate_abs ≤ N ₹/min on holdings. Spread the loss over the
+    rate window so the velocity gate registers."""
+    rate_per_min = float(leaf.get("value") or 0)  # negative
+    accounts     = _scope_accounts(leaf.get("scope", ""))
+    window_min   = int(_rate_window_min({}))
+    holdings = [_default_holding_row(a) for a in accounts]
+    target   = rate_per_min * window_min * 1.4
+    ticks = []
+    for i in range(3):
+        frac  = (i + 1) / 3.0
+        delta = target * frac / 50.0  # qty 50 — per-share delta
+        moves = [{"type": "abs", "scope": "holdings.**", "value": delta - (target * (i / 3.0) / 50.0)}]
+        ticks.append({"at": i, "moves": moves})
+    return {"holdings": holdings, "positions": [], "margins": []}, ticks
+
+
+def _synth_day_rate_pct(leaf: dict) -> tuple[dict, list]:
+    """day_rate_pct ≤ N %/min. Drive a smooth pct decay across the rate
+    window — similar shape to _synth_day_pct but spread further over
+    time to hit a per-minute rate."""
+    pct_per_min = float(leaf.get("value") or 0)
+    window_min  = int(_rate_window_min({}))
+    accounts    = _scope_accounts(leaf.get("scope", ""))
+    target_pct  = pct_per_min * window_min * 1.3
+    holdings = [_default_holding_row(a) for a in accounts]
+    per_tick = (1.0 + target_pct / 100.0) ** (1.0 / 3.0) - 1.0
+    ticks = []
+    for i in range(3):
+        moves = [{"type": "pct", "scope": "holdings.**", "value": per_tick}]
+        ticks.append({"at": i, "moves": moves})
+    return {"holdings": holdings, "positions": [], "margins": []}, ticks
+
+
 _METRIC_SYNTH = {
     "pnl":            _synth_pnl,
     "pnl_pct":        _synth_pnl_pct,
@@ -311,6 +381,10 @@ _METRIC_SYNTH = {
     "pnl_rate_pct":   _synth_pnl_rate_pct,
     "cash":           _synth_cash_negative,
     "avail_margin":   _synth_margin_negative,
+    # Holdings metrics — now synthesisable thanks to holdings sim.
+    "day_pct":        _synth_day_pct,
+    "day_rate_abs":   _synth_day_rate_abs,
+    "day_rate_pct":   _synth_day_rate_pct,
 }
 
 
@@ -340,20 +414,6 @@ def synthesize_for_agent(agent) -> dict:
     metric = leaf.get("metric", "")
     synth  = _METRIC_SYNTH.get(metric)
     if synth is None:
-        # Holdings-based metrics (day_pct / day_rate_abs / day_rate_pct)
-        # deliberately aren't in _METRIC_SYNTH because the sim is
-        # positions-only. Surface that clearly to the operator instead
-        # of failing silently.
-        holdings_metrics = {"day_pct", "day_rate_abs", "day_rate_pct"}
-        if metric in holdings_metrics:
-            raise SynthesizeError(
-                f"Agent '{agent.slug}' checks the holdings metric "
-                f"'{metric}'. The simulator is positions-only — holdings "
-                f"agents can only be validated against live production "
-                f"data. Run a generic stress scenario (/admin/simulator) "
-                f"if you want to see what other agents would do under that "
-                f"market state."
-            )
         raise SynthesizeError(
             f"No synthesiser for metric '{metric}'. "
             f"Known metrics: {sorted(_METRIC_SYNTH.keys())}. "

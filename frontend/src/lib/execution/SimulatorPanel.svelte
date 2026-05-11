@@ -39,6 +39,9 @@
   let walkDrift    = $state(/** @type {number | ''} */ (''));   // e.g. -0.05 (%)
   let walkVol      = $state(/** @type {number | ''} */ (''));   // e.g.  0.30 (%)
   let walkSeed     = $state(/** @type {number | ''} */ (''));   // e.g.  42
+  // Chase-engine cap override for this run. When blank, falls back to
+  // the DB setting `simulator.chase_max_attempts` (default 5).
+  let chaseMaxAttempts = $state(/** @type {number | ''} */ (''));
   let customRows = $state(/** @type {Array<{tradingsymbol:string, quantity:string|number, last_price:string|number, account:string}>} */ ([]));
 
   function addCustomRow() {
@@ -131,6 +134,9 @@
       if (walkDrift !== '' && walkDrift != null) opts.walk_drift = Number(walkDrift) / 100;
       if (walkVol   !== '' && walkVol   != null) opts.walk_vol   = Number(walkVol)   / 100;
       if (walkSeed  !== '' && walkSeed  != null) opts.walk_seed  = Number(walkSeed);
+      if (chaseMaxAttempts !== '' && chaseMaxAttempts != null) {
+        opts.chase_max_attempts = Math.max(1, Math.min(50, Number(chaseMaxAttempts)));
+      }
       const customClean = customRows
         .map(r => ({
           tradingsymbol: String(r.tradingsymbol || '').trim().toUpperCase(),
@@ -348,6 +354,14 @@
         <input id="sim-spread" type="number" min="0" step="0.01"
                class="field-input sim-pct-input"
                bind:value={spreadPct} />
+      </div>
+    </div>
+    <div class="sim-field">
+      <label for="sim-chase-max" class="field-label" title="Max chase attempts before a paper order is marked UNFILLED. Blank = DB default (simulator.chase_max_attempts).">Chase max</label>
+      <div class="sim-pct-cell">
+        <input id="sim-chase-max" type="number" min="1" max="50" step="1"
+               class="field-input sim-pct-input"
+               placeholder="(default)" bind:value={chaseMaxAttempts} />
       </div>
     </div>
     {#if pctOverrides.length > 0}

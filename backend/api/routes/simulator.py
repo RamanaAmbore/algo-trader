@@ -96,6 +96,10 @@ class SimStartRequest(msgspec.Struct):
     walk_drift: Optional[float] = None     # per-tick drift (e.g. -0.002)
     walk_vol:   Optional[float] = None     # per-tick σ (e.g. 0.01)
     walk_seed:  Optional[int]   = None     # reproducibility seed
+    # Per-run override of the chase engine's max-attempts cap. None =
+    # fall back to the DB setting `simulator.chase_max_attempts`.
+    # Clamped to [1, 50] server-side.
+    chase_max_attempts: Optional[int] = None
 
 
 class SimScenarioInfo(msgspec.Struct):
@@ -235,6 +239,7 @@ class SimulatorController(Controller):
                 walk_drift=data.walk_drift,
                 walk_vol=data.walk_vol,
                 walk_seed=data.walk_seed,
+                chase_max_attempts=data.chase_max_attempts,
             )
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))

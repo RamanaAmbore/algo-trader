@@ -208,6 +208,31 @@ def _recompute_position_row(row: dict, spread_pct: float = 0.0) -> None:
     row["ask"] = lp * (1.0 + half) if lp else 0.0
 
 
+def _recompute_holding_row(row: dict) -> None:
+    """
+    Mirror of `_recompute_position_row` for the holdings section.
+    Kite holdings rows carry `quantity`, `average_price`, `last_price`,
+    `close_price`, `pnl`, `day_change`, `day_change_percentage`. The
+    loss agents that gate on holdings metrics (`day_pct`,
+    `day_rate_abs`, `day_rate_pct`) read `day_change` /
+    `day_change_percentage`, so we keep those + `pnl` in lockstep
+    with the current `last_price`.
+    """
+    qty   = float(row.get("quantity")       or 0)
+    avg   = float(row.get("average_price")  or 0)
+    lp    = float(row.get("last_price")     or 0)
+    close = float(row.get("close_price")    or row.get("close")    or 0)
+    row["pnl"] = (lp - avg) * qty
+    if close > 0:
+        day_change = (lp - close) * qty
+        day_pct    = (lp - close) / close
+    else:
+        day_change = 0.0
+        day_pct    = 0.0
+    row["day_change"]            = day_change
+    row["day_change_percentage"] = day_pct
+
+
 # ═════════════════════════════════════════════════════════════════════════
 #  Custom-positions input — operators add ad-hoc symbols via the sim UI
 # ═════════════════════════════════════════════════════════════════════════
@@ -326,6 +351,14 @@ class SimDriver:
         # _build_context so time-aware agents see a simulated clock. Keyed
         # by preset or explicit fields; see MARKET_STATE_PRESETS.
         self.market_state: dict = dict(MARKET_STATE_PRESETS["mid_session"])
+        # Simulated clock offset in minutes. Mutated by the
+        # `advance_clock` primitive each tick. Drives both:
+        #   - market_state.minutes_since_nse_open advances each tick so
+        #     baseline-gated rate agents can be tested without waiting
+        #     wall-clock minutes
+        #   - reprice_row(ref_now=now + offset) so DTE / theta decay
+        #     can be tested on expiry-day auto-close agents
+        self._sim_clock_offset_minutes: int = 0
         self.market_state_preset: str = "mid_session"
         self._task: Optional[asyncio.Task] = None
 
@@ -520,7 +553,8 @@ class SimDriver:
               custom_positions: list[dict] | None = None,
               walk_drift: float | None = None,
               walk_vol: float | None = None,
-              walk_seed: int | None = None) -> dict:
+              walk_seed: int | None = None,
+              chase_max_attempts: int | None = None) -> dict:
         """
         Start the sim against a named scenario from scenarios.yaml, or an
         `inline_scenario` dict (same shape) built at call time by the
@@ -611,6 +645,22 @@ class SimDriver:
         # Both accept the same shape: {preset: "…"} or explicit fields.
         spec = market_state_override if market_state_override else scen.get("market_state")
         self.market_state = _resolve_market_state(spec)
+        # Reset the simulated clock offset on every start so a fresh
+        # run begins at the picked preset's nominal time.
+        self._sim_clock_offset_minutes = 0
+        # Reset regime-switch phase tracking so the first tick with a
+        # `phase` field always logs a transition.
+        self._last_phase = None
+        # Per-run chase cap override — when set, replaces the paper
+        # engine's default getter for the duration of this run.
+        if chase_max_attempts is not None:
+            cap = max(1, min(50, int(chase_max_attempts)))
+            self._paper._get_max = lambda c=cap: c
+        else:
+            # Restore default when not overridden so a previous run's
+            # override doesn't leak into this one.
+            from backend.api.algo.paper import PaperTradeEngine
+            self._paper._get_max = PaperTradeEngine._default_max_attempts
         self.market_state_preset = (
             (spec or {}).get("preset")
             if isinstance(spec, dict) and spec.get("preset") in MARKET_STATE_PRESETS
@@ -619,10 +669,10 @@ class SimDriver:
 
         # Seed the running state — either from scenario.initial, the live-book
         # snapshot, or both stacked. For the live modes, auto-snapshot if the
-        # operator hasn't pressed "Load live book" yet. Holdings is a no-op
-        # here (positions-only sim) — we ignore any `initial.holdings` the
-        # scenario might still carry.
-        self._holdings_rows = []   # always empty — positions-only sim
+        # operator hasn't pressed "Load live book" yet. Holdings is now
+        # simulated alongside positions (was positions-only) so day_pct /
+        # day_rate_abs / day_rate_pct agents become testable too.
+        self._holdings_rows = []
         if seed_mode in ("live", "live+scenario"):
             if not self._live_snapshot:
                 try:
@@ -635,17 +685,20 @@ class SimDriver:
                     )
             self._positions_rows = copy.deepcopy(self._live_snapshot["positions"])
             self._margins_rows   = copy.deepcopy(self._live_snapshot["margins"])
+            self._holdings_rows  = copy.deepcopy(self._live_snapshot.get("holdings", []))
 
         if seed_mode in ("scripted", "live+scenario"):
             initial = scen.get("initial") or {}
             if seed_mode == "scripted":
                 self._positions_rows = copy.deepcopy(initial.get("positions", []))
                 self._margins_rows   = copy.deepcopy(initial.get("margins", []))
+                self._holdings_rows  = copy.deepcopy(initial.get("holdings", []))
             else:
                 # live+scenario — scripted initial rows are layered on top of
                 # the live snapshot (useful for injecting a specific symbol).
                 self._positions_rows.extend(copy.deepcopy(initial.get("positions", [])))
                 self._margins_rows.extend(copy.deepcopy(initial.get("margins", [])))
+                self._holdings_rows.extend(copy.deepcopy(initial.get("holdings", [])))
 
         # Custom positions submitted from the UI's "Custom positions" panel.
         # These are layered ON TOP of whatever scripted/live seeding produced
@@ -742,6 +795,9 @@ class SimDriver:
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
+        # Revert any settings the sim mutated so the operator's prod
+        # configuration is left exactly as we found it.
+        self._revert_settings()
         self._record_tick(
             kind="stopped", moves=[], changes=[],
             note=f"Stopped after {self.tick_index} ticks",
@@ -829,6 +885,16 @@ class SimDriver:
             return
         tick = ticks[self.tick_index % len(ticks)]
 
+        # Regime-switch annotation — log when the phase changes between
+        # ticks so the operator can see "calm → crash" in the tick log.
+        phase = tick.get("phase")
+        if phase and phase != getattr(self, "_last_phase", None):
+            self._record_tick(
+                kind="phase-change", moves=[], changes=[],
+                note=f"phase → {phase}",
+            )
+            self._last_phase = phase
+
         # A tick may carry `moves` (Model B, price-level) or `patch` (legacy
         # aggregate). We support both — moves take precedence.
         moves = tick.get("moves") or []
@@ -879,6 +945,26 @@ class SimDriver:
             if mtype == "set_margin":
                 changes.extend(self._apply_set_margin(scope, move))
                 continue
+            # Time-travel primitive — advances the simulated clock by N
+            # minutes. Affects market_state.minutes_since_nse_open (the
+            # baseline gate for rate agents) AND DTE via ref_now in
+            # subsequent reprice_row calls (theta decay testing).
+            if mtype == "advance_clock":
+                changes.extend(self._apply_advance_clock(move))
+                continue
+            # Implied-vol shock — directly mutates _iv_cache for matched
+            # option positions. Subsequent underlying moves re-price
+            # those options with the new σ (vega shock testing).
+            if mtype == "set_iv":
+                changes.extend(self._apply_set_iv(scope, move))
+                continue
+            # Non-market event primitive — overrides a DB-backed setting
+            # for the duration of the sim run (e.g. lower a threshold,
+            # disable a capability). The override is reverted on Stop /
+            # Clear so prod operator-set values aren't touched.
+            if mtype == "set_setting":
+                changes.extend(self._apply_set_setting(move))
+                continue
             # Underlying moves: shift the spot, then re-price every option /
             # future on that underlying using the cached IV. Drives coherent
             # F&O sims off a single "−3% NIFTY" tick.
@@ -886,9 +972,9 @@ class SimDriver:
                          "underlying_random_walk"):
                 changes.extend(self._apply_underlying_move(mtype, scope, move))
                 continue
-            if scope.startswith("holdings."):
-                logger.debug(f"[SIM] ignoring holdings scope '{scope}' (positions-only sim)")
-                continue
+            # Holdings + positions both flow through the same scope
+            # matcher and primitive helpers; the section is read from
+            # the row when `_refresh` recomputes derived columns.
             if scope.startswith("positions.") and not positions_tick:
                 continue
             matched = self._scope_matches(scope)
@@ -975,7 +1061,7 @@ class SimDriver:
                 self._underlyings[name] = strikes[len(strikes) // 2]
 
         # Calibrate IV per option position. Reuses the same cached parse.
-        ref_now = datetime.now()
+        ref_now = self._ref_now()
         for r in self._positions_rows:
             p = r.get("_parsed")
             if not p or p.get("kind") != "opt":
@@ -1072,7 +1158,7 @@ class SimDriver:
         so this is O(matched) instead of O(positions) — important when a
         50-position book has a single 3-position NIFTY chain."""
         from backend.api.algo.derivatives import reprice_row
-        ref_now = datetime.now()
+        ref_now = self._ref_now()
         changes: list[dict] = []
         rows = self._positions_by_underlying.get(underlying, [])
         for row in rows:
@@ -1198,11 +1284,143 @@ class SimDriver:
                 })
         return changes
 
+    def _apply_advance_clock(self, move: dict) -> list[dict]:
+        """
+        Advance the simulated clock by N minutes. Two downstream effects:
+          1. `minutes_since_nse_open` is bumped on the market_state dict
+             the agent engine reads — lets rate agents pass the baseline
+             gate without waiting real wall-clock time.
+          2. Subsequent `reprice_row` calls receive `ref_now = now() +
+             clock_offset`, shrinking DTE — drives theta decay and
+             expiry-day auto-close behaviour.
+
+        Accepts: `{minutes: N}` or `{days: N}` (days = minutes × 1440).
+        """
+        minutes = int(move.get("minutes") or 0)
+        days    = int(move.get("days")    or 0)
+        delta   = minutes + days * 1440
+        if delta == 0:
+            return []
+        self._sim_clock_offset_minutes += delta
+        # Apply to whichever side of market_state is non-zero so the
+        # advance reads intuitively: at-open + advance 60 min = 60 min
+        # since open; at-close + advance 60 min = 60 min since close.
+        if self.market_state.get("minutes_since_nse_open"):
+            self.market_state["minutes_since_nse_open"] += delta
+        elif self.market_state.get("minutes_since_nse_close"):
+            self.market_state["minutes_since_nse_close"] += delta
+        else:
+            self.market_state["minutes_since_nse_open"] = delta
+        return [{
+            "section": "clock",
+            "account": None,
+            "symbol":  "",
+            "col":     "sim_clock_offset_min",
+            "prev":    self._sim_clock_offset_minutes - delta,
+            "next":    self._sim_clock_offset_minutes,
+            "delta":   delta,
+            "reason":  f"advance_clock {delta:+d} min",
+            "bid":     None,
+            "ask":     None,
+        }]
+
+    def _apply_set_iv(self, scope: str, move: dict) -> list[dict]:
+        """
+        Vega shock — directly overwrite `_iv_cache[symbol]` for every
+        option position matched by `scope`. The new σ is consumed by
+        the next `reprice_row` call (typically triggered by a
+        subsequent `underlying_*` move in the same or later tick).
+
+        Accepts: `{value: 0.30}` for an absolute σ set, OR
+                 `{delta: 0.05}` to add to the existing σ.
+        """
+        matched = self._scope_matches(scope)
+        value   = move.get("value")
+        delta   = move.get("delta")
+        changes: list[dict] = []
+        for section, row in matched:
+            if section != "positions":
+                continue
+            sym = str(row.get("tradingsymbol") or "")
+            old = self._iv_cache.get(sym)
+            if value is not None:
+                new = float(value)
+            elif delta is not None and old is not None:
+                new = float(old) + float(delta)
+            else:
+                continue
+            new = max(0.0001, min(5.0, new))
+            self._iv_cache[sym] = new
+            changes.append({
+                "section": "positions", "account": row.get("account"),
+                "symbol":  sym, "col": "iv",
+                "prev":    old, "next": new,
+                "delta":   (new - old) if old is not None else None,
+                "reason":  "set_iv",
+                "bid":     None, "ask": None,
+            })
+        return changes
+
+    def _apply_set_setting(self, move: dict) -> list[dict]:
+        """
+        Non-market event primitive — override a DB-backed setting in
+        the live cache for the duration of this sim run. Examples:
+          - lower an alert threshold to verify an agent that wouldn't
+            otherwise fire on a small sim move
+          - flip a capability flag to test gating behaviour
+
+        Reverted on Stop / Clear via `_revert_settings()`. Does NOT
+        touch the settings table — purely an in-memory override.
+        """
+        from backend.shared.helpers.settings import _CACHE
+        key   = move.get("key")
+        value = move.get("value")
+        if not isinstance(key, str) or value is None:
+            return []
+        old = _CACHE.get(key)
+        if not hasattr(self, "_setting_overrides"):
+            self._setting_overrides = {}
+        if key not in self._setting_overrides:
+            self._setting_overrides[key] = old  # remember pre-sim value
+        _CACHE[key] = value
+        return [{
+            "section": "settings",
+            "account": None,
+            "symbol":  "",
+            "col":     key,
+            "prev":    old,
+            "next":    value,
+            "delta":   None,
+            "reason":  "set_setting",
+            "bid":     None,
+            "ask":     None,
+        }]
+
+    def _revert_settings(self) -> None:
+        """Restore any settings the sim mutated via `set_setting`. Called
+        from `stop()` so the operator's prod values aren't left changed
+        after a sim run."""
+        if not getattr(self, "_setting_overrides", None):
+            return
+        from backend.shared.helpers.settings import _CACHE
+        for key, old in self._setting_overrides.items():
+            if old is None:
+                _CACHE.pop(key, None)
+            else:
+                _CACHE[key] = old
+        self._setting_overrides = {}
+
+    def _ref_now(self) -> datetime:
+        """Wall clock + simulated offset. Used everywhere we previously
+        called `datetime.now()` directly for derivative pricing — keeps
+        DTE consistent with the `advance_clock` primitive."""
+        return datetime.now() + timedelta(minutes=self._sim_clock_offset_minutes)
+
     def _refresh(self, section: str, row: dict) -> None:
-        # holdings is never populated — positions-only sim. Any future
-        # section gets silently ignored here.
         if section == "positions":
             _recompute_position_row(row, self.spread_pct)
+        elif section == "holdings":
+            _recompute_holding_row(row)
 
     # ── Paper-trade chase engine (delegated to PaperTradeEngine) ─────
 
@@ -1318,14 +1536,16 @@ class SimDriver:
 
     def seed_live(self) -> dict:
         """
-        Snapshot positions + margins from the real book into the driver's
-        `_live_snapshot` field. Holdings are NOT fetched — positions-only
-        sim. Returns a small manifest for the UI preview.
+        Snapshot holdings + positions + margins from the real book into
+        the driver's `_live_snapshot` field. Holdings are included so
+        the simulator can exercise day_pct / day_rate_abs / day_rate_pct
+        agents that condition on holdings P&L.
         """
         assert_enabled()
         from backend.shared.helpers import broker_apis
 
         try:
+            df_h = pd.concat(broker_apis.fetch_holdings(),  ignore_index=True)
             df_p = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
             df_m = pd.concat(broker_apis.fetch_margins(),   ignore_index=True)
         except Exception as e:
@@ -1336,14 +1556,17 @@ class SimDriver:
         # impossible to tell which account fired. Public sim endpoints
         # are admin-guarded, so there's no leak path.
 
+        holdings  = df_h.fillna(0).to_dict(orient="records") if not df_h.empty else []
         positions = df_p.fillna(0).to_dict(orient="records") if not df_p.empty else []
         margins   = df_m.fillna(0).to_dict(orient="records") if not df_m.empty else []
 
         for row in positions:
             _recompute_position_row(row)
+        for row in holdings:
+            _recompute_holding_row(row)
 
         self._live_snapshot = {
-            "holdings":    [],   # kept key for shape compatibility
+            "holdings":    holdings,
             "positions":   positions,
             "margins":     margins,
             "snapshot_at": datetime.now().isoformat(timespec="seconds"),

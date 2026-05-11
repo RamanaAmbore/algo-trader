@@ -231,3 +231,158 @@
       moves:
         - {type: underlying_random_walk, scope: "underlying.NIFTY",
            drift: -0.0005, vol: 0.003}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Gap-down open — single big tick at session open, then walk. Drives the
+# opening gap that's a real morning pattern. Pair with at_open market
+# state so rate agents start their baseline gate at the open clock.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: nifty-gap-down-3pct
+  name: NIFTY gap-down -3% at open
+  mode: symbol
+  seed: 42
+  market_state: {preset: at_open}
+  description: >-
+    Single -3% gap on NIFTY at session open (tick 0), then a calm
+    GBM walk for the next 4 ticks. Use to test agents that fire on
+    opening-gap conditions plus the 15-min baseline gate behaviour
+    (rate agents should stay silent through tick 0, then catch the
+    sustained walk).
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.NIFTY", value: -0.03}
+    - at: 1
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: -0.0002, vol: 0.002}
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: -0.0002, vol: 0.002}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Gap-up open — mirror of gap-down. Crushes short-call books.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: nifty-gap-up-3pct
+  name: NIFTY gap-up +3% at open
+  mode: symbol
+  seed: 42
+  market_state: {preset: at_open}
+  description: >-
+    Single +3% gap on NIFTY at session open, then a calm walk.
+    Stresses short-call writers; vega pain on short premium.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.NIFTY", value: 0.03}
+    - at: 1
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: 0.0002, vol: 0.002}
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: 0.0002, vol: 0.002}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Regime switch — calm sideways for 5 ticks, then a violent 3-tick
+# crash. Tests whether rate-history-dependent agents stay silent during
+# the calm phase and fire only during the crash. Phase 1 / Phase 2 are
+# annotated for the LogPanel.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: regime-switch
+  name: Regime switch (calm → crash)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    Phase 1 (ticks 0–4): calm sideways walk, drift 0, vol 0.1%. No
+    agent should fire. Phase 2 (ticks 5–7): catastrophic -3% / -6% /
+    -10% moves. Sustained-loss rate agents catch the regime change.
+  ticks:
+    - at: 0
+      phase: calm
+      moves:
+        - {type: random_walk, scope: "positions.**", drift: 0.0, vol: 0.001}
+    - at: 1
+      phase: calm
+      moves:
+        - {type: random_walk, scope: "positions.**", drift: 0.0, vol: 0.001}
+    - at: 2
+      phase: calm
+      moves:
+        - {type: random_walk, scope: "positions.**", drift: 0.0, vol: 0.001}
+    - at: 3
+      phase: calm
+      moves:
+        - {type: random_walk, scope: "positions.**", drift: 0.0, vol: 0.001}
+    - at: 4
+      phase: calm
+      moves:
+        - {type: random_walk, scope: "positions.**", drift: 0.0, vol: 0.001}
+    - at: 5
+      phase: crash
+      moves:
+        - {type: pct, scope: "positions.**", value: -0.03}
+    - at: 6
+      phase: crash
+      moves:
+        - {type: pct, scope: "positions.**", value: -0.06}
+    - at: 7
+      phase: crash
+      moves:
+        - {type: pct, scope: "positions.**", value: -0.10}
+
+# ─────────────────────────────────────────────────────────────────────────
+# IV crush — flatten implied vol on every NIFTY option, then move spot.
+# Test agents that gate on option premium decay specifically (not just
+# spot moves).
+# ─────────────────────────────────────────────────────────────────────────
+- slug: nifty-iv-crush
+  name: NIFTY IV crush (σ → 0.10) + small spot drift
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    Hard IV reset to 10% across every NIFTY option (vega shock), then
+    a small calm walk on spot. Long-premium books bleed even with the
+    spot barely moving. Pair with seed_mode=live to see your real
+    NIFTY chain repriced under crushed vol.
+  ticks:
+    - at: 0
+      moves:
+        - {type: set_iv, scope: "positions.*.NIFTY*", value: 0.10}
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: 0.0, vol: 0.001}
+    - at: 1
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: 0.0, vol: 0.001}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Holdings stress — drives the day P&L on every holding down 1% / 2% / 3%.
+# Tests the day_pct / day_rate_abs / day_rate_pct agents that previously
+# could only run against live data (positions-only sim restriction lifted).
+# ─────────────────────────────────────────────────────────────────────────
+- slug: holdings-stress
+  name: Holdings -1% / -2% / -3% (day-change agents)
+  mode: symbol
+  market_state: {preset: mid_session}
+  description: >-
+    Three-tick drawdown on holdings. Pair with seed_mode=live to drag
+    the real holdings book through a coordinated day-change. Fires
+    day_pct (static %), day_rate_abs (₹/min), and day_rate_pct (%/min)
+    floors on a long-equity book.
+  ticks:
+    - at: 0
+      moves:
+        - {type: pct, scope: "holdings.**", value: -0.01}
+    - at: 1
+      moves:
+        - {type: pct, scope: "holdings.**", value: -0.01}
+    - at: 2
+      moves:
+        - {type: pct, scope: "holdings.**", value: -0.01}
