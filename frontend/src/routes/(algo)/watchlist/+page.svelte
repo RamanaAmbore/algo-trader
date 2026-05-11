@@ -180,13 +180,16 @@
     }
   }
 
-  /** Chunked batch-quote — splits keys into ~50-sized chunks so Kite's
-   *  /quote endpoint doesn't time out on huge baskets, and runs them
-   *  in parallel for throughput. Wraps each call in a 5 s timeout so
-   *  a slow Kite round-trip doesn't stall the next 10 s tick. */
+  /** Chunked batch-quote — splits keys into 200-sized chunks. Kite's
+   *  /quote endpoint accepts up to ~500 keys per call but the backend
+   *  caps at 300; 200 fits comfortably and means a typical operator
+   *  (200 holdings + 30 positions + 50 underlyings ≈ 280 keys) needs
+   *  just 2 parallel calls per tick instead of 6 — well under Kite's
+   *  3 req/s per-key rate ceiling. 5 s timeout per chunk so a slow
+   *  round-trip can't stall the next 10 s tick. */
   async function batchQuoteChunked(keys) {
     if (!keys || !keys.length) return [];
-    const CHUNK = 50;
+    const CHUNK = 200;
     const TIMEOUT_MS = 5000;
     const chunks = [];
     for (let i = 0; i < keys.length; i += CHUNK) chunks.push(keys.slice(i, i + CHUNK));
@@ -869,6 +872,10 @@
     <input bind:value={symInput}
       oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
       onfocus={() => typeaheadOpen = true}
+      onkeydown={(e) => {
+        if (e.key === 'Enter')      { e.preventDefault(); addRow(); }
+        else if (e.key === 'Escape') { typeaheadOpen = false; }
+      }}
       class="field-input flex-1" placeholder="Add symbol to {active?.name ?? 'list'} — type 2+ chars" />
     <select bind:value={exchInput} class="field-input w-24">
       <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>

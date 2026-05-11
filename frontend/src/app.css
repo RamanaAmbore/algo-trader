@@ -90,6 +90,10 @@
   padding-left: 3px !important;
   padding-right: 3px !important;
   border-right: 1px solid #e4ddd0 !important;
+  /* Tabular figures so digit widths don't jitter as values update.
+     Same rule on ag-theme-algo below — public + algo grids share this
+     idiom. */
+  font-variant-numeric: tabular-nums;
 }
 .ag-theme-ramboq .ag-row {
   font-size: 0.625rem !important;
@@ -391,6 +395,11 @@
   padding-right: 4px !important;
   color: #c8d8f0 !important;
   border-right: 1px solid rgba(255,255,255,0.06) !important;
+  /* Tabular figures so digit widths don't jitter as values update —
+     applied at the cell level so every numeric column on every algo
+     grid (PerformancePage + watchlist) inherits it without per-column
+     style. */
+  font-variant-numeric: tabular-nums;
 }
 .ag-theme-algo .ag-row {
   font-size: 0.72rem !important;
