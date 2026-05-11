@@ -17,7 +17,16 @@
     fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
   } from '$lib/api';
   import { authStore, visibleInterval, clientTimestamp } from '$lib/stores';
-  import { aggFmt, priceFmt, qtyFmt } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, qtyFmt } from '$lib/format';
+
+  // AG Grid valueFormatter wrappers — the canonical idiom every other
+  // algo grid (PerformancePage etc.) uses. Single source of truth for
+  // how numbers render: no `+` prefix on positives (colour carries
+  // direction), no `₹` prefix, en-IN grouping, '—' for null.
+  const numFmt     = ({ value }) => value == null ? '—' : priceFmt(value);
+  const aggFmtGrid = ({ value }) => value == null ? '—' : aggCompact(value);
+  const pctFmtGrid = ({ value }) => value == null ? '—' : `${pctFmt(value)}%`;
+  const numericHdr = 'ag-right-aligned-header';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -189,6 +198,13 @@
           }
           if (sym) contractKeys.add(`${exch}:${sym}`);
         }
+        // Holdings also need live bid/ask + day-change, not just the
+        // 5-min cached snapshot — fold them into the same batch.
+        for (const r of holdings) {
+          const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+          const exch = r.exchange || 'NSE';
+          if (sym) contractKeys.add(`${exch}:${sym}`);
+        }
       } catch (_) { /* instruments cold */ }
 
       const allKeys = [
@@ -330,6 +346,8 @@
       const liveQ = cq?.[`${exch}:${sym}`];
       if (liveQ?.ltp) {
         row.ltp        = liveQ.ltp;
+        row.bid        = liveQ.bid ?? row.bid ?? null;
+        row.ask        = liveQ.ask ?? row.ask ?? null;
         row.change     = liveQ.change     ?? row.change     ?? null;
         row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
       } else {
@@ -476,27 +494,6 @@
     } catch (e) { error = e.message; }
   }
 
-  async function addToWatchlist(/** @type {string} */ tradingsymbol,
-                                 /** @type {string} */ exchange) {
-    if (activeId == null) return;
-    try {
-      await addWatchlistItem(activeId, tradingsymbol, exchange);
-      await loadActive(activeId);
-      refreshGrid();
-    } catch (e) {
-      if (!/already/i.test(e?.message || '')) error = e.message;
-    }
-  }
-
-  async function removeFromWatchlist(/** @type {number} */ itemId) {
-    if (activeId == null) return;
-    try {
-      await removeWatchlistItem(activeId, itemId);
-      await loadActive(activeId);
-      refreshGrid();
-    } catch (e) { error = e.message; }
-  }
-
   function pickList(/** @type {number} */ id) {
     activeId = id;
     loadActive(id).then(refreshGrid);
@@ -523,11 +520,6 @@
   }
 
   // ── Grid setup ────────────────────────────────────────────────────
-
-  function exchRenderer(params) {
-    const v = String(params.value || '').toUpperCase();
-    return `<span class="exch-chip exch-${v.toLowerCase()}">${v}</span>`;
-  }
 
   function symRenderer(params) {
     const row = params.data || {};
@@ -564,15 +556,6 @@
     return 'cell-flat';
   }
 
-  /** Action column — `+W` when not in watchlist, `×` to remove. */
-  function actionRenderer(params) {
-    const r = params.data;
-    if (r.src.w) {
-      return `<button class="grid-btn grid-btn-rm" data-action="rm" title="Remove from watchlist">×</button>`;
-    }
-    return `<button class="grid-btn grid-btn-add" data-action="add" title="Add to watchlist">+W</button>`;
-  }
-
   function getRowClass(params) {
     const r = params.data || {};
     const s = r.src || {};
@@ -601,36 +584,33 @@
     // symbol cell (cyan=position, green=holding, amber=watchlist,
     // violet=underlying) — no separate Src column needed.
     const colDefs = /** @type {any[]} */ ([
-      // Symbol cell now also carries inline W/H/P/U source badges so
-      // the Pos Qty / Hold Qty columns are gone — qty rides on the
-      // P/H badge itself.
-      { field: 'tradingsymbol', headerName: 'Symbol', width: 220, pinned: 'left',
+      // Symbol cell carries inline W/H/P/U badges (compact). No add /
+      // remove action column — operator uses the input row above to
+      // add; backend dedup handles re-adds.
+      { field: 'tradingsymbol', headerName: 'Symbol', width: 190, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
       { field: 'ltp', headerName: 'LTP', width: 70,
-        type: 'numericColumn',
-        valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'change', headerName: 'Day Δ ₹', width: 78,
-        type: 'numericColumn',
+        type: 'numericColumn', headerClass: numericHdr,
+        valueFormatter: numFmt },
+      { field: 'change', headerName: 'Day Δ', width: 78,
+        type: 'numericColumn', headerClass: numericHdr,
         cellClass: (p) => dirCls(p.value),
-        valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + priceFmt(p.value) },
-      { field: 'change_pct', headerName: 'Day %', width: 56,
-        type: 'numericColumn',
+        valueFormatter: aggFmtGrid },
+      { field: 'change_pct', headerName: 'Day %', width: 64,
+        type: 'numericColumn', headerClass: numericHdr,
         cellClass: (p) => dirCls(p.value),
-        valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + Number(p.value).toFixed(2) + '%' },
+        valueFormatter: pctFmtGrid },
       { field: 'bid', headerName: 'Bid', width: 62,
-        type: 'numericColumn', cellClass: 'cell-muted',
-        valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
+        type: 'numericColumn', headerClass: numericHdr, cellClass: 'cell-muted',
+        valueFormatter: numFmt },
       { field: 'ask', headerName: 'Ask', width: 62,
-        type: 'numericColumn', cellClass: 'cell-muted',
-        valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'pnl', headerName: 'P&L', width: 78,
-        type: 'numericColumn',
+        type: 'numericColumn', headerClass: numericHdr, cellClass: 'cell-muted',
+        valueFormatter: numFmt },
+      { field: 'pnl', headerName: 'P&L', width: 80,
+        type: 'numericColumn', headerClass: numericHdr,
         cellClass: (p) => dirCls(p.value),
-        valueFormatter: (p) => p.value ? aggFmt(p.value) : '—' },
-      { field: 'actions', headerName: '', width: 44,
-        cellRenderer: actionRenderer, sortable: false,
-        onCellClicked: handleActionClick, pinned: 'right' },
+        valueFormatter: aggFmtGrid },
     ]);
 
     grid = createGrid(gridEl, {
@@ -638,8 +618,10 @@
       columnDefs: colDefs,
       rowData: unifiedRows,
       defaultColDef: {
+        // Match PerformancePage's idiom — no flex cellStyle so
+        // type:'numericColumn' delivers its built-in right-aligned
+        // .ag-right-aligned-cell class without override.
         resizable: true, sortable: true, suppressMovable: true,
-        cellStyle: { display: 'flex', alignItems: 'center' },
       },
       overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">No rows — add symbols to your watchlist or load positions/holdings</span>',
       domLayout: 'autoHeight',
@@ -655,24 +637,11 @@
     grid.setGridOption('rowData', unifiedRows);
   }
 
-  function handleActionClick(ev) {
-    const btn = ev.event?.target?.closest?.('button.grid-btn');
-    if (!btn) return;
-    const action = btn.getAttribute('data-action');
-    const r = ev.data;
-    if (action === 'add') addToWatchlist(r.tradingsymbol, r.exchange);
-    else if (action === 'rm' && r.watchlist_item_id) removeFromWatchlist(r.watchlist_item_id);
-  }
-
-  /** Click handler for any non-action row cell — opens the
-   *  OrderEntryShell pre-filled with the row's symbol so the
-   *  operator can place an order without leaving /watchlist. */
+  /** Row-click → open the OrderEntryShell pre-filled with the row's
+   *  symbol so the operator can place an order without leaving
+   *  /watchlist. */
   function handleRowClick(ev) {
     if (!ev.data) return;
-    // Ignore clicks on the actions cell — those have their own
-    // handler that mutates the watchlist.
-    const target = ev.event?.target;
-    if (target?.closest?.('button.grid-btn')) return;
     const r = ev.data;
     const inst = getInstrument?.(r.tradingsymbol);
     const lot = Number(inst?.ls || 1);
@@ -783,50 +752,33 @@
 {/if}
 
 <style>
-  /* Exchange tag — text-only, no chrome. Lets the row breathe. */
-  :global(.exch-chip) {
-    display: inline-block;
-    font-size: 0.52rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  :global(.exch-nse) { color: #94a3b8; }
-  :global(.exch-nfo) { color: #fbbf24; }
-  :global(.exch-bse) { color: #c4b5fd; }
-  :global(.exch-mcx) { color: #fb923c; }
-  :global(.exch-cds) { color: #a78bfa; }
-
   /* Symbol cell — main + alias. */
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
   :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
 
-  /* Source badges (P / H / W / U) — sit right of the symbol. Palette
-     matches the row-tint indicator on the symbol cell: cyan position,
-     green holding, amber watchlist, violet underlying. The badge
-     carries the qty for P / H so the dropped Pos Qty / Hold Qty
-     columns are accounted for inline. */
+  /* Source badges (P / H / W / U) — sit right of the symbol. Compact:
+     borderless coloured chips so the symbol column can stay narrow.
+     Palette matches the row-tint: cyan position, green holding,
+     amber watchlist, violet underlying. P / H carry qty inline. */
   :global(.sym-badges) {
     display: inline-flex;
-    gap: 3px;
-    margin-left: 6px;
+    gap: 2px;
+    margin-left: 4px;
     vertical-align: middle;
   }
   :global(.sym-badge) {
     display: inline-block;
-    padding: 0 4px;
-    font-size: 0.55rem;
+    padding: 0 3px;
+    font-size: 0.5rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 14px;
+    line-height: 12px;
     border-radius: 2px;
-    border: 1px solid;
     font-variant-numeric: tabular-nums;
   }
-  :global(.badge-p) { color: #38bdf8; border-color: rgba(56,189,248,0.45);  background: rgba(56,189,248,0.10); }
-  :global(.badge-h) { color: #4ade80; border-color: rgba(74,222,128,0.45);  background: rgba(74,222,128,0.10); }
-  :global(.badge-w) { color: #fbbf24; border-color: rgba(251,191,36,0.45);  background: rgba(251,191,36,0.10); }
-  :global(.badge-u) { color: #c4b5fd; border-color: rgba(196,181,253,0.45); background: rgba(196,181,253,0.10); }
+  :global(.badge-p) { color: #38bdf8; background: rgba(56,189,248,0.18); }
+  :global(.badge-h) { color: #4ade80; background: rgba(74,222,128,0.18); }
+  :global(.badge-w) { color: #fbbf24; background: rgba(251,191,36,0.18); }
+  :global(.badge-u) { color: #c4b5fd; background: rgba(196,181,253,0.18); }
 
   /* Day Δ / P&L cells — same green/red as PerformancePage pnl-gain / pnl-loss. */
   :global(.cell-pos)  { color: #4ade80 !important; }
@@ -837,22 +789,6 @@
   /* Row tinting (pos-long / pos-short / row-hold / row-watch / row-und)
      is owned globally by ag-col-sym rules in app.css so the same
      PerformancePage idiom paints both /dashboard and this page. */
-
-  /* Action column buttons. */
-  :global(.grid-btn) {
-    padding: 0 6px;
-    font-size: 0.6rem;
-    font-weight: 700;
-    background: transparent;
-    border: 1px solid;
-    border-radius: 3px;
-    cursor: pointer;
-    line-height: 18px;
-  }
-  :global(.grid-btn-add) { color: #fbbf24; border-color: rgba(251,191,36,0.4); }
-  :global(.grid-btn-add:hover) { background: rgba(251,191,36,0.10); }
-  :global(.grid-btn-rm)  { color: #f87171; border-color: rgba(248,113,113,0.4); }
-  :global(.grid-btn-rm:hover)  { background: rgba(248,113,113,0.10); }
 
   /* Grid container */
   .unified-grid {
