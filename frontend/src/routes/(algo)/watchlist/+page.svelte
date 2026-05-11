@@ -393,17 +393,23 @@
 
     // ── Sort ──────────────────────────────────────────────────────
     //
-    // Group every row under its underlying. Each group is laid out as:
-    //   1. The spot row (underlying.kind === 'spot') first.
-    //   2. Futures next, sorted by expiry.
-    //   3. Options next, sorted by strike ASC, then CE before PE.
-    //   4. Anything else (equity holdings of that name, …) last
-    //      within the group.
+    // Two-level ordering:
     //
-    // Groups themselves are ordered alphabetically by underlying.
-    // Rows with no `underlying` parsed (cache miss / non-derivative
-    // equities without a chain) fall into a single trailing group
-    // sorted alphabetically by symbol.
+    //   Level 1 — which UNDERLYING-GROUP comes first?
+    //     groupBucket(g) =
+    //       0 if any row in the group has a position or holding
+    //         (operator's active book — most urgent)
+    //       1 if any row in the group is on the watchlist
+    //       2 otherwise (option-underlying-only / equity passthroughs)
+    //     Ties broken alphabetically by underlying name.
+    //
+    //   Level 2 — within a group:
+    //     spot row first → futures → options (strike ASC, CE then PE)
+    //     → anything else (alphabetical fallback).
+    //
+    // Effect: positions and holdings cluster at the top alongside any
+    // option underlyings / chain rows that share their group; pure
+    // watchlist entries follow; bare option-underlying-only rows trail.
     const out = Object.values(byKey);
     const groupKey = (r) => r.underlying || `~~${r.tradingsymbol || ''}`;
     const tierRank = (r) => {
@@ -413,8 +419,21 @@
       return 3;
     };
     const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
+
+    // Precompute per-group bucket so the comparator stays O(1).
+    const groupBucket = /** @type {Record<string, number>} */ ({});
+    for (const r of out) {
+      const g = String(groupKey(r));
+      const bucket = (r.src?.p || r.src?.h) ? 0 : r.src?.w ? 1 : 2;
+      if (groupBucket[g] == null || bucket < groupBucket[g]) {
+        groupBucket[g] = bucket;
+      }
+    }
+
     out.sort((a, b) => {
-      const ga = groupKey(a), gb = groupKey(b);
+      const ga = String(groupKey(a)), gb = String(groupKey(b));
+      const ba = groupBucket[ga] ?? 2, bb = groupBucket[gb] ?? 2;
+      if (ba !== bb) return ba - bb;
       if (ga !== gb) return ga.localeCompare(gb);
       const ta = tierRank(a), tb = tierRank(b);
       if (ta !== tb) return ta - tb;
@@ -514,7 +533,28 @@
     const row = params.data || {};
     const alias = row.alias ? `<span class="sym-alias"> → ${row.tradingsymbol}</span>` : '';
     const main  = row.alias || row.tradingsymbol || '';
-    return `<span class="sym-main">${main}</span>${alias}`;
+    // Source badges: P / H show qty inline; W / U are flags only.
+    // Ordered position → holding → watchlist → underlying so the
+    // most operational source reads first.
+    const badges = [];
+    if (row.src?.p) {
+      const q = Number(row.qty_pos) || 0;
+      const qStr = q ? ` ${qtyFmt(q)}` : '';
+      badges.push(`<span class="sym-badge badge-p" title="Position">P${qStr}</span>`);
+    }
+    if (row.src?.h) {
+      const q = Number(row.qty_hold) || 0;
+      const qStr = q ? ` ${qtyFmt(q)}` : '';
+      badges.push(`<span class="sym-badge badge-h" title="Holding">H${qStr}</span>`);
+    }
+    if (row.src?.w) {
+      badges.push(`<span class="sym-badge badge-w" title="Watchlist">W</span>`);
+    }
+    if (row.src?.u) {
+      badges.push(`<span class="sym-badge badge-u" title="Option underlying">U</span>`);
+    }
+    const badgeHtml = badges.length ? ` <span class="sym-badges">${badges.join('')}</span>` : '';
+    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}`;
   }
 
   function dirCls(v) {
@@ -561,7 +601,10 @@
     // symbol cell (cyan=position, green=holding, amber=watchlist,
     // violet=underlying) — no separate Src column needed.
     const colDefs = /** @type {any[]} */ ([
-      { field: 'tradingsymbol', headerName: 'Symbol', width: 160, pinned: 'left',
+      // Symbol cell now also carries inline W/H/P/U source badges so
+      // the Pos Qty / Hold Qty columns are gone — qty rides on the
+      // P/H badge itself.
+      { field: 'tradingsymbol', headerName: 'Symbol', width: 220, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
       { field: 'ltp', headerName: 'LTP', width: 70,
@@ -581,12 +624,6 @@
       { field: 'ask', headerName: 'Ask', width: 62,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'qty_pos', headerName: 'Pos Qty', width: 56,
-        type: 'numericColumn', cellClass: 'cell-muted',
-        valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
-      { field: 'qty_hold', headerName: 'Hold Qty', width: 56,
-        type: 'numericColumn', cellClass: 'cell-muted',
-        valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
       { field: 'pnl', headerName: 'P&L', width: 78,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
@@ -764,22 +801,42 @@
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
   :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
 
+  /* Source badges (P / H / W / U) — sit right of the symbol. Palette
+     matches the row-tint indicator on the symbol cell: cyan position,
+     green holding, amber watchlist, violet underlying. The badge
+     carries the qty for P / H so the dropped Pos Qty / Hold Qty
+     columns are accounted for inline. */
+  :global(.sym-badges) {
+    display: inline-flex;
+    gap: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  :global(.sym-badge) {
+    display: inline-block;
+    padding: 0 4px;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 14px;
+    border-radius: 2px;
+    border: 1px solid;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(.badge-p) { color: #38bdf8; border-color: rgba(56,189,248,0.45);  background: rgba(56,189,248,0.10); }
+  :global(.badge-h) { color: #4ade80; border-color: rgba(74,222,128,0.45);  background: rgba(74,222,128,0.10); }
+  :global(.badge-w) { color: #fbbf24; border-color: rgba(251,191,36,0.45);  background: rgba(251,191,36,0.10); }
+  :global(.badge-u) { color: #c4b5fd; border-color: rgba(196,181,253,0.45); background: rgba(196,181,253,0.10); }
+
   /* Day Δ / P&L cells — same green/red as PerformancePage pnl-gain / pnl-loss. */
   :global(.cell-pos)  { color: #4ade80 !important; }
   :global(.cell-neg)  { color: #f87171 !important; }
   :global(.cell-flat) { color: #94a3b8 !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
 
-  /* Row tinting mirrors the /dashboard PerformancePage approach —
-     keep the alternating navy from the base ag-theme-algo, paint
-     only the SYMBOL cell (.col-sym-tint) so the row reads as
-     "navy with a coloured spine of identity." Single-source rows
-     (only W, only H, only P, only U) get one colour; multi-source
-     rows pick the highest-priority source (P > H > W > U). */
-  :global(.unified-grid .ag-row.row-pos)   .col-sym-tint { box-shadow: inset 3px 0 0 #38bdf8; background: rgba(56,189,248,0.10) !important; }
-  :global(.unified-grid .ag-row.row-hold)  .col-sym-tint { box-shadow: inset 3px 0 0 #4ade80; background: rgba(74,222,128,0.10) !important; }
-  :global(.unified-grid .ag-row.row-watch) .col-sym-tint { box-shadow: inset 3px 0 0 #fbbf24; background: rgba(251,191,36,0.10) !important; }
-  :global(.unified-grid .ag-row.row-und)   .col-sym-tint { box-shadow: inset 3px 0 0 #c4b5fd; background: rgba(196,181,253,0.10) !important; }
+  /* Row tinting (pos-long / pos-short / row-hold / row-watch / row-und)
+     is owned globally by ag-col-sym rules in app.css so the same
+     PerformancePage idiom paints both /dashboard and this page. */
 
   /* Action column buttons. */
   :global(.grid-btn) {
