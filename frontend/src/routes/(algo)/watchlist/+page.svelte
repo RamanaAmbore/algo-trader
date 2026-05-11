@@ -430,11 +430,21 @@
 
     // Finalise per-row aggregates: weighted-avg avg_pos from the
     // sum-of-(qty × avg) accumulator. qty_pos === 0 keeps avg at 0.
+    //
+    // Also derive `day_pnl` — aggregate today's P&L (qty × per-share
+    // change). For watchlist-only / underlying-only rows (no qty),
+    // null so the column renders '—' rather than a misleading 0.
+    // The aggregate is what surfaces the K/L suffix the operator
+    // expects on this page.
     for (const row of Object.values(byKey)) {
       if (row.qty_pos !== 0) {
         row.avg_pos = row._avg_num / row.qty_pos;
       }
       delete row._avg_num;
+      const totalQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
+      row.day_pnl = (totalQty !== 0 && row.change != null)
+        ? row.change * totalQty
+        : null;
     }
 
     // ── Sort ──────────────────────────────────────────────────────
@@ -551,19 +561,18 @@
     const row = params.data || {};
     const alias = row.alias ? `<span class="sym-alias"> → ${row.tradingsymbol}</span>` : '';
     const main  = row.alias || row.tradingsymbol || '';
-    // Source badges: P / H show qty inline; W / U are flags only.
-    // Ordered position → holding → watchlist → underlying so the
-    // most operational source reads first.
+    // Source badges: P / H always show qty inline (even when qty=0,
+    // which happens on mirror-net positions or intraday-closed
+    // contracts — `P 0` is more honest than a bare `P` chip that
+    // looks identical to a long position).
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
-      const qStr = q ? ` ${qtyFmt(q)}` : '';
-      badges.push(`<span class="sym-badge badge-p" title="Position">P${qStr}</span>`);
+      badges.push(`<span class="sym-badge badge-p" title="Position">P ${qtyFmt(q)}</span>`);
     }
     if (row.src?.h) {
       const q = Number(row.qty_hold) || 0;
-      const qStr = q ? ` ${qtyFmt(q)}` : '';
-      badges.push(`<span class="sym-badge badge-h" title="Holding">H${qStr}</span>`);
+      badges.push(`<span class="sym-badge badge-h" title="Holding">H ${qtyFmt(q)}</span>`);
     }
     if (row.src?.w) {
       badges.push(`<span class="sym-badge badge-w" title="Watchlist">W</span>`);
@@ -609,6 +618,15 @@
     // the numerics. Source is conveyed by the row-class tint on the
     // symbol cell (cyan=position, green=holding, amber=watchlist,
     // violet=underlying) — no separate Src column needed.
+    // Belt-and-braces right-align: ag-Grid's type:'numericColumn'
+    // adds `ag-right-aligned-cell` automatically, but a dynamic
+    // cellClass function returning a string REPLACES that default in
+    // some ag-Grid v33 paths. We append the right-align class
+    // explicitly in every numeric column's cellClass so the cell is
+    // guaranteed to render flush-right.
+    const RA = 'ag-right-aligned-cell';
+    const dirCellClass = (p) => `${RA} ${dirCls(p.value)}`;
+
     const colDefs = /** @type {any[]} */ ([
       // Symbol cell carries inline W/H/P/U badges (compact). No add /
       // remove action column — operator uses the input row above to
@@ -618,24 +636,27 @@
         cellClass: 'ag-col-sym ag-col-fill' },
       { field: 'ltp', headerName: 'LTP', width: 70,
         type: 'numericColumn', headerClass: numericHdr,
+        cellClass: RA,
         valueFormatter: numFmt },
-      { field: 'change', headerName: 'Day Δ', width: 78,
+      { field: 'day_pnl', headerName: 'Day P&L', width: 88,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: (p) => dirCls(p.value),
+        cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      { field: 'change_pct', headerName: 'Day %', width: 64,
+      { field: 'change_pct', headerName: 'Day %', width: 68,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: (p) => dirCls(p.value),
+        cellClass: dirCellClass,
         valueFormatter: pctFmtGrid },
-      { field: 'bid', headerName: 'Bid', width: 62,
-        type: 'numericColumn', headerClass: numericHdr, cellClass: 'cell-muted',
-        valueFormatter: numFmt },
-      { field: 'ask', headerName: 'Ask', width: 62,
-        type: 'numericColumn', headerClass: numericHdr, cellClass: 'cell-muted',
-        valueFormatter: numFmt },
-      { field: 'pnl', headerName: 'P&L', width: 80,
+      { field: 'bid', headerName: 'Bid', width: 64,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: (p) => dirCls(p.value),
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: numFmt },
+      { field: 'ask', headerName: 'Ask', width: 64,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: numFmt },
+      { field: 'pnl', headerName: 'P&L', width: 88,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
     ]);
 
