@@ -60,6 +60,19 @@
   let newListName = $state('');
   let showCreate  = $state(false);
 
+  // ── Source toggles ────────────────────────────────────────────
+  // The operator can hide Positions and / or Holdings from the
+  // unified grid. Indices + watchlist items are always visible (the
+  // default Markets watchlist already seeds NIFTY 50 / BANKNIFTY /
+  // SENSEX rows, so toggling positions off still keeps the index
+  // surface visible if those are watched).
+  //
+  // When a toggle is OFF the corresponding loop in buildUnified is
+  // skipped — that source contributes no rows, no badges, no qty /
+  // P&L. Both ON (default) is the existing combined view.
+  let showPositions = $state(true);
+  let showHoldings  = $state(true);
+
   let stopPoll, stopPulsePoll;
   let gridEl;
   let grid;
@@ -335,7 +348,8 @@
   /** Build the deduped unified row set. Key = `${exchange}:${tradingsymbol}`.
    *  Each merged row carries `src` flags W/H/P/U plus per-source data. */
   const unifiedRows = $derived(buildUnified(
-    active, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument
+    active, watchQuotes, positions, holdings, underlyingQuotes, contractQuotes, getInstrument,
+    showPositions, showHoldings,
   ));
 
   /** Best-effort tradingsymbol parser using the IndexedDB instrument
@@ -356,7 +370,7 @@
     return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
   }
 
-  function buildUnified(activeList, wq, pos, hold, uq, cq, getInst) {
+  function buildUnified(activeList, wq, pos, hold, uq, cq, getInst, includePos, includeHold) {
     // Key on tradingsymbol alone (case-normalised). If the same
     // symbol exists in multiple accounts or across exchanges, we
     // collapse to one row with net qty + summed P&L — the operator
@@ -405,7 +419,10 @@
 
     // 2. Positions — same symbol across multiple accounts accumulates
     // into a single row with net qty + weighted-average avg_price.
-    for (const r of pos) {
+    // Skip entirely when the operator has toggled Positions off via
+    // the source-filter pills; rows with src.p alone disappear, and
+    // merged rows lose their P badge + qty + P&L contribution.
+    for (const r of (includePos === false ? [] : pos)) {
       const exch = r.exchange || 'NFO';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
@@ -445,7 +462,10 @@
     // opening_quantity for inv_val / day_change_val, and `quantity`
     // drops to 0 after a full sell which would otherwise blank the
     // H badge.
-    for (const r of hold) {
+    //
+    // Skipped entirely when the operator has toggled Holdings off via
+    // the source-filter pills (same idiom as Positions above).
+    for (const r of (includeHold === false ? [] : hold)) {
       const exch = r.exchange || 'NSE';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
@@ -855,6 +875,29 @@
         Delete list
       </button>
     {/if}
+    <!-- Source toggles — Positions (cyan) + Holdings (green) — same
+         colour-coding as the P/H badges inside the symbol cell. Off
+         state is muted; click flips the rebuild flag and the $derived
+         + $effect pipeline regenerates the grid rows. Watchlist +
+         option-underlying rows are always shown regardless of state. -->
+    <div class="ml-auto flex items-center gap-1">
+      <button onclick={() => showPositions = !showPositions}
+        title={showPositions ? 'Hide positions' : 'Show positions'}
+        class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
+               {showPositions
+                 ? 'bg-[#38bdf8]/20 text-[#38bdf8] border-[#38bdf8]/40'
+                 : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#38bdf8]/70'}">
+        P · Positions
+      </button>
+      <button onclick={() => showHoldings = !showHoldings}
+        title={showHoldings ? 'Hide holdings' : 'Show holdings'}
+        class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
+               {showHoldings
+                 ? 'bg-[#4ade80]/20 text-[#4ade80] border-[#4ade80]/40'
+                 : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#4ade80]/70'}">
+        H · Holdings
+      </button>
+    </div>
   </div>
 
   {#if showCreate}
