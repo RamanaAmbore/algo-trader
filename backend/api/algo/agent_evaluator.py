@@ -59,6 +59,12 @@ class Context:
     sum_holdings:    Optional[pd.DataFrame] = None
     sum_positions:   Optional[pd.DataFrame] = None
     df_margins:      Optional[pd.DataFrame] = None
+    # Watchlist rows — each row has tradingsymbol, exchange, last_price,
+    # day_change, day_change_percentage, and `account` carrying the
+    # watchlist name. Populated by the sim driver from _watchlist_rows;
+    # empty on the live path until a future "watchlist polling" task
+    # mirrors the simulator behaviour.
+    watchlist_rows:  list = field(default_factory=list)
     # The persistent alert_state dict: holds 'pnl_history',
     # 'session_start', 'session_date', 'last_alert' keyed by bucket. Resolvers
     # read it for rate computations and the session-minutes helpers.
