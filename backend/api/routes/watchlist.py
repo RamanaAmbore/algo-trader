@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, delete, get, patch, post
+from litestar import Controller, Request, delete, get, patch, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
@@ -169,7 +169,7 @@ class WatchlistController(Controller):
     guards = [jwt_guard]
 
     @get("/")
-    async def list_watchlists(self, request) -> list[WatchlistInfo]:
+    async def list_watchlists(self, request: Request) -> list[WatchlistInfo]:
         """List every watchlist owned by the authenticated user. Auto-
         seeds Default + Markets on first call for any user that doesn't
         have any lists yet."""
@@ -194,7 +194,7 @@ class WatchlistController(Controller):
         return [_wl_info(wl, counts.get(wl.id, 0)) for wl in wls]
 
     @post("/")
-    async def create_watchlist(self, data: CreateWatchlistRequest, request) -> WatchlistInfo:
+    async def create_watchlist(self, data: CreateWatchlistRequest, request: Request) -> WatchlistInfo:
         name = (data.name or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail="Name required")
@@ -230,7 +230,7 @@ class WatchlistController(Controller):
         return _wl_info(wl, 0)
 
     @get("/{wl_id:int}")
-    async def get_watchlist(self, wl_id: int, request) -> WatchlistFull:
+    async def get_watchlist(self, wl_id: int, request: Request) -> WatchlistFull:
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
@@ -258,7 +258,7 @@ class WatchlistController(Controller):
 
     @patch("/{wl_id:int}")
     async def rename_watchlist(
-        self, wl_id: int, data: RenameWatchlistRequest, request,
+        self, wl_id: int, data: RenameWatchlistRequest, request: Request,
     ) -> WatchlistInfo:
         username = _actor_sub(request)
         async with async_session() as session:
@@ -303,7 +303,7 @@ class WatchlistController(Controller):
         return _wl_info(wl, count)
 
     @delete("/{wl_id:int}", status_code=200)
-    async def delete_watchlist(self, wl_id: int, request) -> dict:
+    async def delete_watchlist(self, wl_id: int, request: Request) -> dict:
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
@@ -325,7 +325,7 @@ class WatchlistController(Controller):
 
     @post("/{wl_id:int}/items", status_code=201)
     async def add_item(
-        self, wl_id: int, data: AddItemRequest, request,
+        self, wl_id: int, data: AddItemRequest, request: Request,
     ) -> WatchlistItemInfo:
         tradingsymbol = (data.tradingsymbol or "").strip().upper()
         exchange      = (data.exchange      or "").strip().upper()
@@ -384,7 +384,7 @@ class WatchlistController(Controller):
 
     @patch("/{wl_id:int}/items/{item_id:int}")
     async def reorder_item(
-        self, wl_id: int, item_id: int, data: ReorderItemRequest, request,
+        self, wl_id: int, item_id: int, data: ReorderItemRequest, request: Request,
     ) -> WatchlistItemInfo:
         username = _actor_sub(request)
         async with async_session() as session:
@@ -406,7 +406,7 @@ class WatchlistController(Controller):
 
     @delete("/{wl_id:int}/items/{item_id:int}", status_code=200)
     async def remove_item(
-        self, wl_id: int, item_id: int, request,
+        self, wl_id: int, item_id: int, request: Request,
     ) -> dict:
         username = _actor_sub(request)
         async with async_session() as session:
