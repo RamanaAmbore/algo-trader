@@ -50,6 +50,11 @@
   // synchronously (kind, strike, opt_type) for the group/sort logic.
   let getInstrument = $state(/** @type {((s: string) => any) | null} */ (null));
 
+  // Transient-error suppression. Quote-refresh polls fire every 5 s
+  // and can blip on broker hiccups; one failed call shouldn't paint
+  // the page red. Show the banner only after 3 consecutive failures.
+  let quoteFailStreak = 0;
+
   onMount(async () => {
     if (!$authStore.user) { goto('/signin'); return; }
     // Warm the instruments cache + capture the sync lookup so
@@ -97,8 +102,18 @@
       for (const q of (r?.items || [])) map[q.item_id] = q;
       watchQuotes = map;
       refreshedAt = r?.refreshed_at || '';
+      // Successful fetch — clear streak + any lingering banner.
+      if (quoteFailStreak > 0) {
+        quoteFailStreak = 0;
+        if (/Quote refresh/.test(error)) error = '';
+      }
     } catch (e) {
-      error = `Quote refresh: ${e.message}`;
+      // Transient broker hiccups happen — only paint the banner red
+      // after 3 consecutive failures so a single blip doesn't alarm.
+      quoteFailStreak++;
+      if (quoteFailStreak >= 3) {
+        error = `Quote refresh: ${e.message}`;
+      }
     }
   }
 
@@ -382,19 +397,6 @@
 
   // ── Grid setup ────────────────────────────────────────────────────
 
-  /** Source-badge renderer — W/H/P/U pills in the leftmost cell. */
-  function srcRenderer(params) {
-    const s = params.value || { w:false, h:false, p:false, u:false };
-    const make = (letter, cls) =>
-      `<span class="src-pill ${cls}">${letter}</span>`;
-    const parts = [];
-    if (s.w) parts.push(make('W', 'src-w'));
-    if (s.h) parts.push(make('H', 'src-h'));
-    if (s.p) parts.push(make('P', 'src-p'));
-    if (s.u) parts.push(make('U', 'src-u'));
-    return parts.join('');
-  }
-
   function exchRenderer(params) {
     const v = String(params.value || '').toUpperCase();
     return `<span class="exch-chip exch-${v.toLowerCase()}">${v}</span>`;
@@ -435,45 +437,50 @@
 
   function mountGrid() {
     if (!gridEl) return;
-    const colDefs = [
-      { field: 'src', headerName: 'Src', width: 90,
-        cellRenderer: srcRenderer, sortable: false },
-      { field: 'exchange', headerName: 'Exch', width: 64,
+    // Column widths fixed (no flex) — matches the /dashboard
+    // PerformancePage approach so narrow viewports scroll horizontally
+    // instead of squashing columns. Symbol pinned-left so the row
+    // identity stays visible while the operator scrolls right through
+    // the numerics. Source is conveyed by the row-class tint on the
+    // symbol cell (cyan=position, green=holding, amber=watchlist,
+    // violet=underlying) — no separate Src column needed.
+    const colDefs = /** @type {any[]} */ ([
+      { field: 'exchange', headerName: 'Exch', width: 50,
         cellRenderer: exchRenderer, sortable: true },
-      { field: 'tradingsymbol', headerName: 'Symbol', flex: 1.4,
+      { field: 'tradingsymbol', headerName: 'Symbol', width: 220, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'col-sym-tint' },
-      { field: 'ltp', headerName: 'LTP', flex: 0.8,
+      { field: 'ltp', headerName: 'LTP', width: 78,
         type: 'numericColumn',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'change', headerName: 'Day Δ ₹', flex: 0.8,
+      { field: 'change', headerName: 'Day Δ ₹', width: 88,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
         valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + priceFmt(p.value) },
-      { field: 'change_pct', headerName: 'Day Δ %', flex: 0.8,
+      { field: 'change_pct', headerName: 'Day %', width: 72,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
         valueFormatter: (p) => p.value == null ? '—' : (p.value > 0 ? '+' : '') + Number(p.value).toFixed(2) + '%' },
-      { field: 'bid', headerName: 'Bid', flex: 0.7,
+      { field: 'bid', headerName: 'Bid', width: 72,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'ask', headerName: 'Ask', flex: 0.7,
+      { field: 'ask', headerName: 'Ask', width: 72,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value != null ? priceFmt(p.value) : '—' },
-      { field: 'qty_pos', headerName: 'Pos Qty', flex: 0.7,
+      { field: 'qty_pos', headerName: 'Pos Qty', width: 70,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
-      { field: 'qty_hold', headerName: 'Hold Qty', flex: 0.7,
+      { field: 'qty_hold', headerName: 'Hold Qty', width: 72,
         type: 'numericColumn', cellClass: 'cell-muted',
         valueFormatter: (p) => p.value ? qtyFmt(p.value) : '—' },
-      { field: 'pnl', headerName: 'P&L', flex: 0.9,
+      { field: 'pnl', headerName: 'P&L', width: 88,
         type: 'numericColumn',
         cellClass: (p) => dirCls(p.value),
         valueFormatter: (p) => p.value ? aggFmt(p.value) : '—' },
-      { field: 'actions', headerName: '', width: 64,
+      { field: 'actions', headerName: '', width: 56,
         cellRenderer: actionRenderer, sortable: false,
-        onCellClicked: handleActionClick },
-    ];
+        onCellClicked: handleActionClick, pinned: 'right' },
+    ]);
 
     grid = createGrid(gridEl, {
       theme: 'legacy',
@@ -581,26 +588,6 @@
 </div>
 
 <style>
-  /* Source pills — leftmost column letters. Aligned to the
-     PerformancePage algo palette: amber accent, cyan/orange for
-     long/short equivalents, green/red for gain/loss. */
-  :global(.src-pill) {
-    display: inline-block;
-    padding: 0 4px;
-    margin-right: 2px;
-    border-radius: 2px;
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    line-height: 14px;
-    min-width: 14px;
-    text-align: center;
-  }
-  :global(.src-w) { color: #fbbf24; background: rgba(251,191,36,0.16); }
-  :global(.src-h) { color: #4ade80; background: rgba(74,222,128,0.16); }
-  :global(.src-p) { color: #38bdf8; background: rgba(56,189,248,0.16); }
-  :global(.src-u) { color: #c4b5fd; background: rgba(196,181,253,0.16); }
-
   /* Exchange tag — text-only, no chrome. Lets the row breathe. */
   :global(.exch-chip) {
     display: inline-block;
