@@ -200,6 +200,69 @@
     return results.flatMap(r => (r?.items || []));
   }
 
+  // Resolve an option underlying name to the right Kite quote key +
+  // display symbol. Mirrors the backend `derivatives.underlying_ltp_key`
+  // / `is_mcx_underlying` + `findNearestFuture` chain:
+  //   - Indices (NIFTY, BANKNIFTY, …) have their own special tickers
+  //     ("NSE:NIFTY 50", not "NSE:NIFTY") — handled by INDEX_LTP_KEY.
+  //   - MCX commodities (CRUDEOIL, GOLD, …) have NO spot ticker; the
+  //     "underlying" IS the near-month futures contract on MCX.
+  //   - Stock options (RELIANCE, INFY, …) fall through to NSE:<NAME>.
+  const INDEX_LTP_KEY = {
+    NIFTY:      { tradingsymbol: 'NIFTY 50',         exchange: 'NSE' },
+    BANKNIFTY:  { tradingsymbol: 'NIFTY BANK',       exchange: 'NSE' },
+    FINNIFTY:   { tradingsymbol: 'NIFTY FIN SERVICE', exchange: 'NSE' },
+    MIDCPNIFTY: { tradingsymbol: 'NIFTY MID SELECT', exchange: 'NSE' },
+    SENSEX:     { tradingsymbol: 'SENSEX',           exchange: 'BSE' },
+    BANKEX:     { tradingsymbol: 'BANKEX',           exchange: 'BSE' },
+  };
+  const MCX_COMMODITIES = new Set([
+    'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
+    'GOLD', 'GOLDM', 'GOLDMINI', 'GOLDPETAL', 'GOLDGUINEA',
+    'SILVER', 'SILVERM', 'SILVERMINI', 'SILVERMIC',
+    'COPPER', 'ZINC', 'ZINCMINI', 'LEAD', 'LEADMINI',
+    'ALUMINIUM', 'ALUMINI', 'NICKEL',
+    'MENTHAOIL', 'COTTON', 'CASTORSEED', 'KAPAS', 'CARDAMOM',
+  ]);
+
+  /** @returns {{tradingsymbol:string, exchange:string, quoteKey:string,
+   *             underlying_group:string, kind:'spot'|'fut'} | null} */
+  function resolveUnderlying(name, findNearestFut) {
+    const n = String(name || '').toUpperCase();
+    if (!n) return null;
+    const idx = INDEX_LTP_KEY[n];
+    if (idx) {
+      return {
+        tradingsymbol: idx.tradingsymbol,
+        exchange: idx.exchange,
+        quoteKey: `${idx.exchange}:${idx.tradingsymbol}`,
+        underlying_group: n,
+        kind: 'spot',
+      };
+    }
+    if (MCX_COMMODITIES.has(n)) {
+      const fut = findNearestFut?.(n);
+      if (fut?.s && fut?.e) {
+        return {
+          tradingsymbol: fut.s,
+          exchange: fut.e,
+          quoteKey: `${fut.e}:${fut.s}`,
+          underlying_group: n,
+          kind: 'fut',
+        };
+      }
+      return null;  // commodity but no future in cache — skip rather than 502
+    }
+    // Stock fallback — equity spot on NSE.
+    return {
+      tradingsymbol: n,
+      exchange: 'NSE',
+      quoteKey: `NSE:${n}`,
+      underlying_group: n,
+      kind: 'spot',
+    };
+  }
+
   async function loadPulse() {
     try {
       const [p, h] = await Promise.all([
@@ -212,17 +275,20 @@
       // option/future tradingsymbol — quote them all in one chunked
       // batch so the grid LTPs are live every 10 s, not stuck on the
       // 5-min /api/positions cache.
-      const underlyings = new Set();
+      const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
       const contractKeys = new Set();
       try {
-        const { loadInstruments, getInstrument } = await import('$lib/data/instruments');
+        const { loadInstruments, getInstrument, findNearestFuture } =
+          await import('$lib/data/instruments');
         await loadInstruments();
         for (const r of positions) {
           const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
           const exch = r.exchange || 'NFO';
           const inst = getInstrument(sym);
-          if (inst && inst.u && String(inst.t || '').toUpperCase() !== 'EQ') {
-            underlyings.add(inst.u);
+          if (inst?.u && String(inst.t || '').toUpperCase() !== 'EQ' &&
+              !underlyingInfos.has(inst.u)) {
+            const info = resolveUnderlying(inst.u, findNearestFuture);
+            if (info) underlyingInfos.set(inst.u, info);
           }
           if (sym) contractKeys.add(`${exch}:${sym}`);
         }
@@ -235,23 +301,26 @@
         }
       } catch (_) { /* instruments cold */ }
 
-      const allKeys = [
-        ...[...underlyings].map(u => `NSE:${u}`),
-        ...contractKeys,
-      ];
-      if (allKeys.length) {
-        const items = await batchQuoteChunked(allKeys);
-        const uMap = {};
+      const allKeys = new Set(contractKeys);
+      for (const info of underlyingInfos.values()) allKeys.add(info.quoteKey);
+
+      if (allKeys.size) {
+        const items = await batchQuoteChunked([...allKeys]);
         const cMap = {};
         for (const q of items) {
-          // The underlying-quote path stores by tradingsymbol (NIFTY etc.);
-          // contract quotes store by `EXCHANGE:SYMBOL` for fast position
-          // merge below.
-          if (underlyings.has(q.tradingsymbol)) uMap[q.tradingsymbol] = q;
           cMap[`${q.exchange}:${q.tradingsymbol}`] = q;
         }
+        contractQuotes = cMap;
+        // Build the per-underlying quote bag, keyed by the LOGICAL
+        // underlying name (NIFTY / CRUDEOIL / RELIANCE) so the
+        // buildUnified() step 4 can drop one synthetic row per
+        // underlying carrying the resolved info + live quote.
+        const uMap = {};
+        for (const [name, info] of underlyingInfos.entries()) {
+          const q = cMap[info.quoteKey];
+          if (q) uMap[name] = { ...q, _resolved: info };
+        }
         underlyingQuotes = uMap;
-        contractQuotes  = cMap;
       } else {
         underlyingQuotes = {};
         contractQuotes  = {};
@@ -407,16 +476,25 @@
       fill(row, sym);
     }
 
-    // 4. Option underlyings — quoted on NSE. Mark them as the spot row
-    // of their underlying group so the sort below pins them to the
-    // top of the group.
-    for (const [u, q] of Object.entries(uq)) {
-      const row = get(u);
-      row.exchange      = row.exchange || 'NSE';
-      row.tradingsymbol = u;
+    // 4. Option underlyings — each entry in `uq` carries a `_resolved`
+    // info block (set by loadPulse via resolveUnderlying). Key the
+    // synthetic row by the RESOLVED tradingsymbol — for MCX commodities
+    // that's the near-month future (e.g. "CRUDEOIL26JUNFUT" on MCX),
+    // for indices it's the index ticker ("NIFTY 50" on NSE), for stock
+    // options it's the equity symbol. Keying this way means a real
+    // futures position of CRUDEOIL26JUNFUT MERGES with the synthetic
+    // underlying row into one row carrying both src.p and src.u —
+    // operator sees the chase context AND the underlying badge on the
+    // same row, with the live MCX LTP.
+    for (const [logicalName, q] of Object.entries(uq)) {
+      const info = q._resolved;
+      if (!info) continue;
+      const row = get(info.tradingsymbol);
+      row.exchange      = row.exchange || info.exchange;
+      row.tradingsymbol = info.tradingsymbol;
       row.src.u = true;
-      row.underlying    = u;     // group key — same as the option's parsed underlying
-      row.kind          = 'spot';
+      row.underlying    = info.underlying_group;  // group key for the chain
+      row.kind          = info.kind;              // 'spot' for indices, 'fut' for MCX
       row.ltp        = q.ltp        ?? row.ltp        ?? null;
       row.bid        = q.bid        ?? row.bid        ?? null;
       row.ask        = q.ask        ?? row.ask        ?? null;
