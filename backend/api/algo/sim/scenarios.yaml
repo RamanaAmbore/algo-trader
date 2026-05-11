@@ -204,3 +204,30 @@
     - at: 2
       moves:
         - {type: underlying_pct, scope: "underlying.NIFTY", value: 0.01}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Underlying random walk — drives NIFTY spot through a GBM path. Every
+# option re-prices coherently via Black-Scholes off the new spot each
+# tick. Best long-running stress scenario: the operator can dial drift
+# and vol from the UI (walk_drift / walk_vol on /start) to land on any
+# regime — calm sideways, trending bull, trending bear, high-vol chop.
+#
+# This is THE recommended scenario for end-to-end agent testing: pair
+# with seed_mode=live to exercise your real book under a realistic
+# market path.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: nifty-random-walk
+  name: NIFTY random walk (BS re-priced)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    GBM walk on NIFTY spot: drift -0.05%/tick, vol 0.3%/tick by default.
+    Every NIFTY option re-prices via Black-Scholes each tick using the
+    IV calibrated at sim start. Override drift / vol / seed from the UI
+    to dial bull / bear / chop regimes without editing this file.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.NIFTY",
+           drift: -0.0005, vol: 0.003}

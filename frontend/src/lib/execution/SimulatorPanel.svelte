@@ -33,6 +33,12 @@
   let pctOverrides = $state(/** @type {Array<number | ''>} */([]));
   let symbolFilter = $state(/** @type {string[]} */([]));
   let spreadPct    = $state(/** @type {number | ''} */(0.10));
+  // Random-walk parameter overrides — surfaced only when the picked
+  // scenario contains a walk-shaped move. Drift and vol are entered as
+  // percent (UI surface) and converted to decimal fraction at submit.
+  let walkDrift    = $state(/** @type {number | ''} */ (''));   // e.g. -0.05 (%)
+  let walkVol      = $state(/** @type {number | ''} */ (''));   // e.g.  0.30 (%)
+  let walkSeed     = $state(/** @type {number | ''} */ (''));   // e.g.  42
   let customRows = $state(/** @type {Array<{tradingsymbol:string, quantity:string|number, last_price:string|number, account:string}>} */ ([]));
 
   function addCustomRow() {
@@ -119,6 +125,12 @@
       }
       if (symbolFilter && symbolFilter.length) opts.symbols = [...symbolFilter];
       if (spreadPct !== '' && spreadPct != null) opts.spread_pct = Number(spreadPct);
+      // Random-walk overrides — drift / vol entered as percent in the
+      // UI, sent as decimal fractions (the same convention as
+      // pct_overrides). Seed is a plain integer.
+      if (walkDrift !== '' && walkDrift != null) opts.walk_drift = Number(walkDrift) / 100;
+      if (walkVol   !== '' && walkVol   != null) opts.walk_vol   = Number(walkVol)   / 100;
+      if (walkSeed  !== '' && walkSeed  != null) opts.walk_seed  = Number(walkSeed);
       const customClean = customRows
         .map(r => ({
           tradingsymbol: String(r.tradingsymbol || '').trim().toUpperCase(),
@@ -354,6 +366,27 @@
             </div>
           {/each}
         </div>
+      </div>
+    {/if}
+    <!-- Walk parameter overrides — visible when the scenario contains
+         random_walk or underlying_random_walk moves. Drift and vol are
+         entered as percent (UI convention) and converted to decimal
+         fraction at submit. Pair with seed for deterministic re-runs. -->
+    {#if pickedScenario?.has_walk}
+      <div class="sim-field">
+        <label for="sim-drift" class="field-label" title="Per-tick drift component for random_walk / underlying_random_walk moves (percent). Negative = bear, positive = bull.">Walk drift %</label>
+        <input id="sim-drift" type="number" step="0.01" class="field-input sim-pct-input"
+               placeholder="(YAML)" bind:value={walkDrift} />
+      </div>
+      <div class="sim-field">
+        <label for="sim-vol" class="field-label" title="Per-tick volatility σ for random_walk / underlying_random_walk moves (percent). Higher = more chop.">Walk vol %</label>
+        <input id="sim-vol" type="number" step="0.01" min="0" class="field-input sim-pct-input"
+               placeholder="(YAML)" bind:value={walkVol} />
+      </div>
+      <div class="sim-field">
+        <label for="sim-seed-walk" class="field-label" title="RNG seed for reproducible walks. Same seed = identical tick stream.">Walk seed</label>
+        <input id="sim-seed-walk" type="number" step="1" class="field-input sim-pct-input"
+               placeholder="(YAML)" bind:value={walkSeed} />
       </div>
     {/if}
   </div>

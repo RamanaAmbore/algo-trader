@@ -89,6 +89,13 @@ class SimStartRequest(msgspec.Struct):
     # an operator can stress-test a synthetic NIFTY24500CE without changing
     # their real book or editing scenarios.yaml.
     custom_positions: Optional[list[dict]] = None
+    # Random-walk parameter overrides. When the chosen scenario is of
+    # random_walk shape (per-position or per-underlying), these values
+    # replace the YAML drift / vol / seed. Lets the operator dial regime
+    # parameters from the UI without editing scenarios.yaml.
+    walk_drift: Optional[float] = None     # per-tick drift (e.g. -0.002)
+    walk_vol:   Optional[float] = None     # per-tick σ (e.g. 0.01)
+    walk_seed:  Optional[int]   = None     # reproducibility seed
 
 
 class SimScenarioInfo(msgspec.Struct):
@@ -107,6 +114,10 @@ class SimScenarioInfo(msgspec.Struct):
     # positions. Used by the Symbol picker when the operator hasn't
     # loaded a live-book snapshot yet.
     initial_symbols: list[str]
+    # True when the scenario contains random_walk or underlying_random_walk
+    # moves — the UI shows Walk drift / vol / seed inputs only in that
+    # case to keep the panel uncluttered for static scenarios.
+    has_walk: bool = False
 
 
 class SimEventInfo(msgspec.Struct):
@@ -152,6 +163,7 @@ class SimulatorController(Controller):
                 has_initial=s["has_initial"],
                 tick_pcts=s.get("tick_pcts") or [],
                 initial_symbols=s.get("initial_symbols") or [],
+                has_walk=bool(s.get("has_walk")),
             ))
         return out
 
@@ -220,6 +232,9 @@ class SimulatorController(Controller):
                 symbol_filter=data.symbols,
                 spread_pct=spread_fraction,
                 custom_positions=data.custom_positions,
+                walk_drift=data.walk_drift,
+                walk_vol=data.walk_vol,
+                walk_seed=data.walk_seed,
             )
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))

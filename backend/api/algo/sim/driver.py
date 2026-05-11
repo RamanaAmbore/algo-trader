@@ -517,7 +517,10 @@ class SimDriver:
               pct_overrides: list[float] | None = None,
               symbol_filter: list[str] | None = None,
               spread_pct: float | None = None,
-              custom_positions: list[dict] | None = None) -> dict:
+              custom_positions: list[dict] | None = None,
+              walk_drift: float | None = None,
+              walk_vol: float | None = None,
+              walk_seed: int | None = None) -> dict:
         """
         Start the sim against a named scenario from scenarios.yaml, or an
         `inline_scenario` dict (same shape) built at call time by the
@@ -554,6 +557,23 @@ class SimDriver:
                             move["value"] = float(pct)
                         except (TypeError, ValueError):
                             pass
+
+        # Random-walk overrides — replace drift / vol on every random_walk
+        # and underlying_random_walk move across every tick. Scenarios that
+        # don't contain walk-shaped moves are unaffected. `walk_seed`
+        # overrides the scenario-level seed for reproducibility from the UI.
+        if walk_drift is not None or walk_vol is not None or walk_seed is not None:
+            scen = copy.deepcopy(scen)
+            if walk_seed is not None:
+                scen["seed"] = int(walk_seed)
+            for tick in (scen.get("ticks") or []):
+                for move in (tick.get("moves") or []):
+                    mtype = (move.get("type") or "").lower()
+                    if mtype in ("random_walk", "underlying_random_walk"):
+                        if walk_drift is not None:
+                            move["drift"] = float(walk_drift)
+                        if walk_vol is not None:
+                            move["vol"]   = float(walk_vol)
 
         self.scenario_slug  = scenario_slug
         self.scenario       = scen
@@ -862,7 +882,8 @@ class SimDriver:
             # Underlying moves: shift the spot, then re-price every option /
             # future on that underlying using the cached IV. Drives coherent
             # F&O sims off a single "−3% NIFTY" tick.
-            if mtype in ("underlying_pct", "underlying_abs", "underlying_target"):
+            if mtype in ("underlying_pct", "underlying_abs", "underlying_target",
+                         "underlying_random_walk"):
                 changes.extend(self._apply_underlying_move(mtype, scope, move))
                 continue
             if scope.startswith("holdings."):
@@ -978,12 +999,19 @@ class SimDriver:
         """
         Underlying scope is `underlying.<NAME>` or `underlying.*`. The move
         types are:
-          underlying_pct     value=0.03         → spot × 1.03
-          underlying_abs     value=25           → spot + 25
-          underlying_target  value=22000        → spot ← 22000
+          underlying_pct          value=0.03                     → spot × 1.03
+          underlying_abs          value=25                       → spot + 25
+          underlying_target       value=22000                    → spot ← 22000
+          underlying_random_walk  drift=-0.001 vol=0.005         → spot ×
+                                                                   (1 + drift + vol·N(0,1))
         After updating the spot, every option/future position whose
         underlying matches is re-priced (BS for options using cached σ;
         spot 1:1 for futures).
+
+        `underlying_random_walk` is the realistic-market primitive: walks
+        the SPOT (not each contract), so all options on that underlying
+        re-price coherently via Black-Scholes each tick. Use it for
+        "drive a NIFTY GBM path through my whole book" tests.
         """
         if not scope.startswith("underlying."):
             logger.warning(f"[SIM] underlying move expects 'underlying.*' scope, got '{scope}'")
@@ -998,17 +1026,29 @@ class SimDriver:
             return []
 
         value = float(move.get("value") or 0)
+        drift = float(move.get("drift") or 0.0)
+        vol   = float(move.get("vol")   or 0.0)
         changes: list[dict] = []
         for name in names:
             old_spot = float(self._underlyings[name])
             if   mtype == "underlying_pct":    new_spot = old_spot * (1.0 + value)
             elif mtype == "underlying_abs":    new_spot = old_spot + value
             elif mtype == "underlying_target": new_spot = value
+            elif mtype == "underlying_random_walk":
+                # GBM step at the underlying level. drift+vol are per-tick.
+                shock    = drift + vol * self._rng.gauss(0.0, 1.0)
+                new_spot = old_spot * (1.0 + shock)
             else:                              new_spot = old_spot
             self._underlyings[name] = new_spot
             # Synthetic change row so the tick log shows the underlying move.
+            # `_capture_price_history` (called from the tick loop) picks up
+            # the new spot into `_underlying_history` for chart overlays.
             # Same shape as `_change` so the LogPanel's Simulator tab renders
             # it without special-casing.
+            if mtype == "underlying_random_walk":
+                reason = f"{mtype} drift={drift:+.4f} vol={vol:.4f} → {new_spot - old_spot:+.2f}"
+            else:
+                reason = f"{mtype} {value:+.4f} (underlying)"
             changes.append({
                 "section":  "underlying",
                 "account":  None,
@@ -1017,7 +1057,7 @@ class SimDriver:
                 "prev":     old_spot,
                 "next":     new_spot,
                 "delta":    new_spot - old_spot,
-                "reason":   f"{mtype} {value:+.4f} (underlying)",
+                "reason":   reason,
                 "bid":      None,
                 "ask":      None,
             })
@@ -1445,6 +1485,15 @@ class SimDriver:
                 for p in (initial.get("positions") or [])
                 if p.get("tradingsymbol")
             })
+            # Walk-shape detection — flag when ANY tick contains a
+            # random_walk or underlying_random_walk move. The UI uses
+            # this to surface drift / vol / seed inputs only for
+            # walk-style scenarios.
+            has_walk = any(
+                (m.get("type") or "").lower() in ("random_walk", "underlying_random_walk")
+                for t in (s.get("ticks") or [])
+                for m in (t.get("moves") or [])
+            )
             out.append({
                 "slug":            s.get("slug"),
                 "name":            s.get("name") or s.get("slug"),
@@ -1454,6 +1503,7 @@ class SimDriver:
                 "has_initial":     has_initial,
                 "tick_pcts":       tick_pcts,
                 "initial_symbols": init_syms,
+                "has_walk":        has_walk,
             })
         return out
 
