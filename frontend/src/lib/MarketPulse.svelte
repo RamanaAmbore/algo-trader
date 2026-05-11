@@ -22,7 +22,7 @@
     fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
-    fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
+    fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
@@ -33,6 +33,11 @@
     enableWatchlists   = true,
     enableSourceToggles = true,
     allowOrders        = true,
+    // Phase 2 presets — dashboard mode turns these on.
+    accountPicker      = false, // <select> next to the toolbar
+    showSummary        = false, // small per-account summary grid above the main grid
+    showFunds          = false, // small per-account funds grid below the main grid
+    compactHeader      = false, // collapse title + ts onto the toolbar row
   } = $props();
 
   // AG Grid valueFormatter wrappers — the canonical idiom every other
@@ -91,13 +96,37 @@
   let showPositions = $state(true);
   let showHoldings  = $state(true);
 
+  // Account picker state (dashboard mode). `selectedAccount === 'all'`
+  // shows everything; a specific account id filters the positions /
+  // holdings INPUTS to buildUnified so the merged rows + summaries
+  // reflect just that account. Watchlist + option-underlying rows
+  // are not account-scoped — they always show.
+  let selectedAccount = $state('all');
+  let availableAccounts = $state(/** @type {string[]} */ ([]));
+  // Per-source summary rows from the backend (positions / holdings
+  // endpoints return precomputed per-account totals in .summary).
+  // Combined into one row-set for the summary grid above the main one.
+  let positionsSummary = $state(/** @type {any[]} */ ([]));
+  let holdingsSummary  = $state(/** @type {any[]} */ ([]));
+  // Funds (per-account margins) — loaded only when showFunds is true.
+  let funds = $state(/** @type {any[]} */ ([]));
+
   let stopPoll, stopPulsePoll;
   let gridEl;
+  // $state on the bind:this refs so Svelte 5's reactive-update
+  // analyzer doesn't warn (gridEl was grandfathered in pre-Phase 2;
+  // the new summary / funds refs need the explicit annotation).
+  let summaryEl = $state(/** @type {HTMLDivElement | null} */ (null));
+  let fundsEl   = $state(/** @type {HTMLDivElement | null} */ (null));
   let grid;
+  let summaryGrid;
+  let fundsGrid;
   // Sentinel that flips to true once createGrid runs — used by the
   // $effect below to push unifiedRows into ag-Grid the moment both
   // (a) the grid is mounted and (b) the derived row set has populated.
   let gridReady = $state(false);
+  let summaryReady = $state(false);
+  let fundsReady   = $state(false);
 
   // Instrument-cache lookup functions. Loaded once at mount + cached
   // as module-scope state so buildUnified() can parse tradingsymbols
@@ -142,9 +171,20 @@
       if (activeIds.size > 0) await loadActive();
     }
     await loadPulse();
+    if (showFunds) await loadFunds();
     stopPoll      = visibleInterval(async () => { await loadQuotes(); }, 5000);
-    stopPulsePoll = visibleInterval(async () => { await loadPulse(); }, 10000);
+    stopPulsePoll = visibleInterval(async () => {
+      await loadPulse();
+      if (showFunds) await loadFunds();
+    }, 10000);
   });
+
+  async function loadFunds() {
+    try {
+      const r = await fetchFunds();
+      funds = (r?.rows || []).slice();
+    } catch (_) { /* nothing fatal */ }
+  }
 
   $effect(() => {
     const rows = unifiedRows;
@@ -152,7 +192,62 @@
     grid.setGridOption('rowData', rows);
   });
 
-  onDestroy(() => { stopPoll?.(); stopPulsePoll?.(); grid?.destroy?.(); });
+  // Combine positions+holdings backend summaries into one per-account
+  // row carrying Day P&L + P&L + Cur Val. Account picker scopes the
+  // body rows; the TOTAL pseudo-row stays pinned to the bottom.
+  function isTotalRow(r) { return r && r.account === 'TOTAL'; }
+
+  const combinedSummary = $derived.by(() => {
+    if (!showSummary) return [];
+    const byAcct = /** @type {Record<string, any>} */ ({});
+    const add = (r, src) => {
+      const a = r.account;
+      if (!a) return;
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0 };
+      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
+      byAcct[a].pnl     += Number(r.pnl)            || 0;
+      if (src === 'h') byAcct[a].cur_val += Number(r.cur_val) || 0;
+    };
+    for (const r of holdingsSummary)  add(r, 'h');
+    for (const r of positionsSummary) add(r, 'p');
+    return Object.values(byAcct);
+  });
+
+  const summaryBody  = $derived(
+    selectedAccount === 'all'
+      ? combinedSummary.filter(r => !isTotalRow(r))
+      : combinedSummary.filter(r => r.account === selectedAccount)
+  );
+  const summaryTotal = $derived(combinedSummary.filter(isTotalRow));
+
+  $effect(() => {
+    if (!summaryReady || !summaryGrid) return;
+    const body  = summaryBody;
+    const total = summaryTotal;
+    summaryGrid.setGridOption('rowData', body);
+    summaryGrid.setGridOption('pinnedBottomRowData', total);
+  });
+
+  const scopedFunds = $derived(
+    selectedAccount === 'all'
+      ? funds
+      : funds.filter(r => String(r.account || '') === selectedAccount)
+  );
+
+  $effect(() => {
+    if (!fundsReady || !fundsGrid) return;
+    const body  = scopedFunds.filter(r => !isTotalRow(r));
+    const total = scopedFunds.filter(isTotalRow);
+    fundsGrid.setGridOption('rowData', body);
+    fundsGrid.setGridOption('pinnedBottomRowData', total);
+  });
+
+  onDestroy(() => {
+    stopPoll?.(); stopPulsePoll?.();
+    grid?.destroy?.();
+    summaryGrid?.destroy?.();
+    fundsGrid?.destroy?.();
+  });
 
   async function loadLists() {
     try {
@@ -302,6 +397,21 @@
       ]);
       positions = (p?.rows || []).slice();
       holdings  = (h?.rows || []).slice();
+      // Capture the backend's precomputed per-account summary rows
+      // (used by the dashboard's summary grid). Excludes the TOTAL
+      // synthetic row — we render that separately as pinnedBottomRowData.
+      if (showSummary) {
+        positionsSummary = (p?.summary || []).slice();
+        holdingsSummary  = (h?.summary || []).slice();
+      }
+      // Surface every account id we see across positions + holdings
+      // for the account-picker dropdown. Deduplicated, sorted.
+      if (accountPicker) {
+        const accts = new Set();
+        for (const r of positions) if (r.account) accts.add(String(r.account));
+        for (const r of holdings)  if (r.account) accts.add(String(r.account));
+        availableAccounts = [...accts].sort();
+      }
       const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
       const contractKeys = new Set();
       const lookup = getInstrument;
@@ -347,8 +457,23 @@
     } catch (_) { /* nothing fatal */ }
   }
 
+  // Account-scoped inputs to buildUnified. When selectedAccount is
+  // 'all' (default), pass the raw arrays straight through. Otherwise
+  // filter positions / holdings to that account — watchlist items and
+  // option underlyings are not account-scoped so they remain visible.
+  const scopedPositions = $derived(
+    selectedAccount === 'all'
+      ? positions
+      : positions.filter(r => String(r.account || '') === selectedAccount)
+  );
+  const scopedHoldings = $derived(
+    selectedAccount === 'all'
+      ? holdings
+      : holdings.filter(r => String(r.account || '') === selectedAccount)
+  );
+
   const unifiedRows = $derived(buildUnified(
-    activeLists, watchQuotes, positions, holdings, pulseQuotes, getInstrument,
+    activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
     showPositions, showHoldings,
   ));
 
@@ -733,6 +858,74 @@
       onRowClicked: handleRowClick,
     });
     gridReady = true;
+
+    // Summary grid — small per-account totals strip above the main
+    // grid in dashboard mode. Same theming + numeric formatters as
+    // the main grid; renderless symbol column (just the Account chip).
+    if (showSummary && summaryEl) {
+      const summaryCols = [
+        { field: 'account', headerName: 'Account', width: 90,
+          cellClass: 'ag-col-fill' },
+        { field: 'day_pnl', headerName: 'Day P&L', width: 110,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+        { field: 'pnl', headerName: 'P&L', width: 110,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+        { field: 'cur_val', headerName: 'Cur Val', width: 120,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid },
+      ];
+      summaryGrid = createGrid(summaryEl, {
+        theme: 'legacy',
+        columnDefs: summaryCols,
+        rowData: [],
+        defaultColDef: {
+          resizable: true, sortable: true, suppressMovable: true,
+          suppressHeaderMenuButton: true,
+        },
+        sortingOrder: ['asc', 'desc', null],
+        domLayout: 'autoHeight',
+        rowHeight: 26,
+        headerHeight: 26,
+      });
+      summaryReady = true;
+    }
+
+    // Funds grid — small per-account margins strip below the main
+    // grid in dashboard mode. Wider columns (rupee aggregates).
+    if (showFunds && fundsEl) {
+      const fundsCols = [
+        { field: 'account',      headerName: 'Account',      width: 90,
+          cellClass: 'ag-col-fill' },
+        { field: 'cash',         headerName: 'Cash',         flex: 1,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+        { field: 'avail_margin', headerName: 'Avail Margin', flex: 1,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid },
+        { field: 'used_margin',  headerName: 'Used Margin',  flex: 1,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid },
+        { field: 'collateral',   headerName: 'Collateral',   flex: 1,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid },
+      ];
+      fundsGrid = createGrid(fundsEl, {
+        theme: 'legacy',
+        columnDefs: fundsCols,
+        rowData: [],
+        defaultColDef: {
+          resizable: true, sortable: true, suppressMovable: true,
+          suppressHeaderMenuButton: true,
+        },
+        sortingOrder: ['asc', 'desc', null],
+        domLayout: 'autoHeight',
+        rowHeight: 26,
+        headerHeight: 26,
+      });
+      fundsReady = true;
+    }
   }
 
   function handleRowClick(ev) {
@@ -777,17 +970,19 @@
 </script>
 
 <div class="algo-status-card p-5 pt-4" data-status="inactive">
-  <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
-    <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">{title}</h1>
-    <span class="algo-ts">{refreshedAt || clientTimestamp()}</span>
-  </div>
-  <div class="border-b border-[rgba(251,191,36,0.25)] mb-3"></div>
+  {#if !compactHeader}
+    <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
+      <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">{title}</h1>
+      <span class="algo-ts">{refreshedAt || clientTimestamp()}</span>
+    </div>
+    <div class="border-b border-[rgba(251,191,36,0.25)] mb-3"></div>
+  {/if}
 
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
   {/if}
 
-  {#if enableWatchlists || enableSourceToggles}
+  {#if enableWatchlists || enableSourceToggles || accountPicker}
     <div class="flex flex-wrap items-center gap-1 mb-2">
       {#if enableWatchlists}
         {#each lists as l}
@@ -814,24 +1009,37 @@
           </button>
         {/if}
       {/if}
-      {#if enableSourceToggles}
+      <!-- Right-aligned cluster: account picker + source toggles. -->
+      {#if accountPicker || enableSourceToggles}
         <div class="ml-auto flex items-center gap-1">
-          <button onclick={() => showPositions = !showPositions}
-            title={showPositions ? 'Hide positions' : 'Show positions'}
-            class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
-                   {showPositions
-                     ? 'bg-[#38bdf8]/20 text-[#38bdf8] border-[#38bdf8]/40'
-                     : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#38bdf8]/70'}">
-            P · Positions
-          </button>
-          <button onclick={() => showHoldings = !showHoldings}
-            title={showHoldings ? 'Hide holdings' : 'Show holdings'}
-            class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
-                   {showHoldings
-                     ? 'bg-[#4ade80]/20 text-[#4ade80] border-[#4ade80]/40'
-                     : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#4ade80]/70'}">
-            H · Holdings
-          </button>
+          {#if accountPicker && availableAccounts.length > 0}
+            <select bind:value={selectedAccount}
+              title="Filter by broker account"
+              class="field-input text-[0.65rem] py-1 px-2 max-w-32">
+              <option value="all">All accounts</option>
+              {#each availableAccounts as a}
+                <option value={a}>{a}</option>
+              {/each}
+            </select>
+          {/if}
+          {#if enableSourceToggles}
+            <button onclick={() => showPositions = !showPositions}
+              title={showPositions ? 'Hide positions' : 'Show positions'}
+              class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
+                     {showPositions
+                       ? 'bg-[#38bdf8]/20 text-[#38bdf8] border-[#38bdf8]/40'
+                       : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#38bdf8]/70'}">
+              P · Positions
+            </button>
+            <button onclick={() => showHoldings = !showHoldings}
+              title={showHoldings ? 'Hide holdings' : 'Show holdings'}
+              class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
+                     {showHoldings
+                       ? 'bg-[#4ade80]/20 text-[#4ade80] border-[#4ade80]/40'
+                       : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#4ade80]/70'}">
+              H · Holdings
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -878,8 +1086,21 @@
     </div>
   {/if}
 
+  {#if showSummary}
+    <!-- Per-account summary strip (dashboard mode). Renders empty
+         until loadPulse populates the .summary arrays; ag-Grid shows
+         its empty overlay in the meantime. -->
+    <div bind:this={summaryEl} class="ag-theme-algo summary-grid mb-2"></div>
+  {/if}
+
   <!-- Unified grid -->
   <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
+
+  {#if showFunds}
+    <!-- Funds strip (dashboard mode). Per-account margins below the
+         main grid. -->
+    <div bind:this={fundsEl} class="ag-theme-algo funds-grid mt-3"></div>
+  {/if}
 </div>
 
 {#if allowOrders && ticketProps}
@@ -940,9 +1161,14 @@
   :global(.cell-flat) { color: #94a3b8 !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
 
-  /* Grid container */
+  /* Grid containers */
   .unified-grid {
     width: 100%;
     min-height: 60px;
+  }
+  .summary-grid,
+  .funds-grid {
+    width: 100%;
+    min-height: 40px;
   }
 </style>
