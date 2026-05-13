@@ -2025,6 +2025,7 @@
       dte={strategy.days_to_expiry}
       ivProxy={strategy.iv_proxy}
       legCount={strategy.legs.length}
+      multiExpiry={strategy.multi_expiry ?? false}
       realizedPnl={chartPnlOffset}
       loading={loading}
       onRefresh={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}

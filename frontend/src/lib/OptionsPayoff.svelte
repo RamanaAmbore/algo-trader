@@ -28,6 +28,7 @@
    *   onRefresh?:   (() => void) | null,
    *   loading?:     boolean,
    *   prevClose?:   number|null,
+   *   multiExpiry?: boolean,
    * }} */
   let {
     payoff = [],
@@ -57,6 +58,7 @@
     onRefresh  = /** @type {(() => void) | null} */ (null),
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
+    multiExpiry = false,
   } = $props();
 
   // Day's direction — flag the SPOT readout green when trading above
@@ -905,6 +907,11 @@
         Spot
       </span>
     </div>
+    {#if multiExpiry}
+      <p class="payoff-multi-expiry-note">
+        Calendar/diagonal basket — chart assumes proportional movement across contract months.
+      </p>
+    {/if}
   {/if}
 </div>
 
@@ -1108,4 +1115,11 @@
   .ps-v.ps-spot-flat { color: #7dd3fc; }
   .ps-v.ps-pos  { color: #4ade80; }
   .ps-v.ps-neg  { color: #f87171; }
+  .payoff-multi-expiry-note {
+    margin: 0.25rem 0 0;
+    font-size: 0.6rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-style: italic;
+    color: rgba(200,216,240,0.55);
+  }
 </style>

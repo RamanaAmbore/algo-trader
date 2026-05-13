@@ -304,6 +304,10 @@ class StrategyResponse(msgspec.Struct):
     # chart footnote when span_sigmas is non-zero.
     span_pct:          float = 0.10
     span_sigmas:       float = 0.0
+    # True when the basket spans two or more distinct option expiry dates
+    # (calendar spread / diagonal). Lets the frontend show a footnote that
+    # the X-axis uses front-month as the spot reference, not the per-leg month.
+    multi_expiry:      bool  = False
 
 
 # ── Resolvers ─────────────────────────────────────────────────────────
@@ -467,6 +471,40 @@ async def _lookup_mcx_future(underlying: str,
     return candidates[0].s
 
 
+async def _lookup_mcx_near_month_future(underlying: str) -> Optional[str]:
+    """Return the front-month MCX FUT tradingsymbol for *underlying* —
+    i.e. the contract with the earliest (soonest) expiry in the
+    instruments cache. This is what operators mean by "today's spot" for
+    commodity underlyings: the front-month future price, regardless of
+    which contract month a given option belongs to. Per-leg σ calibration
+    absorbs the cross-month spread so BS pricing still matches each leg's
+    market premium.
+
+    Uses the same 24h instruments cache as ``_lookup_mcx_future``."""
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return None
+    target_u = underlying.upper()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "MCX"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda i: i.x or "")
+    return candidates[0].s
+
+
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
                         expiry_hint: Optional[date] = None
@@ -534,8 +572,12 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     #    option's contract month/year; if nothing matches we accept the
     #    near-month future returned by the cache.  Only on a full cache
     #    miss do we fall through to the walk-forward below.
-    if is_commodity and expiry_hint is not None:
-        resolved_sym = await _lookup_mcx_future(underlying, expiry_hint)
+    # 3b. MCX commodities: always use the front-month future as the spot,
+    #     regardless of which contract month the option is in. Operators
+    #     think in terms of "today's crude oil price" — that's the
+    #     front-month. Per-leg σ calibration absorbs the cross-month spread.
+    if is_commodity:
+        resolved_sym = await _lookup_mcx_near_month_future(underlying)
         if resolved_sym:
             full_key = f"MCX:{resolved_sym}"
             try:
@@ -546,7 +588,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
                     return (px, "futures", _prev_close_from_quote(quote_dict))
             except Exception as e:
                 logger.warning(
-                    f"options MCX-cache spot for {underlying} "
+                    f"options MCX-near-month spot for {underlying} "
                     f"({full_key}) failed: {e}"
                 )
 
@@ -1490,4 +1532,10 @@ class OptionsController(Controller):
             spot_prev_close=spot_prev_close,
             span_pct=span_pct_resolved,
             span_sigmas=float(data.span_sigmas) if data.span_pct is None else 0.0,
+            multi_expiry=len({
+                _leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))
+                for leg in data.legs
+                if parse_tradingsymbol(leg.symbol.upper().strip())
+                   and parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
+            }) > 1,
         )
