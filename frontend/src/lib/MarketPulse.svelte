@@ -28,6 +28,7 @@
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
+  import MultiSelect from '$lib/MultiSelect.svelte';
 
   let {
     title              = 'Market Pulse',
@@ -89,11 +90,16 @@
 
   // New-list form state.
   let newListName = $state('');
-  let showCreate  = $state(false);
 
-  // Source toggles. When OFF, the corresponding loop in buildUnified
-  // is skipped — that source contributes no rows, no badges, no qty
-  // or P&L. Both ON (default) is the existing combined view.
+  // Source toggles — driven by the MultiSelect below.
+  const SOURCE_OPTIONS = [
+    { value: 'positions', label: 'Positions' },
+    { value: 'holdings',  label: 'Holdings'  },
+    { value: 'movers',    label: 'Movers'    },
+  ];
+  let selectedSources = $state(['positions', 'holdings', 'movers']);
+
+  // Keep individual booleans so buildUnified + other callsites are unchanged.
   let showPositions = $state(true);
   let showHoldings  = $state(true);
 
@@ -101,6 +107,12 @@
   // Failure is non-fatal: the rest of the page keeps working.
   let movers     = $state(/** @type {any[]} */ ([]));
   let showMovers = $state(true);
+
+  $effect(() => {
+    showPositions = selectedSources.includes('positions');
+    showHoldings  = selectedSources.includes('holdings');
+    showMovers    = selectedSources.includes('movers');
+  });
   let stopMoversPoll;
 
   // Account picker state (dashboard mode). `selectedAccount === 'all'`
@@ -756,7 +768,7 @@
   // ── Add / remove ────────────────────────────────────────────────
 
   async function searchSymbols(q) {
-    if (!q || q.length < 2) { typeahead = []; return; }
+    if (!q || q.length < 3) { typeahead = []; return; }
     try {
       const { searchByPrefix } = await import('$lib/data/instruments');
       typeahead = await searchByPrefix(q.toUpperCase(), 12);
@@ -799,7 +811,7 @@
     if (!newListName.trim()) return;
     try {
       const w = await createWatchlist(newListName.trim());
-      newListName = ''; showCreate = false;
+      newListName = '';
       activeIds = new Set([...activeIds, w.id]);
       focusedListId = w.id;
       await loadLists();
@@ -1084,9 +1096,12 @@
             {#if l.is_default}<span class="ml-1 text-[0.5rem] text-[#4ade80]">★</span>{/if}
           </button>
         {/each}
-        <button onclick={() => showCreate = !showCreate}
-          class="px-2 py-1 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
-          + New
+        <input bind:value={newListName}
+          onkeydown={(e) => e.key === 'Enter' && makeList()}
+          class="field-input text-[0.65rem] py-1 px-2 w-36" placeholder="New watchlist name" />
+        <button onclick={makeList} disabled={!newListName.trim()}
+          class="px-2 py-1 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 disabled:opacity-40">
+          New
         </button>
         {#if focusedListId != null && lists.find(l => l.id === focusedListId)?.is_default !== true && lists.length > 1}
           <button onclick={() => dropList(focusedListId)}
@@ -1109,43 +1124,12 @@
             </select>
           {/if}
           {#if enableSourceToggles}
-            <button onclick={() => showPositions = !showPositions}
-              title={showPositions ? 'Hide positions' : 'Show positions'}
-              class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
-                     {showPositions
-                       ? 'bg-[#38bdf8]/20 text-[#38bdf8] border-[#38bdf8]/40'
-                       : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#38bdf8]/70'}">
-              P · Positions
-            </button>
-            <button onclick={() => showHoldings = !showHoldings}
-              title={showHoldings ? 'Hide holdings' : 'Show holdings'}
-              class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
-                     {showHoldings
-                       ? 'bg-[#4ade80]/20 text-[#4ade80] border-[#4ade80]/40'
-                       : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#4ade80]/70'}">
-              H · Holdings
-            </button>
-            <button onclick={() => showMovers = !showMovers}
-              title={showMovers ? 'Hide top movers' : 'Show top movers'}
-              class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
-                     {showMovers
-                       ? 'bg-[#f87171]/20 text-[#f87171] border-[#f87171]/40'
-                       : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#f87171]/70'}">
-              M · Movers
-            </button>
+            <div class="w-32">
+              <MultiSelect bind:value={selectedSources} options={SOURCE_OPTIONS} placeholder="Sources" />
+            </div>
           {/if}
         </div>
       {/if}
-    </div>
-  {/if}
-
-  {#if enableWatchlists && showCreate}
-    <div class="flex items-center gap-2 mb-2">
-      <input bind:value={newListName} class="field-input flex-1" placeholder="New watchlist name"
-        onkeydown={(e) => e.key === 'Enter' && makeList()} />
-      <button onclick={makeList} class="btn-primary text-[0.65rem] py-1 px-3">Create</button>
-      <button onclick={() => { showCreate = false; newListName = ''; }}
-        class="btn-secondary text-[0.65rem] py-1 px-3">Cancel</button>
     </div>
   {/if}
 
@@ -1156,10 +1140,13 @@
         oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
         onfocus={() => typeaheadOpen = true}
         onkeydown={(e) => {
-          if (e.key === 'Enter')      { e.preventDefault(); addRow(); }
-          else if (e.key === 'Escape') { typeaheadOpen = false; }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
+            else addRow();
+          } else if (e.key === 'Escape') { typeaheadOpen = false; }
         }}
-        class="field-input flex-1" placeholder="Add symbol to {lists.find(l => l.id === focusedListId)?.name ?? 'list'} — type 2+ chars" />
+        class="field-input flex-1" placeholder="Add symbol to {lists.find(l => l.id === focusedListId)?.name ?? 'list'} — type 3+ chars" />
       <select bind:value={exchInput} class="field-input w-24">
         <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>
       </select>
@@ -1172,7 +1159,6 @@
               class="block w-full text-left px-3 py-1.5 text-xs hover:bg-[#fbbf24]/10">
               <span class="font-mono text-[#fbbf24]">{inst.s}</span>
               <span class="text-[0.6rem] text-[#7e97b8] ml-2">{inst.e}</span>
-              {#if inst.u && inst.u !== inst.s}<span class="text-[0.55rem] text-[#7e97b8] ml-1">· {inst.u}</span>{/if}
             </button>
           {/each}
         </div>
