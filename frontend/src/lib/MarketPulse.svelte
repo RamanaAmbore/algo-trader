@@ -88,6 +88,113 @@
   let typeahead  = $state(/** @type {any[]} */ ([]));
   let typeaheadOpen = $state(false);
 
+  // Option picker — shown inline when the operator picks an underlying
+  // from the typeahead (i.e. a symbol that has CE/PE chains).
+  /** @type {{ name: string, exchange: string } | null} */
+  let optionPickerUnderlying = $state(null);
+  let optionPickerExpiry     = $state('');
+  let optionPickerSide       = $state(/** @type {'CE'|'PE'} */ ('CE'));
+  let optionPickerStrike     = $state(/** @type {number|null} */ (null));
+  let optionPickerExpiries   = $state(/** @type {string[]} */ ([]));
+  let optionPickerStrikes    = $state(/** @type {number[]} */ ([]));
+
+  // Reload strikes when expiry changes (side change intentionally does
+  // NOT reset strike — operator may want the same strike in CE↔PE).
+  $effect(() => {
+    void optionPickerExpiry; void optionPickerSide;
+    if (!optionPickerUnderlying || !optionPickerExpiry) {
+      optionPickerStrikes = []; optionPickerStrike = null; return;
+    }
+    import('$lib/data/instruments').then(({ listStrikes }) => {
+      const strikes = listStrikes(
+        optionPickerUnderlying.name.toUpperCase(),
+        optionPickerSide,
+        optionPickerExpiry,
+      );
+      optionPickerStrikes = strikes;
+      // If the current strike is still in the new list, keep it.
+      if (optionPickerStrike != null && strikes.includes(optionPickerStrike)) return;
+      // Otherwise default to ATM (nearest to current spot).
+      const spot = pulseQuotes.underlyings[optionPickerUnderlying.name.toUpperCase()]
+                     ?.last_price
+                ?? pulseQuotes.underlyings[optionPickerUnderlying.name]
+                     ?.last_price
+                ?? null;
+      if (spot != null && strikes.length) {
+        let best = strikes[0], bestDiff = Math.abs(strikes[0] - spot);
+        for (const k of strikes) {
+          const d = Math.abs(k - spot);
+          if (d < bestDiff) { best = k; bestDiff = d; }
+        }
+        optionPickerStrike = best;
+      } else {
+        optionPickerStrike = strikes[Math.floor(strikes.length / 2)] ?? null;
+      }
+    }).catch(() => { optionPickerStrikes = []; optionPickerStrike = null; });
+  });
+
+  async function openOptionPicker(instName, instExchange) {
+    try {
+      const { listExpiries } = await import('$lib/data/instruments');
+      const expiries = listExpiries(instName.toUpperCase(), 'CE');
+      if (!expiries.length) return false; // no option chain — direct-add
+      optionPickerUnderlying = { name: instName.toUpperCase(), exchange: instExchange };
+      optionPickerExpiry     = expiries[0];
+      optionPickerSide       = 'CE';
+      optionPickerExpiries   = expiries;
+      // Strike is set reactively by the $effect above.
+      return true;
+    } catch { return false; }
+  }
+
+  function closeOptionPicker() {
+    optionPickerUnderlying = null;
+    optionPickerExpiry     = '';
+    optionPickerSide       = 'CE';
+    optionPickerStrike     = null;
+    optionPickerExpiries   = [];
+    optionPickerStrikes    = [];
+  }
+
+  async function addOptionFromPicker() {
+    if (!optionPickerUnderlying || !optionPickerExpiry || optionPickerStrike == null) return;
+    const targetId = focusedListId ?? [...activeIds][0];
+    if (targetId == null) return;
+    try {
+      const { findOption } = await import('$lib/data/instruments');
+      const inst = findOption(
+        optionPickerUnderlying.name,
+        optionPickerSide,
+        optionPickerStrike,
+        optionPickerExpiry,
+      );
+      if (!inst) { error = 'Symbol not in cache — retry.'; return; }
+      await addWatchlistItem(targetId, inst.s, inst.e || 'NFO');
+      symInput = ''; typeahead = []; typeaheadOpen = false;
+      closeOptionPicker();
+      await loadActive();
+    } catch (e) { error = e.message; }
+  }
+
+  async function addSpotFromPicker() {
+    if (!optionPickerUnderlying) return;
+    const targetId = focusedListId ?? [...activeIds][0];
+    if (targetId == null) return;
+    // Resolve the actual NSE/BSE tradingsymbol for the index/stock.
+    const KEY = {
+      NIFTY: 'NIFTY 50', BANKNIFTY: 'NIFTY BANK', FINNIFTY: 'NIFTY FIN SERVICE',
+      MIDCPNIFTY: 'NIFTY MID SELECT', SENSEX: 'SENSEX', BANKEX: 'BANKEX',
+    };
+    const sym  = KEY[optionPickerUnderlying.name] ?? optionPickerUnderlying.name;
+    const exch = (sym === 'SENSEX' || sym === 'BANKEX') ? 'BSE' : 'NSE';
+    try {
+      await addWatchlistItem(targetId, sym, exch);
+      symInput = ''; typeahead = []; typeaheadOpen = false;
+      closeOptionPicker();
+      await loadActive();
+    } catch (e) { error = e.message; }
+  }
+
   // New-list form state.
   let newListName = $state('');
 
@@ -786,6 +893,12 @@
   }
 
   async function pickFromTypeahead(inst) {
+    typeaheadOpen = false;
+    // If the picked symbol is an underlying (has CE/PE chains), open the
+    // inline option picker instead of adding directly.
+    const opened = await openOptionPicker(inst.s, inst.e);
+    if (opened) return;
+    // Direct-add path: equities, futures, CDS, and anything without a chain.
     const targetId = focusedListId ?? [...activeIds][0];
     if (targetId == null) return;
     try {
@@ -1164,6 +1277,74 @@
         </div>
       {/if}
     </div>
+
+    {#if optionPickerUnderlying}
+      <!-- Option picker — inline row for CE/PE/Strike selection after
+           the operator picks an underlying from the typeahead. -->
+      <div class="opt-picker flex flex-wrap items-center gap-1.5 mb-2 px-2 py-1.5
+                  bg-[#0c1830] border border-[#fbbf24]/25 rounded">
+        <!-- Underlying chip (read-only) -->
+        <span class="font-mono text-[0.65rem] font-bold text-[#fbbf24]
+                     bg-[#fbbf24]/10 border border-[#fbbf24]/30 px-2 py-0.5 rounded">
+          {optionPickerUnderlying.name}
+        </span>
+
+        <!-- Expiry dropdown -->
+        <select
+          bind:value={optionPickerExpiry}
+          class="field-input text-[0.65rem] py-0.5 px-1.5 w-28">
+          {#each optionPickerExpiries as exp}
+            <option value={exp}>{exp}</option>
+          {/each}
+        </select>
+
+        <!-- CE / PE toggle -->
+        <span class="flex rounded overflow-hidden border border-[#fbbf24]/25">
+          <button
+            onclick={() => optionPickerSide = 'CE'}
+            class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
+                   {optionPickerSide === 'CE'
+                     ? 'bg-[#fbbf24] text-[#0a1628]'
+                     : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">CE</button>
+          <button
+            onclick={() => optionPickerSide = 'PE'}
+            class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
+                   {optionPickerSide === 'PE'
+                     ? 'bg-[#fbbf24] text-[#0a1628]'
+                     : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">PE</button>
+        </span>
+
+        <!-- Strike dropdown -->
+        <select
+          bind:value={optionPickerStrike}
+          class="field-input text-[0.65rem] py-0.5 px-1.5 w-24"
+          disabled={!optionPickerStrikes.length}>
+          {#each optionPickerStrikes as k}
+            <option value={k}>{k}</option>
+          {/each}
+        </select>
+
+        <!-- Add button -->
+        <button
+          onclick={addOptionFromPicker}
+          disabled={optionPickerStrike == null || !optionPickerExpiry}
+          class="text-[0.65rem] font-bold px-2.5 py-0.5 rounded
+                 bg-[#fbbf24]/90 text-[#0a1628] hover:bg-[#fbbf24]
+                 disabled:opacity-40 disabled:cursor-not-allowed">Add</button>
+
+        <!-- Spot quick-add -->
+        <button
+          onclick={addSpotFromPicker}
+          class="text-[0.65rem] px-2 py-0.5 rounded border border-[#7dd3fc]/40
+                 text-[#7dd3fc] hover:bg-[#7dd3fc]/10">Spot</button>
+
+        <!-- Cancel -->
+        <button
+          onclick={closeOptionPicker}
+          class="text-[0.65rem] px-2 py-0.5 rounded border border-[#7e97b8]/30
+                 text-[#7e97b8] hover:bg-white/5">Cancel</button>
+      </div>
+    {/if}
   {/if}
 
   {#if showFunds}
