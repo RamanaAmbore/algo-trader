@@ -1365,7 +1365,7 @@
   {/if}
 
   {#if showSummary || showFunds}
-    <div class="mp-section-label">Holdings / Positions / Watchlist</div>
+    <div class="mp-section-label">Symbols</div>
   {/if}
   <!-- Unified grid — the per-symbol detail view. -->
   <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
