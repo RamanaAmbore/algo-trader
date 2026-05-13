@@ -14,7 +14,7 @@
   //   allowOrders         — row click opens OrderEntryShell
   //
   // Phase 2 additions (not wired yet): accountFilter, showSummaryRows,
-  // showFundsCard, compactHeader.
+  // showFundsCard.
 
   import { onMount, onDestroy, tick } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
@@ -39,7 +39,6 @@
     accountPicker      = false, // <select> next to the toolbar
     showSummary        = false, // small per-account summary grid above the main grid
     showFunds          = false, // small per-account funds grid below the main grid
-    compactHeader      = false, // collapse title + ts onto the toolbar row
   } = $props();
 
   // AG Grid valueFormatter wrappers — the canonical idiom every other
@@ -894,6 +893,7 @@
 
   async function pickFromTypeahead(inst) {
     typeaheadOpen = false;
+    exchInput = inst.e;   // auto-fill exchange from typeahead selection
     // If the picked symbol is an underlying (has CE/PE chains), open the
     // inline option picker instead of adding directly.
     const opened = await openOptionPicker(inst.s, inst.e);
@@ -1178,49 +1178,100 @@
       await loadActive();
     } catch (e) { error = e.message; }
   }
+
+  let listInputOpen = $state(false);
+
+  function openListInput() { listInputOpen = true; }
+  function closeListInput() { listInputOpen = false; newListName = ''; }
+  async function makeListAndCollapse() {
+    if (!newListName.trim()) return;
+    await makeList();
+    closeListInput();
+  }
 </script>
 
-<div class="algo-status-card p-5 pt-4" data-status="inactive">
-  {#if !compactHeader}
-    <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
-      <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">{title}</h1>
-      <span class="algo-ts">{refreshedAt || clientTimestamp()}</span>
-    </div>
-    <div class="border-b border-[rgba(251,191,36,0.25)] mb-3"></div>
-  {/if}
+<div class="algo-status-card p-3 pt-2.5" data-status="inactive">
 
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
   {/if}
 
   {#if enableWatchlists || enableSourceToggles || accountPicker}
-    <div class="flex flex-wrap items-center gap-1 mb-2">
+    <!-- Single combined toolbar: pills + add-symbol + account/source. -->
+    <div class="flex flex-wrap items-center gap-1 mb-1.5 relative">
       {#if enableWatchlists}
         {#each lists as l}
           {@const selected = activeIds.has(l.id)}
           {@const focused  = focusedListId === l.id}
           <button onclick={() => pickList(l.id)}
             title={selected ? 'Selected — click to deselect' : 'Click to include'}
-            class="px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded transition
+            class="px-2.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wider rounded transition
                    border {focused ? 'border-[#fbbf24]' : 'border-[rgba(251,191,36,0.3)]'}
                    {selected ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'bg-transparent text-[#c8d8f0]/40 hover:bg-[#fbbf24]/10 hover:text-[#fbbf24]/70'}">
             <span class="mr-1 text-[0.55rem]">{selected ? '✓' : '○'}</span>{l.name}
             <span class="ml-1 text-[0.55rem] text-[#7e97b8]">({l.item_count})</span>
             {#if l.is_default}<span class="ml-1 text-[0.5rem] text-[#4ade80]">★</span>{/if}
+            {#if focused && !l.is_default && lists.length > 1}
+              <span
+                role="button"
+                tabindex="0"
+                onclick={(e) => { e.stopPropagation(); dropList(l.id); }}
+                onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), dropList(l.id))}
+                class="ml-1 text-[0.6rem] text-red-300 hover:text-red-400 cursor-pointer">×</span>
+            {/if}
           </button>
         {/each}
-        <input bind:value={newListName}
-          onkeydown={(e) => e.key === 'Enter' && makeList()}
-          class="field-input text-[0.65rem] py-1 px-2 w-36" placeholder="New watchlist name" />
-        <button onclick={makeList} disabled={!newListName.trim()}
-          class="px-2 py-1 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 disabled:opacity-40">
-          New
-        </button>
-        {#if focusedListId != null && lists.find(l => l.id === focusedListId)?.is_default !== true && lists.length > 1}
-          <button onclick={() => dropList(focusedListId)}
-            class="px-2 py-1 text-[0.65rem] text-red-300 border border-red-400/40 rounded hover:bg-red-500/10">
-            Delete list
+        <!-- New-list: collapsed + button, expanded: input + Save -->
+        {#if listInputOpen}
+          <input bind:value={newListName}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') makeListAndCollapse();
+              else if (e.key === 'Escape') closeListInput();
+            }}
+            class="field-input text-[0.65rem] py-0.5 px-2 w-32" placeholder="List name" />
+          <button onclick={makeListAndCollapse} disabled={!newListName.trim()}
+            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 disabled:opacity-40">
+            Save
           </button>
+          <button onclick={closeListInput}
+            class="px-1.5 py-0.5 text-[0.65rem] text-[#7e97b8] border border-[#7e97b8]/30 rounded hover:bg-white/5">
+            ✕
+          </button>
+        {:else}
+          <button onclick={openListInput}
+            title="New watchlist"
+            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
+            +
+          </button>
+        {/if}
+        <!-- Add-symbol input + exchange selector + Add button — inline on same row. -->
+        <input bind:value={symInput}
+          oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
+          onfocus={() => typeaheadOpen = true}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
+              else addRow();
+            } else if (e.key === 'Escape') { typeaheadOpen = false; }
+          }}
+          class="field-input text-[0.65rem] py-0.5 px-2 flex-1 min-w-32"
+          placeholder="Add symbol — type 3+ chars" />
+        <select bind:value={exchInput} class="field-input text-[0.65rem] py-0.5 px-1 w-16">
+          <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>
+        </select>
+        <button onclick={addRow} disabled={!symInput.trim()}
+          class="btn-primary text-[0.65rem] py-0.5 px-2.5 disabled:opacity-50">Add</button>
+        {#if typeaheadOpen && typeahead.length}
+          <div class="absolute top-7 left-0 right-0 max-h-60 overflow-y-auto bg-[#0c1830] border border-[#fbbf24]/30 rounded shadow-lg z-10">
+            {#each typeahead as inst}
+              <button onclick={() => pickFromTypeahead(inst)}
+                class="block w-full text-left px-3 py-1.5 text-xs hover:bg-[#fbbf24]/10">
+                <span class="font-mono text-[#fbbf24]">{inst.s}</span>
+                <span class="text-[0.6rem] text-[#7e97b8] ml-2">{inst.e}</span>
+              </button>
+            {/each}
+          </div>
         {/if}
       {/if}
       <!-- Right-aligned cluster: account picker + source toggles. -->
@@ -1229,7 +1280,7 @@
           {#if accountPicker && availableAccounts.length > 0}
             <select bind:value={selectedAccount}
               title="Filter by broker account"
-              class="field-input text-[0.65rem] py-1 px-2 max-w-32">
+              class="field-input text-[0.65rem] py-0.5 px-2 max-w-32">
               <option value="all">All accounts</option>
               {#each availableAccounts as a}
                 <option value={a}>{a}</option>
@@ -1247,41 +1298,11 @@
   {/if}
 
   {#if enableWatchlists}
-    <!-- Add-symbol row -->
-    <div class="flex items-center gap-2 mb-2 relative">
-      <input bind:value={symInput}
-        oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
-        onfocus={() => typeaheadOpen = true}
-        onkeydown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
-            else addRow();
-          } else if (e.key === 'Escape') { typeaheadOpen = false; }
-        }}
-        class="field-input flex-1" placeholder="Add symbol to {lists.find(l => l.id === focusedListId)?.name ?? 'list'} — type 3+ chars" />
-      <select bind:value={exchInput} class="field-input w-24">
-        <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>
-      </select>
-      <button onclick={addRow} disabled={!symInput.trim()}
-        class="btn-primary text-[0.65rem] py-1 px-3 disabled:opacity-50">Add</button>
-      {#if typeaheadOpen && typeahead.length}
-        <div class="absolute top-10 left-0 right-32 max-h-60 overflow-y-auto bg-[#0c1830] border border-[#fbbf24]/30 rounded shadow-lg z-10">
-          {#each typeahead as inst}
-            <button onclick={() => pickFromTypeahead(inst)}
-              class="block w-full text-left px-3 py-1.5 text-xs hover:bg-[#fbbf24]/10">
-              <span class="font-mono text-[#fbbf24]">{inst.s}</span>
-              <span class="text-[0.6rem] text-[#7e97b8] ml-2">{inst.e}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-    </div>
 
     {#if optionPickerUnderlying}
       <!-- Option picker — inline row for CE/PE/Strike selection after
            the operator picks an underlying from the typeahead. -->
-      <div class="opt-picker flex flex-wrap items-center gap-1.5 mb-2 px-2 py-1.5
+      <div class="opt-picker flex flex-wrap items-center gap-1.5 mb-1.5 px-2 py-1
                   bg-[#0c1830] border border-[#fbbf24]/25 rounded">
         <!-- Underlying chip (read-only) -->
         <span class="font-mono text-[0.65rem] font-bold text-[#fbbf24]
@@ -1353,7 +1374,7 @@
          PerformancePage-driven /dashboard ("what's my cash" answers
          before "what's my P&L"). -->
     <div class="mp-section-label">Funds</div>
-    <div bind:this={fundsEl} class="ag-theme-algo funds-grid mb-3"></div>
+    <div bind:this={fundsEl} class="ag-theme-algo funds-grid mb-2"></div>
   {/if}
 
   {#if showSummary}
@@ -1361,7 +1382,7 @@
          holdings combined). Body filters by account picker; TOTAL
          pinned at the bottom. -->
     <div class="mp-section-label">Summary</div>
-    <div bind:this={summaryEl} class="ag-theme-algo summary-grid mb-3"></div>
+    <div bind:this={summaryEl} class="ag-theme-algo summary-grid mb-2"></div>
   {/if}
 
   {#if showSummary || showFunds}

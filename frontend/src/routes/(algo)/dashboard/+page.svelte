@@ -91,8 +91,7 @@
     allowOrders={true}
     accountPicker={true}
     showSummary={true}
-    showFunds={true}
-    compactHeader={true} />
+    showFunds={true} />
 {:else}
   <PnlAnalysis />
 {/if}
