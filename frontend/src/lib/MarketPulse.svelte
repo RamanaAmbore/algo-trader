@@ -1,6 +1,6 @@
 <script>
-  // Unified market-pulse component shared by /watchlist (default
-  // preset) and /dashboard (Phase 2 preset).
+  // Unified market-pulse component shared by /pulse (default preset)
+  // and /dashboard (Phase 2 preset).
   //
   // A single ag-Grid lists every symbol the operator is tracking,
   // with per-row source badges (W=watchlist, H=holding, P=position,

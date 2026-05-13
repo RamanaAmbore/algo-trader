@@ -74,7 +74,7 @@
   const _algoLinksAll = [
     // ── Monitor ──
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
-    { href: '/watchlist',        label: 'Watchlist', group: 'monitor' },
+    { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
