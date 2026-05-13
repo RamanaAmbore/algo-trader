@@ -432,6 +432,14 @@
       for (const r of holdings) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NSE';
+        if (lookup) {
+          const inst = lookup(sym);
+          if (inst?.u && String(inst.t || '').toUpperCase() !== 'EQ' &&
+              !underlyingInfos.has(inst.u)) {
+            const info = resolveUnderlying(inst.u, nearestFut);
+            if (info) underlyingInfos.set(inst.u, info);
+          }
+        }
         if (sym) contractKeys.add(`${exch}:${sym}`);
       }
 
@@ -478,9 +486,9 @@
   ));
 
   function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
-    if (!instCache) return { underlying: null, kind: null, strike: null, opt_type: null };
+    if (!instCache) return { underlying: null, kind: null, strike: null, opt_type: null, expiry: null };
     const inst = instCache(sym);
-    if (!inst) return { underlying: null, kind: null, strike: null, opt_type: null };
+    if (!inst) return { underlying: null, kind: null, strike: null, opt_type: null, expiry: null };
     const t = String(inst.t || '').toUpperCase();
     const k = inst.k != null ? Number(inst.k) : null;
     let optType = null;
@@ -488,7 +496,8 @@
     else if (/CE$/i.test(sym)) optType = 'CE';
     else if (/PE$/i.test(sym)) optType = 'PE';
     const kind = optType ? 'opt' : (t === 'FUT' ? 'fut' : (t === 'EQ' ? 'eq' : null));
-    return { underlying: inst.u || null, kind, strike: k, opt_type: optType };
+    const expiry = inst.x || null;
+    return { underlying: inst.u || null, kind, strike: k, opt_type: optType, expiry };
   }
 
   function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold) {
@@ -510,6 +519,7 @@
       if (row.kind       == null) row.kind       = p.kind;
       if (row.strike     == null) row.strike     = p.strike;
       if (row.opt_type   == null) row.opt_type   = p.opt_type;
+      if (row.expiry     == null) row.expiry     = p.expiry;
     }
 
     // 1. Watchlist (all selected lists).
@@ -839,6 +849,10 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
+      { field: 'expiry', headerName: 'Expiry', width: 80,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: 'ag-right-aligned-cell cell-muted',
+        valueFormatter: ({ value }) => value || '' },
     ]);
 
     grid = createGrid(gridEl, {
@@ -945,8 +959,12 @@
     let side = 'BUY';
     if (r.src?.p && r.qty_pos < 0) side = 'BUY';
     else if (r.src?.p && r.qty_pos > 0) side = 'SELL';
-    const rowAccts = r.accounts instanceof Set ? [...r.accounts] : [];
-    const preAccount = rowAccts.length === 1 ? rowAccts[0] : '';
+    // Use the row's own account field directly — each position/holding
+    // row carries one unmasked account id for admin sessions, so this
+    // is always correct. The Set+length=1 heuristic was unreliable when
+    // a single account appeared after async realAccounts resolution.
+    const isRealAcct = (a) => !!(a && !String(a).includes('#'));
+    const preAccount = isRealAcct(r.account) ? String(r.account) : '';
     openTicket({
       symbol:   r.tradingsymbol,
       exchange: r.exchange,

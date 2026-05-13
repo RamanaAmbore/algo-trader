@@ -78,12 +78,10 @@
   let selectedAccounts = $state([]);
   /** @type {string} Underlying name (e.g. NIFTY); '' = pick required */
   let selectedUnderlying = $state('');
-  /** @type {string} Expiry filter (YYYY-MM-DD); '' = all expiries.
-   *  When the underlying has options across multiple expiries, the
-   *  strategy endpoint rejects mixed-expiry baskets — so the picker
-   *  forces the operator to nominate one expiry. Auto-picked to the
-   *  nearest available expiry when the underlying changes. */
-  let selectedExpiry = $state('');
+  /** @type {string[]} Expiry filter (YYYY-MM-DD[]); empty = all expiries.
+   *  Multi-select — operator can view candidates from multiple expiries
+   *  simultaneously. The strategy endpoint now accepts cross-expiry baskets. */
+  let selectedExpiries = $state([]);
   /** @type {Record<string, boolean>} symbol → enabled flag */
   let enabledSymbols = $state({});
 
@@ -168,17 +166,18 @@
     return Array.from(set).sort();
   });
 
-  /** Auto-pick the first expiry when the underlying changes (and
-   *  drop the picked expiry if it disappears from the list). */
+  /** Drop any selected expiries that have disappeared from the list
+   *  (e.g. after switching underlying). Empty = all — no auto-pick. */
   $effect(() => {
     void selectedUnderlying;
     untrack(() => {
       const list = expiryChoicesForUnderlying;
       if (!list.length) {
-        if (selectedExpiry) selectedExpiry = '';
+        if (selectedExpiries.length) selectedExpiries = [];
         return;
       }
-      if (!list.includes(selectedExpiry)) selectedExpiry = list[0];
+      const still = selectedExpiries.filter(e => list.includes(e));
+      if (still.length !== selectedExpiries.length) selectedExpiries = still;
     });
   });
 
@@ -201,14 +200,11 @@
     const out = [];
     // Source filter — when a sim is active, work off the sim book only;
     // otherwise the live book. Drafts are always visible regardless.
-    // Expiry filter — when an expiry is selected, only legs whose
-    // contract expires on that date appear (strategy endpoint
-    // rejects mixed-expiry baskets).
     const wantedSource = simActive ? 'sim' : 'live';
     const matchExpiry = /** @param {string} sym */ (sym) => {
-      if (!selectedExpiry) return true;
+      if (!selectedExpiries.length) return true;
       const inst = getInstrument(String(sym || '').toUpperCase());
-      return inst?.x === selectedExpiry;
+      return selectedExpiries.includes(inst?.x);
     };
     for (const p of positions) {
       if (p.source !== wantedSource) continue;
@@ -1361,7 +1357,7 @@
       sessionStorage.setItem(_CACHE_KEY, JSON.stringify({
         ts: Date.now(),
         positions, strategy, drafts,
-        selectedAccounts, selectedUnderlying, selectedExpiry,
+        selectedAccounts, selectedUnderlying, selectedExpiries,
         enabledSymbols,
       }));
     } catch (_) { /* quota / private mode — silent */ }
@@ -1380,7 +1376,7 @@
       if (Array.isArray(d.drafts))     drafts    = d.drafts;
       if (Array.isArray(d.selectedAccounts)) selectedAccounts = d.selectedAccounts;
       if (typeof d.selectedUnderlying === 'string') selectedUnderlying = d.selectedUnderlying;
-      if (typeof d.selectedExpiry === 'string')      selectedExpiry    = d.selectedExpiry;
+      if (Array.isArray(d.selectedExpiries))          selectedExpiries  = d.selectedExpiries;
       if (d.enabledSymbols && typeof d.enabledSymbols === 'object') {
         enabledSymbols = d.enabledSymbols;
       }
@@ -1522,10 +1518,10 @@
   </div>
   <div class="opt-field">
     <label class="field-label" for="opt-exp">Expiry</label>
-    <Select id="opt-exp"
-      bind:value={selectedExpiry}
+    <MultiSelect id="opt-exp"
+      bind:value={selectedExpiries}
       options={expiryChoicesForUnderlying.map(x => ({ value: x, label: x }))}
-      placeholder={expiryChoicesForUnderlying.length ? 'Pick expiry' : '—'} />
+      placeholder={expiryChoicesForUnderlying.length ? 'All expiries' : '—'} />
   </div>
   <!-- OChain launcher — single toggle that opens / closes the chain
        picker. Per-row +/− inside the picker decides each leg's side
@@ -1552,8 +1548,8 @@
               // operator analysing BANKNIFTY / GOLDM had to pick the
               // underlying again inside the panel.
               if (!showAddPanel) {
-                if (selectedUnderlying) chainUnderlying = selectedUnderlying;
-                if (selectedExpiry)     chainExpiry     = selectedExpiry;
+                if (selectedUnderlying)          chainUnderlying = selectedUnderlying;
+                if (selectedExpiries.length > 0) chainExpiry     = selectedExpiries[0];
               }
               showAddPanel = !showAddPanel;
               // Also open the 3-tab shell on the Chain tab so the

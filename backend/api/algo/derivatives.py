@@ -526,12 +526,21 @@ def payoff_curve(*, S: float, K: float, T_years: float, r: float,
 def multileg_payoff_curve(legs: list[dict], *, S: float,
                           r: float = DEFAULT_RISK_FREE,
                           span_pct: float = 0.10,
-                          points: int = 51) -> list[dict]:
+                          points: int = 51,
+                          eval_T: Optional[float] = None) -> list[dict]:
     """
     Aggregate `(spot, today_value, expiry_value)` curve summed across all
     legs. `today_value` uses each leg's own (T_years, sigma); `expiry_value`
-    is intrinsic at the (shared) expiry. Both are net of cumulative entry
-    cost, so they read as total position P&L.
+    evaluates at `eval_T` (the near-leg expiry for calendar/diagonal spreads).
+
+    When `eval_T` is None all legs use intrinsic at T=0 (single-expiry
+    behaviour, unchanged). When `eval_T` is set and a leg's T_years > eval_T,
+    the far leg is re-priced with its remaining time (T_years - eval_T) via
+    Black-Scholes rather than intrinsic, which is the correct P&L at the
+    near-leg's expiry date for a calendar spread.
+
+    Both curves are net of cumulative entry cost, so they read as total
+    position P&L.
     """
     if S <= 0 or not legs or points < 2:
         return []
@@ -561,8 +570,15 @@ def multileg_payoff_curve(legs: list[dict], *, S: float,
             T_yrs = float(l.get("T_years") or 0)
             sig   = float(l.get("sigma") or DEFAULT_IV)
             today_sum  += black_scholes(s_i, K, T_yrs, r, sig, opt) * qty
-            intrinsic   = max(0.0, s_i - K) if opt == "CE" else max(0.0, K - s_i)
-            expiry_sum += intrinsic * qty
+            # Expiry value: when eval_T is set and this leg has remaining
+            # time after the near expiry, re-price via BS with T_remaining
+            # so the far leg's time value is captured (calendar spread).
+            if eval_T is not None and T_yrs > eval_T:
+                T_remaining = T_yrs - eval_T
+                expiry_sum += black_scholes(s_i, K, T_remaining, r, sig, opt) * qty
+            else:
+                intrinsic   = max(0.0, s_i - K) if opt == "CE" else max(0.0, K - s_i)
+                expiry_sum += intrinsic * qty
         out.append({
             "spot":         round(s_i, 4),
             "today_value":  round(today_sum  - total_cost, 2),

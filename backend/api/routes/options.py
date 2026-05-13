@@ -1139,12 +1139,8 @@ class OptionsController(Controller):
                 status_code=400,
                 detail=f"All legs must share an underlying; got {sorted(underlyings)}"
             )
-        if len(expiries) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"All legs must share an expiry (v1 doesn't support "
-                        f"calendar / diagonal spreads); got {sorted(expiries)}")
-            )
+        # Mixed expiries are supported — near-expiry evaluation is used for
+        # the payoff curve and the far leg is re-priced with its remaining T.
         underlying = next(iter(underlyings))
 
         quote_resp: dict = {}
@@ -1191,7 +1187,21 @@ class OptionsController(Controller):
             expiry_hint=expiry_hint)
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
-        T_yrs_shared = 0.0
+        # Pre-compute per-option T_years list so eval_T (near expiry) and
+        # T_yrs_shared (far expiry for POP / EV) are deterministic and not
+        # subject to set-iteration order.
+        _option_T_list = [
+            days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip())))) / 365.0
+            for leg in data.legs
+            if parse_tradingsymbol(leg.symbol.upper().strip()) and
+               parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
+        ]
+        # eval_T — the payoff curve's "expiry" evaluation point (near leg).
+        # Far legs are re-priced with remaining T via BS (not intrinsic).
+        # T_yrs_shared — far horizon used for POP / EV / span_pct.
+        eval_T: float      = min(_option_T_list) if _option_T_list else 0.0
+        T_yrs_shared: float = max(_option_T_list) if _option_T_list else 0.0
+
         sigma_weight_num = 0.0
         sigma_weight_den = 0.0
         leg_details: list[dict] = []
@@ -1202,7 +1212,6 @@ class OptionsController(Controller):
             # the parser's last-Thursday inference.
             leg_expiry = date.fromisoformat(_leg_expiry_iso(leg, parsed))
             T_yrs = days_to_expiry(leg_expiry) / 365.0
-            T_yrs_shared = T_yrs
             qty   = int(leg.qty or 0)
             if qty == 0:
                 raise HTTPException(status_code=400,
@@ -1362,6 +1371,7 @@ class OptionsController(Controller):
             resolved_legs, S=S,
             span_pct=span_pct_resolved,
             points=pts,
+            eval_T=eval_T,
         )
         # Time-slice intermediates parallel to `curve` (same spot grid).
         # Empty list when caller passes time_slices=0 (default).
@@ -1386,11 +1396,10 @@ class OptionsController(Controller):
                       if abs(net_cost) > 0 else None)
         agg_rr = risk_reward_ratio(max_p, max_l)
 
-        # Shared expiry — the v1 mixed-expiry guard above ensures every
-        # leg matches, so the first one is representative. Use the
-        # operator-supplied expiry (instruments cache) over the
-        # parser's last-Thursday inference.
-        shared_expiry_iso = next(iter(expiries))
+        # Near expiry — the payoff curve evaluates at eval_T (the earliest
+        # leg's expiry). Report that date as the strategy's primary expiry.
+        # For single-expiry baskets this is the only element in `expiries`.
+        shared_expiry_iso = min(expiries)
         shared_expiry     = date.fromisoformat(shared_expiry_iso)
         return StrategyResponse(
             underlying=underlying,

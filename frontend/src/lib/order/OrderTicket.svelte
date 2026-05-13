@@ -367,7 +367,10 @@
   //      flips symbol / picker reloads), reset.
   $effect(() => {
     const propPick = _isRealAcct(account) ? String(account) : '';
-    if (!_account && propPick && _accounts.includes(propPick)) {
+    // Seed from prop immediately even if _accounts hasn't resolved yet —
+    // the row already carries the correct unmasked account_id and we
+    // should trust it rather than waiting for the self-fetch to land.
+    if (!_account && propPick) {
       _account = propPick;
       return;
     }
@@ -376,7 +379,9 @@
       return;
     }
     if (_account && _accounts.length && !_accounts.includes(_account)) {
-      _account = _accounts.length === 1 ? _accounts[0] : '';
+      // Re-check against propPick first so a late-arriving list that
+      // confirms the prop doesn't clear it.
+      _account = propPick || (_accounts.length === 1 ? _accounts[0] : '');
     }
   });
 
