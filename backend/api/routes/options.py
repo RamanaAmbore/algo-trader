@@ -425,10 +425,52 @@ def _prev_close_from_quote(q: dict) -> float | None:
         return None
 
 
-def _resolve_spot(underlying: str, override: Optional[float],
-                  *, fallback: Optional[float] = None,
-                  expiry_hint: Optional[date] = None
-                  ) -> tuple[float, str, Optional[float]]:
+async def _lookup_mcx_future(underlying: str,
+                             expiry_hint: date) -> Optional[str]:
+    """Return the MCX FUT tradingsymbol for *underlying* whose expiry
+    falls in the same month/year as *expiry_hint*, falling back to the
+    nearest available future when no same-month contract is found.
+
+    Uses the shared instruments cache (24h TTL, warmed at startup) so
+    the returned tradingsymbol matches Kite's actual format (e.g.
+    ``CRUDEOIL26MAY19FUT``) rather than the constructed approximation
+    that ``futures_symbol_for_expiry`` produces."""
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return None
+    target_u = underlying.upper()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "MCX"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda i: i.x or "")
+    # Prefer same-month/year; else earliest expiry (near-month fallback).
+    for inst in candidates:
+        try:
+            exp = date.fromisoformat(inst.x[:10])
+            if exp.year == expiry_hint.year and exp.month == expiry_hint.month:
+                return inst.s
+        except (TypeError, ValueError):
+            pass
+    return candidates[0].s
+
+
+async def _resolve_spot(underlying: str, override: Optional[float],
+                        *, fallback: Optional[float] = None,
+                        expiry_hint: Optional[date] = None
+                        ) -> tuple[float, str, Optional[float]]:
     """Spot for the underlying. Returns `(spot, source, prev_close)`
     so the UI can flag stale data and color the spot value against
     yesterday's close. Sources: 'override' | 'sim' | 'live' | 'close'
@@ -483,14 +525,35 @@ def _resolve_spot(underlying: str, override: Optional[float],
 
     # 4. Futures fallback. For commodities this is the canonical path;
     #    for indices/stocks it's a defensive secondary when the spot
-    #    ticker miss-fires. Try MCX first for commodities, NFO first
-    #    otherwise — saves a wasted round-trip in the common case.
+    #    ticker miss-fires.
     #
-    #    The matched-month futures may already have rolled off — e.g.
-    #    a CRUDEOIL option expiring April 28 uses MAY futures as its
-    #    underlying because April futures expired ~April 19. So we
-    #    walk forward up to 3 months: matched month → next → next+1,
+    #    For MCX commodities, prefer an instruments-cache lookup over
+    #    the constructed symbol: Kite's actual tradingsymbols sometimes
+    #    include a day-of-month suffix (e.g. CRUDEOIL26MAY19FUT) that
+    #    ``futures_symbol_for_expiry`` cannot predict.  We match on the
+    #    option's contract month/year; if nothing matches we accept the
+    #    near-month future returned by the cache.  Only on a full cache
+    #    miss do we fall through to the walk-forward below.
+    if is_commodity and expiry_hint is not None:
+        resolved_sym = await _lookup_mcx_future(underlying, expiry_hint)
+        if resolved_sym:
+            full_key = f"MCX:{resolved_sym}"
+            try:
+                resp = broker.quote([full_key]) or {}
+                quote_dict = resp.get(full_key) or {}
+                px, _src = _ltp_from_quote(quote_dict)
+                if px is not None:
+                    return (px, "futures", _prev_close_from_quote(quote_dict))
+            except Exception as e:
+                logger.warning(
+                    f"options MCX-cache spot for {underlying} "
+                    f"({full_key}) failed: {e}"
+                )
+
+    #    Walk forward up to 3 months: matched month → next → next+1,
     #    returning the first quote that comes back populated.
+    #    (For MCX commodities this block is only reached when the
+    #    instruments cache is cold or the quote call above failed.)
     if expiry_hint is not None:
         exchanges = ("MCX", "NFO") if is_commodity else ("NFO", "MCX")
         from datetime import timedelta
@@ -694,7 +757,7 @@ class OptionsController(Controller):
         # matching monthly futures contract for commodities (MCX
         # underlyings have no NSE spot ticker — index lookup misses
         # silently and we'd otherwise anchor on the strike).
-        S, spot_src, spot_prev_close = _resolve_spot(
+        S, spot_src, spot_prev_close = await _resolve_spot(
             parsed["underlying"], spot,
             fallback=parsed["strike"],
             expiry_hint=parsed["expiry"])
@@ -865,7 +928,7 @@ class OptionsController(Controller):
         # null (suppresses the ATM highlight + spot pill); we don't
         # want to anchor the UI on a synthetic median-strike value
         # here.
-        px, src, prev = _resolve_spot(und, None, expiry_hint=expiry_d)
+        px, src, prev = await _resolve_spot(und, None, expiry_hint=expiry_d)
         return SpotResponse(
             underlying=und,
             spot=px,
@@ -1181,7 +1244,7 @@ class OptionsController(Controller):
             expiry_hint = date.fromisoformat(
                 _leg_expiry_iso(data.legs[0], first_parsed)
             )
-        S, _spot_src, spot_prev_close = _resolve_spot(
+        S, _spot_src, spot_prev_close = await _resolve_spot(
             underlying, data.spot,
             fallback=median_strike,
             expiry_hint=expiry_hint)
