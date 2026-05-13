@@ -37,6 +37,10 @@ MARKETS_DEFAULT: list[tuple[str, str]] = [
     ("CRUDEOIL",    "MCX"),
     ("NATURALGAS",  "MCX"),
     ("COPPER",      "MCX"),
+
+    # CDS currency futures — stored as bare currency pair name; the
+    # quote endpoint resolves to the near-month future at fetch time.
+    ("USDINR",      "CDS"),
 ]
 
 

@@ -23,6 +23,7 @@
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
+    fetchMovers,
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
@@ -95,6 +96,12 @@
   // or P&L. Both ON (default) is the existing combined view.
   let showPositions = $state(true);
   let showHoldings  = $state(true);
+
+  // Movers — top-% movers from /watchlist/movers. Polled every 30 s.
+  // Failure is non-fatal: the rest of the page keeps working.
+  let movers     = $state(/** @type {any[]} */ ([]));
+  let showMovers = $state(true);
+  let stopMoversPoll;
 
   // Account picker state (dashboard mode). `selectedAccount === 'all'`
   // shows everything; a specific account id filters the positions /
@@ -172,11 +179,13 @@
     }
     await loadPulse();
     if (showFunds) await loadFunds();
+    await loadMovers();
     stopPoll      = visibleInterval(async () => { await loadQuotes(); }, 5000);
     stopPulsePoll = visibleInterval(async () => {
       await loadPulse();
       if (showFunds) await loadFunds();
     }, 10000);
+    stopMoversPoll = visibleInterval(loadMovers, 30000);
   });
 
   async function loadFunds() {
@@ -184,6 +193,15 @@
       const r = await fetchFunds();
       funds = (r?.rows || []).slice();
     } catch (_) { /* nothing fatal */ }
+  }
+
+  async function loadMovers() {
+    try {
+      const r = await fetchMovers();
+      movers = (r?.movers || []).slice();
+    } catch (e) {
+      console.warn('[MarketPulse] movers fetch failed:', e?.message || e);
+    }
   }
 
   $effect(() => {
@@ -243,7 +261,7 @@
   });
 
   onDestroy(() => {
-    stopPoll?.(); stopPulsePoll?.();
+    stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.();
     grid?.destroy?.();
     summaryGrid?.destroy?.();
     fundsGrid?.destroy?.();
@@ -353,6 +371,7 @@
     'ALUMINIUM', 'ALUMINI', 'NICKEL',
     'MENTHAOIL', 'COTTON', 'CASTORSEED', 'KAPAS', 'CARDAMOM',
   ]);
+  const CDS_CURRENCIES = new Set(['USDINR']);
 
   function resolveUnderlying(name, findNearestFut) {
     const n = String(name || '').toUpperCase();
@@ -368,6 +387,19 @@
       };
     }
     if (MCX_COMMODITIES.has(n)) {
+      const fut = findNearestFut?.(n);
+      if (fut?.s && fut?.e) {
+        return {
+          tradingsymbol: fut.s,
+          exchange: fut.e,
+          quoteKey: `${fut.e}:${fut.s}`,
+          underlying_group: n,
+          kind: 'fut',
+        };
+      }
+      return null;
+    }
+    if (CDS_CURRENCIES.has(n)) {
       const fut = findNearestFut?.(n);
       if (fut?.s && fut?.e) {
         return {
@@ -482,7 +514,7 @@
 
   const unifiedRows = $derived(buildUnified(
     activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
-    showPositions, showHoldings,
+    showPositions, showHoldings, movers, showMovers,
   ));
 
   function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
@@ -500,13 +532,13 @@
     return { underlying: inst.u || null, kind, strike: k, opt_type: optType, expiry };
   }
 
-  function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold) {
+  function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers) {
     const uq = pq?.underlyings || {};
     const cq = pq?.contracts   || {};
     const byKey = /** @type {Record<string, any>} */ ({});
     const get = (key) => byKey[key] || (byKey[key] = {
       key,
-      src: { w:false, h:false, p:false, u:false },
+      src: { w:false, h:false, p:false, u:false, m:false },
       qty_pos: 0, qty_hold: 0,
       pnl: null, day_pnl: null,
       _avg_num: 0,
@@ -622,7 +654,35 @@
       if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
     }
 
-    // 5. Watched indices: re-tag tradingsymbol → underlying so the
+    // 5. Movers — badge any symbol that appears in the movers list; if
+    //    it's not already in the grid, add it as a new row.
+    const moverSet = new Set((moverRows || []).map(m => String(m.tradingsymbol || '').toUpperCase()));
+    for (const m of (moverRows || [])) {
+      const sym = String(m.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const row = get(sym);
+      row.src.m = true;
+      row.exchange      = row.exchange || m.exchange || 'NSE';
+      row.tradingsymbol = sym;
+      // Seed price fields only if not already populated by a higher-priority source.
+      if (row.ltp == null && m.last_price != null)    row.ltp        = m.last_price;
+      if (row.change_pct == null && m.change_pct != null) row.change_pct = m.change_pct;
+      if (m.previous_close != null && row.change == null && row.ltp != null)
+        row.change = row.ltp - m.previous_close;
+      // Track sticky flag for title tooltip in the badge.
+      row._mover_sticky    = m.sticky ?? false;
+      row._mover_change_pct = m.change_pct ?? null;
+    }
+    // When showMovers is off, strip rows that are mover-only (no other source).
+    if (!includeMovers) {
+      for (const [k, row] of Object.entries(byKey)) {
+        if (row.src.m && !row.src.w && !row.src.h && !row.src.p && !row.src.u) {
+          delete byKey[k];
+        }
+      }
+    }
+
+    // 6. Watched indices: re-tag tradingsymbol → underlying so the
     //    sort groups them with their derivatives.
     const INDEX_TO_UNDERLYING = {
       'NIFTY 50':         'NIFTY',
@@ -786,6 +846,14 @@
     }
     if (row.src?.u) {
       badges.push(`<span class="sym-badge badge-u" title="Option underlying">U</span>`);
+    }
+    if (row.src?.m) {
+      const pct = row._mover_change_pct;
+      const dir = pct != null && pct >= 0 ? 'pos' : 'neg';
+      const arrow = pct != null && pct >= 0 ? '↑' : '↓';
+      const sticky = row._mover_sticky ? ' (sticky)' : '';
+      const label = pct != null ? `${pct >= 0 ? '+' : ''}${Number(pct).toFixed(2)}%` : '';
+      badges.push(`<span class="sym-badge badge-m badge-m-${dir}" title="Top mover ${label}${sticky}">M${arrow}</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
     const removeBtn = (row.src?.w && row.watchlist_item_id != null)
@@ -1057,6 +1125,14 @@
                        : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#4ade80]/70'}">
               H · Holdings
             </button>
+            <button onclick={() => showMovers = !showMovers}
+              title={showMovers ? 'Hide top movers' : 'Show top movers'}
+              class="px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wider rounded border transition
+                     {showMovers
+                       ? 'bg-[#f87171]/20 text-[#f87171] border-[#f87171]/40'
+                       : 'bg-transparent text-[#c8d8f0]/40 border-[#c8d8f0]/20 hover:text-[#f87171]/70'}">
+              M · Movers
+            </button>
           {/if}
         </div>
       {/if}
@@ -1160,6 +1236,8 @@
   :global(.badge-h) { color: #4ade80; background: rgba(74,222,128,0.18); }
   :global(.badge-w) { color: #fbbf24; background: rgba(251,191,36,0.18); }
   :global(.badge-u) { color: #c4b5fd; background: rgba(196,181,253,0.18); }
+  :global(.badge-m-pos) { color: #4ade80; background: rgba(74,222,128,0.18); }
+  :global(.badge-m-neg) { color: #f87171; background: rgba(248,113,113,0.18); }
 
   /* Inline remove-from-watchlist button. */
   :global(.sym-remove) {

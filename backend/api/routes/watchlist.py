@@ -116,6 +116,22 @@ class WatchlistQuotes(msgspec.Struct):
     items: list[WatchlistQuote]
 
 
+class MoverRow(msgspec.Struct):
+    tradingsymbol: str
+    exchange: str
+    last_price: float
+    previous_close: float
+    change_pct: float
+    peak_pct: float
+    sticky: bool   # True iff abs(change_pct) currently < threshold but was >= threshold earlier today
+
+
+class MoversResponse(msgspec.Struct):
+    movers: list[MoverRow]
+    threshold_pct: float
+    session_date: str   # ISO date "2026-05-13" — when the sticky set last reset
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -126,6 +142,16 @@ class WatchlistQuotes(msgspec.Struct):
 # across multiple polls from the same UI session.
 _QUOTE_CACHE: dict[int, tuple[float, WatchlistQuotes]] = {}
 _QUOTE_TTL_SECONDS = 5.0
+
+
+MOVER_THRESHOLD_PCT: float = 5.0
+
+# ---------------------------------------------------------------------------
+# Session-sticky movers state
+# ---------------------------------------------------------------------------
+
+_session_movers: dict[str, dict] = {}
+_session_date: Optional[str] = None  # ISO date string — rolls over at IST midnight
 
 
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
@@ -158,6 +184,35 @@ async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     return candidates[0].s
 
 
+async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
+    """Map a bare CDS currency pair name (e.g. 'USDINR') to the nearest-month
+    future tradingsymbol. Mirrors _resolve_mcx_commodity for the CDS exchange.
+    Returns None when no CDS FUT is found (cache cold or broker fetch failed)."""
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                   ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return None
+    target_u = currency_name.upper()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "CDS"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x)
+    ]
+    if not candidates:
+        return None
+    # Earliest expiry first — that's the near-month future.
+    candidates.sort(key=lambda i: i.x or "")
+    return candidates[0].s
+
+
 async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     """Returns (broker_key, quote_symbol). MCX bare commodity names get
     resolved to the near-month future; everything else passes through."""
@@ -168,6 +223,12 @@ async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
         resolved = await _resolve_mcx_commodity(sym)
         if resolved:
             return f"MCX:{resolved}", resolved
+    # CDS currency pair names are short + uppercase + no digits.
+    # Real futures look like USDINR25MAYFUT.
+    if exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+        resolved = await _resolve_cds_currency(sym)
+        if resolved:
+            return f"CDS:{resolved}", resolved
     return f"{exch}:{sym}", sym
 
 
@@ -507,6 +568,129 @@ class WatchlistController(Controller):
             await session.commit()
         logger.info(f"Watchlist: deleted id={wl_id} by {username!r}")
         return {"detail": f"Watchlist {wl_id} deleted"}
+
+    # ── Movers ────────────────────────────────────────────────────────
+
+    @get("/movers")
+    async def get_movers(self) -> MoversResponse:
+        """Session-sticky movers: underlyings that have moved ≥5% intraday.
+        Once a name crosses the threshold it stays in the result for the rest
+        of the IST calendar day. One cached broker.quote() batch per 30 s."""
+        import asyncio
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
+        from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
+        from backend.shared.brokers.registry import get_price_broker
+
+        global _session_movers, _session_date
+
+        # Session rollover at IST midnight.
+        ist_today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+        if _session_date != ist_today:
+            _session_movers = {}
+            _session_date = ist_today
+
+        # Build universe: underlyings that have at least one CE/PE row.
+        try:
+            resp = await get_or_fetch("instruments", _fetch_instruments,
+                                      ttl_seconds=_INST_TTL)
+            all_items = resp.items if resp else []
+        except Exception:
+            all_items = []
+
+        # Collect unique underlyings with options chains.
+        underlyings_with_opts: set[str] = set()
+        for inst in all_items:
+            if inst.t in ("CE", "PE") and inst.u:
+                underlyings_with_opts.add(inst.u.upper())
+
+        if not underlyings_with_opts:
+            return MoversResponse(
+                movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+            )
+
+        # Build Kite quote keys. MCX commodities have no NSE spot — skip them
+        # (their "underlying" is the futures contract itself; no option chain
+        # in the traditional sense for volatility movers).
+        key_to_underlying: dict[str, str] = {}
+        for name in underlyings_with_opts:
+            if is_mcx_underlying(name):
+                continue
+            key = underlying_ltp_key(name)
+            key_to_underlying[key] = name
+
+        # Cached 30 s quote batch for the movers universe.
+        _MOVERS_QUOTE_TTL = 30
+
+        async def _fetch_movers_quotes() -> dict:
+            keys = list(key_to_underlying.keys())
+            if not keys:
+                return {}
+            try:
+                broker = get_price_broker()
+                return await asyncio.to_thread(broker.quote, keys) or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Movers quote fetch failed: {exc}")
+                return {}
+
+        from backend.api.cache import get_or_fetch as _gof
+        from backend.shared.helpers.utils import get_nearest_time
+        cache_key = f"movers_quotes_{get_nearest_time(_MOVERS_QUOTE_TTL)}"
+        quote_data: dict = await _gof(cache_key, _fetch_movers_quotes,
+                                      ttl_seconds=_MOVERS_QUOTE_TTL)
+
+        # Compute change_pct for every underlying; update sticky state.
+        for kite_key, underlying in key_to_underlying.items():
+            q = quote_data.get(kite_key) or {}
+            ltp = float(q.get("last_price") or 0.0)
+            ohlc = q.get("ohlc") or {}
+            prev_close = float(ohlc.get("close") or 0.0)
+            if ltp == 0.0 or prev_close == 0.0:
+                # Update last_price/last_pct if already sticky.
+                if underlying in _session_movers:
+                    if ltp:
+                        _session_movers[underlying]["last_price"] = ltp
+                continue
+            change_pct = (ltp - prev_close) / prev_close * 100.0
+
+            if underlying in _session_movers:
+                entry = _session_movers[underlying]
+                entry["last_pct"] = change_pct
+                entry["last_price"] = ltp
+                entry["previous_close"] = prev_close
+                if abs(change_pct) > abs(entry["peak_pct"]):
+                    entry["peak_pct"] = change_pct
+            elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
+                _session_movers[underlying] = {
+                    "first_seen_at": datetime.now(timezone.utc).isoformat(),
+                    "peak_pct": change_pct,
+                    "last_pct": change_pct,
+                    "last_price": ltp,
+                    "previous_close": prev_close,
+                    "exchange": "NSE",  # all non-MCX underlyings resolve via NSE
+                }
+
+        rows: list[MoverRow] = []
+        for underlying, entry in _session_movers.items():
+            change_pct = entry["last_pct"]
+            rows.append(MoverRow(
+                tradingsymbol=underlying,
+                exchange=entry["exchange"],
+                last_price=entry["last_price"],
+                previous_close=entry["previous_close"],
+                change_pct=change_pct,
+                peak_pct=entry["peak_pct"],
+                sticky=(abs(change_pct) < MOVER_THRESHOLD_PCT),
+            ))
+
+        rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+        return MoversResponse(
+            movers=rows,
+            threshold_pct=MOVER_THRESHOLD_PCT,
+            session_date=ist_today,
+        )
 
     # ── Items ─────────────────────────────────────────────────────────
 
