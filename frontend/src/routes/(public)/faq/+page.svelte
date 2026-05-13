@@ -81,10 +81,9 @@
 
   let open = -1;
 
-  /** @type {any} */
-  const win = window;
-
   onMount(async () => {
+    /** @type {any} */
+    const win = window;
     // Dynamically load mermaid — no npm package needed, CDN via script tag
     if (!win.mermaid) {
       await new Promise((resolve, reject) => {

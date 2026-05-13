@@ -4,38 +4,12 @@
   // ticket, or basket from a dedicated workspace. LogPanel below shows
   // command history + agent / order / system streams.
 
-  import { onMount, onDestroy } from 'svelte';
-  import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
+  import { clientTimestamp } from '$lib/stores';
+  import InfoHint        from '$lib/InfoHint.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
 
-  let logLines = $state(/** @type {any[]} */ ([]));
-  let logTab   = $state('terminal');
-  let logTeardown;
-
-  function authHeaders() {
-    const token = $authStore.token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
-  async function loadSystemLog(n = 200) {
-    try {
-      const res = await fetch(`/api/admin/logs?n=${n}`, { headers: authHeaders() });
-      const d = await res.json().catch(() => ({}));
-      if (res.ok) logLines = d.lines || [];
-    } catch (_) { /* ignore */ }
-  }
-
-  function loadCurrentLog() {
-    // 'order' tab is now self-fetching via UnifiedLog in LogPanel.
-    if (logTab === 'system') loadSystemLog();
-  }
-
-  onMount(() => {
-    loadCurrentLog();
-    logTeardown = visibleInterval(loadCurrentLog, 30000);
-  });
-  onDestroy(() => { logTeardown?.(); });
+  let logTab = $state('terminal');
 </script>
 
 <svelte:head><title>Terminal | RamboQuant Analytics</title></svelte:head>
@@ -43,6 +17,7 @@
 <div class="flex flex-col h-[calc(100vh-8rem)]">
   <div class="page-header">
     <h1 class="page-title-chip">Terminal</h1>
+    <InfoHint popup text="Order workspace: type commands (<code>buy ZG#### NIFTY25APRFUT 50 limit 22000</code>), use the Ticket form, or build a basket. Tokenized autocomplete drives the Command tab." />
     <span class="algo-ts">{clientTimestamp()}</span>
   </div>
 

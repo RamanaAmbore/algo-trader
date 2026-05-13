@@ -1,20 +1,9 @@
 <script>
   // Options Analytics dashboard (/admin/options).
   //
-  // Distinct from the regular tick-chart pages (/admin/simulator,
-  // /admin/paper) — those are tick-by-tick price monitors. THIS page is
-  // an options-research workspace: payoff diagram, Greeks, theoretical-
-  // vs-market discrepancy, risk metrics, POP, historical price chart.
-  //
-  // Four input modes:
-  //   live          — pick a symbol from broker positions
-  //   sim           — pick from active simulator positions
-  //   hypothetical  — type any option symbol to dry-analyse pre-trade
-  //   strategy      — combine multiple legs (vertical, iron condor, …)
-  //
-  // The analytics endpoint returns everything in one round-trip; this
-  // page polls every 5 s while the symbol is set so Greeks + IV + LTP
-  // stay current. Historical chart fetches once on symbol change.
+  // Multi-leg options analytics workspace; auto-detects live vs sim from
+  // `/api/simulator/status`. Payoff diagram, Greeks, risk metrics, POP,
+  // EV. Strategy analytics auto-refreshes whenever the leg set changes.
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
@@ -2596,10 +2585,6 @@
     display: flex;
     flex-direction: column;
   }
-  .opt-historical {
-    margin-top: 0.3rem;
-  }
-
   /* Leg builder — compact monospace grid mirroring the simulator's
      custom-positions panel so the two read as siblings. */
   .leg-grid {

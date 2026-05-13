@@ -1,11 +1,11 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, getContext } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import MarketPulse from '$lib/MarketPulse.svelte';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
-  import { clientTimestamp, authStore } from '$lib/stores';
-  import { fetchPaperStatus } from '$lib/api';
+  import InfoHint from '$lib/InfoHint.svelte';
+  import { clientTimestamp } from '$lib/stores';
 
   // ── Tab state — driven by ?tab= query param ────────────────────────
   /** @type {'performance' | 'pnl'} */
@@ -28,18 +28,13 @@
     goto(url.pathname + (url.search || ''), { replaceState: true, noScroll: true });
   }
 
-  // ── Demo banner ────────────────────────────────────────────────────
-  let paperBranch    = $state(/** @type {string|undefined} */ (undefined));
+  // ── Demo banner — sourced from the layout's shared context ─────────
+  const algoStatus = getContext('algoStatus');
+  const isDemo = $derived(algoStatus.isDemo);
   let bannerDismissed = $state(false);
 
-  const isDemo = $derived(!$authStore.user && paperBranch === 'main');
-
-  onMount(async () => {
+  onMount(() => {
     bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
-    try {
-      const s = await fetchPaperStatus();
-      paperBranch = s?.branch;
-    } catch (_) { /* treat as non-demo */ }
   });
 
   function dismissBanner() {
@@ -65,6 +60,7 @@
 <!-- Page header -->
 <div class="page-header">
   <h1 class="algo-page-title">Dashboard</h1>
+  <InfoHint popup text="Admin dashboard: real Kite holdings, positions, funds (account-scoped). The P&amp;L tab shows realised vs unrealised breakdown by symbol." />
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 

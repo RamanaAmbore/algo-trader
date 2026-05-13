@@ -1,7 +1,7 @@
 <script>
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, setContext } from 'svelte';
   import { authStore, visibleInterval, executionMode } from '$lib/stores';
   import {
     fetchSimStatus, fetchPaperStatus,
@@ -32,6 +32,12 @@
   const isDemo = $derived(
     !$authStore.user && paperStatus?.branch === 'main'
   );
+
+  setContext('algoStatus', {
+    get paperStatus() { return paperStatus; },
+    get isDemo()      { return isDemo; },
+    get branch()      { return paperStatus?.branch; },
+  });
 
   function isActive(/** @type {string} */ href) {
     // Longest-match semantics so sub-pages (e.g. /admin/tokens) don't light up

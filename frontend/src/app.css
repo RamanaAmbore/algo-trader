@@ -780,4 +780,10 @@
     color: #c0392b;
     border: 1px solid #e8a3a3;
   }
+  /* Sage-green info banner — neutral status messages on public pages. */
+  .pub-banner-info {
+    background: #e9f1e3;
+    border: 1px solid #a8c098;
+    color: #2f4a26;
+  }
 }

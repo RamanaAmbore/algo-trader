@@ -73,6 +73,7 @@
   // was introduced. This is a one-time sync on navigation; subsequent mode
   // changes go through the navbar combobox → setExecutionMode().
   onMount(async () => {
+    if (!$authStore.user || $authStore.user.role !== 'admin') { goto('/signin'); return; }
     const param = page.url.searchParams.get('mode');
     const valid = /** @type {const} */ (['sim', 'replay', 'paper', 'shadow', 'live']);
     if (param && valid.includes(/** @type {any} */ (param))) {
@@ -583,7 +584,7 @@
                     {o.status === 'SHADOW_OK' ? 'OK' : o.status === 'SHADOW_REJECTED' ? 'REJECTED' : o.status}
                   </span>
                 </td>
-                <td class="sim-td-mono">{o.created_at ? new Date(o.created_at).toLocaleTimeString() : '—'}</td>
+                <td class="sim-td-mono">{o.created_at ? new Date(o.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }) + ' IST' : '—'}</td>
                 <td>
                   <button class="sim-btn-xs"
                           onclick={() => shadowExpandId = shadowExpandId === o.id ? null : o.id}>
@@ -698,11 +699,11 @@
                 <td>{o.id}</td>
                 <td>{o.symbol}</td>
                 <td class={o.transaction_type === 'BUY' ? 'sim-buy' : 'sim-sell'}>{o.transaction_type}</td>
-                <td>{o.quantity}</td>
+                <td>{qtyFmt(o.quantity)}</td>
                 <td class="sim-td-mono">{o.initial_price != null ? `₹${priceFmt(o.initial_price)}` : '—'}</td>
                 <td><span class="sim-pill sim-pill-live">{o.status}</span></td>
                 <td class="sim-td-mono">{o.broker_order_id || '—'}</td>
-                <td class="sim-td-mono">{o.created_at ? new Date(o.created_at).toLocaleTimeString() : '—'}</td>
+                <td class="sim-td-mono">{o.created_at ? new Date(o.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }) + ' IST' : '—'}</td>
               </tr>
             {/each}
           </tbody>

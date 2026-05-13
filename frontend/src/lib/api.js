@@ -419,26 +419,6 @@ export async function fetchChartBatch(mode, symbols, since = null, limit = 600) 
   return _get(`/charts/batch?${p}`, { auth: true });
 }
 
-// ── Options analytics (admin) ────────────────────────────────────────
-
-/** GET /api/options/analytics — Greeks, theoretical price, payoff curve,
- *  risk metrics for one option position. */
-export async function fetchOptionAnalytics(opts = {}) {
-  const p = new URLSearchParams();
-  for (const [k, v] of Object.entries(opts)) {
-    if (v != null && v !== '') p.set(k, String(v));
-  }
-  return _get(`/options/analytics?${p}`, { auth: true });
-}
-
-/** GET /api/options/historical — historical OHLCV bars from Kite. */
-export async function fetchOptionHistorical(symbol, days = 30,
-                                            interval = 'day',
-                                            exchange = 'NFO') {
-  const p = new URLSearchParams({ symbol, days: String(days), interval, exchange });
-  return _get(`/options/historical?${p}`, { auth: true });
-}
-
 // ── Broker accounts (admin CRUD) ─────────────────────────────────────
 
 /** GET /api/admin/brokers — list every broker account (no secrets). */

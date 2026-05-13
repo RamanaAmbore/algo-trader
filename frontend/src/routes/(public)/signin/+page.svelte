@@ -1,6 +1,6 @@
 <script>
   import { goto } from '$app/navigation';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { login as apiLogin, register as apiRegister, forgotPassword } from '$lib/api';
   import { authStore } from '$lib/stores';
 
@@ -25,7 +25,7 @@
   // backend's only way to talk to this page (verify-email redirects
   // here), so the parsing is page-local.
   $effect(() => {
-    const q = $page.url.searchParams;
+    const q = page.url.searchParams;
     if (q.get('verified') === '1') info = 'Email verified. Once an admin approves your account you can sign in.';
     else if (q.get('verified') === '0') error = 'Verification link is invalid or expired. Try registering again.';
     else if (q.get('reset')    === '1') info = 'Password reset. Sign in with your new password.';
@@ -292,12 +292,6 @@
   }
   .pw-toggle:hover {
     color: #1e3050;
-  }
-  /* Green success banner — sage-leaning so it sits with the cream palette. */
-  .pub-banner-info {
-    background: #e9f1e3;
-    border: 1px solid #a8c098;
-    color: #2f4a26;
   }
   /* Override browser autofill yellow background */
   .signin-body :global(input:-webkit-autofill),

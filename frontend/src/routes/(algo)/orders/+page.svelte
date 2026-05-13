@@ -1,8 +1,8 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, getContext } from 'svelte';
   import { goto } from '$app/navigation';
-  import { clientTimestamp, logTime, visibleInterval } from '$lib/stores';
-  import { fetchOrders, cancelOrder, modifyOrder, fetchAdminLogs } from '$lib/api';
+  import { clientTimestamp, logTime } from '$lib/stores';
+  import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
@@ -21,7 +21,6 @@
   let cmdVerb       = $state('');
   let running       = $state(false);
   let logTab        = $state('order');
-  let systemLog     = $state([]);
   let cmdHistory    = $state([]);
   let selectedOrder = $state(/** @type {any|null} */(null));
   // OrderTicket props built when the operator types `buy …` / `sell …`
@@ -32,7 +31,8 @@
   let orderTicketProps = $state(/** @type {any|null} */(null));
   let cmdBar;
   let unsub;
-  let logTeardown;
+  const algoStatus = getContext('algoStatus');
+  const isDemo = $derived(algoStatus.isDemo);
 
   // context for CommandBar — keeps openOrderIds fresh so cancel/modify suggest them
   const cmdContext = $derived({
@@ -128,16 +128,6 @@
     }
   }
 
-  async function loadSystemLog() {
-    try {
-      const d = await fetchAdminLogs(100);
-      systemLog = d.lines || [];
-    } catch (e) { /* ignore */ }
-  }
-  function loadCurrentLog() {
-    // 'order' tab is now self-fetching via UnifiedLog — only system needs manual load.
-    if (logTab === 'system') loadSystemLog();
-  }
 
   function orderEnrichPairs(pairs, ctx) {
     cmdVerb = (ctx?._verb || '').toUpperCase();
@@ -150,7 +140,7 @@
     if (c === 'OPEN' || c === 'TRIGGER PENDING') return 'running';
     return 'inactive';
   };
-  const txnColor = (/** @type {string} */ t) => t === 'BUY' ? 'text-green-400' : 'text-red-400';
+  const txnColor = (/** @type {string} */ t) => t === 'BUY' ? 'color: var(--btn-buy)' : 'color: var(--btn-sell)';
   // Industry standard: distinct hues per account, readable on dark bg
   const ACCT_COLORS = ['text-sky-300', 'text-amber-300', 'text-fuchsia-300', 'text-teal-300'];
   const _acctList = /** @type {string[]} */ ([]);
@@ -161,7 +151,7 @@
   };
 
   onMount(() => {
-    loadOrders(); loadCurrentLog();
+    loadOrders();
     loadAccounts().catch(() => {});
     loadInstruments().catch(() => {});
     // When an async quote fetch completes, re-render the command bar so the
@@ -183,9 +173,8 @@
         loadOrders();
       }
     });
-    logTeardown = visibleInterval(loadCurrentLog, 30000);
   });
-  onDestroy(() => { unsub?.(); logTeardown?.(); });
+  onDestroy(() => { unsub?.(); });
 </script>
 
 <svelte:head><title>Orders | RamboQuant Analytics</title></svelte:head>
@@ -212,7 +201,7 @@
     onsubmit={runParsed}
     previewFn={previewSymbol}
     enrichPairs={orderEnrichPairs}
-    disabled={running}
+    disabled={running || isDemo}
   />
   <div class="absolute bottom-1 right-2 flex gap-1 z-10">
     <!-- Submit / BUY / SELL — reuses the simulator button palette so
@@ -220,7 +209,7 @@
          the generic Submit both use the shared light-green "go" tone
          (sim-btn-primary) — matching Terminal Run and Simulator Start.
          SELL keeps the red sim-btn-danger. -->
-    <button onclick={() => cmdBar?.submit()} disabled={running}
+    <button onclick={() => cmdBar?.submit()} disabled={running || isDemo}
       class="sim-btn sim-btn-order
         {cmdVerb === 'SELL' ? 'sim-btn-danger' : 'sim-btn-primary'}
         disabled:opacity-40">
@@ -230,6 +219,11 @@
       class="sim-btn sim-btn-order sim-btn-secondary">Clear</button>
   </div>
 </div>
+{#if isDemo}
+  <div class="mb-2 text-[0.62rem] text-[#7e97b8] font-mono">
+    Demo: read-only — sign in to place orders
+  </div>
+{/if}
 
 <!-- Status Dashboard -->
 <div class="grid grid-cols-5 gap-2 mt-1 mb-2">
@@ -264,22 +258,22 @@
 {#if loading && !orders.length}
   <div class="text-center text-muted text-xs animate-pulse py-2">Loading orders…</div>
 {:else if orders.length}
-  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-1 max-h-[8rem] overflow-y-auto">
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-1 max-h-[min(30vh,16rem)] overflow-y-auto">
     {#each orders.filter(o => filterStatus === 'all' ? true : filterStatus === 'open' ? (o.status === 'OPEN' || o.status === 'TRIGGER PENDING') : o.status === filterStatus.toUpperCase()) as o}
       <button type="button" onclick={() => selectedOrder = (selectedOrder?.order_id === o.order_id ? null : o)}
         class="algo-status-card text-left p-2.5 transition" data-status={statusDataAttr(o.status)}>
         <div class="flex items-center justify-between mb-0.5">
-          <span class="font-semibold text-xs"><span class="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <span class="text-[#c8d8f0]">{o.tradingsymbol}</span></span>
+          <span class="font-semibold text-xs"><span style="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <span class="text-[#c8d8f0]">{o.tradingsymbol}</span></span>
           <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
             {o.status === 'COMPLETE' ? 'bg-green-500/15 text-green-400 border-green-500/40'
             : o.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
             : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{o.status}</span>
         </div>
         <div class="text-[0.55rem] text-[#c8d8f0]/70 flex flex-wrap gap-x-2 uppercase">
-          <span>QTY:<b>{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</b></span>
+          <span>QTY:<b class="order-card-num">{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</b></span>
           <span>ORDER:<b>{o.order_type}</b></span>
-          <span>PRICE:<b>{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</b></span>
-          {#if o.trigger_price}<span>TRIGGER:<b>{priceFmt(o.trigger_price)}</b></span>{/if}
+          <span>PRICE:<b class="order-card-num">{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</b></span>
+          {#if o.trigger_price}<span>TRIGGER:<b class="order-card-num">{priceFmt(o.trigger_price)}</b></span>{/if}
           <span>PRODUCT:<b>{o.product}</b></span>
           <span>VARIETY:<b>{o.variety}</b></span>
           {#if o.tag}<span>TAG:<b>{o.tag}</b></span>{/if}
@@ -385,3 +379,7 @@
     onClose={() => orderTicketProps = null}
   />
 {/if}
+
+<style>
+  .order-card-num { font-variant-numeric: tabular-nums; }
+</style>

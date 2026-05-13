@@ -49,6 +49,14 @@
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
     </div>
   </div>
+
+  <div class="cta-row">
+    <p class="cta-lead">Ready to work with us?</p>
+    <div class="cta-btns">
+      <a href="/contact" class="cta-btn">Contact us</a>
+      <a href="/signin" class="cta-btn cta-btn-primary">Sign in</a>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -122,6 +130,54 @@
     line-height: 1.75;
     margin-bottom: 1.1rem;
   }
+  /* ── CTA row ───────────────────────────────────────────────────────────── */
+  .cta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 1.1rem 1.5rem;
+    border-top: 1px solid #e7e0cf;
+    background: #f5f2eb;
+  }
+  .cta-lead {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #5a7090;
+    margin: 0;
+  }
+  .cta-btns {
+    display: flex;
+    gap: 0.6rem;
+  }
+  .cta-btn {
+    display: inline-block;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.35rem 1rem;
+    border-radius: 9999px;
+    border: 1px solid #c8a84b;
+    color: #7a5c10;
+    background: transparent;
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  .cta-btn:hover {
+    background: #f4ead4;
+    color: #5a4010;
+  }
+  .cta-btn-primary {
+    background: #d4920c;
+    border-color: #d4920c;
+    color: #fff;
+  }
+  .cta-btn-primary:hover {
+    background: #b87a0a;
+    border-color: #b87a0a;
+    color: #fff;
+  }
+
   .closing-statement {
     font-size: 0.95rem;
     font-weight: 600;

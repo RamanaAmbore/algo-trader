@@ -7,6 +7,7 @@
   // the page is visible.
 
   import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -73,6 +74,7 @@
   }
 
   onMount(() => {
+    if (!$authStore.user || $authStore.user.role !== 'admin') { goto('/signin'); return; }
     loadAgents();
     load();
     teardown = visibleInterval(load, 10000);

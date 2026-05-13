@@ -159,7 +159,7 @@
 
 <div class="page-header">
   <h1 class="page-title-chip">Brokers</h1>
-  <InfoHint text={'CRUD over the broker-accounts table. New accounts go live immediately — the Connections singleton reloads on every save, so the next broker call uses the new credentials without a service restart. Secrets (<span class="font-mono">api_secret</span>, <span class="font-mono">password</span>, <span class="font-mono">totp_token</span>) are encrypted at rest with a key derived from <span class="font-mono">cookie_secret</span> via HKDF, never readable from the API. On Edit, leave a secret field blank to keep the existing value.'} />
+  <InfoHint popup text={'CRUD over the broker-accounts table. New accounts go live immediately — the Connections singleton reloads on every save, so the next broker call uses the new credentials without a service restart. Secrets (<span class="font-mono">api_secret</span>, <span class="font-mono">password</span>, <span class="font-mono">totp_token</span>) are encrypted at rest with a key derived from <span class="font-mono">cookie_secret</span> via HKDF, never readable from the API. On Edit, leave a secret field blank to keep the existing value.'} />
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 

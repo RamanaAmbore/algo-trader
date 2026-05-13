@@ -1,6 +1,6 @@
 <script>
   import { goto } from '$app/navigation';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { resetPassword } from '$lib/api';
 
   let token       = $state('');
@@ -12,7 +12,7 @@
   let showConfirm = $state(false);
 
   $effect(() => {
-    token = $page.url.searchParams.get('token') || '';
+    token = page.url.searchParams.get('token') || '';
     if (!token) error = 'Reset link is missing the token. Request a new one from the sign-in page.';
   });
 

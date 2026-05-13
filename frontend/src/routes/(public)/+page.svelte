@@ -50,4 +50,11 @@
   <noscript>
     <p style="margin-top: 2rem;"><a href="/about" style="color: #0c1830; font-weight: 700;">Learn more about RamboQuant →</a></p>
   </noscript>
+  <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid #e7e0cf;">
+    <span style="font-size: 0.85rem; font-weight: 600; color: #5a7090;">Ready to work with us?</span>
+    <div style="display: flex; gap: 0.6rem;">
+      <a href="/contact" style="display: inline-block; font-size: 0.8rem; font-weight: 700; padding: 0.35rem 1rem; border-radius: 9999px; border: 1px solid #c8a84b; color: #7a5c10; background: transparent; text-decoration: none;">Contact us</a>
+      <a href="/signin" style="display: inline-block; font-size: 0.8rem; font-weight: 700; padding: 0.35rem 1rem; border-radius: 9999px; border: 1px solid #d4920c; color: #fff; background: #d4920c; text-decoration: none;">Sign in</a>
+    </div>
+  </div>
 </div>

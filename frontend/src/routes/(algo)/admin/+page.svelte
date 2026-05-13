@@ -7,22 +7,25 @@
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
     resendVerification, markVerified,
   } from '$lib/api';
+  import InfoHint from '$lib/InfoHint.svelte';
 
-  let users    = $state([]);
-  let loading  = $state(true);
-  let error    = $state('');
-  let success  = $state('');
-  let editing  = $state(null);
-  let editForm = $state(/** @type {Record<string,any>} */ ({}));
+  let users      = $state([]);
+  let loading    = $state(true);
+  let error      = $state('');
+  let success    = $state('');
+  let editing    = $state(null);
+  let editForm   = $state(/** @type {Record<string,any>} */ ({}));
   let showCreate = $state(false);
   let createForm = $state({ username: '', password: '', display_name: '', email: '', phone: '', role: 'partner', contribution: 0, share_pct: 0, is_approved: true });
-  let creating = $state(false);
+  let creating   = $state(false);
+  let refreshedAt = $state(clientTimestamp());
 
   async function load() {
     loading = true; error = ''; success = '';
     try {
       const data = await fetchUsers();
       users = data.users ?? [];
+      refreshedAt = clientTimestamp();
     } catch (e) {
       error = e.message;
     } finally { loading = false; }
@@ -154,10 +157,13 @@
   });
 </script>
 
+<svelte:head><title>Users | RamboQuant Analytics</title></svelte:head>
+
 <div class="algo-status-card p-5 pt-4" data-status="inactive">
   <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
     <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">User Management</h1>
-    <span class="algo-ts">{clientTimestamp()}</span>
+    <InfoHint popup text="User management: approve / suspend / terminate partners. Admins and <b>designated</b> users can act; only admins can promote roles." />
+    <span class="algo-ts">{refreshedAt}</span>
     <button onclick={() => showCreate = !showCreate}
       class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold">
       {showCreate ? 'Cancel' : 'Create User'}

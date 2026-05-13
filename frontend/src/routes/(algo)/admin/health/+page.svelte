@@ -5,6 +5,7 @@
   // Compact card grid — 2 columns desktop / 1 mobile. Polls every 15 s.
 
   import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
   import { fetchSystemHealth } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -29,6 +30,7 @@
   }
 
   onMount(() => {
+    if (!$authStore.user || $authStore.user.role !== 'admin') { goto('/signin'); return; }
     load();
     teardown = visibleInterval(load, 15000);
   });

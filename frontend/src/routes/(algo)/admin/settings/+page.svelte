@@ -13,13 +13,14 @@
   /** @type {Array<{id:number, category:string, key:string, value_type:string,
    *                value:string, default_value:string, description:string,
    *                schema:any, units:string|null, updated_at:string}>} */
-  let settings = $state([]);
-  let loading  = $state(true);
-  let error    = $state('');
-  let note     = $state('');
-  let dirty    = $state(/** @type {Record<string, string>} */({}));
-  let filter   = $state('');
-  let expanded = $state(/** @type {Record<string, boolean>} */({}));
+  let settings    = $state([]);
+  let loading     = $state(true);
+  let error       = $state('');
+  let note        = $state('');
+  let dirty       = $state(/** @type {Record<string, string>} */({}));
+  let filter      = $state('');
+  let expanded    = $state(/** @type {Record<string, boolean>} */({}));
+  let refreshedAt = $state(clientTimestamp());
 
   function toggleInfo(/** @type {string} */ key) {
     expanded[key] = !expanded[key];
@@ -38,7 +39,7 @@
 
   async function load() {
     loading = true; error = '';
-    try { settings = await fetchSettings(); }
+    try { settings = await fetchSettings(); refreshedAt = clientTimestamp(); }
     catch (e) { error = e.message; }
     finally   { loading = false; }
   }
@@ -121,8 +122,8 @@
 
 <div class="page-header">
   <h1 class="page-title-chip">Settings</h1>
-  <InfoHint text={'DB-backed tunables. Edits take effect on the next agent tick / sim run without a deploy. Values are preserved across deploys; pressing <b>Reset</b> returns a key to its code-shipped default. Infrastructure parameters (DB credentials, market hours, Kite URLs, IPv6 addresses) deliberately stay in <span class="font-mono">backend_config.yaml</span> — they change once a quarter and have no business being in the DB.'} />
-  <span class="algo-ts">{clientTimestamp()}</span>
+  <InfoHint popup text={'DB-backed tunables. Edits take effect on the next agent tick / sim run without a deploy. Values are preserved across deploys; pressing <b>Reset</b> returns a key to its code-shipped default. Infrastructure parameters (DB credentials, market hours, Kite URLs, IPv6 addresses) deliberately stay in <span class="font-mono">backend_config.yaml</span> — they change once a quarter and have no business being in the DB.'} />
+  <span class="algo-ts">{refreshedAt}</span>
 </div>
 
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}

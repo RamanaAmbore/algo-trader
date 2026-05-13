@@ -6,6 +6,7 @@
     fetchGrammarTokens, patchGrammarToken, createGrammarToken,
     deleteGrammarToken, reloadGrammarRegistry,
   } from '$lib/api';
+  import InfoHint from '$lib/InfoHint.svelte';
 
   // Agent Tokens page — read + is_active toggle for every token in the
   // grammar_tokens table. (The DB table and backend class keep the
@@ -18,17 +19,19 @@
    *          resolver:string|null, params_schema:object|null,
    *          enum_values:any[]|null, template_body:string|null,
    *          is_system:boolean, is_active:boolean}[]} */
-  let tokens   = $state([]);
-  let loading  = $state(true);
-  let error    = $state('');
-  let reloading = $state(false);
-  let activeTab = $state(/** @type {'condition'|'notify'|'action'} */('condition'));
+  let tokens     = $state([]);
+  let loading    = $state(true);
+  let error      = $state('');
+  let reloading  = $state(false);
+  let activeTab  = $state(/** @type {'condition'|'notify'|'action'} */('condition'));
   let expandedId = $state(/** @type {number|null} */(null));
+  let refreshedAt = $state(clientTimestamp());
 
   async function load() {
     loading = true; error = '';
     try {
       tokens = await fetchGrammarTokens();
+      refreshedAt = clientTimestamp();
     } catch (e) { error = e.message || 'Failed to load'; tokens = []; }
     loading = false;
   }
@@ -175,7 +178,8 @@
     <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24]">
       Agent Tokens
     </h1>
-    <span class="algo-ts">{clientTimestamp()}</span>
+    <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
+    <span class="algo-ts">{refreshedAt}</span>
     <div class="flex gap-2">
       <button onclick={openCreate}
         class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
@@ -187,12 +191,6 @@
       </button>
     </div>
   </div>
-  <p class="text-[0.65rem] text-[#7e97b8] mb-0">
-    Every token the Agent engine can reference — what agents can CHECK
-    (condition), ALERT (notify), or DO (action). System tokens are toggle-only.
-    After any change, hit <b>Reload registry</b> so the dispatch table
-    refreshes without a service restart.
-  </p>
 </div>
 
 {#if error}
