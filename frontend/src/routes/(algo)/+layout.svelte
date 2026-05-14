@@ -139,22 +139,14 @@
   // Mode colors — keep aligned with the .mode-pill-* CSS in
   // LogPanel.svelte and the .algo-mode-* badges below. SIM uses
   // pink/rose (#fb7185), PAPER sky-blue (#7dd3fc), LIVE emerald
-  // (#6ee7b7) — NOT alt-Tailwind variants.
+  // (#4ade80) — NOT alt-Tailwind variants.
   const MODE_COLOR = {
     sim:    '#fb7185',   // rose-400 — matches .algo-mode-sim
     replay: '#4ade80',   // pos-green — matches .algo-mode-replay
     paper:  '#7dd3fc',   // info-sky — matches .algo-mode-paper
     shadow: '#fb923c',   // short-orange — matches .algo-mode-shadow
-    live:   '#6ee7b7',   // live-emerald — matches .algo-mode-live
+    live:   '#4ade80',   // emerald-400 — matches .algo-mode-live [data-mode='live']
   };
-  const MODE_BG = {
-    sim:    'rgba(251,113,133,0.12)',
-    replay: 'rgba(74,222,128,0.12)',
-    paper:  'rgba(125,211,252,0.12)',
-    shadow: 'rgba(251,146,60,0.12)',
-    live:   'rgba(110,231,183,0.12)',
-  };
-
   async function loadMode() {
     try {
       const res = await fetchExecutionMode();
@@ -841,11 +833,6 @@
     animation: algo-mode-dot 2s ease-in-out infinite;
   }
   .algo-mode-demo   { color: #c084fc; background: rgba(192,132,252,0.10); }
-  .algo-mode-sim    { color: #fb7185; background: rgba(251,113,133,0.10); }
-  .algo-mode-replay { color: #4ade80; background: rgba(74,222,128,0.10); }
-  .algo-mode-paper  { color: #38bdf8; background: rgba(56,189,248,0.10); }
-  .algo-mode-shadow { color: #fb923c; background: rgba(251,146,60,0.10); }
-  .algo-mode-live   { color: #4ade80; background: rgba(74,222,128,0.15); border-color: rgba(74,222,128,0.4); }
   @keyframes algo-mode-dot {
     0%, 100% { opacity: 1;   transform: scale(1); }
     50%      { opacity: 0.4; transform: scale(0.8); }

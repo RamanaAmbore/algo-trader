@@ -22,7 +22,7 @@
     { href: '/contact',     label: 'Contact'     },
   ];
 
-  function navLinks(_user) {
+  function navLinks() {
     return baseLinks;
   }
 
@@ -58,7 +58,7 @@
         </a>
 
         <nav class="flex items-center gap-0.5 flex-1 justify-center">
-          {#each navLinks($authStore.user) as link}
+          {#each navLinks() as link}
             <button
               onclick={() => goto(link.href)}
               class="pub-nav-btn {isActive(link.href) ? 'pub-nav-btn-active' : ''}"
@@ -136,7 +136,7 @@
       <!-- Mobile dropdown -->
       {#if menuOpen}
         <nav class="pub-mobile-dropdown">
-          {#each navLinks($authStore.user) as link}
+          {#each navLinks() as link}
             <button
               onclick={() => { goto(link.href); closeMenu(); }}
               class="pub-mobile-item {isActive(link.href) ? 'pub-mobile-active' : ''}"

@@ -735,8 +735,8 @@
 
 <style>
   /* Public /performance: no inner cream card. Content sits directly
-     on the page envelope (.pub-card-wide). The only chrome is the
-     hairline divider below the timestamp/Refresh row. */
+     on the page envelope (.pub-card-wide, applied by (public)/+layout.svelte).
+     The only chrome is the hairline divider below the timestamp/Refresh row. */
   .perf-ts-row {
     border-bottom: 1px solid #d8d4cc;
   }
@@ -940,14 +940,5 @@
      AG Grid cellRenderer (outside Svelte's scoped DOM).  */
   :global(.ag-col-acct) {
     border-left: 3px solid var(--acct-stripe, transparent) !important;
-  }
-  :global(.acct-dot) {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 9999px;
-    margin-right: 4px;
-    flex-shrink: 0;
-    vertical-align: middle;
   }
 </style>

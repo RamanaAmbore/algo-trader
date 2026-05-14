@@ -52,7 +52,7 @@
   border-radius: 6px;
   overflow: hidden;
   /* Slightly darker champagne hairline border with rounded corners.
-     Sits inside .pub-perf-card; gives each grid its own crisp frame
+     Sits inside .pub-card-wide on /performance; gives each grid its own crisp frame
      against the cream surface. */
   border: 1px solid #b8ac90;
   box-shadow: none !important;
