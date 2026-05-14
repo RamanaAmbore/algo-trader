@@ -739,9 +739,8 @@
      but in a warm cream palette instead of the dark navy. */
   .pub-perf-card {
     background: #faf8f4;
-    /* No top line — the timestamp row carries the divider on its
-       bottom edge instead. Bottom-of-card rule still present. */
-    border-bottom: 1px solid #d8d4cc;
+    /* No top or bottom hairline — cream surface alone defines the
+       card. Divider sits below the timestamp row only. */
     padding: 0.375rem 0 0.5rem;
     box-shadow: 0 1px 4px rgba(15,23,42,0.06);
   }
