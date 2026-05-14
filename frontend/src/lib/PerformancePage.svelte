@@ -596,7 +596,7 @@
   });
 </script>
 
-<div class:perf-dark={isDark}>
+<div class:perf-dark={isDark} class:pub-perf-card={!isDark}>
 
 {#if error}
   <!-- Graceful banner. Errors fall into two buckets:
@@ -734,6 +734,17 @@
 </div><!-- /perf-dark -->
 
 <style>
+  /* Public /performance cream card — only applied on the light theme
+     (class:pub-perf-card={!isDark}). Mirrors .algo-status-card shape
+     but in a warm cream palette instead of the dark navy. */
+  .pub-perf-card {
+    background: linear-gradient(180deg, #fffdf8 0%, #faf7f0 100%);
+    border: 1.5px solid #ddd8ce;
+    border-radius: 6px;
+    padding: 0.75rem;
+    box-shadow: 0 2px 8px rgba(80,60,30,0.10), inset 0 1px 0 rgba(255,255,255,0.6);
+  }
+
   .hidden { display: none; }
 
   /* ── Page banners ────────────────────────────────────────────────

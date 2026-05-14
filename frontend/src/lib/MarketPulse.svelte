@@ -241,17 +241,20 @@
   // $state on the bind:this refs so Svelte 5's reactive-update
   // analyzer doesn't warn (gridEl was grandfathered in pre-Phase 2;
   // the new summary / funds refs need the explicit annotation).
-  let summaryEl = $state(/** @type {HTMLDivElement | null} */ (null));
-  let fundsEl   = $state(/** @type {HTMLDivElement | null} */ (null));
+  let positionsSummaryEl = $state(/** @type {HTMLDivElement | null} */ (null));
+  let holdingsSummaryEl  = $state(/** @type {HTMLDivElement | null} */ (null));
+  let fundsEl            = $state(/** @type {HTMLDivElement | null} */ (null));
   let grid;
-  let summaryGrid;
+  let positionsSummaryGrid;
+  let holdingsSummaryGrid;
   let fundsGrid;
   // Sentinel that flips to true once createGrid runs — used by the
   // $effect below to push unifiedRows into ag-Grid the moment both
   // (a) the grid is mounted and (b) the derived row set has populated.
-  let gridReady = $state(false);
-  let summaryReady = $state(false);
-  let fundsReady   = $state(false);
+  let gridReady              = $state(false);
+  let positionsSummaryReady  = $state(false);
+  let holdingsSummaryReady   = $state(false);
+  let fundsReady             = $state(false);
 
   // Instrument-cache lookup functions. Loaded once at mount + cached
   // as module-scope state so buildUnified() can parse tradingsymbols
@@ -328,40 +331,63 @@
     grid.setGridOption('rowData', rows);
   });
 
-  // Combine positions+holdings backend summaries into one per-account
-  // row carrying Day P&L + P&L + Cur Val. Account picker scopes the
-  // body rows; the TOTAL pseudo-row stays pinned to the bottom.
+  // Per-source summary derivations for the two separate summary grids.
+  // Account picker scopes the body rows; TOTAL pinned at the bottom.
   function isTotalRow(r) { return r && r.account === 'TOTAL'; }
 
-  const combinedSummary = $derived.by(() => {
-    if (!showSummary) return [];
+  // Positions Summary — Day P&L + P&L per account (no Cur Val).
+  const positionsSummaryData = $derived.by(() => {
+    if (!showSummary || !selectedSources.includes('positions')) return [];
     const byAcct = /** @type {Record<string, any>} */ ({});
-    const add = (r, src) => {
+    for (const r of positionsSummary) {
       const a = r.account;
-      if (!a) return;
-      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0 };
+      if (!a) continue;
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0 };
       byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl)            || 0;
-      if (src === 'h') byAcct[a].cur_val += Number(r.cur_val) || 0;
-    };
-    for (const r of holdingsSummary)  add(r, 'h');
-    for (const r of positionsSummary) add(r, 'p');
+    }
     return Object.values(byAcct);
   });
 
-  const summaryBody  = $derived(
+  // Holdings Summary — Day P&L + P&L + Cur Val per account.
+  const holdingsSummaryData = $derived.by(() => {
+    if (!showSummary || !selectedSources.includes('holdings')) return [];
+    const byAcct = /** @type {Record<string, any>} */ ({});
+    for (const r of holdingsSummary) {
+      const a = r.account;
+      if (!a) continue;
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0 };
+      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
+      byAcct[a].pnl     += Number(r.pnl)            || 0;
+      byAcct[a].cur_val += Number(r.cur_val)         || 0;
+    }
+    return Object.values(byAcct);
+  });
+
+  const positionsSummaryBody  = $derived(
     selectedAccount === 'all'
-      ? combinedSummary.filter(r => !isTotalRow(r))
-      : combinedSummary.filter(r => r.account === selectedAccount)
+      ? positionsSummaryData.filter(r => !isTotalRow(r))
+      : positionsSummaryData.filter(r => r.account === selectedAccount)
   );
-  const summaryTotal = $derived(combinedSummary.filter(isTotalRow));
+  const positionsSummaryTotal = $derived(positionsSummaryData.filter(isTotalRow));
+
+  const holdingsSummaryBody  = $derived(
+    selectedAccount === 'all'
+      ? holdingsSummaryData.filter(r => !isTotalRow(r))
+      : holdingsSummaryData.filter(r => r.account === selectedAccount)
+  );
+  const holdingsSummaryTotal = $derived(holdingsSummaryData.filter(isTotalRow));
 
   $effect(() => {
-    if (!summaryReady || !summaryGrid) return;
-    const body  = summaryBody;
-    const total = summaryTotal;
-    summaryGrid.setGridOption('rowData', body);
-    summaryGrid.setGridOption('pinnedBottomRowData', total);
+    if (!positionsSummaryReady || !positionsSummaryGrid) return;
+    positionsSummaryGrid.setGridOption('rowData', positionsSummaryBody);
+    positionsSummaryGrid.setGridOption('pinnedBottomRowData', positionsSummaryTotal);
+  });
+
+  $effect(() => {
+    if (!holdingsSummaryReady || !holdingsSummaryGrid) return;
+    holdingsSummaryGrid.setGridOption('rowData', holdingsSummaryBody);
+    holdingsSummaryGrid.setGridOption('pinnedBottomRowData', holdingsSummaryTotal);
   });
 
   const scopedFunds = $derived(
@@ -381,7 +407,8 @@
   onDestroy(() => {
     stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.();
     grid?.destroy?.();
-    summaryGrid?.destroy?.();
+    positionsSummaryGrid?.destroy?.();
+    holdingsSummaryGrid?.destroy?.();
     fundsGrid?.destroy?.();
   });
 
@@ -1066,26 +1093,21 @@
     });
     gridReady = true;
 
-    // Summary grid — small per-account totals strip above the main
-    // grid in dashboard mode. Same theming + numeric formatters as
-    // the main grid; renderless symbol column (just the Account chip).
-    if (showSummary && summaryEl) {
-      const summaryCols = [
+    // Positions Summary grid — per-account Day P&L + P&L (no Cur Val).
+    if (showSummary && positionsSummaryEl) {
+      const posSummaryCols = [
         { field: 'account', headerName: 'Account', width: 90,
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'pnl', headerName: 'P&L', width: 110,
+        { field: 'pnl', headerName: 'P&L', flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'cur_val', headerName: 'Cur Val', width: 120,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid },
       ];
-      summaryGrid = createGrid(summaryEl, {
+      positionsSummaryGrid = createGrid(positionsSummaryEl, {
         theme: 'legacy',
-        columnDefs: summaryCols,
+        columnDefs: posSummaryCols,
         rowData: [],
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
@@ -1096,7 +1118,38 @@
         rowHeight: 26,
         headerHeight: 26,
       });
-      summaryReady = true;
+      positionsSummaryReady = true;
+    }
+
+    // Holdings Summary grid — per-account Day P&L + P&L + Cur Val.
+    if (showSummary && holdingsSummaryEl) {
+      const holdSummaryCols = [
+        { field: 'account', headerName: 'Account', width: 90,
+          cellClass: 'ag-col-fill' },
+        { field: 'day_pnl', headerName: 'Day P&L', width: 110,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+        { field: 'pnl', headerName: 'P&L', width: 110,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+        { field: 'cur_val', headerName: 'Cur Val', flex: 1,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid },
+      ];
+      holdingsSummaryGrid = createGrid(holdingsSummaryEl, {
+        theme: 'legacy',
+        columnDefs: holdSummaryCols,
+        rowData: [],
+        defaultColDef: {
+          resizable: true, sortable: true, suppressMovable: true,
+          suppressHeaderMenuButton: true,
+        },
+        sortingOrder: ['asc', 'desc', null],
+        domLayout: 'autoHeight',
+        rowHeight: 26,
+        headerHeight: 26,
+      });
+      holdingsSummaryReady = true;
     }
 
     // Funds grid — small per-account margins strip below the main
@@ -1378,11 +1431,12 @@
   {/if}
 
   {#if showSummary}
-    <!-- Per-account Day P&L + P&L + Cur Val totals (positions +
-         holdings combined). Body filters by account picker; TOTAL
-         pinned at the bottom. -->
-    <div class="mp-section-label">Summary</div>
-    <div bind:this={summaryEl} class="ag-theme-algo summary-grid mb-2"></div>
+    <!-- Positions Summary — per-account Day P&L + P&L. -->
+    <div class="mp-section-label">Positions Summary</div>
+    <div bind:this={positionsSummaryEl} class="ag-theme-algo summary-grid mb-2"></div>
+    <!-- Holdings Summary — per-account Day P&L + P&L + Cur Val. -->
+    <div class="mp-section-label">Holdings Summary</div>
+    <div bind:this={holdingsSummaryEl} class="ag-theme-algo summary-grid mb-2"></div>
   {/if}
 
   {#if showSummary || showFunds}
