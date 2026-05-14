@@ -617,7 +617,7 @@
 {#if !compactHeader}
   <!-- Default layout: timestamp + Refresh button on their own line, tabs
        below. The public /performance page uses this. -->
-  <div class="flex items-center justify-between mb-1.5">
+  <div class="perf-ts-row flex items-center justify-between mb-1.5 pb-1.5">
     <div class="text-[0.65rem] text-muted perf-ts">
       {#if loading && !lastRefresh}
         <span class="animate-pulse">Loading…</span>
@@ -739,12 +739,16 @@
      but in a warm cream palette instead of the dark navy. */
   .pub-perf-card {
     background: #faf8f4;
-    border-top: 1px solid #d8d4cc;
+    /* No top line — the timestamp row carries the divider on its
+       bottom edge instead. Bottom-of-card rule still present. */
     border-bottom: 1px solid #d8d4cc;
-    /* Flush with viewport — no side border or radius so the cream
-       card extends fully edge-to-edge. Operator-requested density. */
     padding: 0.375rem 0 0.5rem;
     box-shadow: 0 1px 4px rgba(15,23,42,0.06);
+  }
+  /* Divider rule sits below the timestamp/Refresh row, replacing the
+     retired card-top border. */
+  .perf-ts-row {
+    border-bottom: 1px solid #d8d4cc;
   }
   :global(.pub-perf-card .section-heading) {
     margin-bottom: 0.25rem;
