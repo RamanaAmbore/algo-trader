@@ -30,14 +30,18 @@
   // first response lands, `isDemo` is conservatively false so the
   // page doesn't flicker.
   //
-  // NB: bridging the legacy `authStore` through `$state` via
-  // `$effect`. Reading `$authStore.user` directly inside `$derived`
-  // was unreliable — operators reported DEMO + Sign-Out visible at
-  // the same time (logically impossible if the same store value was
-  // observed in both reactive scopes). The bridge guarantees both
-  // `isDemo` and the nav conditionals read identical state.
+  // Bridge the legacy `authStore` via an explicit subscribe — NOT
+  // `$effect`. $effect runs AFTER first render, so on layout remount
+  // (e.g. user goes /signin → /dashboard → /about → /dashboard) the
+  // first paint shows _userPresent=false, and if paperStatus.branch
+  // arrives from cache before $effect fires, the DEMO badge briefly
+  // pins to true. authStore.subscribe(cb) fires `cb` SYNCHRONOUSLY
+  // on subscribe AND on every update, so _userPresent is correct
+  // before the first paint and stays correct.
   let _userPresent = $state(false);
-  $effect(() => { _userPresent = !!$authStore.user; });
+  const _unsubAuth = authStore.subscribe((s) => {
+    _userPresent = !!s?.user;
+  });
   const isDemo = $derived(
     !_userPresent && paperStatus?.branch === 'main'
   );
@@ -311,6 +315,7 @@
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
     shadowTeardown?.(); liveTeardown?.();
     modeTeardown?.(); chaseTeardown?.();
+    _unsubAuth?.();
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────
