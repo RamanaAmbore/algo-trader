@@ -74,7 +74,7 @@
               - anonymous on dev → redirects to /signin via the algo
                 layout's auth guard. -->
         <button onclick={() => goto('/dashboard')} class="pub-nav-algo-btn">
-          {$authStore.user?.role === 'admin' ? 'Algo Site' : 'Algo Site Demo'} ↗
+          {$authStore.user ? 'Algo Site' : 'Algo Site Demo'} ↗
         </button>
 
         {#if $authStore.user}
@@ -145,7 +145,7 @@
           <button
             onclick={() => { goto('/dashboard'); closeMenu(); }}
             class="pub-mobile-item pub-mobile-algo"
-          >{$authStore.user?.role === 'admin' ? 'Algo Site' : 'Algo Site Demo'} ↗</button>
+          >{$authStore.user ? 'Algo Site' : 'Algo Site Demo'} ↗</button>
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="pub-mobile-item">Sign Out</button>
           {:else}
