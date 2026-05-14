@@ -43,17 +43,18 @@
   --ag-odd-row-background-color: #f5f2eb;
   --ag-row-hover-color: #efebdf;
   --ag-selected-row-background-color: #e2dccc;
-  --ag-border-color: #d1d5db;
+  --ag-border-color: #c4bba8;
   --ag-font-family: 'Inter', 'SF Pro Text', -apple-system, system-ui, sans-serif;
   --ag-font-size: 0.625rem;
   --ag-row-height: 22px;
   --ag-header-height: 28px;
-  --ag-wrapper-border-radius: 0;
-  border-radius: 0;
+  --ag-wrapper-border-radius: 6px;
+  border-radius: 6px;
   overflow: hidden;
-  /* No outer border — the grid sits inside .pub-perf-card which
-     provides its own framing. A grid-level border looked boxed-in. */
-  border: none;
+  /* Slightly darker champagne hairline border with rounded corners.
+     Sits inside .pub-perf-card; gives each grid its own crisp frame
+     against the cream surface. */
+  border: 1px solid #b8ac90;
   box-shadow: none !important;
 }
 /* autoHeight: only remove min-height that pads small tables */
@@ -62,7 +63,7 @@
   min-height: 0 !important;
 }
 .ag-theme-ramboq .ag-root-wrapper {
-  border-radius: 0;
+  border-radius: 6px;
   overflow: hidden;
   /* No wrapper bg — header carries its own #1d2939; body is cream.
      The earlier navy wrapper bled at corners with the 4px radius. */
