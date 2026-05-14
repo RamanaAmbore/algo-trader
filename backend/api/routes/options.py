@@ -1298,6 +1298,7 @@ class OptionsController(Controller):
         # Pre-compute per-option T_years list so eval_T (near expiry) and
         # T_yrs_shared (far expiry for POP / EV) are deterministic and not
         # subject to set-iteration order.
+        _is_commodity = is_mcx_underlying(underlying)
         _close_time = (23, 30) if _is_commodity else (15, 30)
         _option_T_list = [
             days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))),
@@ -1330,7 +1331,7 @@ class OptionsController(Controller):
         #
         # Batch all the per-leg same-month futures lookups into one
         # broker.quote() call to avoid N sequential round-trips.
-        _is_commodity = is_mcx_underlying(underlying)
+        # (_is_commodity hoisted above for close_time threading.)
         _leg_scale_ratios: dict[str, float] = {}   # symbol → scale_ratio
         if _is_commodity and S > 0:
             # Collect unique (underlying, expiry_month) pairs across legs;
