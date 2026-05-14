@@ -125,13 +125,16 @@
   letter-spacing: 0.05em !important;
   text-transform: uppercase !important;
 }
+/* TOTAL row inverts the header — champagne bg + navy text, mirroring
+   the header's navy bg + champagne text. Both stay in the cream +
+   champagne palette but read as visually distinct strata. */
 .ag-theme-ramboq .ag-row.totals-row {
-  background-color: #1d2939 !important;
-  color: #f3e9c4 !important;
-  border-top: 1px solid rgba(200,168,75,0.55) !important;
-  border-bottom: 1px solid rgba(200,168,75,0.55) !important;
+  background-color: #e8d9a8 !important;
+  color: #1d2939 !important;
+  border-top: 1px solid rgba(29,41,57,0.35) !important;
+  border-bottom: 1px solid rgba(29,41,57,0.35) !important;
 }
-.ag-theme-ramboq .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(255,255,255,0.12) !important; }
+.ag-theme-ramboq .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(29,41,57,0.12) !important; }
 .ag-theme-algo .ag-row.totals-row {
   background-color: rgba(251,191,36,0.15) !important;
   color: #fbbf24 !important;
