@@ -803,6 +803,9 @@ class OptionsController(Controller):
             parsed["underlying"], spot,
             fallback=parsed["strike"],
             expiry_hint=parsed["expiry"])
+        # TODO: pass close_time=(23,30) for MCX single-leg analytics.
+        # Single-leg mode doesn't always carry the segment context here;
+        # the strategy endpoint (which has _is_commodity) is the primary fix.
         T_yrs = days_to_expiry(parsed["expiry"]) / 365.0
         # Pass avg_cost AND estimated-BS inputs as last-resort fallbacks
         # so a stale broker quote on an illiquid contract still produces
@@ -912,7 +915,7 @@ class OptionsController(Controller):
             opt_type=parsed["opt_type"],
             strike=parsed["strike"],
             expiry=parsed["expiry"].isoformat(),
-            days_to_expiry=days_to_expiry(parsed["expiry"]),
+            days_to_expiry=days_to_expiry(parsed["expiry"]),  # TODO: MCX close_time
             account=acct_resolved,
             qty=qty_resolved,
             avg_cost=entry,
@@ -1295,8 +1298,10 @@ class OptionsController(Controller):
         # Pre-compute per-option T_years list so eval_T (near expiry) and
         # T_yrs_shared (far expiry for POP / EV) are deterministic and not
         # subject to set-iteration order.
+        _close_time = (23, 30) if _is_commodity else (15, 30)
         _option_T_list = [
-            days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip())))) / 365.0
+            days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))),
+                           close_time=_close_time) / 365.0
             for leg in data.legs
             if parse_tradingsymbol(leg.symbol.upper().strip()) and
                parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
@@ -1396,7 +1401,7 @@ class OptionsController(Controller):
             # Operator-supplied expiry (instruments cache) wins over
             # the parser's last-Thursday inference.
             leg_expiry = date.fromisoformat(_leg_expiry_iso(leg, parsed))
-            T_yrs = days_to_expiry(leg_expiry) / 365.0
+            T_yrs = days_to_expiry(leg_expiry, close_time=_close_time) / 365.0
             qty   = int(leg.qty or 0)
             if qty == 0:
                 raise HTTPException(status_code=400,
@@ -1603,7 +1608,7 @@ class OptionsController(Controller):
         return StrategyResponse(
             underlying=underlying,
             expiry=shared_expiry_iso,
-            days_to_expiry=days_to_expiry(shared_expiry),
+            days_to_expiry=days_to_expiry(shared_expiry, close_time=_close_time),
             spot=S,
             net_cost=net_cost,
             net_qty=sum(int(l["qty"]) for l in resolved_legs),

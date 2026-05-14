@@ -138,11 +138,21 @@ def _last_thursday(year: int, month: int) -> date:
 
 
 def days_to_expiry(expiry: date, *, ref: Optional[datetime] = None,
-                   default_days: int = DEFAULT_DTE_DAYS) -> float:
+                   default_days: int = DEFAULT_DTE_DAYS,
+                   close_time: tuple[int, int] = (15, 30)) -> float:
     """Whole + fractional days from `ref` (default: now in IST) to `expiry`.
     Floors at 0. Both sides are normalised to Asia/Kolkata so the day
     boundary lines up with the Indian trading calendar regardless of the
-    host server's clock timezone."""
+    host server's clock timezone.
+
+    `close_time` is (hour, minute) IST when the option actually ceases
+    trading on the expiry date — defaults to (15, 30) for NSE/NFO/BSE/CDS.
+    Pass (23, 30) for MCX commodity options. This matters most when the
+    option expires TODAY: at 3 PM on a 3:30 PM-close expiry day T is
+    30 min, not zero, so theta is visible on the today-value curve.
+    After market close on expiry day the result is still negative → max(0)
+    → 0, which is correct (zero time value remaining).
+    """
     if not expiry:
         return float(default_days)
     if ref is None:
@@ -151,7 +161,8 @@ def days_to_expiry(expiry: date, *, ref: Optional[datetime] = None,
         ref = ref.replace(tzinfo=_IST)
     if isinstance(expiry, datetime):
         expiry = expiry.date()
-    expiry_dt = datetime(expiry.year, expiry.month, expiry.day, tzinfo=_IST)
+    expiry_dt = datetime(expiry.year, expiry.month, expiry.day,
+                         close_time[0], close_time[1], tzinfo=_IST)
     delta = expiry_dt - ref
     days  = delta.total_seconds() / 86400.0
     return max(0.0, days)
@@ -310,6 +321,8 @@ def calibrate_iv_for_row(row: dict, spot: float,
     if ltp is None or float(ltp) <= 0:
         return DEFAULT_IV
     expiry = parsed["expiry"]
+    # TODO: thread MCX close_time=(23,30) here when the sim driver exposes
+    # the segment for per-row context. Default 15:30 is correct for NSE/NFO.
     T_yrs  = days_to_expiry(expiry, ref=ref_now) / 365.0
     return implied_vol(float(ltp), float(spot), parsed["strike"],
                        T_yrs, risk_free, parsed["opt_type"])
@@ -333,6 +346,8 @@ def reprice_row(row: dict, *, spot: float, sigma: Optional[float],
         return float(spot)
     if parsed["kind"] == "opt":
         expiry = parsed["expiry"]
+        # TODO: thread MCX close_time=(23,30) here when the sim driver
+        # exposes the segment for per-row context. Default 15:30 for NSE/NFO.
         T_yrs  = days_to_expiry(expiry, ref=ref_now) / 365.0
         sig    = sigma if (sigma and sigma > 0) else DEFAULT_IV
         return black_scholes(float(spot), parsed["strike"],
