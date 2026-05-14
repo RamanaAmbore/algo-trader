@@ -242,7 +242,11 @@
     position: relative;
   }
   .pub-card-wide {
-    max-width: 1536px;
+    /* /performance is a data-dense operator surface — uncap so the
+       grids use the full viewport on wide monitors. Reading pages
+       (/about, /faq, /market, /contact) keep the 1280px typography
+       cap via .pub-card. */
+    max-width: 100%;
   }
   :global(.pub-card-wide .pub-content) {
     padding-left: 0.25rem;
