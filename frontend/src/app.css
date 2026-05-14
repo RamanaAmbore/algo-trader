@@ -91,10 +91,10 @@
   background-color: transparent !important;
   padding-left: 3px !important;
   padding-right: 3px !important;
-  /* No per-cell vertical separator in the header — read as a
-     champagne tick at column ends against the dark navy bg. The
-     header is already visually distinct via its bg. */
-  border-right: none !important;
+  /* Visible champagne hairline between header cells — reads as a
+     clear column divider against the navy bg without the tick-like
+     short bar the resize handle produced. */
+  border-right: 1px solid rgba(232,217,168,0.30) !important;
 }
 /* Hide header menu/filter icons */
 .ag-theme-ramboq .ag-header-cell-menu-button,
