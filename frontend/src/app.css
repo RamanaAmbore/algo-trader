@@ -32,7 +32,9 @@
 /* ── AG Grid — RamboQuant theme ──────────────────────────────────────────── */
 /* Outside @layer so these override AG Grid's imported quartz styles            */
 .ag-theme-ramboq {
-  --ag-header-background-color: #0c1830;
+  --ag-header-background-color: #1d2939;
+  --ag-cell-focus-border-color: #c8a84b;
+  --ag-range-selection-border-color: #c8a84b;
   --ag-header-foreground-color: #e8d9a8;
   --ag-header-font-weight: 600;
   --ag-header-font-size: 0.6875rem;
@@ -59,11 +61,11 @@
 .ag-theme-ramboq .ag-root-wrapper {
   border-radius: 4px;
   overflow: hidden;
-  background-color: #0c1830 !important;
+  background-color: #1d2939 !important;
   box-shadow: none !important;
 }
 .ag-theme-ramboq .ag-header {
-  background-color: #0c1830 !important;
+  background-color: #1d2939 !important;
   color: #e8d9a8 !important;
 }
 .ag-theme-ramboq .ag-body {
@@ -104,7 +106,7 @@
 }
 /* Background fill for Account and Symbol columns */
 .ag-theme-ramboq .ag-cell.ag-col-fill {
-  background-color: #e8e0d0 !important;
+  background-color: rgba(180,165,145,0.18) !important;
 }
 .ag-theme-ramboq .ag-header-cell.ag-col-fill {
   background-color: rgba(0,0,0,0.08) !important;
@@ -222,10 +224,10 @@
    LONG = sage-teal, SHORT = warm-terracotta — both desaturated so they
    sit alongside the cream + champagne palette without shouting. */
 .ag-theme-ramboq .ag-row.pos-long .ag-col-fill {
-  background-color: rgba(91,142,149,0.14) !important;
+  background-color: rgba(91,142,149,0.10) !important;
 }
 .ag-theme-ramboq .ag-row.pos-short .ag-col-fill {
-  background-color: rgba(196,122,61,0.14) !important;
+  background-color: rgba(196,122,61,0.10) !important;
 }
 /* Symbol-cell side borders — paint a neutral pair on every Symbol cell
    so the column always reads as bordered, even on rows that don't carry
