@@ -239,15 +239,17 @@
   // LEFT half. Each column gets just enough room for its widest
   // expected value + the ~4 px cell padding from the theme.
   const holdingsSummaryCols = [
-    // Account stays fixed (compact identifier). Every numeric column
-    // is flex so they all widen proportionally to the viewport.
+    // Order: operator priority — Day P&L (today's move) leads, P&L (carry)
+    // follows, current/inv totals trail. Widths fixed (not flex) so the
+    // big aggregate numbers (₹X,XX,XXX or crore-level) stop getting
+    // truncated on the summary row.
     { field: 'account',               headerName: 'Account',  width: 70,  minWidth: 70,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'day_change_val',        headerName: 'Day P&L',  flex: 2, minWidth: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    flex: 1, minWidth: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      flex: 2, minWidth: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    flex: 1, minWidth: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'cur_val',               headerName: 'Cur Val',  flex: 2, minWidth: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'inv_val',               headerName: 'Inv Val',  flex: 2, minWidth: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Cur Val',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'inv_val',               headerName: 'Inv Val',  flex: 1, minWidth: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Order priority: LTP → Avg Price → Day P&L → Day % → P&L → P&L % → Qty → Cur Val.
@@ -255,23 +257,23 @@
   // column on narrow viewports (operator was scrolling to find them).
   const holdingsCols = [
     { field: 'account',               headerName: 'Account',  width: 70, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'tradingsymbol',         headerName: 'Symbol',   width: 130, pinned: 'left', cellClass: symFill, headerClass: symFill },
-    { field: 'last_price',            headerName: 'LTP',       flex: 1, minWidth: 70, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price',         headerName: 'Avg Price', flex: 1, minWidth: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'day_change_val',        headerName: 'Day P&L',  flex: 2, minWidth: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    flex: 1, minWidth: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      flex: 2, minWidth: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    flex: 1, minWidth: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'quantity',              headerName: 'Qty',      flex: 1, minWidth: 56, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'cur_val',               headerName: 'Cur Val',  flex: 2, minWidth: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'tradingsymbol',         headerName: 'Symbol',   width: 105, pinned: 'left', cellClass: symFill, headerClass: symFill },
+    { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Cur Val',  flex: 1, minWidth: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Positions summary — same Day-leading order as holdings summary.
   const positionsSummaryCols = [
     { field: 'account',               headerName: 'Account', width: 70,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'day_change_val',        headerName: 'Day P&L', flex: 2, minWidth: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',   flex: 1, minWidth: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',     flex: 2, minWidth: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L', width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',   width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',     flex: 1, minWidth: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Options deep-link cell renderer — only wired up when enableOptionsLink
@@ -305,14 +307,16 @@
 
   const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 70, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
+    // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
-    { field: 'last_price',           headerName: 'LTP',       flex: 1, minWidth: 70, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price',        headerName: 'Avg Price', flex: 1, minWidth: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'day_change_val',       headerName: 'Day P&L',   flex: 2, minWidth: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage',headerName: 'Day %',     flex: 1, minWidth: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                  headerName: 'P&L',       flex: 2, minWidth: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',       headerName: 'P&L %',     flex: 1, minWidth: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'quantity',             headerName: 'Qty',       flex: 1, minWidth: 56, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
+    { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'average_price',        headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                  headerName: 'P&L',       flex: 1, minWidth: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
   ]);
 
   const fundsCols = [
