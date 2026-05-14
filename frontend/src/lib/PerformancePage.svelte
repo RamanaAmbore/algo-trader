@@ -741,7 +741,7 @@
     background: #faf8f4;
     border: 1px solid #d8d4cc;
     border-radius: 8px;
-    padding: 0.5rem 0.5rem 0.75rem;
+    padding: 0.5rem 0.25rem 0.75rem;
     box-shadow: 0 1px 4px rgba(15,23,42,0.08), 0 4px 16px rgba(15,23,42,0.06);
   }
   :global(.pub-perf-card .section-heading) {

@@ -249,8 +249,8 @@
     max-width: 100%;
   }
   :global(.pub-card-wide .pub-content) {
-    padding-left: 0.25rem;
-    padding-right: 0.25rem;
+    padding-left: 0;
+    padding-right: 0;
   }
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */
