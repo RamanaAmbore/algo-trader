@@ -243,7 +243,7 @@
     // follows, current/inv totals trail. Widths fixed (not flex) so the
     // big aggregate numbers (₹X,XX,XXX or crore-level) stop getting
     // truncated on the summary row.
-    { field: 'account',               headerName: 'Account',  width: 70,  minWidth: 70,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',               headerName: 'Account',  width: 54,  minWidth: 54,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -256,8 +256,8 @@
   // Day cols promoted from index 7-8 to 5-6 so they read in the visible scan
   // column on narrow viewports (operator was scrolling to find them).
   const holdingsCols = [
-    { field: 'account',               headerName: 'Account',  width: 70, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'tradingsymbol',         headerName: 'Symbol',   width: 105, pinned: 'left', cellClass: symFill, headerClass: symFill },
+    { field: 'account',               headerName: 'Account',  width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'tradingsymbol',         headerName: 'Symbol',   width: 78, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -270,7 +270,7 @@
 
   // Positions summary — same Day-leading order as holdings summary.
   const positionsSummaryCols = [
-    { field: 'account',               headerName: 'Account', width: 70,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',               headerName: 'Account', width: 54,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L', width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',   width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',     flex: 1, minWidth: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -302,11 +302,11 @@
   }
 
   const positionsSymbolCol = $derived(enableOptionsLink
-    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 140, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
-    : { field: 'tradingsymbol', headerName: 'Symbol', width: 130, pinned: 'left', cellClass: symFill, headerClass: symFill });
+    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 110, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
+    : { field: 'tradingsymbol', headerName: 'Symbol', width: 100, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
-    { field: 'account',       headerName: 'Account',   width: 70, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',       headerName: 'Account',   width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
@@ -320,7 +320,7 @@
   ]);
 
   const fundsCols = [
-    { field: 'account',      headerName: 'Account',      width: 70, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',      headerName: 'Account',      width: 54, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
