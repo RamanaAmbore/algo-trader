@@ -29,8 +29,17 @@
   // `paperStatus.branch` flag arrives via the poll; before the
   // first response lands, `isDemo` is conservatively false so the
   // page doesn't flicker.
+  //
+  // NB: bridging the legacy `authStore` through `$state` via
+  // `$effect`. Reading `$authStore.user` directly inside `$derived`
+  // was unreliable — operators reported DEMO + Sign-Out visible at
+  // the same time (logically impossible if the same store value was
+  // observed in both reactive scopes). The bridge guarantees both
+  // `isDemo` and the nav conditionals read identical state.
+  let _userPresent = $state(false);
+  $effect(() => { _userPresent = !!$authStore.user; });
   const isDemo = $derived(
-    !$authStore.user && paperStatus?.branch === 'main'
+    !_userPresent && paperStatus?.branch === 'main'
   );
 
   setContext('algoStatus', {
