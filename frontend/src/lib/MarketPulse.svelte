@@ -335,31 +335,45 @@
   // Account picker scopes the body rows; TOTAL pinned at the bottom.
   function isTotalRow(r) { return r && r.account === 'TOTAL'; }
 
-  // Positions Summary — Day P&L + P&L per account (no Cur Val).
+  // Positions Summary — Day P&L + Day % + P&L per account.
   const positionsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('positions')) return [];
     const byAcct = /** @type {Record<string, any>} */ ({});
     for (const r of positionsSummary) {
       const a = r.account;
       if (!a) continue;
-      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0 };
-      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
-      byAcct[a].pnl     += Number(r.pnl)            || 0;
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, _inv_val: 0 };
+      byAcct[a].day_pnl  += Number(r.day_change_val) || 0;
+      byAcct[a].pnl      += Number(r.pnl)            || 0;
+      byAcct[a]._inv_val += Number(r.inv_val)         || 0;
+    }
+    // Derive weighted-average percentages after accumulating the sums.
+    for (const row of Object.values(byAcct)) {
+      const iv = row._inv_val;
+      row.day_change_percentage = iv ? (row.day_pnl / iv) * 100 : null;
+      delete row._inv_val;
     }
     return Object.values(byAcct);
   });
 
-  // Holdings Summary — Day P&L + P&L + Cur Val per account.
+  // Holdings Summary — Day P&L + Day % + P&L + P&L % + Cur Val + Inv Val per account.
   const holdingsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('holdings')) return [];
     const byAcct = /** @type {Record<string, any>} */ ({});
     for (const r of holdingsSummary) {
       const a = r.account;
       if (!a) continue;
-      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0 };
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0, inv_val: 0 };
       byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl)            || 0;
       byAcct[a].cur_val += Number(r.cur_val)         || 0;
+      byAcct[a].inv_val += Number(r.inv_val)         || 0;
+    }
+    // Derive weighted-average percentages after accumulating the sums.
+    for (const row of Object.values(byAcct)) {
+      const iv = row.inv_val;
+      row.day_change_percentage = iv ? (row.day_pnl / iv) * 100 : null;
+      row.pnl_percentage        = iv ? (row.pnl     / iv) * 100 : null;
     }
     return Object.values(byAcct);
   });
@@ -1093,15 +1107,18 @@
     });
     gridReady = true;
 
-    // Positions Summary grid — per-account Day P&L + P&L (no Cur Val).
+    // Positions Summary grid — Account | Day P&L | Day % | P&L
     if (showSummary && positionsSummaryEl) {
       const posSummaryCols = [
-        { field: 'account', headerName: 'Account', width: 90,
+        { field: 'account',               headerName: 'Account', width: 90,
           cellClass: 'ag-col-fill' },
-        { field: 'day_pnl', headerName: 'Day P&L', width: 110,
+        { field: 'day_pnl',               headerName: 'Day P&L', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'pnl', headerName: 'P&L', flex: 1,
+        { field: 'day_change_percentage', headerName: 'Day %',   width: 78,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: pctFmtGrid },
+        { field: 'pnl',                   headerName: 'P&L',     flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
       ];
@@ -1121,18 +1138,27 @@
       positionsSummaryReady = true;
     }
 
-    // Holdings Summary grid — per-account Day P&L + P&L + Cur Val.
+    // Holdings Summary grid — Account | Day P&L | Day % | P&L | P&L % | Cur Val | Inv Val
     if (showSummary && holdingsSummaryEl) {
       const holdSummaryCols = [
-        { field: 'account', headerName: 'Account', width: 90,
+        { field: 'account',               headerName: 'Account', width: 90,
           cellClass: 'ag-col-fill' },
-        { field: 'day_pnl', headerName: 'Day P&L', width: 110,
+        { field: 'day_pnl',               headerName: 'Day P&L', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'pnl', headerName: 'P&L', width: 110,
+        { field: 'day_change_percentage', headerName: 'Day %',   width: 78,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: pctFmtGrid },
+        { field: 'pnl',                   headerName: 'P&L',     width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'cur_val', headerName: 'Cur Val', flex: 1,
+        { field: 'pnl_percentage',        headerName: 'P&L %',   width: 78,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: dirCellClass, valueFormatter: pctFmtGrid },
+        { field: 'cur_val',               headerName: 'Cur Val', width: 110,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid },
+        { field: 'inv_val',               headerName: 'Inv Val', flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
       ];
