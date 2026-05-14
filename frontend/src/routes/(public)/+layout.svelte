@@ -43,7 +43,7 @@
 <div class="pub-viewport">
   <div class="pub-accent-top"></div>
 
-  <div class="pub-card">
+  <div class="pub-card" class:pub-card-wide={page.url.pathname === '/performance'}>
     <!-- Desktop navbar -->
     <header class="pub-navbar">
       <div class="pub-nav-inner hidden md:flex items-center gap-1 h-14">
@@ -240,6 +240,13 @@
     margin-top: 4px;
     margin-bottom: 4px;
     position: relative;
+  }
+  .pub-card-wide {
+    max-width: 1536px;
+  }
+  :global(.pub-card-wide .pub-content) {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
   }
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */

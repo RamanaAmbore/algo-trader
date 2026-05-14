@@ -1190,7 +1190,7 @@
   }
 </script>
 
-<div class="algo-status-card p-3 pt-2.5" data-status="inactive">
+<div class="algo-status-card p-1.5" data-status="inactive">
 
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
