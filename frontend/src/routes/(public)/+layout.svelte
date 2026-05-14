@@ -253,10 +253,10 @@
     box-shadow: none;
   }
   :global(.pub-card-wide .pub-content) {
-    /* Mirror algo /dashboard's .algo-content side padding so the
-       outer-frame breathing room matches. */
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
+    /* Operator wants the outer card flush with viewport on
+       /performance — zero side padding. */
+    padding-left: 0;
+    padding-right: 0;
   }
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */

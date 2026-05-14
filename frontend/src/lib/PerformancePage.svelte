@@ -739,10 +739,12 @@
      but in a warm cream palette instead of the dark navy. */
   .pub-perf-card {
     background: #faf8f4;
-    border: 1px solid #d8d4cc;
-    border-radius: 8px;
-    padding: 0.375rem;
-    box-shadow: 0 1px 4px rgba(15,23,42,0.08), 0 4px 16px rgba(15,23,42,0.06);
+    border-top: 1px solid #d8d4cc;
+    border-bottom: 1px solid #d8d4cc;
+    /* Flush with viewport — no side border or radius so the cream
+       card extends fully edge-to-edge. Operator-requested density. */
+    padding: 0.375rem 0 0.5rem;
+    box-shadow: 0 1px 4px rgba(15,23,42,0.06);
   }
   :global(.pub-perf-card .section-heading) {
     margin-bottom: 0.25rem;
