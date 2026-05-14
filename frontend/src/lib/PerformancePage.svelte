@@ -617,7 +617,7 @@
 {#if !compactHeader}
   <!-- Default layout: timestamp + Refresh button on their own line, tabs
        below. The public /performance page uses this. -->
-  <div class="flex items-center justify-between mb-2">
+  <div class="flex items-center justify-between mb-1.5">
     <div class="text-[0.65rem] text-muted perf-ts">
       {#if loading && !lastRefresh}
         <span class="animate-pulse">Loading…</span>
@@ -634,7 +634,7 @@
 <!-- Tabs + account selector. With `compactHeader`, the refresh timestamp
      joins this row as the last element (no Refresh button — the
      performance WebSocket already handles auto-refresh). -->
-<div class="tabs-row mb-3">
+<div class="tabs-row mb-2">
   <div class="flex gap-0.5">
     {#each [['positions','Positions'],['holdings','Holdings']] as [id, label]}
       <button
@@ -685,11 +685,11 @@
     </button>
   {/if}
 </div>
-<div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-4 w-full"></div>
+<div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
 <section class:hidden={activeTab !== 'positions'}>
   <h2 class="section-heading">Summary</h2>
-  <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-4 w-full"></div>
+  <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
   <h2 class="section-heading">Positions</h2>
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
@@ -697,7 +697,7 @@
 
 <section class:hidden={activeTab !== 'holdings'}>
   <h2 class="section-heading">Summary</h2>
-  <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-4 w-full"></div>
+  <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
   <h2 class="section-heading">Holdings</h2>
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
@@ -741,8 +741,11 @@
     background: #faf8f4;
     border: 1px solid #d8d4cc;
     border-radius: 8px;
-    padding: 1rem;
+    padding: 0.5rem 0.5rem 0.75rem;
     box-shadow: 0 1px 4px rgba(15,23,42,0.08), 0 4px 16px rgba(15,23,42,0.06);
+  }
+  :global(.pub-perf-card .section-heading) {
+    margin-bottom: 0.25rem;
   }
 
   .hidden { display: none; }
