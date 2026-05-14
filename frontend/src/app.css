@@ -48,10 +48,12 @@
   --ag-font-size: 0.625rem;
   --ag-row-height: 22px;
   --ag-header-height: 28px;
-  --ag-wrapper-border-radius: 4px;
-  border-radius: 4px;
+  --ag-wrapper-border-radius: 0;
+  border-radius: 0;
   overflow: hidden;
-  border: 1px solid #d1d5db;
+  /* No outer border — the grid sits inside .pub-perf-card which
+     provides its own framing. A grid-level border looked boxed-in. */
+  border: none;
   box-shadow: none !important;
 }
 /* autoHeight: only remove min-height that pads small tables */
@@ -60,9 +62,11 @@
   min-height: 0 !important;
 }
 .ag-theme-ramboq .ag-root-wrapper {
-  border-radius: 4px;
+  border-radius: 0;
   overflow: hidden;
-  background-color: #1d2939 !important;
+  /* No wrapper bg — header carries its own #1d2939; body is cream.
+     The earlier navy wrapper bled at corners with the 4px radius. */
+  background-color: transparent !important;
   box-shadow: none !important;
 }
 .ag-theme-ramboq .ag-header {
