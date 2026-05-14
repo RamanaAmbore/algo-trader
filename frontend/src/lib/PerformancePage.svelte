@@ -596,7 +596,7 @@
   });
 </script>
 
-<div class:perf-dark={isDark} class:pub-perf-card={!isDark}>
+<div class:perf-dark={isDark}>
 
 {#if error}
   <!-- Graceful banner. Errors fall into two buckets:
@@ -734,22 +734,14 @@
 </div><!-- /perf-dark -->
 
 <style>
-  /* Public /performance cream card — only applied on the light theme
-     (class:pub-perf-card={!isDark}). Mirrors .algo-status-card shape
-     but in a warm cream palette instead of the dark navy. */
-  .pub-perf-card {
-    background: #faf8f4;
-    /* No top or bottom hairline — cream surface alone defines the
-       card. Divider sits below the timestamp row only. */
-    padding: 0.375rem 0 0.5rem;
-    box-shadow: 0 1px 4px rgba(15,23,42,0.06);
-  }
-  /* Divider rule sits below the timestamp/Refresh row, replacing the
-     retired card-top border. */
+  /* Public /performance: no inner cream card. Content sits directly
+     on the page envelope (.pub-card-wide). The only chrome is the
+     hairline divider below the timestamp/Refresh row. */
   .perf-ts-row {
     border-bottom: 1px solid #d8d4cc;
   }
-  :global(.pub-perf-card .section-heading) {
+  /* Tighter heading-to-grid gap on the public side. */
+  :global(.pub-card-wide .section-heading) {
     margin-bottom: 0.25rem;
   }
 
