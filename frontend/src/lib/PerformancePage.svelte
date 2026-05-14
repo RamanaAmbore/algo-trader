@@ -8,6 +8,8 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
+  import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -27,6 +29,10 @@
     enableOptionsLink = false,
   } = $props();
   const isDark = $derived(theme === 'ag-theme-algo');
+
+  // Read tab from URL ?tab= param; default to 'positions'
+  const validTabs = ['positions', 'holdings'];
+  let activeTab = $state(validTabs.includes(page.url.searchParams.get('tab')) ? page.url.searchParams.get('tab') : 'positions');
 
   // OrderTicket props built from the clicked row. IBKR convention:
   // a row click defaults the ticket to CLOSE semantics (opposite
@@ -88,6 +94,13 @@
     };
   }
 
+  function switchTab(/** @type {string} */ id) {
+    activeTab = id;
+    const url = new URL(page.url);
+    url.searchParams.set('tab', id);
+    goto(url.pathname + url.search, { replaceState: true, noScroll: true });
+  }
+
   let lastRefresh = $state('');
   let loading     = $state(false);
   let error       = $state('');
@@ -99,7 +112,7 @@
   let accounts        = $state([]);
   let positionSymbols = $state(/** @type {string[]} */([]));
   let holdingSymbols  = $state(/** @type {string[]} */([]));
-  const symbols = $derived([...new Set([...positionSymbols, ...holdingSymbols])]);
+  const symbols = $derived(activeTab === 'holdings' ? holdingSymbols : positionSymbols);
   let rawHoldings     = $state([]);
   let rawPositions    = $state([]);
   let rawFunds        = $state([]);
@@ -514,19 +527,26 @@
   }
 
   function reconcileSymbols() {
-    const allVisible = [...new Set([...positionSymbols, ...holdingSymbols])];
-    const kept = selectedSymbols.filter(s => allVisible.includes(s));
+    const visible = (activeTab === 'holdings' ? holdingSymbols : positionSymbols);
+    const kept = selectedSymbols.filter(s => visible.includes(s));
     if (kept.length !== selectedSymbols.length) selectedSymbols = kept;
   }
 
-  // Reconcile selected symbols when the symbol lists change.
+  // Switching tabs changes which symbol list the picker shows; reconcile
+  // the selection so stale symbols don't hold the grid empty.
   $effect(() => {
-    holdingSymbols; positionSymbols;
+    activeTab; holdingSymbols; positionSymbols;
     reconcileSymbols();
   });
 
   $effect(() => {
-    selectedAccount; selectedSymbols;
+    // Track account + symbol filters + active tab. activeTab is in here
+    // so the filter re-runs on tab switch (defensive — the grids already
+    // hold the right rows since applyAccountFilter runs on every data
+    // refresh, but re-running on tab-switch guards against any edge
+    // case where the tab-scoped symbol list reconciliation runs
+    // mid-flight).
+    selectedAccount; selectedSymbols; activeTab;
     applyAccountFilter();
   });
 
@@ -611,9 +631,24 @@
   </div>
 {/if}
 
-<!-- Account + symbol filters row. -->
+<!-- Tabs + account selector. With `compactHeader`, the refresh timestamp
+     joins this row as the last element (no Refresh button — the
+     performance WebSocket already handles auto-refresh). -->
 <div class="tabs-row mb-3">
+  <div class="flex gap-0.5">
+    {#each [['positions','Positions'],['holdings','Holdings']] as [id, label]}
+      <button
+        class="px-3 py-1 text-xs font-medium border-b-2 transition-colors
+               {activeTab === id ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-text'}"
+        onclick={() => switchTab(id)}
+      >{label}</button>
+    {/each}
+  </div>
   {#if accounts.length > 0}
+    <!-- Account picker uses the themed <Select> so it visually matches
+         the MultiSelect next to it. Single-select — account scope.
+         Theme mirrors the page (dark on the algo dashboard, light on
+         the public /performance). -->
     <div class="acct-multi">
       <Select
         bind:value={selectedAccount}
@@ -625,6 +660,8 @@
     </div>
   {/if}
   {#if symbols.length > 0}
+    <!-- Multi-select: empty array ⇒ "all symbols"; any non-empty
+         selection ⇒ filter the active tab's detail grid to that set. -->
     <div class="sym-multi">
       <MultiSelect
         bind:value={selectedSymbols}
@@ -650,16 +687,16 @@
 </div>
 <div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-4 w-full"></div>
 
-<section>
-  <h2 class="section-heading">Positions Summary</h2>
+<section class:hidden={activeTab !== 'positions'}>
+  <h2 class="section-heading">Summary</h2>
   <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-4 w-full"></div>
 
   <h2 class="section-heading">Positions</h2>
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
-<section>
-  <h2 class="section-heading">Holdings Summary</h2>
+<section class:hidden={activeTab !== 'holdings'}>
+  <h2 class="section-heading">Summary</h2>
   <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-4 w-full"></div>
 
   <h2 class="section-heading">Holdings</h2>
