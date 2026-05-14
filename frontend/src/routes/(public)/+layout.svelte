@@ -243,10 +243,14 @@
   }
   .pub-card-wide {
     /* /performance is a data-dense operator surface — uncap so the
-       grids use the full viewport on wide monitors. Reading pages
-       (/about, /faq, /market, /contact) keep the 1280px typography
-       cap via .pub-card. */
-    max-width: 100%;
+       grids stretch flush with the viewport. Reading pages keep the
+       1280px typography cap via .pub-card. */
+    max-width: 100vw;
+    width: 100vw;
+    /* Drop the side box-shadow on wide route — it extends 14px past
+       the card border and visibly darkens the viewport edges when the
+       card is already flush with them. */
+    box-shadow: none;
   }
   :global(.pub-card-wide .pub-content) {
     padding-left: 0;
