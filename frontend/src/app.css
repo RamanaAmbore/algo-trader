@@ -262,11 +262,13 @@
 .ag-theme-ramboq .ag-row.pos-short.ag-row-hover .ag-col-fill {
   background-color: rgba(196,122,61,0.12) !important;
 }
-/* Totals row cells inherit the header color regardless of +/-/0 */
+/* Totals row cells use navy text on the inverted (champagne) bg —
+   matches the row-level color set above; suppresses per-cell
+   gain/loss tinting on aggregate rows. */
 .ag-theme-ramboq .ag-row.totals-row .pnl-loss,
 .ag-theme-ramboq .ag-row.totals-row .pnl-gain,
 .ag-theme-ramboq .ag-row.totals-row .pnl-zero,
-.ag-theme-ramboq .ag-row.totals-row .ag-cell { color: #e8d9a8 !important; background-color: transparent !important; }
+.ag-theme-ramboq .ag-row.totals-row .ag-cell { color: #1d2939 !important; background-color: transparent !important; }
 .ag-theme-algo .ag-row.totals-row .pnl-loss,
 .ag-theme-algo .ag-row.totals-row .pnl-gain,
 .ag-theme-algo .ag-row.totals-row .pnl-zero,
