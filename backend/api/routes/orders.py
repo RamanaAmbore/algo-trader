@@ -30,7 +30,7 @@ from litestar.exceptions import HTTPException
 from litestar.params import Parameter
 from litestar.status_codes import HTTP_200_OK
 
-from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, is_admin_request
+from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, is_admin_request, is_authenticated_request
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.routes.ws import broadcast
 from backend.api.schemas import (
@@ -255,8 +255,8 @@ class OrdersController(Controller):
     async def list_orders(self, request: Request) -> OrdersResponse:
         try:
             resp = await get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL)
-            # Mask account codes for non-admin callers (demo / public).
-            if not is_admin_request(request):
+            # Mask account codes for anonymous callers (demo / public).
+            if not is_authenticated_request(request):
                 for r in resp.rows:
                     r.account = mask_column(pd.Series([r.account]))[0]
             return resp
@@ -288,10 +288,10 @@ class OrdersController(Controller):
             if mode in ("live", "sim", "paper", "replay", "shadow"):
                 q = q.where(AlgoOrder.mode == mode)
             rows = (await s.execute(q)).scalars().all()
-        # Mask account codes for non-admin callers (demo + public).
+        # Mask account codes for anonymous callers (demo + public).
         # Same masking the /performance grids apply — turns ZG0790
         # into ZG####.
-        do_mask = not is_admin_request(request)
+        do_mask = not is_authenticated_request(request)
         masked_acct = (
             (lambda a: mask_column(pd.Series([a]))[0]) if do_mask else (lambda a: a)
         )
@@ -329,7 +329,7 @@ class OrdersController(Controller):
                 .order_by(asc(_AlgoOrderEvent.ts))
             )).scalars().all()
 
-        do_mask = not is_admin_request(request)
+        do_mask = not is_authenticated_request(request)
 
         def _mask_payload(raw: str | None) -> str | None:
             if raw is None or not do_mask:
@@ -400,7 +400,7 @@ class OrdersController(Controller):
                     .limit(limit)
                 )).scalars().all()
 
-        do_mask = not is_admin_request(request)
+        do_mask = not is_authenticated_request(request)
 
         def _mask_payload(raw: str | None) -> str | None:
             if raw is None or not do_mask:
@@ -1106,11 +1106,11 @@ class AccountsController(Controller):
 
     @get("/")
     async def list_accounts(self, request: Request) -> AccountsResponse:
-        # display = real account_id for admin/designated callers,
-        # masked (ZG####) for any other signed-in caller. Symmetric
+        # display = real account_id for any authenticated caller,
+        # masked (ZG####) for anonymous (demo / public). Symmetric
         # with mask_column() in row endpoints (positions/holdings/funds).
         conn = Connections().conn
-        do_mask = not is_admin_request(request)
+        do_mask = not is_authenticated_request(request)
         accounts = [
             AccountInfo(
                 account_id=account,

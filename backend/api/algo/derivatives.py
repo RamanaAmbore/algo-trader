@@ -557,27 +557,33 @@ def multileg_payoff_curve(legs: list[dict], *, S: float,
         for l in legs:
             kind = l.get("kind") or "opt"
             qty  = int(l["qty"])
+            # scale_ratio maps the chart's near-month spot axis to the
+            # leg's own contract-month spot. For non-MCX legs this is 1.0
+            # (no-op). For MCX legs it equals S_leg_current / S_near so
+            # a CRUDEOIL26JUN option at a chart x=9663 evaluates at its
+            # actual JUN price = 9663 × (9356/9663) = 9356.
+            scale = float(l.get("scale_ratio") or 1.0)
+            s_leg = s_i * scale
             if kind == "fut":
-                # Futures: linear in spot. Today's value tracks spot
-                # 1:1 (cost-of-carry over the sim window is sub-tick);
-                # expiry value is the same — futures settle to spot.
-                today_sum  += s_i * qty
-                expiry_sum += s_i * qty
+                # Futures: linear in leg-spot. Both today and expiry
+                # track the leg's own contract price proportionally.
+                today_sum  += s_leg * qty
+                expiry_sum += s_leg * qty
                 continue
             # Options
             K     = float(l["strike"])
             opt   = l["opt_type"]
             T_yrs = float(l.get("T_years") or 0)
             sig   = float(l.get("sigma") or DEFAULT_IV)
-            today_sum  += black_scholes(s_i, K, T_yrs, r, sig, opt) * qty
+            today_sum  += black_scholes(s_leg, K, T_yrs, r, sig, opt) * qty
             # Expiry value: when eval_T is set and this leg has remaining
             # time after the near expiry, re-price via BS with T_remaining
             # so the far leg's time value is captured (calendar spread).
             if eval_T is not None and T_yrs > eval_T:
                 T_remaining = T_yrs - eval_T
-                expiry_sum += black_scholes(s_i, K, T_remaining, r, sig, opt) * qty
+                expiry_sum += black_scholes(s_leg, K, T_remaining, r, sig, opt) * qty
             else:
-                intrinsic   = max(0.0, s_i - K) if opt == "CE" else max(0.0, K - s_i)
+                intrinsic   = max(0.0, s_leg - K) if opt == "CE" else max(0.0, K - s_leg)
                 expiry_sum += intrinsic * qty
         out.append({
             "spot":         round(s_i, 4),
@@ -693,16 +699,18 @@ def multileg_intermediate_curves(legs: list[dict], *, S: float,
             s_i = lo + step * i
             slice_sum = 0.0
             for l in legs:
-                kind = l.get("kind") or "opt"
-                qty  = int(l["qty"])
+                kind  = l.get("kind") or "opt"
+                qty   = int(l["qty"])
+                scale = float(l.get("scale_ratio") or 1.0)
+                s_leg = s_i * scale
                 if kind == "fut":
-                    slice_sum += s_i * qty
+                    slice_sum += s_leg * qty
                     continue
                 K     = float(l["strike"])
                 opt   = l["opt_type"]
                 T_yrs = float(l.get("T_years") or 0) * (1.0 - p)
                 sig   = float(l.get("sigma") or DEFAULT_IV)
-                slice_sum += black_scholes(s_i, K, T_yrs, r, sig, opt) * qty
+                slice_sum += black_scholes(s_leg, K, T_yrs, r, sig, opt) * qty
             values.append(round(slice_sum - total_cost, 2))
         out.append({
             "label":       _slice_label(days_left),
@@ -734,7 +742,10 @@ def multileg_greeks(legs: list[dict], *, S: float,
         opt   = l["opt_type"]
         T_yrs = float(l.get("T_years") or 0)
         sig   = float(l.get("sigma") or DEFAULT_IV)
-        g = greeks(S, K, T_yrs, r, sig, opt)
+        # Apply scale_ratio so Greeks evaluate at the leg's own contract-
+        # month spot rather than the chart's near-month reference spot.
+        scale = float(l.get("scale_ratio") or 1.0)
+        g = greeks(S * scale, K, T_yrs, r, sig, opt)
         for k in out:
             out[k] += g[k] * qty
     return out

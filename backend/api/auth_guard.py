@@ -105,6 +105,23 @@ async def designated_guard(connection: ASGIConnection, handler: BaseRouteHandler
         raise NotAuthorizedException("Designated-admin access required")
 
 
+def is_authenticated_request(connection: ASGIConnection) -> bool:
+    """True iff the request carries a valid JWT, regardless of role.
+    Used by data-masking chokepoints: anonymous = masked; any
+    authenticated user = unmasked. Signature/expiry only — does NOT
+    validate token_version or live user state, mirroring
+    is_admin_request."""
+    try:
+        auth_header = connection.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return False
+        token = auth_header.removeprefix("Bearer ").strip()
+        from backend.api.routes.auth import verify_token
+        return verify_token(token) is not None
+    except Exception:
+        return False
+
+
 def is_admin_request(connection: ASGIConnection) -> bool:
     """Check if the request has a valid admin (or designated) JWT.
     Signature-and-expiry check only — does NOT validate token_version

@@ -5,7 +5,7 @@ import polars as pl
 from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 
-from backend.api.auth_guard import is_admin_request
+from backend.api.auth_guard import is_admin_request, is_authenticated_request
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import FundsResponse, FundsRow
 from backend.shared.helpers import broker_apis
@@ -77,7 +77,7 @@ class FundsController(Controller):
             if fresh:
                 invalidate("funds")
             resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
-            if not is_admin_request(request):
+            if not is_authenticated_request(request):
                 for r in resp.rows:
                     if r.account != 'TOTAL':
                         r.account = mask_column(pd.Series([r.account]))[0]

@@ -7,7 +7,7 @@ from litestar.exceptions import HTTPException
 
 from litestar import Request
 
-from backend.api.auth_guard import is_admin_request
+from backend.api.auth_guard import is_admin_request, is_authenticated_request
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.shared.helpers import broker_apis
@@ -95,7 +95,7 @@ class HoldingsController(Controller):
             if fresh:
                 invalidate("holdings")
             resp = await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
-            if not is_admin_request(request):
+            if not is_authenticated_request(request):
                 for r in resp.rows:
                     r.account = mask_column(pd.Series([r.account]))[0]
                 for s in resp.summary:

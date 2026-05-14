@@ -1307,6 +1307,86 @@ class OptionsController(Controller):
         eval_T: float      = min(_option_T_list) if _option_T_list else 0.0
         T_yrs_shared: float = max(_option_T_list) if _option_T_list else 0.0
 
+        # ── MCX per-leg scale_ratio ────────────────────────────────────
+        # For MCX commodity baskets the chart's X-axis uses the near-month
+        # (front-month) futures price as "spot" (S). But an option whose
+        # contract month ≠ near month has its own forward price S_leg. If
+        # we calibrate σ against S (near) instead of S_leg the IV is
+        # wrong, and the today_value curve comes out distorted.
+        #
+        # Fix: per-leg scale_ratio = S_leg_current / S_near.
+        # BS calls in multileg_* use S * scale_ratio for each leg.
+        # At chart X = S (today), S_leg = S_leg_current exactly — matching
+        # the point σ was calibrated against. At X = S*1.05 (+5% chart),
+        # each leg evaluates at +5% on its own contract-month price.
+        #
+        # Non-MCX legs and any leg whose same-month future can't be found
+        # get scale_ratio = 1.0 (no-op, original behaviour preserved).
+        #
+        # Batch all the per-leg same-month futures lookups into one
+        # broker.quote() call to avoid N sequential round-trips.
+        _is_commodity = is_mcx_underlying(underlying)
+        _leg_scale_ratios: dict[str, float] = {}   # symbol → scale_ratio
+        if _is_commodity and S > 0:
+            # Collect unique (underlying, expiry_month) pairs across legs;
+            # one quote key per distinct contract month suffices.
+            _month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
+            for _leg in data.legs:
+                _lsym = _leg.symbol.upper().strip()
+                _lparsed = parse_tradingsymbol(_lsym)
+                if not _lparsed:
+                    continue
+                _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
+                _month_key = (_leg_exp.year, _leg_exp.month)
+                if _month_key not in _month_to_fut_sym:
+                    _month_to_fut_sym[_month_key] = None  # placeholder, filled below
+
+            # Resolve tradingsymbol for each distinct contract month.
+            for _mk in list(_month_to_fut_sym.keys()):
+                _hint = date(_mk[0], _mk[1], 1)
+                try:
+                    _fut_sym = await _lookup_mcx_future(underlying, _hint)
+                    _month_to_fut_sym[_mk] = _fut_sym
+                except Exception:
+                    pass
+
+            # Batch broker.quote() for all resolved futures symbols.
+            _fut_quote_keys = [
+                f"MCX:{fs}"
+                for fs in _month_to_fut_sym.values()
+                if fs
+            ]
+            _fut_quote_resp: dict = {}
+            if _fut_quote_keys:
+                try:
+                    _fut_quote_resp = get_price_broker().quote(_fut_quote_keys) or {}
+                except Exception as _e:
+                    logger.warning(
+                        f"MCX per-leg futures batch quote failed: {_e}; "
+                        "falling back to scale_ratio=1 for all legs"
+                    )
+
+            # Build per-leg scale_ratio.
+            for _leg in data.legs:
+                _lsym = _leg.symbol.upper().strip()
+                _lparsed = parse_tradingsymbol(_lsym)
+                if not _lparsed:
+                    _leg_scale_ratios[_lsym] = 1.0
+                    continue
+                _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
+                _mk = (_leg_exp.year, _leg_exp.month)
+                _fut_sym = _month_to_fut_sym.get(_mk)
+                if _fut_sym:
+                    _qkey = f"MCX:{_fut_sym}"
+                    _qdict = _fut_quote_resp.get(_qkey) or {}
+                    _s_leg, _ = _ltp_from_quote(_qdict)
+                    if _s_leg and _s_leg > 0:
+                        _leg_scale_ratios[_lsym] = _s_leg / S
+                    else:
+                        _leg_scale_ratios[_lsym] = 1.0
+                else:
+                    _leg_scale_ratios[_lsym] = 1.0
+
         sigma_weight_num = 0.0
         sigma_weight_den = 0.0
         leg_details: list[dict] = []
@@ -1327,6 +1407,14 @@ class OptionsController(Controller):
             # Resolve LTP from operator override → broker quote → spot
             # (futures track spot 1:1 over the sim window). Cost basis
             # falls back to LTP for "what would buying NOW look like".
+            # Per-leg scale_ratio: 1.0 for non-MCX; S_leg_current/S for MCX.
+            scale_ratio = _leg_scale_ratios.get(sym, 1.0) if _is_commodity else 1.0
+            # The leg's own effective spot (same-month futures price for MCX,
+            # identical to S for non-MCX). Used for σ calibration so BS(S_leg,
+            # K, T, σ) = market premium — σ is not distorted by a cross-month
+            # spread between S (near-month) and the leg's contract month.
+            S_leg = S * scale_ratio
+
             if parsed.get("kind") == "fut":
                 fut_ltp: Optional[float] = None
                 fut_src: str = "none"
@@ -1338,12 +1426,13 @@ class OptionsController(Controller):
                 if fut_ltp is None and leg.avg_cost is not None and leg.avg_cost > 0:
                     fut_ltp, fut_src = float(leg.avg_cost), "avg_cost"
                 if fut_ltp is None or fut_ltp <= 0:
-                    fut_ltp, fut_src = float(S), "estimated"
+                    fut_ltp, fut_src = float(S_leg), "estimated"
                 fut_entry = float(leg.avg_cost) if leg.avg_cost is not None else fut_ltp
                 resolved_legs.append({
                     "kind":        "fut",
                     "qty":         qty,
                     "entry_price": fut_entry,
+                    "scale_ratio": scale_ratio,
                 })
                 # Greeks for the leg detail row — futures contribute
                 # delta=±1 only; everything else is zero.
@@ -1389,7 +1478,9 @@ class OptionsController(Controller):
             # for the WHOLE function, then the comparison further down
             # raises UnboundLocalError when this branch never runs.
             if ltp_val is None or ltp_val <= 0:
-                est = black_scholes(S, parsed["strike"], T_yrs,
+                # Use S_leg (same-month spot) for the estimated fallback so
+                # the BS price is consistent with the leg's own contract month.
+                est = black_scholes(S_leg, parsed["strike"], T_yrs,
                                     DEFAULT_RISK_FREE, DEFAULT_IV,
                                     parsed["opt_type"])
                 if est > 0:
@@ -1403,15 +1494,16 @@ class OptionsController(Controller):
                 )
 
             # σ fallback — operator override > calibrate > default IV.
-            # When the LTP came from a fallback (close/avg_cost) the
-            # calibration uses a stale price, so flag iv_source as
-            # 'default' so the UI doesn't treat the σ as authoritative.
+            # Calibrate using S_leg (same-month spot) so BS(S_leg, K, T, σ)
+            # = market premium. Using S (near-month) here would distort σ
+            # when the leg's contract month ≠ near month (e.g. JUN vs MAY
+            # crude oil). For non-MCX legs scale_ratio=1 so S_leg == S.
             iv_source: str
             if leg.iv is not None and leg.iv > 0:
                 sig = float(leg.iv)
                 iv_source = "override"
             else:
-                sig = implied_vol(ltp_val, S, parsed["strike"], T_yrs,
+                sig = implied_vol(ltp_val, S_leg, parsed["strike"], T_yrs,
                                   DEFAULT_RISK_FREE, parsed["opt_type"])
                 # Fresh sources: live (broker last_price), override
                 # (operator-supplied), sim (driver state). Anything else
@@ -1426,9 +1518,10 @@ class OptionsController(Controller):
             entry = float(leg.avg_cost) if leg.avg_cost is not None else ltp_val
 
             # Theoretical for the leg + per-share Greeks (UI shows them).
-            theo = black_scholes(S, parsed["strike"], T_yrs,
+            # Use S_leg so these figures are consistent with σ calibration.
+            theo = black_scholes(S_leg, parsed["strike"], T_yrs,
                                  DEFAULT_RISK_FREE, sig, parsed["opt_type"])
-            g_per = greeks(S, parsed["strike"], T_yrs,
+            g_per = greeks(S_leg, parsed["strike"], T_yrs,
                            DEFAULT_RISK_FREE, sig, parsed["opt_type"])
 
             resolved_legs.append({
@@ -1438,6 +1531,7 @@ class OptionsController(Controller):
                 "entry_price": entry,
                 "T_years":     T_yrs,
                 "sigma":       sig,
+                "scale_ratio": scale_ratio,
             })
             sigma_weight_num += sig * abs(qty)
             sigma_weight_den += abs(qty)
