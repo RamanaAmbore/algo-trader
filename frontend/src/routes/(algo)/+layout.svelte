@@ -30,20 +30,11 @@
   // first response lands, `isDemo` is conservatively false so the
   // page doesn't flicker.
   //
-  // Bridge the legacy `authStore` via an explicit subscribe — NOT
-  // `$effect`. $effect runs AFTER first render, so on layout remount
-  // (e.g. user goes /signin → /dashboard → /about → /dashboard) the
-  // first paint shows _userPresent=false, and if paperStatus.branch
-  // arrives from cache before $effect fires, the DEMO badge briefly
-  // pins to true. authStore.subscribe(cb) fires `cb` SYNCHRONOUSLY
-  // on subscribe AND on every update, so _userPresent is correct
-  // before the first paint and stays correct.
-  let _userPresent = $state(false);
-  const _unsubAuth = authStore.subscribe((s) => {
-    _userPresent = !!s?.user;
-  });
+  // Both `isDemo` and the template `{#if $authStore.user}` read the
+  // same `$authStore` rune subscription, so they update atomically
+  // in one render tick — no DEMO + Sign Out co-visibility glitch.
   const isDemo = $derived(
-    !_userPresent && paperStatus?.branch === 'main'
+    !$authStore.user && paperStatus?.branch === 'main'
   );
 
   setContext('algoStatus', {
@@ -315,7 +306,6 @@
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
     shadowTeardown?.(); liveTeardown?.();
     modeTeardown?.(); chaseTeardown?.();
-    _unsubAuth?.();
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────

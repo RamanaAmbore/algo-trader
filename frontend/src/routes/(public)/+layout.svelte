@@ -251,6 +251,8 @@
        the card border and visibly darkens the viewport edges when the
        card is already flush with them. */
     box-shadow: none;
+    border-left: none;   /* override global .pub-card border */
+    border-right: none;
   }
   :global(.pub-card-wide .pub-content) {
     /* Operator wants the outer card flush with viewport on
