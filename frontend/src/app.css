@@ -48,6 +48,11 @@
   --ag-font-size: 0.625rem;
   --ag-row-height: 22px;
   --ag-header-height: 28px;
+  /* Hide the column-resize handle (.ag-header-cell-resize:after).
+     Renders as a visible champagne tick at each column boundary on
+     the navy header — operator flagged it as noise. */
+  --ag-header-column-resize-handle-display: none;
+  --ag-header-column-resize-handle-color: transparent;
   --ag-wrapper-border-radius: 6px;
   border-radius: 6px;
   overflow: hidden;
