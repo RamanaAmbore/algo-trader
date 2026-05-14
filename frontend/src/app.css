@@ -39,10 +39,11 @@
   --ag-header-font-weight: 600;
   --ag-header-font-size: 0.6875rem;
   --ag-foreground-color: #1a1e35;
-  --ag-odd-row-background-color: #fafafa;
-  --ag-row-hover-color: #f3f4f6;
-  --ag-selected-row-background-color: #e7eaf0;
-  --ag-border-color: #e5e7eb;
+  --ag-background-color: #faf8f4;
+  --ag-odd-row-background-color: #f5f2eb;
+  --ag-row-hover-color: #efebdf;
+  --ag-selected-row-background-color: #e2dccc;
+  --ag-border-color: #d1d5db;
   --ag-font-family: 'Inter', 'SF Pro Text', -apple-system, system-ui, sans-serif;
   --ag-font-size: 0.625rem;
   --ag-row-height: 22px;
@@ -50,7 +51,7 @@
   --ag-wrapper-border-radius: 4px;
   border-radius: 4px;
   overflow: hidden;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #d1d5db;
   box-shadow: none !important;
 }
 /* autoHeight: only remove min-height that pads small tables */
@@ -69,7 +70,7 @@
   color: #e8d9a8 !important;
 }
 .ag-theme-ramboq .ag-body {
-  background-color: #ffffff !important;
+  background-color: #faf8f4 !important;
 }
 .ag-theme-ramboq .ag-header-cell {
   letter-spacing: 0.03em;
@@ -91,7 +92,7 @@
 .ag-theme-ramboq .ag-cell {
   padding-left: 3px !important;
   padding-right: 3px !important;
-  border-right: 1px solid #e5e7eb !important;
+  border-right: 1px solid #d1d5db !important;
   /* Tabular figures so digit widths don't jitter as values update.
      Same rule on ag-theme-algo below — public + algo grids share this
      idiom. */
@@ -106,7 +107,7 @@
 }
 /* Background fill for Account and Symbol columns */
 .ag-theme-ramboq .ag-cell.ag-col-fill {
-  background-color: #f9fafb !important;
+  background-color: #f5f3ef !important;
 }
 .ag-theme-ramboq .ag-header-cell.ag-col-fill {
   background-color: rgba(0,0,0,0.08) !important;
@@ -212,8 +213,8 @@
      SHORT = muted terracotta — warm earth tone, natural complement to
              champagne gold and the cream card body
    Qty cell text uses the same palette at full saturation. */
-.ag-theme-ramboq .qty-long  { color: #059669 !important; font-weight: 700 !important; }
-.ag-theme-ramboq .qty-short { color: #dc2626 !important; font-weight: 700 !important; }
+.ag-theme-ramboq .qty-long  { color: #4a7c7a !important; font-weight: 700 !important; }
+.ag-theme-ramboq .qty-short { color: #b5521a !important; font-weight: 700 !important; }
 .ag-theme-ramboq .qty-flat  { color: #6b7280 !important; }
 /* Long/short indicator on the public-theme performance grids:
      - bars (left+right edges) are scoped to the symbol cell only
@@ -224,10 +225,10 @@
    LONG = sage-teal, SHORT = warm-terracotta — both desaturated so they
    sit alongside the cream + champagne palette without shouting. */
 .ag-theme-ramboq .ag-row.pos-long .ag-col-fill {
-  background-color: rgba(16,185,129,0.06) !important;
+  background-color: rgba(91,142,149,0.08) !important;
 }
 .ag-theme-ramboq .ag-row.pos-short .ag-col-fill {
-  background-color: rgba(244,63,94,0.06) !important;
+  background-color: rgba(196,122,61,0.08) !important;
 }
 /* Symbol-cell side borders — paint a neutral pair on every Symbol cell
    so the column always reads as bordered, even on rows that don't carry
@@ -240,18 +241,18 @@
               inset -4px 0 0 rgba(120,135,160,0.55) !important;
 }
 .ag-theme-ramboq .ag-row.pos-long .ag-col-sym {
-  box-shadow: inset 4px 0 0 rgba(16,185,129,0.85),
-              inset -4px 0 0 rgba(16,185,129,0.85) !important;
+  box-shadow: inset 4px 0 0 rgba(91,142,149,0.85),
+              inset -4px 0 0 rgba(91,142,149,0.85) !important;
 }
 .ag-theme-ramboq .ag-row.pos-short .ag-col-sym {
-  box-shadow: inset 4px 0 0 rgba(244,63,94,0.85),
-              inset -4px 0 0 rgba(244,63,94,0.85) !important;
+  box-shadow: inset 4px 0 0 rgba(196,122,61,0.85),
+              inset -4px 0 0 rgba(196,122,61,0.85) !important;
 }
 .ag-theme-ramboq .ag-row.pos-long.ag-row-hover .ag-col-fill {
-  background-color: rgba(16,185,129,0.12) !important;
+  background-color: rgba(91,142,149,0.12) !important;
 }
 .ag-theme-ramboq .ag-row.pos-short.ag-row-hover .ag-col-fill {
-  background-color: rgba(244,63,94,0.12) !important;
+  background-color: rgba(196,122,61,0.12) !important;
 }
 /* Totals row cells inherit the header color regardless of +/-/0 */
 .ag-theme-ramboq .ag-row.totals-row .pnl-loss,

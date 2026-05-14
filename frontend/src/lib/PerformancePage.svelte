@@ -738,11 +738,11 @@
      (class:pub-perf-card={!isDark}). Mirrors .algo-status-card shape
      but in a warm cream palette instead of the dark navy. */
   .pub-perf-card {
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
+    background: #faf8f4;
+    border: 1px solid #d8d4cc;
     border-radius: 8px;
     padding: 1rem;
-    box-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 2px 12px rgba(15,23,42,0.04);
+    box-shadow: 0 1px 4px rgba(15,23,42,0.08), 0 4px 16px rgba(15,23,42,0.06);
   }
 
   .hidden { display: none; }

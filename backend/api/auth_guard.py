@@ -8,7 +8,7 @@ Apply at the controller level:
 """
 
 from litestar.connection import ASGIConnection
-from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers.base import BaseRouteHandler
 
 
@@ -93,7 +93,7 @@ async def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> 
     await jwt_guard(connection, handler)
     payload = getattr(connection.state, "token_payload", {})
     if payload.get("role") not in ("admin", "designated"):
-        raise NotAuthorizedException("Admin access required")
+        raise PermissionDeniedException("Admin access required")
 
 
 async def designated_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
@@ -102,7 +102,7 @@ async def designated_guard(connection: ASGIConnection, handler: BaseRouteHandler
     await jwt_guard(connection, handler)
     payload = getattr(connection.state, "token_payload", {})
     if payload.get("role") != "designated":
-        raise NotAuthorizedException("Designated-admin access required")
+        raise PermissionDeniedException("Designated-admin access required")
 
 
 def is_authenticated_request(connection: ASGIConnection) -> bool:
