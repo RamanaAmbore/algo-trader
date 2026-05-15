@@ -572,6 +572,30 @@ for _a in _LOSS_AGENTS:
 BUILTIN_AGENTS.extend(_LOSS_AGENTS)
 
 
+# ── Manual agent: every operator-initiated order submit fires under
+#    this slug so the audit trail (/agents Events tab + agent_events
+#    table) shows manual + automated fires in one consistent stream.
+#    No condition (null = doesn't run in run_cycle), no cooldown
+#    (operator clicks are not throttled).
+MANUAL_AGENT = dict(
+    slug="manual",
+    name="Manual operator order",
+    description="Every order placed manually via ticket / chain / command writes an event here. No automated triggering.",
+    conditions=None,
+    events=[
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email",    "enabled": True},
+        {"channel": "log",      "enabled": True},
+    ],
+    actions=[],
+    scope="manual",
+    schedule="never",          # never picked up by run_cycle
+    cooldown_minutes=0,
+    status="active",
+)
+BUILTIN_AGENTS.append(MANUAL_AGENT)
+
+
 async def seed_agents():
     """
     Sync BUILTIN_AGENTS into the `agents` table.
@@ -782,6 +806,12 @@ async def run_cycle(context: dict, broadcast_fn=None,
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": "completed"})
             continue
 
+        # schedule="never" agents (e.g. the "manual" audit agent) must
+        # never be evaluated by run_cycle — they only receive events written
+        # explicitly via record_manual_event.
+        if agent.schedule == "never":
+            continue
+
         # Enforce schedule: "market_hours" agents only run while some market
         # is open — unless the caller asked to bypass (isolated sim test).
         if (not bypass_schedule
@@ -930,3 +960,86 @@ async def run_cycle(context: dict, broadcast_fn=None,
                 else:
                     new_status = "active"
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": new_status})
+
+
+# ---------------------------------------------------------------------------
+# Manual-agent audit writer
+# ---------------------------------------------------------------------------
+
+# Module-level cache so we don't query on every request.
+_manual_agent_id: int | None = None
+
+
+async def _get_manual_agent_id() -> int | None:
+    """Return the DB id of the 'manual' agent, with a one-time lookup."""
+    global _manual_agent_id
+    if _manual_agent_id is not None:
+        return _manual_agent_id
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Agent).where(Agent.slug == "manual")
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                _manual_agent_id = row.id
+    except Exception as e:
+        logger.warning(f"record_manual_event: could not look up manual agent id: {e}")
+    return _manual_agent_id
+
+
+async def record_manual_event(
+    *,
+    outcome: str,           # 'action_success' | 'action_failure'
+    source: str,            # 'ticket' | 'chain' | 'command' | 'place'
+    account: str,
+    symbol: str,
+    exchange: str,
+    side: str,
+    qty: int,
+    mode: str,              # 'live' | 'paper' | 'draft' | 'shadow'
+    order_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Write an agent_events row attributed to the 'manual' agent.
+
+    Fire-and-forget: any DB error is logged + swallowed so it cannot
+    break the order placement flow.
+    """
+    import json as _json
+    from backend.api.models import AgentEvent
+
+    agent_id = await _get_manual_agent_id()
+    if agent_id is None:
+        logger.warning(
+            "record_manual_event: 'manual' agent not in DB yet "
+            f"(will seed on next deploy) — skipping event for {source}/{symbol}"
+        )
+        return
+
+    detail: dict = {
+        "source": source,
+        "account": account,
+        "symbol": symbol,
+        "exchange": exchange,
+        "side": side,
+        "qty": qty,
+        "mode": mode,
+    }
+    if order_id is not None:
+        detail["order_id"] = order_id
+    if error is not None:
+        detail["error"] = error
+
+    try:
+        async with async_session() as session:
+            session.add(AgentEvent(
+                agent_id=agent_id,
+                event_type=outcome,
+                trigger_condition=f"manual via {source}",
+                detail=_json.dumps(detail),
+                sim_mode=False,
+            ))
+            await session.commit()
+    except Exception as e:
+        logger.warning(f"record_manual_event: DB write failed: {e}")

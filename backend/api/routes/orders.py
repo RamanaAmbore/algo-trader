@@ -524,6 +524,17 @@ class OrdersController(Controller):
             invalidate("orders")  # force fresh fetch on next request
             logger.info(f"Order placed: {order_id} [{masked}] {data.transaction_type} "
                         f"{data.quantity} {data.tradingsymbol}")
+            try:
+                import asyncio as _aio
+                from backend.api.algo.agent_engine import record_manual_event
+                _aio.create_task(record_manual_event(
+                    outcome="action_success", source="place",
+                    account=data.account, symbol=data.tradingsymbol,
+                    exchange=data.exchange, side=data.transaction_type,
+                    qty=data.quantity, mode="live", order_id=str(order_id),
+                ))
+            except Exception:
+                pass
             return PlaceOrderResponse(order_id=str(order_id), account=masked)
         except Exception as e:
             logger.error(f"Place order failed [{masked}]: {e}")
@@ -532,9 +543,20 @@ class OrdersController(Controller):
                 send_order_failure_alert(
                     account=data.account, symbol=data.tradingsymbol,
                     exchange=data.exchange, side=data.transaction_type,
-                    qty=data.quantity, mode="live", source="place",
+                    qty=data.quantity, mode="live", source="agent:manual:place",
                     error=str(e),
                 )
+            except Exception:
+                pass
+            try:
+                import asyncio as _aio
+                from backend.api.algo.agent_engine import record_manual_event
+                _aio.create_task(record_manual_event(
+                    outcome="action_failure", source="place",
+                    account=data.account, symbol=data.tradingsymbol,
+                    exchange=data.exchange, side=data.transaction_type,
+                    qty=data.quantity, mode="live", error=str(e),
+                ))
             except Exception:
                 pass
             raise HTTPException(status_code=400, detail=str(e))
@@ -789,6 +811,17 @@ class OrdersController(Controller):
                 masked = mask_column(pd.Series([account]))[0]
                 logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
                             f"{side} {qty} {sym}{chase_tag}")
+                try:
+                    import asyncio as _aio
+                    from backend.api.algo.agent_engine import record_manual_event
+                    _aio.create_task(record_manual_event(
+                        outcome="action_success", source=data.source or "ticket",
+                        account=account, symbol=sym,
+                        exchange=(data.exchange or "NFO"), side=side,
+                        qty=qty, mode="live", order_id=str(order_id),
+                    ))
+                except Exception:
+                    pass
                 return TicketOrderResponse(
                     order_id=str(order_id),
                     mode="live",
@@ -835,9 +868,20 @@ class OrdersController(Controller):
                     send_order_failure_alert(
                         account=account, symbol=sym,
                         exchange=(data.exchange or "NFO"), side=side,
-                        qty=qty, mode="live", source="ticket",
+                        qty=qty, mode="live", source="agent:manual:ticket",
                         error=kite_msg,
                     )
+                except Exception:
+                    pass
+                try:
+                    import asyncio as _aio
+                    from backend.api.algo.agent_engine import record_manual_event
+                    _aio.create_task(record_manual_event(
+                        outcome="action_failure", source=data.source or "ticket",
+                        account=account, symbol=sym,
+                        exchange=(data.exchange or "NFO"), side=side,
+                        qty=qty, mode="live", error=kite_msg,
+                    ))
                 except Exception:
                     pass
                 raise HTTPException(
@@ -945,6 +989,18 @@ class OrdersController(Controller):
 
         masked = mask_column(pd.Series([account]))[0]
         logger.info(f"Ticket paper order: {algo_order_id} [{masked}] {side} {qty} {sym}")
+        if algo_order_id:
+            try:
+                import asyncio as _aio
+                from backend.api.algo.agent_engine import record_manual_event
+                _aio.create_task(record_manual_event(
+                    outcome="action_success", source=data.source or "ticket",
+                    account=account, symbol=sym,
+                    exchange=(data.exchange or "NFO"), side=side,
+                    qty=qty, mode="paper", order_id=str(algo_order_id),
+                ))
+            except Exception:
+                pass
         return TicketOrderResponse(
             order_id=str(algo_order_id),
             mode="paper",

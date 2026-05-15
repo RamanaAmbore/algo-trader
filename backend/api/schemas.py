@@ -243,6 +243,10 @@ class TicketOrderRequest(msgspec.Struct):
     # patient on entry"; callers explicitly bump to med/high when
     # they want fill speed at the cost of slippage.
     chase_aggressiveness: str = "low"
+    # Source tag for the manual-agent audit trail. Defaults to "ticket"
+    # so existing callers need no change; chain/command tabs can pass
+    # "chain" or "command" to distinguish in agent_events.
+    source: str = "ticket"
 
 
 class TicketOrderResponse(msgspec.Struct):
