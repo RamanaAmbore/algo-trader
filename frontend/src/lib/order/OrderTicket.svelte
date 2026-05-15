@@ -493,7 +493,9 @@
     // _liveConfirmed bypasses this on the second entry from _doSubmitLive.
     if (_mode === 'live' && !_liveConfirmed) {
       const px = showLimit ? `@₹${_price}` : 'MARKET';
-      _confirmText = `${_side} ${_qty} ${symbol} ${px} · ${_account}`;
+      // Use the operator-vocabulary label (ADD / CLOSE) when a current
+      // position is in scope; falls through to raw BUY/SELL otherwise.
+      _confirmText = `${sideLabels[_side] || _side} ${_qty} ${symbol} ${px} · ${_account}`;
       _confirmOpen = true;
       return;
     }
@@ -933,7 +935,7 @@
                 class:ot-submit-sell={_side === 'SELL'}
                 disabled={!!validationErr || submitting}
                 onclick={submit}>
-          {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if action === 'close'}Close · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
+          {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
         </button>
       {/if}
     </div>
