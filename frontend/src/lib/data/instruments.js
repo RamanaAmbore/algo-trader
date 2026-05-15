@@ -262,18 +262,19 @@ export function listFutures(underlying) {
 export function nearestExpiry(underlying, type) {
   const rows = listOptions(underlying, type);
   if (rows.length === 0) return null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = _todayIST();
   for (const r of rows) {
     if (r.x >= today) return r.x;
   }
   return rows[rows.length - 1].x;
 }
 
-/** List distinct expiries available for an underlying+type (sorted). */
+/** List distinct expiries available for an underlying+type (sorted, today-onward in IST). */
 export function listExpiries(underlying, type) {
   const rows = listOptions(underlying, type);
+  const today = _todayIST();
   const set = new Set();
-  for (const r of rows) if (r.x) set.add(r.x);
+  for (const r of rows) if (r.x && r.x >= today) set.add(r.x);
   return Array.from(set).sort();
 }
 
@@ -296,7 +297,7 @@ export function findOption(underlying, type, strike, expiry) {
 export function findNearestFuture(underlying) {
   const rows = listFutures(underlying);
   if (rows.length === 0) return null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = _todayIST();
   for (const r of rows) if (r.x >= today) return r;
   return rows[rows.length - 1];
 }

@@ -669,9 +669,24 @@ async def run_preflight(account: str, order: dict) -> dict:
             bm_result = bm_result[0]
         required  = float((bm_result or {}).get("initial", {}).get("total") or
                           (bm_result or {}).get("required") or 0)
-        available = float((bm_result or {}).get("initial", {}).get("available",
-                          {}).get("cash") or
-                          (bm_result or {}).get("available") or 0)
+        # Kite's `initial.available` splits the available balance across
+        # multiple subfields — cash (uninvested rupees), collateral
+        # (pledged equities / FDs), adhoc_margin (overnight grant),
+        # intraday_payin, opening_balance, live_balance, etc. Accounts
+        # funded primarily via pledged collateral can have cash ~0 while
+        # collateral is several lakh, so reading only `cash` triggers a
+        # false MARGIN_SHORTFALL. Sum every numeric subfield so any
+        # future Kite addition is picked up automatically.
+        avail_dict = (bm_result or {}).get("initial", {}).get("available", {}) or {}
+        available = sum(
+            float(v) for v in avail_dict.values()
+            if isinstance(v, (int, float)) and not math.isnan(float(v))
+        )
+        # Top-level fallback for legacy / non-standard response shapes.
+        if available == 0:
+            top_avail = (bm_result or {}).get("available")
+            if isinstance(top_avail, (int, float)) and not math.isnan(float(top_avail)):
+                available = float(top_avail)
         shortfall = max(0.0, required - available)
         diagnostics["basket_margin_used"] = required
         diagnostics["available_margin"]   = available
