@@ -114,7 +114,7 @@ def _holdings_rows(account: str, target_date: date, raw: list[dict]) -> list[dic
             "ltp":          float(r["last_price"])    if r.get("last_price")    is not None else None,
             "day_pnl":      float(r["day_change"])    if r.get("day_change")    is not None else None,
             "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
-            "payload_json": json.dumps(r),
+            "payload_json": json.dumps(r, default=str),
         })
     return rows
 
@@ -148,7 +148,7 @@ def _positions_rows(account: str, target_date: date, raw: list[dict]) -> list[di
             "ltp":          float(last_price)         if last_price             is not None else None,
             "day_pnl":      day_pnl,
             "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
-            "payload_json": json.dumps(r),
+            "payload_json": json.dumps(r, default=str),
         })
     return rows
 
@@ -172,7 +172,7 @@ def _trades_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]
             "ltp":          None,
             "day_pnl":      None,
             "total_pnl":    None,
-            "payload_json": json.dumps(r),
+            "payload_json": json.dumps(r, default=str),
         })
     return rows
 
