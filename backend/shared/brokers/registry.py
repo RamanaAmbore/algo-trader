@@ -1,11 +1,15 @@
 """
 Broker registry — routes an account to its `Broker` adapter.
 
-Today every account is Zerodha Kite, so the registry always returns a
-`KiteBroker`. The shape is future-proofed: each account in
-`secrets.yaml` can tag its vendor via a `broker:` key (defaults to
-"kite"), and new vendors just need to land an adapter + one line in
-`_ADAPTERS` below. No caller change anywhere.
+Canonical broker_id values are stored in `broker_accounts.broker_id`
+(DB-backed, editable via /admin/brokers). The registry reads the value
+from the `Connections` singleton's `_broker_id_map` cache (populated
+during `rebuild_from_db`) so hot-path calls never hit the DB.
+
+Legacy / YAML-seeded rows that carry `broker: "kite"` still work —
+`_ADAPTERS` maps both `"kite"` (legacy) and `"zerodha_kite"` (canonical)
+to the same `KiteBroker` adapter. Adding a new vendor: add an adapter
+class + one entry in `_ADAPTERS`.
 """
 
 from __future__ import annotations
@@ -15,22 +19,42 @@ from backend.shared.brokers.kite import KiteBroker
 from backend.shared.helpers.connections import Connections
 
 
-# Broker id → factory (connection → Broker). Extend here when a new
-# vendor adapter lands — e.g. `"upstox": UpstoxBroker`.
+# Broker id → adapter class. Both "zerodha_kite" (canonical, stored in
+# broker_accounts.broker_id) and "kite" (legacy YAML value) map to
+# KiteBroker so existing rows remain compatible after the column was added.
+# Extend here when a new vendor adapter lands — e.g. "upstox": UpstoxBroker.
 _ADAPTERS: dict[str, type[Broker]] = {
-    "kite": KiteBroker,
+    "zerodha_kite": KiteBroker,
+    "kite": KiteBroker,         # legacy alias — YAML-seeded rows use "kite"
 }
 
 
 def _broker_id_for(account: str) -> str:
+    """Canonical broker_id for a given account.
+
+    Resolution order:
+    1. Connections._broker_id_map — populated from broker_accounts.broker_id
+       during rebuild_from_db (DB-authoritative, no extra query needed).
+    2. secrets.yaml kite_accounts[account].broker — legacy fallback for
+       accounts that were seeded before the DB-backed broker_id existed.
+    3. "zerodha_kite" — safe default (every account today is Kite).
     """
-    Broker vendor for a given account. Today everything routes to
-    Kite; once secrets.yaml starts tagging accounts with a `broker`
-    key, read it here.
-    """
-    from backend.shared.helpers.utils import secrets
-    accts = secrets.get("kite_accounts") or {}
-    return str((accts.get(account) or {}).get("broker") or "kite")
+    conns = Connections()
+    # Step 1 — DB-backed cache (populated by rebuild_from_db).
+    id_map: dict[str, str] = getattr(conns, "_broker_id_map", {})
+    if account in id_map:
+        return id_map[account]
+    # Step 2 — YAML fallback.
+    try:
+        from backend.shared.helpers.utils import secrets
+        accts = secrets.get("kite_accounts") or {}
+        yaml_val = (accts.get(account) or {}).get("broker")
+        if yaml_val:
+            return str(yaml_val)
+    except Exception:
+        pass
+    # Step 3 — default.
+    return "zerodha_kite"
 
 
 def get_broker(account: str) -> Broker:

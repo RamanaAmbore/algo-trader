@@ -545,7 +545,11 @@ class BrokerAccount(Base):
     # Account code (e.g. "ZG0790") — keep unique so the code paths that
     # already key on this string keep working without a per-row id rewrite.
     account: Mapped[str]         = mapped_column(String(32), unique=True, nullable=False)
-    broker_id: Mapped[str]       = mapped_column(String(16), nullable=False, default="kite")
+    # Canonical vendor identifier. Matches the key in registry._ADAPTERS.
+    # Values: "zerodha_kite" (canonical), "kite" (legacy YAML-seeded alias).
+    # Future values: "upstox", "angel_one", "dhan", "fyers" etc.
+    # Column width 32 to accommodate future multi-word identifiers.
+    broker_id: Mapped[str]       = mapped_column(String(32), nullable=False, default="zerodha_kite")
     # api_key is plaintext — Kite API keys aren't a credentialing secret
     # (they pair with api_secret to authenticate, but the key alone leaks
     # nothing). Keeping it in the clear means it shows up unmasked in

@@ -405,11 +405,18 @@ class Connections(SingletonBase):
     def _rebuild_from_yaml(self) -> None:
         """Build the per-account KiteConnection map from `secrets.yaml`.
         Used as the initial sync seed AND as the fallback when the DB
-        table is empty."""
+        table is empty. Also seeds `_broker_id_map` from the YAML
+        `broker:` key (defaults to "zerodha_kite")."""
         accts = secrets.get("kite_accounts") or {}
         self.conn = {
             account: KiteConnection(account, secrets)
             for account in accts.keys()
+        }
+        # Seed broker_id map from YAML so get_broker() works before
+        # rebuild_from_db() runs (e.g. during module-level imports).
+        self._broker_id_map: dict[str, str] = {
+            account: str(blob.get("broker") or "zerodha_kite")
+            for account, blob in accts.items()
         }
 
     async def rebuild_from_db(self) -> None:
@@ -488,8 +495,17 @@ class Connections(SingletonBase):
                            "leaving self.conn as YAML view.")
             return
 
+        # Build broker_id lookup cache so registry._broker_id_for() never
+        # needs a DB round-trip on the hot path.
+        new_broker_id_map: dict[str, str] = {
+            r.account: (r.broker_id or "zerodha_kite")
+            for r in rows
+            if r.account in new_conn
+        }
+
         with Connections._init_lock:
             self.conn = new_conn
+            self._broker_id_map = new_broker_id_map
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
     async def _seed_db_from_yaml(self) -> int:

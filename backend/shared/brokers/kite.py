@@ -67,7 +67,6 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
 
 
 class KiteBroker(Broker):
-    broker_id = "kite"
 
     def __init__(self, conn: KiteConnection) -> None:
         self._conn = conn
@@ -77,6 +76,10 @@ class KiteBroker(Broker):
     @property
     def account(self) -> str:
         return self._conn.account
+
+    @property
+    def broker_id(self) -> str:
+        return "zerodha_kite"
 
     @property
     def kite(self):
@@ -117,10 +120,23 @@ class KiteBroker(Broker):
     def instruments(self, exchange: str | None = None) -> list[dict]:
         return self.kite.instruments(exchange) if exchange else self.kite.instruments()
 
+    def historical_data(
+        self,
+        instrument_token: int,
+        from_date: Any,
+        to_date: Any,
+        interval: str = "day",
+    ) -> list[dict]:
+        return self.kite.historical_data(instrument_token, from_date,
+                                         to_date, interval)
+
     def holidays(self, exchange: str) -> set[str]:
         return self.kite.holidays(exchange)
 
     # ── Order entry ───────────────────────────────────────────────────
+
+    def basket_order_margins(self, orders: list[dict]) -> list[dict]:
+        return self.kite.basket_order_margins(orders)
 
     def place_order(self, **kwargs: Any) -> str:
         return self.kite.place_order(**kwargs)
@@ -130,3 +146,11 @@ class KiteBroker(Broker):
 
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
         return self.kite.cancel_order(order_id=order_id, **kwargs)
+
+    # ── Qty translation ───────────────────────────────────────────────
+
+    def normalise_qty(self, exchange: str, raw_qty: int,
+                      lot_size: int) -> int:
+        """MCX/NCO want qty=lots; every other Kite exchange wants
+        qty=contracts. Delegates to the module-level `to_kite_qty`."""
+        return to_kite_qty(exchange, raw_qty, lot_size)

@@ -35,12 +35,26 @@
   let error    = $state('');
   let note     = $state('');
 
+  // Supported broker vendors. Add future adapters here as they land.
+  const BROKER_OPTIONS = [
+    { value: 'zerodha_kite', label: 'Zerodha Kite' },
+    // { value: 'upstox',      label: 'Upstox' },
+    // { value: 'angel_one',   label: 'Angel One' },
+    // { value: 'dhan',        label: 'Dhan' },
+    // { value: 'fyers',       label: 'Fyers' },
+  ];
+
+  /** Normalise legacy "kite" to the canonical "zerodha_kite" for display. */
+  function normaliseBrokerId(/** @type {string|null|undefined} */ id) {
+    return (id === 'kite' || !id) ? 'zerodha_kite' : id;
+  }
+
   // Form state — reused for Create + Edit. `editing = ''` means we're
   // in Create mode (account code editable); `editing = 'ZG0790'` puts
   // us in Edit mode for that row.
   let editing = $state(/** @type {string} */ (''));
   let form    = $state({
-    account: '', broker_id: 'kite', api_key: '',
+    account: '', broker_id: 'zerodha_kite', api_key: '',
     api_secret: '', password: '', totp_token: '',
     source_ip: '', is_active: true, notes: '',
   });
@@ -53,7 +67,7 @@
   function resetForm(/** @type {string} */ acct = '') {
     editing = acct;
     form = {
-      account: acct, broker_id: 'kite', api_key: '',
+      account: acct, broker_id: 'zerodha_kite', api_key: '',
       api_secret: '', password: '', totp_token: '',
       source_ip: '', is_active: true, notes: '',
     };
@@ -64,7 +78,7 @@
     editing = row.account;
     form = {
       account:    row.account,
-      broker_id:  row.broker_id,
+      broker_id:  normaliseBrokerId(row.broker_id),
       api_key:    row.api_key,
       api_secret: '',                  // blank = don't change
       password:   '',
@@ -203,7 +217,7 @@
         {#each accounts as row}
           <tr class:row-inactive={!row.is_active}>
             <td class="font-mono">{row.account}</td>
-            <td>{row.broker_id}</td>
+            <td>{BROKER_OPTIONS.find(o => o.value === normaliseBrokerId(row.broker_id))?.label ?? row.broker_id}</td>
             <td class="font-mono mono-trunc" title={row.api_key}>{row.api_key || '—'}</td>
             <td class="font-mono mono-trunc" title={row.source_ip}>{row.source_ip || '—'}</td>
             <td>
@@ -260,9 +274,12 @@
       </div>
       <div class="bf-field">
         <label class="field-label" for="bf-broker">Broker</label>
-        <input id="bf-broker" type="text" class="field-input font-mono"
-               placeholder="kite"
-               bind:value={form.broker_id} />
+        <select id="bf-broker" class="field-input font-mono"
+                bind:value={form.broker_id}>
+          {#each BROKER_OPTIONS as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
       </div>
       <div class="bf-field bf-field-wide">
         <label class="field-label" for="bf-key">API key</label>

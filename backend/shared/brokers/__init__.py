@@ -22,12 +22,16 @@ Adding a new broker:
      implements every method of `Broker` (see base.py) for that
      vendor's SDK.
   2. Register it in `registry.py` under the broker identifier you
-     pick (e.g. "upstox"). Tag the relevant accounts in secrets.yaml
-     with `broker: upstox` and the registry will route to the new
-     adapter automatically.
+     pick (e.g. "upstox", "angel_one"). Set broker_accounts.broker_id
+     to that value for the new account via /admin/brokers; the registry
+     reads from there (DB-authoritative) and routes to the adapter.
+
+Canonical broker_id values:
+  "zerodha_kite"  — Zerodha Kite Connect (the only adapter today)
+  "kite"          — legacy alias for "zerodha_kite" (YAML-seeded rows)
 """
 
 from backend.shared.brokers.base     import Broker
-from backend.shared.brokers.registry import get_broker, all_brokers
+from backend.shared.brokers.registry import get_broker, all_brokers, get_price_broker
 
-__all__ = ["Broker", "get_broker", "all_brokers"]
+__all__ = ["Broker", "get_broker", "all_brokers", "get_price_broker"]

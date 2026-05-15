@@ -57,7 +57,7 @@ class BrokerAccountInfo(msgspec.Struct):
 
 class BrokerAccountCreate(msgspec.Struct):
     account:     str
-    broker_id:   str = "kite"
+    broker_id:   str = "zerodha_kite"
     api_key:     str = ""
     api_secret:  str = ""
     password:    str = ""
@@ -166,7 +166,7 @@ class BrokersController(Controller):
                     detail=f"Account {data.account!r} already exists")
             row = BrokerAccount(
                 account=data.account,
-                broker_id=data.broker_id or "kite",
+                broker_id=data.broker_id or "zerodha_kite",
                 api_key=data.api_key or "",
                 api_secret_enc=encrypt(data.api_secret),
                 password_enc=encrypt(data.password),
