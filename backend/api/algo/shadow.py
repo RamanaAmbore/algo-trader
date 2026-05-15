@@ -53,13 +53,18 @@ class ShadowTradeEngine:
         exchange = resolved.get("exchange") or "NFO"
         product = resolved.get("product") or "NRML"
 
-        # Build the exact payload that kite.place_order would receive
+        # Build the exact payload that kite.place_order would receive.
+        # qty is stored in contracts internally; the payload shows the
+        # Kite-convention qty (lots for MCX) so the logged payload
+        # matches what a real place_order call would send.
+        # We compute kite_qty lazily below (after lot_size is known),
+        # then update this dict before writing to the DB.
         kite_payload = {
             "variety": resolved.get("variety") or "regular",
             "exchange": exchange,
             "tradingsymbol": symbol,
             "transaction_type": side,
-            "quantity": qty,
+            "quantity": qty,  # updated to kite_qty below
             "product": product,
             "order_type": "LIMIT",
             "price": price,
@@ -71,13 +76,17 @@ class ShadowTradeEngine:
         ok, reason = True, "shadow — not executed"
         try:
             import asyncio, json as _json
+            from backend.shared.brokers.kite import to_kite_qty, get_lot_size
             broker = get_broker(account)
             if qty > 0 and price is not None and symbol and exchange:
+                _ls = await get_lot_size(exchange, symbol)
+                _kq = to_kite_qty(exchange, qty, _ls)
+                kite_payload["quantity"] = _kq  # log the Kite-convention qty
                 basket_order = {
                     "exchange": exchange,
                     "tradingsymbol": symbol,
                     "transaction_type": side,
-                    "quantity": qty,
+                    "quantity": _kq,
                     "order_type": "LIMIT",
                     "product": product,
                     "price": price,

@@ -14,6 +14,56 @@ from typing import Any
 
 from backend.shared.brokers.base import Broker
 from backend.shared.helpers.connections import KiteConnection
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def to_kite_qty(exchange: str, raw_qty: int, lot_size: int) -> int:
+    """Translate raw contract qty to Kite's quantity convention.
+
+    NSE/BSE/NFO/BFO/CDS/BCD: quantity = contracts. NSE F&O places
+    qty=50 to trade 1 NIFTY lot (lot_size=50). MCX/NCO: quantity =
+    LOTS. MCX CRUDEOIL with lot_size=100 wants qty=1 to trade 1 lot.
+    Without this translation, a 1-lot MCX order ends up as 100 lots
+    on Kite. lot_size==0 falls through unchanged.
+
+    Only translates when raw_qty >= lot_size (operator typed contracts,
+    not an already-translated value). Sub-lot-size values pass through
+    as-is — better to let Kite reject an odd qty than silently divide
+    and send a nonsensical number.
+    """
+    if exchange in ("MCX", "NCO") and lot_size > 0 and raw_qty >= lot_size:
+        translated = max(1, raw_qty // lot_size)
+        if translated != raw_qty:
+            logger.info(
+                f"[KITE-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
+                f"(lot_size={lot_size})"
+            )
+        return translated
+    return raw_qty
+
+
+async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
+    """Look up lot_size from the instruments cache.
+
+    Returns 1 (safe no-op for to_kite_qty) when the cache is cold or
+    the symbol isn't found — the order goes through as-is and Kite
+    provides the real rejection if the qty is wrong.
+
+    This is intentionally a best-effort read; it must never raise.
+    """
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        for inst in resp.items:
+            if inst.e == exchange and inst.s == tradingsymbol:
+                return int(inst.ls) if inst.ls > 0 else 1
+    except Exception as e:
+        logger.debug(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
+    return 1
 
 
 class KiteBroker(Broker):

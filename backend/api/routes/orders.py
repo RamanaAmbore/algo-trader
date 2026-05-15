@@ -505,12 +505,15 @@ class OrdersController(Controller):
             f"{data.transaction_type} {data.quantity} {data.tradingsymbol}"
         )
         try:
+            from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+            _ls_dep = await get_lot_size(data.exchange, data.tradingsymbol.upper())
+            _kq_dep = to_kite_qty(data.exchange, data.quantity, _ls_dep)
             order_id = kite.place_order(
                 variety=data.variety,
                 exchange=data.exchange,
                 tradingsymbol=data.tradingsymbol.upper(),
                 transaction_type=data.transaction_type,
-                quantity=data.quantity,
+                quantity=_kq_dep,
                 product=data.product,
                 order_type=data.order_type,
                 price=data.price,
@@ -753,13 +756,16 @@ class OrdersController(Controller):
                 else:
                     # Single-shot — preserves the existing path for
                     # MARKET / SL-M and explicit chase=False tickets.
+                    from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+                    _ls_ticket = await get_lot_size(data.exchange or "NFO", sym)
+                    _kq_ticket = to_kite_qty(data.exchange or "NFO", qty, _ls_ticket)
                     kite = _kite_for(account)
                     order_id = kite.place_order(
                         variety=(data.variety or "regular"),
                         exchange=(data.exchange or "NFO"),
                         tradingsymbol=sym,
                         transaction_type=side,
-                        quantity=qty,
+                        quantity=_kq_ticket,
                         product=(data.product or "NRML"),
                         order_type=order_type,
                         price=data.price,
@@ -936,6 +942,11 @@ class OrdersController(Controller):
                 detail="Admin access required to modify orders.")
         kite   = _kite_for(data.account)
         masked = mask_column(pd.Series([data.account]))[0]
+        # Note: MCX qty translation (to_kite_qty) is NOT applied here because
+        # ModifyOrderRequest carries no exchange/tradingsymbol — the operator is
+        # modifying an existing Kite order and should supply the quantity already
+        # in Kite's convention (lots for MCX). This endpoint is legacy / rarely
+        # used; the primary order path (/ticket + chase.py) handles the translation.
         kwargs = {k: v for k, v in {
             "quantity":      data.quantity,
             "price":         data.price,

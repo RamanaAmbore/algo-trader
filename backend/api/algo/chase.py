@@ -119,16 +119,41 @@ def _calc_limit_price(depth: dict, transaction_type: str, attempt: int,
         return min(round(price, 2), best_ask)
 
 
+def _lot_size_sync(exchange: str, symbol: str) -> int:
+    """Read lot_size from the in-process instruments cache (sync).
+
+    The instruments cache is pre-warmed at startup and refreshed daily,
+    so this read is almost always a dict lookup. Falls through to 1 on
+    any miss — safe default for to_kite_qty (no translation for non-MCX
+    exchanges, and MCX lot_size > 1 so raw_qty // 1 == raw_qty anyway).
+    """
+    try:
+        from backend.api.cache import _store  # in-process dict, no I/O
+        entry = _store.get("instruments")
+        if entry is not None:
+            _expires, resp = entry
+            if resp is not None and hasattr(resp, "items"):
+                for inst in resp.items:
+                    if inst.e == exchange and inst.s == symbol:
+                        return int(inst.ls) if inst.ls > 0 else 1
+    except Exception:
+        pass
+    return 1
+
+
 def _place_order(account: str, symbol: str, transaction_type: str,
                  quantity: int, price: float, cfg: ChaseConfig) -> str:
     """Place a limit order. Returns order_id."""
-    kite = _get_kite(account)
+    from backend.shared.brokers.kite import to_kite_qty
+    kite      = _get_kite(account)
+    lot_size  = _lot_size_sync(cfg.exchange, symbol)
+    kite_qty  = to_kite_qty(cfg.exchange, quantity, lot_size)
     order_id = kite.place_order(
         variety=cfg.variety,
         exchange=cfg.exchange,
         tradingsymbol=symbol,
         transaction_type=transaction_type,
-        quantity=quantity,
+        quantity=kite_qty,
         product=cfg.product,
         order_type="LIMIT",
         price=price,

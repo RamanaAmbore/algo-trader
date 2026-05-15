@@ -516,11 +516,17 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
     mirror of what `place_order` would have rejected with.
     """
     try:
+        from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+        exchange  = order.get("exchange", "NFO")
+        symbol    = order.get("symbol") or ""
+        raw_qty   = int(order.get("qty") or 0)
+        lot_size  = await get_lot_size(exchange, symbol)
+        kite_qty  = to_kite_qty(exchange, raw_qty, lot_size)
         basket_order = {
-            "exchange":         order.get("exchange", "NFO"),
-            "tradingsymbol":    order.get("symbol"),
+            "exchange":         exchange,
+            "tradingsymbol":    symbol,
             "transaction_type": order.get("side"),
-            "quantity":         order.get("qty"),
+            "quantity":         kite_qty,
             "order_type":       "LIMIT",
             "product":          order.get("product", "NRML"),
             "price":            order.get("price"),
@@ -650,11 +656,14 @@ async def run_preflight(account: str, order: dict) -> dict:
             logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
 
     # ── 4. MARGIN_SHORTFALL ───────────────────────────────────────────────
+    from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+    _lot_size = await get_lot_size(exchange, symbol)
+    _kite_qty = to_kite_qty(exchange, qty, _lot_size)
     basket_order = {
         "exchange":         exchange,
         "tradingsymbol":    symbol,
         "transaction_type": side,
-        "quantity":         qty,
+        "quantity":         _kite_qty,
         "order_type":       order_type,
         "product":          product,
         "price":            float(price) if price else 0.0,
@@ -813,12 +822,18 @@ async def diagnose_live_failure(kite_or_broker, order: dict, kite_error: str) ->
     HTTP detail.
     """
     import asyncio
+    from backend.shared.brokers.kite import to_kite_qty, get_lot_size
     kite = getattr(kite_or_broker, "kite", kite_or_broker)
+    _exch   = order.get("exchange", "NFO")
+    _sym    = order.get("symbol") or order.get("tradingsymbol") or ""
+    _raw_q  = int(order.get("qty") or order.get("quantity") or 0)
+    _ls     = await get_lot_size(_exch, _sym)
+    _kq     = to_kite_qty(_exch, _raw_q, _ls)
     basket_order = {
-        "exchange":         order.get("exchange", "NFO"),
-        "tradingsymbol":    order.get("symbol") or order.get("tradingsymbol"),
+        "exchange":         _exch,
+        "tradingsymbol":    _sym,
         "transaction_type": order.get("side") or order.get("transaction_type"),
-        "quantity":         order.get("qty") or order.get("quantity"),
+        "quantity":         _kq,
         "order_type":       order.get("order_type", "LIMIT"),
         "product":          order.get("product", "NRML"),
         "price":            order.get("price") or 0,
@@ -1331,6 +1346,10 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
+    # Note: MCX qty translation (to_kite_qty) is NOT applied here because
+    # modify_order references a live Kite order_id — any quantity in params
+    # should already be in Kite's convention (lots for MCX). Agent actions
+    # that modify orders are expected to supply the correct Kite qty.
     kwargs: dict = {}
     for field in ("quantity", "price", "trigger_price", "order_type", "validity"):
         v = params.get(field)
