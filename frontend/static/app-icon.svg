@@ -33,8 +33,8 @@
       <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0a0a0a" flood-opacity="0.6"/>
     </filter>
     <radialGradient id="face-radial" cx="50%" cy="50%" r="55%">
-      <stop offset="0%"   stop-color="#0e2a3a"/>
-      <stop offset="100%" stop-color="#0a2030"/>
+      <stop offset="0%"   stop-color="#10223e"/>
+      <stop offset="100%" stop-color="#0c1830"/>
     </radialGradient>
   </defs>
   <rect width="512" height="512" fill="url(#face-radial)"/>
