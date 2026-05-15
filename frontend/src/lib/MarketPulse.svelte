@@ -306,7 +306,7 @@
     // here so this component can also be embedded in flows that
     // intentionally allow anonymous demo viewers.
     await tick();
-    if (showSymbolsGrid) mountGrid();
+    mountGrid();
 
     try {
       const mod = await import('$lib/data/instruments');
@@ -1141,9 +1141,14 @@
   }
 
   function mountGrid() {
-    if (!gridEl) return;
     const RA = 'ag-right-aligned-cell';
     const dirCellClass = (p) => `${RA} ${dirCls(p.value)}`;
+
+    // Main symbols grid — only built when the parent opted into the
+    // per-symbol view (/pulse). /dashboard passes showSymbolsGrid=false
+    // because it shows only summary + funds; the summary/funds grids
+    // below still need to mount in that case.
+    if (showSymbolsGrid && gridEl) {
 
     const colDefs = /** @type {any[]} */ ([
       { field: 'tradingsymbol', headerName: 'Symbol', width: 190, pinned: 'left',
@@ -1205,6 +1210,7 @@
       },
     });
     gridReady = true;
+    }  // end main symbols grid block
 
     // Positions Summary grid — Account | Day P&L | Day % | P&L
     if (showSummary && positionsSummaryEl) {

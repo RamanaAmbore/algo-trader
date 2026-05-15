@@ -657,19 +657,22 @@
            never changes; only the visible glyph flips. The bottom
            submit button continues to show the resolved BUY/SELL so
            the actual broker action is unambiguous. -->
-      <div class="ot-side-toggle" class:ot-locked={action === 'modify'}>
-        <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
-                disabled={action === 'modify'}
-                title={currentQty
-                  ? (sideLabels.BUY + ' (places a BUY order)')
-                  : 'BUY this contract'}
-                onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
-        <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
-                disabled={action === 'modify'}
-                title={currentQty
-                  ? (sideLabels.SELL + ' (places a SELL order)')
-                  : 'SELL this contract'}
-                onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
+      <div class="ot-side-block">
+        <span class="ot-label">Side</span>
+        <div class="ot-side-toggle" class:ot-locked={action === 'modify'}>
+          <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
+                  disabled={action === 'modify'}
+                  title={currentQty
+                    ? (sideLabels.BUY + ' (places a BUY order)')
+                    : 'BUY this contract'}
+                  onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
+          <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
+                  disabled={action === 'modify'}
+                  title={currentQty
+                    ? (sideLabels.SELL + ' (places a SELL order)')
+                    : 'SELL this contract'}
+                  onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
+        </div>
       </div>
       <div class="ot-qty-block">
         {#if _lotSize > 0}
@@ -1089,6 +1092,14 @@
     background: rgba(125,211,252,0.22);
     border-color: rgba(125,211,252,0.85);
   }
+
+  /* Side block — "Side" label + BUY/SELL pill pair. The label
+     mirrors the "Lots" / "Qty" label structure in the sibling
+     ot-qty-block so the pills + the lots-row line up on the same
+     baseline. Without the label the pills would float up to the
+     top of the row while Lots data sat below its own label. */
+  .ot-side-block { display: flex; flex-direction: column; }
+  .ot-side-block .ot-label { margin-bottom: 0.18rem; }
 
   /* Side toggle (BUY / SELL) */
   .ot-side-toggle {
