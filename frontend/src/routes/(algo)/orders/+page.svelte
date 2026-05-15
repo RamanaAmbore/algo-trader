@@ -79,7 +79,7 @@
           price:     payload.price > 0 ? payload.price : undefined,
           trigger:   payload.trigger_price > 0 ? payload.trigger_price : undefined,
           product:   payload.product,
-          accounts:  [],
+          accounts:  (await loadAccounts()).map(a => a.account_id || a).filter(Boolean),
           account:   String(payload.account || ''),
           // Orders page has no drafts panel — start on PAPER, allow
           // LIVE escalation.

@@ -1214,7 +1214,7 @@
     }
   }
 
-  function handleRowClick(ev) {
+  async function handleRowClick(ev) {
     if (!ev.data) return;
     const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
     const rmBtn = target?.closest?.('.sym-remove');
@@ -1237,13 +1237,23 @@
     // a single account appeared after async realAccounts resolution.
     const isRealAcct = (a) => !!(a && !String(a).includes('#'));
     const preAccount = isRealAcct(r.account) ? String(r.account) : '';
+    // Ensure accounts are resolved before opening the ticket — avoids
+    // a blank picker on first click when onMount hasn't finished yet.
+    if (!realAccounts.length) {
+      try {
+        const r2 = await fetchAccounts();
+        realAccounts = (r2?.accounts || [])
+          .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
+          .filter(Boolean);
+      } catch (_) { /* leave empty — ticket's self-fetch backstop will fill */ }
+    }
     openTicket({
       symbol:   r.tradingsymbol,
       exchange: r.exchange,
       side,
       qty:      Math.abs(Number(r.qty_pos) || lot),
       lotSize:  lot,
-      accounts: realAccounts.length ? realAccounts : [],
+      accounts: realAccounts,
       account:  preAccount,
     });
   }

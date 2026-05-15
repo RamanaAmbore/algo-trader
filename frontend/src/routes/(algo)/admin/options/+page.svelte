@@ -586,7 +586,11 @@
       if (live && live.paper_trading_mode === false && live.branch === 'main') {
         basketMode = 'live';
       }
-    } catch { /* fall back to paper if status fetch fails — safe default */ }
+    } catch {
+      basketError = 'Could not determine execution mode. Try again.';
+      basketPlacing = false;
+      return;
+    }
 
     basketPlacing  = true;
     basketError    = '';
@@ -1073,8 +1077,8 @@
                    ? Number(c.avg_cost) : undefined,
       accounts:  ticketAccounts,
       account:   acct,
-      defaultMode:    'live',
-      availableModes: ['live'],
+      defaultMode:    'draft',
+      availableModes: ['draft', 'live'],
       // Stashed for onTicketSubmit; OrderTicket ignores extra
       // fields, so this rides through unchanged.
       _draftId:  c.draftId,
