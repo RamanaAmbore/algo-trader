@@ -24,7 +24,7 @@
   // page's drafts array, the strategy state, the broker. Every
   // outcome routes through onSubmit(payload).
 
-  import { onMount, untrack } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import { placeTicketOrder, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
@@ -190,6 +190,34 @@
 
   function stepLots(/** @type {number} */ delta) {
     _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
+  }
+
+  // Press-and-hold on the +/− buttons. Single tap bumps by 1; holding
+  // the button fires repeatedly after a short delay, accelerating for
+  // long holds so the operator can rip through 1 → 50 lots quickly
+  // without 50 individual clicks. Pointer events (not mouse-only) so
+  // touch + stylus work identically.
+  let _stepTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+  let _stepLoop  = /** @type {ReturnType<typeof setInterval> | null} */ (null);
+  function _stopStep() {
+    if (_stepTimer) { clearTimeout(_stepTimer); _stepTimer = null; }
+    if (_stepLoop)  { clearInterval(_stepLoop); _stepLoop = null; }
+  }
+  onDestroy(_stopStep);
+  function _holdStep(/** @type {number} */ delta) {
+    // Initial bump, then a 400 ms delay before repeats kick in.
+    stepLots(delta);
+    _stopStep();
+    _stepTimer = setTimeout(() => {
+      _stepLoop = setInterval(() => stepLots(delta), 80);
+      // After 1.5 s of continuous holding, accelerate to ~30 ms/step.
+      setTimeout(() => {
+        if (_stepLoop) {
+          clearInterval(_stepLoop);
+          _stepLoop = setInterval(() => stepLots(delta), 30);
+        }
+      }, 1500);
+    }, 400);
   }
   let _type    = $state(orderType);
   let _variety = $state(variety);
@@ -681,12 +709,18 @@
           <label class="ot-label" for="ot-lots">Lots</label>
           <div class="ot-lots-row">
             <button type="button" class="ot-lots-step"
-                    onclick={() => stepLots(-1)}
+                    onpointerdown={(e) => { e.preventDefault(); _holdStep(-1); }}
+                    onpointerup={_stopStep}
+                    onpointerleave={_stopStep}
+                    onpointercancel={_stopStep}
                     disabled={_lots <= 1}
                     aria-label="Decrease lots">−</button>
             <span class="ot-lots-val" id="ot-lots" aria-label="Lots">{_lots}</span>
             <button type="button" class="ot-lots-step"
-                    onclick={() => stepLots(1)}
+                    onpointerdown={(e) => { e.preventDefault(); _holdStep(1); }}
+                    onpointerup={_stopStep}
+                    onpointerleave={_stopStep}
+                    onpointercancel={_stopStep}
                     aria-label="Increase lots">+</button>
             <span class="ot-meta">(× {_lotSize} = {_qty})</span>
           </div>
