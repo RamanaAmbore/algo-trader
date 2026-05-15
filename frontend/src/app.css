@@ -53,8 +53,8 @@
      the navy header — operator flagged it as noise. */
   --ag-header-column-resize-handle-display: none;
   --ag-header-column-resize-handle-color: transparent;
-  --ag-wrapper-border-radius: 6px;
-  border-radius: 6px;
+  --ag-wrapper-border-radius: 4px;
+  border-radius: 4px;
   overflow: hidden;
   /* Slightly darker champagne hairline border with rounded corners.
      Sits inside .pub-card-wide on /performance; gives each grid its own crisp frame
@@ -68,7 +68,7 @@
   min-height: 0 !important;
 }
 .ag-theme-ramboq .ag-root-wrapper {
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
   /* No wrapper bg — header carries its own #1d2939; body is cream.
      The earlier navy wrapper bled at corners with the 4px radius. */
