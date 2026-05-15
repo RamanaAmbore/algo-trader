@@ -144,7 +144,12 @@ def main():
         smtp_user     = sec.get("smtp_user", "")
         smtp_pass     = sec.get("smtp_pass", "")
         smtp_name     = sec.get("smtp_user_name", "")
-        alert_emails  = sec.get("alert_emails", [])
+        # Prefer dedicated deploy_emails list so deploy pings can go to
+        # a separate inbox (operator wants both prod + dev deploys to
+        # land in website.ramboquant@gmail.com). Falls back to the
+        # shared alert_emails so existing deployments require no
+        # secrets.yaml change.
+        alert_emails  = sec.get("deploy_emails") or sec.get("alert_emails", [])
 
         subject = f"RamboQuant {event_label}: {ts}"
 
