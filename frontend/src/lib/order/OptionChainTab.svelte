@@ -32,6 +32,7 @@
    *   basketLegs?:     any[],
    *   onAddLeg?:       (leg: any) => void,
    *   onRemoveLeg?:    (leg: any) => void,
+   *   onUpdateLeg?:    (key: string, updater: (leg: any) => any) => void,
    *   onSubmitBasket?: () => void,
    *   onClearBasket?:  () => void,
    * }} */
@@ -47,6 +48,7 @@
     basketLegs    = /** @type {any[]|undefined} */ (undefined),
     onAddLeg      = /** @type {((leg: any) => void)|undefined} */ (undefined),
     onRemoveLeg   = /** @type {((leg: any) => void)|undefined} */ (undefined),
+    onUpdateLeg   = /** @type {((key: string, updater: (leg: any) => any) => void)|undefined} */ (undefined),
     onSubmitBasket = /** @type {(() => void)|undefined} */ (undefined),
     onClearBasket  = /** @type {(() => void)|undefined} */ (undefined),
   } = $props();
@@ -281,8 +283,17 @@
   function _mergeIntoBasket(/** @type {{sym:string,side:'BUY'|'SELL',lots:number}} */ incoming) {
     const idx = chainBasket.findIndex(b => b.sym === incoming.sym && b.side === incoming.side);
     if (idx < 0) return false;
-    // External basket: can't mutate in place — call the shell remove+add cycle.
-    if (_externalBasket && onRemoveLeg && onAddLeg) {
+    if (_externalBasket && onUpdateLeg) {
+      // Single-pass map update on the shell's $state. Avoids the
+      // remove+re-add round-trip which could drop rapid clicks when
+      // the basketLegs prop hadn't propagated back to the child.
+      const existing = chainBasket[idx];
+      onUpdateLeg(existing.key, (leg) => ({
+        ...leg,
+        lots: (leg.lots || 0) + (incoming.lots || 1),
+      }));
+    } else if (_externalBasket && onRemoveLeg && onAddLeg) {
+      // Legacy path for callers that haven't wired onUpdateLeg yet.
       const existing = chainBasket[idx];
       onRemoveLeg(existing);
       onAddLeg({ ...existing, lots: (existing.lots || 0) + (incoming.lots || 1) });
@@ -339,18 +350,24 @@
   }
 
   function setBasketChaseAgg(/** @type {string} */ key, /** @type {'low'|'med'|'high'} */ agg) {
-    if (_externalBasket) {
-      // External: remove + re-add with updated agg.
+    if (_externalBasket && onUpdateLeg) {
+      onUpdateLeg(key, (leg) => ({ ...leg, chaseAgg: agg }));
+    } else if (_externalBasket && onRemoveLeg && onAddLeg) {
       const leg = chainBasket.find(b => b.key === key);
-      if (leg && onRemoveLeg && onAddLeg) { onRemoveLeg(leg); onAddLeg({ ...leg, chaseAgg: agg }); }
+      if (leg) { onRemoveLeg(leg); onAddLeg({ ...leg, chaseAgg: agg }); }
     } else {
       _localBasket = _localBasket.map(b => b.key === key ? { ...b, chaseAgg: agg } : b);
     }
   }
   function basketStepLots(/** @type {string} */ key, /** @type {number} */ delta) {
-    if (_externalBasket) {
+    if (_externalBasket && onUpdateLeg) {
+      onUpdateLeg(key, (leg) => ({
+        ...leg,
+        lots: Math.max(1, Math.floor((leg.lots || 1) + delta)),
+      }));
+    } else if (_externalBasket && onRemoveLeg && onAddLeg) {
       const leg = chainBasket.find(b => b.key === key);
-      if (leg && onRemoveLeg && onAddLeg) { onRemoveLeg(leg); onAddLeg({ ...leg, lots: Math.max(1, Math.floor((leg.lots || 1) + delta)) }); }
+      if (leg) { onRemoveLeg(leg); onAddLeg({ ...leg, lots: Math.max(1, Math.floor((leg.lots || 1) + delta)) }); }
     } else {
       _localBasket = _localBasket.map(b => b.key !== key ? b : { ...b, lots: Math.max(1, Math.floor((b.lots || 1) + delta)) });
     }

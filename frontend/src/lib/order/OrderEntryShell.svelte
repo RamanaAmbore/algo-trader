@@ -118,6 +118,16 @@
   }
   function clearBasket() { basketLegs = []; basketResultMsg = ''; }
 
+  // Single-pass leg update — used by chain merge (sym+side dedupe) and
+  // +/- steppers. Maps in place so rapid clicks accumulate cleanly
+  // instead of relying on the remove+re-add pattern which can drop
+  // updates if the prop hasn't propagated back to the child between
+  // calls.
+  function updateLegByKey(/** @type {string} */ key,
+                         /** @type {(leg:any) => any} */ updater) {
+    basketLegs = basketLegs.map(b => b.key === key ? updater(b) : b);
+  }
+
   /** Submit every leg in the shell basket via placeTicketOrder. */
   async function submitBasket() {
     if (basketSubmitting || !basketLegs.length) return;
@@ -380,6 +390,7 @@
             const i = basketLegs.findIndex(b => b.key === leg.key);
             if (i >= 0) removeBasketLeg(i);
           }}
+          onUpdateLeg={updateLegByKey}
           onSubmitBasket={submitBasket}
           onClearBasket={clearBasket}
           onBasketPlace={({ ok, fail }) => {
