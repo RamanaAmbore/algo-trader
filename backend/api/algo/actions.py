@@ -1204,6 +1204,16 @@ async def _action_place_order(context: dict, params: dict):
             diag = "diagnosis unavailable"
         logger.error(f"[LIVE] place_order failed for {account} {exchange}/{symbol} "
                      f"{side} {qty}: {e} | diag: {diag}")
+        try:
+            from backend.shared.helpers.alert_utils import send_order_failure_alert
+            send_order_failure_alert(
+                account=account, symbol=symbol, exchange=exchange,
+                side=side, qty=qty, mode="live",
+                source=f"agent:{context.get('agent_slug', 'place_order')}",
+                error=f"{e} | {diag}",
+            )
+        except Exception:
+            pass
         raise
 
 
@@ -1325,6 +1335,16 @@ async def _action_live_close_position(agent, context: dict, params: dict):
             diag = "diagnosis unavailable"
         logger.error(f"[LIVE] close_position failed for {account} {exchange}/{symbol} "
                      f"{side} {qty}: {e} | diag: {diag}")
+        try:
+            from backend.shared.helpers.alert_utils import send_order_failure_alert
+            send_order_failure_alert(
+                account=account, symbol=symbol, exchange=exchange,
+                side=side, qty=qty, mode="live",
+                source=f"agent:{getattr(agent, 'slug', 'close_position')}",
+                error=f"{e} | {diag}",
+            )
+        except Exception:
+            pass
         raise
 
 
@@ -1577,6 +1597,16 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
                 logger.error(f"[LIVE] chase_close_positions task {i} failed for "
                              f"{acct} {exchange}/{symbol} {side} {qty}: "
                              f"{res} | diag: {diag}")
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=acct, symbol=symbol, exchange=exchange,
+                        side=side, qty=qty, mode="live",
+                        source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
+                        error=f"{res} | {diag}",
+                    )
+                except Exception:
+                    pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════

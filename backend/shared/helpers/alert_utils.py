@@ -434,6 +434,144 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
 # ---------------------------------------------------------------------------
 
 # Mapping from a bucket key to a human-readable rule label for the alert row.
+# ---------------------------------------------------------------------------
+# Order failure alerts
+# ---------------------------------------------------------------------------
+#
+# Fires Telegram + email whenever an order placement fails — manual ticket,
+# agent action, or chase loop.  Deduplicated per (masked_account, symbol,
+# side, error_signature) within a 10-minute cooldown so a misfiring agent
+# doesn't produce an alert storm.  After the cooldown the next fire carries
+# a "(+N suppressed)" suffix.
+# ---------------------------------------------------------------------------
+
+_ORDER_ALERT_COOLDOWN_SEC = 600   # 10 minutes
+
+# Keyed by (masked_account, symbol, side, error_sig) ->
+#   {"first_seen": datetime, "last_sent": datetime, "suppressed": int}
+_order_alert_state: dict[tuple, dict] = {}
+_order_alert_lock  = Lock()
+
+
+def _error_sig(error: str) -> str:
+    """Normalise an error string to an 80-char lowercase signature for dedup."""
+    return error.lower().strip()[:80]
+
+
+def send_order_failure_alert(
+    *,
+    account: str,
+    symbol: str,
+    exchange: str,
+    side: str,
+    qty: int,
+    mode: str,
+    source: str,
+    error: str,
+    detail: dict | None = None,
+) -> None:
+    """
+    Telegram + email alert when an order placement fails.
+
+    Deduplicated by (masked_account, symbol, side, error_signature)
+    within `_ORDER_ALERT_COOLDOWN_SEC`.  Suppressed fires increment a
+    counter that flows into the next dispatched alert as "(+N suppressed)".
+
+    All exceptions are swallowed — a broken Telegram connection must never
+    interrupt order placement or the chase loop.
+    """
+    try:
+        from backend.shared.helpers.date_time_utils import timestamp_display
+        from backend.shared.helpers.utils import mask_column
+        import pandas as pd
+
+        masked = mask_column(pd.Series([account]))[0]
+        sig    = _error_sig(error)
+        key    = (masked, symbol.upper(), side.upper(), sig)
+        now    = datetime.utcnow()
+
+        with _order_alert_lock:
+            entry = _order_alert_state.get(key)
+            if entry is not None:
+                elapsed = (now - entry["last_sent"]).total_seconds()
+                if elapsed < _ORDER_ALERT_COOLDOWN_SEC:
+                    entry["suppressed"] += 1
+                    logger.debug(
+                        f"order-failure alert suppressed ({entry['suppressed']} total) "
+                        f"for {masked} {side} {symbol}: {sig}"
+                    )
+                    return
+                # Cooldown elapsed — fire; carry suppressed count
+                suppressed_count = entry["suppressed"]
+                entry["last_sent"]  = now
+                entry["suppressed"] = 0
+            else:
+                suppressed_count = 0
+                _order_alert_state[key] = {
+                    "first_seen": now, "last_sent": now, "suppressed": 0,
+                }
+
+        branch   = config.get("deploy_branch", "main")
+        ist_disp = timestamp_display()
+        mode_tag = f"[{mode.upper()}]" if mode else ""
+        sup_note = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
+        error_short = error[:160].strip()
+
+        # Telegram — compact monospace block
+        tg_body = (
+            f"<b>&#10060; Order rejected</b>  {mode_tag}{sup_note}\n"
+            f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
+            f"source: {source}\n"
+            f"<code>{error_short}</code>"
+        )
+
+        # Email — HTML table
+        rows_html = _html_table(
+            ("Field", "Value"),
+            [
+                ("Account",   masked),
+                ("Symbol",    symbol),
+                ("Exchange",  exchange),
+                ("Side",      side),
+                ("Qty",       str(qty)),
+                ("Mode",      mode),
+                ("Source",    source),
+                ("Error",     error_short + sup_note),
+                ("Timestamp", ist_disp),
+            ],
+        )
+        email_body = (
+            f"<html><body style='font-family:sans-serif'>"
+            + (_branch_banner_html(branch) if branch != "main" else "")
+            + f"<p style='font-size:14px;color:#c0392b'><b>&#10060; Order rejected</b>"
+              f"{' ' + mode_tag if mode_tag else ''}</p>"
+            + rows_html
+            + f"</body></html>"
+        )
+
+        subject = (
+            f"RamboQuant Order Rejected: {symbol} {side}"
+            + (f" [{branch}]" if branch != "main" else "")
+            + (f" ({mode})" if mode else "")
+        )
+
+        # Deliver — best-effort; never raises out of this function
+        _send_telegram(tg_body)
+        alert_emails = get_alert_recipients()
+        for email in alert_emails:
+            try:
+                send_email("", email, subject, email_body)
+            except Exception as _mail_e:
+                logger.error(f"order-failure email to {email} failed: {_mail_e}")
+
+        logger.warning(
+            f"order-failure alert sent: {masked} {side} {qty} {symbol} "
+            f"mode={mode} source={source}{sup_note}"
+        )
+    except Exception as _top_e:
+        logger.error(f"send_order_failure_alert internal error: {_top_e}")
+
+
 _KIND_LABEL = {
     'static_pct':      'Static %',
     'static_abs':      'Static ₹',

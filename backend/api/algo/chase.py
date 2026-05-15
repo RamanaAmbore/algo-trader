@@ -25,6 +25,11 @@ logger = get_logger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chase")
 
+# Maximum consecutive broker errors before a chase loop is aborted and an
+# alert is fired.  Distinct from `max_attempts` (the unfilled cap): this
+# counts Kite SDK exceptions, not quote-crossing retries.
+_MAX_CHASE_ERRORS = 3
+
 
 class ChaseStatus(str, Enum):
     PENDING   = "pending"
@@ -233,7 +238,8 @@ async def chase_order(
                 pass
 
     current_order_id = None
-    remaining_qty = quantity
+    remaining_qty    = quantity
+    consecutive_errors = 0        # reset on any successful broker call
 
     for attempt in range(1, cfg.max_attempts + 1):
         result.attempts = attempt
@@ -264,6 +270,7 @@ async def chase_order(
             current_order_id = await _run(
                 _place_order, account, symbol, transaction_type, remaining_qty, price, cfg
             )
+            consecutive_errors = 0   # successful placement resets the error streak
             result.order_id = current_order_id
             logger.info(f"Chase {symbol}: attempt {attempt}/{cfg.max_attempts} "
                         f"— {transaction_type} {remaining_qty} @ {price} (order {current_order_id})")
@@ -302,8 +309,36 @@ async def chase_order(
                 current_order_id = None  # Need fresh order
 
         except Exception as e:
-            logger.error(f"Chase {symbol}: attempt {attempt} error: {e}")
+            consecutive_errors += 1
+            logger.error(f"Chase {symbol}: attempt {attempt} error "
+                         f"({consecutive_errors}/{_MAX_CHASE_ERRORS} consecutive): {e}")
             emit("error", {"attempt": attempt, "error": str(e)})
+            if consecutive_errors >= _MAX_CHASE_ERRORS:
+                abort_msg = (
+                    f"Chase abandoned after {consecutive_errors} consecutive errors "
+                    f"({attempt} total attempts) — last error: {e}"
+                )
+                logger.error(f"Chase {symbol}: {abort_msg}")
+                result.status = ChaseStatus.FAILED
+                result.detail = abort_msg
+                emit("chase_failed", {"attempts": attempt, "error": str(e),
+                                      "reason": "consecutive_errors"})
+                try:
+                    if current_order_id:
+                        await _run(_cancel_order, account, current_order_id, cfg.variety)
+                except Exception:
+                    pass
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=account, symbol=symbol,
+                        exchange=cfg.exchange, side=transaction_type,
+                        qty=quantity, mode="live", source="chase",
+                        error=abort_msg,
+                    )
+                except Exception:
+                    pass
+                return result
             await asyncio.sleep(cfg.interval_seconds)
 
     # Max attempts exhausted

@@ -527,6 +527,16 @@ class OrdersController(Controller):
             return PlaceOrderResponse(order_id=str(order_id), account=masked)
         except Exception as e:
             logger.error(f"Place order failed [{masked}]: {e}")
+            try:
+                from backend.shared.helpers.alert_utils import send_order_failure_alert
+                send_order_failure_alert(
+                    account=data.account, symbol=data.tradingsymbol,
+                    exchange=data.exchange, side=data.transaction_type,
+                    qty=data.quantity, mode="live", source="place",
+                    error=str(e),
+                )
+            except Exception:
+                pass
             raise HTTPException(status_code=400, detail=str(e))
 
     @post("/ticket")
@@ -820,6 +830,16 @@ class OrdersController(Controller):
                     f"{f' @{data.price}' if data.price else ''}: "
                     f"{kite_msg} | diag: {diag}"
                 )
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=account, symbol=sym,
+                        exchange=(data.exchange or "NFO"), side=side,
+                        qty=qty, mode="live", source="ticket",
+                        error=kite_msg,
+                    )
+                except Exception:
+                    pass
                 raise HTTPException(
                     status_code=400,
                     detail=f"{kite_msg} ({diag})"[:400],
