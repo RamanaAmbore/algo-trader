@@ -23,7 +23,7 @@
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
-    fetchMovers,
+    fetchMovers, fetchSparklines,
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
@@ -236,6 +236,8 @@
   // Funds (per-account margins) — loaded only when showFunds is true.
   let funds = $state(/** @type {any[]} */ ([]));
 
+  let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
+  let stopSparkPoll;
   let stopPoll, stopPulsePoll;
   let gridEl;
   // $state on the bind:this refs so Svelte 5's reactive-update
@@ -276,6 +278,28 @@
   let ticketProps     = $state(/** @type {any} */ (null));
   let realAccounts    = $state(/** @type {string[]} */ ([]));
 
+  async function loadSparklines() {
+    const pairs = [];
+    const seen = new Set();
+    for (const row of unifiedRows) {
+      if (!row.tradingsymbol) continue;
+      const sym  = String(row.tradingsymbol).toUpperCase();
+      const exch = String(row.exchange || 'NSE').toUpperCase();
+      const key  = `${exch}:${sym}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        pairs.push({ tradingsymbol: sym, exchange: exch });
+      }
+    }
+    if (!pairs.length) return;
+    try {
+      const res = await fetchSparklines(pairs, 5);
+      if (res?.data && typeof res.data === 'object') {
+        sparklines = { ...sparklines, ...res.data };
+      }
+    } catch (_) { /* non-fatal — sparklines are cosmetic */ }
+  }
+
   onMount(async () => {
     // Auth is enforced by the (algo) layout — no goto('/signin')
     // here so this component can also be embedded in flows that
@@ -308,7 +332,9 @@
       await loadPulse();
       if (showFunds) await loadFunds();
     }, 10000);
-    stopMoversPoll = visibleInterval(loadMovers, 30000);
+    stopMoversPoll  = visibleInterval(loadMovers, 30000);
+    await loadSparklines();
+    stopSparkPoll   = visibleInterval(loadSparklines, 60000);
 
     // Keyboard shortcuts — scoped to this wrapper only.
     document.addEventListener('keydown', handleKeydown);
@@ -425,7 +451,7 @@
   });
 
   onDestroy(() => {
-    stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.();
+    stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.(); stopSparkPoll?.();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     grid?.destroy?.();
@@ -1068,6 +1094,29 @@
     return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}`;
   }
 
+  /**
+   * Inline SVG sparkline for the last N daily closes.
+   * ~60×18px, no axes/labels, stroke coloured by direction.
+   * Missing data → em-dash placeholder.
+   */
+  function sparkRenderer(params) {
+    const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
+    const closes = sparklines[sym];
+    if (!closes || closes.length < 2) {
+      return '<span style="color:#7e97b8;font-size:0.6rem;padding:0 4px">—</span>';
+    }
+    const W = 58, H = 16, PAD = 2;
+    const min = Math.min(...closes);
+    const max = Math.max(...closes);
+    const range = max - min || 1;
+    const xStep = (W - PAD * 2) / (closes.length - 1);
+    const yOf   = (v) => PAD + (1 - (v - min) / range) * (H - PAD * 2);
+    const pts   = closes.map((v, i) => `${(PAD + i * xStep).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
+    const up    = closes[closes.length - 1] >= closes[0];
+    const color = up ? 'rgba(91,142,149,0.85)' : 'rgba(196,122,61,0.85)';
+    return `<svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  }
+
   function dirCls(v) {
     if (v == null) return 'cell-flat';
     if (v > 0) return 'cell-pos';
@@ -1099,6 +1148,9 @@
       { field: 'tradingsymbol', headerName: 'Symbol', width: 190, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
+      { field: 'tradingsymbol', headerName: '', width: 70, colId: 'sparkline',
+        cellRenderer: sparkRenderer, sortable: false, resizable: true,
+        cellClass: 'spark-cell' },
       { field: 'ltp', headerName: 'LTP', width: 70,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,

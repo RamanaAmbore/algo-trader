@@ -350,6 +350,12 @@ export const fetchWatchlistQuotes = (id)    => _get(`/watchlist/${id}/quotes`, {
 export const fetchMovers          = ()      => _get('/watchlist/movers', { auth: true });
 /** POST /api/quote/batch — fetch LTP/bid/ask/day-change for arbitrary keys. */
 export const batchQuote           = (keys)  => _post('/quote/batch', { keys }, { auth: _hasToken() });
+
+/** POST /api/quotes/sparkline
+ *  symbols: [{tradingsymbol, exchange}, …]
+ *  days: number of daily closes to return (default 5) */
+export const fetchSparklines = (symbols, days = 5) =>
+  _post('/quotes/sparkline', { symbols, days }, { auth: _hasToken() });
 export const createUser = (payload) => _post('/admin/users', payload, { auth: true });
 
 export const approveUser    = (username) => _put(`/admin/users/${username}/approve`,   undefined, { auth: true });

@@ -33,7 +33,7 @@ from backend.api.routes.news import NewsController
 from backend.api.routes.grammar import GrammarTokenController
 from backend.api.routes.instruments import InstrumentsController
 from backend.api.routes.orders import AccountsController, OrdersController
-from backend.api.routes.quote import QuoteController
+from backend.api.routes.quote import QuoteController, SparklineController
 from backend.api.routes.positions import PositionsController
 from backend.api.routes.settings import SettingsController
 from backend.api.routes.brokers import BrokersController
@@ -148,6 +148,7 @@ _route_handlers = [
     AccountsController,
     InstrumentsController,
     QuoteController,
+    SparklineController,
     ContactController,
     ConfigController,
     SettingsController,
