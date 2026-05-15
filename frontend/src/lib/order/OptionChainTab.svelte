@@ -74,6 +74,20 @@
     return String(symbol).toUpperCase().replace(/\d.*$/, '') || '';
   });
 
+  // Derive the seed expiry from the symbol prop when it's a specific
+  // contract (CE/PE/FUT). The instruments cache row carries the
+  // authoritative ISO expiry as `.x` — way more reliable than parsing
+  // 25APR out of the tradingsymbol. Returns null for bare underlyings
+  // ('NIFTY') or when the cache is still loading. When set, the
+  // default-pick effect below prefers this expiry over chainExpiries[0]
+  // (the near-month default) — operator clicking "close this position"
+  // lands on the position's own contract month, not nearest-future.
+  const seedExpiry = $derived.by(() => {
+    if (!instrumentsReady || !symbol) return null;
+    const inst = getInstrument(String(symbol).toUpperCase());
+    return inst?.x || null;
+  });
+
   // ── Chain picker state ────────────────────────────────────────────
   let chainUnderlying  = $state('');
   let chainExpiry      = $state('');
@@ -145,7 +159,17 @@
   $effect(() => {
     void chainUnderlying;
     if (chainExpiries.length && !chainExpiries.includes(chainExpiry)) {
-      chainExpiry = chainExpiries[0];
+      // Prefer the seed contract's own expiry if it's in the list —
+      // operator clicked a specific position (e.g. NIFTY26MAY22000CE)
+      // and the chain should open on THAT month, not nearest-future.
+      // Bare-underlying / plain-order paths (no contract suffix) fall
+      // through to chainExpiries[0] (near month, post-listExpiries
+      // expiry filter).
+      if (seedExpiry && chainExpiries.includes(seedExpiry)) {
+        chainExpiry = seedExpiry;
+      } else {
+        chainExpiry = chainExpiries[0];
+      }
     }
   });
 
