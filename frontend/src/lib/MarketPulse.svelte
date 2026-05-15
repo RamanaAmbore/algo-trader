@@ -39,6 +39,7 @@
     accountPicker      = false, // <select> next to the toolbar
     showSummary        = false, // small per-account summary grid above the main grid
     showFunds          = false, // small per-account funds grid below the main grid
+    showSymbolsGrid    = true,  // unified symbols grid at the bottom; /dashboard passes false
   } = $props();
 
   // AG Grid valueFormatter wrappers — the canonical idiom every other
@@ -305,7 +306,7 @@
     // here so this component can also be embedded in flows that
     // intentionally allow anonymous demo viewers.
     await tick();
-    mountGrid();
+    if (showSymbolsGrid) mountGrid();
 
     try {
       const mod = await import('$lib/data/instruments');
@@ -1750,11 +1751,13 @@
     <div bind:this={holdingsSummaryEl} class="ag-theme-algo summary-grid mb-2"></div>
   {/if}
 
-  {#if showSummary || showFunds}
-    <div class="mp-section-label">Symbols</div>
+  {#if showSymbolsGrid}
+    {#if showSummary || showFunds}
+      <div class="mp-section-label">Symbols</div>
+    {/if}
+    <!-- Unified grid — the per-symbol detail view. -->
+    <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
   {/if}
-  <!-- Unified grid — the per-symbol detail view. -->
-  <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
 </div>
 
 {#if allowOrders && ticketProps}

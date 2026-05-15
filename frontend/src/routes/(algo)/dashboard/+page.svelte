@@ -1,32 +1,9 @@
 <script>
   import { onMount, getContext } from 'svelte';
-  import { page } from '$app/state';
-  import { goto } from '$app/navigation';
   import MarketPulse from '$lib/MarketPulse.svelte';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { clientTimestamp } from '$lib/stores';
-
-  // ── Tab state — driven by ?tab= query param ────────────────────────
-  /** @type {'performance' | 'pnl'} */
-  let tab = $state(/** @type {'performance'|'pnl'} */ ('performance'));
-
-  // Initialise from URL on mount; keep URL in sync on tab switch.
-  onMount(() => {
-    const qTab = page.url.searchParams.get('tab');
-    if (qTab === 'pnl') tab = 'pnl';
-  });
-
-  function switchTab(/** @type {'performance'|'pnl'} */ t) {
-    tab = t;
-    const url = new URL(page.url);
-    if (t === 'performance') {
-      url.searchParams.delete('tab');
-    } else {
-      url.searchParams.set('tab', t);
-    }
-    goto(url.pathname + (url.search || ''), { replaceState: true, noScroll: true });
-  }
 
   // ── Demo banner — sourced from the layout's shared context ─────────
   const algoStatus = getContext('algoStatus');
@@ -60,41 +37,24 @@
 <!-- Page header -->
 <div class="page-header">
   <h1 class="algo-page-title">Dashboard</h1>
-  <InfoHint popup text="Admin dashboard: real Kite holdings, positions, funds (account-scoped). The P&amp;L tab shows realised vs unrealised breakdown by symbol." />
+  <InfoHint popup text="Admin dashboard: real Kite holdings, positions, funds (account-scoped). P&amp;L Analysis below shows realised vs unrealised breakdown by symbol." />
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 
-<!-- Tab strip — sits below the page header, above the panel. -->
-<div class="dash-tabs-row">
-  <div class="dash-tabs">
-    <button type="button"
-            class="dash-tab"
-            class:dash-tab-active={tab === 'performance'}
-            onclick={() => switchTab('performance')}>
-      Performance
-    </button>
-    <button type="button"
-            class="dash-tab"
-            class:dash-tab-active={tab === 'pnl'}
-            onclick={() => switchTab('pnl')}>
-      P&amp;L
-    </button>
-  </div>
-</div>
+<!-- Performance section — Funds + Positions Summary + Holdings Summary (no Symbols grid) -->
+<MarketPulse
+  title="Performance"
+  enableWatchlists={false}
+  enableSourceToggles={true}
+  allowOrders={true}
+  accountPicker={true}
+  showSummary={true}
+  showFunds={true}
+  showSymbolsGrid={false} />
 
-<!-- Panel area -->
-{#if tab === 'performance'}
-  <MarketPulse
-    title="Performance"
-    enableWatchlists={false}
-    enableSourceToggles={true}
-    allowOrders={true}
-    accountPicker={true}
-    showSummary={true}
-    showFunds={true} />
-{:else}
-  <PnlAnalysis />
-{/if}
+<!-- P&L Analysis section -->
+<div class="mp-section-label pnl-section-label">P&amp;L Analysis</div>
+<PnlAnalysis />
 
 <style>
   .algo-page-title {
@@ -111,38 +71,19 @@
     margin-bottom: 0.3rem;
   }
 
-  /* ── Tab strip ──────────────────────────────────────────────────── */
-  .dash-tabs-row {
-    display: flex;
-    align-items: flex-end;
-    border-bottom: 1px solid rgba(255,255,255,0.10);
-    margin-bottom: 0.75rem;
-  }
-  .dash-tabs {
-    display: flex;
-    gap: 0;
-  }
-  .dash-tab {
-    padding: 0.3rem 0.9rem 0.3rem;
-    font-size: 0.68rem;
-    font-weight: 600;
+  /* P&L section label — matches MarketPulse's mp-section-label style */
+  .mp-section-label {
+    font-size: 0.6rem;
     font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-    color: #7e97b8;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    cursor: pointer;
-    transition: color 0.1s, border-color 0.1s;
-    white-space: nowrap;
-    outline: none;
-  }
-  .dash-tab:hover { color: #c8d8f0; }
-  .dash-tab-active {
-    color: #fbbf24;
-    border-bottom-color: #d4920c;
     font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #fbbf24;
+    margin-bottom: 0.25rem;
+  }
+  .pnl-section-label {
+    margin-top: 0.75rem;
+    margin-bottom: 0.3rem;
   }
 
   /* Demo-mode onboarding banner — purple-tinted to match the DEMO
