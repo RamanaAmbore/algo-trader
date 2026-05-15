@@ -18,14 +18,14 @@
   <meta property="og:description" content="RamboQuant builds systematic, transparent portfolios for partner-investors. Track real-time performance, market reports, and risk metrics." />
   <meta property="og:url" content="https://ramboq.com/" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image.svg" />
+  <meta property="og:image" content="https://ramboq.com/og-image.png" />
   <meta property="og:site_name" content="RamboQuant Analytics" />
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
   <meta name="twitter:description" content="RamboQuant builds systematic, transparent portfolios for partner-investors. Track real-time performance, market reports, and risk metrics." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image.svg" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image.png" />
 </svelte:head>
 
 <!-- Minimal above-fold content for Googlebot. The client-side

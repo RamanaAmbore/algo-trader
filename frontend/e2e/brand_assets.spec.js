@@ -8,7 +8,7 @@
  * variant (rgba(251,191,36,*)).
  *
  * The Svelte route `(public)/+page.svelte` is what renders at `/`,
- * and includes <meta property="og:image"> pointing at og-image.svg.
+ * and includes <meta property="og:image"> pointing at og-image.png.
  * After hydration, the (public) layout's nav bar mounts with the
  * bull.png. We assert against the post-hydration DOM.
  */
@@ -23,6 +23,7 @@ const TIMEOUT = 20_000;
 const STATIC_OK = [
   { path: '/favicon.ico',      mime: /image\/(x-icon|vnd\.microsoft\.icon)|^$/ },
   { path: '/favicon.png',      mime: /image\/png/ },
+  { path: '/og-image.png',     mime: /image\/png/ },
   { path: '/og-image.svg',     mime: /image\/svg\+xml/ },
   { path: '/app-icon-192.png', mime: /image\/png/ },
   { path: '/app-icon-512.png', mime: /image\/png/ },
@@ -56,8 +57,9 @@ test.describe('Brand assets', () => {
     expect(styleAttr).not.toContain('rgba(251,191,36');
 
     // og:image meta tag — the (public)/+page.svelte head block lands
-    // it pointing at og-image.svg.
+    // it pointing at og-image.png (raster — WhatsApp/Twitter previews
+    // don't render SVG OG images reliably).
     const og = await page.locator('meta[property="og:image"]').first().getAttribute('content');
-    expect(og || '', 'og:image meta missing').toMatch(/og-image\.svg$/);
+    expect(og || '', 'og:image meta missing').toMatch(/og-image\.png$/);
   });
 });
