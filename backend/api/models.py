@@ -213,6 +213,12 @@ class AlgoOrder(Base):
     status: Mapped[str]          = mapped_column(String(16), nullable=False, default="OPEN", index=True)
     engine: Mapped[str]          = mapped_column(String(16), nullable=False, default="manual")  # sim/paper/live/replay/shadow/expiry/manual
     mode: Mapped[str]            = mapped_column(String(8), nullable=False, default="live", index=True)  # sim/paper/live/replay/shadow
+    # Which agent originated this order. NULL for rows written before this
+    # column existed (pre-migration), and for orders whose origin can't be
+    # determined (e.g. legacy /place path that predates the manual agent).
+    agent_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("agents.id"), nullable=True, index=True,
+    )
     broker_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expiry_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)

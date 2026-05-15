@@ -23,6 +23,47 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
+
+async def _emit_chase_terminal(
+    broker_order_id: str,
+    outcome: str,          # chase_fill | chase_unfilled | chase_failed | chase_cancelled
+    symbol: str,
+    side: str,
+    qty: int,
+    *,
+    final_price: float | None = None,
+    attempts: int = 0,
+    slippage: float | None = None,
+    error: str | None = None,
+) -> None:
+    """Look up the AlgoOrder row by broker_order_id and write a chase-terminal
+    AgentEvent if the order carries an agent_id.  Fire-and-forget.
+    """
+    try:
+        from sqlalchemy import select as _sel
+        from backend.api.database import async_session as _async_session
+        from backend.api.models import AlgoOrder as _AlgoOrder
+        from backend.api.algo.agent_engine import record_chase_terminal
+
+        async with _async_session() as _s:
+            row = (await _s.execute(
+                _sel(_AlgoOrder).where(_AlgoOrder.broker_order_id == broker_order_id)
+            )).scalar_one_or_none()
+        agent_id = getattr(row, "agent_id", None) if row else None
+        await record_chase_terminal(
+            agent_id=agent_id,
+            outcome=outcome,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            final_price=final_price,
+            attempts=attempts,
+            slippage=slippage,
+            error=error,
+        )
+    except Exception as _e:
+        logger.debug(f"_emit_chase_terminal: {_e}")
+
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chase")
 
 # Maximum consecutive broker errors before a chase loop is aborted and an
@@ -296,6 +337,13 @@ async def chase_order(
                 })
                 logger.info(f"Chase {symbol}: FILLED @ {avg_price} "
                             f"(attempt {attempt}, slippage ₹{result.slippage:.2f})")
+                import asyncio as _asyncio
+                _asyncio.create_task(_emit_chase_terminal(
+                    current_order_id, "chase_fill",
+                    symbol, transaction_type, quantity,
+                    final_price=avg_price, attempts=attempt,
+                    slippage=result.slippage,
+                ))
                 return result
 
             if filled_qty > 0 and filled_qty < remaining_qty:
@@ -338,6 +386,13 @@ async def chase_order(
                     )
                 except Exception:
                     pass
+                if current_order_id:
+                    import asyncio as _asyncio
+                    _asyncio.create_task(_emit_chase_terminal(
+                        current_order_id, "chase_failed",
+                        symbol, transaction_type, quantity,
+                        attempts=attempt, error=abort_msg,
+                    ))
                 return result
             await asyncio.sleep(cfg.interval_seconds)
 
@@ -352,4 +407,11 @@ async def chase_order(
     result.detail = f"Failed after {cfg.max_attempts} attempts"
     emit("chase_failed", {"attempts": cfg.max_attempts})
     logger.error(f"Chase {symbol}: FAILED after {cfg.max_attempts} attempts")
+    if result.order_id:
+        import asyncio as _asyncio
+        _asyncio.create_task(_emit_chase_terminal(
+            result.order_id, "chase_unfilled",
+            symbol, transaction_type, quantity,
+            attempts=cfg.max_attempts,
+        ))
     return result

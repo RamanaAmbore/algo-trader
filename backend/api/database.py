@@ -86,7 +86,14 @@ async def init_db() -> None:
         # adds indexes when CREATING the table — for tables that pre-date the
         # `index=True` flag on the model, we add them explicitly here.
         # CREATE INDEX IF NOT EXISTS is idempotent; cheap no-op once present.
+        # agent_id back-reference — links every AlgoOrder to its originating
+        # agent (manual, or an automated agent that fired the action).
+        await conn.execute(text(
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS agent_id INTEGER "
+            "REFERENCES agents(id)"
+        ))
         for stmt in (
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_agent_id ON algo_orders (agent_id)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode ON algo_orders (mode)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_status ON algo_orders (status)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_created_at ON algo_orders (created_at)",

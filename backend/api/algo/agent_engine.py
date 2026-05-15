@@ -963,29 +963,37 @@ async def run_cycle(context: dict, broadcast_fn=None,
 
 
 # ---------------------------------------------------------------------------
-# Manual-agent audit writer
+# Agent-id lookup cache + chase terminal event writer
 # ---------------------------------------------------------------------------
 
-# Module-level cache so we don't query on every request.
-_manual_agent_id: int | None = None
+# Module-level cache: slug → DB id. Avoids a round-trip on every request.
+_agent_id_cache: dict[str, int] = {}
+
+
+async def get_agent_id_by_slug(slug: str) -> int | None:
+    """Return the DB id for an agent slug, caching the result.
+
+    Returns None when the slug isn't in the DB yet (e.g. on a fresh deploy
+    before seed_agents() has run) so callers can skip the write gracefully.
+    """
+    if slug in _agent_id_cache:
+        return _agent_id_cache[slug]
+    try:
+        async with async_session() as session:
+            row = (await session.execute(
+                select(Agent).where(Agent.slug == slug)
+            )).scalar_one_or_none()
+            if row:
+                _agent_id_cache[slug] = row.id
+                return row.id
+    except Exception as e:
+        logger.warning(f"get_agent_id_by_slug({slug!r}): DB lookup failed: {e}")
+    return None
 
 
 async def _get_manual_agent_id() -> int | None:
-    """Return the DB id of the 'manual' agent, with a one-time lookup."""
-    global _manual_agent_id
-    if _manual_agent_id is not None:
-        return _manual_agent_id
-    try:
-        async with async_session() as session:
-            result = await session.execute(
-                select(Agent).where(Agent.slug == "manual")
-            )
-            row = result.scalar_one_or_none()
-            if row:
-                _manual_agent_id = row.id
-    except Exception as e:
-        logger.warning(f"record_manual_event: could not look up manual agent id: {e}")
-    return _manual_agent_id
+    """Back-compat shim — delegates to get_agent_id_by_slug('manual')."""
+    return await get_agent_id_by_slug("manual")
 
 
 async def record_manual_event(
@@ -1043,3 +1051,58 @@ async def record_manual_event(
             await session.commit()
     except Exception as e:
         logger.warning(f"record_manual_event: DB write failed: {e}")
+
+
+async def record_chase_terminal(
+    *,
+    agent_id: int | None,
+    outcome: str,           # chase_fill | chase_unfilled | chase_failed | chase_cancelled
+    symbol: str,
+    side: str,
+    qty: int,
+    final_price: float | None = None,
+    attempts: int = 0,
+    slippage: float | None = None,
+    error: str | None = None,
+) -> None:
+    """Write an AgentEvent row for a terminal chase lifecycle outcome.
+
+    Attributed to the agent that originated the order (via agent_id from
+    the AlgoOrder row).  When agent_id is None the write is skipped
+    silently — the per-order AlgoOrderEvent timeline still captures the
+    outcome via order_events.write_event(), so no information is lost.
+
+    Fire-and-forget: any DB error is logged + swallowed.
+    """
+    if agent_id is None:
+        return
+
+    import json as _json
+    from backend.api.models import AgentEvent
+
+    detail: dict = {
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "attempts": attempts,
+        "outcome": outcome,
+    }
+    if final_price is not None:
+        detail["final_price"] = final_price
+    if slippage is not None:
+        detail["slippage"] = slippage
+    if error is not None:
+        detail["error"] = error
+
+    try:
+        async with async_session() as session:
+            session.add(AgentEvent(
+                agent_id=agent_id,
+                event_type=outcome,
+                trigger_condition=f"chase terminal: {symbol} {side} {qty}",
+                detail=_json.dumps(detail),
+                sim_mode=False,
+            ))
+            await session.commit()
+    except Exception as e:
+        logger.warning(f"record_chase_terminal: DB write failed: {e}")

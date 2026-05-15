@@ -736,7 +736,13 @@ class OrdersController(Controller):
                 # the operator's Log + Orders panels surface the rejection
                 # (instead of silently 422-ing into the void).
                 try:
+                    from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
                     from backend.api.algo.order_events import write_event as _write_ev
+                    _live_manual_aid: int | None = None
+                    try:
+                        _live_manual_aid = await _g_aid("manual")
+                    except Exception:
+                        pass
                     async with async_session() as _s:
                         _row = AlgoOrder(
                             account=account, symbol=sym,
@@ -745,6 +751,7 @@ class OrdersController(Controller):
                             initial_price=(float(data.price)
                                            if data.price is not None else None),
                             status="REJECTED", engine="live", mode="live",
+                            agent_id=_live_manual_aid,
                             detail=f"preflight blocked: "
                                    f"{', '.join(b.get('code','?') for b in _pf['blocked'])}",
                         )
@@ -917,6 +924,14 @@ class OrdersController(Controller):
         detail = (f"[PAPER-TICKET] manual {side} {qty} {sym} "
                   f"@₹{data.price:.2f}" if data.price is not None
                   else f"[PAPER-TICKET] manual {side} {qty} {sym} @MARKET")
+        # Resolve manual agent id for audit attribution (best-effort — None
+        # is safe; the order still writes, just without agent linkage).
+        _manual_aid: int | None = None
+        try:
+            from backend.api.algo.agent_engine import get_agent_id_by_slug
+            _manual_aid = await get_agent_id_by_slug("manual")
+        except Exception:
+            pass
         try:
             async with async_session() as s:
                 row = AlgoOrder(
@@ -924,6 +939,7 @@ class OrdersController(Controller):
                     transaction_type=side, quantity=qty,
                     initial_price=(float(data.price) if data.price is not None else None),
                     status="OPEN", engine="paper", mode="paper",
+                    agent_id=_manual_aid,
                     detail=detail,
                 )
                 s.add(row)

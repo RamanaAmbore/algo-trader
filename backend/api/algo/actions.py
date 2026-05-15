@@ -265,6 +265,7 @@ async def _write_sim_order(agent, action_type: str, resolved: dict):
                 transaction_type=side, quantity=qty,
                 initial_price=(float(price) if price is not None else None),
                 status="OPEN", engine="sim", mode="sim",
+                agent_id=getattr(agent, "id", None),
                 detail=pretty,
             )
             s.add(row)
@@ -443,6 +444,7 @@ async def _replay_paper_trade(agent, action_type: str, params: dict, context: di
                 # candles — there's no fill lifecycle, so they land FILLED
                 # immediately. OPEN would incorrectly imply a pending chase.
                 status="FILLED", engine="replay", mode="replay",
+                agent_id=getattr(agent, "id", None),
                 detail=pretty,
             )
             s.add(row)
@@ -911,6 +913,7 @@ async def _write_paper_order(agent, action_type: str, resolved: dict, context: d
                 transaction_type=side, quantity=qty,
                 initial_price=(float(price) if price is not None else None),
                 status=status, engine="paper", mode="paper",
+                agent_id=getattr(agent, "id", None),
                 broker_order_id=fake_order_id,
                 detail=pretty,
             )
@@ -1256,6 +1259,7 @@ async def _write_live_order(agent, action_type: str, resolved: dict,
                 transaction_type=side, quantity=qty,
                 initial_price=(float(price) if price is not None else None),
                 status=status, engine="live", mode="live",
+                agent_id=getattr(agent, "id", None),
                 broker_order_id=broker_order_id or "",
                 detail=detail,
             )
