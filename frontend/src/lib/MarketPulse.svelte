@@ -309,6 +309,10 @@
       if (showFunds) await loadFunds();
     }, 10000);
     stopMoversPoll = visibleInterval(loadMovers, 30000);
+
+    // Keyboard shortcuts — scoped to this wrapper only.
+    document.addEventListener('keydown', handleKeydown);
+    document.addEventListener('click', onDocClick);
   });
 
   async function loadFunds() {
@@ -422,6 +426,8 @@
 
   onDestroy(() => {
     stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.();
+    document.removeEventListener('keydown', handleKeydown);
+    document.removeEventListener('click', onDocClick);
     grid?.destroy?.();
     positionsSummaryGrid?.destroy?.();
     holdingsSummaryGrid?.destroy?.();
@@ -1138,6 +1144,12 @@
       rowHeight: 28,
       headerHeight: 28,
       onRowClicked: handleRowClick,
+      onSortChanged: saveColumnState,
+      onColumnResized: saveColumnState,
+      onGridReady: () => { restoreColumnState(); },
+      onCellContextMenu: (ev) => {
+        if (ev.data) openContextMenu(ev.event, ev.data);
+      },
     });
     gridReady = true;
 
@@ -1311,9 +1323,154 @@
     await makeList();
     closeListInput();
   }
+
+  // ── Context menu ─────────────────────────────────────────────────
+  /** @type {{ x: number, y: number, row: any } | null} */
+  let ctxMenu = $state(null);
+  let ctxMenuEl = $state(/** @type {HTMLElement | null} */ (null));
+
+  function openContextMenu(ev, row) {
+    ev.preventDefault();
+    ctxMenu = { x: ev.clientX, y: ev.clientY, row };
+  }
+  function closeContextMenu() { ctxMenu = null; }
+
+  function ctxOpenOptions(row) {
+    closeContextMenu();
+    const sym = encodeURIComponent(row.tradingsymbol || '');
+    window.location.href = `/admin/options?symbol=${sym}`;
+  }
+  function ctxOpenTicket(row) {
+    closeContextMenu();
+    // Synthesise a fake ag-Grid event shape handleRowClick expects.
+    handleRowClick({ data: row, event: null });
+  }
+  async function ctxCopySymbol(row) {
+    closeContextMenu();
+    try { await navigator.clipboard.writeText(row.tradingsymbol || ''); } catch (_) {}
+  }
+  function ctxSetAlert(row) {
+    closeContextMenu();
+    console.info('[MarketPulse] set price alert placeholder:', row.tradingsymbol);
+  }
+  async function ctxRemoveWatch(row) {
+    closeContextMenu();
+    if (row.watchlist_item_id && row.watchlist_list_id) {
+      await removeItem(row.watchlist_list_id, row.watchlist_item_id);
+    }
+  }
+
+  // Dismiss context menu on outside click.
+  function onDocClick(ev) {
+    if (ctxMenu && ctxMenuEl && !ctxMenuEl.contains(/** @type {Node} */ (ev.target))) {
+      closeContextMenu();
+    }
+  }
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────
+  let pulseWrapper = $state(/** @type {HTMLElement | null} */ (null));
+  /** @type {HTMLInputElement | null} */ let symInputEl = null;
+
+  function handleKeydown(ev) {
+    // Never intercept shortcuts when typing in an input/textarea.
+    const tag = /** @type {HTMLElement} */ (ev.target).tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    if (ev.key === 'Escape') {
+      if (ctxMenu) { closeContextMenu(); return; }
+      if (optionPickerUnderlying) { closeOptionPicker(); return; }
+      if (typeaheadOpen) { typeaheadOpen = false; return; }
+      if (listInputOpen) { closeListInput(); return; }
+      ticketProps = null;
+      return;
+    }
+    if (ev.key === '/') {
+      ev.preventDefault();
+      symInputEl?.focus();
+      return;
+    }
+    if (ev.key === 'n') {
+      ev.preventDefault();
+      openListInput();
+      return;
+    }
+    if (ev.key === 'j' || ev.key === 'k') {
+      if (!grid) return;
+      ev.preventDefault();
+      const api = grid;
+      // Attempt to move selection.
+      try {
+        const focused = api.getFocusedCell();
+        if (!focused) {
+          api.setFocusedCell(0, 'tradingsymbol');
+        } else {
+          const next = focused.rowIndex + (ev.key === 'j' ? 1 : -1);
+          if (next >= 0) api.setFocusedCell(next, focused.column);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // ── Column-state persistence (sort + width) ───────────────────────
+  const COL_STATE_KEY = 'pulse.gridColumnState.v1';
+
+  function saveColumnState() {
+    if (!grid) return;
+    try {
+      const state = grid.getColumnState();
+      localStorage.setItem(COL_STATE_KEY, JSON.stringify(state));
+    } catch (_) {}
+  }
+
+  function restoreColumnState() {
+    if (!grid) return;
+    try {
+      const raw = localStorage.getItem(COL_STATE_KEY);
+      if (!raw) return;
+      const state = JSON.parse(raw);
+      grid.applyColumnState({ state, applyOrder: true });
+    } catch (_) {}
+  }
+
+  // ── Per-source subtotals (item 1) ─────────────────────────────────
+  const subtotals = $derived.by(() => {
+    const rows = unifiedRows;
+    let hDayPnl = 0, hPnl = 0, hCurVal = 0, hCount = 0;
+    let pDayPnl = 0, pPnl = 0, pCount = 0;
+    let mCount = 0, mTopSym = '', mTopPct = /** @type {number|null} */ (null);
+
+    for (const r of rows) {
+      if (r.src?.h) {
+        hDayPnl += Number(r.day_pnl) || 0;
+        hPnl    += Number(r.pnl)     || 0;
+        // Cur Val: qty_hold × ltp
+        const cv = (Number(r.qty_hold) || 0) * (Number(r.ltp) || 0);
+        hCurVal += cv;
+        hCount++;
+      }
+      if (r.src?.p) {
+        pDayPnl += Number(r.day_pnl) || 0;
+        pPnl    += Number(r.pnl)     || 0;
+        pCount++;
+      }
+      if (r.src?.m) {
+        mCount++;
+        const pct = r._mover_change_pct;
+        if (pct != null && (mTopPct == null || Math.abs(pct) > Math.abs(mTopPct))) {
+          mTopPct = pct;
+          mTopSym = r.tradingsymbol || '';
+        }
+      }
+    }
+    return { hDayPnl, hPnl, hCurVal, hCount, pDayPnl, pPnl, pCount, mCount, mTopSym, mTopPct };
+  });
+
+  const hasSubtotals = $derived(
+    subtotals.hCount > 0 || subtotals.pCount > 0 || subtotals.mCount > 0
+  );
 </script>
 
-<div class="algo-status-card p-1.5" data-status="inactive">
+<div bind:this={pulseWrapper} class="algo-status-card p-1.5" data-status="inactive">
 
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
@@ -1368,7 +1525,7 @@
           </button>
         {/if}
         <!-- Add-symbol input + exchange selector + Add button — inline on same row. -->
-        <input bind:value={symInput}
+        <input bind:this={symInputEl} bind:value={symInput}
           oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
           onfocus={() => typeaheadOpen = true}
           onkeydown={(e) => {
@@ -1416,6 +1573,38 @@
             </div>
           {/if}
         </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Per-source subtotals strip (item 1) — shown when ≥1 source has rows. -->
+  {#if hasSubtotals}
+    <div class="subtotals-strip">
+      {#if subtotals.hCount > 0}
+        <span class="st-group">
+          <span class="st-src">H</span>
+          <span class="st-chip">Day <span class={subtotals.hDayPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.hDayPnl)}</span></span>
+          <span class="st-chip">P&amp;L <span class={subtotals.hPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.hPnl)}</span></span>
+          <span class="st-chip">Cur <span class="st-val">{aggCompact(subtotals.hCurVal)}</span></span>
+        </span>
+        {#if subtotals.pCount > 0 || subtotals.mCount > 0}<span class="st-sep">|</span>{/if}
+      {/if}
+      {#if subtotals.pCount > 0}
+        <span class="st-group">
+          <span class="st-src">P</span>
+          <span class="st-chip">Day <span class={subtotals.pDayPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.pDayPnl)}</span></span>
+          <span class="st-chip">P&amp;L <span class={subtotals.pPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.pPnl)}</span></span>
+        </span>
+        {#if subtotals.mCount > 0}<span class="st-sep">|</span>{/if}
+      {/if}
+      {#if subtotals.mCount > 0}
+        <span class="st-group">
+          <span class="st-src">M</span>
+          <span class="st-chip">{subtotals.mCount} movers{subtotals.mTopSym ? '' : ''}</span>
+          {#if subtotals.mTopSym && subtotals.mTopPct != null}
+            <span class="st-chip"><span class="st-sym">{subtotals.mTopSym}</span> <span class={subtotals.mTopPct >= 0 ? 'st-pos' : 'st-neg'}>{subtotals.mTopPct >= 0 ? '+' : ''}{subtotals.mTopPct.toFixed(2)}%</span></span>
+          {/if}
+        </span>
       {/if}
     </div>
   {/if}
@@ -1523,6 +1712,24 @@
     onClose={closeTicket} />
 {/if}
 
+<!-- Context menu (item 2) -->
+{#if ctxMenu}
+  <div
+    bind:this={ctxMenuEl}
+    class="ctx-menu"
+    style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
+    role="menu">
+    <button class="ctx-item" onclick={() => ctxOpenOptions(ctxMenu.row)}>Open in Options →</button>
+    <button class="ctx-item" onclick={() => ctxOpenTicket(ctxMenu.row)}>Open ticket →</button>
+    <button class="ctx-item" onclick={() => ctxCopySymbol(ctxMenu.row)}>Copy symbol</button>
+    <button class="ctx-item" onclick={() => ctxSetAlert(ctxMenu.row)}>Set price alert</button>
+    {#if ctxMenu.row?.src?.w && ctxMenu.row?.watchlist_item_id != null}
+      <div class="ctx-sep"></div>
+      <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu.row)}>Remove from watchlist</button>
+    {/if}
+  </div>
+{/if}
+
 <style>
   /* Symbol cell — main + alias. */
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
@@ -1598,5 +1805,78 @@
     text-transform: uppercase;
     color: rgba(251,191,36,0.7);
     margin-bottom: 0.25rem;
+  }
+
+  /* Per-source subtotals strip (item 1) */
+  .subtotals-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin-bottom: 0.35rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(251,191,36,0.04);
+    border: 1px solid rgba(251,191,36,0.12);
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+  .st-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .st-src {
+    font-weight: 800;
+    color: rgba(251,191,36,0.85);
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
+  }
+  .st-chip {
+    color: rgba(200,216,240,0.65);
+  }
+  .st-val  { color: rgba(200,216,240,0.9); font-weight: 600; }
+  .st-pos  { color: #4ade80; font-weight: 600; }
+  .st-neg  { color: #f87171; font-weight: 600; }
+  .st-sym  { color: rgba(251,191,36,0.75); }
+  .st-sep  { color: rgba(200,216,240,0.2); padding: 0 0.15rem; }
+
+  /* Context menu (item 2) */
+  :global(.ctx-menu) {
+    position: fixed;
+    z-index: 9999;
+    min-width: 10rem;
+    background: rgba(10,22,40,0.97);
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: 5px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.55);
+    padding: 0.25rem 0;
+    font-size: 0.65rem;
+  }
+  :global(.ctx-item) {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.3rem 0.75rem;
+    background: transparent;
+    border: none;
+    color: rgba(200,216,240,0.85);
+    cursor: pointer;
+    font-size: 0.65rem;
+    white-space: nowrap;
+    transition: background 0.1s, color 0.1s;
+  }
+  :global(.ctx-item:hover) {
+    background: rgba(251,191,36,0.1);
+    color: #fbbf24;
+  }
+  :global(.ctx-item-danger) { color: rgba(248,113,113,0.8); }
+  :global(.ctx-item-danger:hover) { background: rgba(248,113,113,0.1); color: #f87171; }
+  :global(.ctx-sep) {
+    height: 1px;
+    background: rgba(200,216,240,0.1);
+    margin: 0.2rem 0;
   }
 </style>
