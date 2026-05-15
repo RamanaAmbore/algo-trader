@@ -262,6 +262,7 @@
   // near-month future without re-importing the module on every tick.
   let getInstrument     = $state(/** @type {((s: string) => any) | null} */ (null));
   let findNearestFuture = $state(/** @type {((u: string) => any) | null} */ (null));
+  let listFutures       = $state(/** @type {((u: string) => any[]) | null} */ (null));
 
   // Transient-error suppression. Quote-refresh polls fire every 5 s
   // and can blip on broker hiccups; one failed call shouldn't paint
@@ -287,6 +288,7 @@
       await mod.loadInstruments();
       getInstrument     = mod.getInstrument;
       findNearestFuture = mod.findNearestFuture;
+      listFutures       = mod.listFutures;
     } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
     try {
       const r = await fetchAccounts();
@@ -580,6 +582,36 @@
     };
   }
 
+  // Resolve underlying for an OPTION position. For MCX commodities the
+  // option's underlying is the same-month future (CRUDEOIL26JUN10500CE
+  // settles to CRUDEOIL26JUNFUT, not the front-month MAY future). For
+  // indices/stocks the spot is shared across all expiries so we just
+  // delegate to resolveUnderlying.
+  function resolveUnderlyingForOption(name, optionExpiryISO,
+                                       /** @type {((u: string) => any) | null} */ findNearestFut,
+                                       /** @type {((u: string) => any[]) | null} */ listFuts) {
+    const n = String(name || '').toUpperCase();
+    if (!n) return null;
+    if (MCX_COMMODITIES.has(n) && optionExpiryISO && listFuts) {
+      const ym = String(optionExpiryISO).slice(0, 7);  // YYYY-MM
+      const futs = listFuts(n) || [];
+      const same = futs.find(f => String(f.x || '').slice(0, 7) === ym);
+      if (same?.s && same?.e) {
+        return {
+          tradingsymbol: same.s,
+          exchange: same.e,
+          quoteKey: `${same.e}:${same.s}`,
+          underlying_group: `${n}_${ym}`,
+          kind: 'fut',
+        };
+      }
+    }
+    // Non-MCX or no same-month match → fall back to nearest-month
+    // (still useful — indices/stocks have a single spot, the U badge
+    // groups every option month under it).
+    return resolveUnderlying(n, findNearestFut);
+  }
+
   async function loadPulse() {
     try {
       const [p, h] = await Promise.all([
@@ -607,30 +639,32 @@
       const contractKeys = new Set();
       const lookup = getInstrument;
       const nearestFut = findNearestFuture;
+      const listFuts = listFutures;
+      // Keyed by underlying_group so MCX options with different
+      // contract months (CRUDEOIL26MAY vs CRUDEOIL26JUN) each map to
+      // their own same-month future. Indices/stocks share one key.
+      const addUnderlying = (inst) => {
+        if (!inst?.u) return;
+        const t = String(inst.t || '').toUpperCase();
+        if (t === 'EQ') return;
+        const isOpt = (t === 'CE' || t === 'PE');
+        const info = isOpt
+          ? resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts)
+          : resolveUnderlying(inst.u, nearestFut);
+        if (info && !underlyingInfos.has(info.underlying_group)) {
+          underlyingInfos.set(info.underlying_group, info);
+        }
+      };
       for (const r of positions) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NFO';
-        if (lookup) {
-          const inst = lookup(sym);
-          if (inst?.u && String(inst.t || '').toUpperCase() !== 'EQ' &&
-              !underlyingInfos.has(inst.u)) {
-            const info = resolveUnderlying(inst.u, nearestFut);
-            if (info) underlyingInfos.set(inst.u, info);
-          }
-        }
+        if (lookup) addUnderlying(lookup(sym));
         if (sym) contractKeys.add(`${exch}:${sym}`);
       }
       for (const r of holdings) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NSE';
-        if (lookup) {
-          const inst = lookup(sym);
-          if (inst?.u && String(inst.t || '').toUpperCase() !== 'EQ' &&
-              !underlyingInfos.has(inst.u)) {
-            const info = resolveUnderlying(inst.u, nearestFut);
-            if (info) underlyingInfos.set(inst.u, info);
-          }
-        }
+        if (lookup) addUnderlying(lookup(sym));
         if (sym) contractKeys.add(`${exch}:${sym}`);
       }
 
