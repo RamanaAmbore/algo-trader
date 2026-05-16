@@ -1252,9 +1252,11 @@
     }  // end main symbols grid block
 
     // Positions Summary grid — Account | Day P&L | Day % | P&L
+    // Widths match PerformancePage's Positions Summary grid so the
+    // two pages render identically when scoped to the same account.
     if (showSummary && positionsSummaryEl) {
       const posSummaryCols = [
-        { field: 'account',               headerName: 'Account', width: 90,
+        { field: 'account',               headerName: 'Account', width: 54,
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
@@ -1262,7 +1264,7 @@
         { field: 'day_change_percentage', headerName: 'Day %',   width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: pctFmtGrid },
-        { field: 'pnl',                   headerName: 'P&L',     flex: 1,
+        { field: 'pnl',                   headerName: 'P&L',     width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
       ];
@@ -1283,9 +1285,10 @@
     }
 
     // Holdings Summary grid — Account | Day P&L | Day % | P&L | P&L % | Cur Val | Inv Val
+    // Widths match PerformancePage's Holdings Summary grid.
     if (showSummary && holdingsSummaryEl) {
       const holdSummaryCols = [
-        { field: 'account',               headerName: 'Account', width: 90,
+        { field: 'account',               headerName: 'Account', width: 54,
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
@@ -1302,7 +1305,7 @@
         { field: 'cur_val',               headerName: 'Cur Val', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'inv_val',               headerName: 'Inv Val', flex: 1,
+        { field: 'inv_val',               headerName: 'Inv Val', width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
       ];
@@ -1322,17 +1325,18 @@
       holdingsSummaryReady = true;
     }
 
-    // Funds grid — per-account margins. Columns use explicit widths
-    // (mirroring the Holdings Summary grid above): the row's natural
-    // width stays wider than the container on narrow viewports so
-    // ag-Grid shows its horizontal scrollbar instead of squishing
-    // rupee values into "₹1.5…" ellipsis. Last column is flex:1 so
-    // the row fills its container on wide displays.
+    // Funds grid — per-account margins. Account column matches the
+    // PerformancePage's Funds grid (54 px); money columns sit at
+    // 88 px each (denser than 110 to leave room for the extra
+    // Live Cash + Opt Cash columns we have here but PerformancePage
+    // doesn't). Last column flex:1+minWidth so the row fills its
+    // container on wide displays and ag-Grid's horizontal scrollbar
+    // engages on narrow ones.
     if (showFunds && fundsEl) {
       const fundsCols = [
-        { field: 'account',        headerName: 'Account',     width: 90,
+        { field: 'account',        headerName: 'Account',     width: 54,
           cellClass: 'ag-col-fill' },
-        { field: 'cash_total',     headerName: 'Cash',        width: 110,
+        { field: 'cash_total',     headerName: 'Cash',        width: 88,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Live cash + cash debited on currently-held long options (= cash you would have if every long option were closed at its entry premium)',
@@ -1346,21 +1350,21 @@
             const loc = Number(d._long_opt_cash ?? 0);
             return (lc !== 0 ? lc : Number(d.cash ?? 0)) + loc;
           } },
-        { field: 'live_cash',      headerName: 'Live Cash',   width: 110,
+        { field: 'live_cash',      headerName: 'Live Cash',   width: 88,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Current cash — decreases when option premium is debited' },
-        { field: '_long_opt_cash', headerName: 'Opt Cash',    width: 110,
+        { field: '_long_opt_cash', headerName: 'Opt Cash',    width: 88,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid,
           headerTooltip: 'Cash debited on currently-held long options (sum of avg_price × |qty| across each long CE/PE)' },
-        { field: 'avail_margin',   headerName: 'Avail Margin', width: 120,
+        { field: 'avail_margin',   headerName: 'Avail Margin', width: 100,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'used_margin',    headerName: 'Used Margin', width: 120,
+        { field: 'used_margin',    headerName: 'Used Margin',  width: 100,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'collateral',     headerName: 'Collateral',  flex: 1, minWidth: 110,
+        { field: 'collateral',     headerName: 'Collateral',   flex: 1, minWidth: 88,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
       ];
