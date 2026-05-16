@@ -1322,13 +1322,17 @@
       holdingsSummaryReady = true;
     }
 
-    // Funds grid — small per-account margins strip below the main
-    // grid in dashboard mode. Wider columns (rupee aggregates).
+    // Funds grid — per-account margins. Columns use explicit widths
+    // (mirroring the Holdings Summary grid above): the row's natural
+    // width stays wider than the container on narrow viewports so
+    // ag-Grid shows its horizontal scrollbar instead of squishing
+    // rupee values into "₹1.5…" ellipsis. Last column is flex:1 so
+    // the row fills its container on wide displays.
     if (showFunds && fundsEl) {
       const fundsCols = [
-        { field: 'account',      headerName: 'Account',      width: 90,
+        { field: 'account',        headerName: 'Account',     width: 90,
           cellClass: 'ag-col-fill' },
-        { field: 'cash_total', headerName: 'Cash',         flex: 1,
+        { field: 'cash_total',     headerName: 'Cash',        width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Live cash + cash debited on currently-held long options (= cash you would have if every long option were closed at its entry premium)',
@@ -1342,21 +1346,21 @@
             const loc = Number(d._long_opt_cash ?? 0);
             return (lc !== 0 ? lc : Number(d.cash ?? 0)) + loc;
           } },
-        { field: 'live_cash',    headerName: 'Live Cash',    flex: 1,
+        { field: 'live_cash',      headerName: 'Live Cash',   width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Current cash — decreases when option premium is debited' },
-        { field: '_long_opt_cash', headerName: 'Opt Cash', flex: 1,
+        { field: '_long_opt_cash', headerName: 'Opt Cash',    width: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid,
           headerTooltip: 'Cash debited on currently-held long options (sum of avg_price × |qty| across each long CE/PE)' },
-        { field: 'avail_margin', headerName: 'Avail Margin', flex: 1,
+        { field: 'avail_margin',   headerName: 'Avail Margin', width: 120,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'used_margin',  headerName: 'Used Margin',  flex: 1,
+        { field: 'used_margin',    headerName: 'Used Margin', width: 120,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'collateral',   headerName: 'Collateral',   flex: 1,
+        { field: 'collateral',     headerName: 'Collateral',  flex: 1, minWidth: 110,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
       ];
