@@ -458,12 +458,13 @@
     {:else if _allAccounts.length === 1}
       <span class="oct-acct-single">{_allAccounts[0]}</span>
     {:else}
-      <select id="oct-acct" class="oct-acct-select" bind:value={_account}>
-        <option value="" disabled>Pick account…</option>
-        {#each _allAccounts as a}
-          <option value={a}>{a}</option>
-        {/each}
-      </select>
+      <div class="oct-acct-select-wrap">
+        <Select id="oct-acct"
+          bind:value={_account}
+          ariaLabel="Account"
+          placeholder="Pick account…"
+          options={_allAccounts.map(a => ({ value: a, label: a }))} />
+      </div>
     {/if}
   </div>
 
@@ -744,16 +745,10 @@
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 3px;
   }
-  .oct-acct-select {
-    font-family: monospace;
-    font-size: 0.72rem;
-    color: #c8d8f0;
-    background: #1d2a44;
-    border: 1px solid rgba(251,191,36,0.25);
-    border-radius: 3px;
-    padding: 0.25rem 0.4rem;
-    cursor: pointer;
-  }
+  /* Account picker uses the custom Select component (matches the
+     OrderTicket modal's popup palette). Wrap caps the trigger width
+     so it doesn't stretch the whole row. */
+  .oct-acct-select-wrap { min-width: 9rem; }
   .oct-controls {
     display: flex;
     flex-wrap: nowrap;

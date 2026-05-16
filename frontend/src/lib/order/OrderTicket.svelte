@@ -27,6 +27,7 @@
   import { onMount, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
+  import Select from '$lib/Select.svelte';
   import { placeTicketOrder, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
@@ -712,18 +713,16 @@
     {#if _accounts.length}
       <div class="ot-row">
         <div class="ot-label-block">
-          <label class="ot-label" for="ot-account">Account</label>
+          <span class="ot-label">Account</span>
           {#if _accounts.length === 1}
             <input id="ot-account" type="text" class="ot-input ot-account-readonly"
                    value={_account} readonly />
           {:else}
-            <select id="ot-account" class="ot-input ot-account-select"
-                    bind:value={_account}>
-              <option value="" disabled>Pick an account…</option>
-              {#each _accounts as a}
-                <option value={a}>{a}</option>
-              {/each}
-            </select>
+            <Select id="ot-account"
+                    bind:value={_account}
+                    placeholder="Pick an account…"
+                    ariaLabel="Account"
+                    options={_accounts.map(a => ({ value: a, label: a }))} />
           {/if}
         </div>
       </div>
@@ -1034,6 +1033,10 @@
     gap: 0.6rem;
     margin-bottom: 0.5rem;
     flex-wrap: wrap;
+    /* All row children stack label-above-control. align-items:flex-start
+       keeps the label baselines on the same y-axis even when one child
+       wraps to a taller stack (e.g. price + auto/reset chips). */
+    align-items: flex-start;
   }
   .ot-label-block { flex: 1 1 0; min-width: 0; }
   .ot-label {
@@ -1128,9 +1131,21 @@
     opacity: 0.55;
   }
 
-  .ot-qty-block { display: flex; align-items: flex-end; gap: 0.4rem; flex: 1 1 0; flex-wrap: wrap; }
+  /* Stacks label above the [−] N [+] row so the block lines up with
+     the sibling .ot-side-block (also label-on-top). Previously the
+     label sat INLINE next to the row via flex-end alignment, which
+     made the Side toggle's pills (label-on-top) and the Lots row
+     (label-inline) start at different y-coordinates. */
+  .ot-qty-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    flex: 1 1 0;
+    min-width: 0;
+  }
   .ot-qty-block .ot-label { margin: 0 0 0.18rem; }
-  .ot-qty-block .ot-meta { font-size: 0.65rem; color: #a3b9d0; padding-bottom: 0.5rem; }
+  .ot-qty-block .ot-meta { font-size: 0.65rem; color: #a3b9d0; }
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
      a single row; nowrap so the +/− and the dropdown can never
@@ -1371,27 +1386,17 @@
     font-weight: 700;
     margin: 0.4rem 0;
   }
+  /* Readonly single-account display — matches the custom Select
+     trigger's metrics so single-account vs multi-account UIs sit at
+     the same height. Cursor: default keeps it visually distinct from
+     editable inputs. */
   .ot-account-readonly {
     color: #c8d8f0;
     background: rgba(255,255,255,0.04);
     cursor: default;
-  }
-  .ot-account-select {
-    appearance: none;
-    -webkit-appearance: none;
-    cursor: pointer;
-    /* Inline SVG chevron — `⌄` shape (open angle, like reverse `^`)
-       drawn as two strokes meeting at a point. Brighter `#c8d8f0`
-       and bigger (12 px) than the earlier 4 px filled triangles so
-       the dropdown affordance reads at a glance on a phone.
-       url() value uses Litestar-friendly escaping (no quotes inside
-       the data URI). */
-    background-image:
-      url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%23c8d8f0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='1,1 6,7 11,1' /%3E%3C/svg%3E");
-    background-position: calc(100% - 8px) 50%;
-    background-size: 12px 8px;
-    background-repeat: no-repeat;
-    padding-right: 1.6rem;
+    min-height: 1.55rem;
+    padding: 0.25rem 0.5rem 0.25rem 0.4rem;
+    font-size: 0.62rem;
   }
 
   /* Funds pill — appears under the Account input. Compact 12px-ish
