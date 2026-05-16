@@ -1290,14 +1290,27 @@
       const fundsCols = [
         { field: 'account',      headerName: 'Account',      width: 90,
           cellClass: 'ag-col-fill' },
-        { field: 'cash',         headerName: 'Cash',         flex: 1,
+        { field: 'cash_total', headerName: 'Cash',         flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Opening balance (start of day)' },
+          headerTooltip: 'Live cash + premium tied up in long options (= cash you would have if every long option were closed at its entry premium)',
+          // Derived: live_cash + option_premium. Falls back to row.cash
+          // when live_cash is missing (older API response cached during
+          // a deploy crossover).
+          valueGetter: (/** @type {any} */ p) => {
+            const d = p?.data || {};
+            const lc = Number(d.live_cash ?? 0);
+            const op = Number(d.option_premium ?? 0);
+            return (lc !== 0 ? lc : Number(d.cash ?? 0)) + op;
+          } },
         { field: 'live_cash',    headerName: 'Live Cash',    flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Current cash — decreases when option premium is debited' },
+        { field: 'option_premium', headerName: 'Opt Premium', flex: 1,
+          type: 'numericColumn', headerClass: numericHdr,
+          cellClass: RA, valueFormatter: aggFmtGrid,
+          headerTooltip: 'Net cash debited to buy currently-held long options' },
         { field: 'avail_margin', headerName: 'Avail Margin', flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },

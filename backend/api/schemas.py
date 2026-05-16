@@ -98,11 +98,14 @@ class FundsRow(msgspec.Struct):
     avail_margin: float   # net — what's left for trading after used_margin
     used_margin: float    # util debits
     collateral: float     # avail collateral
-    # Default 0 — older Kite responses without `avail.cash` (or any
-    # broker adapter that doesn't surface a live-balance field) fall
-    # through cleanly instead of raising a missing-key construction
-    # error in the route's FundsRow(**r) builder.
-    live_cash: float = 0.0  # avail cash (= live_balance) — decreases on option premium debit
+    # Defaults are 0 — older Kite responses without `avail.cash` /
+    # `util.option_premium` (or any broker adapter that doesn't
+    # surface them) fall through cleanly instead of raising a
+    # missing-key construction error in the route's FundsRow(**r)
+    # builder.
+    live_cash:       float = 0.0  # avail cash (= live_balance) — decreases on option premium debit
+    option_premium:  float = 0.0  # util option_premium — net cash spent on currently-held long options
+                                  # (≈ debits − receipts; positive when net long premium)
 
 
 class FundsResponse(msgspec.Struct):

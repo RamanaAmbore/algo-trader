@@ -32,9 +32,10 @@ def _is_broker_outage(err: Exception) -> bool:
 
 _COL_MAP = {
     'avail opening_balance': 'cash',
-    'avail cash':            'live_cash',   # = avail.live_balance — current cash
+    'avail cash':            'live_cash',       # = avail.live_balance — current cash
     'net':                   'avail_margin',
     'util debits':           'used_margin',
+    'util option_premium':   'option_premium',  # cash spent on currently-held long options
     'avail collateral':      'collateral',
 }
 
@@ -58,7 +59,7 @@ def _fetch() -> FundsResponse:
     rename = {k: v for k, v in _COL_MAP.items() if k in df.columns}
     df = df.rename(rename)
 
-    numeric = ['cash', 'live_cash', 'avail_margin', 'used_margin', 'collateral']
+    numeric = ['cash', 'live_cash', 'avail_margin', 'used_margin', 'option_premium', 'collateral']
     present = [c for c in numeric if c in df.columns]
 
     totals = df.select(present).sum().with_columns(pl.lit('TOTAL').alias('account'))

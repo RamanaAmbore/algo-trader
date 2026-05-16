@@ -55,11 +55,14 @@
 
   // P    = positions P&L lifetime (open + closed intraday).
   // M    = available margin summed across accounts.
-  // C    = opening cash balance summed across accounts (start of day).
   // Cl   = live cash — decreases when option premium is debited
-  //        (this is what the operator usually checks before placing
-  //        another long-options order; if it's tight, the next
-  //        premium debit will fail).
+  //        (this is what the operator checks before placing another
+  //        long-options order; if it's tight, the next premium
+  //        debit will fail).
+  // C    = Cl + cash debited to buy options currently held (i.e. the
+  //        cash you would have if you closed every long option at
+  //        its entry premium). Derived as
+  //        `live_cash + util.option_premium`.
   // HD∆  = today's mark-to-market move on holdings (day_change_val).
   // Hld  = total unrealised P&L on holdings since entry.
   // H    = current holding value (cur_val sum across holdings).
@@ -89,11 +92,6 @@
     for (const h of holdings)  s += Number(h?.cur_val || 0);
     return s;
   });
-  const cashTotal = $derived.by(() => {
-    let s = 0;
-    for (const f of funds) s += Number(f?.cash || 0);
-    return s;
-  });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
   // accounts. Falls back to `cash` if the backend hasn't surfaced
   // `live_cash` yet (older deploys).
@@ -105,6 +103,18 @@
     }
     return s;
   });
+  // Option premium — cash debited to buy currently-held long options
+  // (Kite's `util.option_premium`). Folded into `cashTotal` so `C`
+  // reads as "live cash + cash tied up in long-options premiums" —
+  // i.e. what cash the operator would have if every long option were
+  // closed at its entry premium. 0 fallback when the backend doesn't
+  // surface this field yet.
+  const optionPremiumTotal = $derived.by(() => {
+    let s = 0;
+    for (const f of funds) s += Number(f?.option_premium || 0);
+    return s;
+  });
+  const cashTotal = $derived(liveCashTotal + optionPremiumTotal);
   const marginTotal = $derived.by(() => {
     let s = 0;
     for (const f of funds) s += Number(f?.avail_margin || 0);
@@ -131,7 +141,7 @@
       {fmtMoney(marginTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Cash — opening balance summed across accounts (start of day)">
+  <span class="ps-agg" title="Cash — live cash + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium)">
     <span class="ps-agg-k">C</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(cashTotal)}
