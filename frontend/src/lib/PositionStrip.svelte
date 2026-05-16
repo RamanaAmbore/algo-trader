@@ -8,6 +8,7 @@
   import { dataCache, marketAwareInterval } from '$lib/stores';
   import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
   import { aggCompact } from '$lib/format';
+  import { getInstrument, loadInstruments } from '$lib/data/instruments';
 
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
@@ -48,6 +49,11 @@
   }
 
   onMount(() => {
+    // Instruments cache feeds the long-options premium derivation
+    // (we read lot_size off each option to compute lots × lot_size
+    // explicitly). Silent on failure — derivation falls back to raw
+    // quantity then.
+    loadInstruments().catch(() => { /* fallback path handles this */ });
     loadOnce();
     teardown = marketAwareInterval(loadOnce, 30000);
   });
@@ -107,19 +113,38 @@
   // Cash debited on currently-held long options — derived from the
   // positions list rather than Kite's `util.option_premium` (which
   // mixes in adjustments + day's net debit, not just current open
-  // longs). Walks the open positions, sums `average_price × |qty|`
-  // for every long CE/PE row. Folded into `cashTotal` so `C` reads
-  // as "live cash + cash tied up in long-options premiums" — i.e.
-  // what cash the operator would have if every long option were
-  // closed at its entry premium.
+  // longs). For each long CE/PE row:
+  //
+  //   num_lots = quantity / lot_size
+  //   cash    = average_price × lot_size × num_lots
+  //
+  // We resolve lot_size from the instruments cache and compute
+  // num_lots + the per-lot premium explicitly. Mathematically this
+  // equals `average_price × quantity` (since quantity = lot_size ×
+  // num_lots after broker_apis applies the multiplier), but going
+  // through num_lots makes the formula match the operator's mental
+  // model ("4 lots of NIFTY 22000 PE at ₹180 = 4 × 50 × 180 = ₹36k")
+  // and gracefully handles any future broker adapter that surfaces
+  // qty in lots instead of contracts.
   const longOptionsCashPaid = $derived.by(() => {
     let s = 0;
     for (const p of positions) {
       const sym = String(p?.tradingsymbol || '').toUpperCase();
       const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
-      const qty   = Number(p?.quantity) || 0;
+      const qty   = Math.abs(Number(p?.quantity) || 0);
       const avg   = Number(p?.average_price) || 0;
-      if (isOpt && qty > 0) s += avg * qty;
+      if (!isOpt || Number(p?.quantity) <= 0) continue;
+      const inst = getInstrument(sym);
+      const lotSize = Number(inst?.ls) || 0;
+      if (lotSize > 0) {
+        const numLots = qty / lotSize;
+        s += avg * lotSize * numLots;
+      } else {
+        // Instruments cache not loaded yet (or no lot_size for this
+        // symbol). qty is in contracts after broker_apis' multiplier,
+        // so avg × qty still gives the right total cash paid.
+        s += avg * qty;
+      }
     }
     return s;
   });

@@ -439,10 +439,13 @@
   });
 
   // Per-account cash debited on currently-held long options — same
-  // derivation the strip uses. Walks positions once, keyed by account
-  // (TOTAL is the sum across all accounts). The funds grid joins
-  // this against each row before rendering so the `Cash` column
-  // reads consistently between the strip and the grid.
+  // derivation the strip uses, but bucketed by account. For each long
+  // CE/PE position row:
+  //   num_lots = quantity / lot_size
+  //   cash    = average_price × lot_size × num_lots
+  // (mathematically equivalent to avg × qty, but explicit so the
+  // formula matches the operator's mental model and stays correct
+  // for any adapter that surfaces qty in lots).
   const longOptCashByAccount = $derived.by(() => {
     /** @type {Record<string, number>} */
     const m = {};
@@ -450,9 +453,15 @@
     for (const p of positions) {
       const sym = String(p?.tradingsymbol || '').toUpperCase();
       if (!(sym.endsWith('CE') || sym.endsWith('PE'))) continue;
-      const qty = Number(p?.quantity) || 0;
-      if (qty <= 0) continue;
-      const v = (Number(p?.average_price) || 0) * qty;
+      const rawQty = Number(p?.quantity) || 0;
+      if (rawQty <= 0) continue;
+      const qty = Math.abs(rawQty);
+      const avg = Number(p?.average_price) || 0;
+      const inst    = getInstrument?.(sym);
+      const lotSize = Number(inst?.ls) || 0;
+      const v = lotSize > 0
+        ? avg * lotSize * (qty / lotSize)
+        : avg * qty;  // fallback when instruments cache cold
       const a = String(p?.account || '');
       if (a) m[a] = (m[a] || 0) + v;
       total += v;
