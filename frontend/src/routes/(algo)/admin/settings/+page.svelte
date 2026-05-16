@@ -9,6 +9,7 @@
   import { authStore, clientTimestamp } from '$lib/stores';
   import { fetchSettings, updateSetting, resetSetting } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select   from '$lib/Select.svelte';
 
   /** @type {Array<{id:number, category:string, key:string, value_type:string,
    *                value:string, default_value:string, description:string,
@@ -191,18 +192,22 @@
 
               <div class="flex items-center gap-1">
                 {#if s.value_type === 'bool'}
-                  <select class="field-input flex-1 py-0.5"
-                          value={currentValue(s)}
-                          onchange={(e) => onEdit(s, e.currentTarget.value)}>
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                  </select>
+                  <div class="flex-1">
+                    <Select ariaLabel={s.key}
+                      value={String(currentValue(s))}
+                      onValueChange={(/** @type {any} */ v) => onEdit(s, v)}
+                      options={[
+                        { value: 'true',  label: 'true'  },
+                        { value: 'false', label: 'false' },
+                      ]} />
+                  </div>
                 {:else if s.value_type === 'enum'}
-                  <select class="field-input flex-1 py-0.5"
-                          value={currentValue(s)}
-                          onchange={(e) => onEdit(s, e.currentTarget.value)}>
-                    {#each (s.schema?.enum || []) as opt}<option value={opt}>{opt}</option>{/each}
-                  </select>
+                  <div class="flex-1">
+                    <Select ariaLabel={s.key}
+                      value={String(currentValue(s))}
+                      onValueChange={(/** @type {any} */ v) => onEdit(s, v)}
+                      options={(s.schema?.enum || []).map((/** @type {string} */ opt) => ({ value: opt, label: opt }))} />
+                  </div>
                 {:else if s.value_type === 'int' || s.value_type === 'float'}
                   <input type="number"
                          class="field-input flex-1 py-0.5"

@@ -8,6 +8,7 @@
     startSimForAgent, aiDraftAgent,
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
+  import Select   from '$lib/Select.svelte';
 
   let agents      = $state([]);
   let agentEvents = $state([]);
@@ -595,17 +596,19 @@
                 </div>
                 <div>
                   <label class="field-label">Scope</label>
-                  <select bind:value={editForm.scope} class="field-input">
-                    <option value="total">Total Only</option>
-                    <option value="per_account">Per Account</option>
-                  </select>
+                  <Select ariaLabel="Scope" bind:value={editForm.scope}
+                    options={[
+                      { value: 'total',       label: 'Total Only' },
+                      { value: 'per_account', label: 'Per Account' },
+                    ]} />
                 </div>
                 <div>
                   <label class="field-label">Schedule</label>
-                  <select bind:value={editForm.schedule} class="field-input">
-                    <option value="market_hours">Market Hours</option>
-                    <option value="always">Always</option>
-                  </select>
+                  <Select ariaLabel="Schedule" bind:value={editForm.schedule}
+                    options={[
+                      { value: 'market_hours', label: 'Market Hours' },
+                      { value: 'always',       label: 'Always' },
+                    ]} />
                 </div>
                 <div>
                   <label class="field-label">Cooldown (minutes)</label>
@@ -619,12 +622,13 @@
                      deactivate. -->
                 <div>
                   <label class="field-label">Lifespan</label>
-                  <select bind:value={editForm.lifespan_type} class="field-input">
-                    <option value="persistent">Persistent (default)</option>
-                    <option value="one_shot">One-shot (fires once)</option>
-                    <option value="n_fires">N fires</option>
-                    <option value="until_date">Until date</option>
-                  </select>
+                  <Select ariaLabel="Lifespan" bind:value={editForm.lifespan_type}
+                    options={[
+                      { value: 'persistent', label: 'Persistent (default)' },
+                      { value: 'one_shot',   label: 'One-shot (fires once)' },
+                      { value: 'n_fires',    label: 'N fires' },
+                      { value: 'until_date', label: 'Until date' },
+                    ]} />
                 </div>
                 {#if editForm.lifespan_type === 'n_fires'}
                   <div>

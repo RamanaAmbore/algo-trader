@@ -11,6 +11,7 @@
   import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select   from '$lib/Select.svelte';
 
   // ── State ──────────────────────────────────────────────────────────
   /** @type {any[]} */
@@ -151,24 +152,26 @@
   <!-- Agent dropdown -->
   <div class="filter-item">
     <label class="filter-label" for="filter-agent">Agent</label>
-    <select id="filter-agent" class="algo-select" bind:value={filterAgent}
-            onchange={() => load()}>
-      <option value="">All agents</option>
-      {#each agents as a}
-        <option value={a.slug}>{a.name ?? a.slug}</option>
-      {/each}
-    </select>
+    <div class="algo-select-wrap">
+      <Select id="filter-agent" ariaLabel="Agent"
+        bind:value={filterAgent}
+        onValueChange={() => load()}
+        options={[
+          { value: '', label: 'All agents' },
+          ...agents.map(a => ({ value: a.slug, label: a.name ?? a.slug })),
+        ]} />
+    </div>
   </div>
 
   <!-- Period dropdown -->
   <div class="filter-item">
     <label class="filter-label" for="filter-period">Period</label>
-    <select id="filter-period" class="algo-select" bind:value={filterPeriod}
-            onchange={() => load()}>
-      {#each PERIODS as p}
-        <option value={p.value}>{p.label}</option>
-      {/each}
-    </select>
+    <div class="algo-select-wrap">
+      <Select id="filter-period" ariaLabel="Period"
+        bind:value={filterPeriod}
+        onValueChange={() => load()}
+        options={PERIODS} />
+    </div>
   </div>
 
   <!-- Event-type pills -->
@@ -309,19 +312,9 @@
     text-transform: uppercase;
     letter-spacing: 0.07em;
   }
-  .algo-select {
-    appearance: none;
-    background: #0f172a;
-    border: 1px solid rgba(255,255,255,0.14);
-    border-radius: 3px;
-    color: #c8d8f0;
-    font-size: 0.65rem;
-    padding: 0.2rem 0.5rem;
-    cursor: pointer;
-    outline: none;
-    min-width: 9rem;
-  }
-  .algo-select:focus { border-color: rgba(251,191,36,0.5); }
+  /* Layout-only wrapper for the custom <Select>. Min-width matches
+     the old native .algo-select so the filter bar lays out the same. */
+  .algo-select-wrap { min-width: 9rem; }
 
   /* Event-type pill buttons */
   .pill-group {
@@ -511,7 +504,7 @@
   /* ── Mobile: horizontal scroll on the table; filter bar wraps ──── */
   @media (max-width: 768px) {
     .filter-bar { gap: 0.4rem; }
-    .algo-select { min-width: 7rem; font-size: 0.6rem; }
+    .algo-select-wrap { min-width: 7rem; }
     .td-cond  { max-width: 8rem; }
     .td-detail { max-width: 10rem; }
   }

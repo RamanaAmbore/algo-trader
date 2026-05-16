@@ -8,6 +8,7 @@
     resendVerification, markVerified,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select   from '$lib/Select.svelte';
 
   let users      = $state([]);
   let loading    = $state(true);
@@ -189,10 +190,11 @@
         <div><label class="field-label">Email</label><input type="email" bind:value={createForm.email} class="field-input" /></div>
         <div><label class="field-label">Phone</label><input bind:value={createForm.phone} class="field-input" /></div>
         <div><label class="field-label">Role</label>
-          <select bind:value={createForm.role} class="field-input">
-            <option value="partner">Partner</option>
-            <option value="admin">Admin</option>
-          </select>
+          <Select ariaLabel="Role" bind:value={createForm.role}
+            options={[
+              { value: 'partner', label: 'Partner' },
+              { value: 'admin',   label: 'Admin'   },
+            ]} />
         </div>
         <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={createForm.contribution} class="field-input" /></div>
         <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={createForm.share_pct} class="field-input" /></div>
@@ -372,10 +374,11 @@
                 <h3 class="section-heading mb-2">Investment</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div><label class="field-label">Role</label>
-                    <select bind:value={editForm.role} class="field-input">
-                      <option value="partner">Partner</option>
-                      <option value="admin">Admin</option>
-                    </select>
+                    <Select ariaLabel="Role" bind:value={editForm.role}
+                      options={[
+                        { value: 'partner', label: 'Partner' },
+                        { value: 'admin',   label: 'Admin'   },
+                      ]} />
                   </div>
                   <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={editForm.contribution} class="field-input" /></div>
                   <div><label class="field-label">Contribution Date</label><input type="date" bind:value={editForm.contribution_date} class="field-input" /></div>

@@ -7,6 +7,7 @@
     deleteGrammarToken, reloadGrammarRegistry,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select   from '$lib/Select.svelte';
 
   // Agent Tokens page — read + is_active toggle for every token in the
   // grammar_tokens table. (The DB table and backend class keep the
@@ -214,27 +215,37 @@
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
       <div>
         <label class="field-label">Category</label>
-        <select bind:value={form.grammar_kind} disabled={editingId != null} class="field-input">
-          <option value="condition">condition</option>
-          <option value="notify">notify</option>
-          <option value="action">action</option>
-        </select>
+        <Select ariaLabel="Category" bind:value={form.grammar_kind}
+          disabled={editingId != null}
+          options={[
+            { value: 'condition', label: 'condition' },
+            { value: 'notify',    label: 'notify' },
+            { value: 'action',    label: 'action' },
+          ]} />
       </div>
       <div>
         <label class="field-label">Token kind</label>
-        <select bind:value={form.token_kind} disabled={editingId != null} class="field-input">
-          {#if form.grammar_kind === 'condition'}
-            <option value="metric">metric</option>
-            <option value="scope">scope</option>
-            <option value="operator">operator</option>
-          {:else if form.grammar_kind === 'notify'}
-            <option value="channel">channel</option>
-            <option value="format">format</option>
-            <option value="template">template</option>
-          {:else}
-            <option value="action_type">action_type</option>
-          {/if}
-        </select>
+        {#if form.grammar_kind === 'condition'}
+          <Select ariaLabel="Token kind" bind:value={form.token_kind}
+            disabled={editingId != null}
+            options={[
+              { value: 'metric',   label: 'metric' },
+              { value: 'scope',    label: 'scope' },
+              { value: 'operator', label: 'operator' },
+            ]} />
+        {:else if form.grammar_kind === 'notify'}
+          <Select ariaLabel="Token kind" bind:value={form.token_kind}
+            disabled={editingId != null}
+            options={[
+              { value: 'channel',  label: 'channel' },
+              { value: 'format',   label: 'format' },
+              { value: 'template', label: 'template' },
+            ]} />
+        {:else}
+          <Select ariaLabel="Token kind" bind:value={form.token_kind}
+            disabled={editingId != null}
+            options={[{ value: 'action_type', label: 'action_type' }]} />
+        {/if}
       </div>
       <div>
         <label class="field-label">Token name</label>
@@ -242,16 +253,17 @@
       </div>
       <div>
         <label class="field-label">Value type</label>
-        <select bind:value={form.value_type} class="field-input">
-          <option value="">—</option>
-          <option value="number">number</option>
-          <option value="string">string</option>
-          <option value="boolean">boolean</option>
-          <option value="enum">enum</option>
-          <option value="array">array</option>
-          <option value="object">object</option>
-          <option value="void">void</option>
-        </select>
+        <Select ariaLabel="Value type" bind:value={form.value_type}
+          options={[
+            { value: '',        label: '—' },
+            { value: 'number',  label: 'number' },
+            { value: 'string',  label: 'string' },
+            { value: 'boolean', label: 'boolean' },
+            { value: 'enum',    label: 'enum' },
+            { value: 'array',   label: 'array' },
+            { value: 'object',  label: 'object' },
+            { value: 'void',    label: 'void' },
+          ]} />
       </div>
       <div>
         <label class="field-label">Units</label>

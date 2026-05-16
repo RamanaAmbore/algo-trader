@@ -3,6 +3,7 @@
   import { aggCompact, pctFmt } from '$lib/format.js';
   import { fetchPnlBenchmarks } from '$lib/api.js';
   import PnlPanel from '$lib/PnlPanel.svelte';
+  import Select   from '$lib/Select.svelte';
 
   // ── State ──────────────────────────────────────────────────────────────────
   /** @type {'today'|'5d'|'1m'|'3m'|'1y'|'ytd'|'custom'} */
@@ -186,6 +187,7 @@
     scheduleApply();
   }
 
+  let _mounted = $state(false);
   onMount(() => {
     const today = todayIST();
     fromDate = today;
@@ -193,6 +195,17 @@
     csvDate  = today;
     load();
     loadBenchmarks();
+    _mounted = true;
+  });
+
+  // Re-apply filters whenever the operator picks a new Segment / Kind
+  // from the custom Select. (Native <select> had an onchange handler;
+  // the custom component drives via $bindable, so an effect is the
+  // post-mount substitute.) Guarded by _mounted so the initial state
+  // doesn't double-fire alongside onMount's load() call.
+  $effect(() => {
+    void segment; void kind;
+    if (_mounted) scheduleApply();
   });
 
   // ── CSV upload ─────────────────────────────────────────────────────────────
@@ -427,20 +440,24 @@
     <input type="date" class="field-input fb-date" title="To date"
            bind:value={toDate} onchange={onDateChange} />
   {/if}
-  <select class="field-input fb-select" title="Segment"
-          bind:value={segment} onchange={() => scheduleApply()}>
-    <option value="all">All Segments</option>
-    <option value="equity">Equity</option>
-    <option value="derivatives">Derivatives</option>
-    <option value="commodity">Commodity</option>
-    <option value="currency">Currency</option>
-  </select>
-  <select class="field-input fb-select" title="Kind"
-          bind:value={kind} onchange={() => scheduleApply()}>
-    <option value="all">All Kinds</option>
-    <option value="holdings">Holdings</option>
-    <option value="positions">Positions</option>
-  </select>
+  <div class="fb-select" title="Segment">
+    <Select ariaLabel="Segment" bind:value={segment}
+      options={[
+        { value: 'all',         label: 'All Segments' },
+        { value: 'equity',      label: 'Equity' },
+        { value: 'derivatives', label: 'Derivatives' },
+        { value: 'commodity',   label: 'Commodity' },
+        { value: 'currency',    label: 'Currency' },
+      ]} />
+  </div>
+  <div class="fb-select" title="Kind">
+    <Select ariaLabel="Kind" bind:value={kind}
+      options={[
+        { value: 'all',       label: 'All Kinds' },
+        { value: 'holdings',  label: 'Holdings' },
+        { value: 'positions', label: 'Positions' },
+      ]} />
+  </div>
   {#if loading}<span class="filter-spinner">Loading…</span>{/if}
   <button class="algo-btn algo-btn-dim csv-btn"
           title="Backfill historical P&L from a Kite Console CSV export"

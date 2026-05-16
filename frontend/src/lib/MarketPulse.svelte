@@ -29,6 +29,7 @@
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
+  import Select      from '$lib/Select.svelte';
 
   let {
     title              = 'Market Pulse',
@@ -1596,9 +1597,16 @@
           }}
           class="field-input text-[0.65rem] py-0.5 px-2 flex-1 min-w-32"
           placeholder="Add symbol — type 3+ chars" />
-        <select bind:value={exchInput} class="field-input text-[0.65rem] py-0.5 px-1 w-16">
-          <option>NSE</option><option>BSE</option><option>NFO</option><option>MCX</option><option>CDS</option>
-        </select>
+        <div class="w-16">
+          <Select ariaLabel="Exchange" bind:value={exchInput}
+            options={[
+              { value: 'NSE', label: 'NSE' },
+              { value: 'BSE', label: 'BSE' },
+              { value: 'NFO', label: 'NFO' },
+              { value: 'MCX', label: 'MCX' },
+              { value: 'CDS', label: 'CDS' },
+            ]} />
+        </div>
         <button onclick={addRow} disabled={!symInput.trim()}
           class="btn-primary text-[0.65rem] py-0.5 px-2.5 disabled:opacity-50">Add</button>
         {#if typeaheadOpen && typeahead.length}
@@ -1617,14 +1625,13 @@
       {#if accountPicker || enableSourceToggles}
         <div class="ml-auto flex items-center gap-1">
           {#if accountPicker && availableAccounts.length > 0}
-            <select bind:value={selectedAccount}
-              title="Filter by broker account"
-              class="field-input text-[0.65rem] py-0.5 px-2 max-w-32">
-              <option value="all">All accounts</option>
-              {#each availableAccounts as a}
-                <option value={a}>{a}</option>
-              {/each}
-            </select>
+            <div class="w-32" title="Filter by broker account">
+              <Select ariaLabel="Account filter" bind:value={selectedAccount}
+                options={[
+                  { value: 'all', label: 'All accounts' },
+                  ...availableAccounts.map(a => ({ value: a, label: a })),
+                ]} />
+            </div>
           {/if}
           {#if enableSourceToggles}
             <div class="w-32">
@@ -1682,13 +1689,10 @@
         </span>
 
         <!-- Expiry dropdown -->
-        <select
-          bind:value={optionPickerExpiry}
-          class="field-input text-[0.65rem] py-0.5 px-1.5 w-28">
-          {#each optionPickerExpiries as exp}
-            <option value={exp}>{exp}</option>
-          {/each}
-        </select>
+        <div class="w-28">
+          <Select ariaLabel="Expiry" bind:value={optionPickerExpiry}
+            options={optionPickerExpiries.map(exp => ({ value: exp, label: exp }))} />
+        </div>
 
         <!-- CE / PE toggle -->
         <span class="flex rounded overflow-hidden border border-[#fbbf24]/25">
@@ -1707,14 +1711,11 @@
         </span>
 
         <!-- Strike dropdown -->
-        <select
-          bind:value={optionPickerStrike}
-          class="field-input text-[0.65rem] py-0.5 px-1.5 w-24"
-          disabled={!optionPickerStrikes.length}>
-          {#each optionPickerStrikes as k}
-            <option value={k}>{k}</option>
-          {/each}
-        </select>
+        <div class="w-24">
+          <Select ariaLabel="Strike" bind:value={optionPickerStrike}
+            disabled={!optionPickerStrikes.length}
+            options={optionPickerStrikes.map(k => ({ value: k, label: String(k) }))} />
+        </div>
 
         <!-- Add button -->
         <button

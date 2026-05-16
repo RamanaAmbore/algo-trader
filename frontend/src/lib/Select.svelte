@@ -15,7 +15,8 @@
   import { onMount, onDestroy } from 'svelte';
 
   let {
-    value = $bindable(''),
+    value = $bindable(/** @type {any} */ ('')),
+    /** @type {Array<{ value: any, label: string, hint?: string }>} */
     options = [],
     placeholder = '',
     id = '',
@@ -31,6 +32,13 @@
     searchable = false,
     searchMinChars = 3,
     searchPlaceholder = 'Type to filter…',
+    // Optional callback fired AFTER `value` updates from a user pick.
+    // Use when the parent doesn't want to keep its own bindable state
+    // (e.g. derived/server-backed forms like /admin/settings, where
+    // the canonical value is the server's stored row and any pick
+    // triggers an update API call rather than mutating a local var).
+    /** @type {((v: any) => void) | undefined} */
+    onValueChange = undefined,
   } = $props();
 
   let open = $state(false);
@@ -80,6 +88,7 @@
     value = opt.value;
     open = false;
     triggerEl?.focus();
+    onValueChange?.(opt.value);
   }
 
   function onKey(/** @type {KeyboardEvent} */ e) {

@@ -26,6 +26,7 @@
     deleteBrokerAccount, testBrokerAccount,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select   from '$lib/Select.svelte';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
    *   source_ip:string|null,is_active:boolean,notes:string|null,
@@ -274,12 +275,9 @@
       </div>
       <div class="bf-field">
         <label class="field-label" for="bf-broker">Broker</label>
-        <select id="bf-broker" class="field-input font-mono"
-                bind:value={form.broker_id}>
-          {#each BROKER_OPTIONS as opt}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
+        <Select id="bf-broker" ariaLabel="Broker"
+                bind:value={form.broker_id}
+                options={BROKER_OPTIONS} />
       </div>
       <div class="bf-field bf-field-wide">
         <label class="field-label" for="bf-key">API key</label>

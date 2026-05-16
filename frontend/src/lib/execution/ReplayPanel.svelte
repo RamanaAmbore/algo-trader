@@ -13,6 +13,7 @@
   import LogPanel   from '$lib/LogPanel.svelte';
   import PriceChart from '$lib/PriceChart.svelte';
   import InfoHint   from '$lib/InfoHint.svelte';
+  import Select     from '$lib/Select.svelte';
 
   let status       = $state(/** @type {any} */ ({}));
   let results      = $state(/** @type {any[]} */ ([]));
@@ -190,12 +191,15 @@
     </label>
     <label>
       <span class="sim-label">Interval</span>
-      <select bind:value={interval} class="sim-input">
-        <option value="minute">1 min</option>
-        <option value="5minute">5 min</option>
-        <option value="15minute">15 min</option>
-        <option value="day">Day</option>
-      </select>
+      <div class="rbq-select-wrap">
+        <Select ariaLabel="Interval" bind:value={interval}
+          options={[
+            { value: 'minute',   label: '1 min' },
+            { value: '5minute',  label: '5 min' },
+            { value: '15minute', label: '15 min' },
+            { value: 'day',      label: 'Day' },
+          ]} />
+      </div>
     </label>
   </div>
   <div class="sim-form-row">
@@ -219,11 +223,11 @@
         Market state preset
         <InfoHint popup text="Overrides the simulated clock so agents that check market hours behave as if it's this time of day. 'No override' means agents see the real wall-clock time — which is usually outside market hours when running a backtest." />
       </span>
-      <select bind:value={marketStatePreset} class="sim-input">
-        {#each MARKET_STATE_PRESETS as p}
-          <option value={p.value}>{p.label}</option>
-        {/each}
-      </select>
+      <div class="rbq-select-wrap">
+        <Select ariaLabel="Market state preset"
+                bind:value={marketStatePreset}
+                options={MARKET_STATE_PRESETS} />
+      </div>
     </label>
 
     <label class="bypass-label">
@@ -333,6 +337,11 @@
                         font-size: 0.8rem; min-width: 10rem; }
   .sim-input-sm      { min-width: 6rem; }
   .sim-input:focus   { outline: none; border-color: rgba(74,222,128,0.5); }
+  /* Width-only wrapper for the custom <Select> — matches the
+     min-width sim-input declares so the field lines up with the
+     surrounding inputs without inheriting their bg/border (the
+     Select component carries its own). */
+  .rbq-select-wrap { min-width: 10rem; }
 
   .bypass-label {
     display: flex;
