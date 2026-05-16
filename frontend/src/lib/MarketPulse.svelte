@@ -438,11 +438,40 @@
     holdingsSummaryGrid.setGridOption('pinnedBottomRowData', holdingsSummaryTotal);
   });
 
-  const scopedFunds = $derived(
-    selectedAccount === 'all'
+  // Per-account cash debited on currently-held long options — same
+  // derivation the strip uses. Walks positions once, keyed by account
+  // (TOTAL is the sum across all accounts). The funds grid joins
+  // this against each row before rendering so the `Cash` column
+  // reads consistently between the strip and the grid.
+  const longOptCashByAccount = $derived.by(() => {
+    /** @type {Record<string, number>} */
+    const m = {};
+    let total = 0;
+    for (const p of positions) {
+      const sym = String(p?.tradingsymbol || '').toUpperCase();
+      if (!(sym.endsWith('CE') || sym.endsWith('PE'))) continue;
+      const qty = Number(p?.quantity) || 0;
+      if (qty <= 0) continue;
+      const v = (Number(p?.average_price) || 0) * qty;
+      const a = String(p?.account || '');
+      if (a) m[a] = (m[a] || 0) + v;
+      total += v;
+    }
+    m.TOTAL = total;
+    return m;
+  });
+
+  const scopedFunds = $derived.by(() => {
+    const list = selectedAccount === 'all'
       ? funds
-      : funds.filter(r => String(r.account || '') === selectedAccount)
-  );
+      : funds.filter(r => String(r.account || '') === selectedAccount);
+    // Inject _long_opt_cash so the grid's `cash_total` valueGetter
+    // can pick it up without poking back into the positions array.
+    return list.map(r => ({
+      ...r,
+      _long_opt_cash: longOptCashByAccount[String(r.account || '')] || 0,
+    }));
+  });
 
   $effect(() => {
     if (!fundsReady || !fundsGrid) return;
@@ -1293,24 +1322,25 @@
         { field: 'cash_total', headerName: 'Cash',         flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Live cash + premium tied up in long options (= cash you would have if every long option were closed at its entry premium)',
-          // Derived: live_cash + option_premium. Falls back to row.cash
-          // when live_cash is missing (older API response cached during
-          // a deploy crossover).
+          headerTooltip: 'Live cash + cash debited on currently-held long options (= cash you would have if every long option were closed at its entry premium)',
+          // live_cash + sum(avg_price × |qty|) for long CE/PE rows in
+          // this account. `_long_opt_cash` is pre-computed by the
+          // scopedFunds derivation. Falls back to row.cash when
+          // live_cash is missing (older API cached during deploy).
           valueGetter: (/** @type {any} */ p) => {
             const d = p?.data || {};
-            const lc = Number(d.live_cash ?? 0);
-            const op = Number(d.option_premium ?? 0);
-            return (lc !== 0 ? lc : Number(d.cash ?? 0)) + op;
+            const lc  = Number(d.live_cash ?? 0);
+            const loc = Number(d._long_opt_cash ?? 0);
+            return (lc !== 0 ? lc : Number(d.cash ?? 0)) + loc;
           } },
         { field: 'live_cash',    headerName: 'Live Cash',    flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Current cash — decreases when option premium is debited' },
-        { field: 'option_premium', headerName: 'Opt Premium', flex: 1,
+        { field: '_long_opt_cash', headerName: 'Opt Cash', flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Net cash debited to buy currently-held long options' },
+          headerTooltip: 'Cash debited on currently-held long options (sum of avg_price × |qty| across each long CE/PE)' },
         { field: 'avail_margin', headerName: 'Avail Margin', flex: 1,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },

@@ -59,10 +59,11 @@
   //        (this is what the operator checks before placing another
   //        long-options order; if it's tight, the next premium
   //        debit will fail).
-  // C    = Cl + cash debited to buy options currently held (i.e. the
-  //        cash you would have if you closed every long option at
-  //        its entry premium). Derived as
-  //        `live_cash + util.option_premium`.
+  // C    = Cl + cash debited to buy long options currently held
+  //        (i.e. cash you would have if every long option were
+  //        closed at its entry premium). Derived from the open
+  //        positions list: sum of `average_price × |quantity|` for
+  //        each long CE/PE row.
   // HD∆  = today's mark-to-market move on holdings (day_change_val).
   // Hld  = total unrealised P&L on holdings since entry.
   // H    = current holding value (cur_val sum across holdings).
@@ -103,18 +104,26 @@
     }
     return s;
   });
-  // Option premium — cash debited to buy currently-held long options
-  // (Kite's `util.option_premium`). Folded into `cashTotal` so `C`
-  // reads as "live cash + cash tied up in long-options premiums" —
-  // i.e. what cash the operator would have if every long option were
-  // closed at its entry premium. 0 fallback when the backend doesn't
-  // surface this field yet.
-  const optionPremiumTotal = $derived.by(() => {
+  // Cash debited on currently-held long options — derived from the
+  // positions list rather than Kite's `util.option_premium` (which
+  // mixes in adjustments + day's net debit, not just current open
+  // longs). Walks the open positions, sums `average_price × |qty|`
+  // for every long CE/PE row. Folded into `cashTotal` so `C` reads
+  // as "live cash + cash tied up in long-options premiums" — i.e.
+  // what cash the operator would have if every long option were
+  // closed at its entry premium.
+  const longOptionsCashPaid = $derived.by(() => {
     let s = 0;
-    for (const f of funds) s += Number(f?.option_premium || 0);
+    for (const p of positions) {
+      const sym = String(p?.tradingsymbol || '').toUpperCase();
+      const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
+      const qty   = Number(p?.quantity) || 0;
+      const avg   = Number(p?.average_price) || 0;
+      if (isOpt && qty > 0) s += avg * qty;
+    }
     return s;
   });
-  const cashTotal = $derived(liveCashTotal + optionPremiumTotal);
+  const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
   const marginTotal = $derived.by(() => {
     let s = 0;
     for (const f of funds) s += Number(f?.avail_margin || 0);
