@@ -55,7 +55,11 @@
 
   // P    = positions P&L lifetime (open + closed intraday).
   // M    = available margin summed across accounts.
-  // C    = free cash summed across accounts (negative = margin debt).
+  // C    = opening cash balance summed across accounts (start of day).
+  // Cl   = live cash — decreases when option premium is debited
+  //        (this is what the operator usually checks before placing
+  //        another long-options order; if it's tight, the next
+  //        premium debit will fail).
   // HD∆  = today's mark-to-market move on holdings (day_change_val).
   // Hld  = total unrealised P&L on holdings since entry.
   // H    = current holding value (cur_val sum across holdings).
@@ -90,6 +94,17 @@
     for (const f of funds) s += Number(f?.cash || 0);
     return s;
   });
+  // Live cash — Kite's `avail.cash` (= live_balance) summed across
+  // accounts. Falls back to `cash` if the backend hasn't surfaced
+  // `live_cash` yet (older deploys).
+  const liveCashTotal = $derived.by(() => {
+    let s = 0;
+    for (const f of funds) {
+      const lc = Number(f?.live_cash ?? 0);
+      s += lc !== 0 ? lc : Number(f?.cash || 0);
+    }
+    return s;
+  });
   const marginTotal = $derived.by(() => {
     let s = 0;
     for (const f of funds) s += Number(f?.avail_margin || 0);
@@ -116,10 +131,16 @@
       {fmtMoney(marginTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Cash — free balance summed across accounts">
+  <span class="ps-agg" title="Cash — opening balance summed across accounts (start of day)">
     <span class="ps-agg-k">C</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(cashTotal)}
+    </span>
+  </span>
+  <span class="ps-agg" title="Live cash — current cash balance after option premium debits (sum across accounts)">
+    <span class="ps-agg-k">Cl</span>
+    <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+      {fmtMoney(liveCashTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
@@ -197,8 +218,23 @@
   .ps-cash { color: #7dd3fc; }
 
   @media (max-width: 640px) {
-    .ps-strip   { gap: 0.3rem; padding: 0.25rem 0.45rem; }
-    .ps-agg     { gap: 0.2rem; }
-    .ps-agg-k   { font-size: 0.55rem; }
+    /* Eight pills (P · M · C · Cl · P∆ · HD∆ · H∆ · H) must fit on a
+       phone. We tighten everything globally; values get a slightly
+       smaller font; the wrapper allows horizontal scroll as a
+       last-resort safety net so nothing clips off-screen on the
+       narrowest devices (~320 px). */
+    .ps-strip   { gap: 0.28rem; padding: 0.25rem 0.4rem;
+                  overflow-x: auto; -webkit-overflow-scrolling: touch;
+                  scrollbar-width: none; }
+    .ps-strip::-webkit-scrollbar { display: none; }
+    .ps-agg     { gap: 0.15rem; flex-shrink: 0; }
+    .ps-agg-k   { font-size: 0.5rem; }
+    .ps-agg-v   { font-size: 0.6rem; }
+  }
+  @media (max-width: 380px) {
+    /* Narrowest phones — drop one more notch. */
+    .ps-strip   { gap: 0.22rem; padding: 0.22rem 0.32rem; }
+    .ps-agg-k   { font-size: 0.46rem; }
+    .ps-agg-v   { font-size: 0.55rem; }
   }
 </style>
