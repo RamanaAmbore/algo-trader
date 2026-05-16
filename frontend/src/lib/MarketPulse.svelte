@@ -1252,19 +1252,19 @@
     }  // end main symbols grid block
 
     // Positions Summary grid — Account | Day P&L | Day % | P&L
-    // Widths match PerformancePage's Positions Summary grid so the
-    // two pages render identically when scoped to the same account.
+    // Compact widths — aggCompact maxes at ~8 chars ("-999.99L") so
+    // 78 px fits every rupee value plus the standard cell padding.
     if (showSummary && positionsSummaryEl) {
       const posSummaryCols = [
         { field: 'account',               headerName: 'Account', width: 54,
           cellClass: 'ag-col-fill' },
-        { field: 'day_pnl',               headerName: 'Day P&L', width: 110,
+        { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'day_change_percentage', headerName: 'Day %',   width: 78,
+        { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: pctFmtGrid },
-        { field: 'pnl',                   headerName: 'P&L',     width: 110,
+        { field: 'pnl',                   headerName: 'P&L',     width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
       ];
@@ -1285,27 +1285,27 @@
     }
 
     // Holdings Summary grid — Account | Day P&L | Day % | P&L | P&L % | Cur Val | Inv Val
-    // Widths match PerformancePage's Holdings Summary grid.
+    // Compact widths matching the Positions Summary above.
     if (showSummary && holdingsSummaryEl) {
       const holdSummaryCols = [
         { field: 'account',               headerName: 'Account', width: 54,
           cellClass: 'ag-col-fill' },
-        { field: 'day_pnl',               headerName: 'Day P&L', width: 110,
+        { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'day_change_percentage', headerName: 'Day %',   width: 78,
+        { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: pctFmtGrid },
-        { field: 'pnl',                   headerName: 'P&L',     width: 110,
+        { field: 'pnl',                   headerName: 'P&L',     width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid },
-        { field: 'pnl_percentage',        headerName: 'P&L %',   width: 78,
+        { field: 'pnl_percentage',        headerName: 'P&L %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: pctFmtGrid },
-        { field: 'cur_val',               headerName: 'Cur Val', width: 110,
+        { field: 'cur_val',               headerName: 'Cur Val', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'inv_val',               headerName: 'Inv Val', width: 110,
+        { field: 'inv_val',               headerName: 'Inv Val', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
       ];
@@ -1325,18 +1325,15 @@
       holdingsSummaryReady = true;
     }
 
-    // Funds grid — per-account margins. Account column matches the
-    // PerformancePage's Funds grid (54 px); money columns sit at
-    // 88 px each (denser than 110 to leave room for the extra
-    // Live Cash + Opt Cash columns we have here but PerformancePage
-    // doesn't). Last column flex:1+minWidth so the row fills its
-    // container on wide displays and ag-Grid's horizontal scrollbar
-    // engages on narrow ones.
+    // Funds grid — per-account margins. Compact widths matching the
+    // summary grids above. Header labels shortened (Avail Margin →
+    // Avail Mar, Used Margin → Used Mar, Collateral → Coll) so the
+    // headers don't truncate at 78 px column width.
     if (showFunds && fundsEl) {
       const fundsCols = [
-        { field: 'account',        headerName: 'Account',     width: 54,
+        { field: 'account',        headerName: 'Account',   width: 54,
           cellClass: 'ag-col-fill' },
-        { field: 'cash_total',     headerName: 'Cash',        width: 88,
+        { field: 'cash_total',     headerName: 'Cash',      width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Live cash + cash debited on currently-held long options (= cash you would have if every long option were closed at its entry premium)',
@@ -1350,23 +1347,26 @@
             const loc = Number(d._long_opt_cash ?? 0);
             return (lc !== 0 ? lc : Number(d.cash ?? 0)) + loc;
           } },
-        { field: 'live_cash',      headerName: 'Live Cash',   width: 88,
+        { field: 'live_cash',      headerName: 'Live Cash', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: aggFmtGrid,
           headerTooltip: 'Current cash — decreases when option premium is debited' },
-        { field: '_long_opt_cash', headerName: 'Opt Cash',    width: 88,
+        { field: '_long_opt_cash', headerName: 'Opt Cash',  width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid,
           headerTooltip: 'Cash debited on currently-held long options (sum of avg_price × |qty| across each long CE/PE)' },
-        { field: 'avail_margin',   headerName: 'Avail Margin', width: 100,
+        { field: 'avail_margin',   headerName: 'Avail Mar', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'used_margin',    headerName: 'Used Margin',  width: 100,
+          cellClass: RA, valueFormatter: aggFmtGrid,
+          headerTooltip: 'Available margin — net trading buffer' },
+        { field: 'used_margin',    headerName: 'Used Mar',  width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'collateral',     headerName: 'Collateral',   flex: 1, minWidth: 88,
+          cellClass: RA, valueFormatter: aggFmtGrid,
+          headerTooltip: 'Margin currently locked against open positions' },
+        { field: 'collateral',     headerName: 'Coll',      flex: 1, minWidth: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid },
+          cellClass: RA, valueFormatter: aggFmtGrid,
+          headerTooltip: 'Collateral value from pledged holdings' },
       ];
       fundsGrid = createGrid(fundsEl, {
         theme: 'legacy',
