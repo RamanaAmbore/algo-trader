@@ -1219,8 +1219,10 @@ class SimDriver:
                 if not self.iteration_end_reason:
                     self.iteration_end_reason = "book_empty" if not self._positions_rows else "scenario_complete"
 
-                # Capture summary stats + persist
-                summary = self._compute_iteration_summary()
+                # Capture summary stats + persist. Fees are async (DB
+                # walk) so compute them before the sync summary builder.
+                fees = await self._compute_iteration_fees()
+                summary = self._compute_iteration_summary(total_fees=fees)
                 await self._finalize_iteration_row(
                     row_id, end_reason=self.iteration_end_reason, summary=summary,
                 )
@@ -1262,8 +1264,15 @@ class SimDriver:
         ts = datetime.now().strftime("%H%M")
         return f"{regime}-{ts}-{idx:02d}"
 
-    def _compute_iteration_summary(self) -> dict:
-        """Cheap end-of-iteration stats — total P&L, position counts, etc."""
+    def _compute_iteration_summary(self, *, total_fees: float = 0.0) -> dict:
+        """Cheap end-of-iteration stats — total P&L, position counts, etc.
+
+        Accepts an externally-computed `total_fees` (async helper does
+        the DB walk; this method stays sync because some callers (e.g.
+        the CancelledError handler) need to compute summary without
+        await). The net_pnl figure is what the operator would actually
+        keep after broker charges — typically 0.5-2% lower than gross.
+        """
         rows = list(self._positions_rows)
         total_pnl = sum(float(r.get("pnl") or 0) for r in rows)
         hung      = sum(1 for r in rows if int(r.get("quantity") or 0) != 0)
@@ -1272,13 +1281,56 @@ class SimDriver:
         # have exhausted at fire #N under this regime" without the
         # operator having to inspect every event row.
         exhausted = list(self._sim_alert_state.get('lifespan_exhausted_agents') or [])
+
         return {
-            "tick_index":         self.tick_index,
-            "total_pnl_remaining": total_pnl,    # P&L of still-open positions
+            "tick_index":          self.tick_index,
+            "total_pnl_remaining": total_pnl,   # P&L of still-open positions (gross)
+            "total_fees":          round(float(total_fees), 2),
+            "net_pnl_remaining":   round(total_pnl - float(total_fees), 2),
             "hung_positions":      hung,
             "regime":              self.iteration_regime,
             "lifespan_exhausted_agents": exhausted,
         }
+
+    async def _compute_iteration_fees(self) -> float:
+        """
+        Sum Kite-style brokerage + STT + ancillary + GST for every sim
+        AlgoOrder written within this iteration's timestamp window.
+        Called from the async scheduler before persisting the summary.
+        Best-effort: any DB/lookup error returns 0 so the scheduler
+        finalises without aborting.
+        """
+        if not self.iteration_started_at:
+            return 0.0
+        try:
+            from backend.shared.helpers.fees import compute_order_fees
+            from backend.api.database import async_session
+            from backend.api.models import AlgoOrder
+            from sqlalchemy import select, and_
+        except Exception as e:
+            logger.warning(f"[SIM] fee imports failed: {e}")
+            return 0.0
+        try:
+            async with async_session() as s:
+                rows = (await s.execute(
+                    select(AlgoOrder).where(and_(
+                        AlgoOrder.mode == 'sim',
+                        AlgoOrder.created_at >= self.iteration_started_at,
+                    ))
+                )).scalars().all()
+            fees = 0.0
+            for o in rows:
+                fees += compute_order_fees({
+                    "tradingsymbol":    o.symbol,
+                    "transaction_type": o.transaction_type,
+                    "quantity":         o.quantity,
+                    "fill_price":       o.fill_price,
+                    "initial_price":    o.initial_price,
+                })
+            return fees
+        except Exception as e:
+            logger.warning(f"[SIM] fee computation failed: {e}")
+            return 0.0
 
     async def _finalize_iteration_row(self, row_id: Optional[int], *,
                                        end_reason: str, summary: dict) -> None:
@@ -1435,6 +1487,16 @@ class SimDriver:
             if mtype == "set_iv":
                 changes.extend(self._apply_set_iv(scope, move))
                 continue
+            # IV skew shift — like set_iv but per-strike: ATM IV moves by
+            # atm_delta; OTM puts get extra `put_skew × (1 − K/S)`; OTM
+            # calls get extra `call_skew × (K/S − 1)`. Models how IV
+            # behaves asymmetrically across strikes during a crash (puts
+            # get bid up MORE than ATM, calls less). Used by the
+            # extreme-gap-down / extreme-gap-up regimes for realistic
+            # tail-hedge P&L.
+            if mtype == "set_iv_skew":
+                changes.extend(self._apply_set_iv_skew(scope, move))
+                continue
             # Non-market event primitive — overrides a DB-backed setting
             # for the duration of the sim run (e.g. lower a threshold,
             # disable a capability). The override is reverted on Stop /
@@ -1557,8 +1619,25 @@ class SimDriver:
                 f"iv-calibrated: {len(self._iv_cache)}"
             )
 
+    # Default beta table for cross-underlying correlation propagation.
+    # When a `underlying_*` move fires without an explicit `propagate:`
+    # list, the engine looks the leading underlying up here and applies
+    # derived moves to the listed peers at `beta × primary_delta`.
+    # Betas roughly match observed NSE intraday correlations:
+    #   - NIFTY moves typically lead BANKNIFTY by 1.25-1.35×
+    #   - FINNIFTY tracks NIFTY at ~1.10×
+    #   - BANKNIFTY ↔ NIFTY relationship in reverse uses 1/beta ≈ 0.77
+    # Operator can override per scenario by putting an explicit
+    # `propagate: [{to: "X", beta: 0.5}, …]` on the underlying move.
+    _DEFAULT_BETAS: dict = {
+        "NIFTY":     [{"to": "BANKNIFTY", "beta": 1.30},
+                      {"to": "FINNIFTY",  "beta": 1.10}],
+        "BANKNIFTY": [{"to": "NIFTY",     "beta": 0.77}],
+        "FINNIFTY":  [{"to": "NIFTY",     "beta": 0.91}],
+    }
+
     def _apply_underlying_move(self, mtype: str, scope: str,
-                               move: dict) -> list[dict]:
+                               move: dict, _propagate_depth: int = 0) -> list[dict]:
         """
         Underlying scope is `underlying.<NAME>` or `underlying.*`. The move
         types are:
@@ -1573,8 +1652,14 @@ class SimDriver:
 
         `underlying_random_walk` is the realistic-market primitive: walks
         the SPOT (not each contract), so all options on that underlying
-        re-price coherently via Black-Scholes each tick. Use it for
-        "drive a NIFTY GBM path through my whole book" tests.
+        re-price coherently via Black-Scholes each tick.
+
+        Cross-underlying correlation: after the primary move resolves, if
+        the move carries `propagate: [{to: NAME, beta: X}, ...]` OR the
+        underlying has an entry in `_DEFAULT_BETAS`, derived
+        `underlying_pct` moves fire at `beta × primary_delta_pct` on each
+        peer. `_propagate_depth` caps at 1 hop so NIFTY→BANKNIFTY
+        doesn't recurse back to NIFTY.
         """
         if not scope.startswith("underlying."):
             logger.warning(f"[SIM] underlying move expects 'underlying.*' scope, got '{scope}'")
@@ -1627,6 +1712,42 @@ class SimDriver:
             # Re-price every position on this underlying — produces one
             # change row per derived contract so the operator sees the chain.
             changes.extend(self._reprice_derivatives_for(name, new_spot))
+
+            # Cross-underlying correlation: propagate this move to
+            # correlated peers via either the move's explicit
+            # `propagate:` list or the default beta table. Bounded to
+            # one hop (`_propagate_depth=1`) so NIFTY → BANKNIFTY can't
+            # bounce back to NIFTY and create an oscillation.
+            if _propagate_depth >= 1:
+                continue
+            propagate = move.get("propagate")
+            if propagate is None:
+                propagate = self._DEFAULT_BETAS.get(name, [])
+            if not propagate:
+                continue
+            # Compute primary move as a % delta so we can scale per peer.
+            if old_spot <= 0:
+                continue
+            primary_pct = (new_spot - old_spot) / old_spot
+            for peer in propagate:
+                peer_name = (peer.get("to") or "").upper()
+                if not peer_name or peer_name not in self._underlyings:
+                    continue
+                try:
+                    beta = float(peer.get("beta") or 0)
+                except (TypeError, ValueError):
+                    beta = 0.0
+                if beta == 0.0:
+                    continue
+                peer_pct = primary_pct * beta
+                # Recursive call with depth=1 to apply + reprice + log the
+                # peer's move. The recursion guard above prevents further hops.
+                changes.extend(self._apply_underlying_move(
+                    "underlying_pct",
+                    f"underlying.{peer_name}",
+                    {"value": peer_pct},
+                    _propagate_depth=1,
+                ))
         return changes
 
     def _reprice_derivatives_for(self, underlying: str, spot: float) -> list[dict]:
@@ -1834,6 +1955,73 @@ class SimDriver:
                 "prev":    old, "next": new,
                 "delta":   (new - old) if old is not None else None,
                 "reason":  "set_iv",
+                "bid":     None, "ask": None,
+            })
+        return changes
+
+    def _apply_set_iv_skew(self, scope: str, move: dict) -> list[dict]:
+        """
+        Skew-aware IV shift. For each matched option position:
+          new_iv = old_iv + atm_delta + skew_extra
+        where `skew_extra` depends on whether the strike is OTM put or
+        OTM call relative to the underlying's current spot:
+          OTM put  (K < S):  skew_extra = put_skew  × (1 − K/S)
+          OTM call (K > S):  skew_extra = call_skew × (K/S − 1)
+          ATM      (K = S):  skew_extra = 0
+
+        Models the realistic asymmetry where a crash drives OTM put IV
+        UP more than ATM, and OTM call IV less than ATM. The
+        extreme-gap-down regime uses this with `{atm_delta: 0.30,
+        put_skew: 0.50, call_skew: 0.10}` so deep OTM puts see ~80
+        vol-point IV jump while ATM sees 30 and OTM calls see 30-40.
+
+        Accepts:
+          {atm_delta: 0.30, put_skew: 0.50, call_skew: 0.10}
+
+        scope: e.g. "positions.**" or "positions.*.NIFTY*" — same matcher
+        as `set_iv`.
+        """
+        from backend.api.algo.derivatives import parse_tradingsymbol
+
+        matched = self._scope_matches(scope)
+        atm_delta  = float(move.get("atm_delta")  or 0.0)
+        put_skew   = float(move.get("put_skew")   or 0.0)
+        call_skew  = float(move.get("call_skew")  or 0.0)
+        changes: list[dict] = []
+        for section, row in matched:
+            if section != "positions":
+                continue
+            sym = str(row.get("tradingsymbol") or "")
+            old = self._iv_cache.get(sym)
+            if old is None:
+                continue  # not an option (no calibrated IV) — skip
+            parsed = row.get("_parsed") or parse_tradingsymbol(sym)
+            if not parsed or parsed.get("kind") != "opt":
+                continue
+            strike = float(parsed.get("strike") or 0)
+            und    = (parsed.get("underlying") or "").upper()
+            spot   = float(self._underlyings.get(und) or 0)
+            if strike <= 0 or spot <= 0:
+                # No moneyness reference — fall back to flat atm_delta.
+                skew_extra = 0.0
+            else:
+                m = strike / spot
+                if m < 1.0:
+                    # OTM put (K below S) — extra IV proportional to depth.
+                    skew_extra = put_skew * (1.0 - m)
+                elif m > 1.0:
+                    # OTM call (K above S) — extra IV proportional to depth.
+                    skew_extra = call_skew * (m - 1.0)
+                else:
+                    skew_extra = 0.0
+            new = max(0.0001, min(5.0, float(old) + atm_delta + skew_extra))
+            self._iv_cache[sym] = new
+            changes.append({
+                "section": "positions", "account": row.get("account"),
+                "symbol":  sym, "col": "iv",
+                "prev":    old, "next": new,
+                "delta":   new - old,
+                "reason":  f"set_iv_skew (atm{atm_delta:+.2f} extra{skew_extra:+.3f})",
                 "bid":     None, "ask": None,
             })
         return changes

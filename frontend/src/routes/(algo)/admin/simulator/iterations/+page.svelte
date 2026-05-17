@@ -131,7 +131,9 @@
             <th>Started</th>
             <th class="numeric">Duration</th>
             <th>End</th>
-            <th class="numeric">P&amp;L (hung)</th>
+            <th class="numeric" title="Sum of fees (brokerage + STT + GST) on sim orders this iteration">Fees</th>
+            <th class="numeric" title="Gross P&L of positions still open at iteration end (force-closed positions don't count)">P&amp;L (hung)</th>
+            <th class="numeric" title="Net P&L after Kite-style fees on every sim order">Net P&amp;L</th>
             <th class="numeric">Hung pos</th>
             <th class="numeric" title="Agents that exhausted their shadow lifespan budget in this iteration">Exhausted</th>
           </tr>
@@ -148,7 +150,9 @@
               </td>
               <td class="numeric">{_duration(it.started_at, it.ended_at)}</td>
               <td class={'er ' + _endReasonClass(it.end_reason)}>{it.end_reason ?? 'pending'}</td>
+              <td class="numeric">{it.summary?.total_fees != null ? aggCompact(it.summary.total_fees) : '—'}</td>
               <td class="numeric">{_summaryPnl(it.summary)}</td>
+              <td class="numeric">{it.summary?.net_pnl_remaining != null ? aggCompact(it.summary.net_pnl_remaining) : '—'}</td>
               <td class="numeric">{it.summary?.hung_positions ?? '—'}</td>
               <td class="numeric" title={(it.summary?.lifespan_exhausted_agents || []).length
                 ? `Agent ids: ${(it.summary.lifespan_exhausted_agents).join(', ')}`

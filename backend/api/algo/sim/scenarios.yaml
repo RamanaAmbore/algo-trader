@@ -396,14 +396,17 @@
   mode: symbol
   market_state: {preset: at_open}
   description: >-
-    +5% gap on every underlying at open + IV crush (-30 vol points). Models
-    a positive surprise where realised vol falls as the move plays out.
+    +5% gap on every underlying at open + skewed IV crush. ATM IV down
+    30 vol points, OTM calls down LESS (deep OTM still bid for upside
+    chase), OTM puts down MORE (further OTM than before the gap).
+    Models a positive-surprise where vol-of-vol drops asymmetrically.
     Catastrophic for naked short-call writers.
   ticks:
     - at: 0
       moves:
         - {type: underlying_pct, scope: "underlying.*", value: 0.05}
-        - {type: set_iv,         scope: "positions.**", delta: -0.30}
+        - {type: set_iv_skew,    scope: "positions.**",
+           atm_delta: -0.30, put_skew: -0.50, call_skew: -0.10}
     - at: 1
       moves: []
     - at: 2
@@ -495,19 +498,76 @@
     - at: 4
       moves: []
 
+- slug: pre-close
+  name: Pre-close squeeze (last 15 min of NSE)
+  mode: symbol
+  seed: 42
+  market_state: {preset: pre_close}
+  description: >-
+    Final 15 minutes of NSE session — typically thin liquidity, MTM
+    panic, and short-covering / closing-auction spikes. The simulated
+    clock starts at 15:15 IST (15 min to close). Volatility ramps:
+    calm 0.1% σ for ticks 0-2, climbs through 0.3% (3-5), peaks at
+    0.8% during the closing rush (6-8), then settles. Tests how
+    agents that have been silent through the day react to the
+    pre-close storm.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: -0.0002, vol: 0.001}
+    - at: 1
+      moves:
+        - {type: advance_clock, minutes: 2}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.001}
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 3}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.003}
+    - at: 3
+      moves:
+        - {type: advance_clock, minutes: 2}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.003}
+    - at: 4
+      moves:
+        - {type: advance_clock, minutes: 2}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: -0.0005, vol: 0.005}
+    - at: 5
+      moves:
+        - {type: advance_clock, minutes: 2}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.008}
+    - at: 6
+      moves:
+        - {type: advance_clock, minutes: 1}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.008}
+    - at: 7
+      moves:
+        - {type: advance_clock, minutes: 2}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0005, vol: 0.005}
+
 - slug: extreme-gap-down
   name: Extreme gap down (-5%, vol spike)
   mode: symbol
   market_state: {preset: at_open}
   description: >-
-    -5% gap on every underlying at open + IV spike (+30 vol points). Models
-    a panic-fear morning where puts become expensive AND the underlying
-    crashes. Worst-case stress test for naked short-put writers.
+    -5% gap on every underlying at open + skewed IV spike. ATM IV +30
+    vol points, OTM puts +80 (deep OTM puts get bid up hardest in
+    panic — classic crashing-skew shape), OTM calls only +40. Models
+    a panic-fear morning realistically: puts get hosed UP, the
+    underlying crashes, naked short-put writers take catastrophic hits.
   ticks:
     - at: 0
       moves:
         - {type: underlying_pct, scope: "underlying.*", value: -0.05}
-        - {type: set_iv,         scope: "positions.**", delta: 0.30}
+        - {type: set_iv_skew,    scope: "positions.**",
+           atm_delta: 0.30, put_skew: 0.50, call_skew: 0.10}
     - at: 1
       moves: []
     - at: 2

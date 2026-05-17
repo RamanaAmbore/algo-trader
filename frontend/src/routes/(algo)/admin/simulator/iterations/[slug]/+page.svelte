@@ -12,6 +12,7 @@
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
+  // aggCompact is used in the summary card below.
 
   /** @type {any} */
   let iteration = $state(null);
@@ -124,6 +125,10 @@
             <tr><th>Hung positions</th><td>{iteration.summary.hung_positions ?? '—'}</td></tr>
             <tr><th>P&amp;L (hung)</th><td>{_summaryPnl(iteration.summary)}</td></tr>
             <tr><th>Regime tag</th><td>{iteration.summary.regime ?? '—'}</td></tr>
+            {#if iteration.summary.total_fees != null}
+              <tr><th title="Sum of brokerage + STT + GST + ancillary on every sim order in this iteration">Fees (sim)</th><td>₹{aggCompact(iteration.summary.total_fees)}</td></tr>
+              <tr><th title="P&L after Kite-style fees on every sim order — what you'd actually keep">Net P&amp;L</th><td>₹{aggCompact(iteration.summary.net_pnl_remaining)}</td></tr>
+            {/if}
             {#if iteration.summary.lifespan_exhausted_agents?.length}
               <tr>
                 <th title="Agents that exhausted their shadow lifespan budget during this iteration. Real DB state untouched.">Exhausted</th>
