@@ -362,6 +362,162 @@
         - {type: underlying_random_walk, scope: "underlying.NIFTY",
            drift: 0.0, vol: 0.001}
 
+# ═════════════════════════════════════════════════════════════════════════
+#  Eight named regimes for iteration-mode sweeps. These are the canonical
+#  presets the /admin/simulator iteration framework runs across. They all
+#  use underlying-driven moves (Black-Scholes re-prices options off spot)
+#  so the operator's real F&O positions track coherently — pair every
+#  one with seed_mode=live or live+scenario.
+# ═════════════════════════════════════════════════════════════════════════
+
+- slug: gap-up
+  name: Gap up open (+1%)
+  mode: symbol
+  market_state: {preset: at_open}
+  description: >-
+    +1% gap on every underlying at open, then 4 calm flat ticks. Tests
+    short-call books and rate-agent baseline behaviour through the gap.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.*", value: 0.01}
+    - at: 1
+      moves: []
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}
+    - at: 3
+      moves: []
+    - at: 4
+      moves: []
+
+- slug: extreme-gap-up
+  name: Extreme gap up (+5%, vol crush)
+  mode: symbol
+  market_state: {preset: at_open}
+  description: >-
+    +5% gap on every underlying at open + IV crush (-30 vol points). Models
+    a positive surprise where realised vol falls as the move plays out.
+    Catastrophic for naked short-call writers.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.*", value: 0.05}
+        - {type: set_iv,         scope: "positions.**", delta: -0.30}
+    - at: 1
+      moves: []
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}
+    - at: 3
+      moves: []
+    - at: 4
+      moves: []
+
+- slug: upward-trending
+  name: Upward trending (+0.05%/tick over 20 ticks)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    Steady drift up across 20 ticks with low realised vol — a calm bull
+    grind. Tests whether trending-day P&L correctly accumulates without
+    spurious agent fires from short-window noise.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0005, vol: 0.001}
+
+- slug: downward-trending
+  name: Downward trending (-0.05%/tick over 20 ticks)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    Mirror of upward-trending — steady bear grind. Useful for testing
+    rate agents that should catch sustained pressure WITHOUT firing on
+    every micro tick.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: -0.0005, vol: 0.001}
+
+- slug: minor-volatility
+  name: Minor volatility (drift 0, vol 0.3%/tick)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    Sideways chop with modest realised vol. No agent should fire under
+    this regime — it's the "control" scenario for false-positive
+    detection.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.003}
+
+- slug: major-volatility
+  name: Major volatility (drift 0, vol 1%/tick)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    High-vol sideways chop. Long-premium books bleed less than under
+    IV crush but slow-drag the P&L. Short-premium writers should NOT
+    profit cleanly — vega + gamma whipsaws hit both sides.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.01}
+
+- slug: gap-down
+  name: Gap down open (-1%)
+  mode: symbol
+  market_state: {preset: at_open}
+  description: >-
+    -1% gap on every underlying at open, then 4 calm flat ticks.
+    Mirror of gap-up. Tests long-put / short-call book reactions.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.*", value: -0.01}
+    - at: 1
+      moves: []
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}
+    - at: 3
+      moves: []
+    - at: 4
+      moves: []
+
+- slug: extreme-gap-down
+  name: Extreme gap down (-5%, vol spike)
+  mode: symbol
+  market_state: {preset: at_open}
+  description: >-
+    -5% gap on every underlying at open + IV spike (+30 vol points). Models
+    a panic-fear morning where puts become expensive AND the underlying
+    crashes. Worst-case stress test for naked short-put writers.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.*", value: -0.05}
+        - {type: set_iv,         scope: "positions.**", delta: 0.30}
+    - at: 1
+      moves: []
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}
+    - at: 3
+      moves: []
+    - at: 4
+      moves: []
+
 # ─────────────────────────────────────────────────────────────────────────
 # Holdings stress — drives the day P&L on every holding down 1% / 2% / 3%.
 # Tests the day_pct / day_rate_abs / day_rate_pct agents that previously

@@ -360,6 +360,38 @@ class AgentEvent(Base):
 
 
 # ---------------------------------------------------------------------------
+# Sim iteration — one row per simulator iteration. A single `/start` call
+# with `iterations: N` creates N rows, all sharing the same `parent_run_id`
+# (the SimIteration row of iteration 1). Stats land in `summary_json` at
+# the end of each iteration so reports survive a `/clear` wipe of the
+# detailed event/order rows.
+# ---------------------------------------------------------------------------
+
+class SimIteration(Base):
+    __tablename__ = "sim_iterations"
+
+    id: Mapped[int]                = mapped_column(primary_key=True, autoincrement=True)
+    slug: Mapped[str]              = mapped_column(String(64), nullable=False, unique=True, index=True)
+    # First iteration of a multi-run; iteration 1 references itself.
+    parent_run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    iteration_index: Mapped[int]   = mapped_column(Integer, nullable=False, default=1)
+    iterations_total: Mapped[int]  = mapped_column(Integer, nullable=False, default=1)
+    regime: Mapped[str]            = mapped_column(String(64), nullable=False)
+    seed: Mapped[Optional[int]]    = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime]   = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 'book_empty' | 'time_limit' | 'scenario_complete' | 'stopped' | 'failed'
+    end_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Full start() params as JSON — used by /replay to reconstruct the run
+    params_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # End-of-iteration stats: P&L per account, # agent fires, # orders, etc.
+    summary_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # Market report — single-row cache (id=1). Reused across deploys when <24h old.
 # ---------------------------------------------------------------------------
 
