@@ -1123,13 +1123,19 @@ test.describe('/admin/execution — UX fixes af3bc50', () => {
     console.log(`[1cbb855-C] "Indices" heading elements found: ${indicesCount}`);
 
     if (indicesCount > 0) {
-      // Section is present — assert at least one .sim-index-pill exists.
+      // Section is present. Accept EITHER pills (live data) OR a
+      // .sim-empty placeholder (08a5cd5+: section headers now render
+      // unconditionally, with an empty placeholder when no sim is
+      // active). The old "header visible → pills must exist" rule
+      // would fail on an idle workspace.
       await expect(indicesHeading.first()).toBeVisible({ timeout: 3_000 });
-      const pillCount = await page.locator('.sim-index-pill').count();
-      console.log(`[1cbb855-C] .sim-index-pill count: ${pillCount}`);
-      expect(pillCount, 'Indices section visible but no .sim-index-pill elements found')
+      const pillCount  = await page.locator('.sim-index-pill').count();
+      const emptyCount = await page.locator('.sim-empty').count();
+      console.log(`[1cbb855-C] .sim-index-pill count: ${pillCount}, .sim-empty count: ${emptyCount}`);
+      expect(pillCount + emptyCount,
+        'Indices section visible but neither pills nor empty placeholder found')
         .toBeGreaterThan(0);
-      console.log('[1cbb855-C] PASS — Indices section visible with pills');
+      console.log('[1cbb855-C] PASS — Indices section visible with pills or empty placeholder');
     } else {
       // Section absent — graceful: no positions seeded or sim not running.
       console.log('[1cbb855-C] "Indices" section absent — no underlyings seeded (graceful, not a failure)');
@@ -1274,6 +1280,74 @@ test.describe('/admin/execution — UX fixes af3bc50', () => {
     await expect(page.locator('.log-tab-row')).toBeVisible({ timeout: 10_000 });
 
     console.log('[f56ae38-C] ReplayPanel renders with date range inputs + LogPanel — PASS');
+  });
+
+  // ── 08a5cd5-A: Section headers always visible + past-grid from API ─────
+  //
+  // Commit 08a5cd5 adds always-rendered section headings to SimulatorPanel
+  // (Indices · Live activity · Underlyings · Positions summary · Past simulations)
+  // with .sim-empty placeholder text when no data is present, plus:
+  //   - .sim-activity  — merged agent-events + sim-orders feed (newest first)
+  //   - .sim-past-grid — table of the last 5 SimIteration rows
+  //
+  // Assertion A: even with no active sim, "Live activity" and "Past simulations"
+  //   text appear in the DOM.
+  //
+  // Assertion B: .sim-past-grid is visible IF /api/simulator/iterations returns
+  //   at least one row (soft — skipped when the API returns []).
+  test('08a5cd5-A: section headers always visible + past-grid from API', async ({ page }) => {
+    // Navigate to /admin/execution via the navbar SIM click.
+    await page.goto('/dashboard');
+    await page.waitForLoadState('domcontentloaded');
+
+    const mc = page.locator('.mode-trigger').first();
+    await expect(mc).toBeVisible({ timeout: 10_000 });
+    await mc.click();
+    const dd = page.locator('.mode-combo-dropdown').first();
+    await expect(dd).toBeVisible({ timeout: 5_000 });
+    const simOpt = dd.locator('.mode-combo-item').filter({ hasText: /^SIM$/i });
+    await expect(simOpt).toBeVisible({ timeout: 3_000 });
+    await simOpt.click();
+    await expect(page).toHaveURL(/\/admin\/execution/, { timeout: 10_000 });
+    await page.waitForLoadState('domcontentloaded');
+
+    // Wait for SimulatorPanel to hydrate.
+    await expect(page.locator('.log-tab-row')).toBeVisible({ timeout: 12_000 });
+
+    // ── Assertion A: section headers ──────────────────────────────────────
+    // "Live activity" must appear at least once (either as section heading text
+    // or .sim-empty placeholder that mentions it).
+    const liveActivityHeadings = page.getByText(/Live\s+activity/i);
+    const liveCount = await liveActivityHeadings.count();
+    console.log(`[08a5cd5-A] "Live activity" heading count: ${liveCount}`);
+    expect(liveCount, '"Live activity" section header must be present in SimulatorPanel').toBeGreaterThanOrEqual(1);
+
+    // "Past simulations" section heading.
+    const pastSimHeadings = page.getByText(/Past\s+simulations/i);
+    const pastCount = await pastSimHeadings.count();
+    console.log(`[08a5cd5-A] "Past simulations" heading count: ${pastCount}`);
+    expect(pastCount, '"Past simulations" section header must be present in SimulatorPanel').toBeGreaterThanOrEqual(1);
+
+    console.log('[08a5cd5-A] PASS — section headers ("Live activity", "Past simulations") always visible');
+
+    // ── Assertion B: past-grid soft check ─────────────────────────────────
+    const iterR = await page.request.get('/api/simulator/iterations?limit=5');
+    expect(iterR.ok(), '/api/simulator/iterations must be reachable').toBe(true);
+    const iterData = await iterR.json();
+    const iters = Array.isArray(iterData) ? iterData : (iterData.iterations ?? []);
+    console.log(`[08a5cd5-A] /api/simulator/iterations returned ${iters.length} row(s)`);
+
+    if (iters.length > 0) {
+      // API has iteration rows — .sim-past-grid must be visible.
+      const pastGrid = page.locator('.sim-past-grid');
+      const gridCount = await pastGrid.count();
+      console.log(`[08a5cd5-A] .sim-past-grid elements: ${gridCount}`);
+      await expect(pastGrid.first()).toBeVisible({ timeout: 5_000 });
+      console.log('[08a5cd5-A] PASS — .sim-past-grid visible (iterations data present)');
+    } else {
+      // No iteration rows yet — soft skip.
+      console.log('[08a5cd5-A] SOFT — /api/simulator/iterations returned [] — .sim-past-grid assertion skipped (no data yet)');
+    }
   });
 
   // ── 8b199c9-A: Execution nav link mode-aware visibility ──────────────

@@ -6,7 +6,7 @@
  *   2. Start an iteration sim with a scenario that should breach
  *      the agent's threshold (e.g. nifty-down-3pct vs a holdings/
  *      positions loss agent).
- *   3. Wait for the iteration to complete.
+ *   3. Wait for the scenario to run far enough (>= 3 ticks).
  *   4. Assert an `agent_events` row with sim_mode=true appears for
  *      the chosen agent.
  *   5. (When the agent has order-placing actions) assert an
@@ -15,16 +15,58 @@
  *
  * Headless by default per durable rule. Run with --headed only when
  * debugging visual layout.
+ *
+ * Design notes:
+ *   - start-for-agent (single-agent mode) does NOT set _run_active; the
+ *     driver stays active until auto_stop_minutes (default 30 min) even
+ *     after the synthesized scenario ticks complete. We therefore poll
+ *     for agent events OR enough ticks elapsed, THEN stop the sim
+ *     explicitly instead of waiting for it to self-stop.
+ *   - On prod the simulator may be enabled (cap_in_prod.simulator: True).
+ *     The start-for-agent call returning 200 means the sim is running.
  */
 
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './fixtures/auth.js';
+
+// API-cached auth (mirrors authOnce in sim_run_end_to_end.spec.js).
+// Avoids the /signin form so prod's 5/min rate limit on
+// /api/auth/login doesn't fail this spec when run before
+// sim_run_end_to_end primes the auth cache. The form-driven path is
+// already covered by 1cbb855-A in sim_run_end_to_end.spec.js.
+const _AUTH_USER = process.env.PLAYWRIGHT_USER || 'rambo';
+const _AUTH_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
+let _cachedAuth = null;
+
+async function authOnce(page) {
+  if (!_cachedAuth) {
+    let tok = null;
+    for (const delay of [0, 5000, 15000]) {
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      const resp = await page.request.post('/api/auth/login', {
+        data: { username: _AUTH_USER, password: _AUTH_PASS },
+      });
+      if (resp.ok()) { tok = (await resp.json()).access_token; break; }
+      if (resp.status() !== 429) throw new Error(`authOnce: /api/auth/login ${resp.status()}`);
+    }
+    if (!tok) throw new Error('authOnce: login rate-limited after 3 attempts');
+    _cachedAuth = { token: tok, user_id: _AUTH_USER };
+  }
+  const { token, user_id } = _cachedAuth;
+  await page.goto('/');
+  await page.evaluate(({ tok, usr }) => {
+    sessionStorage.setItem('ramboq_token', tok);
+    sessionStorage.setItem('ramboq_user', JSON.stringify({
+      user_id: usr, username: usr, role: 'admin', display_name: usr,
+    }));
+  }, { tok: token, usr: user_id });
+  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${token}` });
+}
 
 test.describe.serial('Sim agent triggering', () => {
-  test.setTimeout(180_000);  // 3 min — iteration max_minutes=2 plus overhead
+  test.setTimeout(180_000);  // 3 min — scenario run + assertion overhead
 
   test('Run-in-Simulator on a loss agent → agent fires + activity feed surfaces it', async ({ page }) => {
-    await loginAsAdmin(page);
+    await authOnce(page);
 
     // Pick the smallest, most-likely-to-fire loss agent. The
     // synthesizer builds an inline scenario targeting this agent's
@@ -53,37 +95,80 @@ test.describe.serial('Sim agent triggering', () => {
     if (!startRes.ok()) {
       // Holdings-metric agents return 400 with a "not synthesizable"
       // message — that's a known limitation, not a regression.
+      // Simulator gated off on this branch also returns non-ok.
       const body = await startRes.text();
-      console.log(`[skip] start-for-agent rejected: ${startRes.status()} ${body.slice(0, 120)}`);
-      test.skip(true, `synthesizer rejected agent: ${body.slice(0, 120)}`);
+      console.log(`[skip] start-for-agent rejected: ${startRes.status()} ${body.slice(0, 200)}`);
+      test.skip(true, `synthesizer rejected: ${startRes.status()} ${body.slice(0, 120)}`);
       return;
     }
+    console.log('[sim_agent_triggering] start-for-agent returned OK — sim started');
 
-    // Poll status until the sim is no longer active OR we time out.
-    let completed = false;
-    for (let i = 0; i < 90; i++) {  // 90 × 1s = 90s max
-      await new Promise((r) => setTimeout(r, 1000));
-      const s = await page.request.get('/api/simulator/status').then((r) => r.json()).catch(() => ({}));
-      if (s?.active === false && s?.run_active === false) {
-        completed = true;
+    // Poll status until the scenario ticks have advanced enough that the
+    // agent engine has had at least one run_cycle opportunity. The
+    // synthesised scenario for loss-pos-total-static-abs generates ~3-5
+    // ticks; we wait until tick_index >= 2 OR agent events appear.
+    //
+    // NOTE: start-for-agent is NOT iteration mode (_run_active stays
+    // false). The sim won't self-stop at scenario end — it continues
+    // in random-walk mode indefinitely until auto_stop_minutes (default
+    // 30 min). We stop it explicitly after confirming agent events fired.
+    let hasFired = false;
+    for (let i = 0; i < 60; i++) {  // 60 × 1.5s = 90s max
+      await new Promise((r) => setTimeout(r, 1500));
+      const s = await page.request.get('/api/simulator/status')
+        .then((r) => r.json()).catch(() => ({}));
+      const tickIdx = s?.tick_index ?? 0;
+      console.log(`[sim_agent_triggering] poll ${i}: active=${s?.active} tick_index=${tickIdx}`);
+
+      // Check if agent events have already fired (fastest exit).
+      if (tickIdx >= 2) {
+        const evCheck = await page.request.get('/api/simulator/events/recent?limit=20')
+          .then((r) => r.json()).catch(() => []);
+        const matches = (evCheck || []).filter((e) => e.agent_slug === targetSlug);
+        if (matches.length > 0) {
+          hasFired = true;
+          console.log(`[sim_agent_triggering] agent fired at tick ${tickIdx} (${matches.length} event(s))`);
+          break;
+        }
+      }
+
+      // Also exit if the sim self-stopped (e.g. if auto_stop_minutes
+      // is very short or it's iteration mode after all).
+      if (s?.active === false) {
+        console.log('[sim_agent_triggering] sim self-stopped — exiting poll');
         break;
       }
     }
-    expect(completed, 'sim did not complete within 90 s').toBeTruthy();
+
+    // Stop the sim now regardless — prevents lingering sim state
+    // from polluting subsequent tests. Best-effort.
+    await page.request.post('/api/simulator/stop').catch(() => null);
+    console.log('[sim_agent_triggering] sim stopped');
 
     // Assert agent_events row with sim_mode=true for the target agent.
     const evRes = await page.request.get('/api/simulator/events/recent?limit=50');
     expect(evRes.ok()).toBeTruthy();
     const events = await evRes.json();
     const ours = (events || []).filter((e) => e.agent_slug === targetSlug);
+    console.log(`[sim_agent_triggering] agent events for ${targetSlug}: ${ours.length}`);
     expect(ours.length, `expected at least one sim_mode=true event for ${targetSlug}`).toBeGreaterThan(0);
 
     // Visit the workspace + verify the activity feed surfaces the fire.
     await page.goto('/admin/execution?mode=sim');
+    await page.waitForLoadState('domcontentloaded');
+
+    // Wait for SimulatorPanel to hydrate (LogPanel tab row is the marker).
+    const tabRow = page.locator('.log-tab-row');
+    await expect(tabRow).toBeVisible({ timeout: 12_000 });
+
+    // .sim-activity must be visible.
     const activity = page.locator('.sim-activity');
-    await activity.waitFor({ state: 'visible', timeout: 5000 });
+    await expect(activity.first()).toBeVisible({ timeout: 8_000 });
+
     // The feed should include at least one AGENT chip for our slug.
     const agentRow = page.locator('.sim-activity-row.sim-activity-agent', { hasText: targetSlug });
-    await expect(agentRow.first()).toBeVisible({ timeout: 5000 });
+    await expect(agentRow.first()).toBeVisible({ timeout: 8_000 });
+
+    console.log('[sim_agent_triggering] PASS — agent fired + .sim-activity-row visible');
   });
 });
