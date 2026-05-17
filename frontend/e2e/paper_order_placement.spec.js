@@ -38,14 +38,20 @@ let _cachedAuth = null;
 
 async function authOnce(page) {
   if (!_cachedAuth) {
-    let tok = null;
-    for (const delay of [0, 20000, 65000]) {
-      if (delay) await new Promise((r) => setTimeout(r, delay));
-      const resp = await page.request.post('/api/auth/login', {
-        data: { username: _AUTH_USER, password: _AUTH_PASS },
-      });
-      if (resp.ok()) { tok = (await resp.json()).access_token; break; }
-      if (resp.status() !== 429) throw new Error(`authOnce: /api/auth/login ${resp.status()}`);
+    // Allow a pre-acquired token to be injected via env var to avoid
+    // hitting the prod login rate-limit when running multiple times in
+    // quick succession (e.g. re-runs, CI retries).
+    const envToken = process.env.PLAYWRIGHT_AUTH_TOKEN;
+    let tok = envToken || null;
+    if (!tok) {
+      for (const delay of [0, 20000, 65000]) {
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        const resp = await page.request.post('/api/auth/login', {
+          data: { username: _AUTH_USER, password: _AUTH_PASS },
+        });
+        if (resp.ok()) { tok = (await resp.json()).access_token; break; }
+        if (resp.status() !== 429) throw new Error(`authOnce: /api/auth/login ${resp.status()}`);
+      }
     }
     if (!tok) throw new Error('authOnce: login rate-limited');
     _cachedAuth = { token: tok, user_id: _AUTH_USER };
@@ -66,20 +72,26 @@ async function authOnce(page) {
 // to minimise margin impact (PAPER doesn't really use margin, but
 // keeping it deterministic is nice).
 async function pickNiftyOption(page) {
-  // /api/instruments/options/nifty returns the full options chain.
-  // Fall back to a hand-crafted symbol if the endpoint isn't present.
-  const r = await page.request.get('/api/instruments?underlying=NIFTY&kind=opt');
+  // /api/instruments returns the full instrument dump with abbreviated
+  // field names: s=tradingsymbol, e=exchange, t=type (CE/PE/FUT/EQ),
+  // ls=lot_size, u=underlying, x=expiry, k=strike.
+  // The server ignores query-param filters — we filter client-side.
+  const r = await page.request.get('/api/instruments');
   if (r.ok()) {
     const inst = await r.json();
-    const rows = Array.isArray(inst) ? inst : (inst.rows || []);
-    const ces = rows.filter((x) => /CE$/i.test(x.tradingsymbol)).slice(0, 50);
+    // Response shape: {cycle_date, count, items:[{s,e,t,ls,u,x,k}, …]}
+    // Also handle plain array for forward-compat.
+    const items = Array.isArray(inst) ? inst : (inst.items || inst.rows || []);
+    const ces = items
+      .filter((x) => x.e === 'NFO' && x.t === 'CE' && /^NIFTY/i.test(x.u || x.s || ''))
+      .slice(0, 200);
     if (ces.length) {
       // Pick one near the middle of the strike range to avoid extreme OTM.
       const mid = ces[Math.floor(ces.length / 2)];
       return {
-        tradingsymbol: mid.tradingsymbol,
-        exchange:      mid.exchange || 'NFO',
-        lot_size:      mid.lot_size || 50,
+        tradingsymbol: mid.s || mid.tradingsymbol,
+        exchange:      mid.e || mid.exchange || 'NFO',
+        lot_size:      mid.ls || mid.lot_size || 50,
       };
     }
   }
@@ -87,14 +99,14 @@ async function pickNiftyOption(page) {
   const r2 = await page.request.get('/api/options/instruments?underlying=NIFTY');
   if (r2.ok()) {
     const inst = await r2.json();
-    const rows = Array.isArray(inst) ? inst : (inst.rows || []);
-    const ces = rows.filter((x) => /CE$/i.test(x.tradingsymbol || x.symbol || ''));
+    const rows = Array.isArray(inst) ? inst : (inst.items || inst.rows || []);
+    const ces = rows.filter((x) => /CE$/i.test(x.tradingsymbol || x.symbol || x.s || ''));
     if (ces.length) {
       const mid = ces[Math.floor(ces.length / 2)];
       return {
-        tradingsymbol: mid.tradingsymbol || mid.symbol,
-        exchange:      mid.exchange || 'NFO',
-        lot_size:      mid.lot_size || 50,
+        tradingsymbol: mid.tradingsymbol || mid.symbol || mid.s,
+        exchange:      mid.exchange || mid.e || 'NFO',
+        lot_size:      mid.lot_size || mid.ls || 50,
       };
     }
   }
