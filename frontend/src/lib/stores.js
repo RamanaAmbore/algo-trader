@@ -38,8 +38,28 @@ function _readSession() {
   try {
     const token = sessionStorage.getItem('ramboq_token');
     const raw   = sessionStorage.getItem('ramboq_user');
-    const user  = raw ? JSON.parse(raw) : null;
-    if (token && user) {
+    let user    = raw ? JSON.parse(raw) : null;
+    if (token && !user) {
+      // sessionStorage half-cleared (devtools / partial logout / browser
+      // cache hiccup): the token survived but `ramboq_user` is gone.
+      // Rebuild `user` from the JWT's own claims so the layout's
+      // role-check effect doesn't bounce the operator to /signin on
+      // every navbar click. Claims carry sub / role / display_name —
+      // enough to reconstruct what the login response would have stored.
+      const claims = _decodeJwt(token);
+      if (claims) {
+        user = {
+          username:     claims.sub,
+          role:         claims.role,
+          display_name: claims.display_name,
+        };
+        // Re-persist so subsequent reads (and any code that reads
+        // sessionStorage directly) see the rebuilt blob too.
+        try {
+          sessionStorage.setItem('ramboq_user', JSON.stringify(user));
+        } catch { /* quota / privacy mode — non-fatal */ }
+      }
+    } else if (token && user) {
       const claims = _decodeJwt(token);
       if (claims) {
         // JWT wins for role so a stale `ramboq_user` blob can't pin the
