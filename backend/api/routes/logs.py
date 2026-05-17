@@ -36,6 +36,9 @@ class UnifiedLogRow(msgspec.Struct):
               preflight_ok / preflight_block / cancel / postback   (order)
             ∈ agent_fire / agent_match / agent_action_success /
               agent_action_error / agent_skipped / agent_paused     (agent)
+    sim_mode — True when the row came from a simulator run; False
+               for real (live + paper). Surfaced so the UI can tag
+               a row with a [SIM] chip or filter it out entirely.
     """
     id: int
     source: str           # 'order' | 'agent'
@@ -46,6 +49,7 @@ class UnifiedLogRow(msgspec.Struct):
     agent_slug: str | None
     account: str | None
     payload_json: str | None
+    sim_mode: bool
 
 
 _ACCOUNT_RE = re.compile(r'\b([A-Z]{2})\d{4,8}\b')
@@ -75,6 +79,7 @@ class LogsController(Controller):
         kinds: str = "",
         accounts: str = "",
         since: str = "",
+        sim_mode: str = "",
     ) -> list[UnifiedLogRow]:
         """Merged order-event + agent-event stream, newest-first.
 
@@ -84,6 +89,8 @@ class LogsController(Controller):
           accounts — comma-separated account ids; matches row.account or
                      payload_json content; empty = all
           since    — ISO timestamp; only rows newer than this
+          sim_mode — '' (default) returns both; 'true' returns sim-only;
+                     'false' returns real-only (excludes sim).
         """
         from datetime import datetime, timezone
         from sqlalchemy import desc, select, or_, and_
@@ -92,6 +99,16 @@ class LogsController(Controller):
         limit = max(1, min(limit, 200))
         kind_set = {k.strip() for k in kinds.split(",") if k.strip()} if kinds else set()
         acct_set = {a.strip() for a in accounts.split(",") if a.strip()} if accounts else set()
+
+        # sim_mode parsing: '' = no filter (both real + sim), 'true' = sim
+        # only, 'false' = real only. Used by the dashboard agent-activity
+        # panel to suppress fabricated fires during a sim run.
+        sim_filter: bool | None = None
+        if sim_mode.lower() == "true":
+            sim_filter = True
+        elif sim_mode.lower() == "false":
+            sim_filter = False
+
         since_dt = None
         if since:
             try:
@@ -131,6 +148,10 @@ class LogsController(Controller):
             if kind_set:
                 # Map agent event_type to unified kind — same names used here
                 ae_q = ae_q.where(AgentEvent.event_type.in_(kind_set))
+            if sim_filter is True:
+                ae_q = ae_q.where(AgentEvent.sim_mode.is_(True))
+            elif sim_filter is False:
+                ae_q = ae_q.where(AgentEvent.sim_mode.is_(False))
             ae_rows = (await s.execute(ae_q)).all()
 
         # ── build unified rows ────────────────────────────────────────
@@ -153,6 +174,7 @@ class LogsController(Controller):
                 agent_slug=None,
                 account=acct_val,
                 payload_json=mask_p(oe.payload_json),
+                sim_mode=False,   # order events are real-broker only
             ))
 
         for ae, slug in ae_rows:
@@ -177,6 +199,7 @@ class LogsController(Controller):
                 agent_slug=slug,
                 account=mask(acct_raw) if acct_raw else None,
                 payload_json=None,
+                sim_mode=bool(ae.sim_mode),
             ))
 
         # Sort merged list newest-first, cap to limit

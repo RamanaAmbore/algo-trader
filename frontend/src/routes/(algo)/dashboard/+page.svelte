@@ -63,10 +63,13 @@
 
 <!-- 3. Agent activity — recent fires + action outcomes. Scoped to
      agent kinds so order events don't clutter the panel (those live
-     on /orders). -->
+     on /orders). excludeSim filters out fabricated sim fires so the
+     dashboard reflects only real-market activity even when an
+     operator has a sim running in another tab. -->
 <div class="mp-section-label pnl-section-label">Agent activity</div>
 <UnifiedLog
   filter={{ kinds: ['agent_fire', 'agent_action_success', 'agent_action_error'] }}
+  excludeSim={true}
   maxRows={30}
   emptyMessage="No agent fires yet today." />
 

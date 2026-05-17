@@ -7,11 +7,17 @@
    * row format, chip palette, and timestamp style everywhere.
    *
    * Props:
-   *   filter       — { kinds?, accounts?, since? } passed to fetchUnifiedLog
+   *   filter       — { kinds?, accounts?, since?, simMode? } passed to
+   *                  fetchUnifiedLog. simMode=false suppresses simulator
+   *                  rows entirely — what /dashboard uses so a recruiter
+   *                  doesn't see fabricated agent fires during a sim.
    *   pollMs       — polling interval in ms; 0 disables (default 3000)
    *   maxRows      — max rows to fetch+render (default 50)
    *   emptyMessage — text shown when list is empty
    *   heightClass  — Tailwind height class for the scroll container
+   *   excludeSim   — convenience flag; sets filter.simMode = false. When
+   *                  not passed, sim rows are rendered with a [SIM] chip
+   *                  so they're visually disambiguated from real fires.
    */
 
   import { onMount, onDestroy } from 'svelte';
@@ -19,19 +25,27 @@
   import { logTimeIst } from '$lib/stores';
 
   /** @type {{
-   *   filter?:       { kinds?: string[], accounts?: string[], since?: string },
+   *   filter?:       { kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null },
    *   pollMs?:       number,
    *   maxRows?:      number,
    *   emptyMessage?: string,
    *   heightClass?:  string,
+   *   excludeSim?:   boolean,
    * }} */
   let {
-    filter       = /** @type {{ kinds?: string[], accounts?: string[], since?: string }} */ ({}),
+    filter       = /** @type {{ kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null }} */ ({}),
     pollMs       = 3000,
     maxRows      = 50,
     emptyMessage = 'No recent events.',
     heightClass  = 'max-h-48',
+    excludeSim   = false,
   } = $props();
+
+  // Merge excludeSim into the filter — single source of truth for the
+  // sim-filter flag the backend sees.
+  const _effectiveFilter = $derived(
+    excludeSim ? { ...filter, simMode: false } : filter
+  );
 
   let rows    = $state(/** @type {any[]} */ ([]));
   let loading = $state(true);
@@ -42,7 +56,7 @@
 
   async function _fetch() {
     try {
-      const data = await fetchUnifiedLog(filter, maxRows);
+      const data = await fetchUnifiedLog(_effectiveFilter, maxRows);
       rows  = Array.isArray(data) ? data : [];
       error = '';
     } catch (e) {
@@ -96,6 +110,7 @@
         <div class="ul-row">
           <span class="ul-time">{_fmtTs(row.ts)}</span>
           <span class="ul-line">
+            {#if row.sim_mode}<span class="ul-sim" title="From a simulator run, not a real fire">SIM</span>{/if}
             <span class="ul-kind ul-kind-{row.kind}">{row.kind}</span>
             <span class="ul-msg">
               {#if row.order_id}#{row.order_id} · {/if}{#if row.agent_slug}[{row.agent_slug}] · {/if}{row.message ?? ''}
@@ -182,4 +197,19 @@
 
   /* Fallback for any unknown kind */
   .ul-kind:not([class*="ul-kind-"]) { color: #7dd3fc; }
+
+  /* SIM chip — fabricated-data marker so a sim fire never gets
+     mistaken for a real one. Same rose-red palette as the navbar
+     SIMULATOR banner so the eye recognises it instantly. */
+  .ul-sim {
+    color: #fda4af;
+    background: rgba(251, 113, 133, 0.15);
+    border: 1px solid rgba(251, 113, 133, 0.45);
+    padding: 0 0.25rem;
+    border-radius: 2px;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
 </style>

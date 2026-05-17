@@ -105,17 +105,31 @@ function _trimDetail(/** @type {unknown} */ s) {
 /** Translate a fetch failure into a short UI string. Pages render
  *  this verbatim in a small banner — keep it terse (~25-35 chars) so
  *  the layout doesn't shift. Full detail goes to the console via
- *  _logApiError; operators open devtools for the long form. */
+ *  _logApiError; operators open devtools for the long form.
+ *
+ *  Demo mode (anonymous on prod) gets a single soft message regardless
+ *  of underlying status. A recruiter doesn't need to see "Server busy"
+ *  or "Permission denied" — every error reads the same way: "Demo
+ *  mode — feature unavailable". The raw error still goes to
+ *  console.warn for operators inspecting devtools.
+ */
 function _friendlyError(/** @type {number|null} */ status,
                         /** @type {string|null} */ detail) {
   const isAnon = _isAnonymous();
+  if (isAnon) {
+    // 404 typically means "page no longer exists" (e.g. stale bookmark
+    // to a deleted stub) rather than a feature gate — show a clearer
+    // hint than the generic demo banner.
+    if (status === 404) return 'Not available.';
+    return 'Demo mode — feature unavailable.';
+  }
   if (status === 401) {
     if (detail) return _trimDetail(detail);
-    return isAnon ? 'Sign in required.' : 'Session expired.';
+    return 'Session expired.';
   }
   if (status === 403) {
     if (detail) return _trimDetail(detail);
-    return isAnon ? 'Demo: read-only.' : 'Not allowed.';
+    return 'Not allowed.';
   }
   if (status === 404)              return 'Not available.';
   if (status === 429)              return 'Too many requests.';
@@ -653,13 +667,21 @@ export async function uploadPnlCsv(formData) {
 // ── Unified log feed ──────────────────────────────────────────────────
 /**
  * GET /api/logs/unified — merged order-event + agent-event stream.
- * filter: { kinds?: string[], accounts?: string[], since?: string }
+ * filter: {
+ *   kinds?:    string[],
+ *   accounts?: string[],
+ *   since?:    string,
+ *   simMode?:  true | false | null   — true = sim-only, false = real-only,
+ *                                       null/undefined = both (default)
+ * }
  */
 export const fetchUnifiedLog = (filter = {}, limit = 50) => {
   const p = new URLSearchParams({ limit: String(limit) });
   if (filter.kinds?.length)    p.set('kinds',    filter.kinds.join(','));
   if (filter.accounts?.length) p.set('accounts', filter.accounts.join(','));
   if (filter.since)            p.set('since',    filter.since);
+  if (filter.simMode === true)  p.set('sim_mode', 'true');
+  if (filter.simMode === false) p.set('sim_mode', 'false');
   return _get(`/logs/unified?${p}`, { auth: true });
 };
 
