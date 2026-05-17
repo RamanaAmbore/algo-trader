@@ -26,11 +26,22 @@ const DEFAULT_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
 export async function loginAsAdmin(page, opts = {}) {
   const user = opts.user || DEFAULT_USER;
   const pass = opts.pass || DEFAULT_PASS;
-  const r = await page.request.post('/api/auth/login', {
-    data: { username: user, password: pass },
-  });
+  // Auth route is rate-limited; running the full suite serially still
+  // hits the cap with many beforeEach hooks back-to-back. Three tries
+  // with 2-5-10 s backoff covers transient 429s without slowing the
+  // green path materially.
+  let r, lastText = '';
+  for (const delay of [0, 2000, 5000, 10000]) {
+    if (delay) await new Promise((res) => setTimeout(res, delay));
+    r = await page.request.post('/api/auth/login', {
+      data: { username: user, password: pass },
+    });
+    if (r.ok()) break;
+    lastText = await r.text();
+    if (r.status() !== 429) break;  // any non-429 fails immediately
+  }
   if (!r.ok()) {
-    throw new Error(`loginAsAdmin failed: ${r.status()} ${await r.text()}`);
+    throw new Error(`loginAsAdmin failed: ${r.status()} ${lastText}`);
   }
   const j = await r.json();
   // Navigate to the origin first so the sessionStorage write lands
@@ -50,6 +61,13 @@ export async function loginAsAdmin(page, opts = {}) {
     sessionStorage.setItem('ramboq_token', tok);
     sessionStorage.setItem('ramboq_user', JSON.stringify(usr));
   }, { tok: j.access_token, usr: userRecord });
+  // Also attach the JWT to the page's APIRequestContext so any
+  // `page.request.get/post(...)` call from a spec authenticates
+  // without each helper having to thread headers manually. sessionStorage
+  // only feeds the browser; the request context is separate.
+  await page.context().setExtraHTTPHeaders({
+    Authorization: `Bearer ${j.access_token}`,
+  });
   return { user_id: user, token: j.access_token };
 }
 
