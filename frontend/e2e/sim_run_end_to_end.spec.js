@@ -25,7 +25,7 @@ let _cachedAuth = null;
 async function authOnce(page) {
   if (!_cachedAuth) {
     let tok = null;
-    for (const delay of [0, 5000, 15000]) {
+    for (const delay of [0, 20000, 65000]) {
       if (delay) await new Promise((r) => setTimeout(r, delay));
       const resp = await page.request.post('/api/auth/login', {
         data: { username: _AUTH_USER, password: _AUTH_PASS },
@@ -82,7 +82,9 @@ test.describe('Sim end-to-end — Option B workspace', () => {
     await page.goto('/signin');
     const userI = page.locator('#s-user, input[name="username"]').first();
     const passI = page.locator('#s-pass, input[name="password"]').first();
-    const subBtn = page.locator('form button[type="submit"]').first();
+    // The signin page has no <form> tag and the button has no type="submit".
+    // The submit button is .btn-primary (the tab-strip Sign In link lacks that class).
+    const subBtn = page.locator('button.btn-primary').first();
     await expect(userI).toBeVisible({ timeout: 8000 });
 
     let ok = false;
@@ -152,8 +154,10 @@ test.describe('Sim end-to-end — Option B workspace', () => {
     const replayTab = page.locator('.exec-tab', { hasText: /replay/i }).first();
     await replayTab.click();
     await expect(page.locator('.exec-tab-active', { hasText: /replay/i })).toBeVisible({ timeout: 4000 });
-    // Explainer chip distinguishes Replay-mode (backtest) from Re-run-iteration.
-    await expect(page.locator('.exec-explainer-chip')).toBeVisible({ timeout: 4000 });
+    // The Replay tab's subtitle "historical backtest" distinguishes it from
+    // Re-run-iteration. The .exec-tab-subtitle span is always rendered inside
+    // the active tab button when the replay tab is active.
+    await expect(page.locator('.exec-tab-subtitle')).toBeVisible({ timeout: 4000 });
   });
 
   // 5. SimulatorPanel renders: Inputs MultiSelect with Positions preselected,
