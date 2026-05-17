@@ -12,7 +12,7 @@
     fetchSimTicks, fetchAgents,
     fetchChartBatch, fetchAdminLogs,
     fetchSimDefaults, startSimRun,
-    fetchSimOrders, fetchSimIterations,
+    fetchSimOrders, fetchSimIterations, replaySimIteration,
   } from '$lib/api';
   import LogPanel    from '$lib/LogPanel.svelte';
   import Select      from '$lib/Select.svelte';
@@ -588,21 +588,37 @@
   {/if}
 
   <!-- Past simulations — last 5 iteration rows, persisted across page
-       reloads. Lets the operator refer back to previous runs without
-       leaving the workspace. Click a row to open the detail page. -->
+       reloads. Inline Re-run button kicks off a new single-iteration
+       sim with the same regime + seed + agent_ids (deterministic).
+       Slug is clickable for the detail page. -->
   <div class="sim-section-label">Past simulations</div>
   {#if pastIterations.length}
     <table class="sim-summary-grid sim-past-grid">
-      <thead><tr><th>Slug</th><th>Regime</th><th>Started</th><th>End</th><th class="sim-num">Fees</th><th class="sim-num">Net P&amp;L</th></tr></thead>
+      <thead><tr><th>Slug</th><th>Regime</th><th>Started</th><th>End</th><th class="sim-num">Fees</th><th class="sim-num">Net P&amp;L</th><th></th></tr></thead>
       <tbody>
         {#each pastIterations as it (it.id)}
-          <tr class="sim-past-row" onclick={() => window.location.href = `/admin/simulator/iterations/${it.slug}`}>
-            <td class="sim-past-slug">{it.slug}</td>
+          <tr class="sim-past-row">
+            <td class="sim-past-slug">
+              <a href={`/admin/simulator/iterations/${it.slug}`}>{it.slug}</a>
+            </td>
             <td>{it.regime}</td>
             <td>{@html dualTsHtml(it.started_at)}</td>
             <td class="sim-past-end sim-past-end-{it.end_reason || 'pending'}">{it.end_reason ?? 'pending'}</td>
             <td class="sim-num">{it.summary?.total_fees != null ? priceFmt(it.summary.total_fees) : '—'}</td>
             <td class="sim-num">{it.summary?.net_pnl_remaining != null ? priceFmt(it.summary.net_pnl_remaining) : '—'}</td>
+            <td class="sim-past-action">
+              <button class="sim-past-rerun"
+                      disabled={!it.ended_at || status?.active || status?.run_active}
+                      title="Re-run this iteration with the same regime + seed + agent_ids. Deterministic — same fills."
+                      onclick={async () => {
+                        if (!confirm(`Re-run ${it.slug} with seed ${it.seed ?? '(random)'}?`)) return;
+                        try {
+                          await replaySimIteration(it.slug);
+                          note = `Re-running ${it.slug}…`;
+                          await loadHot();
+                        } catch (e) { error = e?.message || 'Re-run failed'; }
+                      }}>▷ Re-run</button>
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -1297,13 +1313,40 @@
     margin-top: 0.3rem;
   }
   .sim-past-row {
-    cursor: pointer;
     transition: background 0.08s;
   }
   .sim-past-row:hover {
     background: rgba(251, 191, 36, 0.06);
   }
-  .sim-past-slug { color: #fbbf24; font-weight: 700; }
+  .sim-past-slug a {
+    color: #fbbf24;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .sim-past-slug a:hover { text-decoration: underline; }
+  /* Inline Re-run action button — kicks off a deterministic re-run of
+     the iteration without leaving the workspace. Disabled when a sim
+     is already active. */
+  .sim-past-action { text-align: right; }
+  .sim-past-rerun {
+    appearance: none;
+    background: rgba(74, 222, 128, 0.10);
+    border: 1px solid rgba(74, 222, 128, 0.40);
+    color: #4ade80;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.2rem 0.55rem;
+    border-radius: 3px;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .sim-past-rerun:hover:not(:disabled) {
+    background: rgba(74, 222, 128, 0.18);
+    border-color: rgba(74, 222, 128, 0.70);
+  }
+  .sim-past-rerun:disabled { opacity: 0.35; cursor: not-allowed; }
   .sim-past-end {
     text-transform: uppercase;
     font-size: 0.54rem;

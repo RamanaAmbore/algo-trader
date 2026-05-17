@@ -23,17 +23,21 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
-# Order matches the navbar dropdown: SIM first (entry into the simulator),
-# then the live-data ladder (PAPER → LIVE → SHADOW), then REPLAY at the
-# bottom as the historical-data diagnostic.
+# Navbar dropdown lists ONLY the persistent master-toggle modes
+# (LIVE / PAPER / SHADOW). SIM and REPLAY are transient workspaces —
+# they live on /admin/execution as tabs and surface as banners under
+# the navbar when active. Mixing transient and persistent modes in
+# one dropdown was the root cause of the "what does REPLAY mean?"
+# confusion. Industry convention (IB TWS, ThinkOrSwim, QuantConnect,
+# NinjaTrader) keeps the mode picker for persistent state and routes
+# sim/backtest to dedicated workspaces.
 #
-# Dev intentionally excludes 'paper' from the selectable list — every
-# broker-hitting action on dev is forced to paper regardless (see
-# _resolve_mode in actions.py), so PAPER is a no-op confirmation. The
-# chip still RESOLVES to 'paper' on dev when neither sim nor replay is
-# running; it's just not a dropdown option.
-_DEV_MODES  = ["sim", "replay"]
-_PROD_MODES = ["sim", "paper", "live", "shadow", "replay"]
+# `_get_current_mode` below still returns 'sim'/'replay' when those
+# drivers are active so the chip auto-flips to a read-only indicator
+# during a run — operators see what's running without it cluttering
+# the picker.
+_DEV_MODES  = ["paper"]
+_PROD_MODES = ["paper", "live", "shadow"]
 
 
 class ExecutionModeResponse(msgspec.Struct):

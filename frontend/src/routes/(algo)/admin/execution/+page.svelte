@@ -1,24 +1,28 @@
 <script>
   // Execution workspace (/admin/execution).
   //
-  // Scope (P2 = B): SIM and REPLAY only. Both modes need a control
-  // surface (scenario picker, Start/Stop, log) that lives nowhere
-  // else. PAPER / LIVE / SHADOW are master-toggle modes — they have
-  // no dedicated workspace; their content lives on /orders (filtered
-  // by mode), /dashboard (P&L), and /agents (fires). Picking PAPER /
-  // LIVE / SHADOW from the navbar flips the master toggle without
-  // navigating; if the operator deep-links to /admin/execution while
-  // in one of those modes, we render a brief explainer.
+  // Option B model (post-2026-05-17): this page is a workspace,
+  // not a mode picker. Two tabs at the top — [Simulator] [Replay] —
+  // each rendering its respective panel. The current master mode
+  // (LIVE / PAPER / SHADOW) shows as a read-only chip in the header
+  // for context; operators change it via the navbar dropdown.
   //
-  // Mode source of truth: the global `executionMode` store driven by
-  // the navbar dropdown. The internal mode dropdown that used to live
-  // here was removed (P1).
+  // Why this split:
+  //   - SIM and REPLAY are transient workspaces (the driver starts
+  //     and stops; no persistent flag changes).
+  //   - LIVE / PAPER / SHADOW are persistent master toggles that
+  //     affect every broker-hitting action across the platform.
+  //   - Mixing the two in one dropdown was confusing (the "what
+  //     does REPLAY in the navbar mean?" complaint).
+  //
+  // Industry convention (IB TWS, ThinkOrSwim, QuantConnect, Lean,
+  // NinjaTrader) — same split. Mode picker for persistent state;
+  // dedicated workspaces for sim/backtest.
 
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore, clientTimestamp, executionMode } from '$lib/stores';
-  import { setExecutionMode } from '$lib/api';
   import InfoHint       from '$lib/InfoHint.svelte';
   import SimulatorPanel from '$lib/execution/SimulatorPanel.svelte';
   import ReplayPanel    from '$lib/execution/ReplayPanel.svelte';
@@ -32,18 +36,28 @@
   };
 
   const mode = $derived($executionMode);
-  const meta = $derived(MODE_META[mode] || MODE_META.sim);
+  const meta = $derived(MODE_META[mode] || MODE_META.live);
 
-  onMount(async () => {
+  // Active tab — sim or replay. Seeded from ?tab= or ?mode=
+  // (backward-compat for old SIM/REPLAY dropdown navigations).
+  let tab = $state(/** @type {'sim'|'replay'} */ ('sim'));
+
+  onMount(() => {
     const r = $authStore.user?.role;
     if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
-    // Seed the store from ?mode= so deep-links work.
-    const param = page.url.searchParams.get('mode');
-    const valid = ['sim', 'replay', 'paper', 'shadow', 'live'];
-    if (param && valid.includes(param)) {
-      try { await setExecutionMode(param); } catch (_) { executionMode.set(/** @type {any} */ (param)); }
-    }
+    const params = page.url.searchParams;
+    const want = params.get('tab') || params.get('mode');
+    if (want === 'sim' || want === 'replay') tab = want;
   });
+
+  function pickTab(/** @type {'sim'|'replay'} */ t) {
+    tab = t;
+    // Update URL so deep-links / refresh stay on the same tab.
+    const url = new URL(page.url);
+    url.searchParams.set('tab', t);
+    url.searchParams.delete('mode');
+    goto(url.pathname + url.search, { replaceState: true, noScroll: true });
+  }
 </script>
 
 <svelte:head><title>Execution | RamboQuant Analytics</title></svelte:head>
@@ -52,58 +66,31 @@
   <div class="exec-header-left">
     <h1 class="algo-page-title">Execution</h1>
     <span class="exec-mode-pill"
+          title="Master mode — change from the navbar dropdown"
           style="color:{meta.color}; background:{meta.bg}; border-color:{meta.border}">
       {meta.label}
     </span>
-    <InfoHint popup text="The execution workspace hosts the two modes that need a control surface: <b>SIM</b> (scenario picker, iteration form, charts) and <b>REPLAY</b> (historical candle backtest). PAPER · LIVE · SHADOW are master-toggle modes — switch from the navbar; their order log lives at /orders, P&L at /dashboard." />
+    <InfoHint popup text="Workspace for the two transient modes: <b>Simulator</b> (fabricated, scenario-driven) and <b>Replay</b> (historical-data backtest). The chip beside the title shows your current persistent master mode (PAPER / LIVE / SHADOW) — change it from the navbar." />
   </div>
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 
-{#if mode === 'sim'}
+<div class="exec-tabs" role="tablist" aria-label="Execution workspace">
+  <button class="exec-tab" class:exec-tab-active={tab === 'sim'}
+          role="tab" aria-selected={tab === 'sim'} onclick={() => pickTab('sim')}>
+    Simulator
+  </button>
+  <button class="exec-tab" class:exec-tab-active={tab === 'replay'}
+          role="tab" aria-selected={tab === 'replay'} onclick={() => pickTab('replay')}>
+    Replay
+    <span class="exec-tab-subtitle">historical backtest</span>
+  </button>
+</div>
+
+{#if tab === 'sim'}
   <SimulatorPanel />
-{:else if mode === 'replay'}
-  <!-- Replay = mode-4 historical backtest. Real Kite OHLCV candles
-       fed through the agent engine at accelerated speed. NOT the
-       same as "re-running a past sim iteration" — that's the
-       Re-run button on /admin/simulator/iterations/<slug>. -->
-  <div class="exec-explainer-chip">
-    <span class="exec-explainer-label">Replay mode</span>
-    <span class="exec-explainer-sep">·</span>
-    <span class="exec-explainer-body">
-      Historical-data backtest. To re-run a past simulator iteration
-      with the same seed, go to
-      <a href="/admin/simulator/iterations">/admin/simulator/iterations</a>
-      and pick a row → <b>Re-run iteration</b>.
-    </span>
-  </div>
+{:else if tab === 'replay'}
   <ReplayPanel />
-{:else}
-  <!-- PAPER / LIVE / SHADOW have no dedicated workspace. -->
-  <div class="exec-info">
-    <h2 class="exec-info-title">
-      <span class="exec-mode-pill"
-            style="color:{meta.color}; background:{meta.bg}; border-color:{meta.border}">
-        {meta.label}
-      </span>
-      mode is master-toggle only
-    </h2>
-    <p class="exec-info-body">
-      {#if mode === 'paper'}Every broker-hitting action lands as a paper <code>AlgoOrder</code> row.{/if}
-      {#if mode === 'shadow'}Orders are validated via Kite <code>basket_margin</code> but never placed.{/if}
-      {#if mode === 'live'}Every action hits the real Kite broker.{/if}
-      There is no dedicated workspace for this mode — the relevant surfaces live where the data lives.
-    </p>
-    <ul class="exec-info-links">
-      <li><a href="/orders">/orders</a> — order log filtered to <code>mode={mode}</code></li>
-      <li><a href="/dashboard">/dashboard</a> — P&amp;L analysis · summary grids · agent activity</li>
-      <li><a href="/agents">/agents</a> — recent agent fires</li>
-    </ul>
-    <p class="exec-info-hint">
-      Switch to <a href="/admin/execution?mode=sim">SIM</a> or
-      <a href="/admin/execution?mode=replay">REPLAY</a> for a workspace.
-    </p>
-  </div>
 {/if}
 
 <style>
@@ -136,6 +123,7 @@
     font-size: 0.6rem;
     font-weight: 800;
     letter-spacing: 0.1em;
+    cursor: help;
   }
   .algo-ts {
     font-family: ui-monospace, monospace;
@@ -143,74 +131,45 @@
     color: #7e97b8;
     margin-left: auto;
   }
-  .exec-info {
-    padding: 0.85rem 1rem;
-    background: linear-gradient(180deg, rgba(20,30,55,0.65) 0%, rgba(13,21,38,0.65) 100%);
-    border: 1px solid rgba(251,191,36,0.18);
-    border-left: 3px solid #fbbf24;
-    border-radius: 4px;
+  /* Tab strip — [Simulator] [Replay]. Active tab carries an amber
+     bottom border so the visual reads as a section header for the
+     workspace below, not a dropdown trigger. */
+  .exec-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0.75rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
+  }
+  .exec-tab {
+    appearance: none;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 0.5rem 1rem;
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
-    color: #c8d8f0;
-  }
-  .exec-info-title {
-    font-size: 0.7rem;
-    font-weight: 700;
-    color: #fde68a;
-    margin-bottom: 0.45rem;
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-  }
-  .exec-info-body { line-height: 1.4; margin-bottom: 0.6rem; }
-  .exec-info-body code {
-    color: #fde68a;
-    background: rgba(251,191,36,0.10);
-    padding: 0 0.25rem;
-    border-radius: 2px;
-  }
-  .exec-info-links {
-    list-style: none;
-    padding: 0;
-    margin: 0.5rem 0;
-  }
-  .exec-info-links li { padding: 0.15rem 0; }
-  .exec-info-links a { color: #7dd3fc; text-decoration: none; font-weight: 700; }
-  .exec-info-links a:hover { color: #fbbf24; text-decoration: underline; }
-  .exec-info-hint {
-    font-style: italic;
-    color: #7e97b8;
-    margin-top: 0.6rem;
-  }
-  .exec-info-hint a { color: #fbbf24; text-decoration: underline; }
-  /* Explainer chip on /admin/execution?mode=replay — disambiguates
-     "Replay mode" (mode-4 historical backtest) from "Re-run an
-     iteration" (deterministic sim playback). The two share the
-     word 'replay' colloquially and operators routinely confuse
-     them. Chip is muted so it doesn't compete with the ReplayPanel
-     beneath it. */
-  .exec-explainer-chip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.45rem;
-    padding: 0.4rem 0.65rem;
-    margin-bottom: 0.55rem;
-    background: rgba(74, 222, 128, 0.08);
-    border: 1px solid rgba(74, 222, 128, 0.25);
-    border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
-    color: #c8d8f0;
-  }
-  .exec-explainer-label {
-    color: #4ade80;
     font-weight: 700;
     letter-spacing: 0.05em;
+    color: #7e97b8;
+    cursor: pointer;
     text-transform: uppercase;
-    font-size: 0.55rem;
+    transition: color 0.1s, border-color 0.1s;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    margin-bottom: -1px;
   }
-  .exec-explainer-sep { color: rgba(74, 222, 128, 0.5); }
-  .exec-explainer-body a { color: #fde68a; text-decoration: underline; }
-  .exec-explainer-body a:hover { color: #fbbf24; }
+  .exec-tab:hover { color: #c8d8f0; }
+  .exec-tab-active {
+    color: #fbbf24;
+    border-bottom-color: #fbbf24;
+  }
+  .exec-tab-subtitle {
+    font-size: 0.55rem;
+    font-weight: 500;
+    color: #7e97b8;
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
+  .exec-tab-active .exec-tab-subtitle { color: #fde68a; }
 </style>
