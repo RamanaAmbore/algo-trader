@@ -24,7 +24,7 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 _DEV_MODES  = ["sim", "replay", "paper"]
-_PROD_MODES = ["replay", "paper", "shadow", "live"]
+_PROD_MODES = ["sim", "replay", "paper", "shadow", "live"]
 
 
 class ExecutionModeResponse(msgspec.Struct):
@@ -49,14 +49,14 @@ def _get_current_mode(is_prod: bool) -> str:
     except Exception:
         pass
 
-    # Check sim driver (dev only).
-    if not is_prod:
-        try:
-            from backend.api.algo.sim.driver import get_driver
-            if get_driver().active:
-                return "sim"
-        except Exception:
-            pass
+    # Check sim driver. Available on both branches now that sim is a
+    # navbar mode option on prod too.
+    try:
+        from backend.api.algo.sim.driver import get_driver
+        if get_driver().active:
+            return "sim"
+    except Exception:
+        pass
 
     if not is_prod:
         # Dev always forces paper regardless of the master toggle.

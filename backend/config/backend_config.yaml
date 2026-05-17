@@ -38,8 +38,8 @@ cap_in_dev:
   replay:           True   # /api/replay backtest engine (dev default: on)
 
 cap_in_prod:
-  simulator:        False  # /api/simulator market simulator (prod default: off — never run
-                           # fabricated market data in production)
+  simulator:        True   # /api/simulator market simulator — opt-in via navbar SIM mode.
+                           # Sim writes mode='sim' AlgoOrder rows only; real broker state untouched.
   replay:           True   # /api/replay backtest engine (prod: on — uses historical data, no risk)
   shadow:           True   # /api/shadow shadow mode (prod: on — logs without executing)
 
