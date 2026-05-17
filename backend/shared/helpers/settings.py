@@ -293,6 +293,25 @@ async def seed_settings() -> None:
                 if changed:
                     updated_defaults += 1
 
+        # Ensure execution.paper_trading_mode exists with value 'false'
+        # (LIVE) on first boot. This is option B of the "LIVE as default"
+        # change — persisting the default so a fresh install lands in
+        # LIVE without losing the in-code get_bool() fallback of True
+        # (PAPER, fail-safe) for the case where the row gets deleted
+        # mid-run. Operator's later toggles via /api/admin/execution/mode
+        # are preserved (we only insert when missing).
+        if "execution.paper_trading_mode" not in existing_by_key:
+            session.add(Setting(
+                category="execution",
+                key="execution.paper_trading_mode",
+                value_type="bool",
+                value="false",
+                default_value="false",
+                description=("Owned by /api/admin/execution/mode (navbar chip). "
+                             "Seeded false (LIVE) on first boot; toggling to "
+                             "true switches to PAPER."),
+            ))
+
         # Prune rows whose keys are no longer in the SEEDS list — the code
         # is the source of truth for what settings exist. Custom tokens on
         # the Tokens page have their own lifecycle; this is specifically

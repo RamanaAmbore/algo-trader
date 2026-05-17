@@ -174,10 +174,11 @@
       return;
     }
     if (mode === 'sim') {
-      // Sim is transient — the driver is started from /admin/simulator
-      // with a scenario + seed + agent_ids. Just take the operator there;
-      // no persisted mode flip until they actually press Start.
-      goto('/admin/simulator');
+      // Sim is transient — driver is started from /admin/execution's
+      // Simulator panel. Skip the /admin/simulator stub redirect; that
+      // two-step navigation was racing the auth check and bouncing the
+      // operator to /signin.
+      goto('/admin/execution?mode=sim');
       return;
     }
     await _commitMode(mode);
@@ -369,11 +370,11 @@
         {#if $authStore.user && allowedModes.length > 0}
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
-                    data-mode={$executionMode ?? 'paper'}
+                    data-mode={$executionMode ?? 'live'}
                     onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
-              {($executionMode ?? 'paper').toUpperCase()}
+              {($executionMode ?? 'live').toUpperCase()}
               <svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="mode-trigger-caret">
                 <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5"
                       stroke-linecap="round" stroke-linejoin="round"/>
@@ -453,11 +454,11 @@
         {#if $authStore.user && allowedModes.length > 0}
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
-                    data-mode={$executionMode ?? 'paper'}
+                    data-mode={$executionMode ?? 'live'}
                     onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
-              {($executionMode ?? 'paper').toUpperCase()}
+              {($executionMode ?? 'live').toUpperCase()}
               <svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="mode-trigger-caret">
                 <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5"
                       stroke-linecap="round" stroke-linejoin="round"/>

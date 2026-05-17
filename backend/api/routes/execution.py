@@ -23,8 +23,11 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
-_DEV_MODES  = ["sim", "replay", "paper"]
-_PROD_MODES = ["sim", "replay", "paper", "shadow", "live"]
+# Order matches the navbar dropdown: SIM first (entry into the simulator),
+# then the live-data ladder (PAPER → LIVE → SHADOW), then REPLAY at the
+# bottom as the historical-data diagnostic.
+_DEV_MODES  = ["sim", "paper", "replay"]
+_PROD_MODES = ["sim", "paper", "live", "shadow", "replay"]
 
 
 class ExecutionModeResponse(msgspec.Struct):

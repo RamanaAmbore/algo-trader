@@ -2,6 +2,7 @@
   import { onMount, getContext } from 'svelte';
   import MarketPulse from '$lib/MarketPulse.svelte';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
+  import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { clientTimestamp } from '$lib/stores';
 
@@ -37,11 +38,19 @@
 <!-- Page header -->
 <div class="page-header">
   <h1 class="algo-page-title">Dashboard</h1>
-  <InfoHint popup text="Admin dashboard: real Kite holdings, positions, funds (account-scoped). P&amp;L Analysis below shows realised vs unrealised breakdown by symbol." />
+  <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 
-<!-- Performance section — Funds + Positions Summary + Holdings Summary (no Symbols grid) -->
+<!-- 1. P&L Analysis — realised + unrealised breakdown by symbol. Reads
+     the live broker book, so it answers "where am I making/losing money"
+     before showing aggregate balances below. -->
+<div class="mp-section-label pnl-section-label">P&amp;L Analysis</div>
+<PnlAnalysis />
+
+<!-- 2. Summary grids — Funds + Positions Summary + Holdings Summary
+     (Symbols grid intentionally off; the per-symbol detail view lives
+     on /pulse and /performance). -->
 <MarketPulse
   title="Performance"
   enableWatchlists={false}
@@ -52,9 +61,14 @@
   showFunds={true}
   showSymbolsGrid={false} />
 
-<!-- P&L Analysis section -->
-<div class="mp-section-label pnl-section-label">P&amp;L Analysis</div>
-<PnlAnalysis />
+<!-- 3. Agent activity — recent fires + action outcomes. Scoped to
+     agent kinds so order events don't clutter the panel (those live
+     on /orders). -->
+<div class="mp-section-label pnl-section-label">Agent activity</div>
+<UnifiedLog
+  filter={{ kinds: ['agent_fire', 'agent_action_success', 'agent_action_error'] }}
+  maxRows={30}
+  emptyMessage="No agent fires yet today." />
 
 <style>
   .algo-page-title {
