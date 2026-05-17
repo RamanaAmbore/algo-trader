@@ -12,6 +12,7 @@
     fetchSimTicks, fetchAgents,
     fetchChartBatch, fetchAdminLogs,
     fetchSimDefaults, startSimRun,
+    fetchSimOrders, fetchSimIterations,
   } from '$lib/api';
   import LogPanel    from '$lib/LogPanel.svelte';
   import Select      from '$lib/Select.svelte';
@@ -24,6 +25,12 @@
   let status    = $state(/** @type {any} */ ({}));
   let events    = $state(/** @type {any[]} */ ([]));
   let agents    = $state(/** @type {any[]} */ ([]));
+  // Sim-mode AlgoOrder rows + past iteration summaries. Both poll on
+  // the same cadence as `events` so the activity feed and past-runs
+  // panel stay reactive while sim is running AND keep showing the
+  // last run's history when the driver is idle.
+  let simOrders     = $state(/** @type {any[]} */ ([]));
+  let pastIterations = $state(/** @type {any[]} */ ([]));
   let error     = $state('');
   let note      = $state('');
   let pickedSlug = $state('');
@@ -103,11 +110,20 @@
 
   async function loadHot() {
     try {
-      const [stat, ev] = await Promise.all([
-        fetchSimStatus(), fetchSimEvents(100),
+      // Parallel fetch — status, agent events, sim orders, past
+      // iterations. Past iterations + sim orders persist across
+      // sim runs so the workspace never looks "empty" between runs
+      // (operator can always refer to previous activity).
+      const [stat, ev, ord, iters] = await Promise.all([
+        fetchSimStatus(),
+        fetchSimEvents(50),
+        fetchSimOrders(50).catch(() => []),
+        fetchSimIterations(null, 5).catch(() => []),
       ]);
       status = stat;
-      events = ev;
+      events = Array.isArray(ev) ? ev : [];
+      simOrders = Array.isArray(ord) ? ord : [];
+      pastIterations = Array.isArray(iters) ? iters : [];
       // Fetch a single batch of per-underlying chart histories rather
       // than one PriceChart self-polling per name. Underlyings are
       // typically 1-3 names (NIFTY / BANKNIFTY / FINNIFTY) so this is
@@ -125,6 +141,38 @@
       }
     } catch (e) { error = e.message; }
   }
+
+  // Merged activity feed — agent events + sim orders, newest first.
+  // Used by the Live Activity panel above the underlying charts.
+  // Industry pattern: QuantConnect Live Log, TradingView List of
+  // Trades, NinjaTrader Strategy Analyzer — every meaningful signal
+  // surfaced in one place adjacent to the price chart.
+  const activityFeed = $derived.by(() => {
+    const rows = [];
+    for (const e of (events || [])) {
+      rows.push({
+        ts: e.timestamp,
+        kind: 'agent',
+        type: e.event_type,
+        slug: e.agent_slug,
+        detail: e.detail || e.trigger_condition || '',
+      });
+    }
+    for (const o of (simOrders || [])) {
+      rows.push({
+        ts: o.created_at,
+        kind: 'order',
+        side: o.transaction_type,
+        symbol: o.symbol,
+        qty: o.quantity,
+        price: o.fill_price ?? o.initial_price,
+        status: o.status,
+        detail: o.detail || '',
+      });
+    }
+    rows.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+    return rows.slice(0, 30);
+  });
 
   async function loadStatic() {
     try {
@@ -437,12 +485,11 @@
     </div>
   {/if}
 
-  <!-- Indices snapshot — compact "one chart for indices" line. Shows
-       each underlying's spot + Δ% in a single row so the operator sees
-       NIFTY / BANKNIFTY / FINNIFTY at a glance without three separate
-       full charts for the index roll-up. -->
+  <!-- Indices snapshot — always rendered. Compact name·spot·Δ%
+       pill row. Falls back to a placeholder when no underlyings are
+       seeded yet so the operator sees the structure even pre-run. -->
+  <div class="sim-section-label">Indices</div>
   {#if indicesSnapshot.length}
-    <div class="sim-section-label">Indices</div>
     <div class="sim-indices-row">
       {#each indicesSnapshot as ix (ix.name)}
         <span class="sim-index-pill" class:up={ix.pct >= 0} class:down={ix.pct < 0}>
@@ -452,14 +499,41 @@
         </span>
       {/each}
     </div>
+  {:else}
+    <div class="sim-empty">No underlyings seeded. Start a sim to populate.</div>
   {/if}
 
-  <!-- Per-underlying charts — one chart per NIFTY / BANKNIFTY /
-       FINNIFTY. Drops the previous per-contract chart grid (one chart
-       per option / future) since options reprice off spot via BS, so
-       individual contract charts are derivable from these. -->
+  <!-- Live activity — last 30 agent fires + sim orders, newest first.
+       Pattern borrowed from QuantConnect Live Log / TradingView List
+       of Trades / NinjaTrader Strategy Analyzer: a prominent stream
+       adjacent to the chart so signal + order timing is glanceable.
+       Persists across sim runs so the operator can always refer back
+       to recent activity even when no sim is currently running. -->
+  <div class="sim-section-label">Live activity</div>
+  {#if activityFeed.length}
+    <div class="sim-activity">
+      {#each activityFeed as row, i (row.kind + i + row.ts)}
+        <div class="sim-activity-row sim-activity-{row.kind}">
+          <span class="sim-activity-ts">{@html dualTsHtml(row.ts)}</span>
+          {#if row.kind === 'agent'}
+            <span class="sim-activity-chip sim-activity-chip-agent">AGENT</span>
+            <span class="sim-activity-slug">{row.slug || ''}</span>
+            <span class="sim-activity-detail">{row.type || ''} · {row.detail}</span>
+          {:else}
+            <span class="sim-activity-chip sim-activity-chip-order">ORDER</span>
+            <span class="sim-activity-slug">{row.side} {qtyFmt(row.qty)} {row.symbol}</span>
+            <span class="sim-activity-detail">@₹{priceFmt(row.price)} · {row.status} {row.detail ? '· ' + row.detail : ''}</span>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {:else}
+    <div class="sim-empty">No agent fires or orders yet. Start a sim to populate.</div>
+  {/if}
+
+  <!-- Per-underlying charts — always section-labelled. -->
+  <div class="sim-section-label">Underlyings</div>
   {#if underlyingNames.length}
-    <div class="sim-section-label">Underlyings</div>
     <div class="sim-charts">
       {#each underlyingNames as name (name)}
         <PriceChart mode="sim" symbol={name} height={180}
@@ -467,13 +541,13 @@
                     {chartsBySymbol} />
       {/each}
     </div>
+  {:else}
+    <div class="sim-empty">No underlying charts yet. Charts populate when sim positions/holdings have parseable F&amp;O symbols.</div>
   {/if}
 
-  <!-- Positions summary — per-account + TOTAL P&L grid matching the
-       /dashboard summary format. Always rendered when sim has any
-       positions seeded. -->
+  <!-- Positions summary — always rendered with placeholder. -->
+  <div class="sim-section-label">Positions summary</div>
   {#if summaryPositions.length}
-    <div class="sim-section-label">Positions summary</div>
     <table class="sim-summary-grid">
       <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
       <tbody>
@@ -487,6 +561,8 @@
         {/each}
       </tbody>
     </table>
+  {:else}
+    <div class="sim-empty">No positions seeded.</div>
   {/if}
 
   <!-- Holdings summary — same shape, conditional on the operator
@@ -509,6 +585,31 @@
         {/each}
       </tbody>
     </table>
+  {/if}
+
+  <!-- Past simulations — last 5 iteration rows, persisted across page
+       reloads. Lets the operator refer back to previous runs without
+       leaving the workspace. Click a row to open the detail page. -->
+  <div class="sim-section-label">Past simulations</div>
+  {#if pastIterations.length}
+    <table class="sim-summary-grid sim-past-grid">
+      <thead><tr><th>Slug</th><th>Regime</th><th>Started</th><th>End</th><th class="sim-num">Fees</th><th class="sim-num">Net P&amp;L</th></tr></thead>
+      <tbody>
+        {#each pastIterations as it (it.id)}
+          <tr class="sim-past-row" onclick={() => window.location.href = `/admin/simulator/iterations/${it.slug}`}>
+            <td class="sim-past-slug">{it.slug}</td>
+            <td>{it.regime}</td>
+            <td>{@html dualTsHtml(it.started_at)}</td>
+            <td class="sim-past-end sim-past-end-{it.end_reason || 'pending'}">{it.end_reason ?? 'pending'}</td>
+            <td class="sim-num">{it.summary?.total_fees != null ? priceFmt(it.summary.total_fees) : '—'}</td>
+            <td class="sim-num">{it.summary?.net_pnl_remaining != null ? priceFmt(it.summary.net_pnl_remaining) : '—'}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <a class="sim-past-all" href="/admin/simulator/iterations">All past iterations →</a>
+  {:else}
+    <div class="sim-empty">No past simulations yet.</div>
   {/if}
 </div>
 
@@ -1117,6 +1218,113 @@
     color: #fde68a;
     border-top: 1px solid rgba(251,191,36,0.25);
   }
+  /* Empty placeholders so every section header has SOMETHING under it
+     even when there's no live data — operator sees structure, not a
+     missing panel. */
+  .sim-empty {
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    color: #7e97b8;
+    font-style: italic;
+    padding: 0.4rem 0.65rem;
+    background: rgba(126, 151, 184, 0.05);
+    border: 1px dashed rgba(126, 151, 184, 0.25);
+    border-radius: 3px;
+  }
+  /* Live activity feed — agent fires + sim orders interleaved newest-
+     first. Industry pattern (QuantConnect Live Log, TradingView
+     List of Trades) — visible adjacent to the chart, not buried in
+     a tab. Persists across sim runs. */
+  .sim-activity {
+    max-height: 14rem;
+    overflow-y: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    background: rgba(13, 21, 38, 0.4);
+    border: 1px solid rgba(251, 191, 36, 0.15);
+    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+  }
+  .sim-activity-row {
+    display: grid;
+    grid-template-columns: auto auto auto 1fr;
+    gap: 0.5rem;
+    align-items: baseline;
+    padding: 0.2rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .sim-activity-row:last-child { border-bottom: none; }
+  .sim-activity-ts {
+    color: #7e97b8;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.55rem;
+    white-space: nowrap;
+  }
+  .sim-activity-chip {
+    display: inline-block;
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-align: center;
+    min-width: 3rem;
+  }
+  .sim-activity-chip-agent {
+    color: #e879f9;
+    background: rgba(232, 121, 249, 0.10);
+    border: 1px solid rgba(232, 121, 249, 0.35);
+  }
+  .sim-activity-chip-order {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+  }
+  .sim-activity-slug {
+    color: #fde68a;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .sim-activity-detail {
+    color: #c8d8f0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Past simulations table — same visual lineage as sim-summary-grid
+     but rows are clickable to drill into /admin/simulator/iterations/<slug>. */
+  .sim-past-grid {
+    margin-top: 0.3rem;
+  }
+  .sim-past-row {
+    cursor: pointer;
+    transition: background 0.08s;
+  }
+  .sim-past-row:hover {
+    background: rgba(251, 191, 36, 0.06);
+  }
+  .sim-past-slug { color: #fbbf24; font-weight: 700; }
+  .sim-past-end {
+    text-transform: uppercase;
+    font-size: 0.54rem;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+  }
+  .sim-past-end-book_empty,
+  .sim-past-end-scenario_complete { color: #4ade80; }
+  .sim-past-end-time_limit,
+  .sim-past-end-stopped           { color: #fbbf24; }
+  .sim-past-end-failed            { color: #f87171; }
+  .sim-past-end-pending           { color: #7dd3fc; }
+  .sim-past-all {
+    display: inline-block;
+    margin-top: 0.35rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #7dd3fc;
+    text-decoration: none;
+  }
+  .sim-past-all:hover { color: #fbbf24; }
   .custom-pos-header {
     display: flex;
     align-items: center;

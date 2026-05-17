@@ -39,22 +39,42 @@ export async function loginAsAdmin(page, opts = {}) {
     // The form fields are <input type="text"> for username and
     // <input type="password"> for password. Selector text matches
     // the labels on the form.
-    await page.locator('input[name="username"], input#username').first().fill(user);
-    await page.locator('input[name="password"], input#password').first().fill(pass);
-    await page.locator('button:has-text("Sign In"), button[type="submit"]').first().click();
+    await page.locator('input[name="username"], input#username, input#s-user').first().fill(user);
+    await page.locator('input[name="password"], input#password, input#s-pass').first().fill(pass);
+    // Use .btn-primary to target the form's own submit button.
+    // The nav bar also has buttons with type="submit" and text "Sign In" that
+    // come earlier in the DOM and match the generic selectors — .btn-primary
+    // is the correct class for the form's Sign In button on this page.
+    await page.locator('button.btn-primary, button[type="submit"].btn-primary').first().click();
 
     // Wait for either redirect away from /signin (success) or for an
     // error banner to render. The signin page navigates to /dashboard
     // on successful login for admin/designated roles.
     try {
-      await page.waitForURL(/^(?!.*\/signin).*$/, { timeout: 8000 });
+      await page.waitForURL(/^(?!.*\/signin).*$/, { timeout: 15000 });
+      // The SvelteKit auth store writes ramboq_token to sessionStorage
+      // synchronously in the onMount / auth callback after the API response.
+      // Poll for the token to appear rather than blocking on page load
+      // (which can take 30+ s on prod's heavy dashboard).
+      for (let i = 0; i < 10; i++) {
+        const hasTok = await page.evaluate(() => !!sessionStorage.getItem('ramboq_token'));
+        if (hasTok) break;
+        await new Promise((res) => setTimeout(res, 300));
+      }
       break;
     } catch (_) {
       // Still on /signin — check for an error banner or rate-limit text.
-      const banner = await page.locator('.error, .signin-error, [role="alert"]').first().textContent().catch(() => '');
+      // Use a short timeout so this doesn't block for the full test duration.
+      // .pub-banner-error is the prod /signin page's error div class.
+      const banner = await page.locator('.pub-banner-error, .error, .signin-error, [role="alert"]').first()
+        .textContent({ timeout: 2000 }).catch(() => '');
       lastError = banner || `signin did not redirect after ${user}`;
-      if (!/(rate|429|too many)/i.test(lastError)) {
-        // Non-rate error — fail fast.
+      // On prod, anonymous sessions receive "Demo mode — feature unavailable."
+      // when the backend returns 429 (rate-limited), because api.js _friendlyError
+      // masks any non-404 error as the demo message for unauthenticated visitors.
+      // Treat the demo-mode banner as a rate-limit indicator so we retry.
+      if (!/(rate|429|too many|demo mode|unavailable)/i.test(lastError)) {
+        // Non-rate, non-demo error (e.g. wrong credentials) — fail fast.
         break;
       }
     }
