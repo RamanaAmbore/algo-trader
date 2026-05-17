@@ -38,6 +38,74 @@ def _maybe_reset_v2_state(today):
         _V2_LAST_ALERT.clear()
 
 
+# Max samples per (section, scope) bucket in alert_state['pnl_history'].
+# At a 5-minute background refresh that's 200 × 5 = 1000 minutes of
+# history per bucket — well past any rate window we ship. At the 2-second
+# simulator tick it's ~400 seconds (6+ minutes), comfortably above the
+# default 10-minute rate window for fabricated sim runs.
+_PNL_HISTORY_CAP = 200
+
+
+def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings) -> None:
+    """
+    Append the current per-(section, scope) P&L snapshot to
+    `alert_state['pnl_history']` so the rate evaluator has something
+    to compute ΔP&L/min against.
+
+    The retired check-and-alert engine used to maintain this dict; when
+    it was replaced by the v2 grammar engine, the writer was lost.
+    The reader (V2Context._rate_window_samples) stayed in place but
+    found an empty list and returned None — every rate-metric agent
+    silently never fired.
+
+    Key shape matches V2Context's lookup: `(section, scope)` where
+    section is 'holdings' / 'positions' and scope is the per-row
+    account id (incl. 'TOTAL' for the aggregate row).
+
+    Trimming: each bucket caps at _PNL_HISTORY_CAP entries (oldest
+    dropped). Session reset: when `alert_state['session_date']` no
+    longer matches `now.date()`, the whole pnl_history is wiped so
+    yesterday's tail doesn't leak into today's rate window.
+    """
+    today = now.date() if hasattr(now, 'date') else None
+    last_date = alert_state.get('session_date')
+    if today and last_date != today:
+        alert_state['pnl_history'] = {}
+        alert_state['session_date'] = today
+    hist_map = alert_state.setdefault('pnl_history', {})
+
+    def _append(section: str, df):
+        if df is None or getattr(df, 'empty', True):
+            return
+        if 'account' not in getattr(df, 'columns', []):
+            return
+        for _, row in df.iterrows():
+            acct = str(row.get('account', '') or '')
+            if not acct:
+                continue
+            try:
+                pnl = float(row.get('pnl', 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            # pnl_pct is optional — holdings always have it; positions
+            # carry a per-row pnl_percentage too. Fall back to None
+            # when not present so the field_idx=2 path returns None.
+            pct_raw = row.get('pnl_percentage')
+            try:
+                pct = float(pct_raw) if pct_raw is not None else None
+            except (TypeError, ValueError):
+                pct = None
+            key = (section, acct)
+            bucket = hist_map.setdefault(key, [])
+            bucket.append((now, pnl, pct))
+            if len(bucket) > _PNL_HISTORY_CAP:
+                # Drop oldest in chunks of 1 so we stay at cap.
+                del bucket[:len(bucket) - _PNL_HISTORY_CAP]
+
+    _append('positions', sum_positions)
+    _append('holdings',  sum_holdings)
+
+
 # ---------------------------------------------------------------------------
 # v2 condition-tree helpers
 # ---------------------------------------------------------------------------
@@ -759,6 +827,19 @@ async def run_cycle(context: dict, broadcast_fn=None,
     now = context.get("now")
     if not now:
         return
+
+    # Append the current P&L snapshot to alert_state.pnl_history so the
+    # rate evaluator has samples to compute ΔP&L/min against. The
+    # background performance task and the simulator both pass the same
+    # long-lived `alert_state` dict, so each run_cycle call grows the
+    # history one entry per (section, scope) bucket.
+    _alert_state = context.get("alert_state")
+    if _alert_state is not None:
+        _update_pnl_history(
+            _alert_state, now,
+            context.get("sum_positions"),
+            context.get("sum_holdings"),
+        )
 
     # Load agents. For isolated runs (simulator "Run in Simulator") we accept
     # any status so an operator can dry-fire an inactive agent. For the

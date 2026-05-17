@@ -145,6 +145,42 @@ def _scope_accounts(scope: str) -> list[str]:
     return [sub]
 
 
+def _scope_kind(scope: str) -> str:
+    """
+    Returns 'total' / 'any_acct' / 'exact'. The synthesised per-tick
+    target_pnl value scales differently:
+      - 'total'    — sum across accounts must cross the threshold, so
+                     each account gets `target / N`.
+      - 'any_acct' — each account must individually cross, so each
+                     account gets the full `target` (NOT divided).
+                     This is the fix for the historical synthesiser
+                     bug where any_acct loss-pos-acct-* agents seeded
+                     scenarios that put each account at half the
+                     threshold — the agent never fired.
+      - 'exact'    — single named account; same as 'total' with N=1.
+    """
+    parts = scope.split(".", 2)
+    if len(parts) < 2:
+        return "total"
+    sub = parts[1]
+    if sub == "total":
+        return "total"
+    if sub == "any_acct":
+        return "any_acct"
+    return "exact"
+
+
+def _per_acct_share(target: float, kind: str, n_accounts: int) -> float:
+    """
+    Per-account slice of the synthesised target P&L.
+      total / exact → target / N  (sum-across must cross)
+      any_acct      → target      (each account must individually cross)
+    """
+    if kind == "any_acct":
+        return target
+    return target / max(1, n_accounts)
+
+
 def _section_of(scope: str) -> str:
     """Return 'holdings' | 'positions' | 'funds' based on the scope prefix."""
     if scope.startswith("holdings"):
@@ -176,6 +212,25 @@ def _default_margin_row(account: str) -> dict:
     }
 
 
+def _margin_rows_with_total(accounts: list[str]) -> list[dict]:
+    """
+    Build per-account margin rows AND a TOTAL aggregate row.
+
+    The real /api/funds route always emits a TOTAL row alongside the
+    per-account ones, and the agent evaluator's `pnl_pct` metric
+    resolver looks up `ctx.used_margin_for(row.account)` — for a
+    `positions.total` scope row, that's `used_margin_for('TOTAL')`.
+    Without a TOTAL margin row in the synthesised frame, the resolver
+    returns None and total-pct agents never fire. This helper makes
+    the synthesised margins match the real-pipeline shape.
+    """
+    per_acct = [_default_margin_row(a) for a in accounts]
+    total = {"account": "TOTAL"}
+    for k in ("avail opening_balance", "net", "util debits", "avail collateral"):
+        total[k] = sum(r.get(k, 0) for r in per_acct)
+    return [*per_acct, total]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 #  Per-metric synthesisers — each returns (initial_section_rows, ticks).
 #
@@ -189,17 +244,19 @@ def _default_margin_row(account: str) -> dict:
 def _synth_pnl(leaf: dict) -> tuple[dict, list]:
     """Drive positions.pnl to the threshold in 3 ticks via target_pnl."""
     value    = float(leaf.get("value") or 0)
-    accounts = _scope_accounts(leaf.get("scope", ""))
+    scope    = leaf.get("scope", "")
+    accounts = _scope_accounts(scope)
+    kind     = _scope_kind(scope)
     target   = value * 1.2   # go 20 % past the threshold so it clearly trips
 
     positions = [_default_position_row(a) for a in accounts]
-    margins   = [_default_margin_row(a)   for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
 
     ticks = []
     for i, frac in enumerate([0.4, 0.7, 1.0]):
         moves = []
         for a in accounts:
-            per_acct = target * frac / len(accounts)
+            per_acct = _per_acct_share(target * frac, kind, len(accounts))
             moves.append({"type": "target_pnl",
                            "scope": f"positions.{a}.*", "value": per_acct})
         ticks.append({"at": i, "moves": moves})
@@ -210,22 +267,37 @@ def _synth_pnl_pct(leaf: dict) -> tuple[dict, list]:
     """
     pnl_pct ≤ value% of util_margin. Same setup as _synth_pnl but pick a
     pnl such that pnl / used_margin crosses the pct threshold.
+
+    The denominator depends on scope kind:
+      total    — pnl_pct = TOTAL_pnl / TOTAL_util_margin
+      any_acct — pnl_pct = per_acct_pnl / per_acct_util_margin
+      exact    — per_acct, single account
+    `_margin_rows_with_total` seeds both per-account AND TOTAL margins
+    so the total-pct path actually fires.
     """
     pct      = float(leaf.get("value") or 0)
-    accounts = _scope_accounts(leaf.get("scope", ""))
+    scope    = leaf.get("scope", "")
+    accounts = _scope_accounts(scope)
+    kind     = _scope_kind(scope)
     util     = 25000.0   # matches _default_margin_row
 
     positions = [_default_position_row(a) for a in accounts]
-    margins   = [_default_margin_row(a)   for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
 
-    target_abs = util * (pct / 100.0) * 1.2   # 20 % past threshold
+    # For total scope the denominator is sum-across; for any_acct it's
+    # per-account. Either way `util` is the per-account util_margin.
+    if kind == "total":
+        denom = util * len(accounts)
+    else:
+        denom = util
+    target_abs = denom * (pct / 100.0) * 1.2   # 20 % past threshold
     ticks = []
     for i, frac in enumerate([0.4, 0.7, 1.0]):
         moves = []
         for a in accounts:
+            per_acct = _per_acct_share(target_abs * frac, kind, len(accounts))
             moves.append({"type": "target_pnl",
-                           "scope": f"positions.{a}.*",
-                           "value": target_abs * frac / len(accounts)})
+                           "scope": f"positions.{a}.*", "value": per_acct})
         ticks.append({"at": i, "moves": moves})
     return {"positions": positions, "margins": margins}, ticks
 
@@ -234,22 +306,32 @@ def _synth_pnl_rate_abs(leaf: dict) -> tuple[dict, list]:
     """
     pnl_rate_abs ≤ N ₹/min. Smooth positions pnl decay at N ₹/min for
     rate_window_min minutes.
+
+    The rate evaluator computes ΔP&L / Δt_wallclock_minutes from the
+    pnl_history accumulator. The synthesised scenario emits one tick
+    per simulated minute; `at: i` is the tick index, but the engine's
+    timestamps come from real wall-clock time, so we cumulate the
+    target P&L proportionally. The 1.2× overshoot ensures the rate
+    crosses the threshold cleanly even with sub-minute tick spacing.
     """
     rate_per_min = float(leaf.get("value") or 0)   # negative
-    accounts     = _scope_accounts(leaf.get("scope", ""))
+    scope        = leaf.get("scope", "")
+    accounts     = _scope_accounts(scope)
+    kind         = _scope_kind(scope)
     window_min   = int(_rate_window_min({}))
 
     positions = [_default_position_row(a) for a in accounts]
-    margins   = [_default_margin_row(a)   for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
 
     ticks = []
     for i in range(window_min + 1):
         moves = []
         for a in accounts:
             # Cumulative target at tick i = rate × (i+1) × 1.2 (past threshold)
+            full = rate_per_min * (i + 1) * 1.2
+            per_acct = _per_acct_share(full, kind, len(accounts))
             moves.append({"type": "target_pnl",
-                           "scope": f"positions.{a}.*",
-                           "value": rate_per_min * (i + 1) * 1.2 / len(accounts)})
+                           "scope": f"positions.{a}.*", "value": per_acct})
         ticks.append({"at": i, "moves": moves})
     return {"positions": positions, "margins": margins}, ticks
 
@@ -257,22 +339,27 @@ def _synth_pnl_rate_abs(leaf: dict) -> tuple[dict, list]:
 def _synth_pnl_rate_pct(leaf: dict) -> tuple[dict, list]:
     """pnl_rate_pct ≤ N %/min. Similar — pct of util_margin per minute."""
     rate_pct   = float(leaf.get("value") or 0)
-    accounts   = _scope_accounts(leaf.get("scope", ""))
+    scope      = leaf.get("scope", "")
+    accounts   = _scope_accounts(scope)
+    kind       = _scope_kind(scope)
     window_min = int(_rate_window_min({}))
     util       = 25000.0
 
     positions = [_default_position_row(a) for a in accounts]
-    margins   = [_default_margin_row(a)   for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
 
-    # Δpnl/min as % of util → in ₹, rate = util × (pct/100).
-    rate_abs_per_min = util * (rate_pct / 100.0)
+    # Δpnl/min as % of util → in ₹, rate = util × (pct/100). Total
+    # scope's denominator is sum-across; any_acct is per-account.
+    util_basis = util * len(accounts) if kind == "total" else util
+    rate_abs_per_min = util_basis * (rate_pct / 100.0)
     ticks = []
     for i in range(window_min + 1):
         moves = []
         for a in accounts:
+            full = rate_abs_per_min * (i + 1) * 1.2
+            per_acct = _per_acct_share(full, kind, len(accounts))
             moves.append({"type": "target_pnl",
-                           "scope": f"positions.{a}.*",
-                           "value": rate_abs_per_min * (i + 1) * 1.2 / len(accounts)})
+                           "scope": f"positions.{a}.*", "value": per_acct})
         ticks.append({"at": i, "moves": moves})
     return {"positions": positions, "margins": margins}, ticks
 

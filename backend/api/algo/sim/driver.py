@@ -678,6 +678,16 @@ class SimDriver:
         self.only_agent_ids = list(only_agent_ids) if only_agent_ids else None
         self._paper.reset()
 
+        # Reset the rate-history bucket so consecutive sim runs don't
+        # inherit stale samples — the rate evaluator otherwise sees
+        # a stale baseline across the boundary between two runs of
+        # different scenarios.
+        self._sim_alert_state['pnl_history'] = {}
+        # Anchor session_date so the engine's `_update_pnl_history`
+        # rollover wipe doesn't trip on the first tick of the new run.
+        if hasattr(self.started_at, 'date'):
+            self._sim_alert_state['session_date'] = self.started_at.date()
+
         # Spread — request override > scenario YAML > DB setting. Stored as
         # a decimal fraction internally (0.001 = 0.10%). The UI submits a
         # percent (0.10) which the route layer converts before calling us.
