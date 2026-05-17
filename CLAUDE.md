@@ -403,7 +403,7 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 - **`admin/`** — User management with full partner fields
 - **`admin/tokens/`** — Agent Tokens page (Condition / Notify / Action tabs), create/edit custom tokens, Reload Registry. UI label is "Tokens"; the DB table and Python class keep their legacy names (`grammar_tokens`, `GrammarRegistry`) because the data model IS a grammar in the compiler-theory sense. Route: `/admin/tokens`.
 - **`admin/simulator/`** — Market simulator control plane. Scenario dropdown · Seed (Scripted / Live / Live+scenario) · Rate · Load live book · Start / Stop / Step / Run cycle / Clear sim. Shared `LogPanel` embedded at the bottom, defaulted to the Simulator tab (streams per-symbol LTP diffs in real time). See **Simulator** section below.
-- **`agents/`** (formerly `/algo`) — Agents page: grouped compact rows (Loss & Risk / Summaries / Automation / Other), click-to-expand, Edit with live condition validation, per-row "Run in Simulator" button that deep-links to `/admin/simulator?agent_id=<id>`. The Agent-events panel auto-scopes: real events when sim is idle, sim events when a sim is running.
+- **`agents/`** (formerly `/algo`) — Agents page: grouped compact rows (Loss & Risk / Summaries / Automation / Other), click-to-expand, Edit with live condition validation, per-row "Run in Simulator" button that deep-links to `/admin/execution?mode=sim&agent_id=<id>`. The Agent-events panel auto-scopes: real events when sim is idle, sim events when a sim is running.
 - **`console/`** — Terminal: command textarea + output + live log (equal panels)
 - **`orders/`** — Order management
 
@@ -435,7 +435,7 @@ prod:   Simulator → Paper → Live → Shadow → Replay
 
 - [`backend/api/algo/quote/`](backend/api/algo/quote/) — `QuoteSource` ABC + `SimQuoteSource` + `LiveQuoteSource` + `HistoricalQuoteSource`. Bid/ask supplier per open order. `on_fill` hook lets the source update its book on fill (sim drops the symbol; live/replay are no-ops).
 - [`backend/api/algo/paper.py`](backend/api/algo/paper.py) — `PaperTradeEngine` owns the open-order book and the chase / fill / modify / unfilled lifecycle. Constructor takes a `QuoteSource`, a `label` ("sim" / "paper" / "replay"), and an optional event callback. Used by SimDriver (mode 1), get_prod_paper_engine() (mode 2), and ReplayDriver (mode 4).
-- [`backend/api/algo/shadow.py`](backend/api/algo/shadow.py) — `ShadowTradeEngine` singleton. Captures exact Kite payload + basket_margin validation. Writes `AlgoOrder(mode='shadow')` rows. `/admin/live` page's "Promote to Live" button sets both `execution.paper_trading_mode=false` and `execution.shadow_mode=false`.
+- [`backend/api/algo/shadow.py`](backend/api/algo/shadow.py) — `ShadowTradeEngine` singleton. Captures exact Kite payload + basket_margin validation. Writes `AlgoOrder(mode='shadow')` rows. `/admin/execution?mode=live` carries the "Promote to Live" button that sets both `execution.paper_trading_mode=false` and `execution.shadow_mode=false`.
 - [`backend/api/algo/replay/driver.py`](backend/api/algo/replay/driver.py) — `ReplayDriver` singleton. Fetches historical candles at start, advances one candle per tick at playback rate, feeds `HistoricalQuoteSource`, runs `run_cycle()` at each tick.
 - [`actions.py::_resolve_mode`](backend/api/algo/actions.py) — single source of truth for "should this action go to sim, replay, shadow, paper, or live?". Reads `context["sim_mode"]`, `context["replay_mode"]`, the branch, `execution.shadow_mode`, and the master `execution.paper_trading_mode` flag.
 - [`agent_engine._agent_execution_mode_tag`](backend/api/algo/agent_engine.py) — inspects the master `paper_trading_mode` toggle and tags the alert as `[PAPER]` (when paper_trading_mode=True) or empty (when live). The tag flows through `alert_utils._dispatch` into Telegram subjects + email subject prefixes so an operator on Telegram can tell at a glance what execution mode an alert's actions used.
@@ -454,7 +454,7 @@ Each mode has its own page under `/admin/execution`:
 
 The navbar renders a **Mode Dropdown** under the execution-mode section (SIM · PAPER · LIVE · SHADOW · REPLAY on prod; SIM · PAPER · REPLAY on dev). Clicking an entry navigates to that mode's page at `/admin/execution?mode=<slug>`. The dropdown order prioritizes frequent workflows: simulator first (entry point), then the live-data ladder (paper → live → shadow), then replay as a diagnostic. Non-mode nav items (Dashboard, Agents, Orders, Options, Terminal, Tokens, Settings, Brokers, Users) are always visible (subject to adminOnly/demo filtering).
 
-Backward-compat stub: `/admin/simulator` still exists and bounces to `/admin/execution?mode=sim` (but the bookmark-only path avoids an auth race that the old route had).
+No backward-compat stubs — the old per-mode pages and the `/watchlist` redirect were removed. Old bookmarks now 404; the navbar SIM/PAPER/LIVE/SHADOW/REPLAY entries are the canonical entry points.
 
 **Execution settings** (`GET /api/admin/execution/mode`):
 - `mode: str` — current effective mode (computed from sim/replay driver status + settings flags)
@@ -818,13 +818,13 @@ The simulator owns its own `_sim_alert_state` dict, so rate history and suppress
 | `GET /orders/recent?limit=N` | Recent `mode='sim'` algo orders |
 | `GET /ticks/recent?limit=N` | Rolling driver tick log (oldest-first) with per-symbol diffs |
 
-Gated by `admin_guard` + the per-branch `cap_in_<branch>.simulator` flag in `backend_config.yaml` (dev default: on, prod default: off). `GET /status` returns `enabled: false` when the cap is off for the active branch — the `/admin/simulator` page reads this and disables every form button with a banner explaining which branch is gated, so operators don't have to press Start to discover the gate.
+Gated by `admin_guard` + the per-branch `cap_in_<branch>.simulator` flag in `backend_config.yaml` (dev default: on, prod default: on after the LIVE-default rollout). `GET /status` returns `enabled: false` when the cap is off for the active branch — the Simulator panel on `/admin/execution` reads this and disables every form button with a banner explaining the gate.
 
 ### Running the simulator
 
 - **Default path**: pick a scripted scenario (e.g. `crash-open`) → Start.
 - **Stress-test your real book**: press **Load live book** → switch Seed to **Live + scenario** → pick `generic-crash` or `random-walk` → Start.
-- **Dry-fire one agent**: on `/agents`, click **Run in Simulator** on a row → arrives at `/admin/simulator?agent_id=<id>` with the agent armed → pick a scenario → Start. The agent fires regardless of its `status`, `schedule`, cooldown, or baseline gate; no real agent state is mutated.
+- **Dry-fire one agent**: on `/agents`, click **Run in Simulator** on a row → arrives at `/admin/execution?mode=sim&agent_id=<id>` with the agent armed → pick a scenario → Start. The agent fires regardless of its `status`, `schedule`, cooldown, or baseline gate; no real agent state is mutated.
 
 Auto-stops after 30 minutes so a forgotten sim can't bleed forever.
 
@@ -852,9 +852,9 @@ where the chase fired" without any new persistent state.
 **UI**:
 
 - [`PriceChart.svelte`](frontend/src/lib/PriceChart.svelte) — hand-rolled SVG line + bid/ask shaded band + lifecycle markers (placed=amber / filled=emerald / unfilled=red). Polls `/api/charts/price-history` every 3 s. No chart library — keeps the bundle thin.
-- [`/admin/simulator`](frontend/src/routes/(algo)/admin/simulator/+page.svelte) embeds one mini chart per symbol returned by `GET /charts/symbols?mode=sim` directly under the position pills, so the operator sees the trajectory + chase markers live.
+- `/admin/execution?mode=sim` embeds one mini chart per symbol returned by `GET /charts/symbols?mode=sim` directly under the position pills, so the operator sees the trajectory + chase markers live.
 - The LogPanel **News** tab is the operator's headline feed inside the algo dark UI. Pulled out of the shared `<pre>` (where every other tab still lives) and rendered as a proper `<ul class="log-news-list">` with one `<li class="log-news-row">` per headline: `[HH:MM]  [<a> title <span> · source </span></a> flexes]`. The source label sits inside the title link as a trailing tag (subtle leading "·" separator, sky-cyan small-caps) so the row is a single clickable element instead of three loose pieces. Carries a `Refreshed at <ts>` heading line above the list, matching the public `/market` and `/performance` Market News card layout. `loadNews()` captures `refreshed_at` from the `/api/news` payload; heading hides on cold-start. The dual-zone presentational `timestamp` is parsed by a news-specific `_newsTime()` helper (extracts the first `HH:MM` run) — `_shortTime()` only knows ISO/`HH:MM:SS` and was dumping the whole 60-char dual-zone string into the time column. CSS lives in [`app.css`](frontend/src/app.css) alongside the rest of the log palette.
-- The standalone **Chart** tab inside LogPanel was retired — never had a clear use case (the pages that need charts already render them inline alongside their own controls, see `/admin/simulator`, `/admin/paper`, `/admin/options`). Removed the tab + the `chartMode` / `chartSymbols` / `chartsBySymbol` props from LogPanel's API. The pages that were feeding those props for the tab dropped the dead fetch chain.
+- The standalone **Chart** tab inside LogPanel was retired — never had a clear use case (the pages that need charts already render them inline alongside their own controls, see `/admin/execution`, `/admin/options`). Removed the tab + the `chartMode` / `chartSymbols` / `chartsBySymbol` props from LogPanel's API. The pages that were feeding those props for the tab dropped the dead fetch chain.
 
 **Cleanup**: deque `maxlen=600` is the only retention mechanism — at the default tick rates (2 s sim / 5 s paper) that's ~20 min of history per symbol. Restart loses the history; operator monitoring the chase live doesn't need cross-restart continuity. If post-mortem replay becomes valuable, swap to a `price_ticks` table here.
 
@@ -894,17 +894,17 @@ Options + futures re-price coherently off underlying spot moves so a single "−
 
 **Built-in scenarios** — [`scenarios.yaml`](backend/api/algo/sim/scenarios.yaml) ships `nifty-down-3pct` and `nifty-up-3pct` (each: three `underlying_pct` ticks of ±1% on `underlying.NIFTY`). Pair with `seed_mode: live` / `live+scenario` so the BS re-pricing runs against real strikes + premiums.
 
-**Custom-positions seeding** — the `/admin/simulator` page exposes a "Custom positions" panel (account / symbol / qty / LTP rows) that the operator fills inline. `POST /api/simulator/start` accepts `custom_positions: list[dict]`; the driver appends them to whatever scripted/live seed produced via [`_normalise_custom_positions`](backend/api/algo/sim/driver.py) (uppercases the symbol, infers exchange `NFO` for parseable F&O / `NSE` otherwise, defaults `average_price = last_price`). Custom rows are layered BEFORE `_seed_derivatives` runs, so synthetic NIFTY/BANKNIFTY/etc. options pick up underlying spots + IV calibration the same way real positions do.
+**Custom-positions seeding** — the Simulator panel on `/admin/execution?mode=sim` exposes a "Custom positions" panel (account / symbol / qty / LTP rows) that the operator fills inline. `POST /api/simulator/start` accepts `custom_positions: list[dict]`; the driver appends them to whatever scripted/live seed produced via [`_normalise_custom_positions`](backend/api/algo/sim/driver.py) (uppercases the symbol, infers exchange `NFO` for parseable F&O / `NSE` otherwise, defaults `average_price = last_price`). Custom rows are layered BEFORE `_seed_derivatives` runs, so synthetic NIFTY/BANKNIFTY/etc. options pick up underlying spots + IV calibration the same way real positions do.
 
 **Performance — per-underlying index + cached parse**: `_seed_derivatives` walks positions once, stashes the parser result on each row as `row["_parsed"]`, and builds [`_positions_by_underlying: dict[str, list[dict]]`](backend/api/algo/sim/driver.py). All downstream consumers (`_reprice_derivatives_for`, IV calibration, futures-as-spot proxy) read from these cached structures — `_apply_underlying_move("underlying.NIFTY", …)` is now O(matched-rows) instead of O(positions). Hot-path regex calls dropped from 3-per-row-per-tick to 1-per-row-per-seed.
 
 ---
 
-## Paper-trading dashboard (`/admin/paper`)
+## Paper-trading workspace (`/admin/execution?mode=paper`)
 
-> The `/admin/paper`, `/admin/live`, `/admin/shadow`, `/admin/replay`, and `/admin/simulator` routes are now redirect stubs that bounce to `/admin/execution?mode=<slug>`. The single consolidated execution-mode page is the source of truth; the per-mode pages remain only as deep-link aliases. The notes below describe the workspace those stubs land on.
+> The per-mode pages (`/admin/paper`, `/admin/live`, `/admin/shadow`, `/admin/replay`, `/admin/simulator`) and the `/watchlist` redirect were removed when the consolidated `/admin/execution` page absorbed them. Every mode now lives under `/admin/execution?mode=<slug>`. The notes below describe the paper-mode panel inside that workspace.
 
-Visual surface for the prod paper-trade engine, pairing with the simulator page so operators can monitor mode 2 the same way they monitor sims.
+Visual surface for the prod paper-trade engine, pairing with the simulator panel so operators can monitor mode 2 the same way they monitor sims.
 
 **Page**: [`frontend/src/routes/(algo)/admin/paper/+page.svelte`](frontend/src/routes/(algo)/admin/paper/+page.svelte). Polls `/api/charts/paper-status` every 3 s. Layout:
 
@@ -1164,7 +1164,7 @@ Cross-link aggressively — every page on the platform should be findable via at
 
 ## InfoHint pattern
 
-Most algo admin pages used to ship a long descriptive paragraph at the top — fine for first-time onboarding but pure noise once the operator knows what the page does. [`frontend/src/lib/InfoHint.svelte`](frontend/src/lib/InfoHint.svelte) replaces those with a small amber `(i)` chip next to the page title; click to toggle an inline popover with the same gradient + amber accent the Settings row info uses. Implemented across `/admin/brokers`, `/admin/options`, `/admin/paper`, `/admin/simulator`, `/admin/settings`. ~30-40 vh saved per page; help text is one click away when needed.
+Most algo admin pages used to ship a long descriptive paragraph at the top — fine for first-time onboarding but pure noise once the operator knows what the page does. [`frontend/src/lib/InfoHint.svelte`](frontend/src/lib/InfoHint.svelte) replaces those with a small amber `(i)` chip next to the page title; click to toggle an inline popover with the same gradient + amber accent the Settings row info uses. Implemented across `/admin/brokers`, `/admin/options`, `/admin/execution` (all five mode panels), `/admin/settings`. ~30-40 vh saved per page; help text is one click away when needed.
 
 `<InfoHint>` accepts a children snippet so the popover can include HTML / Svelte content. Default `label='i'`; `align='right'` available for header-bar use cases. Component is theme-aligned (no extra CSS in callers).
 
@@ -1184,7 +1184,7 @@ A single Svelte component handles every order op the platform needs (open / clos
 |---|---|
 | **DRAFT** | Caller's `onSubmit` callback (no API hit). Caller appends to its local drafts array — typically the [`/admin/options`](frontend/src/routes/(algo)/admin/options/+page.svelte) page's `drafts[]`. |
 | **PAPER** | `POST /api/orders/ticket` with `mode: "paper"`. Backend persists an `AlgoOrder` row + registers the order with the prod paper engine via `register_open_order`. The engine's 5-second tick runs the same fill / modify / unfilled lifecycle that agent fires use, driven by real bid/ask via `LiveQuoteSource`. |
-| **LIVE** | Same endpoint with `mode: "live"`. Two backend gates fire before any broker call: (1) `is_prod_branch()` — non-prod returns 403; (2) `get_bool('execution.paper_trading_mode', True)` must be `False` — set via `/admin/live`. Both gates pass → `kite.place_order()` tagged `ramboq-ticket`. UI fires a `window.confirm()` listing side / qty / symbol / price / **account** / product before submit. |
+| **LIVE** | Same endpoint with `mode: "live"`. Two backend gates fire before any broker call: (1) `is_prod_branch()` — non-prod returns 403; (2) `get_bool('execution.paper_trading_mode', True)` must be `False` — set via the navbar mode dropdown (LIVE entry) which targets `/admin/execution?mode=live`. Both gates pass → `kite.place_order()` tagged `ramboq-ticket`. UI fires a `window.confirm()` listing side / qty / symbol / price / **account** / product before submit. |
 
 **Account selector** — required for PAPER + LIVE so the operator picks which Kite handle the order routes through; never relying on the backend's silent "first available" fallback. The ticket renders a readonly account display when there's exactly one available, a `<select>` dropdown when there's more than one, and refuses to submit if `_account` is blank. Pre-filled from the calling page's account state when an obvious choice exists (e.g. the operator already filtered to one account in `/admin/options`). The backend enforces the same rule: ticket route returns 400 when account is blank or unknown to it, with no silent first-account fallback.
 

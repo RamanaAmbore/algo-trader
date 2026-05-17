@@ -175,9 +175,8 @@
     }
     if (mode === 'sim') {
       // Sim is transient — driver is started from /admin/execution's
-      // Simulator panel. Skip the /admin/simulator stub redirect; that
-      // two-step navigation was racing the auth check and bouncing the
-      // operator to /signin.
+      // Simulator panel. No persisted mode flip until the operator
+      // presses Start on that page.
       goto('/admin/execution?mode=sim');
       return;
     }

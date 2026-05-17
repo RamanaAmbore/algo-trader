@@ -59,7 +59,8 @@ def _resolve_mode(_action_type: str, agent, context: dict) -> str:
     if get_bool("execution.shadow_mode", False):
         return "shadow"
     # Master kill-switch wins over per-agent — operator can force every
-    # agent to paper from /admin/live regardless of per-agent settings.
+    # agent to paper from the navbar mode dropdown regardless of
+    # per-agent settings.
     if get_bool("execution.paper_trading_mode", True):
         return "paper"
     # Manual one-shot triggers (agent fire / Test Fire) set this so the
@@ -102,7 +103,7 @@ async def execute(agent, actions: list, context: dict):
                 await _paper_trade(agent, action_type, params, context)
             elif mode == "live":
                 # Real broker path. Only reached on main AND with
-                # execution.paper_trading_mode = False in /admin/live.
+                # execution.paper_trading_mode = False (navbar LIVE).
                 if action_type in ("chase_close", "chase_close_positions"):
                     await _action_live_chase_close_positions(agent, context, params)
                 elif action_type == "place_order":
