@@ -61,7 +61,7 @@ def _resolve_mode(_action_type: str, agent, context: dict) -> str:
     # Master kill-switch wins over per-agent — operator can force every
     # agent to paper from the navbar mode dropdown regardless of
     # per-agent settings.
-    if get_bool("execution.paper_trading_mode", True):
+    if get_bool("execution.paper_trading_mode", False):
         return "paper"
     # Manual one-shot triggers (agent fire / Test Fire) set this so the
     # single fire stays paper regardless of the agent's trade_mode.

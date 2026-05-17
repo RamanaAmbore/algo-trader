@@ -73,7 +73,7 @@ def _get_current_mode(is_prod: bool) -> str:
 
     if get_bool("execution.shadow_mode", False):
         return "shadow"
-    if get_bool("execution.paper_trading_mode", True):
+    if get_bool("execution.paper_trading_mode", False):
         return "paper"
     return "live"
 

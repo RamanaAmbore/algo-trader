@@ -86,7 +86,14 @@
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
     { href: '/admin/options',    label: 'Options',   group: 'analyze' },
     // ── Modes ──
-    { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
+    // Execution page only carries content for SIM + REPLAY (the two
+    // modes with a dedicated workspace). PAPER / LIVE / SHADOW are
+    // master-toggle modes — their data lives on /orders + /dashboard
+    // — so we hide the Execution nav entry when one of those is
+    // active. Clicking SIM/REPLAY in the navbar dropdown still works
+    // because pickMode() navigates explicitly.
+    { href: '/admin/execution',  label: 'Execution',                     group: 'modes',
+      modes: ['sim', 'replay'] },
     // ── Build / extend ──
     { href: '/console',          label: 'Terminal',  group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
@@ -96,15 +103,20 @@
     { href: '/admin/brokers',    label: 'Brokers',   adminOnly: true, group: 'config' },
     { href: '/admin',            label: 'Users',     adminOnly: true, group: 'config' },
   ];
-  // Branch-aware + demo-aware filter.
+  // Branch-aware + demo-aware + mode-aware filter.
+  // `modes: [...]` on a link entry means "show only when the current
+  // executionMode is in this list" — used to hide Execution when the
+  // operator is in PAPER/LIVE/SHADOW (modes that have no dedicated
+  // workspace).
   const algoLinks = $derived(
     _algoLinksAll.filter(l => {
       if (l.adminOnly && isDemo) return false;
       if (l.branches) {
         const branch = paperStatus?.branch || 'dev';
         const key = branch === 'main' ? 'main' : 'dev';
-        return l.branches.includes(key);
+        if (!l.branches.includes(key)) return false;
       }
+      if (l.modes && !l.modes.includes($executionMode)) return false;
       return true;
     })
   );

@@ -403,7 +403,7 @@ def _agent_execution_mode_tag(agent) -> str:
     broker_types = types & BROKER_ACTIONS
     if not broker_types:
         return ''
-    if get_bool("execution.paper_trading_mode", True):
+    if get_bool("execution.paper_trading_mode", False):
         return '[PAPER]'
     return ''
 

@@ -39,7 +39,7 @@ class LiveController(Controller):
         branch = config.get("deploy_branch", "dev") or "dev"
         is_prod = is_prod_branch()
 
-        paper_trading_mode = get_bool("execution.paper_trading_mode", True)
+        paper_trading_mode = get_bool("execution.paper_trading_mode", False)
         shadow_mode        = get_bool("execution.shadow_mode", False)
 
         if not is_prod:

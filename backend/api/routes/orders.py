@@ -680,7 +680,7 @@ class OrdersController(Controller):
 
         # Diagnostic so we can see the resolved values when an operator
         # reports "I picked LIVE but orders are paper".
-        _ptm_now = get_bool("execution.paper_trading_mode", True)
+        _ptm_now = get_bool("execution.paper_trading_mode", False)
         _shadow_now = get_bool("execution.shadow_mode", False)
         logger.info(
             f"[ticket-mode] requested={data.mode!r} "
