@@ -1,0 +1,270 @@
+<script>
+  // Past simulator iterations — table view.
+  //
+  // Lists every SimIteration row (most recent first), grouped visually
+  // by parent_run_id so multi-iteration runs read as one bundle. Click
+  // a row to open the detail page.
+
+  import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
+  import { fetchSimIterations } from '$lib/api';
+  import InfoHint from '$lib/InfoHint.svelte';
+  import { aggCompact } from '$lib/format';
+
+  /** @type {any[]} */
+  let rows        = $state([]);
+  let loading     = $state(true);
+  let error       = $state('');
+  let refreshedAt = $state('');
+  let teardown;
+
+  onMount(async () => {
+    if (!$authStore.user) { goto('/signin'); return; }
+    await load();
+    // Poll every 8 s — sim runs take 30 s – 30 min, so refresh has
+    // to be quicker than the run itself or the page lies about state.
+    teardown = visibleInterval(load, 8000);
+  });
+  onDestroy(() => teardown?.());
+
+  async function load() {
+    try {
+      rows = await fetchSimIterations(null, 100);
+      refreshedAt = clientTimestamp();
+      error = '';
+    } catch (e) {
+      error = e.message || 'Failed to load iterations';
+    } finally {
+      loading = false;
+    }
+  }
+
+  /** Group rows by parent_run_id so multi-iteration runs render together. */
+  const grouped = $derived.by(() => {
+    /** @type {Map<number|string, any[]>} */
+    const groups = new Map();
+    for (const r of rows) {
+      // First-iteration rows have parent_run_id == null; they ARE the
+      // root of their run, key by their own id.
+      const key = r.parent_run_id ?? r.id;
+      const arr = groups.get(key) ?? [];
+      arr.push(r);
+      groups.set(key, arr);
+    }
+    // Sort each group by iteration_index ASC, runs by most-recent-first.
+    /** @type {{ run_id: any, rows: any[] }[]} */
+    const out = [];
+    for (const [run_id, arr] of groups) {
+      arr.sort((a, b) => (a.iteration_index ?? 0) - (b.iteration_index ?? 0));
+      out.push({ run_id, rows: arr });
+    }
+    out.sort((a, b) => {
+      const bt = b.rows[0]?.started_at ?? '';
+      const at = a.rows[0]?.started_at ?? '';
+      return bt.localeCompare(at);
+    });
+    return out;
+  });
+
+  function _shortTime(iso) {
+    if (!iso) return '—';
+    return iso.slice(0, 19).replace('T', ' ');
+  }
+  function _duration(start, end) {
+    if (!start || !end) return '—';
+    const ms = new Date(end).getTime() - new Date(start).getTime();
+    if (!isFinite(ms) || ms <= 0) return '—';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    return `${m}m ${s % 60}s`;
+  }
+  function _summaryPnl(s) {
+    if (!s) return '—';
+    const v = Number(s.total_pnl_remaining ?? 0);
+    if (!isFinite(v)) return '—';
+    return aggCompact(v);
+  }
+  function _endReasonClass(reason) {
+    if (!reason) return 'er-pending';
+    if (reason === 'book_empty')        return 'er-ok';
+    if (reason === 'scenario_complete') return 'er-ok';
+    if (reason === 'time_limit')        return 'er-warn';
+    if (reason === 'stopped')           return 'er-warn';
+    if (reason === 'failed')            return 'er-err';
+    return 'er-other';
+  }
+  function _open(slug) { goto(`/admin/simulator/iterations/${slug}`); }
+</script>
+
+<svelte:head>
+  <title>Simulator iterations | RamboQuant Algo</title>
+</svelte:head>
+
+<div class="page-header">
+  <h1 class="algo-page-title">Simulator iterations</h1>
+  <InfoHint popup text="Every iteration of every /start-run call lands here. Click a row to see the iteration's summary stats + replay it with the same seed." />
+  <span class="algo-ts">{refreshedAt}</span>
+  <a href="/admin/simulator" class="back-link">← Simulator</a>
+</div>
+
+{#if error}<div class="err-banner">{error}</div>{/if}
+
+{#if loading}
+  <div class="loading">Loading iterations…</div>
+{:else if grouped.length === 0}
+  <div class="empty">No iterations yet. Kick off a run from <a href="/admin/simulator">/admin/simulator</a>.</div>
+{:else}
+  {#each grouped as group (group.run_id)}
+    <div class="run-card">
+      <div class="run-header">
+        <span class="run-id">run #{group.run_id}</span>
+        <span class="run-meta">{group.rows.length} iteration{group.rows.length === 1 ? '' : 's'}</span>
+        <span class="run-started">{_shortTime(group.rows[0]?.started_at)}</span>
+      </div>
+      <table class="iter-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Slug</th>
+            <th>Regime</th>
+            <th class="numeric">Seed</th>
+            <th>Started</th>
+            <th class="numeric">Duration</th>
+            <th>End</th>
+            <th class="numeric">P&amp;L (hung)</th>
+            <th class="numeric">Hung pos</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each group.rows as it (it.id)}
+            <tr class="iter-row" onclick={() => _open(it.slug)}>
+              <td>{it.iteration_index}/{it.iterations_total}</td>
+              <td class="slug">{it.slug}</td>
+              <td>{it.regime}</td>
+              <td class="numeric">{it.seed ?? '—'}</td>
+              <td>{_shortTime(it.started_at)}</td>
+              <td class="numeric">{_duration(it.started_at, it.ended_at)}</td>
+              <td class={'er ' + _endReasonClass(it.end_reason)}>{it.end_reason ?? 'pending'}</td>
+              <td class="numeric">{_summaryPnl(it.summary)}</td>
+              <td class="numeric">{it.summary?.hung_positions ?? '—'}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {/each}
+{/if}
+
+<style>
+  .algo-page-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #fbbf24;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-family: ui-monospace, monospace;
+  }
+  :global(.page-header:has(.algo-page-title)) {
+    border-bottom: none;
+    padding-bottom: 0;
+    margin-bottom: 0.5rem;
+  }
+  .algo-ts {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #7e97b8;
+    margin-left: auto;
+  }
+  .back-link {
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    color: #7dd3fc;
+    text-decoration: none;
+    margin-left: 0.75rem;
+  }
+  .back-link:hover { color: #fbbf24; }
+  .err-banner {
+    background: rgba(248,113,113,0.10);
+    border: 1px solid rgba(248,113,113,0.35);
+    color: #f87171;
+    padding: 0.4rem 0.65rem;
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    margin-bottom: 0.5rem;
+  }
+  .loading, .empty {
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: #7e97b8;
+    padding: 1rem;
+    text-align: center;
+  }
+  .empty a { color: #fbbf24; text-decoration: underline; }
+
+  .run-card {
+    background: linear-gradient(180deg, rgba(20,30,55,0.65) 0%, rgba(13,21,38,0.65) 100%);
+    border: 1px solid rgba(251,191,36,0.18);
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+  }
+  .run-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.65rem;
+    background: rgba(251,191,36,0.05);
+    border-bottom: 1px solid rgba(251,191,36,0.12);
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+  }
+  .run-id { color: #fbbf24; font-weight: 700; letter-spacing: 0.05em; }
+  .run-meta { color: #c8d8f0; }
+  .run-started { color: #7e97b8; margin-left: auto; }
+
+  .iter-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+  }
+  .iter-table th {
+    text-align: left;
+    color: #7e97b8;
+    font-weight: 600;
+    padding: 0.3rem 0.55rem;
+    border-bottom: 1px solid rgba(251,191,36,0.10);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.55rem;
+  }
+  .iter-table th.numeric, .iter-table td.numeric {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .iter-row {
+    cursor: pointer;
+    transition: background 0.08s;
+  }
+  .iter-row:hover { background: rgba(251,191,36,0.08); }
+  .iter-row td {
+    padding: 0.3rem 0.55rem;
+    color: #c8d8f0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .slug { color: #fbbf24; }
+  .er {
+    text-transform: uppercase;
+    font-size: 0.55rem;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+  }
+  .er-ok      { color: #4ade80; }
+  .er-warn    { color: #fbbf24; }
+  .er-err     { color: #f87171; }
+  .er-pending { color: #7dd3fc; }
+  .er-other   { color: #a3b9d0; }
+</style>

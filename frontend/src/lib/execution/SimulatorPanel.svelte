@@ -11,6 +11,7 @@
     runSimCycle, clearSimArtefacts, seedSimLive, fetchSimEvents,
     fetchSimTicks, fetchAgents,
     fetchChartSymbols, fetchChartBatch, fetchAdminLogs,
+    fetchSimDefaults, startSimRun,
   } from '$lib/api';
   import LogPanel    from '$lib/LogPanel.svelte';
   import Select      from '$lib/Select.svelte';
@@ -187,6 +188,68 @@
     } catch (e) { error = e.message; }
   }
 
+  // ── Iteration-mode state + handlers (Phase 2A) ────────────────────
+  // Settings-backed defaults, pre-filled on mount via /api/simulator/defaults.
+  // Per-run override values land directly on the /start-run payload —
+  // they don't touch the settings table. To change permanent defaults,
+  // operator goes to /admin/settings.
+  let iterIterations  = $state(1);
+  let iterMaxMinutes  = $state(10);
+  let iterRegimes     = $state(/** @type {string[]} */ ([]));
+  let iterAgents      = $state(/** @type {string[]} */ ([]));   // string ids → coerced on submit
+  let iterSeed        = $state(/** @type {number | ''} */ (''));
+  let iterForceClose  = $state(true);
+  let iterAvailableRegimes = $state(/** @type {{value:string,label:string}[]} */ ([]));
+  let iterMarketBlocked    = $state(false);
+  let iterBlockSetting     = $state(true);
+  let iterLoadingDefaults  = $state(true);
+
+  async function loadIterDefaults() {
+    try {
+      const d = await fetchSimDefaults();
+      iterIterations       = Number(d.iterations) || 1;
+      iterMaxMinutes       = Number(d.max_minutes) || 10;
+      iterRegimes          = Array.isArray(d.regimes) ? d.regimes : [];
+      iterForceClose       = Boolean(d.force_close_on_timeout);
+      iterAvailableRegimes = (d.available_regimes || []).map(
+        (r) => ({ value: r.slug, label: r.name || r.slug }));
+      iterMarketBlocked    = Boolean(d.markets_currently_open) && Boolean(d.block_during_market_hours);
+      iterBlockSetting     = Boolean(d.block_during_market_hours);
+    } catch (_) {
+      /* settings unreachable — leave defaults */
+    } finally {
+      iterLoadingDefaults = false;
+    }
+  }
+
+  async function doStartRun() {
+    error = ''; note = '';
+    try {
+      const aids = iterAgents
+        .map((s) => Number(s))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const payload = {
+        iterations:             Math.max(1, Number(iterIterations) || 1),
+        max_minutes:            Math.max(1, Number(iterMaxMinutes) || 10),
+        regimes:                iterRegimes,
+        agent_ids:              aids.length ? aids : null,
+        seed:                   iterSeed === '' ? null : Number(iterSeed),
+        force_close_on_timeout: Boolean(iterForceClose),
+        seed_mode:              seedMode,
+        rate_ms:                Number(rateMs) || null,
+        spread_pct:             spreadPct === '' ? null : Number(spreadPct),
+      };
+      if (!payload.regimes?.length) {
+        error = 'Pick at least one regime.';
+        return;
+      }
+      status = await startSimRun(payload);
+      note = `Run started · ${payload.iterations} iteration${payload.iterations === 1 ? '' : 's'} · max ${payload.max_minutes} min each · regimes=[${payload.regimes.join(',')}]`;
+      // Refresh status polling so the new run_active state surfaces.
+      loadHot();
+    } catch (e) { error = e.message; }
+  }
+
   const armedAgent = $derived.by(() => {
     if (!agentId) return null;
     return agents.find(a => String(a.id) === String(agentId)) || null;
@@ -218,6 +281,7 @@
     const q = page.url.searchParams.get('agent_id');
     if (q) agentId = q;
     loadAll();
+    loadIterDefaults();
     loadSimLog();
     loadSystemLog();
     (async () => {
@@ -329,6 +393,72 @@
       {/each}
     </div>
   {/if}
+</div>
+
+<!-- Iteration-mode card (Phase 2A) -->
+<div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
+  <div class="iter-header">
+    <span class="iter-title">Iteration mode</span>
+    <InfoHint popup text="Runs N iterations sequentially, round-robining through the picked regimes. Each iteration writes a SimIteration row that you can replay later with the same seed. Defaults pre-filled from /admin/settings." />
+    <a class="iter-history-link" href="/admin/simulator/iterations">Past iterations →</a>
+  </div>
+
+  {#if iterMarketBlocked}
+    <div class="iter-banner-warn">
+      Markets are currently open. Simulation is blocked.
+      Set <code>simulator.block_during_market_hours = false</code> on
+      <a href="/admin/settings">/admin/settings</a> to override.
+    </div>
+  {/if}
+
+  <div class="iter-form">
+    <div class="iter-field">
+      <label class="field-label" for="iter-iterations">Iterations</label>
+      <input id="iter-iterations" type="number" min="1" max="100"
+             class="field-input sim-pct-input"
+             bind:value={iterIterations} />
+    </div>
+    <div class="iter-field">
+      <label class="field-label" for="iter-max-min">Max min / iter</label>
+      <input id="iter-max-min" type="number" min="1" max="240"
+             class="field-input sim-pct-input"
+             bind:value={iterMaxMinutes} />
+    </div>
+    <div class="iter-field iter-field-wide">
+      <label class="field-label" for="iter-regimes" title="Round-robin across iterations">Regimes</label>
+      <MultiSelect id="iter-regimes" bind:value={iterRegimes}
+        options={iterAvailableRegimes}
+        placeholder="Pick at least one" />
+    </div>
+    <div class="iter-field iter-field-wide">
+      <label class="field-label" for="iter-agents" title="Empty list = no agents (market explorer). Leave empty AND deselect everything to pass null → run all active agents.">Agents</label>
+      <MultiSelect id="iter-agents" bind:value={iterAgents}
+        options={agents.map((a) => ({ value: String(a.id), label: `${a.slug} (${a.id})` }))}
+        placeholder="(all active)" />
+    </div>
+    <div class="iter-field">
+      <label class="field-label" for="iter-seed" title="seed + N for iteration N (replayable). Blank → random per iteration.">Seed</label>
+      <input id="iter-seed" type="number" placeholder="(random)"
+             class="field-input sim-pct-input"
+             bind:value={iterSeed} />
+    </div>
+    <div class="iter-field iter-field-toggle">
+      <label class="field-label" title="On time_limit with positions remaining, write synthetic close orders at last LTP.">
+        <input type="checkbox" bind:checked={iterForceClose} />
+        Force-close on timeout
+      </label>
+    </div>
+    <div class="iter-actions">
+      <button class="sim-btn sim-btn-go"
+              disabled={iterLoadingDefaults || iterMarketBlocked || !iterRegimes.length || status.run_active}
+              onclick={doStartRun}>
+        {status.run_active ? 'Run in progress…' : 'Start run'}
+      </button>
+      {#if status.run_active}
+        <button class="sim-btn sim-btn-stop" onclick={doStop}>Stop run</button>
+      {/if}
+    </div>
+  </div>
 </div>
 
 <!-- Controls card -->
@@ -833,5 +963,70 @@
   :global(.sim-fields-row .field-label) {
     font-size: 0.5rem;
     margin-bottom: 0.1rem;
+  }
+
+  /* ── Iteration-mode form (Phase 2A) ────────────────────────────── */
+  .iter-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.45rem;
+  }
+  .iter-title {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #fbbf24;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .iter-history-link {
+    margin-left: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #7dd3fc;
+    text-decoration: none;
+  }
+  .iter-history-link:hover { color: #fbbf24; }
+  .iter-banner-warn {
+    margin-bottom: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(248,113,113,0.10);
+    border: 1px solid rgba(248,113,113,0.35);
+    color: #f87171;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+  }
+  .iter-banner-warn code { color: #fde68a; background: rgba(251,191,36,0.10); padding: 0 0.2rem; border-radius: 2px; }
+  .iter-banner-warn a { color: #7dd3fc; text-decoration: underline; }
+  .iter-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+    gap: 0.5rem 0.6rem;
+    align-items: end;
+  }
+  .iter-field-wide { grid-column: span 2; min-width: 0; }
+  .iter-field-toggle {
+    display: flex;
+    align-items: center;
+    padding-bottom: 0.4rem;
+  }
+  .iter-field-toggle .field-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    font-size: 0.6rem;
+  }
+  .iter-field-toggle input[type="checkbox"] {
+    accent-color: #fbbf24;
+    cursor: pointer;
+  }
+  .iter-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
   }
 </style>

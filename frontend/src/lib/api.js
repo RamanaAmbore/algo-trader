@@ -316,6 +316,45 @@ export const fetchSimEvents       = (n = 50) => _get(`/simulator/events/recent?l
 export const fetchSimOrders       = (n = 50) => _get(`/simulator/orders/recent?limit=${n}`, { auth: true });
 export const fetchSimTicks        = (n = 100) => _get(`/simulator/ticks/recent?limit=${n}`, { auth: true });
 
+// ── Simulator iteration framework (Phase 1 endpoints) ─────────────────
+// `/start-run` runs N iterations sequentially with optional regime
+// round-robin + seed derivation. Each iteration's slug + summary is
+// persisted to `sim_iterations`. The form on /admin/simulator iteration
+// tab pre-fills from `/defaults`, validates, and submits to /start-run.
+export const fetchSimDefaults     = () =>
+  _get('/simulator/defaults', { auth: true });
+
+/**
+ * @param {{
+ *   iterations:               number,
+ *   max_minutes:              number,
+ *   regimes:                  string[],
+ *   agent_ids?:               number[] | null,
+ *   seed?:                    number | null,
+ *   force_close_on_timeout?:  boolean,
+ *   seed_mode?:               string,
+ *   rate_ms?:                 number | null,
+ *   spread_pct?:              number | null,
+ *   custom_positions?:        any[] | null,
+ * }} payload
+ */
+export const startSimRun          = (payload) =>
+  _post('/simulator/start-run', payload, { auth: true });
+
+export const fetchSimIterations   = (run_id, limit = 50) => {
+  const q = new URLSearchParams();
+  if (run_id != null) q.set('run_id', String(run_id));
+  if (limit)          q.set('limit', String(limit));
+  const qs = q.toString();
+  return _get(`/simulator/iterations${qs ? '?' + qs : ''}`, { auth: true });
+};
+
+export const fetchSimIteration    = (slug) =>
+  _get(`/simulator/iterations/${encodeURIComponent(slug)}`, { auth: true });
+
+export const replaySimIteration   = (slug) =>
+  _post(`/simulator/iterations/${encodeURIComponent(slug)}/replay`, {}, { auth: true });
+
 export const updateAgent     = (slug, payload) => _put(`/agents/${slug}`, payload, { auth: true });
 export const activateAgent   = (slug) => _put(`/agents/${slug}/activate`, undefined, { auth: true });
 export const deactivateAgent = (slug) => _put(`/agents/${slug}/deactivate`, undefined, { auth: true });

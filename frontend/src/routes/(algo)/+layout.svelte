@@ -557,12 +557,23 @@
       </div>
     {/if}
 
-    {#if simStatus?.active}
+    {#if simStatus?.active || simStatus?.run_active}
       <div class="sim-banner" role="status" aria-live="polite">
         <span class="sim-banner-dot"></span>
         <span class="sim-banner-label">SIMULATOR</span>
-        <span class="sim-banner-sep">·</span>
-        <span><b class="sim-banner-scenario">{simStatus.scenario || '—'}</b></span>
+        {#if simStatus.iterations_total > 0}
+          <!-- Iteration-mode banner: surface "iter N/M · regime" -->
+          <span class="sim-banner-sep">·</span>
+          <span>iter <b class="sim-banner-scenario">{simStatus.iteration_index}/{simStatus.iterations_total}</b></span>
+          {#if simStatus.iteration_regime}
+            <span class="sim-banner-sep">·</span>
+            <span class="sim-banner-scenario">{simStatus.iteration_regime}</span>
+          {/if}
+        {:else}
+          <!-- Legacy single-shot banner -->
+          <span class="sim-banner-sep">·</span>
+          <span><b class="sim-banner-scenario">{simStatus.scenario || '—'}</b></span>
+        {/if}
         {#if simStatus.seed_mode}
           <span class="sim-banner-sep">·</span>
           <span>seed {simStatus.seed_mode}</span>
