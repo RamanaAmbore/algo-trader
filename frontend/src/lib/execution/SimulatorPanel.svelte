@@ -10,7 +10,7 @@
     fetchSimScenarios, fetchSimStatus, startSim, stopSim, stepSim,
     runSimCycle, clearSimArtefacts, seedSimLive, fetchSimEvents,
     fetchSimTicks, fetchAgents,
-    fetchChartSymbols, fetchChartBatch, fetchAdminLogs,
+    fetchChartBatch, fetchAdminLogs,
     fetchSimDefaults, startSimRun,
   } from '$lib/api';
   import LogPanel    from '$lib/LogPanel.svelte';
@@ -54,9 +54,31 @@
 
   let agentId   = $state('');
   let liveSnap  = $state(/** @type {any} */ (null));
-  let chartSymbols = $state(/** @type {string[]} */ ([]));
+  // Chart grid is now per-UNDERLYING (one chart per NIFTY / BANKNIFTY /
+  // FINNIFTY) instead of per-contract — drastic reduction in chart count
+  // since options reprice off spot via BS. The list comes from
+  // status.underlyings (a {name: spot} dict).
   let chartsBySymbol = $state(/** @type {Record<string, any>} */ ({}));
   let refreshTeardown;
+  // Per-underlying spot snapshots from status.underlyings. The chart
+  // grid below iterates these names. status.summary_positions /
+  // summary_holdings come from the same /api/simulator/status payload.
+  const underlyingNames = $derived(Object.keys(status?.underlyings || {}).sort());
+  const summaryPositions = $derived(status?.summary_positions || []);
+  const summaryHoldings  = $derived(status?.summary_holdings  || []);
+  const indicesSnapshot  = $derived.by(() => {
+    const out = [];
+    const u = status?.underlyings || {};
+    const hist = chartsBySymbol || {};
+    for (const name of underlyingNames) {
+      const ticks = hist[name]?.ticks || [];
+      const first = ticks[0]?.ltp;
+      const last  = u[name];
+      const pct = (first && last) ? (((last - first) / first) * 100) : 0;
+      out.push({ name, spot: last, pct });
+    }
+    return out;
+  });
 
   // Log panel feeds
   let simLog    = $state(/** @type {any[]} */ ([]));
@@ -81,16 +103,19 @@
 
   async function loadHot() {
     try {
-      const [stat, ev, chartSyms] = await Promise.all([
+      const [stat, ev] = await Promise.all([
         fetchSimStatus(), fetchSimEvents(100),
-        fetchChartSymbols('sim').catch(() => ({ symbols: [] })),
       ]);
       status = stat;
       events = ev;
-      chartSymbols = chartSyms?.symbols || [];
-      if (chartSymbols.length) {
+      // Fetch a single batch of per-underlying chart histories rather
+      // than one PriceChart self-polling per name. Underlyings are
+      // typically 1-3 names (NIFTY / BANKNIFTY / FINNIFTY) so this is
+      // one round-trip total.
+      const names = Object.keys(stat?.underlyings || {});
+      if (names.length) {
         try {
-          const batch = await fetchChartBatch('sim', chartSymbols);
+          const batch = await fetchChartBatch('sim', names);
           const map = /** @type {Record<string, any>} */ ({});
           for (const c of (batch?.charts || [])) map[c.symbol] = c;
           chartsBySymbol = map;
@@ -197,6 +222,15 @@
   let iterMaxMinutes  = $state(10);
   let iterRegimes     = $state(/** @type {string[]} */ ([]));
   let iterAgents      = $state(/** @type {string[]} */ ([]));   // string ids → coerced on submit
+  // Which buckets to seed into the sim. Default = ["positions"]
+  // (historical behaviour). Picking "holdings" also seeds the
+  // holdings book + surfaces the Holdings summary panel.
+  let iterInputs      = $state(/** @type {string[]} */ (['positions']));
+  const _INPUT_OPTIONS = [
+    { value: 'positions', label: 'Positions' },
+    { value: 'holdings',  label: 'Holdings'  },
+    { value: 'watchlist', label: 'Watchlist' },
+  ];
   let iterSeed        = $state(/** @type {number | ''} */ (''));
   let iterForceClose  = $state(true);
   let iterAvailableRegimes = $state(/** @type {{value:string,label:string}[]} */ ([]));
@@ -253,6 +287,7 @@
         seed_mode:              seedMode,
         rate_ms:                Number(rateMs) || null,
         spread_pct:             spreadPct === '' ? null : Number(spreadPct),
+        inputs:                 iterInputs.length ? iterInputs : ['positions'],
       };
       if (!payload.regimes?.length) {
         error = 'Pick at least one regime.';
@@ -402,14 +437,78 @@
     </div>
   {/if}
 
-  {#if chartSymbols.length}
+  <!-- Indices snapshot — compact "one chart for indices" line. Shows
+       each underlying's spot + Δ% in a single row so the operator sees
+       NIFTY / BANKNIFTY / FINNIFTY at a glance without three separate
+       full charts for the index roll-up. -->
+  {#if indicesSnapshot.length}
+    <div class="sim-section-label">Indices</div>
+    <div class="sim-indices-row">
+      {#each indicesSnapshot as ix (ix.name)}
+        <span class="sim-index-pill" class:up={ix.pct >= 0} class:down={ix.pct < 0}>
+          <span class="sim-index-name">{ix.name}</span>
+          <span class="sim-index-spot">{priceFmt(ix.spot)}</span>
+          <span class="sim-index-pct">{ix.pct >= 0 ? '+' : ''}{ix.pct.toFixed(2)}%</span>
+        </span>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- Per-underlying charts — one chart per NIFTY / BANKNIFTY /
+       FINNIFTY. Drops the previous per-contract chart grid (one chart
+       per option / future) since options reprice off spot via BS, so
+       individual contract charts are derivable from these. -->
+  {#if underlyingNames.length}
+    <div class="sim-section-label">Underlyings</div>
     <div class="sim-charts">
-      {#each chartSymbols as sym (sym)}
-        <PriceChart mode="sim" symbol={sym} height={150}
-                    data={chartsBySymbol[sym]}
+      {#each underlyingNames as name (name)}
+        <PriceChart mode="sim" symbol={name} height={180}
+                    data={chartsBySymbol[name]}
                     {chartsBySymbol} />
       {/each}
     </div>
+  {/if}
+
+  <!-- Positions summary — per-account + TOTAL P&L grid matching the
+       /dashboard summary format. Always rendered when sim has any
+       positions seeded. -->
+  {#if summaryPositions.length}
+    <div class="sim-section-label">Positions summary</div>
+    <table class="sim-summary-grid">
+      <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+      <tbody>
+        {#each summaryPositions as row (row.account)}
+          <tr class:sim-summary-total={row.account === 'TOTAL'}>
+            <td>{row.account}</td>
+            <td class="sim-num">{priceFmt(row.cur_val)}</td>
+            <td class="sim-num" class:up={row.pnl > 0} class:down={row.pnl < 0}>{priceFmt(row.pnl)}</td>
+            <td class="sim-num" class:up={row.day_pnl > 0} class:down={row.day_pnl < 0}>{priceFmt(row.day_pnl)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+
+  <!-- Holdings summary — same shape, conditional on the operator
+       selecting `holdings` in the sim Inputs multi-select. Backend
+       returns [] when holdings isn't in inputs; we hide the section
+       in that case so dev sessions that only seed positions don't see
+       an empty holdings grid. -->
+  {#if summaryHoldings.length}
+    <div class="sim-section-label">Holdings summary</div>
+    <table class="sim-summary-grid">
+      <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+      <tbody>
+        {#each summaryHoldings as row (row.account)}
+          <tr class:sim-summary-total={row.account === 'TOTAL'}>
+            <td>{row.account}</td>
+            <td class="sim-num">{priceFmt(row.cur_val)}</td>
+            <td class="sim-num" class:up={row.pnl > 0} class:down={row.pnl < 0}>{priceFmt(row.pnl)}</td>
+            <td class="sim-num" class:up={row.day_pnl > 0} class:down={row.day_pnl < 0}>{priceFmt(row.day_pnl)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {/if}
 </div>
 
@@ -454,6 +553,12 @@
       <MultiSelect id="iter-regimes" bind:value={iterRegimes}
         options={iterAvailableRegimes}
         placeholder="Pick at least one" />
+    </div>
+    <div class="iter-field iter-field-wide">
+      <label class="field-label" for="iter-inputs" title="Which buckets to seed into the sim. positions = today's default (F&O book). holdings = also seed long-term equity for holdings-summary + holdings-gating agents. watchlist = re-quote symbols with no open position.">Inputs</label>
+      <MultiSelect id="iter-inputs" bind:value={iterInputs}
+        options={_INPUT_OPTIONS}
+        placeholder="positions" />
     </div>
     <div class="iter-field iter-field-wide">
       <label class="field-label" for="iter-agents" title="Empty list = no agents (market explorer). Leave empty AND deselect everything to pass null → run all active agents.">Agents</label>
@@ -929,10 +1034,88 @@
   .sim-pill-pnl.neg { color: #f87171; }
   .sim-pill-pnl.pos { color: #4ade80; }
   .sim-charts {
-    margin-top: 0.6rem;
+    margin-top: 0.4rem;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 0.5rem;
+  }
+  /* Section label between chart / summary blocks. Same amber as
+     MarketPulse's mp-section-label so the sim panel feels consistent
+     with /dashboard's existing summary headings. */
+  .sim-section-label {
+    margin-top: 0.85rem;
+    margin-bottom: 0.3rem;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #fbbf24;
+  }
+  /* Indices snapshot row — compact per-index pill (name · spot · Δ%). */
+  .sim-indices-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.3rem;
+  }
+  .sim-index-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.5rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    border-radius: 4px;
+    background: rgba(125, 211, 252, 0.08);
+    border: 1px solid rgba(125, 211, 252, 0.25);
+    color: #c8d8f0;
+  }
+  .sim-index-pill.up   { border-color: rgba(74, 222, 128, 0.45); }
+  .sim-index-pill.down { border-color: rgba(248, 113, 113, 0.45); }
+  .sim-index-name { color: #fbbf24; font-weight: 700; letter-spacing: 0.04em; }
+  .sim-index-spot { font-variant-numeric: tabular-nums; color: #fde68a; }
+  .sim-index-pct  {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    color: #c8d8f0;
+  }
+  .sim-index-pill.up   .sim-index-pct { color: #4ade80; }
+  .sim-index-pill.down .sim-index-pct { color: #f87171; }
+  /* Summary grids — small inline ag-Grid-style table; matches the
+     /dashboard cream-on-navy summary panels without dragging in a
+     full ag-Grid instance. */
+  .sim-summary-grid {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    color: #c8d8f0;
+  }
+  .sim-summary-grid th {
+    text-align: left;
+    color: #7e97b8;
+    font-weight: 600;
+    padding: 0.3rem 0.55rem;
+    border-bottom: 1px solid rgba(251,191,36,0.18);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.54rem;
+  }
+  .sim-summary-grid td {
+    padding: 0.3rem 0.55rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .sim-summary-grid .sim-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .sim-summary-grid .sim-num.up   { color: #4ade80; }
+  .sim-summary-grid .sim-num.down { color: #f87171; }
+  .sim-summary-total td {
+    font-weight: 700;
+    color: #fde68a;
+    border-top: 1px solid rgba(251,191,36,0.25);
   }
   .custom-pos-header {
     display: flex;

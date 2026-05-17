@@ -473,6 +473,14 @@ class SimDriver:
         # forever) — positions-only sim. Kept here so `dataframes()` can
         # still return a valid empty sum_holdings frame.
         self._holdings_rows:  list[dict] = []
+        # Which input buckets the operator asked to seed. Defaults to
+        # ["positions"] (the historical behaviour); when "holdings" is
+        # passed, seed_live() additionally pulls the holdings book and
+        # snapshot() exposes summary_holdings; when "watchlist" is in
+        # the list, watchlist symbols get re-quoted even with no open
+        # position. Source of truth for the UI's conditional Holdings
+        # summary panel.
+        self.inputs:          list[str] = ["positions"]
         self._positions_rows: list[dict] = []
         # Watchlist rows — zero-qty market-data-only entries. Move
         # primitives (pct / abs / random_walk / underlying_*) apply to
@@ -629,7 +637,64 @@ class SimDriver:
             "open_order_details":      self._paper.open_order_details(),
             "spread_pct":              self.spread_pct,
             "open_orders":             len(self._paper.open_order_details()),
+            # Per-account aggregates — same shape /dashboard renders, so
+            # the Simulator panel can drop in the same summary grids
+            # without re-computing on the frontend. Computed lazily here
+            # because snapshot() is hot-path (polled every 2 s by the UI).
+            "summary_positions":       self._summary_rows("positions"),
+            "summary_holdings":        self._summary_rows("holdings"),
+            # Per-underlying spot snapshot — drives the per-underlying
+            # chart grid. Keys: NIFTY, BANKNIFTY, FINNIFTY, etc. Values:
+            # current spot. PriceChart fetches /api/charts/price-history
+            # ?symbol=NIFTY&mode=sim for the line data; this field just
+            # tells the UI which underlyings to render charts for.
+            "underlyings":             dict(self._underlyings),
+            # What was actually seeded — positions, holdings, watchlist.
+            # The UI uses this to decide whether to render the Holdings
+            # summary panel (hidden when 'holdings' isn't in this list).
+            "inputs":                  list(self.inputs),
         }
+
+    def _summary_rows(self, kind: str) -> list[dict]:
+        """
+        Per-account + TOTAL aggregate rows for the snapshot. Same shape
+        the /dashboard summary grids consume — frontend just drops them
+        into an ag-Grid. `kind` ∈ {'positions', 'holdings'}.
+
+        For holdings, returns [] when self.inputs doesn't include
+        'holdings' so the UI naturally hides the panel.
+        """
+        if kind == "holdings" and "holdings" not in self.inputs:
+            return []
+        rows = self._positions_rows if kind == "positions" else self._holdings_rows
+        if not rows:
+            return []
+        # Per-account aggregate. Pandas-free path so this stays cheap
+        # on every snapshot() call.
+        per_acct: dict[str, dict] = {}
+        for r in rows:
+            acct = str(r.get("account") or "—")
+            agg = per_acct.setdefault(acct, {
+                "account": acct, "pnl": 0.0, "day_pnl": 0.0, "cur_val": 0.0,
+            })
+            try:
+                agg["pnl"]     += float(r.get("pnl")     or 0.0)
+                agg["day_pnl"] += float(r.get("day_pnl") or 0.0)
+                qty = float(r.get("quantity") or 0)
+                ltp = float(r.get("last_price") or 0.0)
+                agg["cur_val"] += qty * ltp
+            except (TypeError, ValueError):
+                pass
+        out = sorted(per_acct.values(), key=lambda d: d["account"])
+        # TOTAL row.
+        total = {
+            "account": "TOTAL",
+            "pnl":     sum(r["pnl"]     for r in out),
+            "day_pnl": sum(r["day_pnl"] for r in out),
+            "cur_val": sum(r["cur_val"] for r in out),
+        }
+        out.append(total)
+        return out
 
     # ── DataFrame builder the agent engine consumes ───────────────────
 
@@ -679,7 +744,8 @@ class SimDriver:
               walk_drift: float | None = None,
               walk_vol: float | None = None,
               walk_seed: int | None = None,
-              chase_max_attempts: int | None = None) -> dict:
+              chase_max_attempts: int | None = None,
+              inputs: list[str] | None = None) -> dict:
         """
         Start the sim against a named scenario from scenarios.yaml, or an
         `inline_scenario` dict (same shape) built at call time by the
@@ -747,6 +813,13 @@ class SimDriver:
         self.scenario_slug  = scenario_slug
         self.scenario       = scen
         self.seed_mode      = seed_mode
+        # Input buckets — normalise to a clean list of known values.
+        # Defaults to ["positions"] (historical behaviour). Unknown
+        # values are silently dropped so a future "options-only" or
+        # "watchlist+positions" UI mode doesn't error here.
+        _known_inputs = {"positions", "holdings", "watchlist"}
+        _req_inputs = [s.strip().lower() for s in (inputs or ["positions"]) if s]
+        self.inputs = [s for s in _req_inputs if s in _known_inputs] or ["positions"]
         self.rate_ms        = max(200, int(rate_ms))
         self.tick_index     = 0
         self.started_at     = datetime.now()
@@ -1114,7 +1187,8 @@ class SimDriver:
                         seed: int | None, force_close_on_timeout: bool,
                         seed_mode: str, rate_ms: int | None,
                         spread_pct: float | None,
-                        custom_positions: list[dict] | None) -> dict:
+                        custom_positions: list[dict] | None,
+                        inputs: list[str] | None = None) -> dict:
         """
         Multi-iteration entry point. The driver runs `iterations` scenarios
         sequentially, round-robining through `regimes`. Each iteration:
@@ -1162,6 +1236,7 @@ class SimDriver:
             "rate_ms":          rate_ms,
             "spread_pct":       spread_pct,
             "custom_positions": custom_positions,
+            "inputs":           inputs,
         }
         self._iter_plan = plan
 
@@ -1241,6 +1316,7 @@ class SimDriver:
                         spread_pct=params.get("spread_pct"),
                         custom_positions=params.get("custom_positions"),
                         walk_seed=iter_seed,
+                        inputs=params.get("inputs"),
                     )
                 except SimGuardError as e:
                     logger.warning(f"[SIM] iteration {idx} start failed: {e}")

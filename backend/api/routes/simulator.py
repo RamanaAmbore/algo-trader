@@ -124,6 +124,12 @@ class SimRunRequest(msgspec.Struct):
     rate_ms:                  Optional[int] = None
     spread_pct:               Optional[float] = None
     custom_positions:         Optional[list[dict]] = None
+    # Which input buckets to seed for this run. Defaults to ["positions"]
+    # — the historical behaviour. Pass ["positions", "holdings"] to also
+    # seed the holdings book so holdings-summary panels and holdings-
+    # gating agents see real data. "watchlist" reserved for re-quoting
+    # symbols with no open position.
+    inputs:                   Optional[list[str]] = None
 
 
 class SimIterationInfo(msgspec.Struct):
@@ -534,6 +540,7 @@ class SimulatorController(Controller):
                 rate_ms=data.rate_ms,
                 spread_pct=spread_fraction,
                 custom_positions=data.custom_positions,
+                inputs=data.inputs,
             )
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))
