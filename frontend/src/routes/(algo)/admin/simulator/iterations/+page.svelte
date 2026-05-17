@@ -133,6 +133,7 @@
             <th>End</th>
             <th class="numeric">P&amp;L (hung)</th>
             <th class="numeric">Hung pos</th>
+            <th class="numeric" title="Agents that exhausted their shadow lifespan budget in this iteration">Exhausted</th>
           </tr>
         </thead>
         <tbody>
@@ -149,6 +150,11 @@
               <td class={'er ' + _endReasonClass(it.end_reason)}>{it.end_reason ?? 'pending'}</td>
               <td class="numeric">{_summaryPnl(it.summary)}</td>
               <td class="numeric">{it.summary?.hung_positions ?? '—'}</td>
+              <td class="numeric" title={(it.summary?.lifespan_exhausted_agents || []).length
+                ? `Agent ids: ${(it.summary.lifespan_exhausted_agents).join(', ')}`
+                : 'No agents exhausted shadow lifespan in this iteration'}>
+                {it.summary?.lifespan_exhausted_agents?.length || '—'}
+              </td>
             </tr>
           {/each}
         </tbody>

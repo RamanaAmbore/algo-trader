@@ -124,6 +124,14 @@
             <tr><th>Hung positions</th><td>{iteration.summary.hung_positions ?? '—'}</td></tr>
             <tr><th>P&amp;L (hung)</th><td>{_summaryPnl(iteration.summary)}</td></tr>
             <tr><th>Regime tag</th><td>{iteration.summary.regime ?? '—'}</td></tr>
+            {#if iteration.summary.lifespan_exhausted_agents?.length}
+              <tr>
+                <th title="Agents that exhausted their shadow lifespan budget during this iteration. Real DB state untouched.">Exhausted</th>
+                <td title="Shadow lifespan exhausted — under this regime, the agent would have hit its budget. Real agent state is unchanged.">
+                  <span class="exhausted-tag">{iteration.summary.lifespan_exhausted_agents.join(', ')}</span>
+                </td>
+              </tr>
+            {/if}
           </tbody>
         </table>
       {:else}
@@ -280,5 +288,14 @@
     font-style: italic;
     margin-top: 0.35rem;
     text-align: center;
+  }
+  .exhausted-tag {
+    color: #f87171;
+    font-weight: 700;
+    background: rgba(248,113,113,0.10);
+    border: 1px solid rgba(248,113,113,0.35);
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    font-size: 0.55rem;
   }
 </style>

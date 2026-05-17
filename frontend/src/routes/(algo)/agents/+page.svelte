@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { clientTimestamp, logTime, visibleInterval } from '$lib/stores';
+  import { clientTimestamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import InfoHint from '$lib/InfoHint.svelte';
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent,
@@ -629,6 +629,16 @@
                       { value: 'n_fires',    label: 'N fires' },
                       { value: 'until_date', label: 'Until date' },
                     ]} />
+                  {#if lifespanChip(agent)}
+                    {@const _ls = lifespanChip(agent)}
+                    <div class="text-[0.55rem] text-[#7e97b8] mt-1" title={_ls.tooltip}>
+                      Current: <span class={'lifespan-chip lifespan-chip-' + _ls.color}>{_ls.label}</span>
+                    </div>
+                  {:else if agent.lifespan_type === 'persistent'}
+                    <div class="text-[0.55rem] text-[#7e97b8] mt-1 italic">
+                      Persistent — fires until manually deactivated.
+                    </div>
+                  {/if}
                 </div>
                 {#if editForm.lifespan_type === 'n_fires'}
                   <div>
@@ -832,18 +842,11 @@
                   Cooldown: {agent.cooldown_minutes}m
                   <span class="mx-1">|</span>
                   Scope: {agent.scope}
-                  {#if agent.lifespan_type && agent.lifespan_type !== 'persistent'}
+                  {#if lifespanChip(agent)}
+                    {@const _lc = lifespanChip(agent)}
                     <span class="mx-1">|</span>
-                    <span class="agent-lifespan-tag" title={
-                      agent.lifespan_type === 'one_shot' ? 'Auto-completes after firing once' :
-                      agent.lifespan_type === 'n_fires' ? `Auto-completes after ${agent.lifespan_max_fires || '?'} fires` :
-                      agent.lifespan_type === 'until_date' ? `Auto-completes at ${(agent.lifespan_expires_at || '').slice(0,16)} UTC` :
-                      ''
-                    }>
-                      {#if agent.lifespan_type === 'one_shot'}1×
-                      {:else if agent.lifespan_type === 'n_fires'}≤{agent.lifespan_max_fires || '?'}×
-                      {:else if agent.lifespan_type === 'until_date'}until {(agent.lifespan_expires_at || '').slice(0,10)}
-                      {/if}
+                    <span class={'lifespan-chip lifespan-chip-' + _lc.color} title={_lc.tooltip}>
+                      {_lc.label}
                     </span>
                   {/if}
                 </span>
@@ -1129,6 +1132,24 @@
     font-size: 0.55rem;
     letter-spacing: 0.04em;
   }
+  /* New lifespanChip variants — color progresses sky → amber → red as
+     the agent's budget is consumed. Grey is the "exhausted / done"
+     terminal state. Mirrors lifespanChip()'s `color` field in stores.js. */
+  .lifespan-chip {
+    display: inline-block;
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    border: 1px solid;
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 0.55rem;
+    letter-spacing: 0.04em;
+    cursor: help;
+  }
+  .lifespan-chip-sky   { color: #7dd3fc; border-color: rgba(125,211,252,0.45); background: rgba(125,211,252,0.10); }
+  .lifespan-chip-amber { color: #fbbf24; border-color: rgba(251,191,36,0.55);  background: rgba(251,191,36,0.10); }
+  .lifespan-chip-red   { color: #f87171; border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.12); }
+  .lifespan-chip-grey  { color: #94a3b8; border-color: rgba(148,163,184,0.40); background: rgba(148,163,184,0.10); }
   .preview-action-params {
     font-size: 0.55rem;
     background: rgba(0,0,0,0.25);

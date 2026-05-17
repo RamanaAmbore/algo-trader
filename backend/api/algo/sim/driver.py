@@ -1173,6 +1173,12 @@ class SimDriver:
                 self.current_sim_iteration_id = row_id
                 self.iteration_end_reason = None
                 self.iteration_started_at = _dt.now()
+                # Reset shadow lifespan state per iteration so each
+                # iteration tests the agent against its real starting
+                # budget. Matches the "iteration = independent trial"
+                # convention used by NinjaTrader / TradeStation.
+                self._sim_alert_state['shadow_lifespan'] = {}
+                self._sim_alert_state['lifespan_exhausted_agents'] = []
 
                 # Kick off the per-iteration tick loop via the legacy
                 # start() path. Pass walk_seed so reproducibility flows
@@ -1233,11 +1239,17 @@ class SimDriver:
         rows = list(self._positions_rows)
         total_pnl = sum(float(r.get("pnl") or 0) for r in rows)
         hung      = sum(1 for r in rows if int(r.get("quantity") or 0) != 0)
+        # Shadow-lifespan: agents that hit their budget during this
+        # iteration. Captured so the report surfaces "agent X would
+        # have exhausted at fire #N under this regime" without the
+        # operator having to inspect every event row.
+        exhausted = list(self._sim_alert_state.get('lifespan_exhausted_agents') or [])
         return {
             "tick_index":         self.tick_index,
             "total_pnl_remaining": total_pnl,    # P&L of still-open positions
             "hung_positions":      hung,
             "regime":              self.iteration_regime,
+            "lifespan_exhausted_agents": exhausted,
         }
 
     async def _finalize_iteration_row(self, row_id: Optional[int], *,

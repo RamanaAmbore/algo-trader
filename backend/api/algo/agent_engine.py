@@ -436,6 +436,36 @@ def _v2_should_suppress(agent, matches, now, cfg) -> bool:
     return not abs_moved
 
 
+def _initial_shadow_remaining(agent) -> int | None:
+    """
+    Compute the shadow remaining-fires count for an agent at sim
+    iteration start. Mirrors the real lifespan budget at the moment
+    the iteration begins, then ticks down in-memory only.
+
+      - `persistent`  → None (no cap; never exhausts in sim)
+      - `one_shot`    → 1 fire (always)
+      - `n_fires`     → max - current_trigger_count, floor 0
+      - `until_date`  → 999 fires (treat as effectively unlimited;
+                        until_date is time-based, not fire-count-based.
+                        Time-based exhaustion is handled separately at
+                        the top of run_cycle.)
+    """
+    lt = getattr(agent, "lifespan_type", "persistent")
+    if lt == "persistent" or not lt:
+        return None
+    if lt == "one_shot":
+        return 1
+    if lt == "n_fires":
+        max_fires = getattr(agent, "lifespan_max_fires", None)
+        used      = getattr(agent, "trigger_count", 0) or 0
+        if max_fires is None:
+            return None  # malformed config → don't cap shadow
+        return max(0, int(max_fires) - int(used))
+    if lt == "until_date":
+        return 999
+    return None
+
+
 def _v2_record(agent, matches, now) -> None:
     worst_val = None
     for m in matches:
@@ -959,6 +989,33 @@ async def run_cycle(context: dict, broadcast_fn=None,
         if not matches:
             _v2_unlatch(agent)
 
+        # Shadow-lifespan gate (sim mode only): every iteration the
+        # simulator seeds a per-agent shadow `trigger_count` from the
+        # agent's REAL DB row. Each sim fire decrements the shadow;
+        # when it hits 0 (or until_date passes in sim's simulated clock)
+        # the agent stops firing for the rest of this iteration. The
+        # real DB row is never mutated — this is purely a "what-if"
+        # preview so the operator sees how a one-shot / n-fires agent
+        # would behave under the regime.
+        if matches and sim_mode:
+            ls_state = alert_state.setdefault('shadow_lifespan', {})
+            shadow = ls_state.get(agent.id)
+            if shadow is None:
+                shadow = {
+                    'remaining': _initial_shadow_remaining(agent),
+                    'exhausted': False,
+                }
+                ls_state[agent.id] = shadow
+            if shadow.get('exhausted') or (shadow['remaining'] is not None
+                                            and shadow['remaining'] <= 0):
+                # Record the agent as exhausted this iteration (only once
+                # per iteration so the report doesn't double-count).
+                exh = alert_state.setdefault('lifespan_exhausted_agents', [])
+                if agent.id not in exh:
+                    exh.append(agent.id)
+                shadow['exhausted'] = True
+                continue   # skip the suppression + fire decision below
+
         # Suppression gate: general sim runs and the live path BOTH go
         # through it; only isolated single-agent sim runs bypass it so
         # repeated "Run in Simulator" clicks always fire.
@@ -966,6 +1023,19 @@ async def run_cycle(context: dict, broadcast_fn=None,
             triggered = True
             result = _v2_build_evalresult(matches, agent.name)
             _v2_record(agent, matches, now)
+
+            # Shadow-lifespan decrement — sim mode only. Records this
+            # iteration's "would have exhausted" state for the report.
+            if sim_mode:
+                ls_state = alert_state.setdefault('shadow_lifespan', {})
+                shadow = ls_state.get(agent.id)
+                if shadow is not None and shadow.get('remaining') is not None:
+                    shadow['remaining'] -= 1
+                    if shadow['remaining'] <= 0:
+                        shadow['exhausted'] = True
+                        exh = alert_state.setdefault('lifespan_exhausted_agents', [])
+                        if agent.id not in exh:
+                            exh.append(agent.id)
 
             if broadcast_fn:
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})

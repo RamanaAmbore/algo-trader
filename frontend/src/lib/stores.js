@@ -245,6 +245,110 @@ export function logTimeEdt(iso) {
   });
 }
 
+/**
+ * Lifespan chip metadata for an agent row.
+ *
+ * Returns `null` for `persistent` agents (the default — no chip needed).
+ * Otherwise returns `{ label, color, tooltip, expired }`:
+ *   - `label`   — short text for the chip ("2/3 fires" / "Until 15 Jun · 28d")
+ *   - `color`   — 'sky' / 'amber' / 'red' / 'grey' for CSS class selection
+ *   - `tooltip` — full state for hover (used / max / expires / last_triggered)
+ *   - `expired` — true when budget exhausted AND agent should no longer fire
+ *
+ * Color progression:
+ *   - 'sky'   — fresh (< 50% used / > 7 days remaining)
+ *   - 'amber' — getting low (≥ 50% used / ≤ 7 days remaining)
+ *   - 'red'   — 1 fire / 1 day remaining (urgent)
+ *   - 'grey'  — exhausted / status=completed
+ *
+ * @param {any} agent
+ * @returns {{ label: string, color: 'sky'|'amber'|'red'|'grey', tooltip: string, expired: boolean } | null}
+ */
+export function lifespanChip(agent) {
+  if (!agent) return null;
+  const t = agent.lifespan_type;
+  if (!t || t === 'persistent') return null;
+  const isCompleted = agent.status === 'completed';
+
+  if (t === 'one_shot') {
+    if (isCompleted) {
+      return {
+        label: '1-shot · DONE',
+        color: 'grey',
+        tooltip: 'One-shot agent has fired and auto-completed.',
+        expired: true,
+      };
+    }
+    return {
+      label: '1-shot',
+      color: 'sky',
+      tooltip: 'Fires once and auto-completes.',
+      expired: false,
+    };
+  }
+
+  if (t === 'n_fires') {
+    const max = Number(agent.lifespan_max_fires) || 0;
+    const used = Number(agent.trigger_count) || 0;
+    const remaining = Math.max(0, max - used);
+    if (isCompleted || remaining === 0) {
+      return {
+        label: `${used}/${max} · EXHAUSTED`,
+        color: 'grey',
+        tooltip: `Used ${used} of ${max} fires — auto-completed.`,
+        expired: true,
+      };
+    }
+    let color = /** @type {'sky'|'amber'|'red'} */ ('sky');
+    if (remaining === 1)             color = 'red';
+    else if (used / max >= 0.5)      color = 'amber';
+    return {
+      label: `${used}/${max} fires`,
+      color,
+      tooltip: `${remaining} of ${max} fires remaining.`,
+      expired: false,
+    };
+  }
+
+  if (t === 'until_date') {
+    const expiresAt = agent.lifespan_expires_at;
+    if (!expiresAt) {
+      return {
+        label: 'Until (no date)',
+        color: 'grey',
+        tooltip: 'until_date agent missing lifespan_expires_at — would never expire.',
+        expired: false,
+      };
+    }
+    const exp = new Date(expiresAt);
+    const now = new Date();
+    const msLeft = exp.getTime() - now.getTime();
+    const daysLeft = Math.ceil(msLeft / 86_400_000);
+    const dateStr = exp.toLocaleDateString('en-GB', {
+      day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata',
+    });
+    if (isCompleted || msLeft <= 0) {
+      return {
+        label: `EXPIRED ${dateStr}`,
+        color: 'red',
+        tooltip: `Expired on ${exp.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST.`,
+        expired: true,
+      };
+    }
+    let color = /** @type {'sky'|'amber'|'red'} */ ('sky');
+    if (daysLeft <= 1)               color = 'red';
+    else if (daysLeft <= 7)          color = 'amber';
+    return {
+      label: `Until ${dateStr} · ${daysLeft}d`,
+      color,
+      tooltip: `Expires on ${exp.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST (in ${daysLeft} day${daysLeft === 1 ? '' : 's'}).`,
+      expired: false,
+    };
+  }
+
+  return null;
+}
+
 /** Parse the leading 'YYYY-MM-DD HH:MM:SS[,ms]' timestamp from a python log line
  *  (treated as UTC) and return short IST|EST. Returns null if not found. */
 export function parseLogLineTime(line) {
