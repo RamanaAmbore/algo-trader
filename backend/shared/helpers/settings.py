@@ -117,6 +117,47 @@ SEEDS: list[tuple] = [
      "order is marked as unfilled. Zero disables chasing.",
      None, {"min": 0, "max": 50, "step": 1}),
 
+    # ── Iteration framework defaults (pre-fill the simulator form) ────
+    ("simulator", "simulator.default_iterations",      "int", 1,
+     "Default iteration count when an operator opens the simulator form. "
+     "Each iteration runs one regime to completion, then the next iteration "
+     "starts with a fresh seed.",
+     None, {"min": 1, "max": 100, "step": 1}),
+    ("simulator", "simulator.default_max_minutes",     "int", 10,
+     "Default per-iteration wall-clock cap. When this elapses with positions "
+     "still open AND force_close_on_timeout is true, the engine writes "
+     "synthetic close orders at last LTP and ends the iteration.",
+     "min", {"min": 1, "max": 240, "step": 1}),
+    ("simulator", "simulator.default_regimes",         "string",
+     "gap-up,gap-down,minor-volatility",
+     "Comma-separated list of regime slugs the form pre-fills. With multiple "
+     "regimes + multiple iterations the driver round-robins through them "
+     "(iter 1 = regimes[0], iter 2 = regimes[1], …).",
+     None, {}),
+    ("simulator", "simulator.default_seed_mode",       "enum", "live",
+     "How the simulator seeds its initial book.",
+     None, {"enum": ["live", "scripted", "live+scenario"]}),
+    ("simulator", "simulator.default_force_close_on_timeout", "bool", True,
+     "Force-close any open positions at last LTP when an iteration hits its "
+     "max_minutes cap. False leaves them open and the iteration's end_reason "
+     "reflects 'time_limit' with hung positions reported separately.",
+     None, {}),
+    ("simulator", "simulator.notify_during_run",       "bool", True,
+     "Telegram + email alerts fire live-style (with SIM prefix) on every "
+     "agent trigger during a sim. Turn off for quiet runs that only emit a "
+     "summary at iteration end.",
+     None, {}),
+    ("simulator", "simulator.block_during_market_hours", "bool", True,
+     "Hard-block /api/simulator/start when any segment (NSE/MCX) is currently "
+     "open. Safety guard: prevents an operator from kicking off a sim during "
+     "live trading and mixing SIMULATOR alerts with real ones. Turn off only "
+     "if you genuinely want to sim during market hours.",
+     None, {}),
+    ("simulator", "simulator.iteration_retention_days", "int", 30,
+     "Sim iteration rows older than this are eligible for purge by an out-of-"
+     "band cleanup. 0 disables auto-purge.",
+     "days", {"min": 0, "max": 365, "step": 1}),
+
     # ── Notifications (per-branch capability toggles) ───────────────────
     # NOTE: these MIRROR the cap_in_<branch>.<feature> YAML flags; the
     # is_enabled() helper is deliberately NOT rewired — it still reads

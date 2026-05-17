@@ -394,6 +394,26 @@ class SimDriver:
         self.started_at: Optional[datetime] = None
         self.tick_index: int = 0
         self.rate_ms: int = 2000
+
+        # ── Iteration-mode state ────────────────────────────────────────
+        # Populated by start_run(); zero-state for legacy single-shot
+        # start() runs (the iteration scheduler isn't involved there).
+        # `_run_active` distinguishes "between iterations of a multi-run"
+        # from "fully stopped" — `self.active` flips on/off per iteration
+        # whereas `_run_active` stays true for the whole run.
+        self._run_active: bool = False
+        self._scheduler_task: Optional[asyncio.Task] = None
+        self.parent_run_id: Optional[int] = None
+        self.current_sim_iteration_id: Optional[int] = None
+        self.iteration_index: int = 0
+        self.iterations_total: int = 0
+        self.iteration_regime: Optional[str] = None
+        self.iteration_max_minutes: Optional[int] = None
+        self.iteration_started_at: Optional[datetime] = None
+        self.iteration_force_close: bool = True
+        # Set per iteration end so the scheduler knows why _run_loop exited
+        # (book_empty / time_limit / stopped). Reset at iteration start.
+        self.iteration_end_reason: Optional[str] = None
         # Optional: list of agent IDs to restrict this sim to — lets the
         # operator dry-fire a single agent from the /algo page.
         self.only_agent_ids: list[int] | None = None
@@ -515,11 +535,23 @@ class SimDriver:
     def snapshot(self) -> dict:
         return {
             "active":           self.active,
+            "run_active":       self._run_active,
             "scenario":         self.scenario_slug,
             "seed_mode":        self.seed_mode,
             "tick_index":       self.tick_index,
             "rate_ms":          self.rate_ms,
             "started_at":       self.started_at.isoformat() if self.started_at else None,
+            # Iteration-mode fields — zero/null when running a legacy
+            # single-shot start() that didn't go through start_run.
+            "parent_run_id":         self.parent_run_id,
+            "iteration_index":       self.iteration_index,
+            "iterations_total":      self.iterations_total,
+            "iteration_regime":      self.iteration_regime,
+            "iteration_max_minutes": self.iteration_max_minutes,
+            "iteration_started_at":  self.iteration_started_at.isoformat()
+                                        if self.iteration_started_at else None,
+            "iteration_end_reason":  self.iteration_end_reason,
+            "current_iteration_id":  self.current_sim_iteration_id,
             "total_ticks":      len(self.scenario.get("ticks", [])) if self.scenario else 0,
             "holdings_count":   len(self._holdings_rows),
             "positions_count":  len(self._positions_rows),
@@ -861,6 +893,24 @@ class SimDriver:
         return self.snapshot()
 
     def stop(self) -> dict:
+        # `stop()` is called from two paths: explicitly via /api/simulator/stop
+        # (operator click) AND internally when _run_loop hits an auto-stop
+        # condition (book empty / time_limit / global auto_stop). The
+        # iteration_end_reason set by _run_loop tells the scheduler which
+        # path triggered this stop.
+        if not self.active and not self._run_active:
+            return self.snapshot()
+        # Manual stop during a multi-iteration run cancels the scheduler
+        # so remaining iterations don't kick off. The iteration in flight
+        # still cleans up below.
+        if self._run_active and self._scheduler_task and not self._scheduler_task.done():
+            # External stop — flag the in-flight iteration as 'stopped'
+            # (if _run_loop hasn't already set a more specific reason).
+            if self.active and not self.iteration_end_reason:
+                self.iteration_end_reason = "stopped"
+            self._scheduler_task.cancel()
+            self._scheduler_task = None
+            self._run_active = False
         if not self.active:
             return self.snapshot()
         self.active = False
@@ -886,12 +936,34 @@ class SimDriver:
         return self.snapshot()
 
     async def _run_loop(self) -> None:
-        """Async loop driving the scenario at `rate_ms` cadence."""
+        """Async loop driving the scenario at `rate_ms` cadence.
+
+        Sets `self.iteration_end_reason` to the reason this iteration
+        terminated so `_iteration_scheduler` knows whether to roll over
+        to the next iteration or treat the run as failed.
+        """
         try:
             auto_stop = _auto_stop_after()
             while self.active:
+                # Global wall-clock cap (safety net — sim shouldn't bleed forever)
                 if datetime.now() - self.started_at > auto_stop:
                     logger.warning(f"[SIM] Auto-stop after {auto_stop}")
+                    if not self.iteration_end_reason:
+                        self.iteration_end_reason = "auto_stop"
+                    self.stop()
+                    return
+                # Per-iteration max_minutes cap. Distinguished from the
+                # global auto_stop: this one triggers force-close when
+                # positions remain (controlled by iteration_force_close).
+                if (self.iteration_max_minutes and self.iteration_started_at
+                        and (datetime.now() - self.iteration_started_at).total_seconds() / 60.0
+                            >= self.iteration_max_minutes):
+                    self.iteration_end_reason = "time_limit"
+                    if self.iteration_force_close and self._positions_rows:
+                        try:
+                            self._force_close_open_positions("iteration time_limit")
+                        except Exception as e:
+                            logger.error(f"[SIM] force-close failed: {e}")
                     self.stop()
                     return
                 self._apply_next_tick()
@@ -901,7 +973,284 @@ class SimDriver:
             pass
         except Exception as e:
             logger.error(f"[SIM] Loop crashed: {e}")
+            if not self.iteration_end_reason:
+                self.iteration_end_reason = "failed"
             self.active = False
+
+    def _force_close_open_positions(self, reason: str) -> int:
+        """
+        Write synthetic close orders against every remaining open position
+        at last_price. Called when an iteration hits its time_limit with
+        positions still open. Side is inverted from the position's signed
+        quantity (long → SELL close, short → BUY close).
+
+        Each close lands as an AlgoOrder(mode='sim', engine='sim',
+        status='FILLED') in the live DB. The position row is removed
+        from `_positions_rows` so the next tick (if any) sees a clean
+        book.
+
+        Returns the number of synthetic closes written.
+        """
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        from sqlalchemy import insert
+        import asyncio as _asyncio
+        from datetime import datetime as _dt, timezone as _tz
+
+        closes: list[dict] = []
+        for row in list(self._positions_rows):
+            qty = int(row.get("quantity") or 0)
+            if qty == 0:
+                continue
+            side = "SELL" if qty > 0 else "BUY"
+            fill = float(row.get("last_price") or 0.0)
+            sym  = str(row.get("tradingsymbol") or "")
+            acct = str(row.get("account") or "")
+            closes.append({
+                "agent_id":      None,
+                "account":       acct,
+                "tradingsymbol": sym,
+                "exchange":      row.get("exchange") or "NFO",
+                "side":          side,
+                "quantity":      abs(qty),
+                "order_type":    "MARKET",
+                "product":       row.get("product") or "MIS",
+                "variety":       "regular",
+                "price":         None,
+                "trigger_price": None,
+                "initial_price": fill,
+                "fill_price":    fill,
+                "status":        "FILLED",
+                "mode":          "sim",
+                "engine":        "sim",
+                "detail":        f"[SIM] force-close ({reason}) {side} {abs(qty)} {sym} @ ₹{fill:.2f}",
+                "filled_at":     _dt.now(_tz.utc),
+                "created_at":    _dt.now(_tz.utc),
+            })
+
+        # Clear the position rows BEFORE the DB insert so a tick crossing
+        # the boundary doesn't see them. Re-add on insert failure.
+        snapshot = list(self._positions_rows)
+        self._positions_rows.clear()
+
+        if not closes:
+            return 0
+
+        async def _insert():
+            async with async_session() as s:
+                await s.execute(insert(AlgoOrder), closes)
+                await s.commit()
+
+        try:
+            loop = _asyncio.get_event_loop()
+            if loop.is_running():
+                _asyncio.create_task(_insert())
+            else:
+                loop.run_until_complete(_insert())
+        except Exception as e:
+            logger.error(f"[SIM] force-close insert failed: {e}")
+            # Restore positions so the iteration report reflects them.
+            self._positions_rows.extend(snapshot)
+            return 0
+
+        logger.warning(f"[SIM] Force-closed {len(closes)} positions ({reason})")
+        return len(closes)
+
+    # ─── Iteration-mode scheduler ──────────────────────────────────────
+    async def start_run(self, *, iterations: int, max_minutes: int,
+                        regimes: list[str], agent_ids: list[int] | None,
+                        seed: int | None, force_close_on_timeout: bool,
+                        seed_mode: str, rate_ms: int | None,
+                        spread_pct: float | None,
+                        custom_positions: list[dict] | None) -> dict:
+        """
+        Multi-iteration entry point. The driver runs `iterations` scenarios
+        sequentially, round-robining through `regimes`. Each iteration:
+          - Persists a SimIteration DB row (started_at, regime, seed)
+          - Calls start() to initialize state and spawn _run_loop
+          - Waits until _run_loop exits (book_empty / time_limit / failed)
+          - Updates the SimIteration row (ended_at, end_reason, summary)
+          - Brief pause before the next iteration
+
+        Caller's POST returns immediately with the run snapshot; iterations
+        play out in a background asyncio task.
+        """
+        assert_enabled()
+        if self.active or self._run_active:
+            raise SimGuardError("Sim is already running — stop it first.")
+        if iterations < 1:
+            raise SimGuardError("iterations must be >= 1")
+        if not regimes:
+            raise SimGuardError("regimes list cannot be empty")
+        # Validate every regime resolves to a known scenario before we
+        # spend an iteration discovering one isn't real.
+        for r in regimes:
+            if not get_scenario(r):
+                raise SimGuardError(f"Unknown regime '{r}'")
+
+        # Build the (regime, seed) plan — round-robin regimes, derive seeds
+        # from `seed` when provided (seed + idx) so the run is replayable.
+        plan: list[tuple[str, int | None]] = []
+        for idx in range(iterations):
+            regime = regimes[idx % len(regimes)]
+            iter_seed = (seed + idx) if seed is not None else None
+            plan.append((regime, iter_seed))
+
+        self._run_active = True
+        self.parent_run_id = None
+        self.iterations_total = iterations
+        self.iteration_force_close = bool(force_close_on_timeout)
+        self.iteration_max_minutes = int(max_minutes)
+
+        # Stash per-iteration start params so we can pass them through
+        # to start() for each iteration without re-resolving.
+        self._iter_start_params = {
+            "agent_ids":        agent_ids,
+            "seed_mode":        seed_mode,
+            "rate_ms":          rate_ms,
+            "spread_pct":       spread_pct,
+            "custom_positions": custom_positions,
+        }
+        self._iter_plan = plan
+
+        self._scheduler_task = asyncio.create_task(
+            self._iteration_scheduler(), name="sim-iteration-scheduler",
+        )
+        return self.snapshot()
+
+    async def _iteration_scheduler(self) -> None:
+        """Outer task that walks `_iter_plan` sequentially."""
+        from backend.api.database import async_session
+        from backend.api.models import SimIteration
+        from datetime import datetime as _dt, timezone as _tz
+        import json as _json
+
+        try:
+            for idx, (regime, iter_seed) in enumerate(self._iter_plan, 1):
+                self.iteration_index = idx
+                self.iteration_regime = regime
+                slug = self._build_iteration_slug(regime, idx)
+
+                # Persist iteration row (started_at)
+                row_id: Optional[int] = None
+                try:
+                    async with async_session() as s:
+                        rec = SimIteration(
+                            slug=slug,
+                            parent_run_id=self.parent_run_id,
+                            iteration_index=idx,
+                            iterations_total=self.iterations_total,
+                            regime=regime,
+                            seed=iter_seed,
+                            started_at=_dt.now(_tz.utc),
+                            params_json=_json.dumps({
+                                **self._iter_start_params,
+                                "regime":       regime,
+                                "seed":         iter_seed,
+                                "max_minutes":  self.iteration_max_minutes,
+                                "force_close":  self.iteration_force_close,
+                            }, default=str),
+                        )
+                        s.add(rec)
+                        await s.commit()
+                        await s.refresh(rec)
+                        row_id = rec.id
+                        if self.parent_run_id is None:
+                            self.parent_run_id = rec.id
+                except Exception as e:
+                    logger.error(f"[SIM] SimIteration insert failed: {e}")
+
+                self.current_sim_iteration_id = row_id
+                self.iteration_end_reason = None
+                self.iteration_started_at = _dt.now()
+
+                # Kick off the per-iteration tick loop via the legacy
+                # start() path. Pass walk_seed so reproducibility flows
+                # through the existing random_walk plumbing.
+                params = dict(self._iter_start_params)
+                try:
+                    self.start(
+                        regime,
+                        rate_ms=params.get("rate_ms") or 2000,
+                        seed_mode=params.get("seed_mode") or "live",
+                        only_agent_ids=params.get("agent_ids"),
+                        spread_pct=params.get("spread_pct"),
+                        custom_positions=params.get("custom_positions"),
+                        walk_seed=iter_seed,
+                    )
+                except SimGuardError as e:
+                    logger.warning(f"[SIM] iteration {idx} start failed: {e}")
+                    self.iteration_end_reason = "failed"
+                    await self._finalize_iteration_row(row_id, end_reason="failed",
+                                                        summary={"error": str(e)})
+                    continue
+
+                # Wait for _run_loop to exit (auto-stop on book empty,
+                # time_limit, or external stop()). Poll lightly.
+                while self.active:
+                    await asyncio.sleep(0.3)
+
+                # Resolve end_reason if _run_loop didn't set one (book
+                # auto-stopped on empty positions + no open orders, which
+                # is the normal "scenario completed cleanly" outcome).
+                if not self.iteration_end_reason:
+                    self.iteration_end_reason = "book_empty" if not self._positions_rows else "scenario_complete"
+
+                # Capture summary stats + persist
+                summary = self._compute_iteration_summary()
+                await self._finalize_iteration_row(
+                    row_id, end_reason=self.iteration_end_reason, summary=summary,
+                )
+
+                # Brief inter-iteration pause so observers can see the
+                # boundary in the UI / logs.
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            logger.warning("[SIM] Iteration scheduler cancelled")
+        except Exception as e:
+            logger.error(f"[SIM] Scheduler crashed: {e}")
+        finally:
+            self._run_active = False
+            self._scheduler_task = None
+
+    def _build_iteration_slug(self, regime: str, idx: int) -> str:
+        """`<regime>-<HHMM>-<NN>` so the iteration's identity reads at a glance."""
+        ts = datetime.now().strftime("%H%M")
+        return f"{regime}-{ts}-{idx:02d}"
+
+    def _compute_iteration_summary(self) -> dict:
+        """Cheap end-of-iteration stats — total P&L, position counts, etc."""
+        rows = list(self._positions_rows)
+        total_pnl = sum(float(r.get("pnl") or 0) for r in rows)
+        hung      = sum(1 for r in rows if int(r.get("quantity") or 0) != 0)
+        return {
+            "tick_index":         self.tick_index,
+            "total_pnl_remaining": total_pnl,    # P&L of still-open positions
+            "hung_positions":      hung,
+            "regime":              self.iteration_regime,
+        }
+
+    async def _finalize_iteration_row(self, row_id: Optional[int], *,
+                                       end_reason: str, summary: dict) -> None:
+        if row_id is None:
+            return
+        from backend.api.database import async_session
+        from backend.api.models import SimIteration
+        from sqlalchemy import update
+        from datetime import datetime as _dt, timezone as _tz
+        import json as _json
+        try:
+            async with async_session() as s:
+                await s.execute(
+                    update(SimIteration).where(SimIteration.id == row_id).values(
+                        ended_at=_dt.now(_tz.utc),
+                        end_reason=end_reason,
+                        summary_json=_json.dumps(summary, default=str),
+                    )
+                )
+                await s.commit()
+        except Exception as e:
+            logger.error(f"[SIM] SimIteration finalize failed: {e}")
 
     # Long-lived alert_state for the simulator — kept separate from the real
     # background task's state so rate-history and suppression don't cross.

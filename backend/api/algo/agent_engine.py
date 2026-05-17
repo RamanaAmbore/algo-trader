@@ -841,19 +841,26 @@ async def run_cycle(context: dict, broadcast_fn=None,
             context.get("sum_holdings"),
         )
 
-    # Load agents. For isolated runs (simulator "Run in Simulator") we accept
-    # any status so an operator can dry-fire an inactive agent. For the
-    # normal cycle we stick to active/cooldown rows.
+    # Load agents. Three distinct semantics for `only_agent_ids`:
+    #   - None        → run every active / cooldown agent (default live path)
+    #   - [id1, id2]  → run ONLY those agents, regardless of DB status
+    #                   (simulator "Run in Simulator" + multi-agent sim)
+    #   - []          → run NO agents — pure market-scenario explorer
+    #                   (sim with positions only; no triggers, no orders)
     async with async_session() as session:
-        if only_agent_ids:
-            result = await session.execute(
-                select(Agent).where(Agent.id.in_(only_agent_ids))
-            )
+        if only_agent_ids is not None:
+            if not only_agent_ids:
+                agents = []   # empty list → explicit "no agents"
+            else:
+                result = await session.execute(
+                    select(Agent).where(Agent.id.in_(only_agent_ids))
+                )
+                agents = result.scalars().all()
         else:
             result = await session.execute(
                 select(Agent).where(Agent.status.in_(["active", "cooldown"]))
             )
-        agents = result.scalars().all()
+            agents = result.scalars().all()
 
     if not agents:
         return

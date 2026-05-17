@@ -102,6 +102,111 @@ class SimStartRequest(msgspec.Struct):
     chase_max_attempts: Optional[int] = None
 
 
+class SimRunRequest(msgspec.Struct):
+    """Iteration-mode entry point — `POST /api/simulator/start-run`.
+
+    Each `/start-run` call spawns one async scheduler that walks the
+    iteration plan sequentially. `iterations` × `regimes` together
+    define the plan: regimes round-robin (iter 1 = regimes[0], iter 2 =
+    regimes[1], iter 3 = regimes[0] again on iter 3 with 2 regimes).
+    """
+    iterations:  int
+    max_minutes: int
+    regimes:     list[str]
+    # `agent_ids` has three distinct semantics (matches run_cycle):
+    #   None — every active/cooldown agent (default live behaviour)
+    #   []   — NO agents (pure market-scenario explorer)
+    #   [id] — only those agents, regardless of DB status
+    agent_ids:                Optional[list[int]] = None
+    seed:                     Optional[int] = None
+    force_close_on_timeout:   bool = True
+    seed_mode:                str = "live"
+    rate_ms:                  Optional[int] = None
+    spread_pct:               Optional[float] = None
+    custom_positions:         Optional[list[dict]] = None
+
+
+class SimIterationInfo(msgspec.Struct):
+    id: int
+    slug: str
+    parent_run_id: Optional[int]
+    iteration_index: int
+    iterations_total: int
+    regime: str
+    seed: Optional[int]
+    started_at: str
+    ended_at: Optional[str]
+    end_reason: Optional[str]
+    summary: Optional[dict]
+
+
+class SimDefaultsResponse(msgspec.Struct):
+    iterations:                int
+    max_minutes:               int
+    regimes:                   list[str]
+    seed_mode:                 str
+    force_close_on_timeout:    bool
+    notify_during_run:         bool
+    block_during_market_hours: bool
+    iteration_retention_days:  int
+    rate_ms:                   int
+    spread_pct:                float
+    available_regimes:         list[dict]
+    markets_currently_open:    bool
+
+
+def _market_hours_block_check() -> None:
+    """Hard-block when any segment (NSE / MCX) is currently open AND the
+    `simulator.block_during_market_hours` setting is on. Raises 409 so
+    the UI can render a clear "Markets open — sim blocked" banner."""
+    from backend.shared.helpers.settings import get_bool
+    if not get_bool("simulator.block_during_market_hours", True):
+        return
+    from backend.api.background import _build_segments
+    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.shared.helpers.date_time_utils import (
+        is_market_open, timestamp_indian,
+    )
+    now = timestamp_indian()
+    segments = _build_segments()
+    for seg in segments:
+        try:
+            holidays = fetch_holidays(seg.get("holiday_exchange") or "NSE")
+        except Exception:
+            holidays = set()
+        if is_market_open(now, holidays, seg["hours_start"], seg["hours_end"]):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Markets are currently open ({seg.get('name', 'segment')}). "
+                    f"Set simulator.block_during_market_hours=false on "
+                    f"/admin/settings to override."
+                ),
+            )
+
+
+def _markets_currently_open() -> bool:
+    """Same probe as the guard but returns a bool (no raise) so the
+    /defaults endpoint can surface the state in the UI."""
+    try:
+        from backend.api.background import _build_segments
+        from backend.shared.helpers.broker_apis import fetch_holidays
+        from backend.shared.helpers.date_time_utils import (
+            is_market_open, timestamp_indian,
+        )
+        now = timestamp_indian()
+        for seg in _build_segments():
+            try:
+                holidays = fetch_holidays(seg.get("holiday_exchange") or "NSE")
+            except Exception:
+                holidays = set()
+            if is_market_open(now, holidays, seg["hours_start"], seg["hours_end"]):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 class SimScenarioInfo(msgspec.Struct):
     slug: str
     name: str
@@ -195,6 +300,7 @@ class SimulatorController(Controller):
         changes. Bypasses suppression + schedule gates so the operator
         gets immediate feedback.
         """
+        _market_hours_block_check()
         from sqlalchemy import select
         async with async_session() as s:
             row = (await s.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
@@ -217,6 +323,7 @@ class SimulatorController(Controller):
     @post("/start")
     async def start(self, data: SimStartRequest) -> dict:
         try:
+            _market_hours_block_check()
             market_state_override = (
                 {"preset": data.market_state_preset}
                 if data.market_state_preset else None
@@ -357,6 +464,152 @@ class SimulatorController(Controller):
         process start.
         """
         return get_driver().recent_ticks(int(limit or 100))
+
+    # ─── Iteration-mode endpoints ──────────────────────────────────────
+
+    @get("/defaults")
+    async def defaults(self) -> SimDefaultsResponse:
+        """Form pre-fill for the simulator page. Reads settings + reports
+        whether markets are currently open (so the UI can render a banner
+        BEFORE the operator submits and gets a 409)."""
+        from backend.shared.helpers.settings import (
+            get_int, get_bool, get_float, get_string,
+        )
+        regimes_raw = get_string("simulator.default_regimes",
+                                  "gap-up,gap-down,minor-volatility")
+        regimes = [r.strip() for r in regimes_raw.split(",") if r.strip()]
+        all_scen = load_scenarios()
+        available = [
+            {"slug": s["slug"], "name": s.get("name") or s["slug"]}
+            for s in all_scen
+        ]
+        return SimDefaultsResponse(
+            iterations  =get_int("simulator.default_iterations", 1),
+            max_minutes =get_int("simulator.default_max_minutes", 10),
+            regimes     =regimes,
+            seed_mode   =get_string("simulator.default_seed_mode", "live"),
+            force_close_on_timeout=get_bool("simulator.default_force_close_on_timeout", True),
+            notify_during_run     =get_bool("simulator.notify_during_run", True),
+            block_during_market_hours=get_bool("simulator.block_during_market_hours", True),
+            iteration_retention_days =get_int("simulator.iteration_retention_days", 30),
+            rate_ms     =get_int("simulator.default_rate_ms", 2000),
+            spread_pct  =get_float("simulator.default_spread_pct", 0.10),
+            available_regimes=available,
+            markets_currently_open=_markets_currently_open(),
+        )
+
+    @post("/start-run")
+    async def start_run(self, data: SimRunRequest) -> dict:
+        """
+        Iteration-mode entry point. Validates payload, blocks during
+        market hours, then kicks off the iteration scheduler in a
+        background task. Returns the run snapshot immediately so the UI
+        can poll /status for per-iteration progress.
+        """
+        _market_hours_block_check()
+        spread_fraction = (
+            max(0.0, float(data.spread_pct)) / 100.0
+            if data.spread_pct is not None else None
+        )
+        try:
+            return await get_driver().start_run(
+                iterations=data.iterations,
+                max_minutes=data.max_minutes,
+                regimes=data.regimes,
+                agent_ids=data.agent_ids,
+                seed=data.seed,
+                force_close_on_timeout=data.force_close_on_timeout,
+                seed_mode=data.seed_mode,
+                rate_ms=data.rate_ms,
+                spread_pct=spread_fraction,
+                custom_positions=data.custom_positions,
+            )
+        except SimGuardError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @get("/iterations")
+    async def list_iterations(
+        self, run_id: Optional[int] = None, limit: Optional[int] = 50,
+    ) -> list[SimIterationInfo]:
+        """List recent simulator iterations. Filter by run_id to fetch
+        every iteration of a single multi-iteration /start-run call."""
+        import json as _json
+        from backend.api.models import SimIteration
+        limit = max(1, min(int(limit or 50), 500))
+        async with async_session() as s:
+            q = select(SimIteration).order_by(desc(SimIteration.id))
+            if run_id is not None:
+                q = q.where(SimIteration.parent_run_id == run_id)
+            rows = (await s.execute(q.limit(limit))).scalars().all()
+        return [
+            SimIterationInfo(
+                id=r.id, slug=r.slug, parent_run_id=r.parent_run_id,
+                iteration_index=r.iteration_index,
+                iterations_total=r.iterations_total,
+                regime=r.regime, seed=r.seed,
+                started_at=r.started_at.isoformat() if r.started_at else "",
+                ended_at=r.ended_at.isoformat() if r.ended_at else None,
+                end_reason=r.end_reason,
+                summary=_json.loads(r.summary_json) if r.summary_json else None,
+            )
+            for r in rows
+        ]
+
+    @get("/iterations/{slug:str}")
+    async def get_iteration(self, slug: str) -> SimIterationInfo:
+        import json as _json
+        from backend.api.models import SimIteration
+        async with async_session() as s:
+            row = (await s.execute(
+                select(SimIteration).where(SimIteration.slug == slug)
+            )).scalar_one_or_none()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Iteration '{slug}' not found")
+        return SimIterationInfo(
+            id=row.id, slug=row.slug, parent_run_id=row.parent_run_id,
+            iteration_index=row.iteration_index,
+            iterations_total=row.iterations_total,
+            regime=row.regime, seed=row.seed,
+            started_at=row.started_at.isoformat() if row.started_at else "",
+            ended_at=row.ended_at.isoformat() if row.ended_at else None,
+            end_reason=row.end_reason,
+            summary=_json.loads(row.summary_json) if row.summary_json else None,
+        )
+
+    @post("/iterations/{slug:str}/replay")
+    async def replay_iteration(self, slug: str) -> dict:
+        """Re-run an iteration with the same regime + seed + agent_ids.
+        Each replay is a fresh single-iteration run (parent_run_id is the
+        new iteration's own id) — the original iteration row is left as-is
+        for the audit trail."""
+        _market_hours_block_check()
+        import json as _json
+        from backend.api.models import SimIteration
+        async with async_session() as s:
+            row = (await s.execute(
+                select(SimIteration).where(SimIteration.slug == slug)
+            )).scalar_one_or_none()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Iteration '{slug}' not found")
+        try:
+            params = _json.loads(row.params_json) if row.params_json else {}
+        except Exception:
+            params = {}
+        try:
+            return await get_driver().start_run(
+                iterations=1,
+                max_minutes=int(params.get("max_minutes") or 10),
+                regimes=[row.regime],
+                agent_ids=params.get("agent_ids"),
+                seed=row.seed,
+                force_close_on_timeout=bool(params.get("force_close", True)),
+                seed_mode=params.get("seed_mode") or "live",
+                rate_ms=params.get("rate_ms"),
+                spread_pct=params.get("spread_pct"),
+                custom_positions=params.get("custom_positions"),
+            )
+        except SimGuardError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @get("/orders/recent")
     async def recent_orders(self, limit: Optional[int] = 50) -> list[SimOrderInfo]:
