@@ -971,7 +971,11 @@ class SimDriver:
                     self.iteration_end_reason = "time_limit"
                     if self.iteration_force_close and self._positions_rows:
                         try:
-                            self._force_close_open_positions("iteration time_limit")
+                            # Await so the AlgoOrder rows land BEFORE the
+                            # scheduler reads them in _compute_iteration_fees.
+                            # Fire-and-forget create_task() left fees=0 in
+                            # the previous smoke run.
+                            await self._force_close_open_positions("iteration time_limit")
                         except Exception as e:
                             logger.error(f"[SIM] force-close failed: {e}")
                     self._internal_stop()
@@ -987,7 +991,7 @@ class SimDriver:
                 self.iteration_end_reason = "failed"
             self.active = False
 
-    def _force_close_open_positions(self, reason: str) -> int:
+    async def _force_close_open_positions(self, reason: str) -> int:
         """
         Write synthetic close orders against every remaining open position
         at last_price. Called when an iteration hits its time_limit with
@@ -999,12 +1003,21 @@ class SimDriver:
         from `_positions_rows` so the next tick (if any) sees a clean
         book.
 
+        Column names match the AlgoOrder model exactly:
+          symbol, transaction_type, quantity, initial_price, fill_price,
+          status, mode, engine, detail, filled_at, created_at, account,
+          exchange, agent_id, attempts, slippage, broker_order_id,
+          expiry_date.
+
+        Awaitable so the insert COMPLETES before the iteration's
+        finalize step reads the rows (prior fire-and-forget pattern
+        left fees=0 because the rows hadn't landed yet).
+
         Returns the number of synthetic closes written.
         """
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
         from sqlalchemy import insert
-        import asyncio as _asyncio
         from datetime import datetime as _dt, timezone as _tz
 
         closes: list[dict] = []
@@ -1017,25 +1030,19 @@ class SimDriver:
             sym  = str(row.get("tradingsymbol") or "")
             acct = str(row.get("account") or "")
             closes.append({
-                "agent_id":      None,
-                "account":       acct,
-                "tradingsymbol": sym,
-                "exchange":      row.get("exchange") or "NFO",
-                "side":          side,
-                "quantity":      abs(qty),
-                "order_type":    "MARKET",
-                "product":       row.get("product") or "MIS",
-                "variety":       "regular",
-                "price":         None,
-                "trigger_price": None,
-                "initial_price": fill,
-                "fill_price":    fill,
-                "status":        "FILLED",
-                "mode":          "sim",
-                "engine":        "sim",
-                "detail":        f"[SIM] force-close ({reason}) {side} {abs(qty)} {sym} @ ₹{fill:.2f}",
-                "filled_at":     _dt.now(_tz.utc),
-                "created_at":    _dt.now(_tz.utc),
+                "account":          acct,
+                "symbol":           sym,
+                "exchange":         row.get("exchange") or "NFO",
+                "transaction_type": side,
+                "quantity":         abs(qty),
+                "initial_price":    fill,
+                "fill_price":       fill,
+                "status":           "FILLED",
+                "mode":             "sim",
+                "engine":           "sim",
+                "detail":           f"[SIM] force-close ({reason}) {side} {abs(qty)} {sym} @ ₹{fill:.2f}",
+                "filled_at":        _dt.now(_tz.utc),
+                "created_at":       _dt.now(_tz.utc),
             })
 
         # Clear the position rows BEFORE the DB insert so a tick crossing
@@ -1046,20 +1053,12 @@ class SimDriver:
         if not closes:
             return 0
 
-        async def _insert():
+        try:
             async with async_session() as s:
                 await s.execute(insert(AlgoOrder), closes)
                 await s.commit()
-
-        try:
-            loop = _asyncio.get_event_loop()
-            if loop.is_running():
-                _asyncio.create_task(_insert())
-            else:
-                loop.run_until_complete(_insert())
         except Exception as e:
             logger.error(f"[SIM] force-close insert failed: {e}")
-            # Restore positions so the iteration report reflects them.
             self._positions_rows.extend(snapshot)
             return 0
 
