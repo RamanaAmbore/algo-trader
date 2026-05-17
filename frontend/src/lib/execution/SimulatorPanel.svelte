@@ -578,7 +578,10 @@
       disabled={simOff}
       class="sim-btn sim-btn-load disabled:opacity-40">Load live book</button>
     <button type="button" onclick={doStart}
-      disabled={simOff || status.active}
+      disabled={simOff || status.active || iterMarketBlocked}
+      title={iterMarketBlocked
+        ? 'Markets are currently open — sim is blocked. Override via /admin/settings (simulator.block_during_market_hours).'
+        : ''}
       class="sim-btn sim-btn-primary disabled:opacity-40">Start</button>
     <button type="button" onclick={doStop}
       disabled={simOff || !status.active}

@@ -142,10 +142,12 @@ SEEDS: list[tuple] = [
      "max_minutes cap. False leaves them open and the iteration's end_reason "
      "reflects 'time_limit' with hung positions reported separately.",
      None, {}),
-    ("simulator", "simulator.notify_during_run",       "bool", True,
+    ("simulator", "simulator.notify_during_run",       "bool", False,
      "Telegram + email alerts fire live-style (with SIM prefix) on every "
-     "agent trigger during a sim. Turn off for quiet runs that only emit a "
-     "summary at iteration end.",
+     "agent trigger during a sim. Default OFF to avoid swamping the alerts "
+     "group with sim chatter — operator opts in per run when they want "
+     "the full live-style feedback. agent_events + log lines are always "
+     "written regardless of this setting.",
      None, {}),
     ("simulator", "simulator.block_during_market_hours", "bool", True,
      "Hard-block /api/simulator/start when any segment (NSE/MCX) is currently "

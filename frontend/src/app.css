@@ -613,6 +613,27 @@
    dual-zone string) and cmd entries (h.time pre-formatted at the
    callsite). Keeps the yellow accent so they stand out from row text. */
 .log-panel .log-ts-fallback { color: #fde047; font-weight: 700; font-size: 0.6rem; }
+
+/* `.log-sim-pill` — amber chip surfacing on EVERY log row whose source
+   is a simulator artefact, regardless of which tab is rendering it.
+   Operator can never mistake a sim entry for live activity on the
+   Agent / Order / System / Terminal tabs. Pill style matches the
+   navbar SIMULATOR badge palette. */
+.log-panel .log-sim-pill {
+  display: inline-block;
+  background: rgba(251,191,36,0.18);
+  border: 1px solid rgba(251,191,36,0.55);
+  color: #fbbf24;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0 0.25rem;
+  border-radius: 2px;
+  margin-right: 0.25rem;
+  cursor: help;
+  vertical-align: 1px;
+}
 /* Agent-id link chip on AlgoOrder rows — amber accent, matching the
    algo palette. Renders inline after the engine chip; absent when
    agent_id is null (tickets, replays without an originating agent). */

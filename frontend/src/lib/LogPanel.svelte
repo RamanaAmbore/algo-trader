@@ -360,7 +360,8 @@
     }));
     const agentLines = (agentLog || []).map(e => {
       const t = _dualTsHtml(e.timestamp);
-      return { ts: _shortTime(e.timestamp), html: `<span class="log-agent-default">${t} ${e.event_type||''} ${e.trigger_condition||''}</span>` };
+      const simPill = e.sim_mode ? '<span class="log-sim-pill" title="Simulator entry — not live activity">SIM</span> ' : '';
+      return { ts: _shortTime(e.timestamp), html: `<span class="log-agent-default">${t} ${simPill}${e.event_type||''} ${e.trigger_condition||''}</span>` };
     });
     const all = [...cmdLines, ...orderLines, ...agentLines];
     return all.length ? all.map(x => x.html).join('\n') : '<span class="log-debug">No events.</span>';
@@ -445,15 +446,22 @@
             : e.event_type === 'action_success' ? 'log-agent-success'
             : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
             : 'log-agent-default';
-  return `<span class="${cls}">${t} ${e.event_type||''} ${e.trigger_condition||''}</span>`;
+  // SIM indicator — sim_mode=true rows interleave with live rows on
+  // this tab; the pill makes them impossible to confuse with real
+  // agent activity. Amber matches the SIMULATOR banner palette.
+  const simPill = e.sim_mode ? '<span class="log-sim-pill" title="Simulator entry — not live activity">SIM</span> ' : '';
+  return `<span class="${cls}">${t} ${simPill}${e.event_type||''} ${e.trigger_condition||''}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
   // System log lines carry a leading ISO timestamp (parsed by
   // parseLogLineTime → dual-zone). When parse fails, render the raw
-  // line unchanged.
+  // line unchanged. Lines emitted by the sim driver / sim alert
+  // dispatch carry a "[SIM]" marker — surface as a pill so they're
+  // visually distinct from live entries on this tab.
   const t = parseLogLineTime(l);
   const rest = t ? stripTs(l) : l;
   const tHtml = t ? `<span class="log-ts log-ts-fallback">${t}</span> ` : '';
-  return `<span class="${sysClass(l)}">${tHtml}${rest}</span>`;
+  const simPill = /\[SIM\]/.test(l) ? '<span class="log-sim-pill" title="Simulator log line">SIM</span> ' : '';
+  return `<span class="${sysClass(l)}">${tHtml}${simPill}${rest}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No log entries.</span>{/if}{/if}</pre>
 {/if}
 

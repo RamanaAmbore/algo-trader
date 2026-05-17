@@ -349,6 +349,26 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                               0 if r['scope'] != 'TOTAL' else 1,
                               r['scope']))
 
+    # `simulator.notify_during_run` gate — when off (default), skip the
+    # outbound Telegram + email send for sim_mode fires. The agent_event
+    # row + log line are still written by the caller (_v2_record, log_event)
+    # so the audit trail is complete; only the noisy channels are
+    # suppressed. Operator opts in by toggling the setting per run when
+    # they want the full live-style feedback (e.g. validating dispatch).
+    if sim_mode:
+        try:
+            from backend.shared.helpers.settings import get_bool
+            if not get_bool("simulator.notify_during_run", False):
+                logger.info(
+                    f"[SIM] notify_during_run=off — skipped TG/email for "
+                    f"agent {agent.slug}; event row + log line still written"
+                )
+                # Treat as "rich path attempted" so the caller doesn't fall
+                # through to the bare dispatch() that ignores the setting.
+                return True
+        except Exception:
+            pass  # if the setting lookup itself fails, fall through to send
+
     tg_body    = _tg_alert_body(rows)
     email_html = _email_alert_body(rows)
     subject    = f"Agent {agent.slug}"

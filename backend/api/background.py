@@ -596,6 +596,70 @@ async def _task_instruments() -> None:
         await _warm()
 
 
+async def _task_sim_cleanup() -> None:
+    """
+    Prune sim_iterations + their related sim_mode agent_events and
+    mode='sim' algo_orders older than `simulator.iteration_retention_days`
+    (default 30). Runs once daily at 03:00 IST (markets closed; sim is
+    blocked during market hours anyway so no risk of touching active state).
+    Setting `simulator.iteration_retention_days = 0` disables auto-purge.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import SimIteration, AgentEvent, AlgoOrder
+    from backend.shared.helpers.settings import get_int
+    from sqlalchemy import delete as sql_delete, and_
+
+    async def _purge_once():
+        days = get_int("simulator.iteration_retention_days", 30)
+        if days <= 0:
+            logger.info("Background: sim cleanup disabled (retention_days=0)")
+            return
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        try:
+            async with async_session() as s:
+                # Purge AlgoOrders + AgentEvents created BEFORE the cutoff
+                # AND tagged with sim mode. Conservative: timestamp window
+                # plus the mode/sim_mode predicate so we never touch a live
+                # row even if its timestamp falls in the same window.
+                ao = await s.execute(
+                    sql_delete(AlgoOrder).where(
+                        and_(AlgoOrder.mode == 'sim', AlgoOrder.created_at < cutoff)
+                    )
+                )
+                ae = await s.execute(
+                    sql_delete(AgentEvent).where(
+                        and_(AgentEvent.sim_mode.is_(True), AgentEvent.timestamp < cutoff)
+                    )
+                )
+                # Finally drop the SimIteration parent rows.
+                si = await s.execute(
+                    sql_delete(SimIteration).where(SimIteration.started_at < cutoff)
+                )
+                await s.commit()
+                logger.info(
+                    f"Background: sim cleanup purged "
+                    f"{si.rowcount or 0} iterations, "
+                    f"{ae.rowcount or 0} sim events, "
+                    f"{ao.rowcount or 0} sim orders (older than {days} days)"
+                )
+        except Exception as e:
+            logger.error(f"Background: sim cleanup failed: {e}")
+
+    await asyncio.sleep(30)  # let the rest of startup settle first
+    await _purge_once()
+
+    while True:
+        # Daily at 03:00 IST — well outside market hours.
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: sim cleanup sleeping {sleep_s/3600:.1f}h until 03:00 IST")
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -610,6 +674,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_expiry_check(),       name="bg-expiry"),
         asyncio.create_task(_task_instruments(),        name="bg-instruments"),
         asyncio.create_task(_task_daily_snapshot(),     name="bg-daily-snapshot"),
+        asyncio.create_task(_task_sim_cleanup(),        name="bg-sim-cleanup"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

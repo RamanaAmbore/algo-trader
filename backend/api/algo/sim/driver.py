@@ -1135,6 +1135,10 @@ class SimDriver:
         from datetime import datetime as _dt, timezone as _tz
         import json as _json
 
+        # Track the in-flight iteration's row across the loop so an
+        # outer cancel/crash can finalise it with `end_reason='stopped'`
+        # or `'failed'` rather than leaving an orphan pending row.
+        in_flight_row_id: Optional[int] = None
         try:
             for idx, (regime, iter_seed) in enumerate(self._iter_plan, 1):
                 self.iteration_index = idx
@@ -1170,13 +1174,15 @@ class SimDriver:
                 except Exception as e:
                     logger.error(f"[SIM] SimIteration insert failed: {e}")
 
+                in_flight_row_id = row_id
                 self.current_sim_iteration_id = row_id
                 self.iteration_end_reason = None
                 self.iteration_started_at = _dt.now()
-                # Reset shadow lifespan state per iteration so each
-                # iteration tests the agent against its real starting
-                # budget. Matches the "iteration = independent trial"
-                # convention used by NinjaTrader / TradeStation.
+                # Defensive: each iteration resets every per-iter dict
+                # in alert_state so a previous iteration's residue
+                # (suppression, shadow lifespan, exhaustion list) can't
+                # leak. Pre-existing run-level dicts in alert_state
+                # (sim_mode flag, pnl_history) are untouched.
                 self._sim_alert_state['shadow_lifespan'] = {}
                 self._sim_alert_state['lifespan_exhausted_agents'] = []
 
@@ -1199,6 +1205,7 @@ class SimDriver:
                     self.iteration_end_reason = "failed"
                     await self._finalize_iteration_row(row_id, end_reason="failed",
                                                         summary={"error": str(e)})
+                    in_flight_row_id = None  # finalized; nothing for the outer handler to do
                     continue
 
                 # Wait for _run_loop to exit (auto-stop on book empty,
@@ -1217,14 +1224,35 @@ class SimDriver:
                 await self._finalize_iteration_row(
                     row_id, end_reason=self.iteration_end_reason, summary=summary,
                 )
+                in_flight_row_id = None  # cleanly finalized
 
                 # Brief inter-iteration pause so observers can see the
                 # boundary in the UI / logs.
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             logger.warning("[SIM] Iteration scheduler cancelled")
+            # Finalize the in-flight iteration row so the audit trail
+            # isn't half-written. Operator-pressed Stop → 'stopped';
+            # internal cancel without an explicit reason also lands here.
+            if in_flight_row_id is not None:
+                reason = self.iteration_end_reason or "stopped"
+                try:
+                    summary = self._compute_iteration_summary()
+                except Exception:
+                    summary = {"error": "summary computation failed during cancel"}
+                await self._finalize_iteration_row(
+                    in_flight_row_id, end_reason=reason, summary=summary,
+                )
         except Exception as e:
             logger.error(f"[SIM] Scheduler crashed: {e}")
+            if in_flight_row_id is not None:
+                try:
+                    summary = self._compute_iteration_summary()
+                except Exception:
+                    summary = {"error": str(e)}
+                await self._finalize_iteration_row(
+                    in_flight_row_id, end_reason="failed", summary=summary,
+                )
         finally:
             self._run_active = False
             self._scheduler_task = None
