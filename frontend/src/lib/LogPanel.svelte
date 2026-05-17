@@ -9,14 +9,18 @@
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
 
+  // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
+  // the mapped tab AND auto-applies the matching order filter — sim →
+  // simulator tab; everything else → order tab filtered to that mode.
   /** @type {{
    *   heightClass?: string,
-   *   tabs?: string[],            // restrict visible tabs (default = all)
-   *   defaultTab?: string,        // initial tab (default 'order')
-   *   simScope?: boolean,         // when true, agent tab pulls sim_mode events
-   *   pollMs?: number,            // poll cadence for the internal streams
+   *   tabs?: string[],
+   *   defaultTab?: string,
+   *   simScope?: boolean,
+   *   pollMs?: number,
    *   cmdHistory?: Array<{status: string, message: string, fields?: Record<string,string>, time: string}>,
    *   onTabChange?: (tab: string) => void,
+   *   mode?: string | null,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -26,6 +30,7 @@
     pollMs      = 3000,
     cmdHistory  = [],
     onTabChange = () => {},
+    mode        = /** @type {string | null} */ (null),
   } = $props();
 
   let logTab = $state(defaultTab);
@@ -34,6 +39,22 @@
   // tab strip silently ignores parent-driven tab switches.
   $effect(() => {
     if (defaultTab && defaultTab !== logTab) logTab = defaultTab;
+  });
+
+  // Mode → tab + filter mapping. When the parent passes `mode`, we
+  // auto-switch the Order-tab filter chip AND (for sim) flip to the
+  // simulator tab so an operator selecting SIM in the navbar lands on
+  // the price-tick stream automatically. Other modes go to the Order
+  // tab so the operator sees the AlgoOrder rows that mode produces.
+  $effect(() => {
+    if (!mode) return;
+    if (mode === 'sim') {
+      orderModeFilter = 'sim';
+      if (logTab !== 'simulator' && tabs.includes('simulator')) logTab = 'simulator';
+    } else if (['paper','live','shadow','replay'].includes(mode)) {
+      orderModeFilter = /** @type {any} */ (mode);
+      if (logTab !== 'order' && tabs.includes('order')) logTab = 'order';
+    }
   });
 
   // ── Internally-fetched data streams ──────────────────────────────────
@@ -133,13 +154,15 @@
   // mode-specific filters fall back to the order-only rendering so
   // operators can scope to "what paper orders did I just place" or
   // "what live orders did Kite take" without agent-fire noise.
-  /** @type {'all'|'paper'|'live'|'sim'} */
+  /** @type {'all'|'paper'|'live'|'sim'|'shadow'|'replay'} */
   let orderModeFilter = $state('all');
   const _ORDER_MODE_TABS = [
-    ['all',   'All'],
-    ['paper', 'Paper'],
-    ['live',  'Live'],
-    ['sim',   'Sim'],
+    ['all',    'All'],
+    ['paper',  'Paper'],
+    ['live',   'Live'],
+    ['sim',    'Sim'],
+    ['shadow', 'Shadow'],
+    ['replay', 'Replay'],
   ];
   const filteredOrderRows = $derived.by(() => {
     if (orderModeFilter === 'all') return orderRows;

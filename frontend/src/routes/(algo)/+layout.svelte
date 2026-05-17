@@ -173,11 +173,14 @@
       liveConfirmOpen = true;
       return;
     }
-    if (mode === 'sim') {
-      // Sim is transient — driver is started from /admin/execution's
-      // Simulator panel. No persisted mode flip until the operator
-      // presses Start on that page.
-      goto('/admin/execution?mode=sim');
+    if (mode === 'sim' || mode === 'replay') {
+      // Both are transient — the driver is started from /admin/execution's
+      // respective panel. Optimistically flip the chip immediately so the
+      // operator sees their selection reflected; the next /api/admin/
+      // execution/mode poll (30s) will sync back to the persisted value
+      // if the operator navigates away without starting.
+      executionMode.set(mode);
+      goto(`/admin/execution?mode=${mode}`);
       return;
     }
     await _commitMode(mode);

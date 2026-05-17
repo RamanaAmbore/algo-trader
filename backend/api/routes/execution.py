@@ -26,7 +26,13 @@ logger = get_logger(__name__)
 # Order matches the navbar dropdown: SIM first (entry into the simulator),
 # then the live-data ladder (PAPER → LIVE → SHADOW), then REPLAY at the
 # bottom as the historical-data diagnostic.
-_DEV_MODES  = ["sim", "paper", "replay"]
+#
+# Dev intentionally excludes 'paper' from the selectable list — every
+# broker-hitting action on dev is forced to paper regardless (see
+# _resolve_mode in actions.py), so PAPER is a no-op confirmation. The
+# chip still RESOLVES to 'paper' on dev when neither sim nor replay is
+# running; it's just not a dropdown option.
+_DEV_MODES  = ["sim", "replay"]
 _PROD_MODES = ["sim", "paper", "live", "shadow", "replay"]
 
 

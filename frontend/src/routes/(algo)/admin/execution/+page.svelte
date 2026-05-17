@@ -512,6 +512,7 @@
 
   <LogPanel
     heightClass="h-[40vh]"
+    mode={mode}
     defaultTab={paperLogTab}
     onTabChange={(id) => { paperLogTab = id; }}
   />
@@ -733,6 +734,7 @@
 
   <LogPanel
     heightClass="h-[40vh]"
+    mode={mode}
     defaultTab="order"
   />
 {/if}

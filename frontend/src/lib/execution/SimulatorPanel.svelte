@@ -683,6 +683,7 @@
 
 <LogPanel
   heightClass="h-[40vh]"
+  mode="sim"
   defaultTab={logTab}
   simScope
   onTabChange={(id) => { logTab = id; }}
