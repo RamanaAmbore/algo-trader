@@ -893,32 +893,42 @@ class SimDriver:
         return self.snapshot()
 
     def stop(self) -> dict:
-        # `stop()` is called from two paths: explicitly via /api/simulator/stop
-        # (operator click) AND internally when _run_loop hits an auto-stop
-        # condition (book empty / time_limit / global auto_stop). The
-        # iteration_end_reason set by _run_loop tells the scheduler which
-        # path triggered this stop.
+        """
+        EXTERNAL stop — invoked by `/api/simulator/stop`. Cancels the
+        in-flight iteration AND the iteration scheduler so remaining
+        iterations don't kick off.
+
+        Internal end-of-iteration stops (book empty, time_limit) go
+        through `_internal_stop()` instead — they keep the scheduler
+        alive so it can roll over to the next iteration.
+        """
         if not self.active and not self._run_active:
             return self.snapshot()
-        # Manual stop during a multi-iteration run cancels the scheduler
-        # so remaining iterations don't kick off. The iteration in flight
-        # still cleans up below.
+        # Cancel the scheduler FIRST so it doesn't react to the
+        # in-flight iteration ending below.
         if self._run_active and self._scheduler_task and not self._scheduler_task.done():
-            # External stop — flag the in-flight iteration as 'stopped'
-            # (if _run_loop hasn't already set a more specific reason).
             if self.active and not self.iteration_end_reason:
                 self.iteration_end_reason = "stopped"
             self._scheduler_task.cancel()
             self._scheduler_task = None
             self._run_active = False
+        return self._internal_stop()
+
+    def _internal_stop(self) -> dict:
+        """
+        Per-iteration shutdown. Called from `_run_loop` when an
+        auto-stop condition trips (book empty / time_limit / global
+        auto_stop), and from the public `stop()` after the scheduler
+        is cancelled. Does NOT touch the scheduler — the scheduler
+        observes `self.active == False` and rolls over to the next
+        iteration.
+        """
         if not self.active:
             return self.snapshot()
         self.active = False
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
-        # Revert any settings the sim mutated so the operator's prod
-        # configuration is left exactly as we found it.
         self._revert_settings()
         self._record_tick(
             kind="stopped", moves=[], changes=[],
@@ -950,7 +960,7 @@ class SimDriver:
                     logger.warning(f"[SIM] Auto-stop after {auto_stop}")
                     if not self.iteration_end_reason:
                         self.iteration_end_reason = "auto_stop"
-                    self.stop()
+                    self._internal_stop()
                     return
                 # Per-iteration max_minutes cap. Distinguished from the
                 # global auto_stop: this one triggers force-close when
@@ -964,7 +974,7 @@ class SimDriver:
                             self._force_close_open_positions("iteration time_limit")
                         except Exception as e:
                             logger.error(f"[SIM] force-close failed: {e}")
-                    self.stop()
+                    self._internal_stop()
                     return
                 self._apply_next_tick()
                 await self._run_cycle_once()
