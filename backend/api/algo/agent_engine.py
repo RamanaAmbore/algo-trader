@@ -1091,52 +1091,48 @@ async def run_cycle(context: dict, broadcast_fn=None,
         # state. The real path runs with bypass_schedule=False and does
         # update the row.
         if not bypass_schedule:
+            # Compute the post-fire status once and reuse it for the DB
+            # write and the WS broadcast. Earlier this was computed twice
+            # in parallel branches — any future tweak risked drift between
+            # the persisted row and the broadcast payload.
+            new_status: str
+            if triggered:
+                # Lifespan check — one_shot or capped n_fires transition
+                # straight to 'completed' instead of 'cooldown'. Engine
+                # won't pick up `completed` rows on subsequent cycles.
+                # Operator can re-arm by editing status back to
+                # active/inactive.
+                new_trigger_count = (agent.trigger_count or 0) + 1
+                lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
+                if lifespan == "one_shot":
+                    new_status = "completed"
+                elif (lifespan == "n_fires"
+                      and agent.lifespan_max_fires is not None
+                      and new_trigger_count >= agent.lifespan_max_fires):
+                    new_status = "completed"
+                else:
+                    new_status = "cooldown"
+            elif agent.status == "cooldown":
+                new_status = "active"
+            else:
+                new_status = agent.status
+
             async with async_session() as session:
                 if triggered:
-                    # Lifespan check — one_shot or capped n_fires
-                    # transition straight to 'completed' instead of
-                    # 'cooldown'. Engine won't pick up `completed`
-                    # rows on subsequent cycles. Operator can re-arm
-                    # by editing status back to active/inactive.
-                    new_trigger_count = (agent.trigger_count or 0) + 1
-                    lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
-                    if lifespan == "one_shot":
-                        end_status = "completed"
-                    elif (lifespan == "n_fires"
-                          and agent.lifespan_max_fires is not None
-                          and new_trigger_count >= agent.lifespan_max_fires):
-                        end_status = "completed"
-                    else:
-                        end_status = "cooldown"
                     await session.execute(
                         update(Agent).where(Agent.id == agent.id).values(
-                            status=end_status,
+                            status=new_status,
                             last_triggered_at=datetime.now(timezone.utc),
                             trigger_count=Agent.trigger_count + 1,
                         )
                     )
                 elif agent.status == "cooldown":
                     await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(status="active")
+                        update(Agent).where(Agent.id == agent.id).values(status=new_status)
                     )
                 await session.commit()
 
             if broadcast_fn:
-                if triggered:
-                    # Compute the same end_status we just persisted so the
-                    # WS payload matches DB state.
-                    new_trigger_count = (agent.trigger_count or 0) + 1
-                    lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
-                    if lifespan == "one_shot":
-                        new_status = "completed"
-                    elif (lifespan == "n_fires"
-                          and agent.lifespan_max_fires is not None
-                          and new_trigger_count >= agent.lifespan_max_fires):
-                        new_status = "completed"
-                    else:
-                        new_status = "cooldown"
-                else:
-                    new_status = "active"
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": new_status})
 
 

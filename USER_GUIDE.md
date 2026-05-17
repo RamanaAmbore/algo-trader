@@ -25,37 +25,41 @@ Read every agent as a sentence: *"When **condition** is true, **notify** me thro
 
 ---
 
-## The big picture — three modes you'll work in
+## The big picture — execution modes
 
-Whenever an agent fires an action that wants to hit your broker, the platform has to decide: is this real, fake, or in-between? It uses three modes:
+Whenever an agent fires an action that wants to hit your broker, the platform has to decide: is this real, fake, or in-between? It has five modes; you'll use one at a time:
 
-### Mode 1 — Simulator (testing only, dev only)
+### Simulator (testing)
 
 Fabricated price moves driven by a script you choose ("NIFTY drops 3% over three minutes"). Your real broker is never contacted. Useful for: *"if my book actually saw this move, would my agent fire? Would the auto-close trade make sense?"*
 
-You'll spend most of your time here when adding a new agent or strategy.
+You'll spend most of your time here when adding a new agent or strategy. On dev branches it's always available; on prod you access it via the mode dropdown in the navbar (SIM · PAPER · LIVE · SHADOW · REPLAY).
 
-### Mode 2 — Paper trade (default on production)
+### Paper trade
 
 Real Kite quotes feeding a fake order book. Your agents see real prices, real bid/ask. When they fire a "place order" action, the order goes into a paper ledger — Kite's `basket_margin` API confirms the order *would* be valid, but no real order ever leaves the platform. You see what would have happened.
 
-### Mode 3 — Live (per-action opt-in)
+Use this when you're soak-testing a new agent against the real market before letting it touch the broker. On dev branches every action is forced to paper regardless of which mode is selected.
 
-A real broker order. Only happens when you've explicitly flipped a flag in **Settings** for the specific action type (e.g. `execution.live.cancel_order = true`). Default is everything stays in paper.
+### Live (production trading, the default)
 
-You promote actions one at a time as you build trust:
+A real broker order. This is the seeded default on a fresh prod install — the navbar lands on LIVE out of the box. You can flip to PAPER from the navbar at any time for soak-testing, then flip back. On dev branches the toggle is ignored — live trading only works on the prod (`main`) branch.
 
-1. `cancel_order` (most reversible — cancelling a stale order can't lose money)
-2. `cancel_all_orders`
-3. `modify_order`
-4. `close_position`
-5. `chase_close_positions` (auto-loss-cut)
-6. `place_order` (opens new exposure — promote last)
+When LIVE is selected, every broker-hitting agent fire or manual order routes through the live Kite API.
 
-Every alert gets a tag in its Telegram subject:
+### Shadow (audit mode)
+
+Logs exactly what a live order *would* be (the Kite API payload + margin validation) without executing. Useful for final sanity-checking before you trust live mode. Not typically needed in day-to-day ops.
+
+### Replay (historical analysis)
+
+Pre-loaded historical price candles instead of live Kite data. Useful for backtesting strategies against past market moves. Dev and prod both support it.
+
+---
+
+**The single switch on prod**: Pick a mode from the navbar dropdown (SIM · PAPER · LIVE · SHADOW · REPLAY) or visit `/admin/execution`. The page banner reads "LIVE mode" (red — default), "PAPER mode" (green), or the equivalent for sim / shadow / replay. Every alert gets a tag in its Telegram subject:
 - (no tag) — every action ran live
 - `[PAPER]` — every action was paper
-- `[MIXED]` — some live, some paper
 
 ---
 
@@ -293,8 +297,8 @@ A typical session for an active operator:
 | Telegram / email not arriving | `/admin/settings` → notifications block. Make sure `cap_in_<branch>.telegram` and `mail` are on. |
 | Options page shows yellow "stale" chips | The broker has no fresh quote. Likely because: market closed, contract illiquid, weekend. Fallback values are still useful for the *shape* of the payoff, just not absolute P&L. |
 | Brokers page shows "PENDING" status pill | The DB row exists but the platform's connection map hasn't picked it up yet. Wait 15 s — the page polls. Or click **Test** to force a load. |
-| Sim won't start | Check `cap_in_<branch>.simulator` in `backend_config.yaml` — defaults to ON on dev, OFF on prod. |
-| "Mode 2 IS LIVE" panic | Check `/admin/settings` → execution block. Flip every `execution.live.<action>` to false. Saves are immediate; no service restart needed. |
+| Sim won't start | Check `cap_in_<branch>.simulator` in `backend_config.yaml` — defaults to ON on both dev and prod. |
+| "I'm in LIVE and didn't want to be" | Pick PAPER from the navbar dropdown. Effect is immediate; the next agent fire lands as paper. No service restart needed. |
 
 ---
 
@@ -321,7 +325,7 @@ The navbar's right-hand side surfaces what the platform is currently doing. Each
 |---|---|
 | **DEMO** (purple) | Anonymous visitor on the prod site — the data you're seeing is synthetic, no broker touch. |
 | **PAPER** (blue) | The prod paper engine has at least one open chase order. Could be your manual paper-mode ticket, or an agent fire that landed in paper. |
-| **SIM** (red) | A simulator run is in progress (dev only — sims are capped off on prod by default). |
+| **SIM** (red) | A simulator run is in progress. Available on both dev and prod via the navbar mode dropdown. |
 
 Both PAPER and SIM can show at the same time on dev if you've started a sim AND have paper orders open. Below the badges, full-width banners under the navbar carry the scenario / chase-count detail.
 

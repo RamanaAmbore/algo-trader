@@ -385,7 +385,7 @@ You'll see:
 - **Chart grid** — one mini chart per symbol with captured ticks. Underlyings come first (sky-blue `SPOT` tag), derivatives below grouped by underlying with the spot overlaid as a dashed line.
 - **LogPanel** at the bottom — Order tab shows recent `mode='paper'` `AlgoOrder` rows; the Chart tab mirrors the same chart grid so you can keep watching while you scroll the order log.
 
-**When the page is most useful**: during the soak phase, after you've flipped a single `execution.live.<action>` flag to `true` and want to watch the chase against the live market without the order touching the broker. Every paper fire shows up here, and you can compare it to what the agent's `[PAPER]` Telegram alert said would happen.
+**When the page is most useful**: during the soak phase, after you've toggled into PAPER mode from the navbar and want to watch the chase against the live market without any order touching the broker. Every paper fire shows up here, and you can compare it to what the agent's `[PAPER]` Telegram alert said would happen. The seeded default on a fresh install is LIVE — flip to PAPER from the navbar (or `/admin/execution`) when you want to soak-test, then flip back to LIVE when you're ready for the real broker to take orders.
 
 ---
 
@@ -574,52 +574,50 @@ The seeder behaves well across deploys: it inserts new keys, refreshes descripti
 
 The first thing you see on the page is the execution mode banner:
 
-- **Green — `Every broker action is in PAPER mode`** — every fired agent that wants to hit Kite will instead write a paper `AlgoOrder` row. Real positions don't change. This is the prod default.
-- **Red — `⚠ N of 6 actions are LIVE`** — at least one `execution.live.<action>` flag is true; agents firing those actions will place real broker orders.
+- **Red — `LIVE mode`** — `execution.paper_trading_mode = False`. Every fired agent that wants to hit Kite places a real broker order. This is the seeded default on a fresh install.
+- **Green — `PAPER mode`** — `execution.paper_trading_mode = True`. Every fired agent writes a paper `AlgoOrder` row instead of touching Kite. Real positions don't change.
+- **Pink — `SIMULATOR running`** / **Orange — `SHADOW mode`** / **Sky — `REPLAY running`** — the corresponding mode is active.
 
-Below the banner, the **execution** section lists six per-action flags (`execution.live.cancel_order`, `execution.live.cancel_all_orders`, `execution.live.modify_order`, `execution.live.place_order`, `execution.live.close_position`, `execution.live.chase_close_positions`). Flip them one by one — no all-or-nothing switch — to promote actions from paper to live.
+The single master toggle `execution.paper_trading_mode` (flipped via the navbar dropdown or `/admin/execution`) decides PAPER vs LIVE; no per-action flags. SHADOW and REPLAY are separate opt-ins on top.
 
-### The three execution modes
+### The five execution modes
 
 Every agent fire that touches the broker gets routed by mode:
 
 | Mode | Where it runs | Quote source | Trade engine |
 |---|---|---|---|
-| **1 — Simulator** | Dev only | Fabricated (scenario-driven) | `PaperTradeEngine` against fabricated bid/ask |
-| **2 — Real-data + paper** | Prod default for every action | Real Kite quote API (batched) | `PaperTradeEngine` against live bid/ask, validated by Kite's `basket_margin` |
-| **3 — Real broker** | Prod, per-action opt-in | Real Kite | Real `place_order` / `modify_order` / `cancel_order` |
+| **1 — Simulator** | Both dev + prod (via navbar SIM) | Fabricated (scenario-driven) | `PaperTradeEngine` against fabricated bid/ask |
+| **2 — Paper** | Prod when `paper_trading_mode=True`; dev always | Real Kite quote API (batched) | `PaperTradeEngine` against live bid/ask, validated by Kite's `basket_margin` |
+| **3 — Live** | Prod when `paper_trading_mode=False` (default on fresh install) | Real Kite | Real `place_order` / `modify_order` / `cancel_order` |
+| **4 — Shadow** | Prod when `shadow_mode=True` | Real Kite | Logged payload + `basket_margin` only; no execution |
+| **5 — Replay** | Both dev + prod | Historical OHLCV candles | `PaperTradeEngine` against historical bid/ask |
 
-The `main` branch is a **hard outer gate**: on dev (any non-main branch), every broker-hitting action is forced to paper regardless of these flags — the `execution.live.*` toggles only matter on prod.
+The `main` branch is a **hard outer gate**: on dev (any non-main branch), every broker-hitting action is forced to paper regardless of `execution.paper_trading_mode`.
 
 Every alert email + Telegram message gets a tag so you can tell at a glance what mode the actions ran in:
 
 | Tag | Meaning |
 |---|---|
-| (no tag) | Every broker action in this fire ran live |
-| `[PAPER]` | Every broker action in this fire was paper |
-| `[MIXED]` | Some live, some paper (you have a mix of `execution.live.*` flags on) |
+| (no tag) | Every broker action in this fire ran live (master toggle `execution.paper_trading_mode=False`) |
+| `[PAPER]` | Every broker action in this fire was paper (master toggle `execution.paper_trading_mode=True`) |
 
 ### Recommended promotion order
 
-When you finally trust the engine enough to go live, promote actions in this order — most reversible first:
+Promotion is now a single master-toggle flip (`execution.paper_trading_mode`), not per-action flags. The recommended path:
 
-1. `execution.live.cancel_order` — cancelling a stale order can't lose money
-2. `execution.live.cancel_all_orders`
-3. `execution.live.modify_order` — modifying an existing order is bounded by your existing position
-4. `execution.live.close_position`
-5. `execution.live.chase_close_positions` — automatic loss-cut
-6. `execution.live.place_order` — opens new exposure; promote last
+1. Soak with the master toggle at `True` (PAPER) and watch the chase loop on `/admin/execution?mode=paper`
+2. Watch the LogPanel's Order tab — every fire writes an `AlgoOrder` row with `mode='paper'` and Kite's `basket_margin` verdict in `.detail`. REJECTED rows tell you "Kite would have kicked this back anyway."
+3. When the fires look right, flip the navbar dropdown to LIVE. The next agent fire hits the real broker.
 
-After each flip, watch the next live agent fire end-to-end. If anything looks off, set the flag back to `false` — the next tick reverts that action to paper.
+If anything looks off in LIVE mode, flip the navbar dropdown back to PAPER. The next tick reverts every action to paper. No per-action staging — one master toggle owns the whole pipeline.
 
 ### How edits take effect
 
 Most settings update on the next agent tick (5-minute cadence). A few are special-cased:
 
-- **`logging.*_log_level`** — handlers reapply the new level the moment you Save.
 - **`performance.refresh_interval`** / **`performance.market_refresh_time`** — picked up live by the background loop.
 - **`alerts.*`** — applied next time `run_cycle` fires.
-- **`execution.live.*`** — applied at the action handler the next time an agent fires.
+- **`execution.paper_trading_mode`** / **`execution.shadow_mode`** — applied at the next mode-resolution call (effectively immediately).
 
 You don't have to memorise this — the **(i)** info chip on each row tells you what the setting governs.
 
@@ -665,13 +663,12 @@ You don't have to memorise this — the **(i)** info chip on each row tells you 
 3. Edit the value → **Save**. The next agent tick (within 5 min) picks up the new value.
 4. If you change your mind, click **Reset** to restore the code default.
 
-**G) "Promote one action from paper to live"**
-1. `/admin/settings` → check the banner — green means everything is paper.
-2. Find the **execution** section. Pick the most reversible action that you trust (start with `execution.live.cancel_order`).
-3. Toggle the dropdown to `true` → **Save**. Banner flips to red `⚠ 1 of 6`.
-4. Wait for the next live agent fire that uses that action. The Telegram subject loses its `[PAPER]` tag (or shows `[MIXED]`) — that tells you the action went to the broker.
-5. Inspect `/orders` for the new live `AlgoOrder` row (mode = `live`).
-6. If something looks wrong, toggle the flag back to `false` — the next tick reverts to paper.
+**G) "Flip the pipeline from paper to live"**
+1. Soak in PAPER first — pick PAPER from the navbar dropdown and watch the chase loop on `/admin/execution?mode=paper`. Every fire writes a `mode='paper'` `AlgoOrder` row with Kite's `basket_margin` verdict in `.detail`.
+2. When the fires look right, pick LIVE from the navbar dropdown. The page banner flips from green to red.
+3. The next agent fire hits the real broker. Telegram alerts drop their `[PAPER]` tag, signaling the action went live.
+4. Inspect `/orders` for the new `mode='live'` `AlgoOrder` row.
+5. If something looks wrong, flip the navbar dropdown back to PAPER. The next tick reverts every action to paper.
 
 ---
 
@@ -742,7 +739,7 @@ Three submit modes:
 - **PAPER** — `POST /api/orders/ticket` with `mode=paper`. Creates an `AlgoOrder` row + registers with the prod paper engine; the chase loop fills it from real bid/ask via `LiveQuoteSource`. Same lifecycle agent fires use.
 - **LIVE** — same endpoint with `mode=live`. Two backend gates:
   1. Branch must be `main` (non-prod returns 403).
-  2. `execution.live.place_order` flag in `/admin/settings` must be true.
+  2. `execution.paper_trading_mode` must be `False` (set from the navbar mode dropdown).
   Then `kite.place_order()` with the operator's payload, tagged `ramboq-ticket`. UI fires a `window.confirm()` with the exact order line before any broker call.
 
 Today the ticket opens from `/admin/options` chain clicks. Future migration: `/orders` row Edit / Cancel / Repeat, `/agents` fire-confirm, `/performance` row "Square off" / "Sell", `/console` `place …` command.

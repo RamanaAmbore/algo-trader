@@ -240,6 +240,8 @@ Defined in `backend_config.yaml` under `market_segments`. Background thread hand
 | Loss alert check | Every performance fetch during market hours |
 | Agent engine `run_cycle()` | Every performance fetch; skips `schedule: market_hours` agents when no segment is open |
 
+**Holiday calendar caching** — `fetch_holidays(exchange)` in `broker_apis.py` is now cached per `(exchange, today's date)` to avoid hammering nseindia.com on every `_build_context()` call (once per 5 min on the real path, once per 2 s in sim). The daily cache refreshes naturally at midnight IST and caches the empty set on API failure to avoid retry-hammering when the upstream is down.
+
 ---
 
 ## Broker accounts (DB-backed CRUD)
@@ -330,6 +332,8 @@ Access tokens are cached in `.log/kite_tokens.json` (per-environment, gitignored
 ### Caching
 In-process TTL cache in `backend/api/cache.py` with per-key locking. `get_nearest_time()` rounds down to the nearest N-minute interval — use it as a cache key when aligning requests to fixed intervals. Background tasks pre-warm the cache before users hit the page.
 
+**Holiday calendar** — `fetch_holidays(exchange)` in [`broker_apis.py`](backend/shared/helpers/broker_apis.py) is cached per (exchange, today's date) in a module-level dict (`_HOLIDAY_CACHE`). The agent engine's `_build_context` calls this on every `run_cycle` (every 5 min real path, every 2 s in sim), and without the cache that meant a blocking HTTP GET to nseindia.com per tick. The holiday list only changes once a year — cache buster is today's date, so rollover happens naturally at midnight. Empty sets (API failure) are also cached to avoid retry-hammering when nseindia is down.
+
 ### Multi-Account Broker Calls
 `@for_all_accounts` in `decorators.py` wraps broker functions to iterate all accounts. Each call returns a **list of DataFrames** (one per account). Callers use `pd.concat(..., ignore_index=True)` to merge them.
 
@@ -393,7 +397,7 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 - **`+layout.svelte`** — algo-site top nav, ordered by usage frequency: Dashboard · Agents · Orders (live monitoring) → Options · Paper · Simulator (analysis surfaces) → Terminal · Tokens (build / extend) → Settings · Brokers (configuration) → Users (admin). The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
   - Polls `/api/simulator/status` (4 s) and renders the sticky red **SIMULATOR** banner on every algo page while a sim is running.
   - Polls `/api/charts/paper-status` (4 s) and renders a sticky sky-blue **PAPER** banner whenever the prod paper engine has open chase orders. Both banners can stack — sim sits on top, paper underneath. Stickiness pins them just under the navbar so they never scroll out of view.
-- **`performance/`** (public) and **`dashboard/`** (admin, same `PerformancePage.svelte` component). The public page uses the default two-row header (timestamp + Refresh on top, tabs + account picker below). The admin dashboard passes `compactHeader={true}` to collapse into one toolbar row: `[Positions | Holdings] [Account ▼] [Refresh]`. Either way, selecting a specific account scopes **every** grid (Holdings summary + detail, Positions summary + detail, Funds) to that account — sibling accounts AND the TOTAL aggregate are filtered out, and the Account column hides across those grids since it would render identical values. Performance **always** shows real Kite data; the background refresh keeps going even while the simulator is active. The algo theme (`ag-theme-algo`) is the dark navy-gradient variant; long positions render a cyan row tint with a left accent border, short positions a warm-orange row tint.
+- **`performance/`** (public) and **`dashboard/`** (admin). The public page uses `PerformancePage.svelte` (two-row header with timestamp + Refresh on top, tabs + account picker below). The admin `/dashboard` is its own page composed of three sections in order: **(1) P&L Analysis** (`PnlAnalysis.svelte`), **(2) MarketPulse summary grids** (Funds + Positions Summary + Holdings Summary; no per-symbol grid), **(3) Agent activity** (`UnifiedLog.svelte` filtered to `agent_fire / agent_action_success / agent_action_error` kinds). The summary grids on `/dashboard` scope to the selected account (sibling accounts + TOTAL filtered out) and hide the Account column when only one account is in view. Performance **always** shows real Kite data; the background refresh keeps going even while the simulator is active. The algo theme (`ag-theme-algo`) is the dark navy-gradient variant; long positions render a cyan row tint with a left accent border, short positions a warm-orange row tint.
 - **`market/`** — AI market report with timestamp
 - **`signin/`** — Sign In / Register (name, email, phone)
 - **`admin/`** — User management with full partner fields
@@ -410,22 +414,22 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 The codebase distinguishes five execution modes, each with its own quote source and trade engine. They form a **confidence ladder** — an agent graduates through these before real money moves:
 
 ```
-dev:    Simulator → Replay
-                      ↓
-prod:   Replay → Paper → Shadow → Live
+dev:    Simulator → Replay → Paper
+                              ↓
+prod:   Simulator → Paper → Live → Shadow → Replay
 ```
 
 | Mode | Quote source | Trade engine | Where it runs | Default |
 |---|---|---|---|---|
-| **1 — Simulator** | `SimQuoteSource` (fabricated, scenario-driven via [`SimDriver`](backend/api/algo/sim/driver.py)) | `PaperTradeEngine` fed by sim quotes — fills against fabricated bid/ask, removes positions on fill | Dev only (capped off in prod via `cap_in_prod.simulator: False`) | `cap_in_dev.simulator: True` |
-| **2 — Paper** | `LiveQuoteSource` (broker.quote / broker.ltp via the `Broker` adapter, with bid/ask from depth or `simulator.default_spread_pct`) | `PaperTradeEngine` singleton (`get_prod_paper_engine()`), 5-second background tick. Validates each new order via Kite's `basket_margin` before marking OPEN; REJECTED rows carry Kite's exact error in `.detail`. Real positions are NOT updated; cooldown handles re-fire | Prod only (dev never runs the live agent engine) | `execution.paper_trading_mode = True` (default) — every broker-hitting action lands as paper |
-| **3 — Live** | `LiveQuoteSource` (read paths) | Real broker via [`chase.py`](backend/api/algo/chase.py) — actual Kite `place_order` / `modify_order` / `cancel_order` | Prod only, when `execution.paper_trading_mode = False` | Enabled by setting `execution.paper_trading_mode = False` in `/admin/live` |
+| **1 — Simulator** | `SimQuoteSource` (fabricated, scenario-driven via [`SimDriver`](backend/api/algo/sim/driver.py)) | `PaperTradeEngine` fed by sim quotes — fills against fabricated bid/ask, removes positions on fill | Both dev and prod (gated by `cap_in_dev.simulator: True` / `cap_in_prod.simulator: True`) | Available on both branches; selecting SIM from the navbar goes to `/admin/execution?mode=sim` where the driver is started against a scenario + seed + agent set |
+| **2 — Paper** | `LiveQuoteSource` (broker.quote / broker.ltp via the `Broker` adapter, with bid/ask from depth or `simulator.default_spread_pct`) | `PaperTradeEngine` singleton (`get_prod_paper_engine()`), 5-second background tick. Validates each new order via Kite's `basket_margin` before marking OPEN; REJECTED rows carry Kite's exact error in `.detail`. Real positions are NOT updated; cooldown handles re-fire | Both dev and prod (dev always forces this regardless of DB flags) | On dev, every action is forced paper. On prod, gated by `execution.paper_trading_mode=True` — the persisted value when the operator clicks PAPER from the navbar |
+| **3 — Live** | `LiveQuoteSource` (read paths) | Real broker via [`chase.py`](backend/api/algo/chase.py) — actual Kite `place_order` / `modify_order` / `cancel_order` | Prod only, when `execution.paper_trading_mode = False` | Enabled by setting `execution.paper_trading_mode = False` via `/admin/execution` |
 | **4 — Replay** | [`HistoricalQuoteSource`](backend/api/algo/quote/historical.py) (pre-loaded Kite OHLCV candles) | `PaperTradeEngine` fed by historical candles — informational orders only | Both dev and prod | `cap_in_dev.replay: True`, `cap_in_prod.replay: True` |
 | **5 — Shadow** | `LiveQuoteSource` (same as paper/live) | [`ShadowTradeEngine`](backend/api/algo/shadow.py) — logs exact Kite `place_order` kwargs + validates via `basket_margin` without executing | Prod only | `execution.shadow_mode: False` (opt-in) |
 
-**The branch is the hard outer gate.** [`utils.is_prod_branch()`](backend/shared/helpers/utils.py) returns `True` only on `main`. On any other branch, every broker-hitting action is forced to paper regardless of any DB flag. On `main`, the single `execution.paper_trading_mode` master toggle decides.
+**The branch is the hard outer gate.** On non-`main` branches, every broker-hitting action is forced to paper regardless of any DB flag. On `main`, the `execution.paper_trading_mode` and `execution.shadow_mode` settings decide the effective mode.
 
-**Mode resolution precedence** in [`_resolve_mode()`](backend/api/algo/actions.py): `sim > replay > (prod branch check) > shadow > paper_trading_mode > live`.
+**Mode resolution precedence** in [`_resolve_mode()`](backend/api/algo/actions.py): `sim > replay > (prod-branch check) > shadow > paper_trading_mode > agent.trade_mode`. Non-prod branches force paper before even checking shadow.
 
 **Architectural pieces**:
 
@@ -438,35 +442,43 @@ prod:   Replay → Paper → Shadow → Live
 
 ### Dedicated mode pages and navbar
 
-Each mode has its own page under `/admin/`:
+Each mode has its own page under `/admin/execution`:
 
-| Page | Mode | Branch | Navbar badge |
+| Mode | Page | Navbar entry | Navbar badge |
 |---|---|---|---|
-| `/admin/simulator` | Simulator | dev | `SIM` (pink) |
-| `/admin/replay` | Replay | dev + prod | `REPLAY` (green) |
-| `/admin/paper` | Paper | prod | `PAPER` (sky) |
-| `/admin/shadow` | Shadow | prod | `SHADOW` (orange) |
-| `/admin/live` | Live | prod | `LIVE` (red) |
+| Simulator | `/admin/execution?mode=sim` | SIM · | `SIM` (pink) |
+| Paper | `/admin/execution?mode=paper` | PAPER · | `PAPER` (sky) |
+| Live | `/admin/execution?mode=live` | LIVE · | `LIVE` (red) |
+| Shadow | `/admin/execution?mode=shadow` | SHADOW · | `SHADOW` (orange) |
+| Replay | `/admin/execution?mode=replay` | REPLAY | `REPLAY` (green) |
 
-The navbar filters mode entries by branch: dev shows Simulator + Replay; prod shows Replay + Paper + Shadow + Live. Non-mode nav items (Dashboard, Agents, Orders, Options, Terminal, Tokens, Settings, Brokers, Users) are always visible (subject to adminOnly/demo filtering).
+The navbar renders a **Mode Dropdown** under the execution-mode section (SIM · PAPER · LIVE · SHADOW · REPLAY on prod; SIM · PAPER · REPLAY on dev). Clicking an entry navigates to that mode's page at `/admin/execution?mode=<slug>`. The dropdown order prioritizes frequent workflows: simulator first (entry point), then the live-data ladder (paper → live → shadow), then replay as a diagnostic. Non-mode nav items (Dashboard, Agents, Orders, Options, Terminal, Tokens, Settings, Brokers, Users) are always visible (subject to adminOnly/demo filtering).
 
-**Master execution gate** — single `execution.paper_trading_mode` toggle (DB seed, default `True`):
+Backward-compat stub: `/admin/simulator` still exists and bounces to `/admin/execution?mode=sim` (but the bookmark-only path avoids an auth race that the old route had).
 
-| Value | Route | Meaning |
-|---|---|---|
-| `True` (default) | Paper | Every broker-hitting action lands as a paper `AlgoOrder` row; no real Kite calls |
-| `False` | Live | Every broker-hitting action calls the real Kite broker (via `chase.py`) |
+**Execution settings** (`GET /api/admin/execution/mode`):
+- `mode: str` — current effective mode (computed from sim/replay driver status + settings flags)
+- `allowed_modes: list[str]` — branch-filtered valid targets
+- `branch: str` — raw deploy_branch value (`main` for prod, other names for dev)
 
-Toggle from `/admin/live`. The page banner shows green ("PAPER mode") when `True`, red ("LIVE mode") when `False`. On non-`main` branches, `execution.paper_trading_mode` is ignored and every action is forced to paper.
+**Master settings**:
 
-**Order-log mode pills**: every `AlgoOrder` row carries `mode ∈ {sim, paper, live}`. The LogPanel Order tab shows three distinct pills:
+| Setting | Type | Default | Meaning |
+|---|---|---|---|
+| `execution.paper_trading_mode` | bool | seeded `False` on first boot (= LIVE) | `seed_settings()` upserts `false` IF the row is missing — fresh installs land in LIVE. Existing rows are NEVER overwritten (operator's last navbar pick persists). The in-code `get_bool()` fallback (5 callsites) stays at `True` (PAPER) so a row deleted mid-run fails safe. On dev, the value is ignored — branch always forces paper. On prod: `True` → paper mode, `False` → live mode. |
+| `execution.shadow_mode` | bool | `False` | Opt-in. When `True` on prod, actions log Kite payload + validate via `basket_margin` without executing. |
+
+Toggles sync via `/api/admin/execution/mode` (POST with `{mode: string}`). The page banner at `/admin/execution` shows green ("PAPER mode") when `paper_trading_mode=True`, red ("LIVE mode") when `False`. On non-`main` branches, both settings are ignored and every action is forced to paper.
+
+**Order-log mode pills**: every `AlgoOrder` row carries `mode ∈ {sim, paper, live, shadow}`. The LogPanel Order tab shows distinct pills:
 - `SIM` — amber, fabricated data
 - `PAPER` — sky-blue, real data + paper trade
 - `LIVE` — emerald, real broker order
+- `SHADOW` — orange, logged payload + validation, no execution
 
 `/api/orders/algo/recent?mode=paper` filters the API to just paper rows; the UI surfaces it via the mode column on each row.
 
-**What this means for the operator on prod**: every broker-hitting agent fire writes a paper `AlgoOrder` row with Kite's `basket_margin` verdict in `.detail`. REJECTED rows tell you "Kite would have kicked this back anyway"; OPEN rows transition to FILLED / UNFILLED via the chase loop. Real positions stay unchanged until you flip a flag to live.
+**What this means for the operator on prod**: every broker-hitting agent fire or manual order routes through the mode resolution logic. On a fresh install the seeder writes `execution.paper_trading_mode=False` (LIVE) so the navbar lands on LIVE out of the box — operator flips to PAPER from the navbar if they want every action to land as a paper `AlgoOrder` row with Kite's `basket_margin` verdict in `.detail`. REJECTED paper rows tell you "Kite would have kicked this back anyway"; OPEN rows transition to FILLED / UNFILLED via the chase loop. If the DB row is ever deleted mid-run the in-code fallback (`True`, PAPER) takes over — no broker calls until the row reappears.
 
 ---
 
@@ -889,6 +901,8 @@ Options + futures re-price coherently off underlying spot moves so a single "−
 ---
 
 ## Paper-trading dashboard (`/admin/paper`)
+
+> The `/admin/paper`, `/admin/live`, `/admin/shadow`, `/admin/replay`, and `/admin/simulator` routes are now redirect stubs that bounce to `/admin/execution?mode=<slug>`. The single consolidated execution-mode page is the source of truth; the per-mode pages remain only as deep-link aliases. The notes below describe the workspace those stubs land on.
 
 Visual surface for the prod paper-trade engine, pairing with the simulator page so operators can monitor mode 2 the same way they monitor sims.
 

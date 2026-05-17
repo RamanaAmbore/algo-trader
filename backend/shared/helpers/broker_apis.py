@@ -109,6 +109,14 @@ def fetch_margins(connections=Connections, account=None, kite=None):
     return df_margins
 
 
+# Daily-TTL cache for fetch_holidays. The holiday list only changes once
+# per year, but the agent engine's _build_context calls fetch_holidays on
+# every run_cycle (every 5 min real-path, every 2 s in sim) — without
+# this, every tick fired a blocking HTTP GET to nseindia.com.
+# Format: {exchange: (cached_date, set_of_dates)}
+_HOLIDAY_CACHE: dict[str, tuple] = {}
+
+
 def fetch_holidays(exchange="NSE"):
     """
     Fetch trading holidays from NSE/MCX official APIs.
@@ -116,9 +124,18 @@ def fetch_holidays(exchange="NSE"):
     NSE API returns segments: CM (equity cash), FO (F&O), CD (currency), CBM (commodity on BSE).
     MCX holidays are fetched from MCX website.
     Maps exchange param to the right segment.
+
+    Cached per-day in-process — first call of the day hits the API, the
+    rest of the day's calls return the cached set. The cache key is the
+    exchange + today's date, so the natural rollover happens at midnight.
     """
     import requests
-    from datetime import datetime as dt_datetime
+    from datetime import datetime as dt_datetime, date as dt_date
+
+    today = dt_date.today()
+    cached = _HOLIDAY_CACHE.get(exchange)
+    if cached and cached[0] == today:
+        return cached[1]
 
     # Map Kite exchange names to NSE holiday API segment keys
     # CM=equity cash, FO=F&O, CD=currency, COM=commodity(MCX)
@@ -145,6 +162,9 @@ def fetch_holidays(exchange="NSE"):
     except Exception:
         pass
 
+    # Cache even on failure (empty set) — avoids retry-hammering nseindia
+    # all day if the API is down. Next day's call retries naturally.
+    _HOLIDAY_CACHE[exchange] = (today, holidays)
     return holidays
 
 
