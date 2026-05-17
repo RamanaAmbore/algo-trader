@@ -44,16 +44,24 @@
   // Mode → tab + filter mapping. When the parent passes `mode`, we
   // auto-switch the Order-tab filter chip AND (for sim) flip to the
   // simulator tab so an operator selecting SIM in the navbar lands on
-  // the price-tick stream automatically. Other modes go to the Order
-  // tab so the operator sees the AlgoOrder rows that mode produces.
+  // the price-tick stream automatically.
+  //
+  // Fires ONLY on mode CHANGE (tracked via _lastMode), not on every
+  // logTab change. Without the gate, manually picking a different tab
+  // while mode='sim' would retrigger this $effect (it reads logTab in
+  // the condition), see mode is still 'sim', and slam logTab back to
+  // 'simulator' — locking the operator on one tab.
+  let _lastMode = $state(/** @type {string | null} */ (null));
   $effect(() => {
     if (!mode) return;
+    if (mode === _lastMode) return;
+    _lastMode = mode;
     if (mode === 'sim') {
       orderModeFilter = 'sim';
-      if (logTab !== 'simulator' && tabs.includes('simulator')) logTab = 'simulator';
+      if (tabs.includes('simulator')) logTab = 'simulator';
     } else if (['paper','live','shadow','replay'].includes(mode)) {
       orderModeFilter = /** @type {any} */ (mode);
-      if (logTab !== 'order' && tabs.includes('order')) logTab = 'order';
+      if (tabs.includes('order')) logTab = 'order';
     }
   });
 
