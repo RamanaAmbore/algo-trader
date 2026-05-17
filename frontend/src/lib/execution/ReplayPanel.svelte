@@ -87,7 +87,7 @@
 
   onMount(() => {
     load();
-    refreshTeardown = visibleInterval(load, 3000);
+    refreshTeardown = visibleInterval(load, 5000);
   });
   onDestroy(() => refreshTeardown?.());
 

@@ -265,6 +265,18 @@ export function logTimeEdt(iso) {
   });
 }
 
+/** Stacked IST | EDT span markup for `{@html}` blocks. Single source of
+ *  truth for the dual-zone cell — any CSS class change to .log-ts /
+ *  .log-ts-ist / .log-ts-sep / .log-ts-edt happens here, not in N
+ *  template files. Returns '' for unparseable input. */
+export function dualTsHtml(iso) {
+  if (!iso) return '';
+  const ist = logTimeIst(iso);
+  const edt = logTimeEdt(iso);
+  if (!ist && !edt) return '';
+  return `<span class="log-ts log-ts-inline"><span class="log-ts-ist">${ist || '—'}</span><span class="log-ts-sep">|</span><span class="log-ts-edt">${edt || '—'}</span></span>`;
+}
+
 /**
  * Lifespan chip metadata for an agent row.
  *

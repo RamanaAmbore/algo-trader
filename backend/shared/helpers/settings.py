@@ -161,28 +161,16 @@ SEEDS: list[tuple] = [
      "days", {"min": 0, "max": 365, "step": 1}),
 
     # ── Notifications (per-branch capability toggles) ───────────────────
-    # NOTE: these MIRROR the cap_in_<branch>.<feature> YAML flags; the
-    # is_enabled() helper is deliberately NOT rewired — it still reads
-    # YAML. Settings page edits here update a parallel set of DB flags
-    # that operators can introspect, and future code can migrate per
-    # feature once we're confident.
+    # `is_enabled()` in utils.py reads notifications.<cap>_enabled from
+    # the DB first, falling back to the cap_in_<branch>.<feature> YAML
+    # flag. Operators can toggle these live from /admin/settings without
+    # a redeploy.
     ("notifications", "notifications.telegram_enabled",    "bool",  True,
-     "Send alerts to Telegram (mirrors cap_in_<branch>.telegram).", None, None),
+     "Send alerts to Telegram (overrides cap_in_<branch>.telegram).", None, None),
     ("notifications", "notifications.email_enabled",       "bool",  True,
-     "Send alerts via SMTP email (mirrors cap_in_<branch>.mail).", None, None),
+     "Send alerts via SMTP email (overrides cap_in_<branch>.mail).", None, None),
     ("notifications", "notifications.notify_on_deploy",    "bool",  True,
      "Send a Telegram/email ping on every deploy.", None, None),
-
-    # ── Logging ─────────────────────────────────────────────────────────
-    ("logging", "logging.file_log_level",    "enum",   "INFO",
-     "Rotating file log verbosity.", None,
-     {"enum": ["DEBUG", "INFO", "WARNING", "ERROR"]}),
-    ("logging", "logging.console_log_level", "enum",   "INFO",
-     "Console log verbosity.", None,
-     {"enum": ["DEBUG", "INFO", "WARNING", "ERROR"]}),
-    ("logging", "logging.error_log_level",   "enum",   "ERROR",
-     "Rotating error file verbosity.", None,
-     {"enum": ["DEBUG", "INFO", "WARNING", "ERROR"]}),
 
     # ── Connections / broker ─────────────────────────────────────────────
     ("connections", "connections.retry_count",      "int", 3,
@@ -254,9 +242,6 @@ SEEDS: list[tuple] = [
     ("replay",      "replay.auto_stop_minutes",  "int",  30,
      "Auto-stop a replay after this many wall-clock minutes.",
      "min", {"min": 1, "max": 120, "step": 1}),
-    ("replay",      "replay.default_interval",   "enum", "5minute",
-     "Default candle interval for replay runs.",
-     None, {"enum": ["minute", "5minute", "15minute", "day"]}),
 ]
 
 

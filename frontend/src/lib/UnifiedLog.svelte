@@ -16,7 +16,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { fetchUnifiedLog } from '$lib/api';
-  import { logTime } from '$lib/stores';
+  import { logTimeIst } from '$lib/stores';
 
   /** @type {{
    *   filter?:       { kinds?: string[], accounts?: string[], since?: string },
@@ -52,17 +52,9 @@
     }
   }
 
-  /** Format an ISO UTC timestamp to the canonical dual-zone string used
-   *  by logTime(), but only take the first HH:MM:SS run so the column
-   *  stays compact. Returns '—' for any unparseable value. */
   function _fmtTs(/** @type {unknown} */ ts) {
     if (!ts || typeof ts !== 'string') return '—';
-    const full = logTime(ts.endsWith('Z') ? ts : ts + 'Z');
-    if (!full) return '—';
-    // logTime returns e.g. "Wed 07 May 09:30:00 IST | Wed 07 May 21:00:00 EDT"
-    // — take the first HH:MM:SS run for the compact log column.
-    const m = full.match(/\d{2}:\d{2}:\d{2}/);
-    return m ? m[0] : full;
+    return logTimeIst(ts.endsWith('Z') ? ts : ts + 'Z') || '—';
   }
 
   function _startPoll() {

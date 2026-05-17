@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
   import { goto } from '$app/navigation';
-  import { clientTimestamp, logTime } from '$lib/stores';
+  import { clientTimestamp, logTimeIst } from '$lib/stores';
   import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
@@ -48,7 +48,7 @@
   }
 
   function addResult(/** @type {string} */ status, /** @type {string} */ message, /** @type {Record<string,string>} */ fields = {}) {
-    const t = logTime(new Date());
+    const t = logTimeIst(new Date());
     cmdHistory = [{ status, message, fields, time: t }, ...cmdHistory].slice(0, 100);
     logTab = 'order';
   }

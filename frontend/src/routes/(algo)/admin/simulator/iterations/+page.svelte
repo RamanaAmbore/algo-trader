@@ -7,7 +7,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, logTimeIst, logTimeEdt, logTime, visibleInterval } from '$lib/stores';
+  import { authStore, clientTimestamp, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
   import { fetchSimIterations } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -22,9 +22,9 @@
   onMount(async () => {
     if (!$authStore.user) { goto('/signin'); return; }
     await load();
-    // Poll every 8 s — sim runs take 30 s – 30 min, so refresh has
-    // to be quicker than the run itself or the page lies about state.
-    teardown = visibleInterval(load, 8000);
+    // Minimum iteration is 30 s; 15 s keeps the table half-a-step
+    // ahead of the run without hammering the endpoint.
+    teardown = visibleInterval(load, 15000);
   });
   onDestroy(() => teardown?.());
 
@@ -118,7 +118,7 @@
         <span class="run-id">run #{group.run_id}</span>
         <span class="run-meta">{group.rows.length} iteration{group.rows.length === 1 ? '' : 's'}</span>
         <span class="run-started" title={logTime(group.rows[0]?.started_at)}>
-          <span class="log-ts-inline log-ts"><span class="log-ts-ist">{logTimeIst(group.rows[0]?.started_at) || '—'}</span><span class="log-ts-sep">|</span><span class="log-ts-edt">{logTimeEdt(group.rows[0]?.started_at) || '—'}</span></span>
+          {@html dualTsHtml(group.rows[0]?.started_at)}
         </span>
       </div>
       <table class="iter-table">

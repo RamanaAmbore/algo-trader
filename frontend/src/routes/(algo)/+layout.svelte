@@ -291,8 +291,8 @@
     pollLive();   liveTeardown   = visibleInterval(pollLive,   5000);
     // Execution-mode combobox — seed then poll every 30s.
     loadMode();   modeTeardown   = visibleInterval(loadMode,  30000);
-    // Chase chip — poll every 3s.
-    pollChase();  chaseTeardown  = visibleInterval(pollChase,  3000);
+    // Chase chip — paper-engine ticks every 5 s, chip is informational.
+    pollChase();  chaseTeardown  = visibleInterval(pollChase,  10000);
   });
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
@@ -392,6 +392,29 @@
           </div>
         {/if}
 
+        <!-- ── Sim chip — always-visible affordance into /admin/simulator.
+             Live-detail surfaces (iter N/M or tick X) when a sim is
+             running; idle otherwise. Hidden in demo + when sim cap is
+             gated off on the active branch. -->
+        {#if $authStore.user && simStatus?.enabled !== false}
+          {@const _simLive = simStatus?.active || simStatus?.run_active}
+          <button
+            class="sim-chip {_simLive ? 'sim-chip-live' : 'sim-chip-idle'}"
+            onclick={() => goto('/admin/simulator')}
+            title={_simLive ? 'Simulator running — open page' : 'Open Simulator'}
+          >
+            <span class="sim-chip-dot"></span>
+            <span class="sim-chip-label">SIM</span>
+            {#if _simLive}
+              {#if simStatus.iterations_total > 0}
+                <span class="sim-chip-meta">{simStatus.iteration_index}/{simStatus.iterations_total}</span>
+              {:else if simStatus.tick_index != null}
+                <span class="sim-chip-meta">t{simStatus.tick_index}</span>
+              {/if}
+            {/if}
+          </button>
+        {/if}
+
         <!-- ── Chase chip ─────────────────────────────────────────── -->
         {#if $authStore.user && showChaseChip}
           <button
@@ -474,6 +497,20 @@
             {/if}
             {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
+        {/if}
+        {#if $authStore.user && simStatus?.enabled !== false}
+          {@const _simLiveM = simStatus?.active || simStatus?.run_active}
+          <button
+            class="sim-chip {_simLiveM ? 'sim-chip-live' : 'sim-chip-idle'}"
+            onclick={() => goto('/admin/simulator')}
+            title={_simLiveM ? 'Simulator running — open page' : 'Open Simulator'}
+          >
+            <span class="sim-chip-dot"></span>
+            <span class="sim-chip-label">SIM</span>
+            {#if _simLiveM && simStatus.iterations_total > 0}
+              <span class="sim-chip-meta">{simStatus.iteration_index}/{simStatus.iterations_total}</span>
+            {/if}
+          </button>
         {/if}
         {#if $authStore.user && showChaseChip}
           <button
@@ -1457,6 +1494,66 @@
     filter: brightness(1.1);
   }
   .chase-chip-arrow { opacity: 0.7; }
+
+  /* ── Sim chip — entry point to /admin/simulator. Two states:
+       .sim-chip-live  — sim running, rose-red palette, pulsing dot.
+       .sim-chip-idle  — idle, muted slate outline.
+     Palette aligns with the SIMULATOR banner so the eye reads
+     "this is the sim affordance" instantly. */
+  .sim-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.4rem;
+    padding: 0 0.55rem;
+    border-radius: 9999px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    cursor: pointer;
+    white-space: nowrap;
+    outline: none;
+    margin-right: 0.3rem;
+    transition: background-color 0.08s, filter 0.08s;
+  }
+  .sim-chip:hover { filter: brightness(1.15); }
+  .sim-chip-live {
+    color: #fda4af;
+    background: rgba(251, 113, 133, 0.15);
+    border: 1px solid rgba(251, 113, 133, 0.6);
+  }
+  .sim-chip-live .sim-chip-dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 50%;
+    background: #fb7185;
+    box-shadow: 0 0 5px rgba(251, 113, 133, 0.9);
+    animation: algo-mode-dot 2s ease-in-out infinite;
+  }
+  .sim-chip-idle {
+    color: #94a3b8;
+    background: rgba(148, 163, 184, 0.08);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+  }
+  .sim-chip-idle .sim-chip-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: rgba(148, 163, 184, 0.55);
+  }
+  .sim-chip-idle:hover {
+    background: rgba(148, 163, 184, 0.16);
+    border-color: rgba(148, 163, 184, 0.6);
+    color: #cbd5e1;
+  }
+  .sim-chip-label { letter-spacing: 0.1em; }
+  .sim-chip-meta {
+    color: #fde68a;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .sim-chip-idle .sim-chip-meta { color: #cbd5e1; }
 
   /* ── Status-driven surface card — used across algo pages ─────────────────── */
   :global(.algo-status-card) {

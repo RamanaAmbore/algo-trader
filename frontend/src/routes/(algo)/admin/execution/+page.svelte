@@ -322,7 +322,7 @@
   // ── Polling lifecycle ─────────────────────────────────────────────────
   // sim and replay panels own their own internal pollers; we only drive
   // paper / shadow / live from here.
-  const POLL_INTERVALS = { paper: 3000, shadow: 5000, live: 5000 };
+  const POLL_INTERVALS = { paper: 5000, shadow: 5000, live: 5000 };
   const LOAD_FNS = /** @type {Record<string, () => Promise<void>>} */ ({
     paper: loadPaper, shadow: loadShadow, live: loadLive,
   });
