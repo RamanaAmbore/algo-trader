@@ -203,7 +203,8 @@ export function clientTimestamp() {
   return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} ${estTz}`;
 }
 
-/** Short DD-MMM HH:MM:SS IST | DD-MMM HH:MM:SS EST for log entries. Input: ISO string or Date. */
+/** Short DD-MMM HH:MM:SS IST | DD-MMM HH:MM:SS EST/EDT for log entries.
+ *  Input: ISO string or Date. EST vs EDT label tracks DST automatically. */
 export function logTime(iso) {
   if (!iso) return '';
   const d = typeof iso === 'string' ? new Date(iso) : iso;
@@ -213,7 +214,35 @@ export function logTime(iso) {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false, timeZone: tz,
   }).replace(',', '');
-  return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} EST`;
+  // EST in winter, EDT in summer — derive from the date itself.
+  const estTz = d.toLocaleTimeString('en-US', {
+    timeZoneName: 'short', timeZone: 'America/New_York',
+  }).split(' ').pop();
+  return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} ${estTz}`;
+}
+
+/** HH:MM:SS in IST. Compact form for inline log rows; pair with
+ *  `logTimeEdt` to render a stacked dual-zone cell. */
+export function logTimeIst(iso) {
+  if (!iso) return '';
+  const d = typeof iso === 'string' ? new Date(iso) : iso;
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString('en-GB', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, timeZone: 'Asia/Kolkata',
+  });
+}
+
+/** HH:MM:SS in EST/EDT. Compact form for the second line of a
+ *  stacked dual-zone log cell. Tracks DST automatically. */
+export function logTimeEdt(iso) {
+  if (!iso) return '';
+  const d = typeof iso === 'string' ? new Date(iso) : iso;
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString('en-GB', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, timeZone: 'America/New_York',
+  });
 }
 
 /** Parse the leading 'YYYY-MM-DD HH:MM:SS[,ms]' timestamp from a python log line

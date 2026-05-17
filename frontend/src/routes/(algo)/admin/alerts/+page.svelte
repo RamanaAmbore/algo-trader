@@ -8,7 +8,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
+  import { authStore, clientTimestamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
@@ -224,7 +224,9 @@
       <tbody>
         {#each filtered as r (r.id ?? r.triggered_at)}
           <tr class:row-sim={r.sim_mode}>
-            <td class="td-time">{_ts(r.triggered_at)}</td>
+            <td class="td-time" title={logTime(r.triggered_at)}>
+              {#if r.triggered_at}<span class="log-ts"><span class="log-ts-ist">{logTimeIst(r.triggered_at)}</span><span class="log-ts-edt">{logTimeEdt(r.triggered_at)}</span></span>{:else}—{/if}
+            </td>
             <td class="td-agent">
               {#if r.sim_mode}
                 <span class="sim-tag">SIM</span>

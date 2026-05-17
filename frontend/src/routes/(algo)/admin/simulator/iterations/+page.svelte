@@ -7,7 +7,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, visibleInterval } from '$lib/stores';
+  import { authStore, clientTimestamp, logTimeIst, logTimeEdt, logTime, visibleInterval } from '$lib/stores';
   import { fetchSimIterations } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -67,10 +67,6 @@
     return out;
   });
 
-  function _shortTime(iso) {
-    if (!iso) return '—';
-    return iso.slice(0, 19).replace('T', ' ');
-  }
   function _duration(start, end) {
     if (!start || !end) return '—';
     const ms = new Date(end).getTime() - new Date(start).getTime();
@@ -121,7 +117,9 @@
       <div class="run-header">
         <span class="run-id">run #{group.run_id}</span>
         <span class="run-meta">{group.rows.length} iteration{group.rows.length === 1 ? '' : 's'}</span>
-        <span class="run-started">{_shortTime(group.rows[0]?.started_at)}</span>
+        <span class="run-started" title={logTime(group.rows[0]?.started_at)}>
+          <span class="log-ts-inline log-ts"><span class="log-ts-ist">{logTimeIst(group.rows[0]?.started_at) || '—'}</span><span class="log-ts-sep">|</span><span class="log-ts-edt">{logTimeEdt(group.rows[0]?.started_at) || '—'}</span></span>
+        </span>
       </div>
       <table class="iter-table">
         <thead>
@@ -144,7 +142,9 @@
               <td class="slug">{it.slug}</td>
               <td>{it.regime}</td>
               <td class="numeric">{it.seed ?? '—'}</td>
-              <td>{_shortTime(it.started_at)}</td>
+              <td title={logTime(it.started_at)}>
+                {#if it.started_at}<span class="log-ts"><span class="log-ts-ist">{logTimeIst(it.started_at)}</span><span class="log-ts-edt">{logTimeEdt(it.started_at)}</span></span>{:else}—{/if}
+              </td>
               <td class="numeric">{_duration(it.started_at, it.ended_at)}</td>
               <td class={'er ' + _endReasonClass(it.end_reason)}>{it.end_reason ?? 'pending'}</td>
               <td class="numeric">{_summaryPnl(it.summary)}</td>

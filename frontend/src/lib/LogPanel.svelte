@@ -1,6 +1,6 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
-  import { parseLogLineTime } from '$lib/stores';
+  import { parseLogLineTime, logTime, logTimeIst, logTimeEdt } from '$lib/stores';
   import {
     fetchNews,
     fetchRecentAgentEvents, fetchSimEvents,
@@ -162,6 +162,31 @@
     return m ? m[0] : s;
   }
 
+  /**
+   * Emit the dual-zone stacked HTML for a log timestamp.
+   * Falls back to `_shortTime` (single IST line) when the input
+   * isn't a parseable ISO — preserves UI for non-ISO inputs like
+   * raw HH:MM:SS strings from upstream payloads.
+   */
+  function _dualTsHtml(input) {
+    if (!input) return '';
+    const s = typeof input === 'string' ? input : input.toISOString?.() || '';
+    let d = null;
+    if (s && (s.includes('T') || s.includes('Z') || /^\d{4}-\d{2}-\d{2}/.test(s))) {
+      const tmp = new Date(s);
+      if (!isNaN(tmp.getTime())) d = tmp;
+    }
+    if (!d) {
+      // Non-ISO (e.g. already-HH:MM:SS) — single-zone fallback.
+      const t = _shortTime(s);
+      return `<span class="log-ts log-ts-fallback">${t}</span>`;
+    }
+    const ist = logTimeIst(d);
+    const edt = logTimeEdt(d);
+    const full = logTime(d);
+    return `<span class="log-ts" title="${full}"><span class="log-ts-ist">${ist}</span><span class="log-ts-edt">${edt}</span></span>`;
+  }
+
   // News-specific time slicer — the /api/news payload's `timestamp`
   // field is a presentational dual-zone string ("Mon, April 20, 2026,
   // 09:30 AM IST | Mon, April 20, 2026, 12:00 AM EDT"), NOT an ISO
@@ -225,23 +250,18 @@
     return 'log-info';
   }
   function _renderSimLine(entry) {
-    const ts = _shortTime(entry.ts);
+    const ts = _dualTsHtml(entry.ts);
     const scen = entry.scenario || '';
-    if (entry.kind === 'started')  return `<span class="log-agent-success"><span class="log-ts">${ts}</span> ▶ START ${scen} · ${entry.note || ''}</span>`;
-    if (entry.kind === 'stopped')  return `<span class="log-info"><span class="log-ts">${ts}</span> ■ STOP ${scen} · ${entry.note || ''}</span>`;
+    if (entry.kind === 'started')  return `<span class="log-agent-success">${ts} ▶ START ${scen} · ${entry.note || ''}</span>`;
+    if (entry.kind === 'stopped')  return `<span class="log-info">${ts} ■ STOP ${scen} · ${entry.note || ''}</span>`;
     if (entry.kind === 'order') {
       const o = entry.order || {};
-      // BUY = green, SELL = neutral (not red — a sell isn't an error).
       const sideCls = o.side === 'BUY' ? 'log-agent-success' : 'log-info';
       const price   = (o.price != null) ? '@' + priceFmt(o.price) : '';
-      return `<span class="${sideCls}"><span class="log-ts">${ts}</span> ${SIM_PILL}◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}</span>`;
+      return `<span class="${sideCls}">${ts} ${SIM_PILL}◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}</span>`;
     }
     const cls = _classifySimLine(entry);
     const diffs = (entry.changes || []).map(c => {
-      // For price moves, `c.symbol` carries the tradingsymbol and `c.col` is
-      // always last_price — show the symbol so the operator sees which
-      // instrument moved. For margin patches `c.symbol` is empty and `c.col`
-      // names the field being set.
       const leaf  = c.symbol ? c.symbol : c.col;
       const field = `${c.section}.${c.account}.${leaf}`;
       const arrow = `${_fmtVal(c.prev)}→${_fmtVal(c.next)}`;
@@ -249,7 +269,7 @@
       return `<span class="log-chip"><span class="log-chip-key">${field}:</span>${arrow}${delta}</span>`;
     }).join(' ');
     const head = `tick ${entry.tick_index} · ${scen}`;
-    return `<span class="${cls}"><span class="log-ts">${ts}</span> ${SIM_PILL}${head} ${diffs || '(no changes)'}</span>`;
+    return `<span class="${cls}">${ts} ${SIM_PILL}${head} ${diffs || '(no changes)'}</span>`;
   }
 
   function stripTs(l) {
@@ -266,14 +286,18 @@
     const chips = h.fields ? Object.entries(h.fields)
       .map(([k, v]) => `<span class="log-chip"><span class="log-chip-key">${k}:</span>${v}</span>`)
       .join(' ') : '';
-    return `<span class="${cls}"><span class="log-ts">${h.time}</span> ${h.status} ${h.message} ${chips}</span>`;
+    // Command entries: h.time is already-formatted (from `logTime(new
+    // Date())` at the callsite in orders/+page.svelte). Render it as a
+    // single-zone fallback inside .log-ts-fallback so it picks up the
+    // muted slate color without forcing IST+EDT extraction.
+    return `<span class="${cls}"><span class="log-ts log-ts-fallback">${h.time || ''}</span> ${h.status} ${h.message} ${chips}</span>`;
   }
 
   // Render one AlgoOrder row (mode=live or sim) for the Order tab. Keeps
   // order details — side, qty, symbol, price, account — on one line so
   // operators can scan placements the same way they'd read a broker blotter.
   function _orderRowHtml(o) {
-    const t    = _shortTime(o.created_at);
+    const t    = _dualTsHtml(o.created_at);
     const tag  = _modePill(o.mode);
     // Colour by terminal state first, then by side. FILLED = green,
     // UNFILLED = red, OPEN (still chasing) = amber, everything else
@@ -314,7 +338,7 @@
     const agentChip = o.agent_id
       ? ` <a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
-    return `<span class="${rowCls}"><span class="log-ts">${t}</span> ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${statusChip}${attemptChip}${engine}${agentChip}</span>`;
+    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${statusChip}${attemptChip}${engine}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -335,8 +359,8 @@
       ts: _shortTime(o.created_at), html: _orderRowHtml(o),
     }));
     const agentLines = (agentLog || []).map(e => {
-      const t = _shortTime(e.timestamp);
-      return { ts: t, html: `<span class="log-agent-default"><span class="log-ts">${t}</span> ${e.event_type||''} ${e.trigger_condition||''}</span>` };
+      const t = _dualTsHtml(e.timestamp);
+      return { ts: _shortTime(e.timestamp), html: `<span class="log-agent-default">${t} ${e.event_type||''} ${e.trigger_condition||''}</span>` };
     });
     const all = [...cmdLines, ...orderLines, ...agentLines];
     return all.length ? all.map(x => x.html).join('\n') : '<span class="log-debug">No events.</span>';
@@ -416,16 +440,20 @@
   {/if}
 {:else}
 <pre class="log-panel {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
-  const t = _shortTime(e.timestamp);
+  const t = _dualTsHtml(e.timestamp);
   const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
             : e.event_type === 'action_success' ? 'log-agent-success'
             : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
             : 'log-agent-default';
-  return `<span class="${cls}"><span class="log-ts">${t}</span> ${e.event_type||''} ${e.trigger_condition||''}</span>`;
+  return `<span class="${cls}">${t} ${e.event_type||''} ${e.trigger_condition||''}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
+  // System log lines carry a leading ISO timestamp (parsed by
+  // parseLogLineTime → dual-zone). When parse fails, render the raw
+  // line unchanged.
   const t = parseLogLineTime(l);
   const rest = t ? stripTs(l) : l;
-  return `<span class="${sysClass(l)}">${t ? `<span class="log-ts">${t}</span> ` : ''}${rest}</span>`;
+  const tHtml = t ? `<span class="log-ts log-ts-fallback">${t}</span> ` : '';
+  return `<span class="${sysClass(l)}">${tHtml}${rest}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No log entries.</span>{/if}{/if}</pre>
 {/if}
 

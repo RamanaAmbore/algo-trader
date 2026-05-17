@@ -467,6 +467,41 @@
   border-left: 3px solid var(--acct-stripe, transparent) !important;
 }
 
+/* ── Dual-zone log timestamp ──────────────────────────────────────────────
+   Stacked IST (primary) + EDT (muted) for every inline log row. The
+   page-header timestamps still use clientTimestamp() which renders the
+   pipe-separated form. This stacked variant is for narrow columns where
+   horizontal space is at a premium (LogPanel order/agent rows, alerts
+   history table, simulator iteration list). Color and density are
+   consistent across every surface that consumes it. */
+.log-ts {
+  display: inline-flex;
+  flex-direction: column;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+.log-ts-ist {
+  color: #c8d8f0;
+  font-size: 0.6rem;
+}
+.log-ts-edt {
+  color: #7e97b8;
+  font-size: 0.5rem;
+  opacity: 0.75;
+}
+/* Inline (single-line) variant — when the surface has horizontal room
+   to spare. Pipe-separated, IST first. */
+.log-ts-inline {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+.log-ts-inline .log-ts-edt { font-size: 0.55rem; }
+.log-ts-sep { color: #7e97b8; opacity: 0.5; }
+
 /* ── Log panel styles ────────────────────────────────────────────────────── */
 .log-panel {
   padding: 0.75rem;
@@ -568,7 +603,16 @@
 .log-panel .log-agent-failed      { color: #f87171; background: rgba(248,113,113,0.12); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-cooldown    { color: #64748b; display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-default     { color: #9ca3af; }
-.log-panel .log-ts                { color: #fde047; font-weight: 700; margin-right: 4px; }
+/* `.log-ts` is the global dual-zone stacked timestamp (defined above).
+   Inside the log panel, give it some right margin so the row text
+   doesn't bump up against the EDT line. Color comes from the global
+   rule (IST primary + EDT muted) — same as every other surface. */
+.log-panel .log-ts { margin-right: 4px; vertical-align: top; }
+/* Single-zone fallback inside the panel — used for system-log lines
+   (which come from a Python timestamp parser that already produces a
+   dual-zone string) and cmd entries (h.time pre-formatted at the
+   callsite). Keeps the yellow accent so they stand out from row text. */
+.log-panel .log-ts-fallback { color: #fde047; font-weight: 700; font-size: 0.6rem; }
 /* Agent-id link chip on AlgoOrder rows — amber accent, matching the
    algo palette. Renders inline after the engine chip; absent when
    agent_id is null (tickets, replays without an originating agent). */

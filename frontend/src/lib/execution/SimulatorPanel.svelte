@@ -5,7 +5,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { clientTimestamp, visibleInterval, branchLabel } from '$lib/stores';
+  import { clientTimestamp, visibleInterval, branchLabel, logTime, logTimeIst, logTimeEdt } from '$lib/stores';
   import {
     fetchSimScenarios, fetchSimStatus, startSim, stopSim, stepSim,
     runSimCycle, clearSimArtefacts, seedSimLive, fetchSimEvents,
@@ -337,7 +337,10 @@
         market: <span class="text-[#fde68a]">{status.market_state_preset ?? 'mid_session'}</span>
       </span>
       <span class="text-[#7e97b8]">|</span>
-      <span>started: {status.started_at?.slice(11, 19) ?? '—'}</span>
+      <span title={status.started_at ? logTime(status.started_at) : ''}>
+        started:
+        {#if status.started_at}<span class="log-ts log-ts-inline"><span class="log-ts-ist">{logTimeIst(status.started_at)}</span><span class="log-ts-sep">|</span><span class="log-ts-edt">{logTimeEdt(status.started_at)}</span></span>{:else}—{/if}
+      </span>
       {#if status.only_agent_ids?.length}
         <span class="text-[#7e97b8]">|</span>
         <span class="text-[#fbbf24]">agents=[{status.only_agent_ids.join(',')}]</span>

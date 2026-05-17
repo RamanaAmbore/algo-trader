@@ -8,7 +8,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { authStore } from '$lib/stores';
+  import { authStore, logTimeIst, logTimeEdt, logTime } from '$lib/stores';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -51,10 +51,6 @@
     }
   }
 
-  function _shortTime(iso) {
-    if (!iso) return '—';
-    return iso.slice(0, 19).replace('T', ' ');
-  }
   function _duration(start, end) {
     if (!start || !end) return '—';
     const ms = new Date(end).getTime() - new Date(start).getTime();
@@ -110,8 +106,8 @@
           <tr><th>Position</th><td>{iteration.iteration_index} / {iteration.iterations_total}</td></tr>
           <tr><th>Regime</th><td class="regime">{iteration.regime}</td></tr>
           <tr><th>Seed</th><td>{iteration.seed ?? '(random)'}</td></tr>
-          <tr><th>Started</th><td>{_shortTime(iteration.started_at)}</td></tr>
-          <tr><th>Ended</th><td>{_shortTime(iteration.ended_at)}</td></tr>
+          <tr><th>Started</th><td title={logTime(iteration.started_at)}>{#if iteration.started_at}<span class="log-ts log-ts-inline"><span class="log-ts-ist">{logTimeIst(iteration.started_at)}</span><span class="log-ts-sep">|</span><span class="log-ts-edt">{logTimeEdt(iteration.started_at)}</span></span>{:else}—{/if}</td></tr>
+          <tr><th>Ended</th><td title={logTime(iteration.ended_at)}>{#if iteration.ended_at}<span class="log-ts log-ts-inline"><span class="log-ts-ist">{logTimeIst(iteration.ended_at)}</span><span class="log-ts-sep">|</span><span class="log-ts-edt">{logTimeEdt(iteration.ended_at)}</span></span>{:else}—{/if}</td></tr>
           <tr><th>Duration</th><td>{_duration(iteration.started_at, iteration.ended_at)}</td></tr>
           <tr><th>End reason</th><td class={'er ' + _endReasonClass(iteration.end_reason)}>{iteration.end_reason ?? 'pending'}</td></tr>
         </tbody>
