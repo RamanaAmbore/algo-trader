@@ -1,18 +1,17 @@
 /**
- * Pre-authenticate a Playwright page as the operator admin.
+ * Authenticate a Playwright page as an operator by driving the real
+ * /signin form (Username + Password + Sign In button). The form goes
+ * through /api/auth/login like a normal user, then the SvelteKit auth
+ * store populates from the response — no sessionStorage stuffing.
  *
- * Skips the /signin form by hitting /api/auth/login directly, then
- * stuffs the JWT into sessionStorage at the page origin. Every spec
- * that needs admin context calls `await loginAsAdmin(page)` once and
- * navigates straight to its target page.
+ * Defaults (rambo / admin1234) match the local-dev setup; override
+ * via PLAYWRIGHT_USER / PLAYWRIGHT_PASS env vars (e.g. ambore + their
+ * real password when testing against prod).
  *
- * Defaults (rambo / admin1234) match the operator's setup; can be
- * overridden via PLAYWRIGHT_USER / PLAYWRIGHT_PASS env vars when
- * targeting a different environment.
- *
- * Mode-aware: this only works on dev or localhost. On prod the same
- * call would authenticate but writes are guarded by the prod
- * paper/live rails described in CLAUDE.md.
+ * Why this over the previous API-only shortcut? The operator wants
+ * the test to behave as close to a real session as possible — the
+ * signin form is the first surface a visitor sees, and bypassing it
+ * would miss regressions in the form / auth-store / redirect chain.
  */
 
 const DEFAULT_USER = process.env.PLAYWRIGHT_USER || 'rambo';
@@ -26,49 +25,61 @@ const DEFAULT_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
 export async function loginAsAdmin(page, opts = {}) {
   const user = opts.user || DEFAULT_USER;
   const pass = opts.pass || DEFAULT_PASS;
-  // Auth route is rate-limited; running the full suite serially still
-  // hits the cap with many beforeEach hooks back-to-back. Three tries
-  // with 2-5-10 s backoff covers transient 429s without slowing the
-  // green path materially.
-  let r, lastText = '';
-  for (const delay of [0, 2000, 5000, 10000]) {
+
+  // Start at /signin like a real visitor. Submitting the form
+  // triggers /api/auth/login → the auth store populates → the page
+  // redirects to /dashboard (admin/designated) or /signin (failure).
+  // We retry a couple of times to cover the 5/min rate-limit window.
+  /** @type {string} */
+  let lastError = '';
+  for (const delay of [0, 3000, 8000]) {
     if (delay) await new Promise((res) => setTimeout(res, delay));
-    r = await page.request.post('/api/auth/login', {
-      data: { username: user, password: pass },
-    });
-    if (r.ok()) break;
-    lastText = await r.text();
-    if (r.status() !== 429) break;  // any non-429 fails immediately
+
+    await page.goto('/signin', { waitUntil: 'domcontentloaded' });
+    // The form fields are <input type="text"> for username and
+    // <input type="password"> for password. Selector text matches
+    // the labels on the form.
+    await page.locator('input[name="username"], input#username').first().fill(user);
+    await page.locator('input[name="password"], input#password').first().fill(pass);
+    await page.locator('button:has-text("Sign In"), button[type="submit"]').first().click();
+
+    // Wait for either redirect away from /signin (success) or for an
+    // error banner to render. The signin page navigates to /dashboard
+    // on successful login for admin/designated roles.
+    try {
+      await page.waitForURL(/^(?!.*\/signin).*$/, { timeout: 8000 });
+      break;
+    } catch (_) {
+      // Still on /signin — check for an error banner or rate-limit text.
+      const banner = await page.locator('.error, .signin-error, [role="alert"]').first().textContent().catch(() => '');
+      lastError = banner || `signin did not redirect after ${user}`;
+      if (!/(rate|429|too many)/i.test(lastError)) {
+        // Non-rate error — fail fast.
+        break;
+      }
+    }
   }
-  if (!r.ok()) {
-    throw new Error(`loginAsAdmin failed: ${r.status()} ${lastText}`);
-  }
-  const j = await r.json();
-  // Navigate to the origin first so the sessionStorage write lands
-  // in the right window. Subsequent goto() calls keep the session.
-  await page.goto('/');
-  // The (algo) layout's redirect logic gates on $authStore.user (not
-  // just the token). Stash both keys so the auth store re-reads a
-  // populated session on the next route load — otherwise dev-branch
-  // routes redirect to /signin.
-  const userRecord = {
-    user_id: j.username || user,
-    username: j.username || user,
-    role: j.role || 'admin',
-    display_name: j.display_name || user,
-  };
-  await page.evaluate(({ tok, usr }) => {
-    sessionStorage.setItem('ramboq_token', tok);
-    sessionStorage.setItem('ramboq_user', JSON.stringify(usr));
-  }, { tok: j.access_token, usr: userRecord });
-  // Also attach the JWT to the page's APIRequestContext so any
-  // `page.request.get/post(...)` call from a spec authenticates
-  // without each helper having to thread headers manually. sessionStorage
-  // only feeds the browser; the request context is separate.
-  await page.context().setExtraHTTPHeaders({
-    Authorization: `Bearer ${j.access_token}`,
+
+  // Pull the token out of sessionStorage so callers that need it for
+  // API calls still get it. The store has it after the form submit
+  // either way.
+  const tokenInfo = await page.evaluate(() => {
+    const tok = sessionStorage.getItem('ramboq_token');
+    const usr = sessionStorage.getItem('ramboq_user');
+    return { tok, usr: usr ? JSON.parse(usr) : null };
   });
-  return { user_id: user, token: j.access_token };
+
+  if (!tokenInfo.tok) {
+    throw new Error(`loginAsAdmin failed: ${lastError || 'no token in sessionStorage after signin'}`);
+  }
+
+  // Attach the JWT to APIRequestContext so spec-level page.request
+  // calls authenticate without having to thread headers manually.
+  await page.context().setExtraHTTPHeaders({
+    Authorization: `Bearer ${tokenInfo.tok}`,
+  });
+
+  return { user_id: user, token: tokenInfo.tok };
 }
 
 /**
