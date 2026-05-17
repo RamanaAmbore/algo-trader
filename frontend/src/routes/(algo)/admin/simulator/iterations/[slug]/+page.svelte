@@ -41,7 +41,7 @@
 
   async function onReplay() {
     if (replaying) return;
-    if (!confirm(`Replay ${slug} with seed ${iteration?.seed ?? '(random)'}?`)) return;
+    if (!confirm(`Re-run ${slug} with seed ${iteration?.seed ?? '(random)'}?`)) return;
     replaying = true;
     try {
       await replaySimIteration(slug);
@@ -83,7 +83,7 @@
 <div class="page-header">
   <h1 class="algo-page-title">Iteration</h1>
   <span class="slug-chip">{slug || '—'}</span>
-  <InfoHint popup text="Snapshot of one simulator iteration. The Replay button re-runs this regime with the same seed (deterministic — same fills) and the same agent_ids, as a new single-iteration run." />
+  <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
   <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
 </div>
@@ -143,11 +143,12 @@
         <div class="empty-inline">No summary yet — iteration may still be running.</div>
       {/if}
 
-      <button class="replay-btn" onclick={onReplay} disabled={replaying || !iteration.ended_at}>
-        {replaying ? 'Starting replay…' : 'Replay this iteration'}
+      <button class="replay-btn" onclick={onReplay} disabled={replaying || !iteration.ended_at}
+              title="Re-run this iteration deterministically: same regime, same seed, same agent set. Different from 'Replay mode' which is a historical-data backtest.">
+        {replaying ? 'Starting re-run…' : 'Re-run iteration'}
       </button>
       {#if !iteration.ended_at}
-        <p class="hint">Replay enabled once the iteration ends.</p>
+        <p class="hint">Re-run enabled once the iteration ends.</p>
       {/if}
     </div>
 

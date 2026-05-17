@@ -63,6 +63,20 @@
 {#if mode === 'sim'}
   <SimulatorPanel />
 {:else if mode === 'replay'}
+  <!-- Replay = mode-4 historical backtest. Real Kite OHLCV candles
+       fed through the agent engine at accelerated speed. NOT the
+       same as "re-running a past sim iteration" — that's the
+       Re-run button on /admin/simulator/iterations/<slug>. -->
+  <div class="exec-explainer-chip">
+    <span class="exec-explainer-label">Replay mode</span>
+    <span class="exec-explainer-sep">·</span>
+    <span class="exec-explainer-body">
+      Historical-data backtest. To re-run a past simulator iteration
+      with the same seed, go to
+      <a href="/admin/simulator/iterations">/admin/simulator/iterations</a>
+      and pick a row → <b>Re-run iteration</b>.
+    </span>
+  </div>
   <ReplayPanel />
 {:else}
   <!-- PAPER / LIVE / SHADOW have no dedicated workspace. -->
@@ -169,4 +183,34 @@
     margin-top: 0.6rem;
   }
   .exec-info-hint a { color: #fbbf24; text-decoration: underline; }
+  /* Explainer chip on /admin/execution?mode=replay — disambiguates
+     "Replay mode" (mode-4 historical backtest) from "Re-run an
+     iteration" (deterministic sim playback). The two share the
+     word 'replay' colloquially and operators routinely confuse
+     them. Chip is muted so it doesn't compete with the ReplayPanel
+     beneath it. */
+  .exec-explainer-chip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.45rem;
+    padding: 0.4rem 0.65rem;
+    margin-bottom: 0.55rem;
+    background: rgba(74, 222, 128, 0.08);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    color: #c8d8f0;
+  }
+  .exec-explainer-label {
+    color: #4ade80;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 0.55rem;
+  }
+  .exec-explainer-sep { color: rgba(74, 222, 128, 0.5); }
+  .exec-explainer-body a { color: #fde68a; text-decoration: underline; }
+  .exec-explainer-body a:hover { color: #fbbf24; }
 </style>

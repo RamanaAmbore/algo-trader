@@ -86,14 +86,13 @@
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
     { href: '/admin/options',    label: 'Options',   group: 'analyze' },
     // ── Modes ──
-    // Execution page only carries content for SIM + REPLAY (the two
-    // modes with a dedicated workspace). PAPER / LIVE / SHADOW are
-    // master-toggle modes — their data lives on /orders + /dashboard
-    // — so we hide the Execution nav entry when one of those is
-    // active. Clicking SIM/REPLAY in the navbar dropdown still works
-    // because pickMode() navigates explicitly.
-    { href: '/admin/execution',  label: 'Execution',                     group: 'modes',
-      modes: ['sim', 'replay'] },
+    // Execution page always visible. SIM + REPLAY render their
+    // workspaces; PAPER / LIVE / SHADOW render an explainer card
+    // that links to /orders + /dashboard. Always-on visibility
+    // matters because the operator may want to access past sim
+    // playback (/admin/simulator/iterations) from here regardless
+    // of which mode the master toggle is in.
+    { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
     // ── Build / extend ──
     { href: '/console',          label: 'Terminal',  group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
