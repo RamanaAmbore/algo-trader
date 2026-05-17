@@ -293,13 +293,17 @@ async def seed_settings() -> None:
                 if changed:
                     updated_defaults += 1
 
-        # Ensure execution.paper_trading_mode exists with value 'false'
-        # (LIVE) on first boot. This is option B of the "LIVE as default"
-        # change — persisting the default so a fresh install lands in
-        # LIVE without losing the in-code get_bool() fallback of True
-        # (PAPER, fail-safe) for the case where the row gets deleted
-        # mid-run. Operator's later toggles via /api/admin/execution/mode
-        # are preserved (we only insert when missing).
+        # Ensure both execution-mode flags exist with the LIVE-default
+        # values on first boot — paper_trading_mode=false AND
+        # shadow_mode=false. Without seeding shadow_mode, a fresh
+        # install that has its paper_trading_mode row seeded to false
+        # but no shadow_mode row would still resolve to LIVE via the
+        # False fallback — but the moment the operator clicks SHADOW
+        # in the navbar and back to LIVE, both rows persist. Seeding
+        # both up-front means /admin/execution/mode reads two known-
+        # good values from the cache without needing the resolver's
+        # fallback. Operator's later toggles are preserved (insert
+        # only when missing).
         if "execution.paper_trading_mode" not in existing_by_key:
             session.add(Setting(
                 category="execution",
@@ -310,6 +314,18 @@ async def seed_settings() -> None:
                 description=("Owned by /api/admin/execution/mode (navbar chip). "
                              "Seeded false (LIVE) on first boot; toggling to "
                              "true switches to PAPER."),
+            ))
+        if "execution.shadow_mode" not in existing_by_key:
+            session.add(Setting(
+                category="execution",
+                key="execution.shadow_mode",
+                value_type="bool",
+                value="false",
+                default_value="false",
+                description=("Owned by /api/admin/execution/mode (navbar chip). "
+                             "Seeded false on first boot; flipping to true "
+                             "puts every broker-hitting action into shadow "
+                             "(log + basket_margin validation, no execution)."),
             ))
 
         # Prune rows whose keys are no longer in the SEEDS list — the code
