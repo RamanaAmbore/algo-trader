@@ -33,7 +33,11 @@ test.describe.serial('Signin flow → admin landing', () => {
     // robustness.
     const userInput = page.locator('#s-user, input[name="username"], input[type="text"]').first();
     const passInput = page.locator('#s-pass, input[name="password"], input[type="password"]').first();
-    const submitBtn = page.locator('button.btn-primary, button:has-text("Sign In"), button[type="submit"]').first();
+    // Scope to the FORM submit button, not the navbar "Sign In" CTA
+    // that's on the public site header. The page has two "Sign In"
+    // buttons — top-right nav (which is just an anchor) and the
+    // form submit. Anchor to the form's submit type explicitly.
+    const submitBtn = page.locator('form button[type="submit"]').first();
 
     await expect(userInput).toBeVisible({ timeout: 8000 });
     await expect(passInput).toBeVisible();
