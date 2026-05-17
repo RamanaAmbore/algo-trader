@@ -73,7 +73,8 @@
   // was introduced. This is a one-time sync on navigation; subsequent mode
   // changes go through the navbar combobox → setExecutionMode().
   onMount(async () => {
-    if (!$authStore.user || $authStore.user.role !== 'admin') { goto('/signin'); return; }
+    const r = $authStore.user?.role;
+    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
     const param = page.url.searchParams.get('mode');
     const valid = /** @type {const} */ (['sim', 'replay', 'paper', 'shadow', 'live']);
     if (param && valid.includes(/** @type {any} */ (param))) {
