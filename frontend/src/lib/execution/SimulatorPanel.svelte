@@ -203,6 +203,9 @@
   let iterMarketBlocked    = $state(false);
   let iterBlockSetting     = $state(true);
   let iterLoadingDefaults  = $state(true);
+  // Cross-underlying correlation table from /defaults. Shape:
+  // { "NIFTY": [{to: "BANKNIFTY", beta: 1.30}, ...], ... }
+  let iterCorrelationBetas = $state(/** @type {Record<string, Array<{to: string, beta: number}>>} */ ({}));
 
   async function loadIterDefaults() {
     try {
@@ -215,12 +218,24 @@
         (r) => ({ value: r.slug, label: r.name || r.slug }));
       iterMarketBlocked    = Boolean(d.markets_currently_open) && Boolean(d.block_during_market_hours);
       iterBlockSetting     = Boolean(d.block_during_market_hours);
+      iterCorrelationBetas = d.correlation_betas || {};
     } catch (_) {
       /* settings unreachable — leave defaults */
     } finally {
       iterLoadingDefaults = false;
     }
   }
+
+  // Compact correlation summary for the chip — "NIFTY→BANKNIFTY β=1.30, …"
+  const _correlationSummary = $derived.by(() => {
+    const lines = [];
+    for (const [src, peers] of Object.entries(iterCorrelationBetas || {})) {
+      for (const p of (peers || [])) {
+        lines.push(`${src}→${p.to} β=${Number(p.beta).toFixed(2)}`);
+      }
+    }
+    return lines;
+  });
 
   async function doStartRun() {
     error = ''; note = '';
@@ -403,6 +418,13 @@
   <div class="iter-header">
     <span class="iter-title">Iteration mode</span>
     <InfoHint popup text="Runs N iterations sequentially, round-robining through the picked regimes. Each iteration writes a SimIteration row that you can replay later with the same seed. Defaults pre-filled from /admin/settings." />
+    {#if _correlationSummary.length > 0}
+      <span class="iter-corr-chip" title={'Cross-underlying correlation propagation: when a scenario moves NIFTY, BANKNIFTY drags at β=1.30, FINNIFTY at β=1.10, etc. Single-hop only.'}>
+        <span class="iter-corr-label">Correlation:</span>
+        <span class="iter-corr-pairs">{_correlationSummary.join(' · ')}</span>
+        <InfoHint popup label="?" text={`<strong>Cross-underlying correlation table</strong><br/><br/>${_correlationSummary.map(l => l + '<br/>').join('')}<br/>When an <code>underlying_pct</code> scenario fires on a source, peers move at <code>β × primary_delta</code>. Propagation is capped at one hop so the chain doesn't recurse.`} />
+      </span>
+    {/if}
     <a class="iter-history-link" href="/admin/simulator/iterations">Past iterations →</a>
   </div>
 
@@ -995,6 +1017,37 @@
     text-decoration: none;
   }
   .iter-history-link:hover { color: #fbbf24; }
+  /* Cross-underlying correlation chip — read-only badge that surfaces
+     the default beta table so operators see what propagation fires
+     when a scenario moves NIFTY/BANKNIFTY/FINNIFTY. Click the (?)
+     for the full table in an InfoHint popup. */
+  .iter-corr-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    color: #c8d8f0;
+    background: rgba(124, 58, 237, 0.10);
+    border: 1px solid rgba(124, 58, 237, 0.35);
+    padding: 0.15rem 0.45rem;
+    border-radius: 9999px;
+    margin-left: 0.5rem;
+    white-space: nowrap;
+    overflow: hidden;
+    max-width: 36rem;
+  }
+  .iter-corr-label {
+    color: #c4b5fd;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .iter-corr-pairs {
+    color: #c8d8f0;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .iter-banner-warn {
     margin-bottom: 0.5rem;
     padding: 0.4rem 0.6rem;

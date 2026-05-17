@@ -602,3 +602,34 @@
     - at: 2
       moves:
         - {type: pct, scope: "holdings.**", value: -0.01}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Generic IV crush — second-order vega test that works on any book.
+# Unlike nifty-iv-crush (NIFTY-only), this resets IV across every option
+# on every underlying, so iteration-mode sweeps can include it without
+# requiring a specific underlying in the seed book.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: iv-crush
+  name: IV crush (σ → 0.10 across all options)
+  mode: symbol
+  seed: 42
+  market_state: {preset: mid_session}
+  description: >-
+    Hard IV reset to 10% on every option in the book (vega shock), then
+    a small calm walk on each underlying. Tests long-premium agents
+    that gate on option decay rather than spot moves. Pair with
+    seed_mode=live to see the operator's real chain reprice under
+    crushed vol.
+  ticks:
+    - at: 0
+      moves:
+        - {type: set_iv, scope: "positions.*.*", value: 0.10}
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.001}
+    - at: 1
+      moves:
+        - {type: underlying_random_walk, scope: "underlying.*",
+           drift: 0.0, vol: 0.001}
+    - at: 2
+      moves:
+        - {type: advance_clock, minutes: 5}

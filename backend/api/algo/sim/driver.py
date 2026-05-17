@@ -353,6 +353,39 @@ async def _fetch_user_watchlist_rows(user_id: int) -> list[dict]:
     return rows
 
 
+# Direct-LTP move primitives. Realistic market simulation should use
+# `underlying_*` instead so options reprice off spot via Black-Scholes.
+# These are kept for the per-agent synthesizer (which uses target_pnl
+# to force specific thresholds) and for testing non-derivative legs.
+_UNREALISTIC_DERIV_MOVES = {"pct", "abs", "random_walk", "target_pnl"}
+
+
+def _warn_unrealistic_moves(scen: dict, slug: str) -> None:
+    """
+    Emit one warning per (slug, move_type) when a YAML scenario applies
+    a direct-LTP primitive to a positions-scope move. Derivatives in
+    that scope bypass Black-Scholes — option/future prices move
+    independently of the underlying spot, which is unrealistic for any
+    book that has F&O.
+    """
+    seen: set[str] = set()
+    for tick in (scen.get("ticks") or []):
+        for move in (tick.get("moves") or []):
+            mtype = (move.get("type") or "").lower()
+            scope = move.get("scope") or ""
+            if mtype in _UNREALISTIC_DERIV_MOVES and scope.startswith("positions."):
+                if mtype in seen:
+                    continue
+                seen.add(mtype)
+                logger.warning(
+                    f"[SIM] scenario '{slug}' uses '{mtype}' over '{scope}' — "
+                    f"direct-LTP move on positions bypasses Black-Scholes; "
+                    f"options/futures will tick without the underlying moving. "
+                    f"Use 'underlying_pct' / 'underlying_random_walk' for "
+                    f"realistic re-pricing."
+                )
+
+
 def _match_glob(glob: str, section: str, account: str, symbol: str) -> bool:
     """
     Match a glob like `holdings.**` / `holdings.ZG*.*` / `positions.*.NIFTY*`
@@ -663,6 +696,16 @@ class SimDriver:
             scen = get_scenario(scenario_slug)
             if not scen:
                 raise SimGuardError(f"Unknown scenario '{scenario_slug}'")
+            # Realism check — non-inline scenarios are YAML-authored
+            # and should drive market change via underlying_* moves so
+            # derivatives reprice coherently off spot via BS. Direct-LTP
+            # primitives (pct/abs/random_walk/target_pnl) on positions
+            # scopes bypass the spot path and produce unrealistic option
+            # ticks. The synthesizer (inline_scenario != None) is exempt
+            # because it deliberately uses target_pnl to force agent
+            # thresholds. Soft warning only — operator may still want
+            # to run the scenario for ad-hoc testing.
+            _warn_unrealistic_moves(scen, scenario_slug)
 
         # Apply pct_overrides into the scenario's ticks before we store
         # it. The shape we handle cleanly: every override slot [i] replaces

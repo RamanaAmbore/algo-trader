@@ -153,6 +153,10 @@ class SimDefaultsResponse(msgspec.Struct):
     spread_pct:                float
     available_regimes:         list[dict]
     markets_currently_open:    bool
+    # Read-only cross-underlying correlation table — surfaces in the UI
+    # so operators see what propagation will fire when a scenario moves
+    # NIFTY (BANKNIFTY drags at β=1.30, FINNIFTY at β=1.10, etc.).
+    correlation_betas:         dict
 
 
 def _market_hours_block_check() -> None:
@@ -483,6 +487,12 @@ class SimulatorController(Controller):
             {"slug": s["slug"], "name": s.get("name") or s["slug"]}
             for s in all_scen
         ]
+        # Cross-underlying correlation table — read directly from the
+        # SimDriver class constant so frontend always sees what's
+        # actually wired in. (Per-scenario `propagate:` overrides aren't
+        # surfaced here — operators see the default that fires when no
+        # override is supplied.)
+        from backend.api.algo.sim.driver import SimDriver
         return SimDefaultsResponse(
             iterations  =get_int("simulator.default_iterations", 1),
             max_minutes =get_int("simulator.default_max_minutes", 10),
@@ -496,6 +506,7 @@ class SimulatorController(Controller):
             spread_pct  =get_float("simulator.default_spread_pct", 0.10),
             available_regimes=available,
             markets_currently_open=_markets_currently_open(),
+            correlation_betas=SimDriver._DEFAULT_BETAS,
         )
 
     @post("/start-run")
