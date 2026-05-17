@@ -130,6 +130,11 @@ class SimRunRequest(msgspec.Struct):
     # gating agents see real data. "watchlist" reserved for re-quoting
     # symbols with no open position.
     inputs:                   Optional[list[str]] = None
+    # Account scope — list of broker account codes (e.g. ["ZG0790"]).
+    # Empty / None = run across every loaded account (historical
+    # behaviour). When set, seed_live() filters the snapshot to only
+    # the listed accounts so per-account agents see a scoped book.
+    accounts:                 Optional[list[str]] = None
 
 
 class SimIterationInfo(msgspec.Struct):
@@ -159,6 +164,9 @@ class SimDefaultsResponse(msgspec.Struct):
     spread_pct:                float
     available_regimes:         list[dict]
     markets_currently_open:    bool
+    # Account codes currently loaded in Connections — populates the
+    # Accounts multi-select on the sim form. Empty selection = all.
+    available_accounts:        list[str]
     # Read-only cross-underlying correlation table — surfaces in the UI
     # so operators see what propagation will fire when a scenario moves
     # NIFTY (BANKNIFTY drags at β=1.30, FINNIFTY at β=1.10, etc.).
@@ -499,6 +507,14 @@ class SimulatorController(Controller):
         # surfaced here — operators see the default that fires when no
         # override is supplied.)
         from backend.api.algo.sim.driver import SimDriver
+        # Account codes currently loaded into Connections — these are
+        # the choices the operator can scope the sim to. Empty if
+        # no broker accounts have been seeded yet.
+        try:
+            from backend.shared.helpers.connections import Connections
+            available_accounts = sorted(Connections().conn.keys())
+        except Exception:
+            available_accounts = []
         return SimDefaultsResponse(
             iterations  =get_int("simulator.default_iterations", 1),
             max_minutes =get_int("simulator.default_max_minutes", 10),
@@ -513,6 +529,7 @@ class SimulatorController(Controller):
             available_regimes=available,
             markets_currently_open=_markets_currently_open(),
             correlation_betas=SimDriver._DEFAULT_BETAS,
+            available_accounts=available_accounts,
         )
 
     @post("/start-run")
@@ -541,6 +558,7 @@ class SimulatorController(Controller):
                 spread_pct=spread_fraction,
                 custom_positions=data.custom_positions,
                 inputs=data.inputs,
+                accounts=data.accounts,
             )
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))

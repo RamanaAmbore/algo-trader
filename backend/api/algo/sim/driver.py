@@ -481,6 +481,12 @@ class SimDriver:
         # position. Source of truth for the UI's conditional Holdings
         # summary panel.
         self.inputs:          list[str] = ["positions"]
+        # Account scope — list of broker account codes (ZG0790,
+        # ZJ6294, …). Empty list = all loaded accounts (historical
+        # behaviour). When set, seed_live() filters every captured
+        # row to only those accounts so the sim runs against a
+        # subset of the operator's book.
+        self.accounts:        list[str] = []
         self._positions_rows: list[dict] = []
         # Watchlist rows — zero-qty market-data-only entries. Move
         # primitives (pct / abs / random_walk / underlying_*) apply to
@@ -653,6 +659,8 @@ class SimDriver:
             # The UI uses this to decide whether to render the Holdings
             # summary panel (hidden when 'holdings' isn't in this list).
             "inputs":                  list(self.inputs),
+            # Account scope for the run. Empty = all loaded accounts.
+            "accounts":                list(self.accounts),
         }
 
     def _summary_rows(self, kind: str) -> list[dict]:
@@ -745,7 +753,8 @@ class SimDriver:
               walk_vol: float | None = None,
               walk_seed: int | None = None,
               chase_max_attempts: int | None = None,
-              inputs: list[str] | None = None) -> dict:
+              inputs: list[str] | None = None,
+              accounts: list[str] | None = None) -> dict:
         """
         Start the sim against a named scenario from scenarios.yaml, or an
         `inline_scenario` dict (same shape) built at call time by the
@@ -820,6 +829,9 @@ class SimDriver:
         _known_inputs = {"positions", "holdings", "watchlist"}
         _req_inputs = [s.strip().lower() for s in (inputs or ["positions"]) if s]
         self.inputs = [s for s in _req_inputs if s in _known_inputs] or ["positions"]
+        # Account scope — stored for snapshot serialization + passed
+        # to seed_live below. Empty list = all loaded accounts.
+        self.accounts = [str(a).strip().upper() for a in (accounts or []) if a]
         self.rate_ms        = max(200, int(rate_ms))
         self.tick_index     = 0
         self.started_at     = datetime.now()
@@ -893,9 +905,14 @@ class SimDriver:
         self._holdings_rows = []
         self._watchlist_rows = []
         if seed_mode in ("live", "live+scenario"):
-            if not self._live_snapshot:
+            # Re-seed when the account filter changed since the last
+            # snapshot OR no snapshot exists. Otherwise the cached
+            # snapshot may include rows from accounts the operator
+            # has now excluded from this run.
+            cached_accts = (self._live_snapshot or {}).get("accounts_filter") or []
+            if not self._live_snapshot or cached_accts != self.accounts:
                 try:
-                    self.seed_live()
+                    self.seed_live(accounts=self.accounts or None)
                 except Exception as e:
                     raise SimGuardError(
                         f"Auto-seed of live book failed: {e}. "
@@ -1188,7 +1205,8 @@ class SimDriver:
                         seed_mode: str, rate_ms: int | None,
                         spread_pct: float | None,
                         custom_positions: list[dict] | None,
-                        inputs: list[str] | None = None) -> dict:
+                        inputs: list[str] | None = None,
+                        accounts: list[str] | None = None) -> dict:
         """
         Multi-iteration entry point. The driver runs `iterations` scenarios
         sequentially, round-robining through `regimes`. Each iteration:
@@ -1237,6 +1255,7 @@ class SimDriver:
             "spread_pct":       spread_pct,
             "custom_positions": custom_positions,
             "inputs":           inputs,
+            "accounts":         accounts,
         }
         self._iter_plan = plan
 
@@ -1317,6 +1336,7 @@ class SimDriver:
                         custom_positions=params.get("custom_positions"),
                         walk_seed=iter_seed,
                         inputs=params.get("inputs"),
+                        accounts=params.get("accounts"),
                     )
                 except SimGuardError as e:
                     logger.warning(f"[SIM] iteration {idx} start failed: {e}")
@@ -2329,12 +2349,20 @@ class SimDriver:
 
     # ── Live-book seeding ────────────────────────────────────────────
 
-    def seed_live(self, user_id: int | None = None) -> dict:
+    def seed_live(self, user_id: int | None = None,
+                  accounts: list[str] | None = None) -> dict:
         """
         Snapshot holdings + positions + margins from the real book into
         the driver's `_live_snapshot` field. Holdings are included so
         the simulator can exercise day_pct / day_rate_abs / day_rate_pct
         agents that condition on holdings P&L.
+
+        `accounts` (optional) scopes the snapshot to only the listed
+        account codes (e.g. ["ZG0790"]). None or [] = all loaded
+        accounts (historical behaviour). The filter is applied AFTER
+        the broker fetch so the @for_all_accounts decorator still
+        runs as designed; we just drop unwanted rows from the
+        snapshot.
 
         When `user_id` is given, additionally fetches that user's
         watchlists and seeds zero-qty rows for every watchlist item so
@@ -2366,6 +2394,19 @@ class SimDriver:
         positions = df_p.fillna(0).to_dict(orient="records") if not df_p.empty else []
         margins   = df_m.fillna(0).to_dict(orient="records") if not df_m.empty else []
 
+        # Per-account scope filter — when caller passes a non-empty
+        # list, drop every row whose `account` isn't in it. Applied
+        # uniformly across all three buckets so per-account agents
+        # see a coherent slice of the book.
+        if accounts:
+            scoped = {str(a).strip().upper() for a in accounts if a}
+            def _in_scope(r):
+                acct = str(r.get("account") or "").strip().upper()
+                return acct in scoped
+            holdings  = [r for r in holdings  if _in_scope(r)]
+            positions = [r for r in positions if _in_scope(r)]
+            margins   = [r for r in margins   if _in_scope(r)]
+
         for row in positions:
             _recompute_position_row(row)
         for row in holdings:
@@ -2383,6 +2424,10 @@ class SimDriver:
             "margins":     margins,
             "watchlist":   watchlist_rows,
             "snapshot_at": datetime.now().isoformat(timespec="seconds"),
+            # Echo the filter back so start() can decide whether the
+            # cached snapshot matches the current run's account scope.
+            "accounts_filter": sorted([str(a).strip().upper()
+                                       for a in (accounts or []) if a]),
         }
         logger.info(
             f"[SIM] seed-live: {len(positions)} positions · {len(margins)} margins · "

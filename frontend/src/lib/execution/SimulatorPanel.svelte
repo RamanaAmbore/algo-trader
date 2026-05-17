@@ -279,6 +279,10 @@
     { value: 'holdings',  label: 'Holdings'  },
     { value: 'watchlist', label: 'Watchlist' },
   ];
+  // Account scope — empty = all loaded accounts. Pre-populated from
+  // /api/simulator/defaults.available_accounts.
+  let iterAccounts          = $state(/** @type {string[]} */ ([]));
+  let iterAvailableAccounts = $state(/** @type {{value:string,label:string}[]} */ ([]));
   let iterSeed        = $state(/** @type {number | ''} */ (''));
   let iterForceClose  = $state(true);
   let iterAvailableRegimes = $state(/** @type {{value:string,label:string}[]} */ ([]));
@@ -298,6 +302,8 @@
       iterForceClose       = Boolean(d.force_close_on_timeout);
       iterAvailableRegimes = (d.available_regimes || []).map(
         (r) => ({ value: r.slug, label: r.name || r.slug }));
+      iterAvailableAccounts = (d.available_accounts || []).map(
+        (a) => ({ value: a, label: a }));
       iterMarketBlocked    = Boolean(d.markets_currently_open) && Boolean(d.block_during_market_hours);
       iterBlockSetting     = Boolean(d.block_during_market_hours);
       iterCorrelationBetas = d.correlation_betas || {};
@@ -336,6 +342,7 @@
         rate_ms:                Number(rateMs) || null,
         spread_pct:             spreadPct === '' ? null : Number(spreadPct),
         inputs:                 iterInputs.length ? iterInputs : ['positions'],
+        accounts:               iterAccounts.length ? iterAccounts : null,
       };
       if (!payload.regimes?.length) {
         error = 'Pick at least one regime.';
@@ -676,6 +683,12 @@
       <MultiSelect id="iter-inputs" bind:value={iterInputs}
         options={_INPUT_OPTIONS}
         placeholder="positions" />
+    </div>
+    <div class="iter-field iter-field-wide">
+      <label class="field-label" for="iter-accounts" title="Broker accounts to scope this run to. Leave empty to run across every loaded account (default). Pick one or more to seed the sim with only those accounts' positions/holdings/margins.">Accounts</label>
+      <MultiSelect id="iter-accounts" bind:value={iterAccounts}
+        options={iterAvailableAccounts}
+        placeholder="(all loaded)" />
     </div>
     <div class="iter-field iter-field-wide">
       <label class="field-label" for="iter-agents" title="Empty list = no agents (market explorer). Leave empty AND deselect everything to pass null → run all active agents.">Agents</label>
