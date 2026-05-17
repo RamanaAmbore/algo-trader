@@ -170,19 +170,26 @@
     modeOpen  = false;
     modeError = '';
     if (mode === 'live') {
+      // LIVE keeps the confirm modal — real broker calls deserve a
+      // dress-rehearsal click. confirmLive() commits the master toggle
+      // (no nav; LIVE has no dedicated workspace).
       liveConfirmOpen = true;
       return;
     }
     if (mode === 'sim' || mode === 'replay') {
-      // Both are transient — the driver is started from /admin/execution's
-      // respective panel. Optimistically flip the chip immediately so the
-      // operator sees their selection reflected; the next /api/admin/
-      // execution/mode poll (30s) will sync back to the persisted value
-      // if the operator navigates away without starting.
+      // Both modes have a dedicated workspace at /admin/execution.
+      // Optimistically flip the chip so the operator sees the
+      // selection reflected immediately; the next /api/admin/execution/
+      // mode poll (30s) will sync if they navigate away without
+      // starting.
       executionMode.set(mode);
       goto(`/admin/execution?mode=${mode}`);
       return;
     }
+    // PAPER / SHADOW: master-toggle only. Commit the flag, optimistically
+    // flip the chip, and stay on the current page — these modes have no
+    // dedicated workspace (their content lives on /orders + /dashboard).
+    executionMode.set(/** @type {any} */ (mode));
     await _commitMode(mode);
   }
 

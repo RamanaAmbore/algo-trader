@@ -56,6 +56,13 @@
     if (!mode) return;
     if (mode === _lastMode) return;
     _lastMode = mode;
+    // Clear stale in-memory rows on mode switch so the chip filter
+    // doesn't briefly render wrong-mode rows before the next poll
+    // lands. Each stream refetches immediately via _every() / the
+    // poll cadence — no functional gap, just no flash of stale data.
+    orderRows = [];
+    agentLog  = [];
+    simLog    = [];
     if (mode === 'sim') {
       orderModeFilter = 'sim';
       if (tabs.includes('simulator')) logTab = 'simulator';
