@@ -120,18 +120,56 @@ test.describe('Agents · paper trading via simulator', () => {
     expect(event.trigger_condition).toMatch(/margin/i);
   });
 
-  // NOTE: deliberately not testing `loss-pos-total-static-pct` or the
-  // `loss-*-rate-*` rate agents here. The synthesizer has two real
-  // backend issues uncovered while building this suite:
-  //   - pnl_pct + positions.total scope: `_synth_pnl_pct` doesn't seed
-  //     a TOTAL margin row, so `ctx.used_margin_for("TOTAL")` returns
-  //     None at eval time and the metric resolves to None (agent never
-  //     fires).
-  //   - pnl_rate_*: the 3-tick scripted scenario doesn't supply enough
-  //     P&L history for the 10-min rate window to satisfy the
-  //     baseline-offset + window-length gates.
-  // Both deserve their own follow-up fix; this spec covers the four
-  // synthesizer paths that DO produce reliable fires.
+  // ── Case 4: total positions percentage P&L threshold ────────────────
+  // Validates the synthesizer's `_margin_rows_with_total` + scope-aware
+  // denominator scaling. Earlier the TOTAL margin row was missing so
+  // `ctx.used_margin_for('TOTAL')` returned None and the agent never
+  // fired (commit 944cfa1 fixed this).
+  test('loss-pos-total-static-pct fires via target_pnl sized to TOTAL util margin', async ({ page }) => {
+    const id = agentMap['loss-pos-total-static-pct'];
+    test.skip(!id, 'agent not seeded');
+
+    await startForAgent(page.request, id);
+    const { event } = await waitForAgentFire(page.request, id, FIRE_TIMEOUT);
+
+    expect(event.agent_id).toBe(id);
+    expect(event.trigger_condition).toMatch(/pnl_pct/);
+  });
+
+  // ── Case 5: per-account positions absolute P&L threshold ────────────
+  // Validates the synthesizer's `any_acct`-aware per-account share —
+  // earlier the target was divided across both scripted accounts, so
+  // each ended up at half the threshold and the agent never crossed.
+  test('loss-pos-acct-static-abs fires with the FULL target on each account', async ({ page }) => {
+    const id = agentMap['loss-pos-acct-static-abs'];
+    test.skip(!id, 'agent not seeded');
+
+    await startForAgent(page.request, id);
+    const { event } = await waitForAgentFire(page.request, id, FIRE_TIMEOUT);
+
+    expect(event.agent_id).toBe(id);
+    expect(event.trigger_condition).toMatch(/positions\.any_acct\s+pnl/);
+  });
+
+  // ── Case 6: total positions ₹/min rate metric ───────────────────────
+  // Validates the engine's pnl_history writer (commit 944cfa1).
+  // Before that fix, alert_state.pnl_history was never populated by
+  // the v2 engine, so rate metric resolvers returned None on every
+  // tick and every rate agent silently never fired — both in prod and
+  // in sim.
+  test('loss-pos-total-rate-abs fires once history accumulates', async ({ page }) => {
+    const id = agentMap['loss-pos-total-rate-abs'];
+    test.skip(!id, 'agent not seeded');
+
+    await startForAgent(page.request, id);
+    // 60 s — rate scenarios run window_min+1 ticks at 2 s spacing and
+    // need run_cycle to accumulate ≥2 history samples before the rate
+    // evaluator can compute a slope.
+    const { event } = await waitForAgentFire(page.request, id, 60_000);
+
+    expect(event.agent_id).toBe(id);
+    expect(event.trigger_condition).toMatch(/pnl_rate_abs/);
+  });
 
   // ── UI smoke: /agents page surfaces the fired event in its panel ────
   test('agents page shows the fired event in its scoped event panel', async ({ page }) => {
