@@ -37,7 +37,13 @@ logger = get_logger(__name__)
 # during a run — operators see what's running without it cluttering
 # the picker.
 _DEV_MODES  = ["paper"]
-_PROD_MODES = ["paper", "live", "shadow"]
+# SHADOW removed from the navbar dropdown to prevent accidental
+# clicks reverting the master toggle from LIVE. SHADOW is a rarely-
+# used diagnostic — toggle via /admin/settings → execution.shadow_mode
+# when actually needed. The chip still RENDERS 'shadow' if the flag
+# is on (so the operator sees it), but it's no longer pickable from
+# the dropdown.
+_PROD_MODES = ["paper", "live"]
 
 
 class ExecutionModeResponse(msgspec.Struct):
