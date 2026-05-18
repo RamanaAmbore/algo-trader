@@ -403,18 +403,50 @@
       {/if}
     </div>
 
-    <!-- Shell-level basket bar — visible from any tab when legs exist. -->
+    <!-- Shell-level basket bar — visible from any tab when legs exist.
+         Per-leg pills (B/S · sym · lots stepper · × remove) sit on the
+         left; Clear / Submit on the right. Same shape as the chain
+         tab's in-tab basket so the operator sees what's pending from
+         any tab without flipping back to Chain. -->
     {#if basketLegs.length > 0}
       <div class="oes-basket-bar">
-        <span class="oes-basket-count">{basketLegs.length} leg{basketLegs.length === 1 ? '' : 's'} in basket</span>
-        {#if basketResultMsg}
-          <span class="oes-basket-result">{basketResultMsg}</span>
-        {/if}
-        <div class="oes-basket-actions">
-          <button type="button" class="oes-basket-clear" disabled={basketSubmitting} onclick={clearBasket}>Clear</button>
-          <button type="button" class="oes-basket-submit" disabled={basketSubmitting} onclick={submitBasket}>
-            {basketSubmitting ? 'Placing…' : `Submit basket (${basketLegs.length})`}
-          </button>
+        <div class="oes-basket-pills" role="list">
+          {#each basketLegs as leg, i (leg.key)}
+            <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : 'fut'}"
+                  class:is-disabled={basketSubmitting}
+                  role="listitem"
+                  title="Click × to remove from basket">
+              <span class="oes-basket-pill-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
+              <span class="oes-basket-pill-sym">{leg.sym}</span>
+              <button type="button" class="oes-basket-pill-step"
+                      title="Decrease lots"
+                      disabled={basketSubmitting || (leg.lots || 1) <= 1}
+                      onclick={() => updateLegByKey(leg.key, b => ({ ...b, lots: Math.max(1, (b.lots || 1) - 1) }))}>−</button>
+              <span class="oes-basket-pill-lots">{leg.lots || 1}</span>
+              <button type="button" class="oes-basket-pill-step"
+                      title="Increase lots"
+                      disabled={basketSubmitting}
+                      onclick={() => updateLegByKey(leg.key, b => ({ ...b, lots: (b.lots || 1) + 1 }))}>+</button>
+              {#if leg.lotSize > 1}
+                <span class="oes-basket-pill-qty">× {leg.lotSize} = {(leg.lots || 1) * leg.lotSize}</span>
+              {/if}
+              <button type="button" class="oes-basket-pill-remove"
+                      title="Remove leg from basket"
+                      disabled={basketSubmitting}
+                      onclick={() => removeBasketLeg(i)}>×</button>
+            </span>
+          {/each}
+        </div>
+        <div class="oes-basket-meta">
+          {#if basketResultMsg}
+            <span class="oes-basket-result">{basketResultMsg}</span>
+          {/if}
+          <div class="oes-basket-actions">
+            <button type="button" class="oes-basket-clear" disabled={basketSubmitting} onclick={clearBasket}>Clear</button>
+            <button type="button" class="oes-basket-submit" disabled={basketSubmitting} onclick={submitBasket}>
+              {basketSubmitting ? 'Placing…' : `Submit basket (${basketLegs.length})`}
+            </button>
+          </div>
         </div>
       </div>
     {/if}
@@ -641,26 +673,106 @@
     flex-shrink: 0;
     z-index: 2;
   }
-  .oes-basket-count {
-    font-family: monospace;
-    font-size: 0.65rem;
-    font-weight: 700;
-    color: #4ade80;
-    letter-spacing: 0.04em;
-  }
   .oes-basket-result {
     font-family: monospace;
     font-size: 0.62rem;
     color: #c8d8f0;
-    flex: 1 1 100%;
-    margin-top: 0.15rem;
+    margin-right: 0.4rem;
   }
-  .oes-basket-actions {
+  .oes-basket-meta {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     margin-left: auto;
   }
+  .oes-basket-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  /* Per-leg pills. Mirror the chain-tab basket palette so an
+     operator scanning the bottom strip from any tab gets the same
+     B / S colour, sym, lots stepper, and × remove affordance. */
+  .oes-basket-pills {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.35rem;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .oes-basket-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.18rem 0.4rem;
+    border-radius: 2px;
+    border: 1px solid;
+    font-family: monospace;
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .oes-basket-pill-buy {
+    color:        #67e8f9;
+    border-color: rgba(103,232,249,0.55);
+    background:   rgba(103,232,249,0.10);
+  }
+  .oes-basket-pill-sell {
+    color:        #fbbf24;
+    border-color: rgba(251,191,36,0.55);
+    background:   rgba(251,191,36,0.10);
+  }
+  .oes-basket-pill-side {
+    font-weight: 900;
+    padding-right: 0.18rem;
+    border-right: 1px solid currentColor;
+    opacity: 0.9;
+  }
+  .oes-basket-pill-sym {
+    font-weight: 800;
+    color: #f1f7ff;
+  }
+  .oes-basket-pill-step {
+    border: none;
+    background: transparent;
+    color: currentColor;
+    font-weight: 800;
+    font-family: monospace;
+    cursor: pointer;
+    padding: 0 0.2rem;
+    line-height: 1;
+  }
+  .oes-basket-pill-step:hover:not(:disabled) { color: #fff; }
+  .oes-basket-pill-step:disabled { opacity: 0.35; cursor: not-allowed; }
+  .oes-basket-pill-lots {
+    min-width: 1rem;
+    text-align: center;
+    font-weight: 800;
+    color: #f1f7ff;
+  }
+  .oes-basket-pill-qty {
+    font-size: 0.52rem;
+    opacity: 0.7;
+    font-weight: 600;
+  }
+  .oes-basket-pill-remove {
+    border: none;
+    background: transparent;
+    color: rgba(255,255,255,0.55);
+    font-weight: 900;
+    font-family: monospace;
+    cursor: pointer;
+    padding: 0 0.2rem;
+    margin-left: 0.1rem;
+    line-height: 1;
+  }
+  .oes-basket-pill-remove:hover:not(:disabled) { color: #f87171; }
+  .oes-basket-pill-remove:disabled { opacity: 0.35; cursor: not-allowed; }
+  .oes-basket-pill.is-disabled { opacity: 0.55; }
   .oes-basket-clear,
   .oes-basket-submit {
     height: 1.9rem;
