@@ -44,15 +44,30 @@
     for (const s of series) {
       const t = s.ticks || [];
       if (!t.length) continue;
-      const base = Number(t[0].ltp) || 0;
-      if (base === 0) continue;
+      // Use the first NON-ZERO tick as the % baseline. Symptom of the
+      // earlier bug: pills updated (reading status.positions directly)
+      // but the chart stayed blank because the very first captured
+      // tick had ltp=0 (broker quote hadn't landed yet) — base=0 →
+      // series dropped → all subsequent valid ticks discarded. Now we
+      // walk past leading zeros and only drop a series when EVERY tick
+      // is zero.
+      let baseIdx = -1;
+      for (let i = 0; i < t.length; i++) {
+        if (Number(t[i].ltp) > 0) { baseIdx = i; break; }
+      }
+      if (baseIdx < 0) continue;
+      const base = Number(t[baseIdx].ltp);
+      // Keep all ticks from the first non-zero onward; trailing /
+      // mid-series zeros are passed through (they'll plot as -100 %
+      // dips, which is the truthful visual for "we lost the quote").
+      const startedTicks = t.slice(baseIdx);
       out.push({
         symbol:  s.symbol,
         color:   s.color || '#7dd3fc',
         side:    s.side,
         account: s.account,
         base,
-        pctTicks: t.map((tk) => ({
+        pctTicks: startedTicks.map((tk) => ({
           ts:  tk.ts,
           pct: (Number(tk.ltp) - base) / base,
           raw: Number(tk.ltp),

@@ -2524,7 +2524,14 @@ class SimDriver:
             if not sym:
                 continue
             ltp = r.get("last_price")
-            if ltp is None:
+            # Skip ltp = None and 0 / negative — those are placeholder
+            # values from before the broker quote has landed. Capturing
+            # a zero-ltp first-tick used to poison the chart's
+            # %-normalised baseline (base = 0 → series dropped); even
+            # though the frontend now walks past leading zeros, dropping
+            # them at capture time keeps the deque clean of meaningless
+            # entries.
+            if ltp is None or float(ltp) <= 0:
                 continue
             buf = self._price_history.get(sym)
             if buf is None:
