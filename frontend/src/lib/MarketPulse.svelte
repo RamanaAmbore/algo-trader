@@ -996,7 +996,15 @@
       const g = String(groupKey(r));
       const u = String(r.underlying || '').toUpperCase();
       const isIdx = INDEX_UNDERLYINGS.has(u);
-      const bucket = isIdx ? 0 : (r.src?.p || r.src?.h) ? 1 : r.src?.w ? 2 : 3;
+      // Pulse priority — operator wants watchlist symbols (the
+      // platform's curated/default set plus any saved manually)
+      // surfaced before broker positions/holdings, so the page leads
+      // with "what I'm watching" instead of "what I happen to be
+      // holding". Indices stay at the top (always-relevant context).
+      const bucket = isIdx ? 0
+                   : r.src?.w ? 1
+                   : (r.src?.p || r.src?.h) ? 2
+                   : 3;
       if (groupBucket[g] == null || bucket < groupBucket[g]) {
         groupBucket[g] = bucket;
       }

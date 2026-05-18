@@ -295,6 +295,7 @@ class PaperTradeEngine:
         render underlying lines next to options."""
         from backend.api.algo.derivatives import (
             parse_tradingsymbol, underlying_ltp_key,
+            is_mcx_underlying, futures_symbol_for_expiry,
         )
 
         ts   = datetime.now().isoformat(timespec="seconds")
@@ -319,8 +320,21 @@ class PaperTradeEngine:
                         "ask": float(ask) if ask is not None else None})
             parsed = parse_tradingsymbol(sym)
             if parsed:
-                underlyings.setdefault(parsed["underlying"],
-                                       underlying_ltp_key(parsed["underlying"]))
+                name = parsed["underlying"]
+                # For MCX commodities the option's "underlying spot"
+                # is the matching-month MCX future, not NSE:<name>
+                # which underlying_ltp_key() would naively return
+                # (the bogus key Kite has no quote for). This bug
+                # showed up as "underlying for a June option chart
+                # was the May front-month future" — the user's
+                # report. options.py was already fixed; this is the
+                # parallel fix in the paper-engine capture path.
+                if is_mcx_underlying(name) and parsed.get("expiry"):
+                    fut_sym = futures_symbol_for_expiry(name, parsed["expiry"])
+                    ltp_key = f"MCX:{fut_sym}"
+                else:
+                    ltp_key = underlying_ltp_key(name)
+                underlyings.setdefault(name, ltp_key)
 
         # Best-effort underlying spot fetch — ONE broker.ltp call covers
         # every distinct underlying. Routes through the first open order's
