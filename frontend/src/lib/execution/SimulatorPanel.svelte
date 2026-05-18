@@ -214,11 +214,14 @@
       events = Array.isArray(ev) ? ev : [];
       simOrders = Array.isArray(ord) ? ord : [];
       pastIterations = Array.isArray(iters) ? iters : [];
-      // Fetch a single batch of per-underlying chart histories rather
-      // than one PriceChart self-polling per name. Underlyings are
-      // typically 1-3 names (NIFTY / BANKNIFTY / FINNIFTY) so this is
-      // one round-trip total.
-      const names = Object.keys(stat?.underlyings || {});
+      // Batch-fetch chart histories for BOTH underlying spots AND
+      // every leg symbol in the book. One round-trip covers all
+      // PriceChart instances on the page (per-card underlying chart
+      // + the per-leg charts below each card).
+      const underlyingNames = Object.keys(stat?.underlyings || {});
+      const legSymbols = [...new Set((stat?.positions || [])
+        .map((p) => p.symbol).filter(Boolean))];
+      const names = [...new Set([...underlyingNames, ...legSymbols])];
       if (names.length) {
         try {
           const batch = await fetchChartBatch('sim', names);
@@ -607,19 +610,49 @@
         </div>
       {/if}
       <!-- Time-series chart: underlying spot evolution across all
-           ticks of the scenario. Pairs with the payoff snapshot
-           above — answers "how did the underlying move + when did
-           agents fire / orders place" while the payoff answers
-           "what's my P&L curve right now". Industry pattern:
-           ThinkOrSwim / Tastytrade always show both.
-           Lifecycle markers (agent fires, order placements) come
-           from the chart payload's `events` array. -->
+           ticks of the scenario. Always renders the section; an
+           empty placeholder shows when no ticks have been captured
+           yet so the operator knows where the chart will appear. -->
+      <div class="sim-payoff-history-label">Underlying spot · scenario history</div>
       {#if chartsBySymbol[underlying]?.ticks?.length}
-        <div class="sim-payoff-history-label">Underlying spot · scenario history</div>
         <PriceChart mode="sim" symbol={underlying} height={160}
                     data={chartsBySymbol[underlying]}
                     {chartsBySymbol} />
+      {:else}
+        <div class="sim-empty">Waiting for ticks. Start the sim to populate.</div>
       {/if}
+
+      <!-- Per-leg premium time-series. Each leg gets a small
+           PriceChart so the operator can see how that contract's
+           price evolved through the scenario. Colored by the same
+           palette swatch the legend uses below. -->
+      {#if positions.length}
+        <div class="sim-payoff-history-label">Leg premiums · scenario history</div>
+        <div class="sim-leg-charts">
+          {#each [...longs, ...shorts] as p, idx (p.symbol + ':' + p.account)}
+            {@const _palIdx = idx < longs.length ? idx : (idx - longs.length)}
+            {@const color = _legColor(p, _palIdx)}
+            <div class="sim-leg-chart-row">
+              <div class="sim-leg-chart-header">
+                <span class="sim-leg-swatch" style="background:{color}"></span>
+                <span class="sim-leg-side sim-leg-side-{(Number(p.quantity)||0) >= 0 ? 'long' : 'short'}">
+                  {(Number(p.quantity)||0) >= 0 ? 'LONG' : 'SHORT'}
+                </span>
+                <span class="sim-leg-symbol">{p.symbol}</span>
+                <span class="sim-leg-acct">· {p.account}</span>
+              </div>
+              {#if chartsBySymbol[p.symbol]?.ticks?.length}
+                <PriceChart mode="sim" symbol={p.symbol} height={110}
+                            data={chartsBySymbol[p.symbol]}
+                            {chartsBySymbol} />
+              {:else}
+                <div class="sim-empty sim-empty-leg">No ticks captured for this leg yet.</div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
       <div class="sim-payoff-legend">
         {#each longs as p, i (p.symbol + ':' + p.account)}
           <div class="sim-leg-row">
@@ -1407,6 +1440,32 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #7e97b8;
+  }
+  /* Per-leg chart stack. One row per leg: header (swatch + side +
+     symbol + account) over a small PriceChart. */
+  .sim-leg-charts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    margin-top: 0.15rem;
+  }
+  .sim-leg-chart-row {
+    background: rgba(13, 21, 38, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    padding: 0.3rem 0.4rem;
+  }
+  .sim-leg-chart-header {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-bottom: 0.2rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+  }
+  .sim-empty-leg {
+    padding: 0.2rem 0.4rem;
+    font-size: 0.55rem;
   }
   .sim-payoff-legend {
     display: flex;
