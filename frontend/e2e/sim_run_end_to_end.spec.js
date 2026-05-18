@@ -57,7 +57,7 @@ async function gotoSimWorkspace(page) {
   await page.goto('/admin/execution?tab=sim');
   await page.waitForLoadState('domcontentloaded');
   // SimulatorPanel mounts when the Simulator tab is active.
-  await expect(page.locator('.exec-tab-active', { hasText: /simulator/i })).toBeVisible({ timeout: 8000 });
+  await expect(page.locator('.exec-tab-active', { hasText: /scenario/i })).toBeVisible({ timeout: 8000 });
 }
 
 async function waitForStatus(page, predicate, timeoutMs = 90_000) {
@@ -145,19 +145,19 @@ test.describe('Sim end-to-end — Option B workspace', () => {
     await authOnce(page);
     await page.goto('/dashboard');
     await page.waitForLoadState('domcontentloaded');
-    const execLink = page.locator('.algo-nav-btn', { hasText: /^Execution$/ }).first();
+    const execLink = page.locator('.algo-nav-btn', { hasText: /^Lab$/ }).first();
     await expect(execLink).toBeVisible({ timeout: 8000 });
     await execLink.click();
     await expect(page).toHaveURL(/\/admin\/execution/, { timeout: 8000 });
 
     // Tab strip should be visible with Simulator + Replay tabs.
-    const simTab = page.locator('.exec-tab', { hasText: /simulator/i }).first();
-    const replayTab = page.locator('.exec-tab', { hasText: /replay/i }).first();
+    const simTab = page.locator('.exec-tab', { hasText: /scenario/i }).first();
+    const replayTab = page.locator('.exec-tab', { hasText: /backtest/i }).first();
     await expect(simTab).toBeVisible();
     await expect(replayTab).toBeVisible();
 
     // Simulator tab is active by default (post-25aab45 the page lands on sim).
-    await expect(page.locator('.exec-tab-active', { hasText: /simulator/i })).toBeVisible({ timeout: 4000 });
+    await expect(page.locator('.exec-tab-active', { hasText: /scenario/i })).toBeVisible({ timeout: 4000 });
   });
 
   // 4. Switching to the Replay tab loads ReplayPanel + the explainer chip.
@@ -165,9 +165,9 @@ test.describe('Sim end-to-end — Option B workspace', () => {
     await authOnce(page);
     await page.goto('/admin/execution');
     await page.waitForLoadState('domcontentloaded');
-    const replayTab = page.locator('.exec-tab', { hasText: /replay/i }).first();
+    const replayTab = page.locator('.exec-tab', { hasText: /backtest/i }).first();
     await replayTab.click();
-    await expect(page.locator('.exec-tab-active', { hasText: /replay/i })).toBeVisible({ timeout: 4000 });
+    await expect(page.locator('.exec-tab-active', { hasText: /backtest/i })).toBeVisible({ timeout: 4000 });
     // The Replay tab's subtitle "historical backtest" distinguishes it from
     // Re-run-iteration. The .exec-tab-subtitle span is always rendered inside
     // the active tab button when the replay tab is active.

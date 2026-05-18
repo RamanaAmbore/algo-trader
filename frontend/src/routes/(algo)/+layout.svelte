@@ -85,14 +85,14 @@
     // ── Analyze ──
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
     { href: '/admin/options',    label: 'Options',   group: 'analyze' },
-    // ── Modes ──
-    // Execution page always visible. SIM + REPLAY render their
-    // workspaces; PAPER / LIVE / SHADOW render an explainer card
-    // that links to /orders + /dashboard. Always-on visibility
-    // matters because the operator may want to access past sim
-    // playback (/admin/simulator/iterations) from here regardless
-    // of which mode the master toggle is in.
-    { href: '/admin/execution',  label: 'Execution',                     group: 'modes' },
+    // ── Lab ──
+    // "Lab" workspace hosts the two non-execution research surfaces:
+    // Scenario (fabricated price moves) and Backtest (historical
+    // candles). Renamed from "Execution" because the page no longer
+    // carries the live/paper/shadow master toggles (those live in
+    // the navbar dropdown). URL kept at /admin/execution for
+    // backward-compat with deep links + bookmarks.
+    { href: '/admin/execution',  label: 'Lab',                           group: 'modes' },
     // ── Build / extend ──
     { href: '/console',          label: 'Terminal',  group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
