@@ -209,6 +209,12 @@ SEEDS: list[tuple] = [
     ("algo",        "algo.max_attempts",            "int", 20,
      "Maximum chase attempts before the order is marked unfilled.",
      None, {"min": 1, "max": 100, "step": 1}),
+    ("algo",        "algo.chase_rejection_backoff_seconds", "int", 0,
+     "Extra pause (s) after a chase order is REJECTED / CANCELLED, "
+     "before the next place_order. 0 = use the standard chase "
+     "interval. Bump higher to avoid hammering Kite on structural "
+     "rejections (margin, tick, permission).",
+     "s", {"min": 0, "max": 300, "step": 1}),
     ("algo",        "algo.expiry_start_offset_hours","float", 2,
      "Hours before market close to begin expiry-day auto-close scan.",
      "h", {"min": 0, "max": 6, "step": 0.25}),

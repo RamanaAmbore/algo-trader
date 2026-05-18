@@ -105,6 +105,13 @@ class ChaseConfig:
     product: str = "NRML"
     variety: str = "regular"
     validity: str = "DAY"
+    rejection_backoff_seconds: int = 0
+    # extra pause when an attempt comes back REJECTED / CANCELLED. 0 →
+    # use cfg.interval_seconds (keeps spacing identical to a normal
+    # re-quote cycle). A structural rejection (margin shortfall, tick
+    # violation, permission gap) won't fix itself in milliseconds, so
+    # waiting before the next place_order avoids hammering Kite's
+    # 1-order/sec rate limit and gives the operator time to react.
 
 
 def _get_kite(account: str):
@@ -260,6 +267,8 @@ async def chase_order(
             interval_seconds=get_int("algo.chase_interval_seconds", 20),
             aggression_step=get_float("algo.aggression_step", 0.10),
             max_attempts=get_int("algo.max_attempts", 20),
+            rejection_backoff_seconds=get_int(
+                "algo.chase_rejection_backoff_seconds", 0),
         )
 
     result = ChaseResult(
@@ -355,6 +364,9 @@ async def chase_order(
             if order_status in ("CANCELLED", "REJECTED"):
                 logger.warning(f"Chase {symbol}: order {order_status} — {status.get('status_message', '')}")
                 current_order_id = None  # Need fresh order
+                backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
+                logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
+                await asyncio.sleep(backoff)
 
         except Exception as e:
             consecutive_errors += 1
