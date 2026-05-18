@@ -87,6 +87,13 @@
   // each chart's anchor lookup. $derived so it auto-updates when
   // chartsBySymbol gains new ticks per poll.
   const _scrubTimestamps = $derived(_buildScrubTimestamps(chartsBySymbol));
+  // Per-symbol last-known LTP at scrubbedTs (null when LIVE). Drives
+  // the per-card spot marker + the legend rows + the total-P&L
+  // banner. All look up symbols in this map; null returns mean "no
+  // captured tick yet at or before scrub" and the UI falls back to
+  // the live status.positions[].last_price.
+  const _scrubbedLtps = $derived(_ltpAtScrub(_scrubbedTs, chartsBySymbol));
+  const _scrubMode = $derived(_scrubbedTs != null);
 
   /**
    * Build the cumulative-P&L curve for the equity-curve chart.
@@ -116,6 +123,33 @@
       for (const t of tk) tsSet.add(t.ts);
     }
     return Array.from(tsSet).sort();
+  }
+
+  /**
+   * Last-known LTP per symbol at a given scrubbed timestamp. Walks
+   * each symbol's tick history and returns the most-recent tick at
+   * or before `ts`. Symbols with no ticks ≤ ts fall back to null.
+   * Used by the legend rows + spot marker + total-P&L banner so the
+   * pills reflect the historical moment, not "now".
+   *
+   * @param {string | null} ts
+   * @param {Record<string, any>} chartsBySymbol
+   * @returns {Record<string, number | null>}
+   */
+  function _ltpAtScrub(ts, chartsBySymbol) {
+    /** @type {Record<string, number | null>} */
+    const out = {};
+    if (!ts) return out;
+    for (const sym of Object.keys(chartsBySymbol || {})) {
+      const tk = chartsBySymbol[sym]?.ticks || [];
+      let last = null;
+      for (const t of tk) {
+        if (t.ts <= ts) last = Number(t.ltp);
+        else break;
+      }
+      out[sym] = last;
+    }
+    return out;
   }
 
   function _buildPnlCurve(positions, chartsBySymbol) {
@@ -698,10 +732,25 @@
       <div class="sim-payoff-header">
         <span class="sim-payoff-name">{underlying}</span>
         <span class="sim-payoff-meta">{positions.length} leg{positions.length === 1 ? '' : 's'}</span>
-        {#if payoff?.strategy?.spot != null}
+        {#if _scrubMode && _scrubbedLtps[underlying] != null}
+          {@const _scrubSpot = _scrubbedLtps[underlying]}
+          <span class="sim-payoff-spot" title="Historical spot at scrubbed timestamp">
+            spot ₹{priceFmt(_scrubSpot)} <span class="sim-scrub-tag">SCRUB</span>
+          </span>
+        {:else if payoff?.strategy?.spot != null}
           <span class="sim-payoff-spot">spot ₹{priceFmt(payoff.strategy.spot)}</span>
         {/if}
-        {#if payoff?.strategy?.risk?.current_pnl != null}
+        {#if _scrubMode}
+          <!-- Total P&L recomputed at scrub timestamp: Σ qty × (scrubbed_ltp − avg_price) -->
+          {@const _scrubTotal = positions.reduce((s, p) => {
+            const lp = _scrubbedLtps[p.symbol];
+            if (lp == null || !p.average_price || !p.quantity) return s;
+            return s + Number(p.quantity) * (lp - Number(p.average_price));
+          }, 0)}
+          <span class="sim-payoff-pnl {_scrubTotal < 0 ? 'neg' : _scrubTotal > 0 ? 'pos' : ''}">
+            scrub: ₹{aggFmt(_scrubTotal)}
+          </span>
+        {:else if payoff?.strategy?.risk?.current_pnl != null}
           {@const pnl = payoff.strategy.risk.current_pnl}
           <span class="sim-payoff-pnl {pnl < 0 ? 'neg' : pnl > 0 ? 'pos' : ''}">
             now: ₹{aggFmt(pnl)}
@@ -711,7 +760,9 @@
       {#if payoff?.strategy?.payoff?.length}
         <OptionsPayoff
           payoff={payoff.strategy.payoff}
-          spot={payoff.strategy.spot}
+          spot={_scrubMode && _scrubbedLtps[underlying] != null
+                ? _scrubbedLtps[underlying]
+                : payoff.strategy.spot}
           prevClose={payoff.strategy.spot_prev_close}
           breakevens={payoff.strategy.risk?.breakevens}
           spanSigmas={payoff.strategy.span_sigmas}
@@ -1697,6 +1748,22 @@
   }
   .sim-payoff-pnl.pos { color: #4ade80; background: rgba(74, 222, 128, 0.10); }
   .sim-payoff-pnl.neg { color: #f87171; background: rgba(248, 113, 113, 0.10); }
+
+  /* SCRUB tag next to the spot value — surfaces that the displayed
+     spot/PnL are historical at the scrubbed timestamp, not live. */
+  .sim-scrub-tag {
+    display: inline-block;
+    margin-left: 0.25rem;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background: rgba(251, 191, 36, 0.16);
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    vertical-align: middle;
+  }
   /* Section label between the payoff snapshot chart and the
      underlying-spot time-series chart. Same muted-amber style as
      the page-level section labels so the operator's eye reads it
