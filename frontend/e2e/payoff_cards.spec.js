@@ -441,4 +441,209 @@ test.describe('Simulator payoff cards (/admin/execution?tab=sim)', () => {
     await resetSim(page.request);
     console.log('[payoff_cards/two-charts] sim stopped and cleared');
   });
+
+  // ── NEW: per-leg time-series charts + dual section labels (deploy 2dea143) ──
+  //
+  // Changes verified:
+  //   1. "Underlying spot · scenario history" section ALWAYS renders (with an
+  //      empty placeholder when no ticks — no conditional hide).
+  //   2. NEW "Leg premiums · scenario history" section with one
+  //      .sim-leg-chart-row per position in the underlying group.
+  //   3. /api/charts/batch fetch extended to include leg symbols so per-leg
+  //      PriceCharts receive data.
+  //
+  // Assertions inside first .sim-payoff-card:
+  //   a. .sim-payoff-history-label count >= 2  (one per section heading)
+  //   b. The two label texts are exactly the two new strings.
+  //   c. .sim-leg-chart-row count >= 1
+  //   d. Total svg.chart-svg count > 1  (underlying chart + per-leg charts)
+  //   e. .sim-empty-leg is a soft check — may or may not exist per live book.
+  test('per-leg premium charts and dual section labels (deploy 2dea143)', async ({ page }) => {
+    await authOnce(page);
+
+    // Guard: simulator must be enabled.
+    const statusProbe = await page.request.get('/api/simulator/status');
+    expect(statusProbe.ok(), 'simulator status probe failed').toBe(true);
+    const statusInit = await statusProbe.json();
+    if (statusInit.enabled === false) {
+      test.skip(true, `simulator disabled on branch=${statusInit.branch} — run on prod`);
+      return;
+    }
+
+    // Clean slate.
+    await resetSim(page.request);
+
+    const agentId = await resolveAutoCloseAgentId(page.request);
+    console.log(`[payoff_cards/leg-charts] auto-close agent_id=${agentId ?? '(not found)'}`);
+
+    // Seed the live book.
+    const seedR = await page.request.post('/api/simulator/seed-live');
+    const seedBody = seedR.ok() ? await seedR.json().catch(() => ({})) : {};
+    console.log(`[payoff_cards/leg-charts] seed-live positions=${seedBody.positions_count ?? '?'}`);
+
+    // Start extreme-crash at 1 s/tick so chart ticks accumulate quickly.
+    const startR = await page.request.post('/api/simulator/start', {
+      data: {
+        scenario: 'extreme-crash',
+        rate_ms: 1000,
+        seed_mode: 'live',
+        agent_ids: agentId ? [agentId] : null,
+      },
+    });
+    if (!startR.ok()) {
+      const txt = await startR.text().catch(() => '');
+      if (/empty|no position|not enabled|disabled/i.test(txt)) {
+        test.skip(true, `sim start skipped: ${txt.slice(0, 120)}`);
+        return;
+      }
+      throw new Error(`POST /api/simulator/start failed ${startR.status()}: ${txt.slice(0, 200)}`);
+    }
+    const startBody = await startR.json().catch(() => ({}));
+    const posCount = startBody.positions_count ?? startBody.total_positions ?? 0;
+    console.log(`[payoff_cards/leg-charts] start ok positions_count=${posCount}`);
+
+    if (posCount === 0) {
+      await resetSim(page.request).catch(() => {});
+      test.skip(true, 'Live broker book has no F&O positions — per-leg chart test not applicable');
+      return;
+    }
+
+    // Wait for tick_index >= 2 (enough ticks for both underlying + leg symbols
+    // to appear in the batch chart response).
+    const liveStatus = await waitForStatus(
+      page.request,
+      (s) => s.tick_index >= 2,
+      45_000,
+    );
+    console.log(`[payoff_cards/leg-charts] sim ticked: tick_index=${liveStatus.tick_index}`);
+
+    // Probe the batch endpoint for leg symbols (not just underlyings) to
+    // confirm the extended fetch reaches contract-level ticks.
+    const posRows = liveStatus.positions || [];
+    const legSymbols = [...new Set(posRows.map((p) => p.symbol).filter(Boolean))];
+    const underlyingSyms = Object.keys(liveStatus.underlyings || {});
+    const allBatchSymbols = [...new Set([...underlyingSyms, ...legSymbols])];
+    console.log(`[payoff_cards/leg-charts] batch symbols to probe: [${allBatchSymbols.join(', ')}]`);
+
+    if (allBatchSymbols.length) {
+      const batchR = await page.request.get(
+        `/api/charts/batch?mode=sim&symbols=${allBatchSymbols.join(',')}`,
+      );
+      if (batchR.ok()) {
+        const batchBody = await batchR.json().catch(() => ({}));
+        const legTicksTotal = (batchBody.charts || [])
+          .filter((c) => legSymbols.includes(c.symbol))
+          .reduce((s, c) => s + (c.ticks?.length || 0), 0);
+        const underlyingTicksTotal = (batchBody.charts || [])
+          .filter((c) => underlyingSyms.includes(c.symbol))
+          .reduce((s, c) => s + (c.ticks?.length || 0), 0);
+        console.log(
+          `[payoff_cards/leg-charts] batch: underlying ticks=${underlyingTicksTotal} ` +
+          `leg ticks=${legTicksTotal}`,
+        );
+      }
+    }
+
+    // Navigate to the simulator workspace.
+    await page.goto('/admin/execution?tab=sim');
+    await page.waitForLoadState('domcontentloaded');
+
+    await expect(
+      page.locator('.exec-tab-active', { hasText: /scenario/i }),
+    ).toBeVisible({ timeout: 10_000 });
+
+    // Wait for at least one payoff card.
+    const cardLocator = page.locator('.sim-payoff-card');
+    try {
+      await cardLocator.first().waitFor({ state: 'visible', timeout: 15_000 });
+    } catch (_) {
+      await resetSim(page.request).catch(() => {});
+      test.skip(true, 'No .sim-payoff-card rendered — no F&O positions at time of run');
+      return;
+    }
+
+    const cardCount = await cardLocator.count();
+    console.log(`[payoff_cards/leg-charts] .sim-payoff-card count=${cardCount}`);
+    expect(cardCount).toBeGreaterThanOrEqual(1);
+
+    const firstCard = cardLocator.first();
+
+    // ── Assert a: .sim-payoff-history-label count >= 2 ────────────────────
+    // The "Underlying spot" label always renders (even with empty placeholder).
+    // The "Leg premiums" label renders whenever positions.length > 0.
+    // After tick_index >= 2 with a live book, both sections must be present.
+    const historyLabels = firstCard.locator('.sim-payoff-history-label');
+    // Wait for the second label to appear (may lag a render cycle after batch data arrives).
+    let labelCount = 0;
+    const labelDeadline = Date.now() + 20_000;
+    while (Date.now() < labelDeadline) {
+      labelCount = await historyLabels.count();
+      if (labelCount >= 2) break;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    console.log(`[payoff_cards/leg-charts] .sim-payoff-history-label count=${labelCount}`);
+    expect(
+      labelCount,
+      '.sim-payoff-history-label should appear at least twice (one per section heading)',
+    ).toBeGreaterThanOrEqual(2);
+
+    // ── Assert b: verify the exact label texts ────────────────────────────
+    const allLabelTexts = await historyLabels.allTextContents();
+    const cleanLabels = allLabelTexts.map((t) => t.trim());
+    console.log(`[payoff_cards/leg-charts] section label texts: ${JSON.stringify(cleanLabels)}`);
+    expect(
+      cleanLabels,
+      'must include "Underlying spot · scenario history"',
+    ).toContain('Underlying spot · scenario history');
+    expect(
+      cleanLabels,
+      'must include "Leg premiums · scenario history"',
+    ).toContain('Leg premiums · scenario history');
+
+    // ── Assert c: .sim-leg-chart-row count >= 1 ───────────────────────────
+    const legChartRows = firstCard.locator('.sim-leg-chart-row');
+    const legChartRowCount = await legChartRows.count();
+    console.log(`[payoff_cards/leg-charts] .sim-leg-chart-row count=${legChartRowCount}`);
+    expect(
+      legChartRowCount,
+      'at least one .sim-leg-chart-row must exist inside the first card',
+    ).toBeGreaterThanOrEqual(1);
+
+    // ── Assert d: total svg.chart-svg count > 1 ───────────────────────────
+    // After batch data arrives the underlying chart + at least one leg chart
+    // each render a <svg class="chart-svg">.  Poll up to 20 s for the
+    // second svg to appear (leg data from extended batch may arrive slightly
+    // after the underlying data).
+    let chartSvgCount = 0;
+    const svgDeadline = Date.now() + 20_000;
+    while (Date.now() < svgDeadline) {
+      chartSvgCount = await firstCard.locator('svg.chart-svg').count();
+      if (chartSvgCount > 1) break;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    const totalSvgCount = await firstCard.locator('svg').count();
+    const payoffSvgCount = await firstCard.locator('svg.payoff-svg').count();
+    console.log(
+      `[payoff_cards/leg-charts] svg counts in first card: ` +
+      `total=${totalSvgCount} chart-svg=${chartSvgCount} payoff-svg=${payoffSvgCount}`,
+    );
+    expect(
+      chartSvgCount,
+      'total svg.chart-svg inside first card must be > 1 (underlying chart + at least one leg chart)',
+    ).toBeGreaterThan(1);
+
+    // ── Assert e: .sim-empty-leg — soft check ─────────────────────────────
+    // This element appears for legs that have no captured ticks yet. It is
+    // valid for it to appear (slow tick capture) or not appear (ticks present).
+    // We only log; we do NOT hard-assert its presence or absence.
+    const emptyLegCount = await firstCard.locator('.sim-empty-leg').count();
+    console.log(
+      `[payoff_cards/leg-charts] .sim-empty-leg count=${emptyLegCount} ` +
+      `(soft — 0 means all legs have ticks; >0 means some legs still waiting)`,
+    );
+
+    // ── Stop the sim cleanly ──────────────────────────────────────────────
+    await resetSim(page.request);
+    console.log('[payoff_cards/leg-charts] sim stopped and cleared');
+  });
 });
