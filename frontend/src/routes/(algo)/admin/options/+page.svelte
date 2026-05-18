@@ -648,7 +648,21 @@
    *  or instrumentsReady changes — the chain picker always reflects
    *  the freshest book without a manual refresh. */
   const _COMMON_INDICES_AND_COMMODITIES = [
+    // Indices (always on top for derivatives traders).
     'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
+    // Top-traded NSE F&O single stocks (NSE F&O turnover top-25 by
+    // ADV). Surfaces the popular tickers above the alphabetical
+    // dump — typing "rel" now lists RELIANCE BEFORE RELAXO/RELCHEMQ/
+    // RELIGARE etc. because RELIANCE is in this curated list.
+    'RELIANCE', 'HDFCBANK', 'INFY', 'ICICIBANK', 'TCS', 'SBIN',
+    'AXISBANK', 'KOTAKBANK', 'ITC', 'LT', 'BHARTIARTL', 'HINDUNILVR',
+    'ASIANPAINT', 'BAJFINANCE', 'BAJAJFINSV', 'TITAN', 'WIPRO',
+    'MARUTI', 'M&M', 'ADANIENT', 'ADANIPORTS', 'TATAMOTORS', 'TATASTEEL',
+    'JSWSTEEL', 'COALINDIA', 'POWERGRID', 'NTPC', 'ONGC', 'IOC',
+    'BPCL', 'HEROMOTOCO', 'EICHERMOT', 'CIPLA', 'DRREDDY', 'SUNPHARMA',
+    'GRASIM', 'ULTRACEMCO', 'TECHM', 'HCLTECH', 'NESTLEIND', 'BRITANNIA',
+    'INDUSINDBK', 'BAJAJ-AUTO',
+    // MCX commodities (operator's primary segment outside indices).
     'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
     'GOLD', 'GOLDM', 'GOLDMINI', 'GOLDPETAL',
     'SILVER', 'SILVERM', 'SILVERMINI', 'SILVERMIC',
