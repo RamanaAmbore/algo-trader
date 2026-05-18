@@ -286,9 +286,50 @@ def underlying_ltp_key(underlying: str) -> str:
     """Kite quote/ltp key for an underlying's spot. Indices use their
     special tickers; stocks use NSE:<underlying>. Commodities have no
     spot key — callers should detect via `is_mcx_underlying()` and
-    look up the matching futures contract instead."""
+    look up the matching futures contract instead.
+
+    Most callers should prefer `option_underlying_quote_key(symbol)`
+    which handles MCX commodities and per-expiry resolution in one
+    call; this lower-level helper exists for the rare path where the
+    caller already knows the underlying name in isolation."""
     name = (underlying or "").upper()
     return _INDEX_LTP_KEY.get(name, f"NSE:{name}")
+
+
+def option_underlying_quote_key(symbol: str) -> str | None:
+    """Resolve the Kite quote/ltp key for an option's / future's
+    UNDERLYING SPOT.
+
+    One call replaces the parse + branch + futures-lookup dance that
+    several call sites (paper.py, sim driver, options.py spot
+    resolver) used to duplicate, each with slight variations and
+    bug-prone defaults. Centralising here means a single source of
+    truth for "what do I quote to chart the underlying line next to
+    this option?".
+
+    Returns:
+      • NSE:NIFTY 50 (and friends) for index options like NIFTY26APR…
+      • NSE:RELIANCE (etc.) for stock options like RELIANCE26APR…
+      • MCX:CRUDEOIL26JUNFUT for an MCX commodity option (the
+        matching-month future, not the front-month — a June option
+        gets the June future, fixing the earlier "May spot under a
+        June option chart" bug).
+      • None when the symbol is unparseable, or when it parses to an
+        MCX commodity but carries no expiry (callers should skip the
+        underlying line in that case).
+    """
+    parsed = parse_tradingsymbol(symbol)
+    if not parsed:
+        return None
+    name = parsed.get("underlying")
+    if not name:
+        return None
+    if is_mcx_underlying(name):
+        expiry = parsed.get("expiry")
+        if not expiry:
+            return None
+        return f"MCX:{futures_symbol_for_expiry(name, expiry)}"
+    return underlying_ltp_key(name)
 
 
 _FUT_MONTH_CODES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
