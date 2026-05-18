@@ -70,6 +70,12 @@
   // status.underlyings (a {name: spot} dict).
   let chartsBySymbol = $state(/** @type {Record<string, any>} */ ({}));
   let refreshTeardown;
+  // Collapsible advanced cards — default closed so the page leads
+  // with the run controls + single-scenario form. Operators only
+  // open Iteration mode for multi-iteration sweeps and Custom
+  // positions for synthetic-position layering — both rare paths.
+  let _iterCardOpen   = $state(false);
+  let _customPosOpen  = $state(false);
   // Per-underlying spot snapshots from status.underlyings. The chart
   // grid below iterates these names. status.summary_positions /
   // summary_holdings come from the same /api/simulator/status payload.
@@ -544,8 +550,13 @@
   </div>
 {/if}
 
-<!-- Status bar -->
-<div class="algo-status-card p-3 mb-3" data-status={status.active ? 'triggered' : 'inactive'}>
+<!-- Status bar — sticky to the top of the scroll container so the
+     RUNNING/idle indicator + tick + scenario chips stay visible while
+     the operator scrolls through the controls or activity feed below.
+     Top offset = (navbar 2.5rem + algo banner ~1.5rem) so it tucks
+     directly under the page chrome on prod and dev alike. -->
+<div class="algo-status-card sim-status-sticky p-3 mb-3"
+     data-status={status.active ? 'triggered' : 'inactive'}>
   <div class="flex items-center flex-wrap gap-2 text-[0.7rem]">
     <span class="w-2 h-2 rounded-full {status.active ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}"></span>
     <span class="text-[#fbbf24] font-semibold">{status.active ? 'RUNNING' : 'idle'}</span>
@@ -845,10 +856,25 @@
   {/if}
 </div>
 
-<!-- Iteration-mode card (Phase 2A) -->
-<div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
-  <div class="iter-header">
+<!-- Iteration-mode card (Phase 2A). Collapsed by default — operators
+     run a single ad-hoc scenario far more often than a multi-iteration
+     sweep, so hide the bigger surface behind a toggle and surface it
+     only when the operator opens the card. When a run is in progress
+     the summary auto-opens (browsers honour `open` attribute on
+     details) so the operator can see progress without expanding by
+     hand. -->
+<details class="algo-status-card cmd-surface p-3 mb-3 sim-collapsible"
+         data-status={status.run_active ? 'triggered' : 'inactive'}
+         bind:open={_iterCardOpen}>
+  <summary class="sim-collapsible-summary">
+    <span class="sim-collapsible-chevron">{_iterCardOpen ? '▾' : '▸'}</span>
     <span class="iter-title">Iteration mode</span>
+    {#if status.run_active}
+      <span class="sim-collapsible-running">RUNNING</span>
+    {/if}
+    <span class="sim-collapsible-hint">{_iterCardOpen ? 'click to hide' : 'click for multi-iteration sweep'}</span>
+  </summary>
+  <div class="iter-header">
     <InfoHint popup text="Runs N iterations sequentially, round-robining through the picked regimes. Each iteration writes a SimIteration row that you can replay later with the same seed. Defaults pre-filled from /admin/settings." />
     {#if _correlationSummary.length > 0}
       <span class="iter-corr-chip" title={'Cross-underlying correlation propagation: when a scenario moves NIFTY, BANKNIFTY drags at β=1.30, FINNIFTY at β=1.10, etc. Single-hop only.'}>
@@ -951,7 +977,7 @@
       {/if}
     </div>
   </div>
-</div>
+</details>
 
 <!-- Controls card -->
 <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
@@ -1116,13 +1142,22 @@
   {/if}
 </div>
 
-<!-- Custom positions panel -->
-<div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
-  <div class="custom-pos-header">
-    <h3 class="text-[0.65rem] font-bold uppercase tracking-wider text-[#fbbf24]">
+<!-- Custom positions panel. Collapsed by default — only relevant when
+     the operator wants to layer synthetic positions on top of the
+     seeded book. Auto-expands when at least one custom row exists so
+     the operator never loses sight of what they've configured. -->
+<details class="algo-status-card cmd-surface p-3 mb-3 sim-collapsible"
+         data-status="inactive"
+         bind:open={_customPosOpen}>
+  <summary class="sim-collapsible-summary">
+    <span class="sim-collapsible-chevron">{_customPosOpen ? '▾' : '▸'}</span>
+    <h3 class="text-[0.65rem] font-bold uppercase tracking-wider text-[#fbbf24] m-0">
       Custom positions
       {#if customRows.length}<span class="opacity-60 font-normal ml-1">({customRows.length})</span>{/if}
     </h3>
+    <span class="sim-collapsible-hint">{_customPosOpen ? 'click to hide' : 'click to layer synthetic positions on top of the seeded book'}</span>
+  </summary>
+  <div class="custom-pos-header">
     <button type="button" class="sim-btn sim-btn-order"
             title="Add a synthetic position to layer on top of the seeded book."
             onclick={addCustomRow}>+ Add row</button>
@@ -1168,7 +1203,7 @@
       <span class="font-mono">underlying_*</span> move fires.
     </div>
   {/if}
-</div>
+</details>
 
 <LogPanel
   heightClass="h-[40vh]"
@@ -1179,6 +1214,65 @@
 />
 
 <style>
+  /* Sticky status strip — the RUNNING/idle + tick + scenario chips
+     stay pinned to the top of the scroll container while the operator
+     scrolls through controls / activity feed below. Top offset tucks
+     under the algo navbar + any sim/paper/replay banner above. */
+  :global(.sim-status-sticky) {
+    position: sticky;
+    top: calc(2.5rem + 1.5rem);
+    z-index: 5;
+    background: linear-gradient(180deg, #1d2a44 0%, #1a2540 100%);
+  }
+
+  /* Collapsible cards (Iteration mode + Custom positions). Default
+     collapsed; the summary row carries the title, a chevron, and a
+     hint string explaining what expanding does. */
+  :global(.sim-collapsible) > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  :global(.sim-collapsible) > summary::-webkit-details-marker {
+    display: none;
+  }
+  :global(.sim-collapsible-summary) {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: ui-monospace, monospace;
+    padding: 0.1rem 0;
+    margin-bottom: 0.4rem;
+    user-select: none;
+  }
+  :global(.sim-collapsible-chevron) {
+    color: #fbbf24;
+    font-weight: 800;
+    font-size: 0.7rem;
+    line-height: 1;
+    width: 0.7rem;
+  }
+  :global(.sim-collapsible-running) {
+    background: rgba(248, 113, 113, 0.15);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    color: #f87171;
+    padding: 0.06rem 0.4rem;
+    border-radius: 999px;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+  }
+  :global(.sim-collapsible-hint) {
+    margin-left: auto;
+    color: #7e97b8;
+    font-size: 0.55rem;
+    letter-spacing: 0.04em;
+  }
+  /* When collapsed, hide the now-redundant body's first inner row.
+     The summary already carries the title. */
+  :global(details.sim-collapsible:not([open]) > :not(summary)) {
+    display: none;
+  }
+
   .sim-scenario-row {
     display: flex;
     flex-wrap: wrap;

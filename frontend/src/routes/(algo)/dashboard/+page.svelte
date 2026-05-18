@@ -21,6 +21,9 @@
   let _paperOpen    = $state(0);
   let _heroLoadedAt = $state(/** @type {string|null} */ (null));
   let _heroTeardown;
+  // Agent log collapsed by default. Operators glance at the count
+  // chip first; expand only when they want to inspect specific fires.
+  let _agentLogOpen = $state(false);
 
   async function loadHero() {
     try {
@@ -118,36 +121,49 @@
   {/if}
 </div>
 
-<!-- 1. P&L Analysis — realised + unrealised breakdown by symbol. Reads
-     the live broker book, so it answers "where am I making/losing money"
-     before showing aggregate balances below. -->
-<div class="mp-section-label pnl-section-label">P&amp;L Analysis</div>
-<PnlAnalysis />
+<!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
+     stack (Funds + Positions Summary + Holdings Summary) on the right.
+     Below 1200px collapses to a single column, preserving the same
+     vertical order. Operators check P&L and account balances together,
+     so putting them side-by-side cuts the dashboard scroll roughly in
+     half on desktop. -->
+<div class="dash-grid">
+  <section class="dash-col dash-col-pnl">
+    <div class="mp-section-label">P&amp;L Analysis</div>
+    <PnlAnalysis />
+  </section>
+  <section class="dash-col dash-col-pulse">
+    <MarketPulse
+      title="Performance"
+      enableWatchlists={false}
+      enableSourceToggles={true}
+      allowOrders={true}
+      accountPicker={true}
+      showSummary={true}
+      showFunds={true}
+      showSymbolsGrid={false} />
+  </section>
+</div>
 
-<!-- 2. Summary grids — Funds + Positions Summary + Holdings Summary
-     (Symbols grid intentionally off; the per-symbol detail view lives
-     on /pulse and /performance). -->
-<MarketPulse
-  title="Performance"
-  enableWatchlists={false}
-  enableSourceToggles={true}
-  allowOrders={true}
-  accountPicker={true}
-  showSummary={true}
-  showFunds={true}
-  showSymbolsGrid={false} />
-
-<!-- 3. Agent activity — recent fires + action outcomes. Scoped to
-     agent kinds so order events don't clutter the panel (those live
-     on /orders). excludeSim filters out fabricated sim fires so the
-     dashboard reflects only real-market activity even when an
-     operator has a sim running in another tab. -->
-<div class="mp-section-label pnl-section-label">Agent activity</div>
-<UnifiedLog
-  filter={{ kinds: ['agent_fire', 'agent_action_success', 'agent_action_error'] }}
-  excludeSim={true}
-  maxRows={30}
-  emptyMessage="No agent fires yet today." />
+<!-- Agent activity — collapsed by default (showing just count + last-
+     fire chip). UnifiedLog reveals on expand. Most days the panel is
+     forensic detail; surface the count first so a glance answers
+     "anything firing today?" without scrolling. -->
+<details class="dash-agent" bind:open={_agentLogOpen}>
+  <summary class="dash-agent-summary">
+    <span class="mp-section-label">Agent activity</span>
+    <span class="dash-agent-chip">
+      <span class="dash-agent-count">{_firesToday}</span>
+      <span class="dash-agent-label">fires today</span>
+    </span>
+    <span class="dash-agent-toggle">{_agentLogOpen ? '▾ hide log' : '▸ show log'}</span>
+  </summary>
+  <UnifiedLog
+    filter={{ kinds: ['agent_fire', 'agent_action_success', 'agent_action_error'] }}
+    excludeSim={true}
+    maxRows={30}
+    emptyMessage="No agent fires yet today." />
+</details>
 
 <style>
   .algo-page-title {
@@ -233,6 +249,80 @@
     color: #7e97b8;
     font-family: ui-monospace, monospace;
     font-size: 0.55rem;
+    letter-spacing: 0.04em;
+  }
+
+  /* Two-column dashboard grid — desktop only. Mobile and narrow
+     desktops (laptops) collapse to single-column to keep grids
+     readable. P&L Analysis (long horizontal rows) gets ~58% width
+     since its columns are wider; MarketPulse stack (vertical card
+     grids) takes the remaining ~42%. */
+  .dash-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+  @media (min-width: 1200px) {
+    .dash-grid {
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      gap: 1rem;
+      align-items: start;
+    }
+  }
+  .dash-col       { min-width: 0; }
+  .dash-col-pnl   { display: flex; flex-direction: column; }
+  .dash-col-pulse { display: flex; flex-direction: column; }
+
+  /* Agent log details/summary — collapsed by default, hover-revealing
+     chevron + "show log" label. open state shows the full UnifiedLog. */
+  .dash-agent {
+    margin-top: 0.6rem;
+  }
+  .dash-agent-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    padding: 0.35rem 0.55rem;
+    border-radius: 3px;
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    background: rgba(15, 25, 45, 0.55);
+  }
+  .dash-agent-summary::-webkit-details-marker { display: none; }
+  .dash-agent-summary:hover {
+    border-color: rgba(251, 191, 36, 0.35);
+  }
+  .dash-agent-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    padding: 0.1rem 0.5rem;
+    border-left: 2px solid #fbbf24;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 2px;
+    font-family: ui-monospace, monospace;
+    line-height: 1;
+  }
+  .dash-agent-count {
+    color: #fbbf24;
+    font-size: 0.85rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .dash-agent-label {
+    color: #7e97b8;
+    font-size: 0.55rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .dash-agent-toggle {
+    margin-left: auto;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
     letter-spacing: 0.04em;
   }
   .pnl-section-label {
