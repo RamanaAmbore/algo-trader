@@ -346,7 +346,7 @@
       // `numericColumn` (warning #34). The built-in already adds
       // `ag-right-aligned-cell` + `ag-right-aligned-header` classes
       // that our CSS picks up — no override needed.
-      overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#999">—</span>',
+      overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">—</span>',
       domLayout: 'autoHeight',
       getRowClass,
       pinnedBottomRowData: [],
@@ -879,7 +879,12 @@
   .funds-heading-refresh { margin-left: auto; }
 
   /* ── Dark (algo) overrides ─────────────────────────────────────────────── */
-  .perf-dark :global(.section-heading) { color: #fbbf24; }
+  /* Section headings ("Fund Balances", "Summary", "Positions",
+     "Holdings") demoted from full amber to light blue so the three
+     heading tiers (page title amber → section label muted blue →
+     section heading light blue) read as distinct strata. Previously
+     all three tiers rendered in #fbbf24 and the hierarchy collapsed. */
+  .perf-dark :global(.section-heading) { color: #c8d8f0; }
 
   /* Tabs — active gets an amber tint + slight top-corner round so the
      selected tab reads as a panel header, not just an underlined word.

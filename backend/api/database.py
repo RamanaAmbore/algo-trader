@@ -97,10 +97,21 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode ON algo_orders (mode)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_status ON algo_orders (status)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_created_at ON algo_orders (created_at)",
+            # broker_order_id — chase.py terminal events + postback handlers
+            # all look up an AlgoOrder by broker_order_id. Pre-release audit
+            # caught this as the worst missing index on the order-hot-path.
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_broker_order_id ON algo_orders (broker_order_id)",
             # algo_order_events — index on order_id for per-order timeline queries.
             # Base.metadata.create_all will create the table; the index is added
             # idempotently here so existing deployments pick it up too.
             "CREATE INDEX IF NOT EXISTS ix_algo_order_events_order_id ON algo_order_events (order_id)",
+            # agent_events — alerts / agents / logs / simulator pages all
+            # filter on agent_id + sim_mode + timestamp. Pre-release audit
+            # caught these three as missing indexes on a growing append-only
+            # table; without them every list query was a seq-scan.
+            "CREATE INDEX IF NOT EXISTS ix_agent_events_agent_id ON agent_events (agent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_events_sim_mode ON agent_events (sim_mode)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_events_timestamp ON agent_events (timestamp)",
             # daily_book — composite indexes for date-range P&L queries on
             # existing tables (Base.metadata.create_all covers brand-new tables;
             # these are safe no-ops when the table was just created).

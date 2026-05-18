@@ -46,7 +46,13 @@ async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30):
         if asyncio.iscoroutinefunction(fetcher):
             value = await fetcher()
         else:
-            value = fetcher()
+            # Sync fetchers (Kite SDK calls, urllib3 fetches) historically
+            # ran inline on the event loop. On a cold cache hit that
+            # blocked the entire ramboq process for several seconds
+            # (instruments dump = ~90k rows × N exchanges; orders =
+            # one HTTP round-trip per account). Offload to the default
+            # threadpool so other requests in flight keep moving.
+            value = await asyncio.to_thread(fetcher)
 
         _store[key] = (now + ttl_seconds, value)
         return value

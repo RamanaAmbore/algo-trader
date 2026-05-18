@@ -230,27 +230,27 @@
   <button onclick={() => filterStatus = 'all'}
     class="algo-status-card p-2 text-center {filterStatus === 'all' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="inactive">
     <div class="text-xs font-bold text-[#c8d8f0]">{orders.length}</div>
-    <div class="text-[0.55rem] text-[#7e97b8] uppercase">All</div>
+    <div class="text-[0.62rem] text-[#7e97b8] uppercase">All</div>
   </button>
   <button onclick={() => filterStatus = 'open'}
     class="algo-status-card p-2 text-center {filterStatus === 'open' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="running">
     <div class="text-xs font-bold text-amber-400">{orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length}</div>
-    <div class="text-[0.55rem] text-[#7e97b8] uppercase">Open</div>
+    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Open</div>
   </button>
   <button onclick={() => filterStatus = 'complete'}
     class="algo-status-card p-2 text-center {filterStatus === 'complete' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="active">
     <div class="text-xs font-bold text-green-400">{orders.filter(o => o.status === 'COMPLETE').length}</div>
-    <div class="text-[0.55rem] text-[#7e97b8] uppercase">Filled</div>
+    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Filled</div>
   </button>
   <button onclick={() => filterStatus = 'rejected'}
     class="algo-status-card p-2 text-center {filterStatus === 'rejected' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="error">
     <div class="text-xs font-bold text-red-400">{orders.filter(o => o.status === 'REJECTED').length}</div>
-    <div class="text-[0.55rem] text-[#7e97b8] uppercase">Rejected</div>
+    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Rejected</div>
   </button>
   <button onclick={() => filterStatus = 'cancelled'}
     class="algo-status-card p-2 text-center {filterStatus === 'cancelled' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="error">
-    <div class="text-xs font-bold text-red-300">{orders.filter(o => o.status === 'CANCELLED').length}</div>
-    <div class="text-[0.55rem] text-[#7e97b8] uppercase">Cancelled</div>
+    <div class="text-xs font-bold text-orange-400">{orders.filter(o => o.status === 'CANCELLED').length}</div>
+    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Cancelled</div>
   </button>
 </div>
 
@@ -269,7 +269,7 @@
             : o.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
             : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{o.status}</span>
         </div>
-        <div class="text-[0.55rem] text-[#c8d8f0]/70 flex flex-wrap gap-x-2 uppercase">
+        <div class="text-[0.65rem] text-[#c8d8f0] flex flex-wrap gap-x-2 uppercase">
           <span>QTY:<b class="order-card-num">{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</b></span>
           <span>ORDER:<b>{o.order_type}</b></span>
           <span>PRICE:<b class="order-card-num">{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</b></span>

@@ -19,6 +19,7 @@ we hammer for shared market data" in one place.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -575,7 +576,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     if not is_commodity:
         key = underlying_ltp_key(underlying)
         try:
-            resp = broker.quote([key]) or {}
+            resp = await asyncio.to_thread(broker.quote, [key]) or {}
             quote_dict = resp.get(key) or {}
             px, src = _ltp_from_quote(quote_dict)
             if px is not None:
@@ -603,7 +604,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
         if resolved_sym:
             full_key = f"MCX:{resolved_sym}"
             try:
-                resp = broker.quote([full_key]) or {}
+                resp = await asyncio.to_thread(broker.quote, [full_key]) or {}
                 quote_dict = resp.get(full_key) or {}
                 px, _src = _ltp_from_quote(quote_dict)
                 if px is not None:
@@ -627,7 +628,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
             for ex in exchanges:
                 full_key = f"{ex}:{fut_sym}"
                 try:
-                    resp = broker.quote([full_key]) or {}
+                    resp = await asyncio.to_thread(broker.quote, [full_key]) or {}
                     quote_dict = resp.get(full_key) or {}
                     px, _src = _ltp_from_quote(quote_dict)
                     if px is not None:
@@ -728,7 +729,7 @@ def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
     from backend.shared.brokers.registry import get_price_broker
     key = _option_quote_key(symbol)
     try:
-        resp = get_price_broker().quote([key]) or {}
+        resp = await asyncio.to_thread(get_price_broker().quote, [key]) or {}
     except Exception as e:
         logger.warning(f"options LTP quote() failed for {symbol}: {e}")
         resp = {}
@@ -1066,7 +1067,7 @@ class OptionsController(Controller):
         quote_resp: dict = {}
         if keys:
             try:
-                quote_resp = get_price_broker().quote(keys) or {}
+                quote_resp = await asyncio.to_thread(get_price_broker().quote, keys) or {}
             except Exception as e:
                 logger.warning(
                     f"chain-quotes quote() failed for {und}/{exp}: {e}")
@@ -1144,7 +1145,7 @@ class OptionsController(Controller):
             for ex in (exchange, "BFO", "NSE", "BSE"):
                 if ex == exchange and token:
                     break
-                insts = broker.instruments(ex) or []
+                insts = await asyncio.to_thread(broker.instruments, ex) or []
                 for inst in insts:
                     if str(inst.get("tradingsymbol") or "").upper() == sym:
                         token = int(inst.get("instrument_token"))
@@ -1174,7 +1175,7 @@ class OptionsController(Controller):
             kite = broker.kite  # type: ignore[attr-defined]
             to_d   = datetime.now()
             from_d = to_d - timedelta(days=days)
-            raw    = kite.historical_data(token, from_d, to_d, interval) or []
+            raw    = await asyncio.to_thread(kite.historical_data, token, from_d, to_d, interval) or []
         except Exception as e:
             logger.warning(f"options historical_data failed for {sym}: {e}")
             return HistoricalResponse(symbol=sym, instrument_token=token,
@@ -1276,7 +1277,7 @@ class OptionsController(Controller):
         quote_resp: dict = {}
         if need_quote:
             try:
-                quote_resp = get_price_broker().quote(list(need_quote.keys())) or {}
+                quote_resp = await asyncio.to_thread(get_price_broker().quote, list(need_quote.keys())) or {}
             except Exception as e:
                 # Don't fail the whole request — sim legs and operator
                 # overrides + per-leg fallbacks (avg_cost) can still
@@ -1387,7 +1388,7 @@ class OptionsController(Controller):
             _fut_quote_resp: dict = {}
             if _fut_quote_keys:
                 try:
-                    _fut_quote_resp = get_price_broker().quote(_fut_quote_keys) or {}
+                    _fut_quote_resp = await asyncio.to_thread(get_price_broker().quote, _fut_quote_keys) or {}
                 except Exception as _e:
                     logger.warning(
                         f"MCX per-leg futures batch quote failed: {_e}; "

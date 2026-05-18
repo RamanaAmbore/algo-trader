@@ -219,7 +219,13 @@ class AlgoOrder(Base):
     agent_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("agents.id"), nullable=True, index=True,
     )
-    broker_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Indexed — chase.py terminal events (fill / unfill / chase_failed)
+    # query `WHERE broker_order_id = ?` on every real broker fill, and
+    # postback handlers in routes/orders.py do the same. Without the
+    # index that's a seq-scan on a growing append-only table.
+    broker_order_id: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True,
+    )
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expiry_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -348,14 +354,26 @@ class AgentEvent(Base):
     __tablename__ = "agent_events"
 
     id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
-    agent_id: Mapped[int]        = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    # Indexed — alerts/agents/logs pages all filter by agent_id; without
+    # the index every page load was a seq-scan on a growing append-only
+    # table.
+    agent_id: Mapped[int]        = mapped_column(
+        Integer, ForeignKey("agents.id"), nullable=False, index=True,
+    )
     event_type: Mapped[str]      = mapped_column(String(32), nullable=False)
     trigger_condition: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    sim_mode: Mapped[bool]       = mapped_column(Boolean, nullable=False, default=False)
+    # Indexed — simulator panels filter sim_mode=true; live alert pages
+    # filter sim_mode=false. Both run on every page tick.
+    sim_mode: Mapped[bool]       = mapped_column(
+        Boolean, nullable=False, default=False, index=True,
+    )
+    # Indexed — every list query orders by timestamp DESC and most filter
+    # by a recent time range.
     timestamp: Mapped[datetime]  = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        index=True,
     )
 
 

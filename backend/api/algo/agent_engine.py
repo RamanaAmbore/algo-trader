@@ -8,6 +8,7 @@ through configured channels and optional actions are executed.
 The engine handles cooldown, state transitions, and WebSocket broadcasts.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
@@ -919,7 +920,12 @@ async def run_cycle(context: dict, broadcast_fn=None,
     # override dict on the context, forward it so the per-segment open
     # flags reflect the simulated clock (e.g. "pre_close" preset) instead
     # of real wall-clock time.
-    base_ctx = _build_context(now, sim_overrides=context.get("market_state"))
+    # _build_context can do a blocking HTTP GET to nseindia.com when
+    # the holidays cache is cold (once per day per exchange). Offload
+    # to a thread so the agent tick doesn't stall the event loop.
+    base_ctx = await asyncio.to_thread(
+        _build_context, now, sim_overrides=context.get("market_state")
+    )
 
     # Determine whether NSE/MCX are currently open (for schedule filtering)
     nse_open_flag = bool(base_ctx.get("nse_open"))
