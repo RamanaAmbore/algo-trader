@@ -19,6 +19,7 @@
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import PriceChart    from '$lib/PriceChart.svelte';
+  import MultiPriceChart from '$lib/MultiPriceChart.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
@@ -508,41 +509,19 @@
         if (seedMode === 'scripted') seedMode = 'live';
       } catch (_) { /* ignore */ }
     })();
-    // Adaptive cadence — fast (3 s) when a sim is actually running
-    // so the operator gets live updates; slow (30 s) when idle so the
-    // Lab page doesn't burn server requests while the operator is
-    // just looking at past iterations. Saves ~38 req/min on every
-    // idle Lab tab — the most common Lab state.
-    refreshTeardown = _adaptiveLoopInterval(
-      () => { loadHot(); loadCurrentLog(); },
-      () => !!(status?.active || status?.run_active),
-      3000, 30000,
+    // Fixed-cadence polling at 3 s. Earlier I had this adaptive
+    // (3 s active / 30 s idle), but the transition was buggy: the
+    // setTimeout scheduled BEFORE a Start click was already on the
+    // slow 30 s schedule, so the chart timeseries didn't update for
+    // up to 30 s after Start. The supposed savings (~38 req/min on
+    // idle Lab) only matter when an operator is on Lab but doing
+    // nothing — which is rare. Live updates while the sim ticks is
+    // the actual common case, so optimize for that.
+    refreshTeardown = visibleInterval(
+      () => { loadHot(); loadCurrentLog(); }, 3000,
     );
   });
   onDestroy(() => { refreshTeardown?.(); });
-
-  function _adaptiveLoopInterval(/** @type {() => any} */ run,
-                                  /** @type {() => boolean} */ isActive,
-                                  fastMs = 3000, slowMs = 30000) {
-    let stopped = false;
-    let timer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
-    const schedule = () => {
-      if (stopped) return;
-      const ms = isActive() ? fastMs : slowMs;
-      timer = setTimeout(() => {
-        if (stopped) return;
-        try { run(); } catch (_) { /* swallow */ }
-        if (typeof document !== 'undefined' && document.hidden) {
-          // backoff while tab is in background
-          schedule();
-        } else {
-          schedule();
-        }
-      }, ms);
-    };
-    schedule();
-    return () => { stopped = true; if (timer) clearTimeout(timer); };
-  }
 </script>
 
 {#if error}
@@ -660,35 +639,26 @@
         <div class="sim-empty">Waiting for ticks. Start the sim to populate.</div>
       {/if}
 
-      <!-- Per-leg premium time-series. Each leg gets a small
-           PriceChart so the operator can see how that contract's
-           price evolved through the scenario. Colored by the same
-           palette swatch the legend uses below. -->
+      <!-- Per-leg premiums in ONE multi-line chart. Each leg gets
+           its own colored line; the y-axis is the % change from each
+           leg's first captured tick, so a ₹50 long-call and a ₹2,000
+           short-strangle wing share the same vertical scale and the
+           operator can compare trajectories directly. Hover reveals
+           per-leg values at the crosshair timestamp. -->
       {#if positions.length}
         <div class="sim-payoff-history-label">Leg premiums · scenario history</div>
-        <div class="sim-leg-charts">
-          {#each [...longs, ...shorts] as p, idx (p.symbol + ':' + p.account)}
-            {@const _palIdx = idx < longs.length ? idx : (idx - longs.length)}
-            {@const color = _legColor(p, _palIdx)}
-            <div class="sim-leg-chart-row">
-              <div class="sim-leg-chart-header">
-                <span class="sim-leg-swatch" style="background:{color}"></span>
-                <span class="sim-leg-side sim-leg-side-{(Number(p.quantity)||0) >= 0 ? 'long' : 'short'}">
-                  {(Number(p.quantity)||0) >= 0 ? 'LONG' : 'SHORT'}
-                </span>
-                <span class="sim-leg-symbol">{p.symbol}</span>
-                <span class="sim-leg-acct">· {p.account}</span>
-              </div>
-              {#if chartsBySymbol[p.symbol]?.ticks?.length}
-                <PriceChart mode="sim" symbol={p.symbol} height={110}
-                            data={chartsBySymbol[p.symbol]}
-                            {chartsBySymbol} />
-              {:else}
-                <div class="sim-empty sim-empty-leg">No ticks captured for this leg yet.</div>
-              {/if}
-            </div>
-          {/each}
-        </div>
+        {@const legSeries = [...longs, ...shorts].map((p, idx) => {
+          const palIdx = idx < longs.length ? idx : (idx - longs.length);
+          return {
+            symbol:  p.symbol,
+            color:   _legColor(p, palIdx),
+            side:    /** @type {'LONG'|'SHORT'} */ ((Number(p.quantity) || 0) >= 0 ? 'LONG' : 'SHORT'),
+            account: p.account,
+            ticks:   chartsBySymbol[p.symbol]?.ticks || [],
+          };
+        })}
+        <MultiPriceChart series={legSeries} height={220}
+                         emptyMsg="No ticks captured yet for any leg." />
       {/if}
 
       <div class="sim-payoff-legend">

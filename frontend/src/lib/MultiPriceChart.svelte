@@ -1,0 +1,318 @@
+<script>
+  // MultiPriceChart — overlay N price series on one SVG with a shared
+  // x-axis (timestamps) and a normalized y-axis (% change from each
+  // series' first captured tick). Built for the Lab simulator's
+  // per-leg view: a long-call at ₹50 and a short-strangle wing at
+  // ₹2,000 would otherwise need separate charts because their raw
+  // y-scales differ by 40×. Normalizing each series to its t=0 value
+  // lets the operator compare trajectories directly in one frame.
+  //
+  // The single-series PriceChart remains the right tool for an
+  // underlying spot or a single contract; this is purely the
+  // multi-leg comparison surface.
+
+  /** @type {{
+   *   series:    Array<{symbol: string, color: string, side?: 'LONG'|'SHORT', account?: string,
+   *                     ticks: Array<{ts: string, ltp: number}>}>,
+   *   height?:   number,
+   *   title?:    string,
+   *   emptyMsg?: string,
+   * }} */
+  const { series = [], height = 240, title = '',
+          emptyMsg = 'No ticks captured yet for any leg.' } = $props();
+
+  // ── Chart geometry ─────────────────────────────────────────────────
+  const W      = 720;
+  const PAD_L  = 44;
+  const PAD_R  = 16;
+  const PAD_T  = 8;
+  const PAD_B  = 28;
+  const innerW = $derived(W - PAD_L - PAD_R);
+  const innerH = $derived(height - PAD_T - PAD_B);
+
+  // ── Build normalized series ────────────────────────────────────────
+  // For each input series, derive {pctTicks: [{ts, pct, raw}]} where
+  // pct = (ltp - base) / base, base = first tick's ltp. Series whose
+  // first tick is 0 or missing are skipped (can't normalize against
+  // zero). All series share the same time domain (the union of all
+  // timestamps across all input series).
+  const normSeries = $derived.by(() => {
+    /** @type {Array<{symbol:string,color:string,side?:string,account?:string,
+     *                pctTicks:Array<{ts:string,pct:number,raw:number}>,
+     *                base:number}>} */
+    const out = [];
+    for (const s of series) {
+      const t = s.ticks || [];
+      if (!t.length) continue;
+      const base = Number(t[0].ltp) || 0;
+      if (base === 0) continue;
+      out.push({
+        symbol:  s.symbol,
+        color:   s.color || '#7dd3fc',
+        side:    s.side,
+        account: s.account,
+        base,
+        pctTicks: t.map((tk) => ({
+          ts:  tk.ts,
+          pct: (Number(tk.ltp) - base) / base,
+          raw: Number(tk.ltp),
+        })),
+      });
+    }
+    return out;
+  });
+
+  // Unified x-domain (min/max timestamp across every series).
+  const xDomain = $derived.by(() => {
+    let lo = Infinity, hi = -Infinity;
+    for (const s of normSeries) {
+      for (const tk of s.pctTicks) {
+        const t = Date.parse(tk.ts);
+        if (Number.isFinite(t)) {
+          if (t < lo) lo = t;
+          if (t > hi) hi = t;
+        }
+      }
+    }
+    return Number.isFinite(lo) && Number.isFinite(hi) && hi > lo
+      ? { lo, hi } : null;
+  });
+
+  // Unified y-domain (min/max pct across every series). Symmetric
+  // around 0 so up moves and down moves are equally visible.
+  const yDomain = $derived.by(() => {
+    let mag = 0;
+    for (const s of normSeries) {
+      for (const tk of s.pctTicks) {
+        const v = Math.abs(tk.pct);
+        if (v > mag) mag = v;
+      }
+    }
+    // Floor at 1 % so a flat market doesn't collapse to a degenerate axis.
+    return Math.max(mag * 1.10, 0.01);
+  });
+
+  const xOf = (/** @type {number} */ tMs) => {
+    if (!xDomain) return PAD_L;
+    if (xDomain.hi === xDomain.lo) return PAD_L + innerW / 2;
+    return PAD_L + ((tMs - xDomain.lo) / (xDomain.hi - xDomain.lo)) * innerW;
+  };
+  const yOf = (/** @type {number} */ pct) => {
+    // pct in [-yDomain, +yDomain]. yOf(+yDomain) = top (PAD_T).
+    // yOf(0) = vertical centre. yOf(-yDomain) = bottom (PAD_T+innerH).
+    return PAD_T + innerH / 2 - (pct / yDomain) * (innerH / 2);
+  };
+
+  function buildPath(/** @type {Array<{ts:string,pct:number}>} */ pts) {
+    if (!pts.length) return '';
+    let d = '';
+    for (let i = 0; i < pts.length; i++) {
+      const t = Date.parse(pts[i].ts);
+      if (!Number.isFinite(t)) continue;
+      const x = xOf(t);
+      const y = yOf(pts[i].pct);
+      d += (i === 0 ? `M${x.toFixed(2)},${y.toFixed(2)}`
+                    : ` L${x.toFixed(2)},${y.toFixed(2)}`);
+    }
+    return d;
+  }
+
+  // Y-axis tick marks at ±yDomain, ±yDomain/2, 0.
+  const yTicks = $derived([
+    -yDomain, -yDomain / 2, 0, yDomain / 2, yDomain,
+  ]);
+  const pctFmt = (/** @type {number} */ v) => {
+    const sign = v > 0 ? '+' : '';
+    return `${sign}${(v * 100).toFixed(1)}%`;
+  };
+
+  // X-axis labels — 4 evenly-spaced timestamps.
+  const xLabels = $derived.by(() => {
+    if (!xDomain) return [];
+    const out = [];
+    for (let i = 0; i < 4; i++) {
+      const t = xDomain.lo + ((xDomain.hi - xDomain.lo) * i) / 3;
+      const d = new Date(t);
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      const ss = String(d.getSeconds()).padStart(2, '0');
+      out.push({ x: xOf(t), label: `${hh}:${mm}:${ss}` });
+    }
+    return out;
+  });
+
+  // Hover crosshair — closest tick by x in the union of all series.
+  /** @type {{x:number,y:number,ts:string,rows:Array<{symbol:string,color:string,pct:number,raw:number}>}|null} */
+  let hover = $state(null);
+
+  function onPointerMove(/** @type {PointerEvent} */ ev) {
+    if (!xDomain || !normSeries.length) { hover = null; return; }
+    const svg = /** @type {SVGSVGElement} */ (ev.currentTarget);
+    const rect = svg.getBoundingClientRect();
+    const xRel = ((ev.clientX - rect.left) / rect.width) * W;
+    const tMs = xDomain.lo + ((xRel - PAD_L) / innerW) * (xDomain.hi - xDomain.lo);
+    // For each series, find the tick closest to tMs.
+    const rows = normSeries.map((s) => {
+      let best = s.pctTicks[0];
+      let bestD = Infinity;
+      for (const tk of s.pctTicks) {
+        const d = Math.abs(Date.parse(tk.ts) - tMs);
+        if (d < bestD) { bestD = d; best = tk; }
+      }
+      return { symbol: s.symbol, color: s.color, pct: best.pct, raw: best.raw, ts: best.ts };
+    });
+    // Anchor crosshair to the median tick's x.
+    const anchorT = Date.parse(rows[0]?.ts || '') || tMs;
+    hover = {
+      x:    xOf(anchorT),
+      y:    PAD_T + innerH / 2,
+      ts:   rows[0]?.ts || '',
+      rows: rows.map(({ symbol, color, pct, raw }) => ({ symbol, color, pct, raw })),
+    };
+  }
+  function onPointerLeave() { hover = null; }
+</script>
+
+<div class="mpc-shell">
+  {#if title}
+    <div class="mpc-header">{title}</div>
+  {/if}
+
+  {#if !normSeries.length}
+    <div class="mpc-empty">{emptyMsg}</div>
+  {:else}
+    <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none" class="mpc-svg"
+         onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
+      <!-- y-axis grid lines + labels (pct) -->
+      {#each yTicks as v}
+        <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}
+              stroke={v === 0 ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.08)'}
+              stroke-width={v === 0 ? 1 : 0.7}
+              stroke-dasharray={v === 0 ? '' : '2 3'} />
+        <text x={PAD_L - 6} y={yOf(v) + 3} text-anchor="end"
+              fill="#c8d8f0" font-size="10" font-weight="500">{pctFmt(v)}</text>
+      {/each}
+
+      <!-- x-axis labels -->
+      {#each xLabels as l}
+        <line x1={l.x} x2={l.x} y1={PAD_T} y2={height - PAD_B}
+              stroke="rgba(200,216,240,0.07)" stroke-width="0.7" stroke-dasharray="2 3" />
+        <text x={l.x} y={height - PAD_B + 14} text-anchor="middle"
+              fill="#7e97b8" font-size="10">{l.label}</text>
+      {/each}
+
+      <!-- One path per series -->
+      {#each normSeries as s}
+        <path d={buildPath(s.pctTicks)} fill="none"
+              stroke={s.color} stroke-width="1.8"
+              stroke-linejoin="round" stroke-linecap="round" />
+      {/each}
+
+      <!-- Hover crosshair -->
+      {#if hover}
+        <line x1={hover.x} x2={hover.x} y1={PAD_T} y2={height - PAD_B}
+              stroke="rgba(251,191,36,0.6)" stroke-width="1" stroke-dasharray="3 2" />
+      {/if}
+    </svg>
+
+    <!-- Legend -->
+    <div class="mpc-legend">
+      {#each normSeries as s}
+        <span class="mpc-legend-row">
+          <span class="mpc-swatch" style="background:{s.color}"></span>
+          {#if s.side}<span class="mpc-side mpc-side-{s.side.toLowerCase()}">{s.side}</span>{/if}
+          <span class="mpc-sym">{s.symbol}</span>
+          {#if s.account}<span class="mpc-acct">{s.account}</span>{/if}
+          {#if hover}
+            {@const row = hover.rows.find((r) => r.symbol === s.symbol)}
+            {#if row}
+              <span class="mpc-val mpc-val-{row.pct >= 0 ? 'up' : 'down'}">
+                {pctFmt(row.pct)}
+              </span>
+              <span class="mpc-raw">@₹{row.raw.toFixed(2)}</span>
+            {/if}
+          {/if}
+        </span>
+      {/each}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .mpc-shell {
+    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    border: 1px solid rgba(251,191,36,0.18);
+    border-left: 3px solid #fbbf24;
+    border-radius: 4px;
+    padding: 8px 12px;
+    width: 100%;
+    max-width: 960px;
+    box-sizing: border-box;
+  }
+  .mpc-header {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #c8d8f0;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.35rem;
+  }
+  .mpc-svg {
+    width: 100%;
+    display: block;
+    cursor: crosshair;
+  }
+  .mpc-empty {
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    text-align: center;
+    padding: 1.2rem 0;
+  }
+  .mpc-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.55rem;
+    margin-top: 0.35rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid rgba(200,216,240,0.08);
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+  }
+  .mpc-legend-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .mpc-swatch {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 2px;
+  }
+  .mpc-side {
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    padding: 0 0.18rem;
+  }
+  .mpc-side-long  { color: #67e8f9; }
+  .mpc-side-short { color: #fbbf24; }
+  .mpc-sym {
+    color: #f1f7ff;
+    font-weight: 700;
+  }
+  .mpc-acct {
+    color: #7e97b8;
+  }
+  .mpc-val {
+    margin-left: 0.2rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .mpc-val-up   { color: #4ade80; }
+  .mpc-val-down { color: #f87171; }
+  .mpc-raw {
+    color: #c8d8f0;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
