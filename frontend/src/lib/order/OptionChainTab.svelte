@@ -366,11 +366,14 @@
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
     if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
     if (_placeMode && onPlaceLeg) {
+      // Hand-off to Ticket tab as LIMIT (default for the platform) —
+      // operator enters the limit price in Ticket and submits. The
+      // Ticket's _chase + _chaseAgg defaults are already on/low.
       onPlaceLeg({
         symbol: String(sym), exchange: inst?.e || 'NFO', side: sideTag,
         qty: Number(lotSize || inst?.ls || 1),
         lotSize: Number(lotSize || inst?.ls || 1),
-        price: 0, orderType: 'MARKET',
+        price: 0, orderType: 'LIMIT',
         product: 'NRML', variety: 'regular', account: _account,
       });
       _flashToast(_quickKeyFut(sym), '→ ticket');
@@ -447,14 +450,23 @@
     for (const leg of chainBasket) {
       try {
         const hasLimit = Number(leg.limit) > 0;
+        if (!hasLimit) {
+          // Default to LIMIT + chase[low]; refuse a placement that
+          // would silently downgrade to MARKET because the quote
+          // hadn't arrived yet. Operator can wait for chain quotes
+          // to load (auto-poll every 5 s) and resubmit.
+          failures.push(`${leg.side} ${leg.sym}: no quote yet — re-open the chain so the bid/ask price loads, then submit again.`);
+          basketProgress += 1;
+          continue;
+        }
         await placeTicketOrder({
           mode: basketMode, side: leg.side, tradingsymbol: leg.sym,
           quantity: leg.lots * leg.lotSize, exchange: leg.exchange,
           product: leg.product || 'NRML',
-          order_type: hasLimit ? 'LIMIT' : 'MARKET',
-          price: hasLimit ? Number(leg.limit) : 0,
+          order_type: 'LIMIT',
+          price: Number(leg.limit),
           variety: 'regular', account: leg.account || acct,
-          chase: hasLimit, chase_aggressiveness: hasLimit ? (leg.chaseAgg || 'low') : 'low',
+          chase: true, chase_aggressiveness: leg.chaseAgg || 'low',
         });
       } catch (e) {
         failures.push(`${leg.side} ${leg.sym}: ${String(/** @type {any} */ (e)?.message || e || 'failed')}`);

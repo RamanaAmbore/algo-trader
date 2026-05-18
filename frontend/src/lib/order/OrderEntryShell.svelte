@@ -142,6 +142,15 @@
     for (const leg of basketLegs) {
       try {
         const hasLimit = Number(leg.limit) > 0;
+        if (!hasLimit) {
+          // Every order is LIMIT + chase[low] by default — silently
+          // downgrading to MARKET when the quote hadn't arrived yet
+          // bypassed the operator's intent and made the chase engine
+          // a no-op (MARKET fills immediately). Force the operator to
+          // either wait for the quote or override per-leg manually.
+          fails.push(`${leg.side} ${leg.sym}: no quote yet — re-open the chain so the bid/ask price loads, then submit again.`);
+          continue;
+        }
         await placeTicketOrder({
           mode:             basketMode2,
           side:             leg.side,
@@ -149,12 +158,12 @@
           exchange:         leg.exchange || 'NFO',
           quantity:         (leg.lots || 1) * (leg.lotSize || 1),
           product:          leg.product || 'NRML',
-          order_type:       hasLimit ? 'LIMIT' : 'MARKET',
+          order_type:       'LIMIT',
           variety:          'regular',
-          price:            hasLimit ? Number(leg.limit) : 0,
+          price:            Number(leg.limit),
           account:          leg.account || account || '',
-          chase:            hasLimit,
-          chase_aggressiveness: hasLimit ? (leg.chaseAgg || 'low') : 'low',
+          chase:            true,
+          chase_aggressiveness: leg.chaseAgg || 'low',
         });
         ok++;
         onSubmit?.({ ...leg, _basketLeg: true });
