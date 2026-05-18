@@ -9,11 +9,13 @@
     fetchReplayStatus, startReplay, stopReplay,
     fetchReplayResults, fetchReplayOrders, clearReplayData,
     fetchChartSymbols, fetchChartBatch,
+    fetchAgents,
   } from '$lib/api';
-  import LogPanel   from '$lib/LogPanel.svelte';
-  import PriceChart from '$lib/PriceChart.svelte';
-  import InfoHint   from '$lib/InfoHint.svelte';
-  import Select     from '$lib/Select.svelte';
+  import LogPanel    from '$lib/LogPanel.svelte';
+  import PriceChart  from '$lib/PriceChart.svelte';
+  import InfoHint    from '$lib/InfoHint.svelte';
+  import Select      from '$lib/Select.svelte';
+  import MultiSelect from '$lib/MultiSelect.svelte';
 
   let status       = $state(/** @type {any} */ ({}));
   let results      = $state(/** @type {any[]} */ ([]));
@@ -27,30 +29,33 @@
   let starting     = $state(false);
   let refreshTeardown;
 
-  // Form state
-  let symbols     = $state('');
+  // Form state — mirrors the Scenario form's structure for consistency.
+  let runName     = $state('');
+  let _runNameTouched = $state(false);
+  let symbolList  = $state(/** @type {string[]} */ ([]));   // MultiSelect of futures
+  let symbolOptions = $state(/** @type {{value:string,label:string}[]} */ ([]));
   let dateFrom    = $state('');
   let dateTo      = $state('');
   let interval    = $state('5minute');
   let rateMs      = $state(100);
-  let agentIds    = $state('');
+  let agentIdList = $state(/** @type {string[]} */ ([]));   // MultiSelect of agent ids → strings
+  let agentOptions = $state(/** @type {{value:string,label:string}[]} */ ([]));
   let spreadPct   = $state(0.10);
 
-  let marketStatePreset = $state(
-    /** @type {''|'pre_open'|'at_open'|'mid_session'|'pre_close'|'at_close'|'post_close'|'expiry_day'} */ ('')
-  );
-  let bypassSchedule = $state(false);
-
-  const MARKET_STATE_PRESETS = [
-    { value: '',            label: 'No override (wall-clock)' },
-    { value: 'pre_open',    label: 'Pre-open (08:45 IST)' },
-    { value: 'at_open',     label: 'At open (09:15 IST)' },
-    { value: 'mid_session', label: 'Mid session (12:00 IST)' },
-    { value: 'pre_close',   label: 'Pre-close (15:00 IST)' },
-    { value: 'at_close',    label: 'At close (15:30 IST)' },
-    { value: 'post_close',  label: 'Post close (16:00 IST)' },
-    { value: 'expiry_day',  label: 'Expiry day (11:00 IST)' },
-  ];
+  // Auto-generated run-name pattern — `backtest-{HHMMSS}`, refreshed
+  // on every From-date change until the operator overtypes.
+  function _autoRunName() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `backtest-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
+  $effect(() => {
+    // Re-trigger when dateFrom or dateTo changes; stop after the
+    // operator overtypes.
+    const _ = dateFrom + dateTo;
+    if (_runNameTouched) return;
+    runName = _autoRunName();
+  });
 
   async function load() {
     try {
@@ -85,8 +90,34 @@
     }
   }
 
+  async function loadFormOptions() {
+    // Symbols MultiSelect — futures-first from the instruments cache.
+    // Filter to t='FUT' so the picker stays focused; operator can
+    // still type to extend (MultiSelect supports free-form add via
+    // its options list).
+    try {
+      const inst = await fetch('/api/instruments', {
+        headers: { ...(typeof window !== 'undefined'
+          ? { Authorization: `Bearer ${sessionStorage.getItem('ramboq_token') || ''}` } : {}) },
+      }).then((r) => r.ok ? r.json() : { items: [] });
+      const items = inst.items || [];
+      const futs = items.filter((x) => x.t === 'FUT')
+        .slice(0, 200) // cap so the picker doesn't load thousands
+        .map((x) => ({ value: x.s, label: `${x.s} (${x.e || 'NFO'})` }));
+      symbolOptions = futs;
+    } catch (_) { /* ignore — operator can still type ticker into the picker */ }
+    // Agents MultiSelect.
+    try {
+      const ags = await fetchAgents();
+      agentOptions = (ags || [])
+        .filter((a) => ['active', 'cooldown', 'inactive'].includes(a.status))
+        .map((a) => ({ value: String(a.id), label: `${a.slug} (${a.id})` }));
+    } catch (_) { /* ignore */ }
+  }
+
   onMount(() => {
     load();
+    loadFormOptions();
     refreshTeardown = visibleInterval(load, 5000);
   });
   onDestroy(() => refreshTeardown?.());
@@ -95,20 +126,17 @@
     error = '';
     starting = true;
     try {
-      const symList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-      const aidList = agentIds.trim()
-        ? agentIds.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
-        : undefined;
+      const aidList = agentIdList
+        .map((s) => parseInt(s, 10))
+        .filter((n) => Number.isFinite(n));
       await startReplay({
-        symbols:              symList,
-        date_from:            dateFrom,
-        date_to:              dateTo,
+        symbols:    symbolList.map((s) => String(s).toUpperCase()),
+        date_from:  dateFrom,
+        date_to:    dateTo,
         interval,
-        rate_ms:              rateMs,
-        agent_ids:            aidList,
-        spread_pct:           spreadPct,
-        market_state_preset:  marketStatePreset || null,
-        bypass_schedule:      bypassSchedule,
+        rate_ms:    rateMs,
+        agent_ids:  aidList.length ? aidList : undefined,
+        spread_pct: spreadPct,
       });
       await load();
     } catch (e) {
@@ -162,87 +190,84 @@
       {#if status.date_from && status.date_to}
         &nbsp;·&nbsp; {status.date_from} → {status.date_to}
       {/if}
-      {#if marketStatePreset}
-        &nbsp;·&nbsp; preset: <span class="font-mono">{marketStatePreset}</span>
-      {/if}
-      {#if bypassSchedule}
-        &nbsp;·&nbsp; <span class="bypass-active">bypass schedule</span>
-      {/if}
     </span>
   </div>
 {/if}
 
-<!-- Control panel -->
-<div class="sim-controls mb-3">
-  <div class="sim-form-row">
-    <label>
-      <span class="sim-label">Symbols (comma-sep)</span>
-      <input type="text" bind:value={symbols} placeholder="NIFTY25MAYFUT, BANKNIFTY25MAYFUT" class="sim-input" />
-    </label>
-  </div>
-  <div class="sim-form-row">
-    <label>
-      <span class="sim-label">From</span>
-      <input type="date" bind:value={dateFrom} class="sim-input" />
-    </label>
-    <label>
-      <span class="sim-label">To</span>
-      <input type="date" bind:value={dateTo} class="sim-input" />
-    </label>
-    <label>
-      <span class="sim-label">Interval</span>
-      <div class="rbq-select-wrap">
-        <Select ariaLabel="Interval" bind:value={interval}
-          options={[
-            { value: 'minute',   label: '1 min' },
-            { value: '5minute',  label: '5 min' },
-            { value: '15minute', label: '15 min' },
-            { value: 'day',      label: 'Day' },
-          ]} />
-      </div>
-    </label>
-  </div>
-  <div class="sim-form-row">
-    <label>
-      <span class="sim-label">Playback rate (ms)</span>
-      <input type="number" bind:value={rateMs} min="10" max="5000" step="10" class="sim-input sim-input-sm" />
-    </label>
-    <label>
-      <span class="sim-label">Spread %</span>
-      <input type="number" bind:value={spreadPct} min="0" max="5" step="0.01" class="sim-input sim-input-sm" />
-    </label>
-    <label>
-      <span class="sim-label">Agent IDs (opt)</span>
-      <input type="text" bind:value={agentIds} placeholder="1, 3, 7" class="sim-input sim-input-sm" />
-    </label>
+<!-- Backtest control panel — grid layout mirrors the Scenario form. -->
+<div class="bt-form">
+  <!-- Row 1: Run name (full width, auto-generated, overtype-able). -->
+  <div class="bt-field bt-field-wide">
+    <label class="field-label" for="bt-run-name"
+           title="Default auto-generated from a timestamp. Overtype to label your backtest.">Run name</label>
+    <input id="bt-run-name" type="text"
+           class="field-input"
+           placeholder="auto"
+           bind:value={runName}
+           oninput={() => { _runNameTouched = true; }} />
   </div>
 
-  <div class="sim-form-row">
-    <label>
-      <span class="sim-label">
-        Market state preset
-        <InfoHint popup text="Overrides the simulated clock so agents that check market hours behave as if it's this time of day. 'No override' means agents see the real wall-clock time — which is usually outside market hours when running a backtest." />
-      </span>
-      <div class="rbq-select-wrap">
-        <Select ariaLabel="Market state preset"
-                bind:value={marketStatePreset}
-                options={MARKET_STATE_PRESETS} />
-      </div>
-    </label>
-
-    <label class="bypass-label">
-      <input type="checkbox" bind:checked={bypassSchedule} class="bypass-check" />
-      <span class="sim-label bypass-text">
-        Bypass schedule gates
-        <InfoHint popup text="When checked, market_hours-scheduled agents always fire regardless of the simulated clock. Use this when testing loss agents outside equity/commodity hours." />
-      </span>
-    </label>
+  <!-- Row 2: Symbols MultiSelect (full width). -->
+  <div class="bt-field bt-field-wide">
+    <label class="field-label" for="bt-symbols"
+           title="Futures contracts from the live instruments cache. Pick one or more.">Symbols</label>
+    <MultiSelect id="bt-symbols" bind:value={symbolList}
+                 options={symbolOptions}
+                 placeholder="Pick at least one future" />
   </div>
 
-  <div class="sim-btn-row">
+  <!-- Row 3: From | To | Interval. -->
+  <div class="bt-field">
+    <label class="field-label" for="bt-from">From</label>
+    <input id="bt-from" type="date" class="field-input" bind:value={dateFrom} />
+  </div>
+  <div class="bt-field">
+    <label class="field-label" for="bt-to">To</label>
+    <input id="bt-to" type="date" class="field-input" bind:value={dateTo} />
+  </div>
+  <div class="bt-field">
+    <label class="field-label" for="bt-interval">Interval</label>
+    <Select ariaLabel="Interval" bind:value={interval}
+            options={[
+              { value: 'minute',   label: '1 min' },
+              { value: '5minute',  label: '5 min' },
+              { value: '15minute', label: '15 min' },
+              { value: 'day',      label: 'Day' },
+            ]} />
+  </div>
+
+  <!-- Row 4: Playback rate stepper | Spread % | Agents MultiSelect. -->
+  <div class="bt-field">
+    <label class="field-label" for="bt-rate">Playback (ms)</label>
+    <div class="iter-stepper">
+      <button type="button" class="iter-stepper-btn"
+              onclick={() => rateMs = Math.max(10, Number(rateMs) - 10)}
+              aria-label="Decrement rate">−</button>
+      <span class="iter-stepper-val" id="bt-rate">{rateMs}</span>
+      <button type="button" class="iter-stepper-btn"
+              onclick={() => rateMs = Math.min(5000, Number(rateMs) + 10)}
+              aria-label="Increment rate">+</button>
+    </div>
+  </div>
+  <div class="bt-field">
+    <label class="field-label" for="bt-spread">Spread %</label>
+    <input id="bt-spread" type="number" class="field-input bt-input-num"
+           bind:value={spreadPct} min="0" max="5" step="0.01" />
+  </div>
+  <div class="bt-field bt-field-wide">
+    <label class="field-label" for="bt-agents"
+           title="Restrict the backtest to these agent IDs. Leave empty to run every active agent.">Agents</label>
+    <MultiSelect id="bt-agents" bind:value={agentIdList}
+                 options={agentOptions}
+                 placeholder="(all active)" />
+  </div>
+
+  <!-- Row 5: action buttons. -->
+  <div class="bt-actions">
     {#if !status?.active}
-      <button class="sim-btn sim-btn-start" onclick={handleStart} disabled={!enabled || starting || !symbols.trim() || !dateFrom || !dateTo}>
-        {starting ? 'Starting…' : 'Start Replay'}
+      <button class="sim-btn sim-btn-start" onclick={handleStart}
+              disabled={!enabled || starting || !symbolList.length || !dateFrom || !dateTo}>
+        {starting ? 'Starting…' : 'Start Backtest'}
       </button>
     {:else}
       <button class="sim-btn sim-btn-stop" onclick={handleStop}>Stop</button>
@@ -324,6 +349,95 @@
 />
 
 <style>
+  /* ── Backtest form (post-rewrite) ──────────────────────────────────
+     Grid layout mirrors the Scenario form's `.iter-form`. 4 columns
+     on desktop; `bt-field-wide` spans 2 columns for full-width
+     fields (Run name, Symbols MultiSelect). */
+  .bt-form {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.5rem 0.6rem;
+    align-items: end;
+    background: rgba(15,23,42,0.6);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 0.5rem;
+    padding: 0.85rem 0.95rem;
+    margin-bottom: 0.75rem;
+  }
+  .bt-field { min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+  .bt-field-wide { grid-column: span 2; }
+  .bt-field .field-label {
+    font-size: 0.55rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+  }
+  .bt-field .field-input {
+    background: rgba(13, 21, 38, 0.6);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    color: #c8d8f0;
+    padding: 0.3rem 0.45rem;
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    width: 100%;
+  }
+  .bt-field .field-input:focus {
+    outline: none;
+    border-color: rgba(251, 191, 36, 0.50);
+  }
+  .bt-input-num { font-variant-numeric: tabular-nums; }
+  .bt-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+  }
+  /* Stepper — shared with iter-stepper. Re-declared locally so the
+     panel renders the same regardless of cascade order. */
+  .bt-form .iter-stepper {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(13, 21, 38, 0.6);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 4px;
+    overflow: hidden;
+    height: 1.6rem;
+  }
+  .bt-form .iter-stepper-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1;
+    width: 1.6rem;
+    cursor: pointer;
+  }
+  .bt-form .iter-stepper-btn:hover {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fde68a;
+  }
+  .bt-form .iter-stepper-val {
+    min-width: 2.5rem;
+    text-align: center;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: #fde68a;
+    font-variant-numeric: tabular-nums;
+    border-left: 1px solid rgba(251, 191, 36, 0.30);
+    border-right: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 0 0.35rem;
+  }
+  /* Mobile collapse — single column. */
+  @media (max-width: 640px) {
+    .bt-form { grid-template-columns: 1fr; padding: 0.7rem; }
+    .bt-field-wide { grid-column: span 1; }
+  }
+
   .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; margin-bottom: 0.75rem; }
   .sim-banner-warn   { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.20); }
   .sim-banner-error  { background: rgba(248,113,113,0.10); color: #f87171; border: 1px solid rgba(248,113,113,0.20); }
