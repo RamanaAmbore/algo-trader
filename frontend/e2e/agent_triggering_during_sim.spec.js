@@ -81,8 +81,11 @@ test.describe('Agent triggering during sim', () => {
     await authOnce(page);
 
     // Ensure no prior sim is running; wipe past sim rows so we have a
-    // clean assertion window. Both endpoints are idempotent.
+    // clean assertion window. POST /stop returns immediately but the
+    // driver's run_active flag may stay True for a few seconds — poll
+    // until the engine reports idle before proceeding.
     await page.request.post('/api/simulator/stop').catch(() => null);
+    await waitForStatus(page, (s) => !s.active && !s.run_active, 30_000).catch(() => null);
     await page.request.post('/api/simulator/clear').catch(() => null);
 
     // Find the auto-close agent's id — needed to include in agent_ids
@@ -120,8 +123,9 @@ test.describe('Agent triggering during sim', () => {
         spread_pct: 0.10,
       },
     });
-    expect(startR.ok(), `start-run ${startR.status()}`).toBe(true);
     const startBody = await startR.json();
+    console.log(`[agent_triggering] start-run status=${startR.status()} positions_count=${startBody.positions_count ?? 'N/A'}`);
+    expect(startR.ok(), `start-run ${startR.status()}: ${JSON.stringify(startBody)}`).toBe(true);
     if ((startBody.positions_count ?? 0) === 0) {
       test.skip(true, 'live broker book empty — agent fires need positions');
       return;
@@ -140,10 +144,11 @@ test.describe('Agent triggering during sim', () => {
     console.log(`[agent_triggering] sim orders this run: ${(orders || []).length}`);
     expect((orders || []).length, 'expected at least 1 mode=sim AlgoOrder row').toBeGreaterThan(0);
 
-    // Validate the row shape: mode must be 'sim', side must be SELL
-    // (auto-close closes positions → SELL for long, BUY for short).
+    // Validate the row shape: AlgoOrderInfo exposes `engine: "sim"` (the
+    // DB mode column is serialised as `engine` by the simulator routes).
+    // Side must be SELL for long-position close, BUY for short.
     const sample = (orders || [])[0];
-    expect(sample.mode, 'AlgoOrder.mode should be "sim"').toBe('sim');
+    expect(sample.engine, 'AlgoOrder.engine should be "sim"').toBe('sim');
     expect(['BUY', 'SELL']).toContain(sample.transaction_type);
     expect(sample.symbol, 'AlgoOrder.symbol should be non-empty').toBeTruthy();
 

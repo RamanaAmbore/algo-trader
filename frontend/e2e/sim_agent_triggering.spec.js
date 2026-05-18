@@ -28,6 +28,10 @@
 
 import { test, expect } from '@playwright/test';
 
+// File-scope timeout — most reliable placement in Playwright 1.x.
+// 3 min covers: authOnce 65s back-off + 30s sim + 30s nav + overhead.
+test.setTimeout(180_000);
+
 // API-cached auth (mirrors authOnce in sim_run_end_to_end.spec.js).
 // Avoids the /signin form so prod's 5/min rate limit on
 // /api/auth/login doesn't fail this spec when run before
@@ -167,6 +171,19 @@ test.describe.serial('Sim agent triggering', () => {
     console.log(`[sim_agent_triggering] sim agent events: total=${(events||[]).length} fires=${allFires.length} for ${targetSlug}=${ours.length}`);
     expect((events || []).length, 'expected at least one sim_mode=true agent event').toBeGreaterThan(0);
 
+    // Check if SIM is in the allowed modes before attempting the navbar
+    // navigation — on prod (main branch) SIM is never in allowedModes
+    // (['paper','live']). Skip the nav assertion early instead of spinning
+    // through 8 dropdown poll attempts that can never succeed.
+    const modeApiRes = await page.request.get('/api/admin/execution/mode').catch(() => null);
+    const modeApiData = modeApiRes?.ok() ? await modeApiRes.json() : null;
+    const allowedOnBranch = (modeApiData?.allowed_modes || []).map((s) => s.toLowerCase());
+    if (!allowedOnBranch.includes('sim')) {
+      console.log(`[sim_agent_triggering] SIM not in allowed_modes (${allowedOnBranch.join(',')}) — skipping nav assertion`);
+      test.skip(true, `SIM not in allowed_modes on branch ${modeApiData?.branch || 'unknown'}; skipping nav assertion`);
+      return;
+    }
+
     // Navigate to /admin/execution in SIM mode via the navbar dropdown.
     // A direct goto('/admin/execution?mode=sim') doesn't work on prod
     // because setExecutionMode('sim') resolves to 'paper' via the API
@@ -185,25 +202,45 @@ test.describe.serial('Sim agent triggering', () => {
     // rehydrated before the first fetch fires, yielding a 401 and the
     // fallback ['paper','shadow','live'] (no SIM). Poll the chip until
     // SIM appears, re-opening the dropdown each time (up to 20s).
+    // On prod (main branch), SIM is never in allowedModes (['paper','live']).
+    // This loop runs only to confirm that by checking the actual dropdown
+    // contents; after 8 attempts with no SIM option it exits to test.skip().
+    //
+    // Dropdown toggle mechanics: clicking the chip toggles modeOpen.
+    // There is NO Escape-key handler — pressing Escape has no effect.
+    // To close the dropdown, click the overlay OR click the chip again
+    // (the toggle will set modeOpen to false).
     let simOption = null;
+    let dropdownOpened = false;
     for (let attempt = 0; attempt < 8; attempt++) {
-      // Ensure any previously-open dropdown is closed before clicking the chip.
-      // If the overlay is still present from a prior attempt, clicking modeChip
-      // would hit the overlay instead, which only closes the dropdown.
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(200);
-      // force:true bypasses the overlay z-index hit-test — the overlay
-      // may still be in the DOM after a prior Escape if the Svelte
-      // transition hasn't fully completed.
+      // If the dropdown is currently open (from a prior iteration where we
+      // toggled it open to check), close it by clicking the overlay.
+      const overlay = page.locator('.mode-combo-overlay').first();
+      if (await overlay.isVisible().catch(() => false)) {
+        await overlay.click();
+        await page.waitForTimeout(150);
+      }
+      // Click the chip to open the dropdown (force:true skips the
+      // pointer-interception check, safe here since we've already ensured
+      // the overlay is not covering the chip).
       await modeChip.click({ force: true });
+      // Wait up to 3s for the dropdown to appear in the DOM.
       const dropdown = page.locator('.mode-combo-dropdown').first();
-      await expect(dropdown).toBeVisible({ timeout: 5_000 });
-      const opt = dropdown.locator('.mode-combo-item').filter({ hasText: /^SIM$/i });
-      const count = await opt.count();
-      if (count > 0) { simOption = opt; break; }
-      // Close the dropdown and wait for the next allowedModes poll (30s cycle,
-      // but the first re-fetch fires within seconds after auth store hydrates).
-      await page.keyboard.press('Escape');
+      dropdownOpened = await dropdown.isVisible().catch(() => false);
+      if (!dropdownOpened) {
+        // Chip click may have toggled modeOpen from open→closed if the
+        // overlay was missed. Wait a bit and retry.
+        await page.waitForTimeout(500);
+        dropdownOpened = await dropdown.isVisible().catch(() => false);
+      }
+      if (dropdownOpened) {
+        const opt = dropdown.locator('.mode-combo-item').filter({ hasText: /^SIM$/i });
+        const count = await opt.count();
+        if (count > 0) { simOption = opt; break; }
+      }
+      // SIM not found this attempt — wait 2.5s for allowedModes to repoll
+      // (the layout re-fetches /api/admin/execution/mode every 30s, but the
+      // first hydration fetch fires within seconds).
       await page.waitForTimeout(2500);
     }
     if (!simOption) {

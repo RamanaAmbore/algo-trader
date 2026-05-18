@@ -19,11 +19,16 @@ import { test, expect } from '@playwright/test';
 const _AUTH_USER = process.env.PLAYWRIGHT_USER || 'rambo';
 const _AUTH_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
 
+// File-scope timeout (most reliable placement in Playwright 1.x).
+// 4 min: 2 × 65s rate-limit back-off + 3 × 12s per attempt + overhead.
+test.setTimeout(240_000);
+
 test.describe.serial('Signin flow → admin landing', () => {
-  // 2.5 min: handles 65s rate-limit back-off + 12s per attempt + overhead.
-  test.setTimeout(150_000);
 
   test('Form login → /dashboard → LIVE chip, no DEMO badge, admin navbar', async ({ page }) => {
+    // Override at test level too — describe-level test.setTimeout is not
+    // reliable in all Playwright versions when describe.serial is used.
+    test.setTimeout(240_000);
     // Start fresh — no sessionStorage, no cookies. Visit /signin
     // directly (not /dashboard, since the algo layout's auth $effect
     // would bounce us to /signin anyway).
@@ -48,9 +53,11 @@ test.describe.serial('Signin flow → admin landing', () => {
     // Retry on rate limit (5/min on prod).
     let landed = false;
     let lastBanner = '';
-    // Third delay is 65s to let the 60s rate-limit window fully roll over
-    // when the prior two attempts were consumed by a fresh 429 burst.
-    for (const delay of [0, 8000, 65000]) {
+    // Both non-zero delays are 65s: each covers a full 60s sliding window.
+    // Attempt 1: immediate. Attempt 2: after 65s (first window clears).
+    // Attempt 3: after another 65s (second window clears). This handles
+    // back-to-back suite runs that exhaust the 5/min bucket.
+    for (const delay of [0, 65000, 65000]) {
       if (delay) await new Promise((r) => setTimeout(r, delay));
       if (await page.url().includes('/signin') === false) { landed = true; break; }
 
