@@ -133,6 +133,60 @@ def _maybe_send_breaker_alert(key: str, account: str, symbol: str,
         logger.warning(f"[BREAKER] alert dispatch failed for {key}: {e}")
 
 
+async def _align_price_to_tick(exchange: str, symbol: str,
+                                price: float | None) -> float | None:
+    """Snap *price* to the nearest valid tick for the instrument.
+
+    Kite rejects orders whose LIMIT / trigger price isn't a multiple
+    of the contract's `tick_size` with "Exchange invalid price — the
+    entered price is not as per ticker price". Operators routinely
+    enter ₹9961.50 for a MCX commodity that ticks at ₹1 (whole
+    rupees); we round to the nearest valid tick before sending.
+
+    Reads tick_size from the in-process instruments cache (no broker
+    round-trip). Returns the input unchanged when:
+      - price is None or 0
+      - the instrument isn't in the cache (let Kite reject explicitly)
+      - tick_size resolves to a non-positive value (defensive)
+
+    Rounding policy: half-up to the nearest tick, then clamped to the
+    same tick grid. For options with tick=0.05, 12.37 → 12.35;
+    for commodities with tick=1, 9961.50 → 9962.
+    """
+    if price is None or price == 0:
+        return price
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        return price
+    sym_u = (symbol or "").upper()
+    ex_u  = (exchange or "").upper()
+    tick = None
+    for inst in items:
+        if inst.s == sym_u and inst.e == ex_u:
+            tick = float(inst.ts or 0)
+            break
+    if not tick or tick <= 0:
+        return price
+    # Round half-up to the nearest tick. Using integer division on a
+    # scaled-up price avoids float-rounding artefacts (0.05 ticks in
+    # binary float misbehave).
+    scale = round(1.0 / tick) if tick < 1 else 1
+    if scale > 1:
+        scaled = round(float(price) * scale)
+        aligned = scaled / scale
+    else:
+        aligned = round(float(price) / tick) * tick
+    aligned = round(aligned, 4)
+    if aligned != price:
+        logger.info(f"[TICK] aligned {symbol} price {price} → {aligned} (tick={tick})")
+    return aligned
+
+
 def _kite_for(account: str):
     conn = Connections().conn
     if account not in conn:
@@ -698,27 +752,21 @@ class OrdersController(Controller):
         if data.order_type in ("SL", "SL-M") and not data.trigger_price:
             raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
 
-        # Tick-size sanitisation. Kite rejects orders whose price isn't an
-        # exact tick multiple — most NSE F&O / equity ticks are ₹0.05 (some
-        # MCX commodities are coarser like ₹1.00, but those are still
-        # 0.05-tick-aligned multiples so a 0.05-snap is universally safe).
-        # We round here as a defence-in-depth: the OrderTicket frontend
-        # already rounds, but an external script POSTing /ticket directly
-        # could still leak a float-arithmetic value like 590.7999999. Snap
-        # everything that reaches the broker to the nearest paise tick.
-        def _snap_to_tick(px, tick: float = 0.05) -> float | None:
-            if px is None:
-                return None
-            try:
-                v = float(px)
-            except (TypeError, ValueError):
-                return None
-            if v <= 0:
-                return v
-            return round(round(v / tick) * tick, 2)
-
-        data.price         = _snap_to_tick(data.price)
-        data.trigger_price = _snap_to_tick(data.trigger_price)
+        # Tick-size sanitisation. Kite rejects orders whose price isn't
+        # an exact tick multiple ("Exchange invalid price — entered
+        # price is not as per ticker price"). Tick varies by
+        # instrument: most NSE F&O / equity = ₹0.05; MCX commodities
+        # like CRUDEOIL = ₹1; some bullion = ₹1; etc. The OrderTicket
+        # frontend can't always know the correct tick, and the
+        # previous hardcoded-₹0.05 path let MCX commodities through
+        # with halves (e.g. ₹9961.50) that Kite then rejected.
+        # _align_price_to_tick() reads the actual tick from the
+        # instruments cache and rounds to the nearest valid multiple.
+        _exch_for_snap = (data.exchange or "NFO")
+        data.price         = await _align_price_to_tick(
+            _exch_for_snap, sym, data.price)
+        data.trigger_price = await _align_price_to_tick(
+            _exch_for_snap, sym, data.trigger_price)
 
         # Resolve account — caller must supply one explicitly. Silently
         # falling back to the first available account would route an
