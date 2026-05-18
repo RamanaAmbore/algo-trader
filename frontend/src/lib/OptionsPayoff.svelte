@@ -281,6 +281,7 @@
     });
   });
 
+  import { untrack } from 'svelte';
   import { priceFmt, aggFmt } from '$lib/format';
 
   // Profit + loss zones — shade above and below zero on the today curve
@@ -320,6 +321,38 @@
     hover = null;
     _hoverSuppressUntil = Date.now() + 350;
   }
+
+  // Re-snap a pinned hover tooltip whenever the underlying curve
+  // changes (e.g. the operator toggles a leg in the Candidates
+  // panel and strategy reloads). Without this, the popup keeps
+  // displaying the today/expiry values captured at click time,
+  // so a stale tooltip lingers showing the OLD curve's P&L at
+  // the hovered spot.
+  //
+  // untrack() on the hover read so this $effect re-runs ONLY
+  // when adjustedPayoff changes — not on every hover update.
+  // Without untrack the write below (`hover = {...}`) would
+  // re-trigger the effect infinitely.
+  $effect(() => {
+    const src = adjustedPayoff;
+    untrack(() => {
+      if (!hover || !src.length) return;
+      const hoverSpot = hover.spot;
+      let best = src[0];
+      let bestDiff = Math.abs(best.spot - hoverSpot);
+      for (const p of src) {
+        const d = Math.abs(p.spot - hoverSpot);
+        if (d < bestDiff) { best = p; bestDiff = d; }
+      }
+      hover = {
+        x:      hover.x,
+        y:      yOf(best.today_value),
+        spot:   best.spot,
+        today:  best.today_value,
+        expiry: best.expiry_value,
+      };
+    });
+  });
 
   // Snap the tooltip to the payoff point nearest to the given client X.
   // Shared between hover (mouse pointermove) and tap (touch pointerdown)
