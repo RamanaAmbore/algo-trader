@@ -17,6 +17,7 @@
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
+  import SymbolActions from '$lib/SymbolActions.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
@@ -1168,6 +1169,18 @@
   /** Add a chain row to the user's default watchlist. Resolves the
    *  contract via the instrument cache so the tradingsymbol matches
    *  exactly what the broker knows. */
+  /** Generic "add this symbol to the default watchlist" — used by
+   *  the SymbolActions component on the Candidates rows. Doesn't
+   *  need a strike/optType because it acts on a resolved
+   *  tradingsymbol directly. */
+  async function addSymbolToWatchlist(
+    /** @type {string} */ sym,
+    /** @type {string|undefined} */ exchange,
+  ) {
+    if (defaultWatchlistId == null) throw new Error('No default watchlist');
+    await addWatchlistItem(defaultWatchlistId, String(sym), exchange || 'NFO');
+  }
+
   async function addOptionToWatchlist(
     /** @type {number} */ strike,
     /** @type {'CE'|'PE'} */ optType,
@@ -1813,6 +1826,20 @@
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
               <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
               <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
+              <span class="cand-actions" onclick={(e) => e.stopPropagation()}>
+                <SymbolActions
+                  symbol={c.symbol}
+                  exchange="NFO"
+                  defaultTicketSide={c.qty < 0 ? 'BUY' : 'SELL'}
+                  defaultTicketAccount={_isRealAccount(c.account) ? c.account : ''}
+                  onAddToWatchlist={defaultWatchlistId != null ? addSymbolToWatchlist : null}
+                  onOpenTicket={(props) => openTicket({
+                    ...props,
+                    qty:      Math.abs(c.qty),
+                    action:   'open',
+                    accounts: ticketAccounts,
+                  })} />
+              </span>
             </div>
           {/each}
         </div>
@@ -2522,6 +2549,13 @@
     background: rgba(240,171,252,0.22);
     border-color: rgba(240,171,252,0.75);
     color: #fff;
+  }
+  /* Candidate row's ⋯ actions container — keeps the popover button
+     visually grouped at the right edge of the row. */
+  .cand-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
   }
 
   /* P&L cell — same green/red scheme as /dashboard's pnl-gain /
