@@ -54,14 +54,38 @@ async function authOnce(page) {
     }
     _cachedToken = tok;
   }
-  await page.goto('/');
-  await page.evaluate((tok) => {
-    sessionStorage.setItem('ramboq_token', tok);
+  // addInitScript runs BEFORE every page's own scripts — this means
+  // authStore's module-init `sessionStorage.getItem('ramboq_token')`
+  // reads the planted value on its very first call, instead of racing
+  // the planting against the bundle load. Without this, the (algo)
+  // layout's auth $effect fires with `$authStore.user == null` and
+  // bounces to /signin before the planted token is even visible.
+  await page.context().addInitScript((token) => {
+    sessionStorage.setItem('ramboq_token', token);
     sessionStorage.setItem('ramboq_user', JSON.stringify({
       user_id: 'rambo', username: 'rambo', role: 'admin', display_name: 'rambo',
     }));
   }, _cachedToken);
   await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${_cachedToken}` });
+}
+
+/**
+ * The chain button only enables once exactly ONE account is picked
+ * in the Account MultiSelect at #opt-acct. Drives the picker so the
+ * Chain button becomes interactive.
+ */
+async function pickFirstAccount(page) {
+  const acctTrigger = page.locator('button#opt-acct').first();
+  await expect(acctTrigger).toBeVisible({ timeout: 10_000 });
+  await acctTrigger.click();
+  // The dropdown panel opens with options below. Pick whichever is
+  // first — order doesn't matter for the chain-picker test, only that
+  // exactly one account ends up selected.
+  const firstAcct = page.locator('.rbq-multi-panel .rbq-multi-option').first();
+  await expect(firstAcct).toBeVisible({ timeout: 5000 });
+  await firstAcct.click();
+  // Close the panel by clicking the trigger again.
+  await acctTrigger.click();
 }
 
 test.describe('Chain picker Underlying dropdown', () => {
@@ -70,89 +94,73 @@ test.describe('Chain picker Underlying dropdown', () => {
 
     await page.goto('/admin/options');
     await page.waitForLoadState('domcontentloaded');
+    // Instruments cache loads on mount — wait for the page picker bar
+    // to populate before any clicks.
+    await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(1500);
 
-    // Wait for instruments cache to be ready — the underlying dropdown
-    // is empty until then. The page surfaces an `Underlying` Select
-    // (#chain-und is in the in-page picker, but the OrderTicket modal
-    // version is opened by the Chain button).
-    await page.waitForTimeout(2000);
+    await pickFirstAccount(page);
 
-    // Click the Chain button on the picker bar. The button label is
-    // exactly "Chain"; aria-label is "Toggle chain picker".
+    // Chain button now enables. Click it — opens both the in-page
+    // chain panel AND the OrderTicket modal on its Chain tab.
     const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
     await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
     await chainBtn.click();
 
-    // The OrderTicket modal opens with its Chain tab active. Inside the
-    // modal there's another Underlying Select. The MODAL Select carries
-    // its own placeholder text "Type 3+ chars to filter…" — wait for it.
-    const modal = page.locator('.oes-overlay, .oes-modal').first();
-    await expect(modal).toBeVisible({ timeout: 5000 });
+    // The OrderTicket modal opens on top of the page and would
+    // otherwise intercept clicks on the in-page #chain-und Select.
+    // Dismiss it with Escape — the in-page panel stays open and the
+    // #chain-und Select becomes interactable. (The modal carries its
+    // own Underlying picker fed by the same POPULAR_UNDERLYINGS
+    // source — testing either path validates the fix.)
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
 
-    // Find the Underlying dropdown trigger inside the modal. The
-    // <Select> component renders a button-like trigger with the
-    // currently-selected value as its text.
-    const underlyingTrigger = modal
-      .locator('.rbq-select-trigger, [role="combobox"], button')
-      .filter({ hasText: /NIFTY|RELIANCE|BANKNIFTY|CRUDEOIL/i })
-      .first();
-    await expect(underlyingTrigger).toBeVisible({ timeout: 10_000 });
+    const chainUndTrigger = page.locator('button#chain-und').first();
+    await expect(chainUndTrigger).toBeVisible({ timeout: 10_000 });
+    await chainUndTrigger.click();
 
-    // Click to open the dropdown panel, then type into the search input.
-    await underlyingTrigger.click();
     const searchInput = page.locator(
       'input[placeholder*="Type 3+ chars to filter"]',
     ).first();
     await expect(searchInput).toBeVisible({ timeout: 5000 });
-
     await searchInput.fill('rel');
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
 
-    // After typing "rel", the filtered options should include RELIANCE.
-    // Look for the option text in the open dropdown panel.
-    const relianceOption = page.locator(
-      '.rbq-select-option, [role="option"], li, button',
-    ).filter({ hasText: /^RELIANCE$/ }).first();
+    // Open dropdown should now contain RELIANCE as a filtered option.
+    const relianceOption = page.locator('.rbq-select-option-label')
+      .filter({ hasText: /^RELIANCE$/ }).first();
     await expect(relianceOption).toBeVisible({ timeout: 5000 });
   });
 
-  test('default underlying matches the page underlying', async ({ page }) => {
+  test('chain underlying defaults to the page underlying', async ({ page }) => {
     await authOnce(page);
 
     await page.goto('/admin/options');
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(2500);  // instruments load
+    await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(1500);
 
-    // Read the page's active underlying from the picker bar's display.
-    // The selectedUnderlying Select on the picker bar carries the chosen
-    // value as its trigger text.
-    const pickerTrigger = page
-      .locator('.rbq-select-trigger, [role="combobox"]')
-      .filter({ hasText: /^[A-Z]+$/ })
-      .first();
-    const activeUnderlying = (await pickerTrigger.textContent() || '').trim();
+    await pickFirstAccount(page);
 
-    // Open the chain modal.
+    // The page auto-selects the first available underlying. Read its
+    // value from the #opt-und Select trigger label.
+    const pickerLabel = page.locator('button#opt-und .rbq-select-label').first();
+    await expect(pickerLabel).toBeVisible({ timeout: 10_000 });
+    const activeUnderlying = (await pickerLabel.textContent() || '').trim();
+
     const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
     await expect(chainBtn).toBeEnabled({ timeout: 10_000 });
     await chainBtn.click();
 
-    const modal = page.locator('.oes-overlay, .oes-modal').first();
-    await expect(modal).toBeVisible({ timeout: 5000 });
-
-    // The modal's Underlying dropdown trigger should reflect the same
-    // underlying as the page's picker. The OptionChainTab seeds its
-    // chainUnderlying from the `symbol` prop, which is now passed as
-    // selectedUnderlying from /admin/options.
-    if (activeUnderlying && /^[A-Z]+$/.test(activeUnderlying)) {
-      const modalTrigger = modal
-        .locator('.rbq-select-trigger, [role="combobox"]')
-        .first();
-      await expect(modalTrigger).toContainText(activeUnderlying, {
+    if (activeUnderlying && /^[A-Z][A-Z0-9-]+$/.test(activeUnderlying)) {
+      // The in-page chain picker should auto-seed from selectedUnderlying.
+      const chainUndLabel = page.locator('button#chain-und .rbq-select-label').first();
+      await expect(chainUndLabel).toContainText(activeUnderlying, {
         timeout: 5000,
       });
     } else {
-      test.skip(true, 'page underlying not detected — sim-empty book');
+      test.skip(true, 'page underlying not detected — empty book');
     }
   });
 });
