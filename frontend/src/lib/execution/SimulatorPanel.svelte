@@ -868,6 +868,18 @@
   {/if}
   </section>
 
+<!-- Side column wrapper. Holds the three operator-action cards (iter
+     / Run controls / custom positions) so the grid has exactly two
+     direct children (one per column). Earlier each card was a direct
+     grid child with grid-row: 1 / span 100 on the main section — the
+     side cards got laid out into separate implicit rows sized by
+     their own height, but the section's cell measured only the sum
+     of those rows. Tall section content (past iter table) overflowed
+     its cell and visually overlapped the side cards on scroll. With
+     a single aside wrapper, both columns flow naturally and the grid
+     container sizes to the taller column. -->
+<aside class="sim-grid-side-col">
+
 <!-- Iteration-mode card (Phase 2A). Collapsed by default — operators
      run a single ad-hoc scenario far more often than a multi-iteration
      sweep, so hide the bigger surface behind a toggle and surface it
@@ -1217,7 +1229,8 @@
   {/if}
 </details>
 
-</div>  <!-- /.sim-grid — close the two-column wrapper before LogPanel -->
+</aside>  <!-- /.sim-grid-side-col -->
+</div>    <!-- /.sim-grid — close the two-column wrapper before LogPanel -->
 
 <LogPanel
   heightClass="h-[40vh]"
@@ -1229,10 +1242,10 @@
 
 <style>
   /* Two-column Lab grid — controls on the left, monitoring on the
-     right. Mobile / narrow desktops collapse to single column.
-     The .sim-grid-main <section> spans every row so its content can
-     flow independently from the (typically shorter) side column;
-     side items each take one implicit row in col 1. */
+     right. Mobile / narrow desktops collapse to single column. Each
+     column has ONE direct grid child (aside on left, section on
+     right) so the columns flow independently and the grid container
+     sizes to the taller column. */
   :global(.sim-grid) {
     display: grid;
     grid-template-columns: 1fr;
@@ -1243,13 +1256,24 @@
       grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
       align-items: start;
     }
-    :global(.sim-grid > .sim-grid-side) {
+    :global(.sim-grid > .sim-grid-side-col) {
       grid-column: 1;
     }
     :global(.sim-grid > .sim-grid-main) {
       grid-column: 2;
-      grid-row: 1 / span 100;
     }
+  }
+  :global(.sim-grid-side-col) {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+  /* Side cards inside the aside wrapper — explicit min-width 0 so
+     long content can't push the column wider than its grid track. */
+  :global(.sim-grid-side-col > .algo-status-card) {
+    margin-bottom: 0 !important;  /* aside gap handles spacing now */
+    min-width: 0;
   }
 
   /* Sticky status strip — the RUNNING/idle + tick + scenario chips
