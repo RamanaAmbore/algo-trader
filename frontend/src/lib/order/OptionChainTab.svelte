@@ -36,6 +36,7 @@
    *   onUpdateLeg?:    (key: string, updater: (leg: any) => any) => void,
    *   onSubmitBasket?: () => void,
    *   onClearBasket?:  () => void,
+   *   onPlaceLeg?:     (props: any) => void,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -52,7 +53,17 @@
     onUpdateLeg   = /** @type {((key: string, updater: (leg: any) => any) => void)|undefined} */ (undefined),
     onSubmitBasket = /** @type {(() => void)|undefined} */ (undefined),
     onClearBasket  = /** @type {(() => void)|undefined} */ (undefined),
+    // When Place mode is enabled, +/− route through this instead of
+    // staging into the basket — the shell flips to the Ticket tab
+    // pre-filled with the leg, mirroring CommandLineTab's
+    // BUY/SELL → Ticket flow.
+    onPlaceLeg     = /** @type {((p: any) => void)|undefined} */ (undefined),
   } = $props();
+
+  // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
+  // legs into the shared basket. On: +/− open the Ticket tab pre-
+  // filled with that leg for direct submit, same as Command's flow.
+  let _placeMode = $state(false);
 
   // Whether basket state is lifted to the shell or owned locally.
   const _externalBasket = $derived(basketLegs !== undefined && !!onAddLeg);
@@ -320,6 +331,21 @@
     if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
     if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
+    // Place-mode short-circuit: route directly to the Ticket tab
+    // pre-filled with this leg, bypassing the basket entirely.
+    if (_placeMode && onPlaceLeg) {
+      const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
+      const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
+      onPlaceLeg({
+        symbol: String(inst.s), exchange: inst.e || 'NFO', side: sideTag,
+        qty: Number(inst.ls || 1), lotSize: Number(inst.ls || 1),
+        price: Number(limit) || 0,
+        orderType: limit > 0 ? 'LIMIT' : 'MARKET',
+        product: 'NRML', variety: 'regular', account: _account,
+      });
+      _flashToast(_quickKeyOpt(strike, optType), '→ ticket');
+      return;
+    }
     if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '+1 lot'); return;
     }
@@ -339,6 +365,17 @@
     const inst = getInstrument(String(sym || '').toUpperCase());
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
     if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
+    if (_placeMode && onPlaceLeg) {
+      onPlaceLeg({
+        symbol: String(sym), exchange: inst?.e || 'NFO', side: sideTag,
+        qty: Number(lotSize || inst?.ls || 1),
+        lotSize: Number(lotSize || inst?.ls || 1),
+        price: 0, orderType: 'MARKET',
+        product: 'NRML', variety: 'regular', account: _account,
+      });
+      _flashToast(_quickKeyFut(sym), '→ ticket');
+      return;
+    }
     if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyFut(sym), '+1 lot'); return;
     }
@@ -495,6 +532,28 @@
         options={[{ value: 'opt', label: 'Options' }, { value: 'fut', label: 'Futures' }]}
         placeholder="Both" />
     </div>
+    <!-- Place-mode toggle. Default: Basket. When ON, clicking +/− on a
+         strike or futures pill opens the Ticket tab pre-filled with
+         that leg for direct submit, instead of staging into the
+         basket. Operator workflow shortcut for the "I want to place
+         one specific leg right now" case. -->
+    {#if onPlaceLeg}
+      <div class="oct-field oct-field-mode">
+        <label class="oct-label">Mode</label>
+        <div class="oct-mode-toggle" role="group" aria-label="Add target">
+          <button type="button"
+                  class="oct-mode-btn"
+                  class:on={!_placeMode}
+                  onclick={() => _placeMode = false}
+                  title="+/− stage legs into the basket (default).">Basket</button>
+          <button type="button"
+                  class="oct-mode-btn"
+                  class:on={_placeMode}
+                  onclick={() => _placeMode = true}
+                  title="+/− open the Ticket tab pre-filled for direct submit.">Place</button>
+        </div>
+      </div>
+    {/if}
   </div>
 
   <!-- Spot + ATM pill -->
@@ -659,8 +718,12 @@
     <div class="oct-empty">No strikes for {chainUnderlying} expiring {chainExpiry}. Try a different underlying or expiry.</div>
   {/if}
 
-  <!-- Basket bar -->
-  {#if chainBasket.length}
+  <!-- Basket bar — render the in-tab pills ONLY when the basket isn't
+       lifted to the shell. With _externalBasket=true the OrderEntryShell
+       already renders a richer pill row in its sticky bottom strip
+       that's visible from every tab; showing the same pills here would
+       just be a duplicate of that. -->
+  {#if chainBasket.length && !_externalBasket}
     <div class="chain-basket">
       <div class="chain-basket-legs">
         {#each chainBasket as leg (leg.key)}
@@ -765,6 +828,32 @@
     flex: 1 1 0;
     min-width: 0;
   }
+  /* Place-mode toggle — outline pill row, active button highlighted. */
+  .oct-field-mode { flex: 0 0 auto; }
+  .oct-mode-toggle {
+    display: inline-flex;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .oct-mode-btn {
+    padding: 0.3rem 0.55rem;
+    border: none;
+    background: transparent;
+    color: #a3b9d0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+  }
+  .oct-mode-btn + .oct-mode-btn { border-left: 1px solid rgba(255,255,255,0.12); }
+  .oct-mode-btn:hover { background: rgba(255,255,255,0.05); color: #f1f7ff; }
+  .oct-mode-btn.on {
+    background: rgba(74,222,128,0.18);
+    color: #4ade80;
+  }
+
   .oct-spot-row { margin-bottom: 0.25rem; }
   .oct-empty { font-size: 0.6rem; color: #a3b9d0; font-style: italic; margin-top: 0.5rem; }
 

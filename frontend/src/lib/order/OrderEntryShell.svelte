@@ -393,6 +393,7 @@
           onUpdateLeg={updateLegByKey}
           onSubmitBasket={submitBasket}
           onClearBasket={clearBasket}
+          onPlaceLeg={handleParsedOrder}
           onBasketPlace={({ ok, fail }) => {
             if (ok > 0 && fail === 0) {
               onSubmit?.({ mode: 'paper', _basketLegs: ok });
@@ -819,6 +820,14 @@
   .oes-ticket-body :global(.ot-modal) {
     width: 100% !important;
     max-height: none !important;
+    /* Critical: OrderTicket's own .ot-modal has overflow-y: auto so it
+       can scroll independently when used as a standalone modal. Inside
+       the shell, that creates a double-scroll (outer .oes-body also
+       scrolls), which pushes the Submit/Place footer off the visible
+       viewport, behind the sticky bottom panel. Force visible so the
+       ticket grows to its natural height inside .oes-body's single
+       scroll region — Submit is then reachable by scrolling the body. */
+    overflow-y: visible !important;
     border: none !important;
     border-radius: 0 !important;
     background: none !important;
