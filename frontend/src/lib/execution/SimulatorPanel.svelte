@@ -168,6 +168,15 @@
     return palette[idxWithinSide % palette.length];
   }
 
+  // Auto-sync the run name to the first picked regime UNTIL the
+  // operator overtypes it. Once they edit, the name is theirs to
+  // own — we stop re-syncing.
+  $effect(() => {
+    const regimes = iterRegimes;
+    if (_runNameTouched) return;
+    iterRunName = _autoRunName(regimes);
+  });
+
   // Log panel feeds
   let simLog    = $state(/** @type {any[]} */ ([]));
   let systemLog = $state(/** @type {string[]} */ ([]));
@@ -349,6 +358,19 @@
   // operator goes to /admin/settings.
   let iterIterations  = $state(1);
   let iterMaxMinutes  = $state(10);
+  // Run name — auto-generated from the first picked regime + a
+  // short HH:MM:SS timestamp. Sent to /start-run as the slug prefix
+  // for every iteration in the run. Operator can overtype to set
+  // their own label (e.g. "weekend-stress"); we stop auto-syncing
+  // the moment they edit it.
+  let iterRunName     = $state('');
+  let _runNameTouched = $state(false);
+  function _autoRunName(/** @type {string[]} */ regimes) {
+    const head = (regimes || [])[0] || 'sim';
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${head}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
   let iterRegimes     = $state(/** @type {string[]} */ ([]));
   let iterAgents      = $state(/** @type {string[]} */ ([]));   // string ids → coerced on submit
   // Which buckets to seed into the sim. Default = ["positions"]
@@ -424,6 +446,7 @@
         spread_pct:             spreadPct === '' ? null : Number(spreadPct),
         inputs:                 iterInputs.length ? iterInputs : ['positions'],
         accounts:               iterAccounts.length ? iterAccounts : null,
+        run_name:               (iterRunName || '').trim() || null,
       };
       if (!payload.regimes?.length) {
         error = 'Pick at least one regime.';
@@ -791,17 +814,40 @@
   {/if}
 
   <div class="iter-form">
+    <!-- Run name — auto-generated from the first picked regime, but
+         overtype-able. Used as the slug prefix for every iteration
+         in this run, so the operator can find the run again later. -->
+    <div class="iter-field iter-field-wide">
+      <label class="field-label" for="iter-run-name" title="Default auto-generated from regime+timestamp. Overtype to set your own.">Run name</label>
+      <input id="iter-run-name" type="text"
+             class="field-input"
+             placeholder="auto"
+             bind:value={iterRunName}
+             oninput={() => { _runNameTouched = true; }} />
+    </div>
     <div class="iter-field">
       <label class="field-label" for="iter-iterations">Iterations</label>
-      <input id="iter-iterations" type="number" min="1" max="100"
-             class="field-input sim-pct-input"
-             bind:value={iterIterations} />
+      <div class="iter-stepper">
+        <button type="button" class="iter-stepper-btn"
+                onclick={() => iterIterations = Math.max(1, (Number(iterIterations) || 1) - 1)}
+                aria-label="Decrement iterations">−</button>
+        <span class="iter-stepper-val" id="iter-iterations">{iterIterations}</span>
+        <button type="button" class="iter-stepper-btn"
+                onclick={() => iterIterations = Math.min(100, (Number(iterIterations) || 1) + 1)}
+                aria-label="Increment iterations">+</button>
+      </div>
     </div>
     <div class="iter-field">
       <label class="field-label" for="iter-max-min">Max min / iter</label>
-      <input id="iter-max-min" type="number" min="1" max="240"
-             class="field-input sim-pct-input"
-             bind:value={iterMaxMinutes} />
+      <div class="iter-stepper">
+        <button type="button" class="iter-stepper-btn"
+                onclick={() => iterMaxMinutes = Math.max(1, (Number(iterMaxMinutes) || 1) - 1)}
+                aria-label="Decrement max minutes">−</button>
+        <span class="iter-stepper-val" id="iter-max-min">{iterMaxMinutes}</span>
+        <button type="button" class="iter-stepper-btn"
+                onclick={() => iterMaxMinutes = Math.min(240, (Number(iterMaxMinutes) || 1) + 1)}
+                aria-label="Increment max minutes">+</button>
+      </div>
     </div>
     <div class="iter-field iter-field-wide">
       <label class="field-label" for="iter-regimes" title="Round-robin across iterations">Regimes</label>
@@ -1727,6 +1773,46 @@
     align-items: end;
   }
   .iter-field-wide { grid-column: span 2; min-width: 0; }
+  /* Stepper — − value + for Iterations + Max min. Same shape as
+     OrderTicket's Lots stepper so the operator's muscle memory
+     transfers across the platform. */
+  .iter-stepper {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(13, 21, 38, 0.6);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 4px;
+    overflow: hidden;
+    height: 1.6rem;
+  }
+  .iter-stepper-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1;
+    width: 1.6rem;
+    cursor: pointer;
+    transition: background 0.08s, color 0.08s;
+  }
+  .iter-stepper-btn:hover {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fde68a;
+  }
+  .iter-stepper-val {
+    min-width: 2.5rem;
+    text-align: center;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: #fde68a;
+    font-variant-numeric: tabular-nums;
+    border-left: 1px solid rgba(251, 191, 36, 0.30);
+    border-right: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 0 0.35rem;
+  }
   .iter-field-toggle {
     display: flex;
     align-items: center;

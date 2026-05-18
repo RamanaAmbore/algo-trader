@@ -1206,7 +1206,8 @@ class SimDriver:
                         spread_pct: float | None,
                         custom_positions: list[dict] | None,
                         inputs: list[str] | None = None,
-                        accounts: list[str] | None = None) -> dict:
+                        accounts: list[str] | None = None,
+                        run_name: str | None = None) -> dict:
         """
         Multi-iteration entry point. The driver runs `iterations` scenarios
         sequentially, round-robining through `regimes`. Each iteration:
@@ -1245,6 +1246,11 @@ class SimDriver:
         self.iterations_total = iterations
         self.iteration_force_close = bool(force_close_on_timeout)
         self.iteration_max_minutes = int(max_minutes)
+
+        # Operator-supplied run name — sets the slug prefix for every
+        # iteration in this run. Stash on self so _build_iteration_slug
+        # can read it without threading the arg through every call.
+        self.run_name = (run_name or '').strip() or None
 
         # Stash per-iteration start params so we can pass them through
         # to start() for each iteration without re-resolving.
@@ -1398,7 +1404,20 @@ class SimDriver:
             self._scheduler_task = None
 
     def _build_iteration_slug(self, regime: str, idx: int) -> str:
-        """`<regime>-<HHMM>-<NN>` so the iteration's identity reads at a glance."""
+        """Iteration slug. When the operator supplied a `run_name`, use it
+        as the prefix so every iteration in the run carries the operator's
+        chosen label (e.g. `weekend-stress-iter-01`). Otherwise fall back
+        to the legacy `<regime>-<HHMM>-<NN>` format that reads the regime
+        + a short clock stamp at a glance.
+        """
+        prefix = (getattr(self, "run_name", "") or "").strip()
+        if prefix:
+            # Lowercase, replace whitespace+slash with '-', strip everything
+            # but [a-z0-9-_] so the slug stays URL-safe.
+            import re as _re
+            slug_prefix = _re.sub(r"[^a-z0-9_-]+", "-", prefix.lower()).strip("-")
+            if slug_prefix:
+                return f"{slug_prefix}-iter-{idx:02d}"
         ts = datetime.now().strftime("%H%M")
         return f"{regime}-{ts}-{idx:02d}"
 

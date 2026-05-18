@@ -170,8 +170,9 @@ test.describe('Sim end-to-end — Option B workspace', () => {
     await expect(page.locator('.exec-tab-active', { hasText: /backtest/i })).toBeVisible({ timeout: 4000 });
     // The Replay tab's subtitle "historical backtest" distinguishes it from
     // Re-run-iteration. The .exec-tab-subtitle span is always rendered inside
-    // the active tab button when the replay tab is active.
-    await expect(page.locator('.exec-tab-subtitle')).toBeVisible({ timeout: 4000 });
+    // every tab button; scope to the active tab so the locator is unique.
+    const activeSubtitle = page.locator('.exec-tab-active .exec-tab-subtitle');
+    await expect(activeSubtitle).toBeVisible({ timeout: 4000 });
   });
 
   // 5. SimulatorPanel renders: Inputs MultiSelect with Positions preselected,

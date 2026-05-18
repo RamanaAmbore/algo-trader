@@ -130,6 +130,10 @@ class SimRunRequest(msgspec.Struct):
     # gating agents see real data. "watchlist" reserved for re-quoting
     # symbols with no open position.
     inputs:                   Optional[list[str]] = None
+    # Operator-supplied run name. Used as the slug PREFIX for every
+    # iteration in this run (so `crash-2230-iter-01`, `crash-2230-iter-02`,
+    # …). None / empty falls back to the legacy auto-generated slug.
+    run_name:                 Optional[str] = None
     # Account scope — list of broker account codes (e.g. ["ZG0790"]).
     # Empty / None = run across every loaded account (historical
     # behaviour). When set, seed_live() filters the snapshot to only
@@ -559,6 +563,7 @@ class SimulatorController(Controller):
                 custom_positions=data.custom_positions,
                 inputs=data.inputs,
                 accounts=data.accounts,
+                run_name=data.run_name,
             )
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))
