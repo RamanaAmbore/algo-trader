@@ -606,6 +606,20 @@
           {payoff === undefined ? 'Computing payoff…' : 'Payoff unavailable for this leg set'}
         </div>
       {/if}
+      <!-- Time-series chart: underlying spot evolution across all
+           ticks of the scenario. Pairs with the payoff snapshot
+           above — answers "how did the underlying move + when did
+           agents fire / orders place" while the payoff answers
+           "what's my P&L curve right now". Industry pattern:
+           ThinkOrSwim / Tastytrade always show both.
+           Lifecycle markers (agent fires, order placements) come
+           from the chart payload's `events` array. -->
+      {#if chartsBySymbol[underlying]?.ticks?.length}
+        <div class="sim-payoff-history-label">Underlying spot · scenario history</div>
+        <PriceChart mode="sim" symbol={underlying} height={160}
+                    data={chartsBySymbol[underlying]}
+                    {chartsBySymbol} />
+      {/if}
       <div class="sim-payoff-legend">
         {#each longs as p, i (p.symbol + ':' + p.account)}
           <div class="sim-leg-row">
@@ -1380,6 +1394,20 @@
   }
   .sim-payoff-pnl.pos { color: #4ade80; background: rgba(74, 222, 128, 0.10); }
   .sim-payoff-pnl.neg { color: #f87171; background: rgba(248, 113, 113, 0.10); }
+  /* Section label between the payoff snapshot chart and the
+     underlying-spot time-series chart. Same muted-amber style as
+     the page-level section labels so the operator's eye reads it
+     as a sub-header within the card. */
+  .sim-payoff-history-label {
+    margin-top: 0.4rem;
+    margin-bottom: 0.15rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7e97b8;
+  }
   .sim-payoff-legend {
     display: flex;
     flex-direction: column;
