@@ -39,6 +39,7 @@ from backend.api.algo.derivatives import (
     greeks,
     implied_vol,
     is_mcx_underlying,
+    lookup_mcx_front_month_future,
     multileg_extremes,
     multileg_greeks,
     multileg_payoff_curve,
@@ -473,60 +474,10 @@ async def _lookup_mcx_future(underlying: str,
     return candidates[0].s
 
 
-async def _lookup_mcx_near_month_future(underlying: str) -> Optional[str]:
-    """Return the front-month MCX FUT tradingsymbol for *underlying* —
-    the active liquid contract operators read as "today's spot price".
-
-    Importantly, the FRONT month skips any contract whose expiry is on
-    or before today (IST) — those settle today and their last-trade
-    price is stale / illiquid for the rest of the session. The
-    operator's broker app shows the next-out month instead, and so
-    should we.
-
-    Example (2026-05-18):
-      CRUDEOIL26MAYFUT  expiry=2026-05-18  → SKIP (settling today)
-      CRUDEOIL26JUNFUT  expiry=2026-06-18  → use this one
-      CRUDEOIL26JULFUT  expiry=2026-07-20
-
-    Per-leg σ calibration absorbs the cross-month spread so BS pricing
-    still matches each leg's market premium even when the option is on
-    a different expiry than the futures we read as "spot".
-
-    Uses the same 24h instruments cache as ``_lookup_mcx_future``."""
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-    try:
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                  ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
-    except Exception:
-        items = []
-    if not items:
-        return None
-    target_u = underlying.upper()
-    # Today's date in IST — the cycle the instruments dump is anchored
-    # to. ISO string comparison works against `inst.x` which is also
-    # ISO (YYYY-MM-DD).
-    from datetime import datetime as _dt
-    try:
-        from zoneinfo import ZoneInfo
-        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _ist_today_iso = _dt.utcnow().date().isoformat()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "MCX"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x
-            # Skip contracts that settle today or earlier — last-trade
-            # is stale for the rest of the session.
-            and inst.x > _ist_today_iso)
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda i: i.x or "")
-    return candidates[0].s
+# `_lookup_mcx_near_month_future` moved to
+# `derivatives.lookup_mcx_front_month_future` so paper / sim / chart
+# code can reuse the same "today's liquid contract" rule. Kept as a
+# breadcrumb for anyone grep'ing the old name.
 
 
 async def _resolve_spot(underlying: str, override: Optional[float],
@@ -601,7 +552,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     #     think in terms of "today's crude oil price" — that's the
     #     front-month. Per-leg σ calibration absorbs the cross-month spread.
     if is_commodity:
-        resolved_sym = await _lookup_mcx_near_month_future(underlying)
+        resolved_sym = await lookup_mcx_front_month_future(underlying)
         if resolved_sym:
             full_key = f"MCX:{resolved_sym}"
             try:

@@ -296,6 +296,95 @@ def underlying_ltp_key(underlying: str) -> str:
     return _INDEX_LTP_KEY.get(name, f"NSE:{name}")
 
 
+async def lookup_mcx_front_month_future(underlying: str) -> str | None:
+    """Resolve the FRONT-MONTH liquid MCX futures tradingsymbol for an
+    underlying — the contract operators read as "today's spot price".
+
+    Important: skips any contract whose expiry is on or before today
+    (IST) — those settle today and their last-trade price is stale /
+    illiquid for the rest of the session. The operator's broker app
+    shows the next-out month instead, and so do we.
+
+    Example (2026-05-18):
+      CRUDEOIL26MAYFUT  expiry=2026-05-18  → SKIP (settling today)
+      CRUDEOIL26JUNFUT  expiry=2026-06-18  → use this one
+      CRUDEOIL26JULFUT  expiry=2026-07-20
+
+    Reads the 24h-cached instruments dump; deferred imports avoid
+    circular dependency from `backend.api.algo` ↔ `backend.api`
+    layers.
+
+    Returns the bare tradingsymbol (e.g. `'CRUDEOIL26JUNFUT'`) or None
+    when the cache is cold / no commodity matches.
+    """
+    if not underlying:
+        return None
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return None
+    target_u = underlying.upper()
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _ist_today_iso = _dt.utcnow().date().isoformat()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "MCX"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x
+            and inst.x > _ist_today_iso)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda i: i.x or "")
+    return candidates[0].s
+
+
+async def front_month_underlying_quote_key(underlying: str) -> str | None:
+    """Kite quote key for the "current liquid spot" of an underlying
+    NAME, resolved differently per instrument class:
+
+      • Index (NIFTY, BANKNIFTY, …)   → NSE:NIFTY 50 (etc.)
+      • Stock (RELIANCE, INFY, …)     → NSE:RELIANCE
+      • MCX commodity (CRUDEOIL, …)   → MCX:<front-month-future>
+                                         (skips today's-expiry month)
+
+    Counterpart of `option_underlying_quote_key(symbol)`:
+      - This one takes the bare NAME and returns the front-month
+        future for MCX (operators read this as "today's crude price").
+      - The other takes a full TRADINGSYMBOL and returns that
+        option's MATCHING-month future for MCX (the spot under
+        THIS contract for σ-calibration).
+
+    Both designs are correct in their context; choose by whether you
+    have a name or a symbol on hand. Async because MCX path hits the
+    instruments cache (deferred imports inside).
+
+    Returns None when underlying is empty or no MCX contract resolves
+    (cache cold / commodity has no listed front-month). For non-MCX
+    callers, never returns None — falls back to `NSE:<name>` which is
+    Kite's default for an equity ticker.
+    """
+    if not underlying:
+        return None
+    if is_mcx_underlying(underlying):
+        sym = await lookup_mcx_front_month_future(underlying)
+        if not sym:
+            return None
+        return f"MCX:{sym}"
+    return underlying_ltp_key(underlying)
+
+
 def option_quote_key(symbol: str) -> str | None:
     """Kite quote/ltp key for an F&O contract ITSELF (not its
     underlying). Routes commodity contracts to MCX, everything else
