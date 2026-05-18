@@ -689,7 +689,7 @@ def _leg_expiry_iso(leg, parsed: dict) -> str:
     return parsed["expiry"].isoformat()
 
 
-def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
+async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
                  override: Optional[float],
                  avg_cost_hint: Optional[float] = None,
                  *,
@@ -834,7 +834,7 @@ class OptionsController(Controller):
         # so a stale broker quote on an illiquid contract still produces
         # a usable payoff curve. ltp_source='estimated' tells the UI it
         # came from BS at default IV against the resolved spot.
-        ltp_val, ltp_src = _resolve_ltp(
+        ltp_val, ltp_src = await _resolve_ltp(
             sym, mode, acct_resolved or account, ltp,
             avg_cost_hint=avg_resolved if avg_resolved > 0 else avg_cost,
             estimate_inputs={
