@@ -296,6 +296,32 @@ def underlying_ltp_key(underlying: str) -> str:
     return _INDEX_LTP_KEY.get(name, f"NSE:{name}")
 
 
+def option_quote_key(symbol: str) -> str | None:
+    """Kite quote/ltp key for an F&O contract ITSELF (not its
+    underlying). Routes commodity contracts to MCX, everything else
+    to NFO. Returns None for unparseable input.
+
+    Examples:
+      NIFTY26APR22000CE   → NFO:NIFTY26APR22000CE
+      RELIANCE26APR2800CE → NFO:RELIANCE26APR2800CE
+      CRUDEOIL26JUN9500CE → MCX:CRUDEOIL26JUN9500CE
+      CRUDEOIL26JUNFUT    → MCX:CRUDEOIL26JUNFUT
+
+    Counterpart of `option_underlying_quote_key` — that one quotes
+    the underlying SPOT for charting; this one quotes the OPTION
+    itself for LTP / depth / strategy-analytics batch fetches.
+    """
+    if not symbol:
+        return None
+    parsed = parse_tradingsymbol(symbol)
+    if not parsed:
+        return None
+    name = parsed.get("underlying") or ""
+    if is_mcx_underlying(name):
+        return f"MCX:{symbol}"
+    return f"NFO:{symbol}"
+
+
 def option_underlying_quote_key(symbol: str) -> str | None:
     """Resolve the Kite quote/ltp key for an option's / future's
     UNDERLYING SPOT.

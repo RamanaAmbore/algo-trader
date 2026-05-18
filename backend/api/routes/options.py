@@ -45,6 +45,7 @@ from backend.api.algo.derivatives import (
     multileg_intermediate_curves,
     intermediate_curves,
     multileg_pop,
+    option_quote_key,
     parse_tradingsymbol,
     payoff_curve,
     risk_metrics,
@@ -658,16 +659,9 @@ async def _resolve_spot(underlying: str, override: Optional[float],
                         detail=f"spot for {underlying} unavailable from any source")
 
 
-def _option_quote_key(symbol: str) -> str:
-    """Kite quote key for an F&O contract. Stock and index derivatives
-    live on NFO/BFO; commodity derivatives live on MCX. We pick the
-    exchange off the parsed underlying so commodity options like
-    CRUDEOIL25MAY9000CE route to `MCX:…` instead of the (always-empty)
-    `NFO:…`."""
-    parsed = parse_tradingsymbol(symbol)
-    if parsed and is_mcx_underlying(parsed.get("underlying", "")):
-        return f"MCX:{symbol}"
-    return f"NFO:{symbol}"
+# Option-quote-key helper moved to `derivatives.option_quote_key`.
+# This route module imports it directly. Keep the comment as a
+# breadcrumb for anyone searching the old name.
 
 
 def _leg_expiry_iso(leg, parsed: dict) -> str:
@@ -727,7 +721,7 @@ async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
         # the sim is paused but real-data analytics are still useful).
 
     from backend.shared.brokers.registry import get_price_broker
-    key = _option_quote_key(symbol)
+    key = option_quote_key(symbol)
     try:
         resp = await asyncio.to_thread(get_price_broker().quote, [key]) or {}
     except Exception as e:
@@ -1051,7 +1045,7 @@ class OptionsController(Controller):
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
 
         # Build the batch quote keys (MCX vs NFO routing handled by
-        # `_option_quote_key`). Track key → (strike, side) so the
+        # `option_quote_key`). Track key → (strike, side) so the
         # response can be redistributed back into the chain map.
         keys: list[str] = []
         key_meta: dict[str, tuple[float, str]] = {}
@@ -1059,7 +1053,7 @@ class OptionsController(Controller):
             for side, sym in sides.items():
                 if not sym:
                     continue
-                qk = _option_quote_key(sym)
+                qk = option_quote_key(sym)
                 keys.append(qk)
                 key_meta[qk] = (strike, side)
 
@@ -1261,9 +1255,9 @@ class OptionsController(Controller):
             # bypass the fetch and fall straight to avg_cost).
             if leg.ltp is None or leg.ltp <= 0:
                 # Route commodity contracts to MCX, everything else to
-                # NFO. `_option_quote_key()` parses the underlying and
+                # NFO. `option_quote_key()` parses the underlying and
                 # picks the exchange — keeps this in one place.
-                need_quote[_option_quote_key(sym)] = sym
+                need_quote[option_quote_key(sym)] = sym
 
         if len(underlyings) > 1:
             raise HTTPException(
@@ -1450,7 +1444,7 @@ class OptionsController(Controller):
                 if leg.ltp is not None and leg.ltp > 0:
                     fut_ltp, fut_src = float(leg.ltp), "override"
                 else:
-                    q = quote_resp.get(_option_quote_key(sym)) or {}
+                    q = quote_resp.get(option_quote_key(sym)) or {}
                     fut_ltp, fut_src = _ltp_from_quote(q)
                 if fut_ltp is None and leg.avg_cost is not None and leg.avg_cost > 0:
                     fut_ltp, fut_src = float(leg.avg_cost), "avg_cost"
@@ -1491,7 +1485,7 @@ class OptionsController(Controller):
             if leg.ltp is not None and leg.ltp > 0:
                 ltp_val, ltp_source = float(leg.ltp), "override"
             else:
-                q = quote_resp.get(_option_quote_key(sym)) or {}
+                q = quote_resp.get(option_quote_key(sym)) or {}
                 ltp_val, ltp_source = _ltp_from_quote(q)
             # Fallback to operator's avg_cost if no broker price was usable.
             if ltp_val is None and leg.avg_cost is not None and leg.avg_cost > 0:
