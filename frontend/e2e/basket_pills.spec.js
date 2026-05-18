@@ -61,8 +61,13 @@ test('basket pills render in the shell bottom bar', async ({ page }) => {
   await authOnce(page);
   await page.goto('/admin/options');
   await page.waitForLoadState('domcontentloaded');
-  await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 10_000 });
-  await page.waitForTimeout(1500);
+  // Wait until the account list has actually loaded (placeholder text
+  // flips away from "No accounts loaded"). Without this, the test
+  // sometimes runs before /api/accounts returns and the picker can't
+  // pop a usable account option.
+  await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('button#opt-acct')).not.toContainText(
+    /No accounts loaded/i, { timeout: 15_000 });
   await pickFirstAccount(page);
 
   // Open the chain modal.
@@ -103,8 +108,13 @@ test('command line + chain legs both surface as pills', async ({ page }) => {
   await authOnce(page);
   await page.goto('/admin/options');
   await page.waitForLoadState('domcontentloaded');
-  await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 10_000 });
-  await page.waitForTimeout(1500);
+  // Wait until the account list has actually loaded (placeholder text
+  // flips away from "No accounts loaded"). Without this, the test
+  // sometimes runs before /api/accounts returns and the picker can't
+  // pop a usable account option.
+  await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('button#opt-acct')).not.toContainText(
+    /No accounts loaded/i, { timeout: 15_000 });
   await pickFirstAccount(page);
 
   const chainBtn = page.getByRole('button', { name: /Toggle chain picker/i });
