@@ -118,6 +118,23 @@
   }
   function clearBasket() { basketLegs = []; basketResultMsg = ''; }
 
+  // ── Shared account state ─────────────────────────────────────────
+  // Single source of truth for the routable account across all three
+  // tabs (command / ticket / chain). Earlier each tab maintained its
+  // own _account so picking it in one tab didn't sync to the others
+  // — operators could submit a Ticket-tab order on one account while
+  // the Chain-tab basket was staged for another. Lifted here as $state
+  // initialised from the `account` prop; each tab receives it as
+  // `account` and calls `onAccountChange` when its picker changes.
+  let _sharedAccount = $state(account || '');
+  // Re-sync from the prop when the caller updates it externally (e.g.
+  // when /admin/options opens the modal with a new default after the
+  // operator picks a different position).
+  $effect(() => { _sharedAccount = account || _sharedAccount; });
+  function _onAccountChange(/** @type {string} */ a) {
+    _sharedAccount = a;
+  }
+
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
   // +/- steppers. Maps in place so rapid clicks accumulate cleanly
   // instead of relying on the remove+re-add pattern which can drop
@@ -373,7 +390,8 @@
             trigger={_ticketProps.trigger ?? trigger}
             lotSize={_ticketProps.lotSize ?? lotSize}
             accounts={_ticketProps.accounts ?? accounts}
-            account={_ticketProps.account ?? account}
+            account={_sharedAccount || _ticketProps.account || account}
+            onAccountChange={_onAccountChange}
             orderId={_ticketProps.orderId ?? orderId}
             defaultMode={_ticketProps.defaultMode ?? defaultMode}
             availableModes={_ticketProps.availableModes ?? availableModes}
@@ -391,7 +409,8 @@
              when routed through onSubmitBasket. -->
         <OptionChainTab
           {symbol}
-          {account}
+          account={_sharedAccount || account}
+          onAccountChange={_onAccountChange}
           {accounts}
           basketLegs={basketLegs}
           onAddLeg={addToBasket}

@@ -55,6 +55,7 @@
    *   onClose:   () => void,
    *   onAddToBasket?: ((payload: any) => void) | null,
    *   basketMode?: boolean,
+   *   onAccountChange?: (account: string) => void,
    * }} */
   let {
     symbol,
@@ -96,6 +97,11 @@
     currentQty = 0,
     onSubmit,
     onClose,
+    // Pushed back to OrderEntryShell when the operator picks a
+    // different account from this tab's selector. Shell uses it to
+    // sync the other tabs (command / chain) to the same account so
+    // they all submit through the same Kite handle.
+    onAccountChange = /** @type {((account: string) => void) | null} */ (null),
     // Optional "+ Basket" callback — when set, the ticket renders
     // an "Add to basket" action alongside the primary Submit. The
     // caller pushes the leg into its own basket panel (same pill
@@ -383,6 +389,21 @@
       // Re-check against propPick first so a late-arriving list that
       // confirms the prop doesn't clear it.
       _account = propPick || (_accounts.length === 1 ? _accounts[0] : '');
+    }
+  });
+
+  // Push picker changes back to the shell so the other tabs (command /
+  // chain) re-sync. Guard against the no-op echo (when shell pushes
+  // a new prop value, our $effect above sets `_account` to match,
+  // which would otherwise fire onAccountChange in a loop). Untrack the
+  // callback read.
+  let _lastNotifiedAcct = '';
+  $effect(() => {
+    if (_account && _account !== _lastNotifiedAcct && _account !== account) {
+      _lastNotifiedAcct = _account;
+      onAccountChange?.(_account);
+    } else if (_account === account) {
+      _lastNotifiedAcct = _account;
     }
   });
 

@@ -37,6 +37,7 @@
    *   onSubmitBasket?: () => void,
    *   onClearBasket?:  () => void,
    *   onPlaceLeg?:     (props: any) => void,
+   *   onAccountChange?: (account: string) => void,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -58,6 +59,10 @@
     // pre-filled with the leg, mirroring CommandLineTab's
     // BUY/SELL → Ticket flow.
     onPlaceLeg     = /** @type {((p: any) => void)|undefined} */ (undefined),
+    // Pushed back to OrderEntryShell when the operator changes the
+    // routable account from this tab — shell syncs the other tabs
+    // (command / ticket) to the same value.
+    onAccountChange = /** @type {((a: string) => void)|undefined} */ (undefined),
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -123,6 +128,24 @@
     if (_account) return;
     if (_isRealAcct(account)) { _account = account; return; }
     if (_allAccounts.length === 1) _account = _allAccounts[0];
+  });
+  // Sync from a shell-pushed prop change (operator switched account
+  // in another tab; shell re-renders us with the new value).
+  $effect(() => {
+    if (account && _isRealAcct(account) && account !== _account) {
+      _account = account;
+    }
+  });
+  // Push picker changes back to the shell so the other tabs sync.
+  // Guard against the echo of the inbound prop sync above.
+  let _lastNotifiedAcct = '';
+  $effect(() => {
+    if (_account && _account !== _lastNotifiedAcct && _account !== account) {
+      _lastNotifiedAcct = _account;
+      onAccountChange?.(_account);
+    } else if (_account === account) {
+      _lastNotifiedAcct = _account;
+    }
   });
 
   // Underlying choices — common indices first, then everything else.
