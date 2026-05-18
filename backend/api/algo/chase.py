@@ -139,12 +139,19 @@ def _get_ltp(account: str, exchange: str, symbol: str) -> float:
 
 
 def _calc_limit_price(depth: dict, transaction_type: str, attempt: int,
-                      aggression_step: float) -> float:
+                      aggression_step: float,
+                      exchange: str = "", symbol: str = "") -> float:
     """
-    Calculate limit price from market depth.
+    Calculate limit price from market depth, snapped to the
+    instrument's actual tick.
 
     For SELL: start at mid, move toward best_bid with each attempt.
     For BUY:  start at mid, move toward best_ask with each attempt.
+
+    The result is rounded to the contract's real tick_size (₹0.05 on
+    NFO/NSE, ₹1 on MCX commodities, …). Without this, the chase would
+    happily send ₹437.55 on a ₹1-tick contract and Kite rejects with
+    "the entered price is not as per the ticker price".
     """
     buy_depth  = depth.get("buy", [])
     sell_depth = depth.get("sell", [])
@@ -162,14 +169,17 @@ def _calc_limit_price(depth: dict, transaction_type: str, attempt: int,
     # Aggression: fraction of spread to cross toward market
     aggression = min(attempt * aggression_step, 0.95)
 
+    tick = _tick_size_sync(exchange, symbol) if exchange and symbol else 0.05
     if transaction_type == "SELL":
         # Move from mid toward best_bid
         price = mid - (spread * aggression * 0.5)
-        return max(round(price, 2), best_bid)
+        snapped = _snap_to_tick(price, tick)
+        return max(snapped, best_bid)
     else:
         # BUY: move from mid toward best_ask
         price = mid + (spread * aggression * 0.5)
-        return min(round(price, 2), best_ask)
+        snapped = _snap_to_tick(price, tick)
+        return min(snapped, best_ask)
 
 
 def _lot_size_sync(exchange: str, symbol: str) -> int:
@@ -192,6 +202,47 @@ def _lot_size_sync(exchange: str, symbol: str) -> int:
     except Exception:
         pass
     return 1
+
+
+def _tick_size_sync(exchange: str, symbol: str) -> float:
+    """Read tick_size from the in-process instruments cache (sync).
+
+    Kite rejects orders whose LIMIT price isn't a multiple of the
+    contract's tick — NFO/NSE = ₹0.05, MCX commodities like CRUDEOIL =
+    ₹1, bullion = ₹1, etc. _calc_limit_price's plain `round(px, 2)`
+    handles paise-tick correctly but lets through ₹437.55 on a ₹1-tick
+    contract, which the exchange then rejects. We round to the actual
+    tick before returning the chase price.
+
+    Falls through to 0.05 on a miss — the NSE default that's been
+    the implicit assumption everywhere else in this engine.
+    """
+    try:
+        from backend.api.cache import _store
+        entry = _store.get("instruments")
+        if entry is not None:
+            _expires, resp = entry
+            if resp is not None and hasattr(resp, "items"):
+                for inst in resp.items:
+                    if inst.e == exchange and inst.s == symbol:
+                        return float(inst.ts) if inst.ts > 0 else 0.05
+    except Exception:
+        pass
+    return 0.05
+
+
+def _snap_to_tick(price: float, tick: float) -> float:
+    """Round `price` to the nearest valid `tick` multiple.
+
+    Uses scaled-integer rounding when tick < 1 (0.05 in binary float
+    misbehaves) and plain `round(px/tick)*tick` otherwise.
+    """
+    if price <= 0 or tick <= 0:
+        return price
+    if tick < 1:
+        scale = round(1.0 / tick)
+        return round(round(price * scale) / scale, 4)
+    return round(round(price / tick) * tick, 4)
 
 
 def _place_order(account: str, symbol: str, transaction_type: str,
@@ -298,7 +349,9 @@ async def chase_order(
         try:
             # Get market depth
             depth = await _run(_get_depth, account, cfg.exchange, symbol)
-            price = _calc_limit_price(depth, transaction_type, attempt, cfg.aggression_step)
+            price = _calc_limit_price(depth, transaction_type, attempt,
+                                       cfg.aggression_step,
+                                       exchange=cfg.exchange, symbol=symbol)
 
             if price <= 0:
                 logger.warning(f"Chase {symbol}: no valid price from depth at attempt {attempt}")
