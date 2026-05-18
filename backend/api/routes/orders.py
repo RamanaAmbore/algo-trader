@@ -62,6 +62,76 @@ _VALIDITIES  = {"DAY", "IOC"}
 
 _ORDERS_TTL  = 15   # orders refresh faster — 15s cache
 
+# ── Live-order circuit breaker ────────────────────────────────────────
+# Stop the operator (or an agent) from re-attempting the same rejected
+# order again and again. Track rejection timestamps per
+# (account, symbol, side, qty) tuple. After REJECTION_THRESHOLD
+# rejections in the last REJECTION_WINDOW_S seconds, the next attempt
+# returns 423 (Locked) without hitting the broker, and a Telegram +
+# email alert fires so the operator knows the breaker tripped.
+#
+# Module-level state — lost on service restart. That's fine; the
+# operator's debug session rarely exceeds a single working day.
+import time as _time
+
+_REJECTION_TRACKER: dict[str, list[float]] = {}
+_REJECTION_WINDOW_S = 3600       # 1 hour
+_REJECTION_THRESHOLD = 3
+_BREAKER_ALERT_COOLDOWN_S = 600  # 10 min between breaker-trip alerts per key
+_BREAKER_LAST_ALERT: dict[str, float] = {}
+
+
+def _rejection_key(account: str, symbol: str, side: str, qty: int) -> str:
+    return f"{account}|{symbol}|{side}|{qty}"
+
+
+def _prune_rejection_window(key: str) -> None:
+    now = _time.time()
+    cutoff = now - _REJECTION_WINDOW_S
+    _REJECTION_TRACKER[key] = [t for t in _REJECTION_TRACKER.get(key, []) if t > cutoff]
+
+
+def _rejection_count(key: str) -> int:
+    _prune_rejection_window(key)
+    return len(_REJECTION_TRACKER.get(key, []))
+
+
+def _record_rejection(key: str) -> int:
+    """Append now() to the rejection list for this key, return new count."""
+    _prune_rejection_window(key)
+    _REJECTION_TRACKER.setdefault(key, []).append(_time.time())
+    return len(_REJECTION_TRACKER[key])
+
+
+def _clear_rejections(key: str) -> None:
+    """Reset on a successful placement."""
+    _REJECTION_TRACKER.pop(key, None)
+    _BREAKER_LAST_ALERT.pop(key, None)
+
+
+def _maybe_send_breaker_alert(key: str, account: str, symbol: str,
+                               side: str, qty: int, reason: str) -> None:
+    """Fire one alert per key per cooldown window. Returns silently on
+    any send failure so the trip itself isn't blocked by infra issues."""
+    now = _time.time()
+    last = _BREAKER_LAST_ALERT.get(key, 0)
+    if now - last < _BREAKER_ALERT_COOLDOWN_S:
+        return
+    _BREAKER_LAST_ALERT[key] = now
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange="—",
+            side=side, qty=qty, mode="live",
+            source="circuit-breaker",
+            error=(f"BREAKER TRIPPED — {_REJECTION_THRESHOLD}+ rejections in "
+                   f"the last {_REJECTION_WINDOW_S//60} min. "
+                   f"Further submits blocked until the breaker resets. "
+                   f"Last reason: {reason[:200]}"),
+        )
+    except Exception as e:
+        logger.warning(f"[BREAKER] alert dispatch failed for {key}: {e}")
+
 
 def _kite_for(account: str):
     conn = Connections().conn
@@ -696,6 +766,30 @@ class OrdersController(Controller):
                 raise HTTPException(status_code=403,
                     detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/execution (LIVE mode).")
 
+            # ── Circuit breaker ───────────────────────────────────────
+            # Block the operator from re-attempting the SAME live order
+            # after 3+ rejections within the last hour. Surfaces a
+            # 423 with a clear "breaker tripped" message + fires a
+            # Telegram/email alert (cooldown'd) so the operator knows
+            # to investigate the root cause (margin shortfall, API key
+            # segment scope, etc.) before re-trying.
+            _bk_key = _rejection_key(account, sym, side, qty)
+            _bk_count = _rejection_count(_bk_key)
+            if _bk_count >= _REJECTION_THRESHOLD:
+                _maybe_send_breaker_alert(_bk_key, account, sym, side, qty,
+                                           f"{_bk_count} rejections in last hour")
+                logger.warning(
+                    f"[BREAKER] BLOCKED ticket — {_bk_key} has "
+                    f"{_bk_count} rejections in last hour"
+                )
+                raise HTTPException(
+                    status_code=423,
+                    detail=(f"Circuit breaker: {_REJECTION_THRESHOLD}+ rejections "
+                            f"in the last hour for {sym} {side} {qty} on {account}. "
+                            "Further attempts blocked until the breaker resets. "
+                            "Check margin / segment scope, then wait or reset."),
+                )
+
             # ── Preflight gate ────────────────────────────────────────
             # Run before any broker call; surface structured blockers to
             # the operator with specific fix hints. Skipped for PAPER /
@@ -767,6 +861,11 @@ class OrdersController(Controller):
                 except Exception as _ev_err:
                     logger.warning(f"[LIVE-TICKET] preflight_block log failed: "
                                    f"{_ev_err}")
+                # Tick the circuit breaker — N+1 rejection on this key.
+                _new_count = _record_rejection(_bk_key)
+                if _new_count >= _REJECTION_THRESHOLD:
+                    _reason = ', '.join(b.get('code', '?') for b in _pf['blocked'])
+                    _maybe_send_breaker_alert(_bk_key, account, sym, side, qty, _reason)
                 raise HTTPException(
                     status_code=422,
                     detail={"blocked": _pf["blocked"],
@@ -829,6 +928,9 @@ class OrdersController(Controller):
                     ))
                 except Exception:
                     pass
+                # Successful placement clears any prior rejection
+                # history for this key — the breaker resets.
+                _clear_rejections(_bk_key)
                 return TicketOrderResponse(
                     order_id=str(order_id),
                     mode="live",
@@ -891,6 +993,13 @@ class OrdersController(Controller):
                     ))
                 except Exception:
                     pass
+                # Tick the circuit breaker — Kite rejected this order.
+                # Same key the pre-preflight check uses; cumulative
+                # with preflight blocks.
+                _new_count = _record_rejection(_bk_key)
+                if _new_count >= _REJECTION_THRESHOLD:
+                    _maybe_send_breaker_alert(_bk_key, account, sym, side, qty,
+                                               kite_msg[:200])
                 raise HTTPException(
                     status_code=400,
                     detail=f"{kite_msg} ({diag})"[:400],
