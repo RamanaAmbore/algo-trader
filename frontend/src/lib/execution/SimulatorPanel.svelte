@@ -594,7 +594,19 @@
       · accounts=[{liveSnap.accounts.join(', ')}]
     </div>
   {/if}
+</div>
 
+<!-- Two-column Lab layout on desktop (≥1100 px): controls on the
+     LEFT (iter / Run / custom cards), monitoring on the RIGHT (payoff
+     cards, pills, indices, activity feed, summaries, past iter).
+     The cards are direct children of .sim-grid; CSS positions
+     `.sim-grid-side` items into col 1 and the single `.sim-grid-main`
+     <section> into col 2 with grid-row spanning so the monitoring
+     content flows independently from the (typically shorter) controls
+     column. Below 1100 px the grid collapses to one column, preserving
+     source order. -->
+<div class="sim-grid">
+  <section class="sim-grid-main">
   <!-- Per-underlying payoff cards — replace the position pills with a
        chart-driven view. Each card shows the combined net payoff
        curve + a color-coded legend mapping each leg to a hue used in
@@ -854,7 +866,7 @@
   {:else}
     <div class="sim-empty">No past simulations yet.</div>
   {/if}
-</div>
+  </section>
 
 <!-- Iteration-mode card (Phase 2A). Collapsed by default — operators
      run a single ad-hoc scenario far more often than a multi-iteration
@@ -863,7 +875,7 @@
      the summary auto-opens (browsers honour `open` attribute on
      details) so the operator can see progress without expanding by
      hand. -->
-<details class="algo-status-card cmd-surface p-3 mb-3 sim-collapsible"
+<details class="algo-status-card cmd-surface p-3 mb-3 sim-collapsible sim-grid-side"
          data-status={status.run_active ? 'triggered' : 'inactive'}
          bind:open={_iterCardOpen}>
   <summary class="sim-collapsible-summary">
@@ -980,7 +992,7 @@
 </details>
 
 <!-- Controls card -->
-<div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
+<div class="algo-status-card cmd-surface p-3 mb-3 sim-grid-side" data-status="inactive">
   <div class="sim-scenario-row">
     <div class="sim-field sim-field-scenario">
       <label for="sim-scenario" class="field-label">Scenario</label>
@@ -1146,7 +1158,7 @@
      the operator wants to layer synthetic positions on top of the
      seeded book. Auto-expands when at least one custom row exists so
      the operator never loses sight of what they've configured. -->
-<details class="algo-status-card cmd-surface p-3 mb-3 sim-collapsible"
+<details class="algo-status-card cmd-surface p-3 mb-3 sim-collapsible sim-grid-side"
          data-status="inactive"
          bind:open={_customPosOpen}>
   <summary class="sim-collapsible-summary">
@@ -1205,6 +1217,8 @@
   {/if}
 </details>
 
+</div>  <!-- /.sim-grid — close the two-column wrapper before LogPanel -->
+
 <LogPanel
   heightClass="h-[40vh]"
   mode="sim"
@@ -1214,6 +1228,30 @@
 />
 
 <style>
+  /* Two-column Lab grid — controls on the left, monitoring on the
+     right. Mobile / narrow desktops collapse to single column.
+     The .sim-grid-main <section> spans every row so its content can
+     flow independently from the (typically shorter) side column;
+     side items each take one implicit row in col 1. */
+  :global(.sim-grid) {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+  @media (min-width: 1100px) {
+    :global(.sim-grid) {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+      align-items: start;
+    }
+    :global(.sim-grid > .sim-grid-side) {
+      grid-column: 1;
+    }
+    :global(.sim-grid > .sim-grid-main) {
+      grid-column: 2;
+      grid-row: 1 / span 100;
+    }
+  }
+
   /* Sticky status strip — the RUNNING/idle + tick + scenario chips
      stay pinned to the top of the scroll container while the operator
      scrolls through controls / activity feed below. Top offset tucks
