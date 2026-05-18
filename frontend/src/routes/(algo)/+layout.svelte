@@ -5,7 +5,7 @@
   import { authStore, visibleInterval, executionMode } from '$lib/stores';
   import {
     fetchSimStatus, fetchPaperStatus,
-    fetchReplayStatus, fetchShadowStatus, fetchLiveStatus,
+    fetchReplayStatus,
     fetchExecutionMode, setExecutionMode,
     fetchOrderEvents,
   } from '$lib/api';
@@ -22,8 +22,11 @@
   let simStatus    = $state(/** @type {any} */ ({ active: false }));
   let paperStatus  = $state(/** @type {any} */ ({ enabled: false, open_order_count: 0 }));
   let replayStatus = $state(/** @type {any} */ ({ active: false }));
-  let shadowStatus = $state(/** @type {any} */ ({ shadow_active: false }));
-  let liveStatus   = $state(/** @type {any} */ ({ live_count: 0 }));
+  // Shadow + Live status polls were dropped — those status objects
+  // were declared and polled every 5 s but read by zero template
+  // consumers (the SHADOW / LIVE pills in the navbar derive from
+  // the master execution-mode response loaded by `loadMode` every
+  // 30 s, not from these polls). Net win: 24 wasted req/min/tab.
 
   // Demo mode == anonymous visitor on the prod (main) branch. The
   // `paperStatus.branch` flag arrives via the poll; before the
@@ -279,7 +282,7 @@
   // The state vars are declared at the top of the script so the
   // `isDemo` derivation + nav filter can read them; the actual
   // pollers + lifecycle live here.
-  let simTeardown, paperTeardown, replayTeardown, shadowTeardown, liveTeardown;
+  let simTeardown, paperTeardown, replayTeardown;
   let modeTeardown, chaseTeardown;
   async function pollSim() {
     try { simStatus = await fetchSimStatus(); }
@@ -293,28 +296,47 @@
     try { replayStatus = await fetchReplayStatus(); }
     catch (_) { /* treat as idle */ }
   }
-  async function pollShadow() {
-    try { shadowStatus = await fetchShadowStatus(); }
-    catch (_) { /* treat as idle */ }
-  }
-  async function pollLive() {
-    try { liveStatus = await fetchLiveStatus(); }
-    catch (_) { /* treat as idle */ }
+  // Adaptive cadence — Sim/Paper/Replay fast-poll only while their
+  // mode is active (banner + chip data is live); when idle they
+  // back off to 30 s. A typical session has all three idle most of
+  // the time, so this drops baseline load from ~63 to ~6 req/min
+  // per tab while keeping snappy updates when something IS running.
+  function _adaptiveInterval(/** @type {() => Promise<void>} */ poll,
+                              /** @type {() => boolean} */ isActive,
+                              fastMs = 4000, slowMs = 30000) {
+    let stopped = false;
+    let timer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+    const schedule = () => {
+      if (stopped) return;
+      const ms = isActive() ? fastMs : slowMs;
+      timer = setTimeout(async () => {
+        if (stopped) return;
+        try { await poll(); } catch (_) { /* swallow */ }
+        schedule();
+      }, ms);
+    };
+    schedule();
+    return () => {
+      stopped = true;
+      if (timer != null) clearTimeout(timer);
+    };
   }
   onMount(() => {
-    pollSim();    simTeardown    = visibleInterval(pollSim,    4000);
-    pollPaper();  paperTeardown  = visibleInterval(pollPaper,  4000);
-    pollReplay(); replayTeardown = visibleInterval(pollReplay, 5000);
-    pollShadow(); shadowTeardown = visibleInterval(pollShadow, 5000);
-    pollLive();   liveTeardown   = visibleInterval(pollLive,   5000);
-    // Execution-mode combobox — seed then poll every 30s.
+    // Fire once, then schedule adaptive polls.
+    pollSim();
+    pollPaper();
+    pollReplay();
+    simTeardown    = _adaptiveInterval(pollSim,
+      () => !!(simStatus?.active || simStatus?.run_active), 4000, 30000);
+    paperTeardown  = _adaptiveInterval(pollPaper,
+      () => !!(paperStatus?.open_order_count > 0), 4000, 30000);
+    replayTeardown = _adaptiveInterval(pollReplay,
+      () => !!replayStatus?.active, 5000, 30000);
     loadMode();   modeTeardown   = visibleInterval(loadMode,  30000);
-    // Chase chip — paper-engine ticks every 5 s, chip is informational.
     pollChase();  chaseTeardown  = visibleInterval(pollChase,  10000);
   });
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
-    shadowTeardown?.(); liveTeardown?.();
     modeTeardown?.(); chaseTeardown?.();
   });
 
