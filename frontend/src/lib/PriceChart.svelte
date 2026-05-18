@@ -44,7 +44,7 @@
   let loading = $state(true);
   let timer = $state(/** @type {any} */ (null));
   let mounted = $state(true);
-  /** @type {{x:number,y:number,kind:string,side:string,price:number|null,ts:string,detail:string|null,order_id:number}|null} */
+  /** @type {{x:number,y:number,kind:string,side:string,price:number|null,ts:string,detail:string|null,order_id:number,qty:number|null,slippage:number|null}|null} */
   let hover = $state(null);
 
   // True when the parent is feeding pre-fetched data; we skip our own
@@ -302,6 +302,7 @@
       x: xOf(e.ts), y: yOf(e.price ?? ticks[ticks.length - 1]?.ltp ?? 0),
       kind: e.kind, side: e.side, price: e.price, ts: e.ts,
       detail: e.detail, order_id: e.order_id,
+      qty: e.qty, slippage: e.slippage,
     };
   }
   function hideHover() { hover = null; }
@@ -453,25 +454,38 @@
         {/if}
       {/each}
 
-      <!-- Hover tooltip -->
+      <!-- Hover tooltip — line 1: kind · side · qty; line 2: price ×
+           qty = total @ time; line 3: order #N · slippage (if any). -->
       {#if hover}
-        {@const tx = Math.min(W - 180 - PAD_R, Math.max(PAD_L, hover.x + 8))}
-        {@const ty = Math.max(PAD_T, hover.y - 60)}
+        {@const _qty   = hover.qty}
+        {@const _px    = hover.price}
+        {@const _total = (_qty != null && _px != null) ? _qty * _px : null}
+        {@const _slip  = hover.slippage}
+        {@const _h     = (_slip != null && _slip !== 0) ? 70 : 56}
+        {@const tx = Math.min(W - 200 - PAD_R, Math.max(PAD_L, hover.x + 8))}
+        {@const ty = Math.max(PAD_T, hover.y - _h - 4)}
         <g pointer-events="none">
-          <rect x={tx} y={ty} width="180" height="56" rx="4"
+          <rect x={tx} y={ty} width="200" height={_h} rx="4"
                 fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
           <text x={tx + 6} y={ty + 14} fill="#fbbf24"
                 font-size="10" font-weight="700" font-family="monospace">
-            {hover.kind.toUpperCase()} · {hover.side}
+            {hover.kind.toUpperCase()} · {hover.side}{#if _qty != null} · {_qty}×{/if}
           </text>
           <text x={tx + 6} y={ty + 28} fill="#c8d8f0"
                 font-size="9" font-family="monospace">
-            {fmtPrice(hover.price)} @ {fmtTime(hover.ts)}
+            {fmtPrice(_px)}{#if _total != null} → {fmtPrice(_total)}{/if} @ {fmtTime(hover.ts)}
           </text>
           <text x={tx + 6} y={ty + 42} fill="#7e97b8"
                 font-size="9" font-family="monospace">
             order #{hover.order_id}
           </text>
+          {#if _slip != null && _slip !== 0}
+            <text x={tx + 6} y={ty + 56}
+                  fill={_slip < 0 ? '#4ade80' : '#f87171'}
+                  font-size="9" font-family="monospace">
+              slippage {_slip < 0 ? '−' : '+'}{fmtPrice(Math.abs(_slip))}
+            </text>
+          {/if}
         </g>
       {/if}
     </svg>

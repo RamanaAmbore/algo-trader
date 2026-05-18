@@ -72,6 +72,13 @@ class OrderEvent(msgspec.Struct):
     order_id:  int
     attempts:  int
     detail:    str | None
+    # Trade context for hover tooltip — qty for the leg, total value
+    # = qty × price (capital outlay for BUY / proceeds for SELL),
+    # and slippage = |fill - initial| × qty when terminal. Frontend
+    # renders these so each marker tells the operator the impact of
+    # that transition, not just "an order happened here".
+    qty:       int   | None = None
+    slippage:  float | None = None
 
 
 class ChartResponse(msgspec.Struct):
@@ -127,6 +134,8 @@ def _algo_order_events(rows: list[AlgoOrder]) -> list[OrderEvent]:
     out: list[OrderEvent] = []
     for r in rows:
         side = r.transaction_type or "?"
+        qty  = int(r.quantity) if r.quantity is not None else None
+        slip = float(r.slippage) if r.slippage is not None else None
         # Placed marker — every order has a created_at and an initial_price.
         if r.created_at:
             out.append(OrderEvent(
@@ -138,6 +147,8 @@ def _algo_order_events(rows: list[AlgoOrder]) -> list[OrderEvent]:
                 order_id=r.id,
                 attempts=int(r.attempts or 0),
                 detail=r.detail,
+                qty=qty,
+                # Slippage only known at terminal — placed marker leaves None.
             ))
         # Terminal marker — choose by status.
         if r.status == "FILLED" and r.filled_at:
@@ -150,6 +161,8 @@ def _algo_order_events(rows: list[AlgoOrder]) -> list[OrderEvent]:
                 order_id=r.id,
                 attempts=int(r.attempts or 0),
                 detail=r.detail,
+                qty=qty,
+                slippage=slip,
             ))
         elif r.status == "UNFILLED":
             # No dedicated unfilled timestamp on the model — use filled_at if
@@ -166,6 +179,7 @@ def _algo_order_events(rows: list[AlgoOrder]) -> list[OrderEvent]:
                     order_id=r.id,
                     attempts=int(r.attempts or 0),
                     detail=r.detail,
+                    qty=qty,
                 ))
     out.sort(key=lambda e: e.ts)
     return out

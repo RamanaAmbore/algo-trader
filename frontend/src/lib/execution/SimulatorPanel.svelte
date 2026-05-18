@@ -20,6 +20,7 @@
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import PriceChart    from '$lib/PriceChart.svelte';
   import MultiPriceChart from '$lib/MultiPriceChart.svelte';
+  import EquityCurve from '$lib/EquityCurve.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
@@ -76,6 +77,56 @@
   // positions for synthetic-position layering — both rare paths.
   let _iterCardOpen   = $state(false);
   let _customPosOpen  = $state(false);
+
+  /**
+   * Build the cumulative-P&L curve for the equity-curve chart.
+   * At each unique tick timestamp T (union across all legs in this
+   * underlying card), compute total P&L = Σ leg qty × (latest_ltp_at_T
+   * − avg_price). Late-arriving legs use last-known-LTP carry-forward
+   * before their first tick (effectively no contribution).
+   *
+   * Pure function in scope so the template's {@const _pnlCurve = ...}
+   * re-evaluates each render when chartsBySymbol or positions change.
+   *
+   * @param {Array<any>} positions
+   * @param {Record<string, any>} chartsBySymbol
+   * @returns {Array<{ts: string, pnl: number}>}
+   */
+  function _buildPnlCurve(positions, chartsBySymbol) {
+    const legs = positions.filter((p) =>
+      p?.symbol && Number(p?.quantity) !== 0
+              && Number(p?.average_price) > 0);
+    if (!legs.length) return [];
+    // Union of timestamps across all leg histories, sorted.
+    const tsSet = new Set();
+    for (const p of legs) {
+      const tk = chartsBySymbol?.[p.symbol]?.ticks || [];
+      for (const t of tk) tsSet.add(t.ts);
+    }
+    if (!tsSet.size) return [];
+    const sortedTs = Array.from(tsSet).sort();
+    // Per-leg cursor for last-known LTP. Pre-first-tick = avg_price
+    // (zero contribution).
+    const cursors = new Map();
+    for (const p of legs) {
+      cursors.set(p.symbol, { idx: 0, lastLtp: Number(p.average_price) });
+    }
+    const result = [];
+    for (const ts of sortedTs) {
+      let pnl = 0;
+      for (const p of legs) {
+        const tk = chartsBySymbol[p.symbol]?.ticks || [];
+        const cur = cursors.get(p.symbol);
+        while (cur.idx < tk.length && tk[cur.idx].ts <= ts) {
+          cur.lastLtp = Number(tk[cur.idx].ltp);
+          cur.idx++;
+        }
+        pnl += Number(p.quantity) * (cur.lastLtp - Number(p.average_price));
+      }
+      result.push({ ts, pnl });
+    }
+    return result;
+  }
   // Per-underlying spot snapshots from status.underlyings. The chart
   // grid below iterates these names. status.summary_positions /
   // summary_holdings come from the same /api/simulator/status payload.
@@ -682,6 +733,18 @@
         })}
         <MultiPriceChart series={legSeries} height={220}
                          emptyMsg="No ticks captured yet for any leg." />
+      {/if}
+
+      <!-- Equity curve — cumulative P&L over time. Industry-standard
+           backtest visualisation (AlgoTest, Lean, TradingView). At
+           each tick timestamp, sum qty × (latest_ltp - avg_price)
+           across every leg in this underlying card. The line crosses
+           zero on the operator's reference line so winning / losing
+           regions are visually obvious. -->
+      {#if positions.length}
+        {@const _pnlCurve = _buildPnlCurve(positions, chartsBySymbol)}
+        <div class="sim-payoff-history-label">Equity curve · cumulative P&amp;L</div>
+        <EquityCurve ticks={_pnlCurve} height={150} title="" />
       {/if}
 
       <div class="sim-payoff-legend">

@@ -21,6 +21,24 @@
   const { series = [], height = 240, title = '',
           emptyMsg = 'No ticks captured yet for any leg.' } = $props();
 
+  // Y-axis scale toggle — linear (default) vs symmetric-log. Log
+  // makes a +400 % long-call and a +5 % short-strangle both readable
+  // on the same chart, which the linear axis can't (the small move
+  // gets squashed against zero). Symmetric-log handles negative
+  // values by mirroring the log curve below zero.
+  let _yScale = $state(/** @type {'lin'|'log'} */ ('lin'));
+  // Symlog inflection point (% above which we switch to log
+  // compression). Below ±1 % we stay linear so noise near zero
+  // doesn't blow up visually.
+  const _symLogLinThresh = 0.01;
+  function _symLog(/** @type {number} */ x) {
+    if (_yScale === 'lin') return x;
+    const sign = x < 0 ? -1 : 1;
+    const ax = Math.abs(x);
+    if (ax <= _symLogLinThresh) return x;
+    return sign * (_symLogLinThresh + Math.log10(ax / _symLogLinThresh) * _symLogLinThresh);
+  }
+
   // ── Chart geometry ─────────────────────────────────────────────────
   const W      = 720;
   const PAD_L  = 44;
@@ -120,7 +138,10 @@
   const yOf = (/** @type {number} */ pct) => {
     // pct in [-yDomain, +yDomain]. yOf(+yDomain) = top (PAD_T).
     // yOf(0) = vertical centre. yOf(-yDomain) = bottom (PAD_T+innerH).
-    return PAD_T + innerH / 2 - (pct / yDomain) * (innerH / 2);
+    // _symLog is identity when scale=lin, otherwise symmetric-log.
+    const v   = _symLog(pct);
+    const dom = _symLog(yDomain);
+    return PAD_T + innerH / 2 - (v / dom) * (innerH / 2);
   };
 
   function buildPath(/** @type {Array<{ts:string,pct:number}>} */ pts) {
@@ -194,9 +215,23 @@
 </script>
 
 <div class="mpc-shell">
-  {#if title}
-    <div class="mpc-header">{title}</div>
-  {/if}
+  <div class="mpc-header-row">
+    {#if title}
+      <div class="mpc-header">{title}</div>
+    {/if}
+    <!-- Y-axis scale toggle. Linear default; symlog when a wide-range
+         leg basket has both ±400 % and ±5 % moves on the same chart. -->
+    <div class="mpc-yscale" role="group" aria-label="Y-axis scale">
+      <button type="button" class="mpc-yscale-btn"
+              class:on={_yScale === 'lin'}
+              onclick={() => _yScale = 'lin'}
+              title="Linear scale (default)">lin</button>
+      <button type="button" class="mpc-yscale-btn"
+              class:on={_yScale === 'log'}
+              onclick={() => _yScale = 'log'}
+              title="Symmetric-log scale — compresses big moves so small-magnitude legs stay readable.">log</button>
+    </div>
+  </div>
 
   {#if !normSeries.length}
     <div class="mpc-empty">{emptyMsg}</div>
@@ -269,13 +304,43 @@
     max-width: 960px;
     box-sizing: border-box;
   }
+  .mpc-header-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+  }
   .mpc-header {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     color: #c8d8f0;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    margin-bottom: 0.35rem;
+    flex: 1 1 auto;
+  }
+  .mpc-yscale {
+    display: inline-flex;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-left: auto;
+  }
+  .mpc-yscale-btn {
+    padding: 0.15rem 0.45rem;
+    border: none;
+    background: transparent;
+    color: #a3b9d0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+  }
+  .mpc-yscale-btn + .mpc-yscale-btn { border-left: 1px solid rgba(255,255,255,0.12); }
+  .mpc-yscale-btn:hover { background: rgba(255,255,255,0.05); color: #f1f7ff; }
+  .mpc-yscale-btn.on {
+    background: rgba(74,222,128,0.18);
+    color: #4ade80;
   }
   .mpc-svg {
     width: 100%;
