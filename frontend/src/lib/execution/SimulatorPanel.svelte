@@ -13,12 +13,14 @@
     fetchChartBatch, fetchAdminLogs,
     fetchSimDefaults, startSimRun,
     fetchSimOrders, fetchSimIterations, replaySimIteration,
+    fetchStrategyAnalytics,
   } from '$lib/api';
-  import LogPanel    from '$lib/LogPanel.svelte';
-  import Select      from '$lib/Select.svelte';
-  import MultiSelect from '$lib/MultiSelect.svelte';
-  import PriceChart  from '$lib/PriceChart.svelte';
-  import InfoHint    from '$lib/InfoHint.svelte';
+  import LogPanel      from '$lib/LogPanel.svelte';
+  import Select        from '$lib/Select.svelte';
+  import MultiSelect   from '$lib/MultiSelect.svelte';
+  import PriceChart    from '$lib/PriceChart.svelte';
+  import InfoHint      from '$lib/InfoHint.svelte';
+  import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
 
   let scenarios = $state(/** @type {any[]} */ ([]));
@@ -86,6 +88,85 @@
     }
     return out;
   });
+
+  // Known F&O underlyings the platform actively trades. Sorted
+  // longest-first so "BANKNIFTY..." matches before "NIFTY...".
+  // (Symbols like BANKNIFTY26JUN... start with NIFTY's substring;
+  // the longer-first ordering avoids the miscategorisation.)
+  const _KNOWN_UNDERLYINGS = [
+    'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYIT', 'NIFTY',
+    'CRUDEOIL', 'CRUDEOILM',
+    'GOLDPETAL', 'GOLDM', 'GOLD',
+    'SILVERMIC', 'SILVERM', 'SILVER',
+    'NATURALGAS', 'COPPER', 'ZINC',
+  ];
+  function _underlyingFromSymbol(/** @type {string} */ sym) {
+    if (!sym) return null;
+    for (const u of _KNOWN_UNDERLYINGS) if (sym.startsWith(u)) return u;
+    return null;
+  }
+
+  // Group positions by underlying. Each group feeds one OptionsPayoff
+  // card replacing the per-position pill list. Equity positions and
+  // non-recognised underlyings are dropped — they don't have a payoff
+  // curve concept anyway (handled by the Positions summary table).
+  const positionsByUnderlying = $derived.by(() => {
+    const out = /** @type {Record<string, any[]>} */ ({});
+    for (const p of (status?.positions || [])) {
+      if (!p.symbol || !p.quantity) continue;
+      const u = _underlyingFromSymbol(p.symbol);
+      if (!u) continue;
+      if (!out[u]) out[u] = [];
+      out[u].push(p);
+    }
+    return out;
+  });
+
+  // Strategy analytics per underlying. Refetched only when the leg
+  // SET changes (symbol+qty key), not every status poll — keeps the
+  // /options/strategy-analytics endpoint cost bounded.
+  let payoffByUnderlying = $state(/** @type {Record<string, any>} */ ({}));
+  let _lastLegKey        = $state(/** @type {Record<string, string>} */ ({}));
+
+  $effect(() => {
+    const groups = positionsByUnderlying;
+    for (const [u, positions] of Object.entries(groups)) {
+      const key = positions.map((p) => `${p.symbol}:${p.quantity}`).sort().join('|');
+      if (_lastLegKey[u] === key) continue;
+      _lastLegKey = { ..._lastLegKey, [u]: key };
+      const legs = positions.map((p) => ({
+        symbol:   p.symbol,
+        qty:      Number(p.quantity) || 0,
+        avg_cost: p.average_price ?? p.last_price ?? null,
+        ltp:      p.last_price ?? null,
+      }));
+      fetchStrategyAnalytics(legs)
+        .then((s) => {
+          payoffByUnderlying = { ...payoffByUnderlying, [u]: { legs: positions, strategy: s } };
+        })
+        .catch((e) => {
+          console.warn(`[sim] strategy-analytics for ${u} failed:`, e?.message || e);
+        });
+    }
+    // Drop entries for underlyings no longer in the book.
+    const known = new Set(Object.keys(groups));
+    let changed = false;
+    const next = { ...payoffByUnderlying };
+    for (const k of Object.keys(next)) {
+      if (!known.has(k)) { delete next[k]; changed = true; }
+    }
+    if (changed) payoffByUnderlying = next;
+  });
+
+  // Color palette per leg side. Industry pattern (TOS/Tastytrade):
+  // longs in cool blues, shorts in warm oranges. Each leg within a
+  // side gets a distinct hue cycle position for legend disambiguation.
+  const _LONG_HUES  = ['#7dd3fc', '#38bdf8', '#22d3ee', '#67e8f9', '#06b6d4'];
+  const _SHORT_HUES = ['#fb923c', '#f97316', '#fb7185', '#f87171', '#facc15'];
+  function _legColor(/** @type {any} */ p, /** @type {number} */ idxWithinSide) {
+    const palette = (Number(p.quantity) || 0) >= 0 ? _LONG_HUES : _SHORT_HUES;
+    return palette[idxWithinSide % palette.length];
+  }
 
   // Log panel feeds
   let simLog    = $state(/** @type {any[]} */ ([]));
@@ -460,22 +541,72 @@
     </div>
   {/if}
 
-  {#if status?.positions?.length}
-    <div class="sim-pills mt-2">
-      <span class="sim-pills-label">Positions ({status.positions.length}):</span>
-      {#each status.positions as p}
-        <span class="sim-pill sim-pill-{p.quantity >= 0 ? 'long' : 'short'}"
-              title={`LTP ₹${priceFmt(p.last_price)} · bid ₹${priceFmt(p.bid)} · ask ₹${priceFmt(p.ask)}`}>
-          <span class="sim-pill-side">{p.quantity >= 0 ? 'LONG' : 'SHORT'}</span>
-          <span class="sim-pill-sym">{p.symbol}</span>
-          <span class="sim-pill-qty">{qtyFmt(Math.abs(p.quantity ?? 0))}</span>
-          <span class="sim-pill-pnl {(p.pnl ?? 0) < 0 ? 'neg' : (p.pnl ?? 0) > 0 ? 'pos' : ''}">
-            ₹{aggFmt(p.pnl ?? 0)}
+  <!-- Per-underlying payoff cards — replace the position pills with a
+       chart-driven view. Each card shows the combined net payoff
+       curve + a color-coded legend mapping each leg to a hue used in
+       the chart. Pattern: ThinkOrSwim Risk Profile / Tastytrade Trade
+       Tab. Equity positions and futures-only books fall through to
+       the Positions summary table; only F&O legs get a payoff. -->
+  {#each Object.entries(positionsByUnderlying) as [underlying, positions] (underlying)}
+    {@const payoff = payoffByUnderlying[underlying]}
+    {@const longs  = positions.filter((p) => (Number(p.quantity) || 0) >= 0)}
+    {@const shorts = positions.filter((p) => (Number(p.quantity) || 0) < 0)}
+    <div class="sim-payoff-card">
+      <div class="sim-payoff-header">
+        <span class="sim-payoff-name">{underlying}</span>
+        <span class="sim-payoff-meta">{positions.length} leg{positions.length === 1 ? '' : 's'}</span>
+        {#if payoff?.strategy?.spot != null}
+          <span class="sim-payoff-spot">spot ₹{priceFmt(payoff.strategy.spot)}</span>
+        {/if}
+        {#if payoff?.strategy?.risk?.current_pnl != null}
+          {@const pnl = payoff.strategy.risk.current_pnl}
+          <span class="sim-payoff-pnl {pnl < 0 ? 'neg' : pnl > 0 ? 'pos' : ''}">
+            now: ₹{aggFmt(pnl)}
           </span>
-        </span>
-      {/each}
+        {/if}
+      </div>
+      {#if payoff?.strategy?.payoff?.length}
+        <OptionsPayoff
+          payoff={payoff.strategy.payoff}
+          spot={payoff.strategy.spot}
+          prevClose={payoff.strategy.spot_prev_close}
+          breakevens={payoff.strategy.risk?.breakevens}
+          spanSigmas={payoff.strategy.span_sigmas}
+          spanPct={payoff.strategy.span_pct}
+          dte={payoff.strategy.days_to_expiry}
+          ivProxy={payoff.strategy.iv_proxy}
+          legCount={payoff.strategy.legs?.length ?? positions.length}
+          multiExpiry={payoff.strategy.multi_expiry ?? false}
+          height={220} />
+      {:else}
+        <div class="sim-empty">
+          {payoff === undefined ? 'Computing payoff…' : 'Payoff unavailable for this leg set'}
+        </div>
+      {/if}
+      <div class="sim-payoff-legend">
+        {#each longs as p, i (p.symbol + ':' + p.account)}
+          <div class="sim-leg-row">
+            <span class="sim-leg-swatch" style="background:{_legColor(p, i)}"></span>
+            <span class="sim-leg-side sim-leg-side-long">LONG</span>
+            <span class="sim-leg-qty">{qtyFmt(Math.abs(p.quantity ?? 0))}×</span>
+            <span class="sim-leg-symbol">{p.symbol}</span>
+            <span class="sim-leg-price">@₹{priceFmt(p.average_price ?? p.last_price)}</span>
+            <span class="sim-leg-acct">· {p.account}</span>
+          </div>
+        {/each}
+        {#each shorts as p, i (p.symbol + ':' + p.account)}
+          <div class="sim-leg-row">
+            <span class="sim-leg-swatch" style="background:{_legColor(p, i)}"></span>
+            <span class="sim-leg-side sim-leg-side-short">SHORT</span>
+            <span class="sim-leg-qty">{qtyFmt(Math.abs(p.quantity ?? 0))}×</span>
+            <span class="sim-leg-symbol">{p.symbol}</span>
+            <span class="sim-leg-price">@₹{priceFmt(p.average_price ?? p.last_price)}</span>
+            <span class="sim-leg-acct">· {p.account}</span>
+          </div>
+        {/each}
+      </div>
     </div>
-  {/if}
+  {/each}
 
   {#if status?.open_order_details?.length}
     <div class="sim-pills mt-1">
@@ -1162,6 +1293,88 @@
     margin-left: 0.1rem;
   }
   .sim-pill-pnl.neg { color: #f87171; }
+  /* ── Per-underlying payoff card ────────────────────────────────
+     Replaces the per-position pill row. Each card carries one
+     OptionsPayoff chart (combined net payoff curve) + a color-
+     coded legend of the constituent legs. Industry pattern:
+     ThinkOrSwim Risk Profile / Tastytrade Trade Tab. */
+  .sim-payoff-card {
+    margin: 0.6rem 0;
+    padding: 0.55rem 0.65rem 0.65rem;
+    background: rgba(13, 21, 38, 0.55);
+    border: 1px solid rgba(251, 191, 36, 0.18);
+    border-left: 3px solid #fbbf24;
+    border-radius: 4px;
+  }
+  .sim-payoff-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.55rem;
+    margin-bottom: 0.35rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+  }
+  .sim-payoff-name {
+    color: #fbbf24;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    font-size: 0.7rem;
+  }
+  .sim-payoff-meta { color: #7e97b8; }
+  .sim-payoff-spot {
+    color: #fde68a;
+    font-variant-numeric: tabular-nums;
+    margin-left: auto;
+  }
+  .sim-payoff-pnl {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    padding: 0 0.35rem;
+    border-radius: 3px;
+  }
+  .sim-payoff-pnl.pos { color: #4ade80; background: rgba(74, 222, 128, 0.10); }
+  .sim-payoff-pnl.neg { color: #f87171; background: rgba(248, 113, 113, 0.10); }
+  .sim-payoff-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    margin-top: 0.45rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .sim-leg-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #c8d8f0;
+  }
+  .sim-leg-swatch {
+    display: inline-block;
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .sim-leg-side {
+    font-weight: 700;
+    font-size: 0.5rem;
+    letter-spacing: 0.06em;
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    min-width: 3.2rem;
+    text-align: center;
+  }
+  .sim-leg-side-long  { color: #7dd3fc; background: rgba(125, 211, 252, 0.12); }
+  .sim-leg-side-short { color: #fb923c; background: rgba(251, 146, 60, 0.12);  }
+  .sim-leg-qty    { color: #fde68a; font-variant-numeric: tabular-nums; }
+  .sim-leg-symbol { color: #c8d8f0; font-weight: 700; }
+  .sim-leg-price  {
+    color: #7e97b8;
+    font-variant-numeric: tabular-nums;
+  }
+  .sim-leg-acct   { color: #7e97b8; font-size: 0.55rem; }
   .sim-pill-pnl.pos { color: #4ade80; }
   .sim-charts {
     margin-top: 0.4rem;
