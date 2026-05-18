@@ -1139,7 +1139,16 @@
     const removeBtn = (row.src?.w && row.watchlist_item_id != null)
       ? `<span class="sym-remove" data-item="${row.watchlist_item_id}" data-list="${row.watchlist_list_id ?? ''}" title="Remove from watchlist">×</span>`
       : '';
-    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}`;
+    // Per-row actions menu — ⋯ pops a Chart / Watchlist / Trade
+    // popover via handleRowClick → _actionsMenu state. Hidden on
+    // bare-underlying placeholder rows where there's no resolvable
+    // symbol to act on.
+    const sym = String(row.tradingsymbol || '').trim();
+    const exch = String(row.exchange || '').trim();
+    const actionsBtn = sym
+      ? `<span class="sym-actions" data-sym="${sym}" data-exch="${exch}" data-watchitem="${row.watchlist_item_id ?? ''}" title="Symbol actions">⋯</span>`
+      : '';
+    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}${actionsBtn}`;
   }
 
   /**
@@ -1403,6 +1412,20 @@
       if (itemId && listId) removeItem(listId, itemId);
       return;
     }
+    // ⋯ actions button — re-uses the existing right-click context
+    // menu (which already has Open in Options / Open ticket / Copy
+    // symbol / Set price alert items). Positioning is anchored to
+    // the button's bottom-right so it pops next to the symbol.
+    const actBtn = target?.closest?.('.sym-actions');
+    if (actBtn) {
+      ev.event?.stopPropagation?.();
+      const rect = /** @type {DOMRect} */ (actBtn.getBoundingClientRect());
+      openContextMenu(
+        { clientX: rect.right, clientY: rect.bottom + 4, preventDefault: () => {} },
+        ev.data,
+      );
+      return;
+    }
     if (!allowOrders) return;
     const r = ev.data;
     const inst = getInstrument?.(r.tradingsymbol);
@@ -1490,6 +1513,29 @@
     closeContextMenu();
     if (row.watchlist_item_id && row.watchlist_list_id) {
       await removeItem(row.watchlist_list_id, row.watchlist_item_id);
+    }
+  }
+  /** Add the symbol to the focused / first-active watchlist. Mirror of
+   *  the existing keyboard "+" handler. */
+  async function ctxAddWatch(row) {
+    closeContextMenu();
+    const sym  = String(row.tradingsymbol || '').trim();
+    const exch = String(row.exchange || 'NFO').trim();
+    if (!sym) return;
+    const targetId = focusedListId ?? [...activeIds][0];
+    if (!targetId) return;
+    try {
+      await addWatchlistItem(targetId, sym, exch);
+      // Reload active watchlists so the row materialises immediately
+      // without waiting for the next refresh cycle.
+      await loadActive();
+    } catch (e) {
+      // 409 = already in list — silently ignore, the operator's
+      // intent (have this symbol in the list) is already satisfied.
+      const msg = String(/** @type {any} */ (e)?.message || '');
+      if (!/already/i.test(msg)) {
+        console.warn('Add to watchlist failed:', e);
+      }
     }
   }
 
@@ -1854,8 +1900,14 @@
     class="ctx-menu"
     style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
     role="menu">
-    <button class="ctx-item" onclick={() => ctxOpenOptions(ctxMenu.row)}>Open in Options →</button>
-    <button class="ctx-item" onclick={() => ctxOpenTicket(ctxMenu.row)}>Open ticket →</button>
+    <button class="ctx-item" onclick={() => ctxOpenOptions(ctxMenu.row)}>📈 Open in Options →</button>
+    <button class="ctx-item" onclick={() => ctxOpenTicket(ctxMenu.row)}>📝 Open ticket →</button>
+    {#if !ctxMenu.row?.src?.w}
+      <!-- ★ Add to watchlist — visible when the symbol is NOT already
+           in the operator's watchlist. The other branch below shows
+           the Remove counterpart. -->
+      <button class="ctx-item" onclick={() => ctxAddWatch(ctxMenu.row)}>★ Add to watchlist</button>
+    {/if}
     <button class="ctx-item" onclick={() => ctxCopySymbol(ctxMenu.row)}>Copy symbol</button>
     <button class="ctx-item" onclick={() => ctxSetAlert(ctxMenu.row)}>Set price alert</button>
     {#if ctxMenu.row?.src?.w && ctxMenu.row?.watchlist_item_id != null}
@@ -1910,6 +1962,27 @@
   :global(.sym-remove:hover) {
     color: #f87171;
     background: rgba(248,113,113,0.12);
+  }
+
+  /* ⋯ symbol-actions button — sibling of .sym-remove. Routes click
+     through openContextMenu() so the existing right-click menu also
+     opens on left-click of this affordance. */
+  :global(.sym-actions) {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 4px;
+    color: rgba(126,151,184,0.55);
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 12px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 2px;
+    transition: color 0.12s ease, background 0.12s ease;
+  }
+  :global(.sym-actions:hover) {
+    color: #fbbf24;
+    background: rgba(251,191,36,0.10);
   }
 
   /* Day Δ / P&L cells. */
