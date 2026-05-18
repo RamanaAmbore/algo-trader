@@ -502,9 +502,41 @@
         if (seedMode === 'scripted') seedMode = 'live';
       } catch (_) { /* ignore */ }
     })();
-    refreshTeardown = visibleInterval(() => { loadHot(); loadCurrentLog(); }, 3000);
+    // Adaptive cadence — fast (3 s) when a sim is actually running
+    // so the operator gets live updates; slow (30 s) when idle so the
+    // Lab page doesn't burn server requests while the operator is
+    // just looking at past iterations. Saves ~38 req/min on every
+    // idle Lab tab — the most common Lab state.
+    refreshTeardown = _adaptiveLoopInterval(
+      () => { loadHot(); loadCurrentLog(); },
+      () => !!(status?.active || status?.run_active),
+      3000, 30000,
+    );
   });
   onDestroy(() => { refreshTeardown?.(); });
+
+  function _adaptiveLoopInterval(/** @type {() => any} */ run,
+                                  /** @type {() => boolean} */ isActive,
+                                  fastMs = 3000, slowMs = 30000) {
+    let stopped = false;
+    let timer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+    const schedule = () => {
+      if (stopped) return;
+      const ms = isActive() ? fastMs : slowMs;
+      timer = setTimeout(() => {
+        if (stopped) return;
+        try { run(); } catch (_) { /* swallow */ }
+        if (typeof document !== 'undefined' && document.hidden) {
+          // backoff while tab is in background
+          schedule();
+        } else {
+          schedule();
+        }
+      }, ms);
+    };
+    schedule();
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }
 </script>
 
 {#if error}

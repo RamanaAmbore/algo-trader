@@ -1460,7 +1460,12 @@
     // status here picks up on the next mount or manual refresh.
     teardown    = marketAwareInterval(loadStrategy,  5000);
     posTeardown = marketAwareInterval(loadPositions, 30000);
-    simTeardown = marketAwareInterval(loadSimStatus,  5000);
+    // Sim status polled at 30 s here (down from 5 s) — the layout-level
+    // _adaptiveInterval already polls it every 4 s when a sim is
+    // actually active and every 30 s when idle, so 5 s here was double-
+    // polling for no benefit. 30 s catches sim-start transitions
+    // within one cycle without burning extra requests.
+    simTeardown = marketAwareInterval(loadSimStatus, 30000);
   });
   onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); });
 

@@ -333,7 +333,13 @@
     replayTeardown = _adaptiveInterval(pollReplay,
       () => !!replayStatus?.active, 5000, 30000);
     loadMode();   modeTeardown   = visibleInterval(loadMode,  30000);
-    pollChase();  chaseTeardown  = visibleInterval(pollChase,  10000);
+    // pollChase — adaptive. 5 s when an order is open (operator wants
+    // live chase progress), 60 s otherwise. Without this it ran at 10 s
+    // on every algo page including Tokens / Settings / Brokers / Users
+    // where chase is irrelevant — 6 wasted req/min per idle tab.
+    pollChase();
+    chaseTeardown = _adaptiveInterval(pollChase,
+      () => openOrderIds.size > 0, 5000, 60000);
   });
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
