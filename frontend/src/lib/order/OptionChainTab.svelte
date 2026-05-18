@@ -22,6 +22,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
+  import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt } from '$lib/format';
 
   /** @type {{
@@ -59,15 +60,13 @@
   // ── Instruments cache ─────────────────────────────────────────────
   let instrumentsReady = $state(false);
 
-  const _COMMON_INDICES_AND_COMMODITIES = [
-    'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
-    'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
-    'GOLD', 'GOLDM', 'GOLDMINI', 'GOLDPETAL',
-    'SILVER', 'SILVERM', 'SILVERMINI', 'SILVERMIC',
-    'COPPER', 'ZINC', 'ZINCMINI', 'LEAD', 'LEADMINI',
-    'ALUMINIUM', 'ALUMINI', 'NICKEL',
-    'MENTHAOIL', 'COTTON',
-  ];
+  // Curated priority list (indices + top NSE F&O stocks + MCX) imported
+  // from `$lib/data/popularUnderlyings` — single source shared with the
+  // in-page chain picker on /admin/options. Without RELIANCE et al. in
+  // this list, typing "rel" matched nothing because `suggestUnderlyings`
+  // fallback only returns the first 1000 alphabetical names (RELIANCE
+  // lands past index 1000 in the Kite instruments dump).
+  const _COMMON_INDICES_AND_COMMODITIES = POPULAR_UNDERLYINGS;
 
   // Derive the seed underlying from the symbol prop (strip trailing
   // digits + CE/PE/FUT suffix). E.g. NIFTY25APR22000CE → NIFTY.
@@ -128,7 +127,11 @@
     };
     push(seedUnderlying);
     for (const u of _COMMON_INDICES_AND_COMMODITIES) push(u);
-    for (const u of suggestUnderlyings('', 1000)) push(u);
+    // Pull the entire underlying universe (Kite dump produces ~5k
+    // unique underlyings — well under any sane bound). The Select
+    // component's own filter handles the long tail; we just need
+    // every name to be in `options` so a typed substring can match.
+    for (const u of suggestUnderlyings('', 100000)) push(u);
     return out;
   });
 

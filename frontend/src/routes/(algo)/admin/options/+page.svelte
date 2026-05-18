@@ -25,6 +25,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
+  import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
   // Source card semantics (v4): no more single-vs-multi distinction.
@@ -647,29 +648,7 @@
    *  Re-derives whenever the page's selectedUnderlying, positions,
    *  or instrumentsReady changes — the chain picker always reflects
    *  the freshest book without a manual refresh. */
-  const _COMMON_INDICES_AND_COMMODITIES = [
-    // Indices (always on top for derivatives traders).
-    'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
-    // Top-traded NSE F&O single stocks (NSE F&O turnover top-25 by
-    // ADV). Surfaces the popular tickers above the alphabetical
-    // dump — typing "rel" now lists RELIANCE BEFORE RELAXO/RELCHEMQ/
-    // RELIGARE etc. because RELIANCE is in this curated list.
-    'RELIANCE', 'HDFCBANK', 'INFY', 'ICICIBANK', 'TCS', 'SBIN',
-    'AXISBANK', 'KOTAKBANK', 'ITC', 'LT', 'BHARTIARTL', 'HINDUNILVR',
-    'ASIANPAINT', 'BAJFINANCE', 'BAJAJFINSV', 'TITAN', 'WIPRO',
-    'MARUTI', 'M&M', 'ADANIENT', 'ADANIPORTS', 'TATAMOTORS', 'TATASTEEL',
-    'JSWSTEEL', 'COALINDIA', 'POWERGRID', 'NTPC', 'ONGC', 'IOC',
-    'BPCL', 'HEROMOTOCO', 'EICHERMOT', 'CIPLA', 'DRREDDY', 'SUNPHARMA',
-    'GRASIM', 'ULTRACEMCO', 'TECHM', 'HCLTECH', 'NESTLEIND', 'BRITANNIA',
-    'INDUSINDBK', 'BAJAJ-AUTO',
-    // MCX commodities (operator's primary segment outside indices).
-    'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
-    'GOLD', 'GOLDM', 'GOLDMINI', 'GOLDPETAL',
-    'SILVER', 'SILVERM', 'SILVERMINI', 'SILVERMIC',
-    'COPPER', 'ZINC', 'ZINCMINI', 'LEAD', 'LEADMINI',
-    'ALUMINIUM', 'ALUMINI', 'NICKEL',
-    'MENTHAOIL', 'COTTON',
-  ];
+  const _COMMON_INDICES_AND_COMMODITIES = POPULAR_UNDERLYINGS;
   const underlyingChoices = $derived.by(() => {
     if (!instrumentsReady) return [];
     const seen = new Set();
@@ -690,8 +669,11 @@
     }
     // 3. Common indices + MCX commodities.
     for (const u of _COMMON_INDICES_AND_COMMODITIES) push(u);
-    // 4. Everything else from the instruments cache.
-    for (const u of suggestUnderlyings('', 1000)) push(u);
+    // 4. Everything else from the instruments cache — the full
+    // universe (Kite dump has ~5k unique underlyings, well under
+    // any sane bound) so a typed substring can match anything,
+    // not just the alphabetical-first-1000 slice.
+    for (const u of suggestUnderlyings('', 100000)) push(u);
     return out;
   });
 
@@ -1575,9 +1557,13 @@
               // the shell. The in-page panel stays for visual scan;
               // the shell is the action surface.
               if (showAddPanel) {
+                // Pass `selectedUnderlying` as the symbol so the
+                // OrderTicket chain tab seeds its own underlying
+                // picker from the page's active underlying instead
+                // of opening blank.
                 openTicket({
                   defaultTab: 'chain',
-                  symbol:     '',
+                  symbol:     selectedUnderlying || '',
                   exchange:   'NFO',
                   side:       'BUY',
                   action:     'open',
