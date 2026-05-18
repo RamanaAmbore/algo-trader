@@ -21,6 +21,7 @@
   import PriceChart    from '$lib/PriceChart.svelte';
   import MultiPriceChart from '$lib/MultiPriceChart.svelte';
   import EquityCurve from '$lib/EquityCurve.svelte';
+  import ReplayScrubber from '$lib/ReplayScrubber.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
@@ -77,6 +78,15 @@
   // positions for synthetic-position layering — both rare paths.
   let _iterCardOpen   = $state(false);
   let _customPosOpen  = $state(false);
+  // Replay scrubber — one shared "scrubbedTs" drives all charts on
+  // the Lab page. Null = follow live (default); a timestamp string =
+  // pin every chart's anchor line to that historical moment.
+  /** @type {string | null} */
+  let _scrubbedTs = $state(null);
+  // Union of all captured timestamps — drives the scrubber range +
+  // each chart's anchor lookup. $derived so it auto-updates when
+  // chartsBySymbol gains new ticks per poll.
+  const _scrubTimestamps = $derived(_buildScrubTimestamps(chartsBySymbol));
 
   /**
    * Build the cumulative-P&L curve for the equity-curve chart.
@@ -92,6 +102,22 @@
    * @param {Record<string, any>} chartsBySymbol
    * @returns {Array<{ts: string, pnl: number}>}
    */
+  /**
+   * Union of all captured tick timestamps across every symbol in
+   * chartsBySymbol. Drives the ReplayScrubber's slider range. Sorted
+   * ascending so slider index 0 = oldest tick, max = newest.
+   *
+   * @returns {string[]}
+   */
+  function _buildScrubTimestamps(chartsBySymbol) {
+    const tsSet = new Set();
+    for (const sym of Object.keys(chartsBySymbol || {})) {
+      const tk = chartsBySymbol[sym]?.ticks || [];
+      for (const t of tk) tsSet.add(t.ts);
+    }
+    return Array.from(tsSet).sort();
+  }
+
   function _buildPnlCurve(positions, chartsBySymbol) {
     const legs = positions.filter((p) =>
       p?.symbol && Number(p?.quantity) !== 0
@@ -708,7 +734,8 @@
       {#if chartsBySymbol[underlying]?.ticks?.length}
         <PriceChart mode="sim" symbol={underlying} height={160}
                     data={chartsBySymbol[underlying]}
-                    {chartsBySymbol} />
+                    {chartsBySymbol}
+                    scrubbedTs={_scrubbedTs} />
       {:else}
         <div class="sim-empty">Waiting for ticks. Start the sim to populate.</div>
       {/if}
@@ -732,7 +759,8 @@
           };
         })}
         <MultiPriceChart series={legSeries} height={220}
-                         emptyMsg="No ticks captured yet for any leg." />
+                         emptyMsg="No ticks captured yet for any leg."
+                         scrubbedTs={_scrubbedTs} />
       {/if}
 
       <!-- Equity curve — cumulative P&L over time. Industry-standard
@@ -744,8 +772,10 @@
       {#if positions.length}
         {@const _pnlCurve = _buildPnlCurve(positions, chartsBySymbol)}
         <div class="sim-payoff-history-label">Equity curve · cumulative P&amp;L</div>
-        <EquityCurve ticks={_pnlCurve} height={150} title="" />
+        <EquityCurve ticks={_pnlCurve} height={150} title=""
+                     scrubbedTs={_scrubbedTs} />
       {/if}
+
 
       <div class="sim-payoff-legend">
         {#each longs as p, i (p.symbol + ':' + p.account)}
@@ -771,6 +801,19 @@
       </div>
     </div>
   {/each}
+
+  <!-- Replay scrubber — one panel-level slider that scrubs across
+       every chart on the page simultaneously. Each underlying card's
+       PriceChart / MultiPriceChart / EquityCurve renders a vertical
+       amber anchor at the same scrubbed timestamp so the operator
+       can compare spot · leg premiums · equity at any past moment in
+       one visual sweep. LIVE button snaps back to the latest tick. -->
+  {#if _scrubTimestamps.length > 1}
+    <ReplayScrubber timestamps={_scrubTimestamps}
+                    value={_scrubbedTs}
+                    title="Replay scrubber"
+                    onChange={(ts) => _scrubbedTs = ts} />
+  {/if}
 
   {#if status?.open_order_details?.length}
     <div class="sim-pills mt-1">

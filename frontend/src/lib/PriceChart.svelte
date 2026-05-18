@@ -22,6 +22,11 @@
     // overlay lookup so we don't re-hit the API.
     /** @type {any} */ data = null,
     /** @type {Record<string, any>} */ chartsBySymbol = null,
+    // Replay-scrubber anchor — when the parent sets this to a
+    // timestamp from the captured history, the chart pins a vertical
+    // amber dashed line at that x so multiple charts on the page
+    // share the same "you are here" visual reference.
+    /** @type {string | null} */ scrubbedTs = null,
   } = $props();
 
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
@@ -453,6 +458,21 @@
           </g>
         {/if}
       {/each}
+
+      <!-- Replay-scrubber anchor (shared across all Lab charts via
+           scrubbedTs prop). Vertical amber dashed line at the
+           scrubbed timestamp. Suppressed while the operator is
+           hovering on an event marker so the hover tooltip stays
+           clean. -->
+      {#if scrubbedTs && !hover}
+        {@const _stMs = +new Date(scrubbedTs)}
+        {#if Number.isFinite(_stMs) && _stMs >= tMin && _stMs <= tMax}
+          <line x1={xOf(scrubbedTs)} x2={xOf(scrubbedTs)}
+                y1={PAD_T} y2={height - PAD_B}
+                stroke="rgba(251,191,36,0.7)" stroke-width="1.25"
+                stroke-dasharray="4 3" />
+        {/if}
+      {/if}
 
       <!-- Hover tooltip — line 1: kind · side · qty; line 2: price ×
            qty = total @ time; line 3: order #N · slippage (if any). -->

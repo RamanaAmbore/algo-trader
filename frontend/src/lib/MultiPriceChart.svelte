@@ -12,14 +12,16 @@
   // multi-leg comparison surface.
 
   /** @type {{
-   *   series:    Array<{symbol: string, color: string, side?: 'LONG'|'SHORT', account?: string,
-   *                     ticks: Array<{ts: string, ltp: number}>}>,
-   *   height?:   number,
-   *   title?:    string,
-   *   emptyMsg?: string,
+   *   series:      Array<{symbol: string, color: string, side?: 'LONG'|'SHORT', account?: string,
+   *                       ticks: Array<{ts: string, ltp: number}>}>,
+   *   height?:     number,
+   *   title?:      string,
+   *   emptyMsg?:   string,
+   *   scrubbedTs?: string | null,
    * }} */
   const { series = [], height = 240, title = '',
-          emptyMsg = 'No ticks captured yet for any leg.' } = $props();
+          emptyMsg = 'No ticks captured yet for any leg.',
+          scrubbedTs = null } = $props();
 
   // Y-axis scale toggle — linear (default) vs symmetric-log. Log
   // makes a +400 % long-call and a +5 % short-strangle both readable
@@ -262,6 +264,20 @@
               stroke={s.color} stroke-width="1.8"
               stroke-linejoin="round" stroke-linecap="round" />
       {/each}
+
+      <!-- Replay-scrubber anchor (when external scrubbedTs prop is
+           set, the chart pins a vertical amber line at that
+           timestamp so all charts on the page share the same
+           visual reference moment). Hover crosshair takes precedence
+           when the operator moves the cursor over the chart. -->
+      {#if scrubbedTs && !hover}
+        {@const _stMs = Date.parse(scrubbedTs)}
+        {#if Number.isFinite(_stMs)}
+          <line x1={xOf(_stMs)} x2={xOf(_stMs)} y1={PAD_T} y2={height - PAD_B}
+                stroke="rgba(251,191,36,0.7)" stroke-width="1.25"
+                stroke-dasharray="4 3" />
+        {/if}
+      {/if}
 
       <!-- Hover crosshair -->
       {#if hover}

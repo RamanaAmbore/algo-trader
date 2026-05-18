@@ -13,11 +13,13 @@
   import { priceFmt } from '$lib/format';
 
   /** @type {{
-   *   ticks?:  Array<{ts: string, pnl: number}>,
-   *   height?: number,
-   *   title?:  string,
+   *   ticks?:      Array<{ts: string, pnl: number}>,
+   *   height?:     number,
+   *   title?:      string,
+   *   scrubbedTs?: string | null,
    * }} */
-  const { ticks = [], height = 180, title = 'Equity curve' } = $props();
+  const { ticks = [], height = 180, title = 'Equity curve',
+          scrubbedTs = null } = $props();
 
   const W       = 720;
   const PAD_L   = 56;
@@ -206,6 +208,20 @@
       <path d={linePath} fill="none"
             stroke="#fbbf24" stroke-width="1.8"
             stroke-linejoin="round" stroke-linecap="round" />
+
+      <!-- Replay-scrubber anchor (shared across all Lab charts via
+           the scrubbedTs prop). When set and not over-ridden by a
+           live hover, draws a vertical amber dashed line at the
+           scrubbed timestamp so the operator can read the equity
+           value at that historical moment. -->
+      {#if scrubbedTs && !hover}
+        {@const _stMs = Date.parse(scrubbedTs)}
+        {#if Number.isFinite(_stMs) && xDomain}
+          <line x1={xOf(_stMs)} x2={xOf(_stMs)} y1={PAD_T} y2={height - PAD_B}
+                stroke="rgba(251,191,36,0.7)" stroke-width="1.25"
+                stroke-dasharray="4 3" />
+        {/if}
+      {/if}
 
       <!-- Hover crosshair + dot + value label -->
       {#if hover}
