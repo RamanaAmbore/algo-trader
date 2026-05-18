@@ -62,7 +62,11 @@
     return out;
   });
 
-  // Unified x-domain (min/max timestamp across every series).
+  // Unified x-domain (min/max timestamp across every series). When
+  // every captured tick collapses to the same timestamp (sub-second
+  // sim with seconds-rounded ts before the backend fix, or only one
+  // tick captured) we synthesise a 1-second window so the chart still
+  // renders a flat line / single point instead of going blank.
   const xDomain = $derived.by(() => {
     let lo = Infinity, hi = -Infinity;
     for (const s of normSeries) {
@@ -74,8 +78,9 @@
         }
       }
     }
-    return Number.isFinite(lo) && Number.isFinite(hi) && hi > lo
-      ? { lo, hi } : null;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+    if (hi === lo) return { lo: lo - 500, hi: hi + 500 };
+    return { lo, hi };
   });
 
   // Unified y-domain (min/max pct across every series). Symmetric

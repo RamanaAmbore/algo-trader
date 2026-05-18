@@ -2511,7 +2511,14 @@ class SimDriver:
         Also captures every known underlying spot into a parallel buffer
         so the chart UI can render the underlying line alongside its
         derived options."""
-        ts = datetime.now().isoformat(timespec="seconds")
+        # Millisecond precision is critical for the chart: when the sim
+        # tick rate is sub-second (rate_ms < 1000), seconds-rounded
+        # timestamps collapse multiple captures to the same `ts` string.
+        # The frontend xDomain check then sees `hi == lo`, treats the
+        # domain as degenerate, and renders an empty chart even though
+        # ticks are accumulating in the deque. Capturing at ms-precision
+        # gives every tick a unique x and the line draws normally.
+        ts = datetime.now().isoformat(timespec="milliseconds")
         for r in self._positions_rows:
             sym = str(r.get("tradingsymbol") or "")
             if not sym:
