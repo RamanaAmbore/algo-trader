@@ -473,12 +473,22 @@ async def _lookup_mcx_future(underlying: str,
 
 async def _lookup_mcx_near_month_future(underlying: str) -> Optional[str]:
     """Return the front-month MCX FUT tradingsymbol for *underlying* —
-    i.e. the contract with the earliest (soonest) expiry in the
-    instruments cache. This is what operators mean by "today's spot" for
-    commodity underlyings: the front-month future price, regardless of
-    which contract month a given option belongs to. Per-leg σ calibration
-    absorbs the cross-month spread so BS pricing still matches each leg's
-    market premium.
+    the active liquid contract operators read as "today's spot price".
+
+    Importantly, the FRONT month skips any contract whose expiry is on
+    or before today (IST) — those settle today and their last-trade
+    price is stale / illiquid for the rest of the session. The
+    operator's broker app shows the next-out month instead, and so
+    should we.
+
+    Example (2026-05-18):
+      CRUDEOIL26MAYFUT  expiry=2026-05-18  → SKIP (settling today)
+      CRUDEOIL26JUNFUT  expiry=2026-06-18  → use this one
+      CRUDEOIL26JULFUT  expiry=2026-07-20
+
+    Per-leg σ calibration absorbs the cross-month spread so BS pricing
+    still matches each leg's market premium even when the option is on
+    a different expiry than the futures we read as "spot".
 
     Uses the same 24h instruments cache as ``_lookup_mcx_future``."""
     from backend.api.cache import get_or_fetch
@@ -492,12 +502,24 @@ async def _lookup_mcx_near_month_future(underlying: str) -> Optional[str]:
     if not items:
         return None
     target_u = underlying.upper()
+    # Today's date in IST — the cycle the instruments dump is anchored
+    # to. ISO string comparison works against `inst.x` which is also
+    # ISO (YYYY-MM-DD).
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _ist_today_iso = _dt.utcnow().date().isoformat()
     candidates = [
         inst for inst in items
         if (inst.e == "MCX"
             and inst.t == "FUT"
             and (inst.u or "").upper() == target_u
-            and inst.x)
+            and inst.x
+            # Skip contracts that settle today or earlier — last-trade
+            # is stale for the rest of the session.
+            and inst.x > _ist_today_iso)
     ]
     if not candidates:
         return None
