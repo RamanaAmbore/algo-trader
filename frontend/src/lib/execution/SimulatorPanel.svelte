@@ -318,6 +318,12 @@
       const cadTag = ` · P:${status.positions_every_n_ticks}`;
       const msTag  = status.market_state_preset ? ` · market=${status.market_state_preset}` : '';
       note = `Started ${pickedSlug} · seed=${seedMode} · ${rateMs}ms${cadTag}${msTag}${tag}`;
+      // Kick loadHot immediately so chartsBySymbol populates without
+      // waiting for the next adaptive-poll tick (which can be up to
+      // 30 s away if the previous status was idle). Without this, the
+      // operator clicks Start and sees "Waiting for ticks…" for the
+      // full slow-interval window before any chart appears.
+      loadHot();
     } catch (e) { error = e.message; }
   }
   async function doStop() {
@@ -1473,13 +1479,20 @@
     text-transform: uppercase;
     color: #7e97b8;
   }
-  /* Per-leg chart stack. One row per leg: header (swatch + side +
-     symbol + account) over a small PriceChart. */
+  /* Per-leg chart stack — single column on mobile, side-by-side
+     auto-fit grid on desktop so the leg charts use horizontal space
+     instead of stacking into a tall scroll. minmax(420px, ...) keeps
+     each chart wide enough to read tick density. */
   .sim-leg-charts {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr;
     gap: 0.45rem;
     margin-top: 0.15rem;
+  }
+  @media (min-width: 900px) {
+    .sim-leg-charts {
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    }
   }
   .sim-leg-chart-row {
     background: rgba(13, 21, 38, 0.4);

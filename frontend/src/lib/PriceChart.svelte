@@ -484,8 +484,15 @@
     border: 1px solid rgba(251,191,36,0.18);
     border-left: 3px solid #fbbf24;
     border-radius: 4px;
-    padding: 6px 8px 4px;
+    padding: 8px 12px 6px;
     width: 100%;
+    /* Cap chart width on desktop so the viewBox (720×height) doesn't
+       get horizontally stretched by preserveAspectRatio="none" into a
+       distorted, low-density line. On mobile we want full-width.
+       960px lets two charts sit side-by-side in a grid layout at
+       1920+ widths and matches the natural aspect of a 720-unit
+       viewBox at ~180px tall. */
+    max-width: 960px;
     box-sizing: border-box;
   }
   .chart-header {
