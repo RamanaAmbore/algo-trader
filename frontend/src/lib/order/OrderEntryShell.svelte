@@ -412,7 +412,7 @@
       <div class="oes-basket-bar">
         <div class="oes-basket-pills" role="list">
           {#each basketLegs as leg, i (leg.key)}
-            <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : 'fut'}"
+            <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
                   class:is-disabled={basketSubmitting}
                   role="listitem"
                   title="Click × to remove from basket">

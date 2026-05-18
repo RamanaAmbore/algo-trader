@@ -664,7 +664,7 @@
     <div class="chain-basket">
       <div class="chain-basket-legs">
         {#each chainBasket as leg (leg.key)}
-          <span class="chain-basket-leg chain-basket-leg-{leg.side === 'BUY' ? 'buy' : 'sell'} chain-basket-leg-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : 'fut'}"
+          <span class="chain-basket-leg chain-basket-leg-{leg.side === 'BUY' ? 'buy' : 'sell'} chain-basket-leg-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
                 class:is-disabled={basketPlacing}
                 role="button" tabindex="0"
                 title="Click to remove from basket"
@@ -901,6 +901,7 @@
   .chain-basket-leg-type-ce  { border-left-color: #4ade80; }
   .chain-basket-leg-type-pe  { border-left-color: #f87171; }
   .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
+  .chain-basket-leg-type-eq  { border-left-color: #fbbf24; }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
   .chain-basket-sym { color: #c8d8f0; font-weight: 600; }
   .chain-basket-qty { color: #a3b9d0; font-size: 0.58rem; opacity: 0.85; font-variant-numeric: tabular-nums; }
