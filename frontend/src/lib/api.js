@@ -558,6 +558,28 @@ export async function fetchChainQuotes(underlying, expiry) {
               { auth: true });
 }
 
+/** GET /api/options/historical — Kite OHLCV candles for any symbol.
+ *  Backs the SymbolChartModal so the operator can chart any symbol
+ *  from any list. Returns `{symbol, instrument_token, interval,
+ *  bars: [{ts, open, high, low, close, volume}]}`. Empty bars[] on
+ *  cache miss / broker unreachable; never 5xx. */
+/**
+ * @param {string} symbol
+ * @param {{days?: number, interval?: string, exchange?: string}} [opts]
+ */
+export async function fetchOptionsHistorical(symbol,
+                                              { days = 30,
+                                                interval = 'day',
+                                                exchange = undefined } = {}) {
+  const p = new URLSearchParams({
+    symbol:   String(symbol),
+    days:     String(days),
+    interval: String(interval),
+  });
+  if (exchange) p.set('exchange', String(exchange));
+  return _get(`/options/historical?${p}`, { auth: true });
+}
+
 // ── Replay / Backtest ─────────────────────────────────────────────────
 export const fetchReplayStatus  = () => _get('/replay/status', { auth: true });
 export const startReplay        = (payload) => _post('/replay/start', payload, { auth: true });

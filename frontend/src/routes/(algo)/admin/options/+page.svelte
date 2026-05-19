@@ -18,6 +18,7 @@
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
   import SymbolActions from '$lib/SymbolActions.svelte';
+  import SymbolChartModal from '$lib/SymbolChartModal.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
@@ -929,6 +930,16 @@
   /** @type {any} */
   let ticketProps = $state(null);
   function openTicket(/** @type {any} */ p) { ticketProps = { defaultTab: 'ticket', ...p }; }
+
+  // SymbolChartModal — opened by the ⋯ → 📈 Chart item on any
+  // candidate row. Fetches /api/options/historical for the picked
+  // symbol and renders a close-price line chart with hover OHLCV.
+  /** @type {{symbol:string,exchange?:string}|null} */
+  let chartModal = $state(null);
+  function openSymbolChart(/** @type {string} */ sym,
+                           /** @type {string|undefined} */ exch) {
+    chartModal = { symbol: sym, exchange: exch || 'NFO' };
+  }
   function closeTicket() { ticketProps = null; }
 
   // Chain "+" handlers — open the OrderTicket pre-filled. The ticket
@@ -1832,6 +1843,7 @@
                   exchange="NFO"
                   defaultTicketSide={c.qty < 0 ? 'BUY' : 'SELL'}
                   defaultTicketAccount={_isRealAccount(c.account) ? c.account : ''}
+                  onOpenChart={openSymbolChart}
                   onAddToWatchlist={defaultWatchlistId != null ? addSymbolToWatchlist : null}
                   onOpenTicket={(props) => openTicket({
                     ...props,
@@ -1987,6 +1999,18 @@
       }];
       basketError = '';
     }} />
+{/if}
+
+<!-- Symbol chart modal — triggered by the SymbolActions ⋯ → 📈 Chart
+     item on any candidate row. Renders historical OHLCV bars fetched
+     from /api/options/historical. Single instance at page level so a
+     click anywhere shares one overlay; null = closed. -->
+{#if chartModal}
+  <SymbolChartModal
+    symbol={chartModal.symbol}
+    exchange={chartModal.exchange}
+    open={true}
+    onClose={() => { chartModal = null; }} />
 {/if}
 
 <style>

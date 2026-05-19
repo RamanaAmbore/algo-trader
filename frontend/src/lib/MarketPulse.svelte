@@ -18,6 +18,7 @@
 
   import { onMount, onDestroy, tick } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+  import SymbolChartModal from '$lib/SymbolChartModal.svelte';
   import {
     fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
@@ -1509,6 +1510,17 @@
     closeContextMenu();
     console.info('[MarketPulse] set price alert placeholder:', row.tradingsymbol);
   }
+  /** 📈 Chart action — opens the SymbolChartModal for the row's
+   *  symbol. Historical bars fetched on open via /api/options/historical. */
+  function ctxOpenChart(row) {
+    closeContextMenu();
+    const sym = String(row.tradingsymbol || '').trim();
+    if (!sym) return;
+    _chartModal = { symbol: sym, exchange: String(row.exchange || '').trim() };
+  }
+  /** @type {{symbol:string,exchange?:string}|null} */
+  let _chartModal = $state(null);
+
   async function ctxRemoveWatch(row) {
     closeContextMenu();
     if (row.watchlist_item_id && row.watchlist_list_id) {
@@ -1900,7 +1912,8 @@
     class="ctx-menu"
     style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
     role="menu">
-    <button class="ctx-item" onclick={() => ctxOpenOptions(ctxMenu.row)}>📈 Open in Options →</button>
+    <button class="ctx-item" onclick={() => ctxOpenChart(ctxMenu.row)}>📈 Chart →</button>
+    <button class="ctx-item" onclick={() => ctxOpenOptions(ctxMenu.row)}>🧮 Open in Options →</button>
     <button class="ctx-item" onclick={() => ctxOpenTicket(ctxMenu.row)}>📝 Open ticket →</button>
     {#if !ctxMenu.row?.src?.w}
       <!-- ★ Add to watchlist — visible when the symbol is NOT already
@@ -1915,6 +1928,17 @@
       <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu.row)}>Remove from watchlist</button>
     {/if}
   </div>
+{/if}
+
+<!-- Symbol chart modal — single page-level instance shared across
+     every row's ⋯ → 📈 Chart click. Historical OHLCV bars from
+     /api/options/historical. -->
+{#if _chartModal}
+  <SymbolChartModal
+    symbol={_chartModal.symbol}
+    exchange={_chartModal.exchange}
+    open={true}
+    onClose={() => { _chartModal = null; }} />
 {/if}
 
 <style>
