@@ -8,15 +8,53 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+import contextvars
+import socket
+
 import urllib3.util.connection
 import requests
 from requests.adapters import HTTPAdapter
 from kiteconnect import KiteConnect
 
-# Force IPv4 globally. Server's outbound IPv6 hangs for most hosts.
-# KiteConnect API sessions for accounts with source_ip get a per-session
-# override to use IPv6 (api.kite.trade supports IPv6 and it works).
+# IPv4 vs IPv6 — the server's outbound IPv6 routing works for Kite
+# (api.kite.trade supports v6 and accounts are whitelisted on
+# per-IP-address IPv6s) but hangs for other hosts (Gemini, Google
+# publisher feeds). We want IPv4 by default everywhere AND IPv6
+# specifically for the per-account-bound Kite calls.
+#
+# Earlier code achieved this by toggling the module-global
+# `urllib3.util.connection.HAS_IPV6` flag from `_IPv6SourceAdapter.
+# send()` — set True at entry, reset to False at exit. That was
+# RACY: if two threads called Kite (or Kite + Gemini) concurrently,
+# Thread A's True-set leaked into Thread B's connection
+# establishment, mid-flight resets corrupted family selection, and
+# the IPv6-source-bound call could end up using the server's
+# default IPv4 source. Kite then sees an unwhitelisted IP and
+# returns "Insufficient permission for that call" — the exact bug
+# the user reported.
+#
+# New design: keep HAS_IPV6=False globally (default IPv4 only),
+# patch `allowed_gai_family` to consult a ContextVar instead. Each
+# IPv6-source adapter sets the ContextVar before super().send() and
+# resets after. ContextVar scope is per-task / per-thread, so
+# overlapping calls can't trip on each other's overrides. urllib3's
+# socket creation reads the patched function, which returns
+# AF_UNSPEC when the override is set and AF_INET otherwise.
+_IPV6_FAMILY_OVERRIDE: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar('ramboq_ipv6_family_override', default=False)
+)
+
 urllib3.util.connection.HAS_IPV6 = False
+
+_orig_allowed_gai_family = urllib3.util.connection.allowed_gai_family
+def _ramboq_allowed_gai_family():
+    # When an IPv6-source adapter is mid-request in this context, return
+    # AF_UNSPEC so urllib3 honours the IPv6 source_address binding.
+    # Otherwise force AF_INET — protects unrelated outbound calls.
+    if _IPV6_FAMILY_OVERRIDE.get():
+        return socket.AF_UNSPEC
+    return socket.AF_INET
+urllib3.util.connection.allowed_gai_family = _ramboq_allowed_gai_family
 
 from backend.shared.helpers.date_time_utils import timestamp_indian
 from backend.shared.helpers.decorators import retry_kite_conn
@@ -86,6 +124,12 @@ class _IPv6SourceAdapter(HTTPAdapter):
     """Force IPv6 with a specific source address for KiteConnect API calls.
     Used when an account needs a different IP than the server's default IPv4.
     Only applied to KiteConnect.reqsession (api.kite.trade), never to login.
+
+    The IPv6 family selection is request-scoped via the
+    `_IPV6_FAMILY_OVERRIDE` ContextVar — set at the start of send()
+    and reset on exit. ContextVars are per-task/per-thread so two
+    accounts calling Kite concurrently can't race each other or
+    leak the override into an unrelated Gemini / Google call.
     """
     def __init__(self, source_ip, **kwargs):
         self._source_ip = source_ip
@@ -96,13 +140,15 @@ class _IPv6SourceAdapter(HTTPAdapter):
         super().init_poolmanager(*args, **kwargs)
 
     def send(self, request, *args, **kwargs):
-        # Temporarily re-enable IPv6 for this request
-        old = urllib3.util.connection.HAS_IPV6
-        urllib3.util.connection.HAS_IPV6 = True
+        # Set the IPv6-family override for this request's scope.
+        # `_ramboq_allowed_gai_family` (installed at import time) reads
+        # this ContextVar and returns AF_UNSPEC for the duration of
+        # the request so urllib3 honours the IPv6 source_address.
+        token = _IPV6_FAMILY_OVERRIDE.set(True)
         try:
             return super().send(request, *args, **kwargs)
         finally:
-            urllib3.util.connection.HAS_IPV6 = old
+            _IPV6_FAMILY_OVERRIDE.reset(token)
 
 
 
