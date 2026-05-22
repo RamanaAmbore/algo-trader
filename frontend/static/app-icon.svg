@@ -35,21 +35,29 @@
 
     <!-- Three-layer gold halo on the bull: wide bloom + outer + tight inner.
          Matches the og-image's bull-glow at the same scale. -->
-    <filter id="bull-glow" x="-60%" y="-60%" width="220%" height="220%">
-      <!-- Very wide warm bloom: a soft champagne-gold wash around the bull. -->
-      <feGaussianBlur in="SourceAlpha" stdDeviation="34" result="bloom-blur" />
-      <feFlood flood-color="#c8a84b" flood-opacity="0.60" result="bloom-color" />
-      <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="halo-bloom" />
-      <!-- Mid halo: gold ring that sits ~10 px outside the silhouette. -->
-      <feMorphology in="SourceAlpha" operator="dilate" radius="3" result="dil-mid" />
-      <feGaussianBlur in="dil-mid" stdDeviation="9" result="mid-blur" />
-      <feFlood flood-color="#e2c267" flood-opacity="1.00" result="mid-color" />
-      <feComposite in="mid-color" in2="mid-blur" operator="in" result="halo-mid" />
-      <!-- Tight inner rim: bright cream sliver right against the outline. -->
-      <feMorphology in="SourceAlpha" operator="dilate" radius="2" result="dil-inner" />
-      <feGaussianBlur in="dil-inner" stdDeviation="3" result="inner-blur" />
-      <feFlood flood-color="#fff5d0" flood-opacity="1.00" result="inner-color" />
-      <feComposite in="inner-color" in2="inner-blur" operator="in" result="halo-inner" />
+    <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <!-- Wide warm bloom — softened both in spread and alpha. -->
+      <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="bloom-blur" />
+      <feFlood flood-color="#c8a84b" result="bloom-color" />
+      <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
+      <feComponentTransfer in="bloom-raw" result="halo-bloom">
+        <feFuncA type="linear" slope="0.30" />
+      </feComponentTransfer>
+      <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
+      <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="mid-blur" />
+      <feFlood flood-color="#e2c267" result="mid-color" />
+      <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
+      <feComponentTransfer in="mid-raw" result="halo-mid">
+        <feFuncA type="linear" slope="0.42" />
+      </feComponentTransfer>
+      <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
+      <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
+      <feGaussianBlur in="dil-inner" stdDeviation="2.5" result="inner-blur" />
+      <feFlood flood-color="#fff5d0" result="inner-color" />
+      <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
+      <feComponentTransfer in="inner-raw" result="halo-inner">
+        <feFuncA type="linear" slope="0.40" />
+      </feComponentTransfer>
       <feMerge>
         <feMergeNode in="halo-bloom" />
         <feMergeNode in="halo-mid" />

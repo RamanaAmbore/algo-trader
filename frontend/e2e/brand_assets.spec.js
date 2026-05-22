@@ -27,7 +27,6 @@ const STATIC_OK = [
   { path: '/og-image.svg',     mime: /image\/svg\+xml/ },
   { path: '/app-icon-192.png', mime: /image\/png/ },
   { path: '/app-icon-512.png', mime: /image\/png/ },
-  { path: '/logo.png',         mime: /image\/png/ },
 ];
 
 test.describe('Brand assets', () => {

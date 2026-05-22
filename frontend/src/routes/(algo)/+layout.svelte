@@ -369,12 +369,6 @@
   });
 </script>
 
-<!-- Algo-side favicon — a circled "algo" mark so the browser tab visually
-     separates the trading-console tabs from the public marketing site. -->
-<svelte:head>
-  <link rel="icon" type="image/svg+xml" href="/algo-favicon.svg" />
-</svelte:head>
-
 <div class="algo-viewport">
   <div class="algo-card">
     <!-- Top bar -->
