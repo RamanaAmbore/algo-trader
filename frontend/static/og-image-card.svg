@@ -78,10 +78,10 @@
   <!-- Brand text — pushed left to x=380 so the wordmark + tagline get
        ~800 px instead of the previous ~540 px. Same content,
        proportionally bigger. -->
-  <text x="380" y="265" font-family="'Trebuchet MS', Arial, sans-serif" font-size="88" font-weight="900" text-anchor="start" fill="url(#goldGrad)" letter-spacing="2">RamboQuant</text>
-  <text x="380" y="330" font-family="'Trebuchet MS', Arial, sans-serif" font-size="46" font-weight="700" text-anchor="start" fill="rgba(240,220,180,0.92)" letter-spacing="1">Analytics</text>
-  <line x1="380" y1="370" x2="1140" y2="370" stroke="#c8a84b" stroke-width="1.5" stroke-opacity="0.55"/>
-  <text x="380" y="420" font-family="'Trebuchet MS', Arial, sans-serif" font-size="30" font-weight="500" text-anchor="start" fill="rgba(240,220,180,0.82)" letter-spacing="1">Quantitative Investment for Indian Markets</text>
-  <text x="380" y="475" font-family="'Trebuchet MS', Arial, sans-serif" font-size="22" font-weight="500" text-anchor="start" fill="rgba(200,168,75,0.75)" letter-spacing="5">INVEST · GROW · COMPOUND</text>
-  <text x="380" y="545" font-family="'Trebuchet MS', Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="rgba(200,216,240,0.55)" letter-spacing="2">ramboq.com</text>
+  <text x="380" y="219" font-family="'Trebuchet MS', Arial, sans-serif" font-size="88" font-weight="900" text-anchor="start" fill="url(#goldGrad)" letter-spacing="2">RamboQuant</text>
+  <text x="380" y="284" font-family="'Trebuchet MS', Arial, sans-serif" font-size="46" font-weight="700" text-anchor="start" fill="rgba(240,220,180,0.92)" letter-spacing="1">Analytics</text>
+  <line x1="380" y1="324" x2="1140" y2="324" stroke="#c8a84b" stroke-width="1.5" stroke-opacity="0.55"/>
+  <text x="380" y="374" font-family="'Trebuchet MS', Arial, sans-serif" font-size="30" font-weight="500" text-anchor="start" fill="rgba(240,220,180,0.82)" letter-spacing="1">Quantitative Investment for Indian Markets</text>
+  <text x="380" y="429" font-family="'Trebuchet MS', Arial, sans-serif" font-size="22" font-weight="500" text-anchor="start" fill="rgba(200,168,75,0.75)" letter-spacing="5">INVEST · GROW · COMPOUND</text>
+  <text x="380" y="499" font-family="'Trebuchet MS', Arial, sans-serif" font-size="18" font-weight="400" text-anchor="start" fill="rgba(200,216,240,0.55)" letter-spacing="2">ramboq.com</text>
 </svg>
