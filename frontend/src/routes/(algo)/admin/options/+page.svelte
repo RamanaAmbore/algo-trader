@@ -2432,60 +2432,52 @@
      P&L sits between Qty and Cost so the operator's eye scans
      "what I have → what I'm making/losing → what I paid".
 
-     Track sizing: `minmax(0, Nfr)` per column. The 0 min lets each
-     track SHRINK below its content max-content size — without that,
-     a long F&O ticker (NIFTY26MAY22000CE, ~120 px) inflates the grid
-     past the side-by-side legs panel (~520 px on a 1440 px viewport)
-     and the panel scrolls horizontally instead of distributing
-     width. With `minmax(0, …)` the grid always fits its container;
-     the fr ratios distribute available space (Symbol gets 2fr since
-     it carries the longest content). Cell-level white-space:nowrap +
-     text-overflow:ellipsis (see .cand-headrow > *, .cand-row > *)
-     keeps content readable on narrow widths. */
+     Track sizing: `minmax(max-content, 1fr)` per column. The
+     max-content floor means each column NEVER shrinks below its
+     widest cell — cell content always renders in full (no
+     truncation). When the container has spare width beyond the
+     max-content sum, 1fr distributes the leftover so columns expand
+     proportionally and the grid fills the panel. When the container
+     is narrower than the max-content sum (e.g. the side-by-side
+     legs panel on a 1440 px laptop where a long F&O ticker pushes
+     content past the 520 px allocation), `min-width: max-content`
+     keeps the grid at max-content size and the wrapping
+     `.cand-scroll` triggers a horizontal scrollbar — preferred over
+     truncating numeric values that the operator needs to read. */
   .cand-grid {
     display: grid;
     grid-template-columns:
-      auto              /* checkbox */
-      minmax(0, 2fr)    /* symbol (largest share — longest content) */
-      minmax(0, 1fr)    /* account */
-      minmax(0, 1fr)    /* qty */
-      minmax(0, 1fr)    /* pnl */
-      minmax(0, 1fr)    /* cost */
-      minmax(0, 1fr)    /* ltp */
-      minmax(0, 1fr)    /* iv */
-      minmax(0, 1fr)    /* delta */
-      minmax(0, 1fr)    /* theta */
-      minmax(0, 1fr);   /* vega */
-    column-gap: 0.4rem;
+      auto                        /* checkbox */
+      minmax(max-content, 1.4fr)  /* symbol (largest share — longest content) */
+      minmax(max-content, 1fr)    /* account */
+      minmax(max-content, 1fr)    /* qty */
+      minmax(max-content, 1fr)    /* pnl */
+      minmax(max-content, 1fr)    /* cost */
+      minmax(max-content, 1fr)    /* ltp */
+      minmax(max-content, 1fr)    /* iv */
+      minmax(max-content, 1fr)    /* delta */
+      minmax(max-content, 1fr)    /* theta */
+      minmax(max-content, 1fr);   /* vega */
+    column-gap: 0.6rem;
     row-gap: 0.2rem;
     width: 100%;
+    min-width: max-content;
   }
   /* When the operator filters to a single account, the Account
      column is implicit (every row carries the same value) — drop
      the column entirely. */
   .cand-grid-noacct {
     grid-template-columns:
-      auto              /* checkbox */
-      minmax(0, 2fr)    /* symbol */
-      minmax(0, 1fr)    /* qty */
-      minmax(0, 1fr)    /* pnl */
-      minmax(0, 1fr)    /* cost */
-      minmax(0, 1fr)    /* ltp */
-      minmax(0, 1fr)    /* iv */
-      minmax(0, 1fr)    /* delta */
-      minmax(0, 1fr)    /* theta */
-      minmax(0, 1fr);   /* vega */
-  }
-  /* Cell-level truncation so columns can shrink below content max
-     without breaking layout. Hover the cell to see the full value
-     via the row's `title` attribute (already set elsewhere on the
-     symbol cell). */
-  .cand-headrow > *,
-  .cand-row > * {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+      auto                        /* checkbox */
+      minmax(max-content, 1.4fr)  /* symbol */
+      minmax(max-content, 1fr)    /* qty */
+      minmax(max-content, 1fr)    /* pnl */
+      minmax(max-content, 1fr)    /* cost */
+      minmax(max-content, 1fr)    /* ltp */
+      minmax(max-content, 1fr)    /* iv */
+      minmax(max-content, 1fr)    /* delta */
+      minmax(max-content, 1fr)    /* theta */
+      minmax(max-content, 1fr);   /* vega */
   }
   /* Single parent grid via subgrid. Each row inherits the parent's
      column tracks — so headers and data cells line up exactly,
