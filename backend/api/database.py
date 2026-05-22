@@ -142,6 +142,22 @@ async def init_db() -> None:
             "ALTER TABLE agents ADD COLUMN IF NOT EXISTS trade_mode VARCHAR(8) "
             "NOT NULL DEFAULT 'paper'"
         ))
+        # Alert hierarchy (May 2026) — severity tier + topic tag drive
+        # topic-scoped suppression in run_cycle; digest_window_sec
+        # buffers dispatches so a burst lands as one consolidated
+        # message instead of N separate notifications. Defaults are
+        # set so existing rows behave like before — operator opts into
+        # the new behaviour by re-tagging agents to non-'general'
+        # topics with critical/high tiers.
+        for stmt in (
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS tier VARCHAR(16) "
+            "NOT NULL DEFAULT 'medium'",
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS topic VARCHAR(64) "
+            "NOT NULL DEFAULT 'general'",
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS digest_window_sec "
+            "INTEGER NOT NULL DEFAULT 30",
+        ):
+            await conn.execute(text(stmt))
         # User-management v2 — super-admin role, email verification,
         # token versioning for force-logout, suspend / terminate stamps.
         # Columns added with explicit defaults so existing rows backfill

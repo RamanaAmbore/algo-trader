@@ -157,6 +157,74 @@ def _scope_funds_any_acct(ctx):
     return [r.to_dict() for _, r in df[mask].iterrows()]
 
 
+# ── "Worst case" scope selectors — collapse N per-account agents to 1 ─────
+#
+# Returns the SINGLE row with the largest drawdown in the chosen dimension.
+# Pairs naturally with the existing day_pct / pnl_pct / day_rate_abs metrics
+# — the leaf evaluator OR-combines across returned rows, so a single-row
+# list means "fire if THIS one row breaches".
+#
+# Operator workflow this replaces:
+#   Before — five per-account agents at threshold -3% (one per account),
+#            all of which fire simultaneously on a market dump.
+#   After  — ONE agent with scope=holdings.worst_acct, threshold -3%.
+#            Fires once with the worst-affected account's row attached.
+
+def _row_with_min(rows: list, key: str) -> list:
+    """Helper: pick the row whose `key` is the most-negative (or smallest)
+    value. Returns a single-row list, or empty if no row has a numeric
+    value at `key`. None/NaN values are skipped."""
+    import math
+    candidates = []
+    for r in rows:
+        v = r.get(key)
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(fv):
+            continue
+        candidates.append((fv, r))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda t: t[0])
+    return [candidates[0][1]]
+
+
+def _scope_holdings_worst_acct(ctx):
+    """Single per-account holdings row with the worst day_pct."""
+    rows = _scope_holdings_any_acct(ctx)
+    return _row_with_min(rows, 'day_pct')
+
+def _scope_holdings_worst_symbol(ctx):
+    """Single per-symbol holdings row with the worst day_pct. Note: relies
+    on the engine context populating per-symbol detail. When the live
+    pipeline only carries per-account aggregates (current default), this
+    falls back to the same row as worst_acct — operators get an honest
+    drawdown signal either way."""
+    df = getattr(ctx, 'holdings_rows', None)
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        return _scope_holdings_worst_acct(ctx)
+    rows = [r.to_dict() for _, r in df.iterrows()] if hasattr(df, 'iterrows') else list(df)
+    return _row_with_min(rows, 'day_pct')
+
+def _scope_positions_worst_acct(ctx):
+    """Single per-account positions row with the worst pnl_pct."""
+    rows = _scope_positions_any_acct(ctx)
+    return _row_with_min(rows, 'pnl_pct')
+
+def _scope_positions_worst_symbol(ctx):
+    """Single per-symbol positions row with the worst pnl. Falls back to
+    worst_acct semantics when per-symbol rows aren't on the context."""
+    df = getattr(ctx, 'positions_rows', None)
+    if df is None or (hasattr(df, 'empty') and df.empty):
+        return _scope_positions_worst_acct(ctx)
+    rows = [r.to_dict() for _, r in df.iterrows()] if hasattr(df, 'iterrows') else list(df)
+    return _row_with_min(rows, 'pnl')
+
+
 # ── Watchlist scopes ─────────────────────────────────────────────────────
 # Each scope returns rows from ctx.watchlist_rows. The `account` slot on
 # each row carries the watchlist NAME so we filter by list name.
@@ -313,6 +381,26 @@ SYSTEM_TOKENS: list[dict] = [
      'value_type': 'array',
      'description': 'Every non-TOTAL account row of the funds dataframe (leaf is OR-combined).',
      'resolver': 'backend.api.algo.grammar._scope_funds_any_acct'},
+    # Worst-case scopes — collapse N per-account agents into 1 by selecting
+    # the single biggest-loser row each tick. Pair with the standard day_pct
+    # / pnl_pct / pnl metrics. Operator-facing benefit: one agent, one
+    # threshold, one notification per fire.
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'holdings.worst_acct',
+     'value_type': 'object',
+     'description': 'The single account row with the most-negative day_pct in holdings.',
+     'resolver': 'backend.api.algo.grammar._scope_holdings_worst_acct'},
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'holdings.worst_symbol',
+     'value_type': 'object',
+     'description': 'The single per-symbol holding row with the most-negative day_pct.',
+     'resolver': 'backend.api.algo.grammar._scope_holdings_worst_symbol'},
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'positions.worst_acct',
+     'value_type': 'object',
+     'description': 'The single account row with the most-negative pnl_pct in positions.',
+     'resolver': 'backend.api.algo.grammar._scope_positions_worst_acct'},
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'positions.worst_symbol',
+     'value_type': 'object',
+     'description': 'The single per-symbol position row with the most-negative pnl.',
+     'resolver': 'backend.api.algo.grammar._scope_positions_worst_symbol'},
 
     # ── Watchlist metric ─────────────────────────────────────────────
     {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'ltp',

@@ -337,6 +337,30 @@ class Agent(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # ── Alert hierarchy / noise reduction (Sprint 1, May 2026) ─────────
+    #
+    # tier   — severity bucket. critical / high / medium / low.
+    #          Drives topic-scoped suppression: if a higher-tier agent
+    #          fires for the same topic, lower-tier agents are logged
+    #          as suppressed and skipped (no push notification).
+    # topic  — freeform tag. Agents with the same topic are siblings —
+    #          one tier wins, others are suppressed. Operator decides
+    #          which agents are "about the same thing"; default
+    #          'general' means no topic-suppression.
+    # digest_window_sec — buffer outgoing dispatches in N-sec windows
+    #          and send ONE consolidated alert message per window per
+    #          channel. 0 = fire immediately. 30s default keeps a
+    #          market-crash burst to a single push.
+    tier: Mapped[str]            = mapped_column(
+        String(16), nullable=False, default="medium",
+    )
+    topic: Mapped[str]           = mapped_column(
+        String(64), nullable=False, default="general",
+    )
+    digest_window_sec: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30,
+    )
+
     # Meta
     is_system: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
