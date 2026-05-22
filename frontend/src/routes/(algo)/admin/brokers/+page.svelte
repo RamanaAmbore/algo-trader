@@ -90,6 +90,14 @@
   // (truthy = mutate existing row) simple — see save().
   const NEW_SENTINEL = '__new__';
   let editing = $state(/** @type {string} */ (''));
+  // Derived: in Edit mode (mutating an existing row) — used by every
+  // template check that previously treated `editing` as a binary
+  // (truthy = edit). Without this distinction, NEW_SENTINEL leaks
+  // "edit" semantics into the create form (Save button reads "Save
+  // changes" instead of "Create", secret-field placeholders say
+  // "(leave blank to keep)", etc.), making the new-account form
+  // visually indistinguishable from an edit of the wrong row.
+  const isEditing = $derived(editing !== '' && editing !== NEW_SENTINEL);
   let form    = $state({
     account: '', broker_id: 'zerodha_kite',
     // Plaintext fields (returned by the API in clear)
@@ -175,9 +183,8 @@
         return;
       }
       const fieldsForThisBroker = credentialFields(form.broker_id);
-      const isCreating = (editing === NEW_SENTINEL);
 
-      if (editing && !isCreating) {
+      if (isEditing) {
         // PATCH — only send fields with values; empty secret fields are
         // explicitly omitted so the backend's "leave unchanged" logic
         // gets the right signal.
@@ -368,14 +375,14 @@
 {#if editing !== '' || !accounts.length}
   <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
     <h2 class="brokers-h" style="border-bottom:1px solid rgba(251,191,36,0.18); padding-bottom:0.3rem; margin-bottom:0.5rem;">
-      {editing && editing !== NEW_SENTINEL ? `Edit ${editing}` : 'New account'}
+      {isEditing ? `Edit ${editing}` : 'New account'}
     </h2>
     <div class="brokers-form">
       <div class="bf-field">
         <label class="field-label" for="bf-acct">Account code</label>
         <input id="bf-acct" type="text" class="field-input font-mono"
                placeholder="ZG0790"
-               disabled={!!editing && editing !== NEW_SENTINEL}
+               disabled={isEditing}
                bind:value={form.account} />
       </div>
       <div class="bf-field">
@@ -393,12 +400,12 @@
         <div class={'bf-field' + (f.key === 'api_key' || f.key === 'client_id' || f.key === 'access_token' || f.key === 'api_secret' ? ' bf-field-wide' : '')}>
           <label class="field-label" for={'bf-' + f.key}>
             {f.label}
-            {#if editing && f.secret}<span class="bf-hint">(blank = unchanged)</span>{/if}
+            {#if isEditing && f.secret}<span class="bf-hint">(blank = unchanged)</span>{/if}
           </label>
           <input id={'bf-' + f.key}
                  type={f.secret ? 'password' : 'text'}
                  class="field-input font-mono"
-                 placeholder={editing && f.secret
+                 placeholder={isEditing && f.secret
                               ? '••••••• (leave blank to keep)'
                               : f.label.toLowerCase()}
                  bind:value={form[f.key]} />
@@ -446,7 +453,7 @@
 
     <div class="bf-actions">
       <button type="button" class="btn-primary text-[0.6rem] py-1 px-3"
-              onclick={save}>{editing ? 'Save changes' : 'Create'}</button>
+              onclick={save}>{isEditing ? 'Save changes' : 'Create'}</button>
       <button type="button" class="btn-secondary text-[0.6rem] py-1 px-3"
               onclick={() => resetForm()}>Cancel</button>
     </div>
