@@ -43,7 +43,7 @@
 <div class="pub-viewport">
   <div class="pub-accent-top"></div>
 
-  <div class="pub-card" class:pub-card-wide={page.url.pathname === '/performance'}>
+  <div class="pub-card">
     <!-- Desktop navbar -->
     <header class="pub-navbar">
       <div class="pub-nav-inner hidden md:flex items-center gap-1 h-14">
@@ -212,13 +212,17 @@
   }
 
   .pub-accent-top, .pub-accent-bottom {
+    /* Full viewport width so on screens wider than the 1280px card the
+       top 4 px doesn't reveal the card's white background outside the
+       gradient strip. (Was max-width: 1280px centered, which left two
+       white slivers either side that visually appeared to scroll
+       relative to the fixed centered strip.) */
     position: fixed;
     height: 4px;
     z-index: 200;
-    max-width: 1280px;
     width: 100%;
-    left: 50%;
-    transform: translateX(-50%);
+    left: 0;
+    right: 0;
     background: linear-gradient(90deg, #0c1830 0%, #c8a84b 30%, #f0d878 50%, #c8a84b 70%, #0c1830 100%);
   }
   .pub-accent-top    { top: 0; }
@@ -241,25 +245,7 @@
     margin-bottom: 4px;
     position: relative;
   }
-  .pub-card-wide {
-    /* /performance is a data-dense operator surface — uncap so the
-       grids stretch flush with the viewport. Reading pages keep the
-       1280px typography cap via .pub-card. */
-    max-width: 100vw;
-    width: 100vw;
-    /* Drop the side box-shadow on wide route — it extends 14px past
-       the card border and visibly darkens the viewport edges when the
-       card is already flush with them. */
-    box-shadow: none;
-    border-left: none;   /* override global .pub-card border */
-    border-right: none;
-  }
-  :global(.pub-card-wide .pub-content) {
-    /* Operator wants the outer card flush with viewport on
-       /performance — zero side padding. */
-    padding-left: 0;
-    padding-right: 0;
-  }
+
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */
   .pub-navbar {
