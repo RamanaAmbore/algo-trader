@@ -638,6 +638,27 @@ class BrokerAccount(Base):
     source_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     is_active: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── Multi-broker fields (Sprint 2 prep, May 2026) ─────────────────
+    # client_id — for brokers that authenticate by client_id + permanent
+    #             access_token (Dhan-style) rather than the api_key /
+    #             api_secret / TOTP flow Kite uses. Plaintext, like
+    #             api_key (the client_id alone doesn't authenticate).
+    # access_token_enc — Fernet-encrypted long-lived access token for
+    #             Dhan-style brokers. Operators paste the token from
+    #             the broker dashboard; we encrypt at rest and the
+    #             adapter reads it during Connections.rebuild_from_db.
+    # priority — fallback ordering for PriceBroker market-data calls.
+    #            Lower = tried first. Lets the operator tune "if Kite
+    #            rate-limits, hit Dhan next" without code changes.
+    # extra_config — free-form JSON for per-broker tuning knobs
+    #            (rate-limit overrides, custom endpoints, future
+    #            adapter settings). Adapters read what they need;
+    #            unknown keys are ignored.
+    client_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    access_token_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    priority: Mapped[int]            = mapped_column(Integer, nullable=False, default=100)
+    extra_config: Mapped[dict]       = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

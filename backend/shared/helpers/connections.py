@@ -464,6 +464,11 @@ class Connections(SingletonBase):
             account: str(blob.get("broker") or "zerodha_kite")
             for account, blob in accts.items()
         }
+        # Priority map — defaults to 100 per account. Populated from
+        # broker_accounts.priority via rebuild_from_db.
+        self._priority_map: dict[str, int] = {
+            account: 100 for account in accts.keys()
+        }
 
     async def rebuild_from_db(self) -> None:
         """
@@ -548,10 +553,20 @@ class Connections(SingletonBase):
             for r in rows
             if r.account in new_conn
         }
+        # Priority cache for PriceBroker fallback ordering — lower
+        # priority value = tried first. Defaults to 100 (the schema
+        # default) for any account where the column is null/missing
+        # (e.g. just after migration, before the operator has tuned).
+        new_priority_map: dict[str, int] = {
+            r.account: int(getattr(r, "priority", 100) or 100)
+            for r in rows
+            if r.account in new_conn
+        }
 
         with Connections._init_lock:
             self.conn = new_conn
             self._broker_id_map = new_broker_id_map
+            self._priority_map  = new_priority_map
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
     async def _seed_db_from_yaml(self) -> int:

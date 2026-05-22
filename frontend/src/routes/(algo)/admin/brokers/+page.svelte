@@ -36,12 +36,16 @@
   let error    = $state('');
   let note     = $state('');
 
-  // Supported broker vendors. Add future adapters here as they land.
+  // Supported broker vendors. Adding a new entry here makes it
+  // selectable in the form; the adapter must be registered in
+  // `backend/shared/brokers/registry.py::_ADAPTERS` and have a
+  // matching credential-shape entry in CREDENTIAL_SCHEMA below.
   const BROKER_OPTIONS = [
     { value: 'zerodha_kite', label: 'Zerodha Kite' },
+    { value: 'groww',        label: 'Groww' },
+    { value: 'dhan',         label: 'Dhan' },
     // { value: 'upstox',      label: 'Upstox' },
     // { value: 'angel_one',   label: 'Angel One' },
-    // { value: 'dhan',        label: 'Dhan' },
     // { value: 'fyers',       label: 'Fyers' },
   ];
 
@@ -50,14 +54,52 @@
     return (id === 'kite' || !id) ? 'zerodha_kite' : id;
   }
 
+  // Per-broker credential schema. The form renders one input per entry
+  // for the currently-selected broker_id. `secret: true` means the
+  // value is encrypted at rest on the backend and never read back (so
+  // the input stays blank on Edit; blank = "leave unchanged").
+  const CREDENTIAL_SCHEMA = {
+    zerodha_kite: [
+      { key: 'api_key',    label: 'API key',     secret: false, required: true },
+      { key: 'api_secret', label: 'API secret',  secret: true,  required: true },
+      { key: 'password',   label: 'Password',    secret: true,  required: true },
+      { key: 'totp_token', label: 'TOTP seed',   secret: true,  required: true },
+    ],
+    groww: [
+      { key: 'api_key',    label: 'API key',     secret: false, required: true },
+      { key: 'api_secret', label: 'API secret',  secret: true,  required: true },
+      { key: 'totp_token', label: 'TOTP seed',   secret: true,  required: true },
+    ],
+    dhan: [
+      { key: 'client_id',    label: 'Client ID',     secret: false, required: true },
+      { key: 'access_token', label: 'Access token',  secret: true,  required: true },
+    ],
+  };
+
+  /** Fields applicable to the currently-selected broker. */
+  function credentialFields(/** @type {string} */ brokerId) {
+    return CREDENTIAL_SCHEMA[brokerId] || CREDENTIAL_SCHEMA.zerodha_kite;
+  }
+
   // Form state — reused for Create + Edit. `editing = ''` means we're
   // in Create mode (account code editable); `editing = 'ZG0790'` puts
   // us in Edit mode for that row.
   let editing = $state(/** @type {string} */ (''));
   let form    = $state({
-    account: '', broker_id: 'zerodha_kite', api_key: '',
-    api_secret: '', password: '', totp_token: '',
+    account: '', broker_id: 'zerodha_kite',
+    // Plaintext fields (returned by the API in clear)
+    api_key: '', client_id: '',
+    // Secret fields — sent only when non-empty on Edit ("leave unchanged"
+    // semantics). On Create they're required (the backend validates).
+    api_secret: '', password: '', totp_function: '', totp_token: '',
+    access_token: '',
+    // Operational fields
     source_ip: '', is_active: true, notes: '',
+    priority: 100,
+    // JSON text bound to a <textarea>; parsed at save time. Bound here as
+    // a string so the operator's in-progress typing isn't constantly
+    // re-validated. Empty = `{}` server-side.
+    extra_config_text: '{}',
   });
 
   /** @type {Record<string, {ok:boolean, detail:string} | undefined>} */
@@ -68,9 +110,13 @@
   function resetForm(/** @type {string} */ acct = '') {
     editing = acct;
     form = {
-      account: acct, broker_id: 'zerodha_kite', api_key: '',
-      api_secret: '', password: '', totp_token: '',
+      account: acct, broker_id: 'zerodha_kite',
+      api_key: '', client_id: '',
+      api_secret: '', password: '', totp_function: '', totp_token: '',
+      access_token: '',
       source_ip: '', is_active: true, notes: '',
+      priority: 100,
+      extra_config_text: '{}',
     };
     error = ''; note = '';
   }
@@ -80,13 +126,17 @@
     form = {
       account:    row.account,
       broker_id:  normaliseBrokerId(row.broker_id),
-      api_key:    row.api_key,
-      api_secret: '',                  // blank = don't change
-      password:   '',
-      totp_token: '',
+      api_key:    row.api_key || '',
+      client_id:  row.client_id || '',
+      // Secret fields stay blank — backend treats blank as
+      // "leave unchanged" so a partial form doesn't clear them.
+      api_secret: '', password: '', totp_function: '', totp_token: '',
+      access_token: '',
       source_ip:  row.source_ip || '',
       is_active:  !!row.is_active,
       notes:      row.notes || '',
+      priority:   typeof row.priority === 'number' ? row.priority : 100,
+      extra_config_text: JSON.stringify(row.extra_config || {}, null, 2),
     };
     error = ''; note = '';
   }
@@ -102,27 +152,71 @@
   async function save() {
     error = ''; note = '';
     try {
+      // Parse + validate Advanced JSON. Bad JSON aborts the save so the
+      // operator never accidentally persists a malformed config.
+      let parsedExtra;
+      try {
+        parsedExtra = JSON.parse(form.extra_config_text || '{}');
+        if (!parsedExtra || typeof parsedExtra !== 'object' || Array.isArray(parsedExtra)) {
+          error = 'Advanced settings must be a JSON object.';
+          return;
+        }
+      } catch (parseErr) {
+        error = `Advanced settings JSON invalid: ${parseErr.message}`;
+        return;
+      }
+      const fieldsForThisBroker = credentialFields(form.broker_id);
+
       if (editing) {
         // PATCH — only send fields with values; empty secret fields are
         // explicitly omitted so the backend's "leave unchanged" logic
         // gets the right signal.
         const payload = {
-          broker_id: form.broker_id, api_key: form.api_key,
-          source_ip: form.source_ip, is_active: form.is_active,
+          broker_id: form.broker_id,
+          api_key: form.api_key,
+          client_id: form.client_id || '',
+          source_ip: form.source_ip,
+          is_active: form.is_active,
           notes: form.notes,
+          priority: Number(form.priority) || 100,
+          extra_config: parsedExtra,
         };
-        if (form.api_secret) payload.api_secret = form.api_secret;
-        if (form.password)   payload.password   = form.password;
-        if (form.totp_token) payload.totp_token = form.totp_token;
+        // Only send each secret if the operator typed a new value AND
+        // that field is actually relevant to the selected broker.
+        for (const f of fieldsForThisBroker) {
+          if (f.secret && form[f.key]) payload[f.key] = form[f.key];
+        }
         await updateBrokerAccount(editing, payload);
         note = `Updated ${editing}`;
       } else {
         if (!form.account) { error = 'Account code is required.'; return; }
-        if (!form.api_key || !form.api_secret || !form.password || !form.totp_token) {
-          error = 'api_key, api_secret, password, and totp_token are all required for new accounts.';
+        // Broker-aware required-field check. Each broker schema declares
+        // which fields are mandatory at create time (Kite needs 4 fields,
+        // Dhan only 2). Missing any one of them aborts the save with a
+        // specific error so the operator knows what to fill in.
+        const missing = fieldsForThisBroker
+          .filter(f => f.required && !form[f.key])
+          .map(f => f.label);
+        if (missing.length) {
+          error = `Required for ${form.broker_id}: ${missing.join(', ')}.`;
           return;
         }
-        await createBrokerAccount(form);
+        const payload = {
+          account:     form.account,
+          broker_id:   form.broker_id,
+          api_key:     form.api_key || '',
+          api_secret:  form.api_secret || '',
+          password:    form.password || '',
+          totp_token:  form.totp_token || '',
+          client_id:   form.client_id || '',
+          access_token: form.access_token || '',
+          source_ip:   form.source_ip,
+          is_active:   form.is_active,
+          notes:       form.notes,
+          priority:    Number(form.priority) || 100,
+          extra_config: parsedExtra,
+        };
+        await createBrokerAccount(payload);
         note = `Created ${form.account}`;
       }
       resetForm();
@@ -280,35 +374,33 @@
                 bind:value={form.broker_id}
                 options={BROKER_OPTIONS} />
       </div>
-      <div class="bf-field bf-field-wide">
-        <label class="field-label" for="bf-key">API key</label>
-        <input id="bf-key" type="text" class="field-input font-mono"
-               placeholder="kite api_key"
-               bind:value={form.api_key} />
-      </div>
-      <div class="bf-field bf-field-wide">
-        <label class="field-label" for="bf-secret">
-          API secret {#if editing}<span class="bf-hint">(blank = unchanged)</span>{/if}
-        </label>
-        <input id="bf-secret" type="password" class="field-input font-mono"
-               placeholder={editing ? '••••••• (leave blank to keep)' : 'kite api_secret'}
-               bind:value={form.api_secret} />
-      </div>
+      <!-- Credential fields — driven by CREDENTIAL_SCHEMA so each broker
+           renders exactly the fields it needs. Kite gets 4 (api_key +
+           api_secret + password + totp_token); Groww gets 3 (no
+           password); Dhan gets 2 (client_id + access_token). Operator
+           changing the Broker dropdown swaps the field set instantly. -->
+      {#each credentialFields(form.broker_id) as f (f.key)}
+        <div class={'bf-field' + (f.key === 'api_key' || f.key === 'client_id' || f.key === 'access_token' || f.key === 'api_secret' ? ' bf-field-wide' : '')}>
+          <label class="field-label" for={'bf-' + f.key}>
+            {f.label}
+            {#if editing && f.secret}<span class="bf-hint">(blank = unchanged)</span>{/if}
+          </label>
+          <input id={'bf-' + f.key}
+                 type={f.secret ? 'password' : 'text'}
+                 class="field-input font-mono"
+                 placeholder={editing && f.secret
+                              ? '••••••• (leave blank to keep)'
+                              : f.label.toLowerCase()}
+                 bind:value={form[f.key]} />
+        </div>
+      {/each}
       <div class="bf-field">
-        <label class="field-label" for="bf-pwd">
-          Password {#if editing}<span class="bf-hint">(blank = unchanged)</span>{/if}
-        </label>
-        <input id="bf-pwd" type="password" class="field-input font-mono"
-               placeholder={editing ? '••••••• (leave blank)' : 'login password'}
-               bind:value={form.password} />
-      </div>
-      <div class="bf-field">
-        <label class="field-label" for="bf-totp">
-          TOTP seed {#if editing}<span class="bf-hint">(blank = unchanged)</span>{/if}
-        </label>
-        <input id="bf-totp" type="password" class="field-input font-mono"
-               placeholder={editing ? '••••••• (leave blank)' : 'TOTP secret seed'}
-               bind:value={form.totp_token} />
+        <label class="field-label" for="bf-priority">Priority</label>
+        <input id="bf-priority" type="number" class="field-input font-mono"
+               min="0" max="999" step="1"
+               placeholder="100"
+               title="PriceBroker fallback order — lower = tried first for shared market data. Default 100; ties broken by insertion order."
+               bind:value={form.priority} />
       </div>
       <div class="bf-field bf-field-wide">
         <label class="field-label" for="bf-ip">Source IP (optional)</label>
@@ -328,6 +420,17 @@
           <input id="bf-active" type="checkbox" bind:checked={form.is_active} />
           <span>active</span>
         </label>
+      </div>
+      <div class="bf-field bf-field-wide">
+        <label class="field-label" for="bf-extra">
+          Advanced settings (JSON)
+          <span class="bf-hint">— per-broker tuning knobs</span>
+        </label>
+        <textarea id="bf-extra" class="field-input font-mono text-[0.6rem]"
+                  rows="3"
+                  placeholder="{'{}'}"
+                  title='Free-form JSON object for per-broker config (rate limit overrides, custom endpoints, etc.). Adapters read what they need; unknown keys are ignored.'
+                  bind:value={form.extra_config_text}></textarea>
       </div>
     </div>
 

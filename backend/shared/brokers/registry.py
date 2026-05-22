@@ -243,6 +243,16 @@ class PriceBroker(Broker):
         )
 
 
+def _account_priority(account: str) -> int:
+    """Per-account priority hint for PriceBroker fallback ordering.
+    Lower = tried first. Sourced from broker_accounts.priority via the
+    Connections cache; defaults to 100 when the cache hasn't been
+    populated (boot timing) or the account isn't in the map."""
+    conns = Connections()
+    pri_map: dict[str, int] = getattr(conns, "_priority_map", {}) or {}
+    return int(pri_map.get(account, 100))
+
+
 def get_price_broker() -> Broker:
     """
     Auto-failover broker for shared market-data fetches (underlying
@@ -252,9 +262,14 @@ def get_price_broker() -> Broker:
 
     Preference order:
       1. `connections.price_account` setting (operator-pinned account)
-      2. Every other available account, in Connections().conn order
+         — when set, that broker is always tried first.
+      2. Remaining brokers sorted by `broker_accounts.priority` ASC
+         (lower = earlier). Set per-account via /admin/brokers so
+         operators can tune "if Kite stutters, hit Dhan next" from
+         the UI without code changes.
+      3. Tie-breaker: insertion order in Connections().conn.
 
-    Operator's pinned choice services calls when it's healthy; on
+    Operator's pinned choice + priority sort win when healthy; on
     failure (rate-limit, token expiry, network blip, vendor outage)
     the call transparently rolls to the next broker without the
     caller seeing it. Use `PriceBroker.last_served_by()` for
@@ -268,15 +283,17 @@ def get_price_broker() -> Broker:
 
     pinned = (get_string("connections.price_account", "") or "").strip()
 
-    # Build ordered list: pinned first (if valid), then the rest.
+    # Build ordered list: pinned first (if valid), then everything
+    # else sorted by priority ASC (with a stable secondary sort on
+    # insertion order from Connections().conn).
     ordered: list[Broker] = []
     seen: set[str] = set()
     if pinned and pinned in accounts:
         ordered.append(get_broker(pinned))
         seen.add(pinned)
-    for acct in accounts:
-        if acct not in seen:
-            ordered.append(get_broker(acct))
-            seen.add(acct)
+    remaining = [a for a in accounts if a not in seen]
+    remaining.sort(key=lambda a: (_account_priority(a), accounts.index(a)))
+    for acct in remaining:
+        ordered.append(get_broker(acct))
 
     return PriceBroker(ordered)

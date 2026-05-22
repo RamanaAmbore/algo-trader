@@ -44,9 +44,12 @@ class BrokerAccountInfo(msgspec.Struct):
     account:    str
     broker_id:  str
     api_key:    str            # plaintext — not credential-grade alone
+    client_id:  str | None     # plaintext — Dhan-style client identifier
     source_ip:  str | None
     is_active:  bool
     notes:      str | None
+    priority:   int            # PriceBroker fallback order; lower = tried first
+    extra_config: dict         # free-form per-broker tuning knobs
     created_at: str
     updated_at: str
     # Status — populated by enrichment (whether the account is currently
@@ -62,9 +65,13 @@ class BrokerAccountCreate(msgspec.Struct):
     api_secret:  str = ""
     password:    str = ""
     totp_token:  str = ""
+    client_id:   str = ""             # Dhan-style client id (plaintext)
+    access_token: str = ""            # Dhan-style long-lived token
     source_ip:   str | None = None
     is_active:   bool = True
     notes:       str | None = None
+    priority:    int = 100
+    extra_config: dict = msgspec.field(default_factory=dict)
 
 
 class BrokerAccountUpdate(msgspec.Struct):
@@ -72,14 +79,18 @@ class BrokerAccountUpdate(msgspec.Struct):
     without re-typing the others. Empty strings on the secret fields
     are treated as 'no change' (so a partial form doesn't blank out a
     credential the operator didn't intend to clear)."""
-    broker_id:   Optional[str] = None
-    api_key:     Optional[str] = None
-    api_secret:  Optional[str] = None
-    password:    Optional[str] = None
-    totp_token:  Optional[str] = None
-    source_ip:   Optional[str] = None
+    broker_id:   Optional[str]  = None
+    api_key:     Optional[str]  = None
+    api_secret:  Optional[str]  = None
+    password:    Optional[str]  = None
+    totp_token:  Optional[str]  = None
+    client_id:   Optional[str]  = None
+    access_token: Optional[str] = None
+    source_ip:   Optional[str]  = None
     is_active:   Optional[bool] = None
-    notes:       Optional[str] = None
+    notes:       Optional[str]  = None
+    priority:    Optional[int]  = None
+    extra_config: Optional[dict] = None
 
 
 class TestResult(msgspec.Struct):
@@ -93,9 +104,13 @@ class TestResult(msgspec.Struct):
 def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
     return BrokerAccountInfo(
         id=row.id, account=row.account, broker_id=row.broker_id,
-        api_key=row.api_key, source_ip=row.source_ip,
+        api_key=row.api_key,
+        client_id=getattr(row, "client_id", None),
+        source_ip=row.source_ip,
         is_active=bool(row.is_active),
         notes=row.notes,
+        priority=int(getattr(row, "priority", 100) or 100),
+        extra_config=getattr(row, "extra_config", None) or {},
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
         loaded=loaded,
@@ -171,9 +186,14 @@ class BrokersController(Controller):
                 api_secret_enc=encrypt(data.api_secret),
                 password_enc=encrypt(data.password),
                 totp_token_enc=encrypt(data.totp_token),
+                client_id=(data.client_id or None) or None,
+                access_token_enc=(encrypt(data.access_token)
+                                   if data.access_token else None),
                 source_ip=data.source_ip or None,
                 is_active=bool(data.is_active),
                 notes=data.notes,
+                priority=int(data.priority) if data.priority is not None else 100,
+                extra_config=dict(data.extra_config or {}),
             )
             s.add(row)
             await s.commit()
@@ -198,16 +218,20 @@ class BrokersController(Controller):
             # Non-secret fields — straight-through.
             if data.broker_id is not None:  row.broker_id = data.broker_id
             if data.api_key   is not None:  row.api_key   = data.api_key
+            if data.client_id is not None:  row.client_id = data.client_id or None
             if data.source_ip is not None:  row.source_ip = data.source_ip or None
             if data.is_active is not None:  row.is_active = bool(data.is_active)
             if data.notes     is not None:  row.notes     = data.notes
+            if data.priority  is not None:  row.priority  = int(data.priority)
+            if data.extra_config is not None: row.extra_config = dict(data.extra_config or {})
 
             # Secret fields — only update when the operator passed a
             # NON-EMPTY string. Empty / None means "leave unchanged" so
             # a partial edit doesn't blank a credential.
-            if data.api_secret:  row.api_secret_enc = encrypt(data.api_secret)
-            if data.password:    row.password_enc   = encrypt(data.password)
-            if data.totp_token:  row.totp_token_enc = encrypt(data.totp_token)
+            if data.api_secret:    row.api_secret_enc   = encrypt(data.api_secret)
+            if data.password:      row.password_enc     = encrypt(data.password)
+            if data.totp_token:    row.totp_token_enc   = encrypt(data.totp_token)
+            if data.access_token:  row.access_token_enc = encrypt(data.access_token)
 
             row.updated_at = datetime.now(timezone.utc)
             await s.commit()

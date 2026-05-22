@@ -158,6 +158,31 @@ async def init_db() -> None:
             "INTEGER NOT NULL DEFAULT 30",
         ):
             await conn.execute(text(stmt))
+
+        # Multi-broker extension (May 2026) — broker_accounts gains four
+        # columns so a Dhan / Groww / future-vendor account fits the same
+        # schema as Kite. The api_secret_enc / password_enc / totp_token_enc
+        # columns already exist (Kite-shaped); the new fields supplement
+        # them for brokers that authenticate differently.
+        #   client_id        — plaintext, like api_key. Used by Dhan-style
+        #                       brokers that key on client_id + access_token.
+        #   access_token_enc — Fernet-encrypted access token for Dhan-style
+        #                       brokers (long-lived, pasted from dashboard).
+        #   priority         — INT, fallback order for PriceBroker
+        #                       (lower = tried first). 100 default — every
+        #                       existing account ties; operator can pull
+        #                       a preferred broker forward by setting it
+        #                       to 10, push laggy ones back to 200, etc.
+        #   extra_config     — JSONB, free-form per-broker tuning knobs.
+        for stmt in (
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS access_token_enc TEXT",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS priority INTEGER "
+            "NOT NULL DEFAULT 100",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS extra_config JSONB "
+            "NOT NULL DEFAULT '{}'::jsonb",
+        ):
+            await conn.execute(text(stmt))
         # User-management v2 — super-admin role, email verification,
         # token versioning for force-logout, suspend / terminate stamps.
         # Columns added with explicit defaults so existing rows backfill
