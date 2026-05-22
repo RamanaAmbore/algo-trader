@@ -937,6 +937,14 @@ async def run_cycle(context: dict, broadcast_fn=None,
             context.get("sum_holdings"),
         )
 
+    # Tier-suppression buffer — fires accumulate here during the per-agent
+    # loop, then a single post-loop pass computes topic-scoped suppression
+    # and dispatches the survivors. State mutations (cooldown latch,
+    # lifespan shadow) still happen inline so cross-tick semantics are
+    # unchanged; only the push notification + action execution defer.
+    # Each entry: {agent, matches, result, sim_mode, alert_state}.
+    pending_dispatches: list[dict] = []
+
     # Load agents. Three distinct semantics for `only_agent_ids`:
     #   - None        → run every active / cooldown agent (default live path)
     #   - [id1, id2]  → run ONLY those agents, regardless of DB status
@@ -1111,30 +1119,19 @@ async def run_cycle(context: dict, broadcast_fn=None,
             if broadcast_fn:
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
 
-            # Send the rich narrow-TG + coloured HTML table message via
-            # alert_utils._dispatch. Fall back to the generic dispatch()
-            # path on any failure so the log / WebSocket channel still
-            # carries a record of the fire.
-            rich_sent = await _v2_send_rich_alert(
-                agent, matches, now, sim_mode=sim_mode, context=context,
-            )
-            if not rich_sent:
-                await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode)
-            else:
-                await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode)
-                if broadcast_fn:
-                    broadcast_fn('agent_alert', {
-                        'slug': agent.slug,
-                        'message': result.condition_text,
-                        'timestamp': now.isoformat(),
-                        'sim_mode': sim_mode,
-                    })
-
-            if agent.actions:
-                action_ctx = dict(context)
-                action_ctx["account"] = "TOTAL"
-                action_ctx["sim_mode"] = sim_mode
-                await execute(agent, agent.actions, action_ctx)
+            # Buffer dispatch + actions for the post-loop suppression pass.
+            # State mutations above (cooldown latch, lifespan shadow) and
+            # the agent_state broadcast already ran inline so the cross-
+            # tick semantics are unchanged; only the push notification
+            # and action execution defer until we know which fires win
+            # tier suppression.
+            pending_dispatches.append({
+                'agent':       agent,
+                'matches':     matches,
+                'result':      result,
+                'sim_mode':    sim_mode,
+                'alert_state': alert_state,
+            })
 
         # Update state. For any sim run (schedule-bypassed) we never mutate
         # the agent row — the whole point of the simulator is to exercise the
@@ -1185,6 +1182,118 @@ async def run_cycle(context: dict, broadcast_fn=None,
 
             if broadcast_fn:
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": new_status})
+
+    # ── Post-loop: topic-scoped tier suppression + dispatch survivors ────
+    #
+    # Suppression rule: within each topic, find the highest-priority tier
+    # that fired this tick. Drop every lower-tier fire in that topic — they
+    # get an audit-log entry as `triggered_suppressed` but no push
+    # notification, no action execution. The operator gets ONE alert per
+    # topic per tick instead of N stacked alarms for the same root cause.
+    if pending_dispatches:
+        suppressed_ids = _compute_topic_suppression(pending_dispatches)
+        for entry in pending_dispatches:
+            agent       = entry['agent']
+            matches_    = entry['matches']
+            result      = entry['result']
+            sim_mode_p  = entry['sim_mode']
+
+            if agent.id in suppressed_ids:
+                # Audit-log only. Channel push + actions skipped.
+                supp_by = suppressed_ids[agent.id]
+                detail_text = (
+                    f"Suppressed by higher-tier agent '{supp_by}' in topic "
+                    f"'{getattr(agent, 'topic', 'general')}'."
+                )
+                try:
+                    await log_event(
+                        agent, 'triggered_suppressed',
+                        f"{result.condition_text} — {detail_text}",
+                        detail={'suppressed_by': supp_by,
+                                'topic': getattr(agent, 'topic', 'general'),
+                                'tier':  getattr(agent, 'tier',  'medium')},
+                        sim_mode=sim_mode_p,
+                    )
+                except Exception as _le:
+                    logger.debug(f"suppressed-event log failed: {_le}")
+                if broadcast_fn:
+                    broadcast_fn('agent_state', {
+                        'slug': agent.slug,
+                        'status': 'suppressed',
+                        'suppressed_by': supp_by,
+                    })
+                continue
+
+            # Full dispatch path — same code that used to live inside the
+            # per-agent loop, now driven from the buffer.
+            rich_sent = await _v2_send_rich_alert(
+                agent, matches_, now, sim_mode=sim_mode_p, context=context,
+            )
+            if not rich_sent:
+                await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
+            else:
+                await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
+                if broadcast_fn:
+                    broadcast_fn('agent_alert', {
+                        'slug': agent.slug,
+                        'message': result.condition_text,
+                        'timestamp': now.isoformat(),
+                        'sim_mode': sim_mode_p,
+                    })
+            if agent.actions:
+                action_ctx = dict(context)
+                action_ctx["account"] = "TOTAL"
+                action_ctx["sim_mode"] = sim_mode_p
+                await execute(agent, agent.actions, action_ctx)
+
+
+# Tier rank for topic-suppression. Lower = higher priority.
+_TIER_RANK = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+
+
+def _compute_topic_suppression(pending: list[dict]) -> dict[int, str]:
+    """
+    Given the list of buffered fires from a single run_cycle, return a
+    dict mapping `suppressed_agent_id → suppressing_agent_slug`.
+
+    Rule: within each topic, the highest-priority tier wins. Every fire
+    at a lower tier within the same topic is suppressed (dispatch +
+    actions skipped). Topic 'general' is opt-out — agents at the default
+    tag don't participate, so legacy untagged agents behave exactly as
+    before.
+
+    Returns an empty dict when no suppression applies (single-fire ticks,
+    all-equal-tier ticks, all-untagged ticks).
+    """
+    # Bucket fires by topic.
+    by_topic: dict[str, list[dict]] = {}
+    for entry in pending:
+        agent = entry['agent']
+        topic = getattr(agent, 'topic', 'general') or 'general'
+        if topic == 'general':
+            continue  # opt-out — no suppression on the default topic
+        by_topic.setdefault(topic, []).append(entry)
+
+    suppressed: dict[int, str] = {}
+    for topic, group in by_topic.items():
+        if len(group) <= 1:
+            continue  # nothing to suppress; one fire is the only fire
+        # Find the minimum (highest-priority) tier rank in this topic.
+        min_rank = min(
+            _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99)
+            for e in group
+        )
+        # Pick a representative winner slug (first entry at that rank).
+        winner_slug = next(
+            e['agent'].slug for e in group
+            if _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99) == min_rank
+        )
+        for entry in group:
+            agent = entry['agent']
+            rank = _TIER_RANK.get(getattr(agent, 'tier', 'medium'), 99)
+            if rank > min_rank:
+                suppressed[agent.id] = winner_slug
+    return suppressed
 
 
 # ---------------------------------------------------------------------------
