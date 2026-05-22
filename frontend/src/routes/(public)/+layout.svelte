@@ -212,21 +212,29 @@
   }
 
   .pub-accent-top, .pub-accent-bottom {
-    /* Bounded to the 1280px card width + centered, so the accent
-       strip reads as the top/bottom *border of the card* — same
-       visual contract as .pub-footer's gold top border (which is
-       naturally bounded by .pub-card). On viewports wider than
-       1280px the outer area shows the body's cream + diagonal-hatch
-       background, not white, since the card itself is now 1280px on
-       every public route (no more .pub-card-wide variant). */
+    /* Strip spans the full viewport width and is `position: fixed` so
+       the entire top/bottom 4 px region (gradient + side panels) sits
+       as one immovable banner — never scrolls with content.
+       The visible champagne gradient is still bounded to the 1280 px
+       card footprint (matching .pub-footer's gold hairline contract).
+       Outside 1280 px the strip is filled with the body's cream so
+       the side panels match the .pub-viewport background — but, being
+       part of the fixed strip, they're locked relative to the viewport
+       instead of scrolling with the diagonal-hatch body bg behind. */
     position: fixed;
     height: 4px;
     z-index: 200;
-    max-width: 1280px;
     width: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    background: linear-gradient(90deg, #0c1830 0%, #c8a84b 30%, #f0d878 50%, #c8a84b 70%, #0c1830 100%);
+    left: 0;
+    right: 0;
+    background-color: #f0ece3;
+    background-image: linear-gradient(
+      90deg,
+      #0c1830 0%, #c8a84b 30%, #f0d878 50%, #c8a84b 70%, #0c1830 100%
+    );
+    background-size: min(1280px, 100%) 100%;
+    background-position: center;
+    background-repeat: no-repeat;
   }
   .pub-accent-top    { top: 0; }
   .pub-accent-bottom { bottom: 0; }
