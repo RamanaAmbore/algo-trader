@@ -1,6 +1,7 @@
 # Core broker / data dependencies (shared by API and worker layers)
 pyyaml~=6.0.2
 kiteconnect~=5.1
+dhanhq~=2.2
 pyotp~=2.9.0
 google-genai~=1.0
 babel~=2.17.0

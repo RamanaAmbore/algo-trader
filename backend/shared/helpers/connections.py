@@ -6,6 +6,7 @@ import socket
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 import contextvars
@@ -418,6 +419,78 @@ class KiteConnection:
         return self._api_secret
 
 
+class DhanConnection:
+    """Dhan client wrapper. Holds a `dhanhq.dhanhq(client_id, access_token)`
+    handle and re-instantiates it when the operator pastes a fresh access
+    token via /admin/brokers.
+
+    Dhan access tokens expire in ≤ 24 h. v0 expects the operator to
+    refresh manually from Dhan's portal and paste into the admin UI;
+    every save triggers `Connections.rebuild_from_db()` which builds a
+    new DhanConnection with the new token. Auto-refresh via Partner
+    API (api_key + api_secret + TOTP) lands when a sandbox token is
+    available — credential columns are already in place.
+
+    No IPv6 source-binding here; Dhan doesn't enforce per-IP whitelisting
+    the way Kite does. `source_ip` on the broker_accounts row is read
+    but unused for Dhan (kept for future symmetry).
+    """
+
+    def __init__(self, account: str, *, client_id: str, access_token: str,
+                 source_ip: str | None = None) -> None:
+        self.account       = account
+        self.client_id     = client_id
+        self._access_token = access_token
+        self._source_ip    = source_ip
+        self._dhan         = None
+        self._build()
+
+    def _build(self) -> None:
+        """Lazily construct the dhanhq client. Imported inside the method
+        so the module is importable on systems where `dhanhq` isn't yet
+        installed (e.g. during a deploy that hasn't pip-installed the
+        new requirement). The first real call will then surface the
+        ImportError with a clear message.
+
+        dhanhq 2.x changed the constructor shape — pre-2.0 took
+        `(client_id, access_token)` directly; 2.x takes a `DhanContext`.
+        We probe for both so an in-flight version bump on the server
+        doesn't break boot."""
+        try:
+            from dhanhq import dhanhq  # type: ignore[import-not-found]
+        except ImportError as e:
+            logger.error(
+                f"dhanhq SDK not installed; run `pip install dhanhq`. "
+                f"Account {self.account!r} will be inactive until "
+                f"the dependency is available."
+            )
+            self._dhan = None
+            self._import_error = e
+            return
+        try:
+            # 2.x path — DhanContext wraps the credentials.
+            from dhanhq import DhanContext  # type: ignore[import-not-found]
+            ctx = DhanContext(self.client_id, self._access_token)
+            self._dhan = dhanhq(ctx)
+        except ImportError:
+            # 1.x fallback — direct positional args.
+            self._dhan = dhanhq(self.client_id, self._access_token)
+        self._import_error = None
+
+    def get_dhan_conn(self):
+        """Return the dhanhq client. Raises if the SDK isn't installed."""
+        if self._dhan is None:
+            err = getattr(self, "_import_error", None)
+            raise RuntimeError(
+                f"DhanConnection for {self.account!r} is not initialised "
+                f"(dhanhq SDK missing? {err})"
+            )
+        return self._dhan
+
+    def get_access_token(self) -> str:
+        return self._access_token
+
+
 class Connections(SingletonBase):
     # Serialises the one-time init — SingletonBase's own lock protects
     # the _instances dict, not the body of this __init__. Two concurrent
@@ -515,9 +588,38 @@ class Connections(SingletonBase):
                 return
 
         # Build new credentials dict from DB rows + decrypt in-memory.
-        new_conn: dict[str, "KiteConnection"] = {}
+        # The connection type branches on broker_id — Dhan rows build a
+        # DhanConnection (client_id + access_token), everything else
+        # (Kite + Kite-legacy) builds a KiteConnection.
+        new_conn: dict[str, Any] = {}
         for r in rows:
+            broker_id = (r.broker_id or "zerodha_kite").lower()
             try:
+                if broker_id == "dhan":
+                    # Dhan path — uses client_id (plaintext) + access_token
+                    # (encrypted). Operator pastes a fresh token daily from
+                    # Dhan's portal until auto-refresh via Partner API lands.
+                    access_token = (decrypt(r.access_token_enc)
+                                    if r.access_token_enc else "")
+                    if not r.client_id:
+                        logger.warning(f"Dhan account {r.account!r} missing "
+                                       f"client_id; skipping.")
+                        continue
+                    if not access_token:
+                        logger.warning(f"Dhan account {r.account!r} has no "
+                                       f"access_token; paste one from Dhan's "
+                                       f"portal in /admin/brokers and the "
+                                       f"connection will load on next save.")
+                        continue
+                    new_conn[r.account] = DhanConnection(
+                        r.account,
+                        client_id=r.client_id,
+                        access_token=access_token,
+                        source_ip=r.source_ip,
+                    )
+                    continue
+
+                # Default — Kite (and "zerodha_kite" alias).
                 creds_blob = {
                     "api_key":    r.api_key,
                     "api_secret": decrypt(r.api_secret_enc),
@@ -525,20 +627,17 @@ class Connections(SingletonBase):
                     "totp_token": decrypt(r.totp_token_enc),
                     "source_ip":  r.source_ip,
                 }
-            except Exception as e:
-                logger.error(f"broker_accounts decrypt failed for {r.account!r}: {e}")
-                continue
-            # Build a synthesized "secrets-shaped" dict so KiteConnection's
-            # existing constructor still works without refactoring.
-            synthetic = {
-                "kite_accounts":  {r.account: creds_blob},
-                "kite_login_url": secrets.get("kite_login_url"),
-                "kite_twofa_url": secrets.get("kite_twofa_url"),
-            }
-            try:
+                # Build a synthesized "secrets-shaped" dict so KiteConnection's
+                # existing constructor still works without refactoring.
+                synthetic = {
+                    "kite_accounts":  {r.account: creds_blob},
+                    "kite_login_url": secrets.get("kite_login_url"),
+                    "kite_twofa_url": secrets.get("kite_twofa_url"),
+                }
                 new_conn[r.account] = KiteConnection(r.account, synthetic)
             except Exception as e:
-                logger.error(f"KiteConnection init failed for {r.account!r}: {e}")
+                logger.error(f"{broker_id} connection init failed for "
+                             f"{r.account!r}: {e}")
                 continue
 
         if not new_conn:

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.shared.brokers.base import Broker
+from backend.shared.brokers.dhan import DhanBroker
 from backend.shared.brokers.kite import KiteBroker
 from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -30,7 +31,8 @@ logger = get_logger(__name__)
 # Extend here when a new vendor adapter lands — e.g. "upstox": UpstoxBroker.
 _ADAPTERS: dict[str, type[Broker]] = {
     "zerodha_kite": KiteBroker,
-    "kite": KiteBroker,         # legacy alias — YAML-seeded rows use "kite"
+    "kite":         KiteBroker,  # legacy alias — YAML-seeded rows use "kite"
+    "dhan":         DhanBroker,
 }
 
 
