@@ -230,6 +230,41 @@
     try { return { ok: true, value: JSON.parse(editForm.events || '[]') }; }
     catch (e) { return { ok: false, error: e.message }; }
   });
+
+  // ── Notify-channel checkbox helpers ────────────────────────────────
+  // The four supported channels (matches backend/api/algo/events.py:dispatch).
+  // Each one is one row in the edit-form checkbox grid. Description
+  // shown next to the channel name so operators pick the right one.
+  const ALERT_CHANNELS = [
+    { id: 'telegram',  label: 'Telegram',  desc: 'Push to the ops Telegram group' },
+    { id: 'email',     label: 'Email',     desc: 'SMTP to alert recipients' },
+    { id: 'websocket', label: 'WebSocket', desc: 'Live UI toast / chart overlay' },
+    { id: 'log',       label: 'Log',       desc: 'Server log file only (no push)' },
+  ];
+
+  /** Returns true if the channel is enabled in editForm.events (parsed). */
+  function isChannelEnabled(/** @type {string} */ channelId) {
+    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
+    const row = list.find((e) => e?.channel === channelId);
+    return !!(row && row.enabled);
+  }
+
+  /** Flip a single channel on/off in editForm.events. Re-serializes the
+   *  JSON so the existing save path keeps working unchanged. Channels
+   *  not present in the array are added; existing rows are toggled in
+   *  place (preserves order operators set). */
+  function toggleChannel(/** @type {string} */ channelId, /** @type {boolean} */ enabled) {
+    let list = [];
+    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
+    if (!Array.isArray(list)) list = [];
+    const idx = list.findIndex((e) => e?.channel === channelId);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], channel: channelId, enabled };
+    } else {
+      list.push({ channel: channelId, enabled });
+    }
+    editForm.events = JSON.stringify(list, null, 2);
+  }
   const parsedActions = $derived.by(() => {
     try { return { ok: true, value: JSON.parse(editForm.actions || '[]') }; }
     catch (e) { return { ok: false, error: e.message }; }
@@ -664,8 +699,25 @@
                   <textarea bind:value={editForm.conditions} class="field-input font-mono text-[0.6rem]" rows="5"></textarea>
                 </div>
                 <div>
-                  <label class="field-label">Events (JSON)</label>
-                  <textarea bind:value={editForm.events} class="field-input font-mono text-[0.6rem]" rows="5"></textarea>
+                  <label class="field-label">Alert channels</label>
+                  <!-- Per-agent notify routing. Each tick adds a row
+                       {channel, enabled:true} to the agent's events
+                       JSONB; the dispatcher (backend/api/algo/events.py)
+                       fans out the alert to every enabled channel. Saves
+                       round-trip with the JSON shape unchanged on the
+                       wire. -->
+                  <div class="channel-grid">
+                    {#each ALERT_CHANNELS as ch}
+                      <label class="channel-row">
+                        <input type="checkbox"
+                               class="channel-check"
+                               checked={isChannelEnabled(ch.id)}
+                               onchange={(e) => toggleChannel(ch.id, /** @type {HTMLInputElement} */(e.target).checked)} />
+                        <span class="channel-label">{ch.label}</span>
+                        <span class="channel-desc">{ch.desc}</span>
+                      </label>
+                    {/each}
+                  </div>
                 </div>
                 <div>
                   <div class="flex items-center justify-between flex-wrap gap-1">
@@ -1158,6 +1210,43 @@
     border-radius: 2px;
     margin-top: 0.2rem;
     overflow-x: auto;
+  }
+
+  /* Alert-channel checkbox grid — replaces the prior raw-JSON textarea.
+     Each row is one channel (telegram / email / websocket / log) with
+     a label + short description. Stacked vertically so the description
+     wraps cleanly on narrow viewports. */
+  .channel-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.4rem 0.5rem;
+    background: rgba(8, 14, 30, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 3px;
+  }
+  .channel-row {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.68rem;
+    color: #c8d8f0;
+    cursor: pointer;
+  }
+  .channel-check {
+    accent-color: #fbbf24;
+    cursor: pointer;
+  }
+  .channel-label {
+    font-weight: 700;
+    color: #fbbf24;
+    letter-spacing: 0.02em;
+  }
+  .channel-desc {
+    color: #7e97b8;
+    font-size: 0.6rem;
+    line-height: 1.25;
   }
 
   /* Quick-add action pills next to the Actions textarea. Compact, colour-
