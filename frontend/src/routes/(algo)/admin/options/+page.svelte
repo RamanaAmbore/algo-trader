@@ -2432,49 +2432,60 @@
      P&L sits between Qty and Cost so the operator's eye scans
      "what I have → what I'm making/losing → what I paid".
 
-     Track sizing: `minmax(max-content, 1fr)` per column — each track
-     is AT LEAST as wide as its widest cell (so digits never truncate
-     and the row reads dense at minimum size), then shares any spare
-     container width equally with its peers. Earlier `max-content`
-     pinned tracks to their content size and left a blank strip on
-     the right of the panel when it sat in a wide card; now extra
-     width is distributed instead of wasted. The wrapping
-     .cand-scroll still triggers horizontal scroll when the viewport
-     can't even fit every track's max-content minimum. */
+     Track sizing: `minmax(0, Nfr)` per column. The 0 min lets each
+     track SHRINK below its content max-content size — without that,
+     a long F&O ticker (NIFTY26MAY22000CE, ~120 px) inflates the grid
+     past the side-by-side legs panel (~520 px on a 1440 px viewport)
+     and the panel scrolls horizontally instead of distributing
+     width. With `minmax(0, …)` the grid always fits its container;
+     the fr ratios distribute available space (Symbol gets 2fr since
+     it carries the longest content). Cell-level white-space:nowrap +
+     text-overflow:ellipsis (see .cand-headrow > *, .cand-row > *)
+     keeps content readable on narrow widths. */
   .cand-grid {
     display: grid;
     grid-template-columns:
-      auto                       /* checkbox */
-      minmax(max-content, 1.4fr) /* symbol (longest content — give it more share) */
-      minmax(max-content, 1fr)   /* account */
-      minmax(max-content, 1fr)   /* qty */
-      minmax(max-content, 1fr)   /* pnl */
-      minmax(max-content, 1fr)   /* cost */
-      minmax(max-content, 1fr)   /* ltp */
-      minmax(max-content, 1fr)   /* iv */
-      minmax(max-content, 1fr)   /* delta */
-      minmax(max-content, 1fr)   /* theta */
-      minmax(max-content, 1fr);  /* vega */
-    column-gap: 0.6rem;
+      auto              /* checkbox */
+      minmax(0, 2fr)    /* symbol (largest share — longest content) */
+      minmax(0, 1fr)    /* account */
+      minmax(0, 1fr)    /* qty */
+      minmax(0, 1fr)    /* pnl */
+      minmax(0, 1fr)    /* cost */
+      minmax(0, 1fr)    /* ltp */
+      minmax(0, 1fr)    /* iv */
+      minmax(0, 1fr)    /* delta */
+      minmax(0, 1fr)    /* theta */
+      minmax(0, 1fr);   /* vega */
+    column-gap: 0.4rem;
     row-gap: 0.2rem;
     width: 100%;
-    min-width: max-content;
   }
   /* When the operator filters to a single account, the Account
      column is implicit (every row carries the same value) — drop
      the column entirely. */
   .cand-grid-noacct {
     grid-template-columns:
-      auto                       /* checkbox */
-      minmax(max-content, 1.4fr) /* symbol */
-      minmax(max-content, 1fr)   /* qty */
-      minmax(max-content, 1fr)   /* pnl */
-      minmax(max-content, 1fr)   /* cost */
-      minmax(max-content, 1fr)   /* ltp */
-      minmax(max-content, 1fr)   /* iv */
-      minmax(max-content, 1fr)   /* delta */
-      minmax(max-content, 1fr)   /* theta */
-      minmax(max-content, 1fr);  /* vega */
+      auto              /* checkbox */
+      minmax(0, 2fr)    /* symbol */
+      minmax(0, 1fr)    /* qty */
+      minmax(0, 1fr)    /* pnl */
+      minmax(0, 1fr)    /* cost */
+      minmax(0, 1fr)    /* ltp */
+      minmax(0, 1fr)    /* iv */
+      minmax(0, 1fr)    /* delta */
+      minmax(0, 1fr)    /* theta */
+      minmax(0, 1fr);   /* vega */
+  }
+  /* Cell-level truncation so columns can shrink below content max
+     without breaking layout. Hover the cell to see the full value
+     via the row's `title` attribute (already set elsewhere on the
+     symbol cell). */
+  .cand-headrow > *,
+  .cand-row > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* Single parent grid via subgrid. Each row inherits the parent's
      column tracks — so headers and data cells line up exactly,
