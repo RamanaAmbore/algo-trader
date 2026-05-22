@@ -9,30 +9,10 @@
     </radialGradient>
 
     <!-- 3D ring main gradient: cream highlight at top, deep brown at bottom. -->
-    <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#f0c66e" />
-      <stop offset="20%"  stop-color="#e8aa3a" />
-      <stop offset="45%"  stop-color="#d4920c" />
-      <stop offset="68%"  stop-color="#b07804" />
-      <stop offset="88%"  stop-color="#8a5d02" />
-      <stop offset="100%" stop-color="#5a3d02" />
-    </linearGradient>
 
     <!-- Top-only cream sheen — riding along the inner edge for torus bevel. -->
-    <linearGradient id="ring-rim-highlight" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fbe0a8" stop-opacity="0.45" />
-      <stop offset="32%"  stop-color="#fbe0a8" stop-opacity="0.20" />
-      <stop offset="55%"  stop-color="#fbe0a8" stop-opacity="0.00" />
-      <stop offset="100%" stop-color="#fbe0a8" stop-opacity="0.00" />
-    </linearGradient>
 
     <!-- Bottom-only dark rim — riding along the outer edge for torus bevel. -->
-    <linearGradient id="ring-rim-shadow" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#3a2810" stop-opacity="0.00" />
-      <stop offset="55%"  stop-color="#3a2810" stop-opacity="0.00" />
-      <stop offset="78%"  stop-color="#3a2810" stop-opacity="0.10" />
-      <stop offset="100%" stop-color="#3a2810" stop-opacity="0.22" />
-    </linearGradient>
 
     <!-- Three-layer gold halo on the bull: wide bloom + outer + tight inner.
          Matches the og-image's bull-glow at the same scale. -->
@@ -80,18 +60,10 @@
   <!-- Main 3D ring, inset 32 px from outer edge -->
   <circle cx="256" cy="256" r="224"
           fill="none"
-          stroke="url(#ring-bevel)"
+          stroke="#d4920c"
           stroke-width="18" />
 
   <!-- Top cream highlight rim (inner edge of torus) -->
-  <circle cx="256" cy="256" r="218.5"
-          fill="none"
-          stroke="url(#ring-rim-highlight)"
-          stroke-width="2.5" />
 
   <!-- Bottom dark shadow rim (outer edge of torus) -->
-  <circle cx="256" cy="256" r="229.5"
-          fill="none"
-          stroke="url(#ring-rim-shadow)"
-          stroke-width="2.5" />
 </svg>

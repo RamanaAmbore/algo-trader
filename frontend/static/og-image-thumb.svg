@@ -12,32 +12,12 @@
       <stop offset="0%"   stop-color="#0e2a3a"/>
       <stop offset="100%" stop-color="#0a2030"/>
     </radialGradient>
-    <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#f0c66e"/>
-      <stop offset="20%"  stop-color="#e8aa3a"/>
-      <stop offset="45%"  stop-color="#d4920c"/>
-      <stop offset="68%"  stop-color="#b07804"/>
-      <stop offset="88%"  stop-color="#8a5d02"/>
-      <stop offset="100%" stop-color="#5a3d02"/>
-    </linearGradient>
     <!-- Highlight rim — softened so the top isn't over-bright. -->
-    <linearGradient id="ring-rim-highlight" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fbe0a8" stop-opacity="0.45"/>
-      <stop offset="32%"  stop-color="#fbe0a8" stop-opacity="0.20"/>
-      <stop offset="55%"  stop-color="#fbe0a8" stop-opacity="0.00"/>
-      <stop offset="100%" stop-color="#fbe0a8" stop-opacity="0.00"/>
-    </linearGradient>
     <!-- Shadow rim — dialed WAY back. The previous rim peaked at 0.55
          opacity at the bottom; against the teal face that read as
          "the ring is narrower here" because the dark shadow blended
          INTO the dark face beyond the ring. New peak is 0.22; just
          enough to define the bevel, not enough to eat the rim. -->
-    <linearGradient id="ring-rim-shadow" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#3a2810" stop-opacity="0.00"/>
-      <stop offset="55%"  stop-color="#3a2810" stop-opacity="0.00"/>
-      <stop offset="78%"  stop-color="#3a2810" stop-opacity="0.10"/>
-      <stop offset="100%" stop-color="#3a2810" stop-opacity="0.22"/>
-    </linearGradient>
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="bloom-blur"/>
       <feFlood flood-color="#d4920c" result="bloom-color"/>
@@ -82,9 +62,5 @@
   <!-- Main ring — stroke 24 (was effectively ~16 at this scale via
        app-icon's stroke=14 @ r=224). Thicker for visual presence. -->
   <circle cx="300" cy="300" r="226" fill="none"
-          stroke="url(#ring-bevel)" stroke-width="24"/>
-  <circle cx="300" cy="300" r="217" fill="none"
-          stroke="url(#ring-rim-highlight)" stroke-width="3"/>
-  <circle cx="300" cy="300" r="235" fill="none"
-          stroke="url(#ring-rim-shadow)" stroke-width="3"/>
+          stroke="#d4920c" stroke-width="24"/>
 </svg>

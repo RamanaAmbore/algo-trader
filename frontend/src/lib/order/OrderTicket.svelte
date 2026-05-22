@@ -557,9 +557,10 @@
         await modifyOrder(orderId, payload);
         submitOk = `Order #${orderId} modified`;
         // Surface the diff to the caller so the page can refresh
-        // its order list / log the change.
+        // its order list / log the change. Modal stays open with the
+        // Exit button until the operator dismisses it (was 1.2 s auto-
+        // close; operator couldn't read the confirmation in time).
         await onSubmit({ action: 'modify', orderId, ...payload });
-        setTimeout(onClose, 1200);
       } catch (e) {
         submitErr = /** @type {any} */ (e)?.message || String(e);
       } finally {
@@ -614,24 +615,26 @@
           chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
         });
         // Show inline confirmation so the operator sees the order
-        // landed before the modal closes. Backend returns
-        // {order_id, mode, status, detail} — surface order_id +
-        // mode for clarity.
-        const oid = resp?.order_id || '?';
-        submitOk = `${(_mode || '').toUpperCase()} order placed · #${oid}`;
+        // landed; modal stays open until the operator clicks Exit.
+        // Backend returns {order_id, mode, status, detail} — surface
+        // a verbose summary line with side / qty / symbol / price.
+        const oid   = resp?.order_id || '?';
+        const px    = showLimit && _price ? `@₹${_roundToTick(_price)}` : '@MKT';
+        submitOk = (
+          `${(_mode || '').toUpperCase()} ${_side} ${_qty} ${symbol} ${px} · ` +
+          `#${oid}`
+        );
       }
       // Notify the caller — DRAFT mode appends to drafts[]; PAPER /
       // LIVE let the caller refresh its local view if it wants to.
       await onSubmit(payload);
-      // DRAFT closes immediately. PAPER / shadow: 200 ms flash so the
-      // operator sees "order placed" without the ticket lingering.
-      // LIVE keeps a slightly longer 600 ms pause (real broker hit).
+      // DRAFT closes immediately; PAPER / LIVE stay open with an Exit
+      // button so the operator can read the placed-order line. The
+      // previous auto-close (200 / 600 ms) was racing the operator's
+      // gaze — the inline "✓ placed" flash was visible for a heartbeat
+      // then gone, leaving them unsure what landed.
       if (_mode === 'draft') {
         onClose();
-      } else if (_mode === 'live') {
-        setTimeout(onClose, 600);
-      } else {
-        setTimeout(onClose, 200);
       }
     } catch (e) {
       submitErr = /** @type {any} */ (e)?.message || String(e);
@@ -963,87 +966,94 @@
     {#if validationErr}
       <div class="ot-err">{validationErr}</div>
     {/if}
-    {#if _mode !== 'draft' && _account && Number(_qty) > 0 && symbol}
-      <!-- Pre-submit cost / margin preview — Kite basket_margin via the
-           same preflight endpoint that gates live placement. Shown only
-           when the form has enough state to compute (account + qty +
-           symbol). Drafts skip this; they're page-local what-ifs. -->
-      <div class="ot-margin">
-        {#if _marginLoading && !_marginPreview}
-          <span class="ot-margin-label">Computing margin…</span>
-        {:else if _marginPreview?.error}
-          <span class="ot-margin-err">⚠ {_marginPreview.error}</span>
-        {:else if _marginPreview}
-          {@const _d = _marginPreview.diagnostics ?? {}}
-          {@const _required  = Number(_d.basket_margin_used)  || 0}
-          {@const _available = _d.available_margin}
-          {@const _shortfall = Number(_d.margin_shortfall)    || 0}
-          {@const _label = (_side === 'BUY' && (_type === 'LIMIT' || _type === 'MARKET') && isOption)
-                              ? 'COST'   /* long-option debit = premium × qty */
-                              : 'MARGIN' /* SPAN + exposure / shorts / futures */}
-          <div class="ot-margin-row">
-            <span class="ot-margin-label">{_label}</span>
-            <span class="ot-margin-value">₹{aggFmt(_required)}</span>
-          </div>
-          {#if typeof _available === 'number'}
-            <div class="ot-margin-row ot-margin-row-sub">
-              <span class="ot-margin-label">Available</span>
-              <span class="ot-margin-value">₹{aggFmt(_available)}</span>
-            </div>
-          {/if}
-          {#if _shortfall > 0}
-            <div class="ot-margin-row ot-margin-row-err">
-              <span class="ot-margin-label">Shortfall</span>
-              <span class="ot-margin-value">−₹{aggFmt(_shortfall)}</span>
-            </div>
-          {/if}
-          {#if (_marginPreview.blocked || []).length}
-            {#each _marginPreview.blocked as _b}
-              <div class="ot-margin-blocked">⚠ {_b.reason}</div>
-            {/each}
-          {/if}
-        {/if}
-      </div>
-    {/if}
-
     {#if submitErr}
       <!-- Surface backend rejections (preflight 422, 503, broker errors)
            inline. Silent failure was causing operators to believe orders
            had been placed when they hadn't. -->
       <div class="ot-err">{submitErr}</div>
     {/if}
-    {#if submitOk}
-      <div class="ot-ok">✓ {submitOk}</div>
-    {/if}
 
     <div class="ot-footer">
-      <button type="button" class="ot-cancel" onclick={onClose}>Cancel</button>
-      {#if onAddToBasket && action === 'open'}
-        <!-- "+ Basket" — stages the leg into the caller's basket
-             panel instead of placing now. Shown only when the
-             caller wired onAddToBasket (currently /admin/options
-             chain `(i)` flow); other callers see just Cancel +
-             Place. -->
-        <button type="button" class="ot-basket"
-                disabled={!!validationErr || submitting}
-                title="Add this leg to the basket — place every leg together later"
-                onclick={addToBasket}>+ Basket</button>
-      {/if}
-      {#if basketMode && action !== 'modify'}
-        <!-- basketMode: primary action is "Add to basket" — no backend hit. -->
-        <button type="button" class="ot-submit ot-submit-basket-mode"
-                disabled={!!validationErr}
-                onclick={addToBasket}>
-          + Add to basket
-        </button>
+      <!-- Left side of the footer: margin preview BEFORE submit, placed-
+           order summary AFTER a successful submit. Same vertical slot;
+           replaces what used to be a separate row above the footer. -->
+      <div class="ot-footer-info">
+        {#if submitOk}
+          <div class="ot-ok">✓ {submitOk}</div>
+        {:else if _mode !== 'draft' && _account && Number(_qty) > 0 && symbol}
+          {#if _marginLoading && !_marginPreview}
+            <span class="ot-margin-label">Computing margin…</span>
+          {:else if _marginPreview?.error}
+            <span class="ot-margin-err">⚠ {_marginPreview.error}</span>
+          {:else if _marginPreview}
+            {@const _d = _marginPreview.diagnostics ?? {}}
+            {@const _required  = Number(_d.basket_margin_used)  || 0}
+            {@const _available = _d.available_margin}
+            {@const _shortfall = Number(_d.margin_shortfall)    || 0}
+            {@const _label = (_side === 'BUY' && (_type === 'LIMIT' || _type === 'MARKET') && isOption)
+                                ? 'COST'   /* long-option debit = premium × qty */
+                                : 'MARGIN' /* SPAN + exposure / shorts / futures */}
+            <div class="ot-margin-row">
+              <span class="ot-margin-label">{_label}</span>
+              <span class="ot-margin-value">₹{aggFmt(_required)}</span>
+            </div>
+            {#if typeof _available === 'number'}
+              <div class="ot-margin-row ot-margin-row-sub">
+                <span class="ot-margin-label">Avail</span>
+                <span class="ot-margin-value">₹{aggFmt(_available)}</span>
+              </div>
+            {/if}
+            {#if _shortfall > 0}
+              <div class="ot-margin-row ot-margin-row-err">
+                <span class="ot-margin-label">Short</span>
+                <span class="ot-margin-value">−₹{aggFmt(_shortfall)}</span>
+              </div>
+            {/if}
+            {#if (_marginPreview.blocked || []).length}
+              {#each _marginPreview.blocked as _b}
+                <div class="ot-margin-blocked">⚠ {_b.reason}</div>
+              {/each}
+            {/if}
+          {/if}
+        {/if}
+      </div>
+
+      <!-- Right side of the footer: buttons. After a successful submit
+           collapses to a single Exit button — modal stays open until
+           the operator dismisses it, so they can read the placed-order
+           line above. -->
+      {#if submitOk}
+        <button type="button" class="ot-exit"
+                onclick={onClose}>Exit</button>
       {:else}
-        <button type="button" class="ot-submit"
-                class:ot-submit-buy={_side === 'BUY'}
-                class:ot-submit-sell={_side === 'SELL'}
-                disabled={!!validationErr || submitting}
-                onclick={submit}>
-          {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
-        </button>
+        <button type="button" class="ot-cancel" onclick={onClose}>Cancel</button>
+        {#if onAddToBasket && action === 'open'}
+          <!-- "+ Basket" — stages the leg into the caller's basket
+               panel instead of placing now. Shown only when the
+               caller wired onAddToBasket (currently /admin/options
+               chain `(i)` flow); other callers see just Cancel +
+               Place. -->
+          <button type="button" class="ot-basket"
+                  disabled={!!validationErr || submitting}
+                  title="Add this leg to the basket — place every leg together later"
+                  onclick={addToBasket}>+ Basket</button>
+        {/if}
+        {#if basketMode && action !== 'modify'}
+          <!-- basketMode: primary action is "Add to basket" — no backend hit. -->
+          <button type="button" class="ot-submit ot-submit-basket-mode"
+                  disabled={!!validationErr}
+                  onclick={addToBasket}>
+            + Add to basket
+          </button>
+        {:else}
+          <button type="button" class="ot-submit"
+                  class:ot-submit-buy={_side === 'BUY'}
+                  class:ot-submit-sell={_side === 'SELL'}
+                  disabled={!!validationErr || submitting}
+                  onclick={submit}>
+            {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
+          </button>
+        {/if}
       {/if}
     </div>
   </div>
@@ -1456,19 +1466,9 @@
     margin: 0.4rem 0;
   }
   /* ── Margin / cash preview ─────────────────────────────────────────
-     Compact two-column strip sitting between the form fields and the
-     err/ok rows. Amber accent on the primary row (matches the algo
-     palette's "money" tone — same hue as the gold ring in the brand
-     icon). Sub-rows render in cooler grey so the eye anchors on the
-     primary line first. */
-  .ot-margin {
-    margin: 0.5rem 0 0.2rem 0;
-    padding: 0.35rem 0.55rem 0.45rem;
-    background: rgba(251,191,36,0.05);
-    border-left: 2px solid rgba(251,191,36,0.55);
-    border-radius: 2px;
-    font-size: 0.62rem;
-  }
+     Rows live inline inside .ot-footer-info, to the left of the
+     Cancel/Submit buttons. No outer container — the footer's top
+     border + the buttons' visual weight provide enough containment. */
   .ot-margin-row {
     display: flex;
     justify-content: space-between;
@@ -1506,15 +1506,20 @@
     color: rgba(248,113,113,0.85);
     font-size: 0.6rem;
   }
+  /* Placed-order summary line — lives inside .ot-footer-info, to the
+     left of the Exit button. Compact (no vertical margin, smaller pad
+     than the prior block-level version) so the footer doesn't shove
+     the form fields off-screen. */
   .ot-ok {
     background: rgba(74,222,128,0.10);
     border: 1px solid rgba(74,222,128,0.45);
     color: #4ade80;
-    padding: 0.35rem 0.55rem;
+    padding: 0.3rem 0.5rem;
     border-radius: 3px;
     font-size: 0.65rem;
     font-weight: 700;
-    margin: 0.4rem 0;
+    line-height: 1.3;
+    word-break: break-word;
   }
   /* Readonly single-account display — matches the custom Select
      trigger's metrics so single-account vs multi-account UIs sit at
@@ -1570,12 +1575,25 @@
 
   .ot-footer {
     display: flex;
-    gap: 0.5rem;
-    justify-content: flex-end;
+    gap: 0.75rem;
+    align-items: center;
     padding-top: 0.6rem;
     border-top: 1px solid rgba(255,255,255,0.08);
   }
+  /* Left side of the footer: flex-grows to occupy free space so the
+     buttons stay pinned to the right edge regardless of how long the
+     margin / placed-order text gets. Anchored-left content (margin
+     rows, ok line) reads naturally next to the right-aligned buttons. */
+  .ot-footer-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .ot-footer-info:empty { display: none; }
   .ot-cancel,
+  .ot-exit,
   .ot-basket,
   .ot-submit {
     padding: 0.45rem 1rem;
@@ -1584,7 +1602,17 @@
     font-weight: 700;
     cursor: pointer;
     border: 1px solid transparent;
+    flex-shrink: 0;
   }
+  /* Exit — appears in place of Cancel + Submit after a successful
+     order. Outlined champagne so it reads as "you've completed the
+     action; close when ready", not as another primary submit. */
+  .ot-exit {
+    background: rgba(212,146,12,0.12);
+    border-color: rgba(212,146,12,0.55);
+    color: #d4920c;
+  }
+  .ot-exit:hover { background: rgba(212,146,12,0.22); border-color: rgba(212,146,12,0.85); }
   .ot-cancel {
     background: transparent;
     border-color: rgba(255,255,255,0.18);
