@@ -31,14 +31,18 @@
   <meta property="og:description" content="Get in touch with RamboQuant Analytics LLP — for partnership inquiries, support, or general questions." />
   <meta property="og:url" content="https://ramboq.com/contact" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image-card.png" />
+  <meta property="og:image" content="https://ramboq.com/og-image-thumb.png" />
+  <meta property="og:image:width" content="600" />
+  <meta property="og:image:height" content="600" />
+  <meta property="og:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
   <meta property="og:site_name" content="RamboQuant Analytics" />
 
   <!-- Twitter -->
-  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="Contact Us | RamboQuant Analytics" />
   <meta name="twitter:description" content="Get in touch with RamboQuant Analytics LLP — for partnership inquiries, support, or general questions." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image-card.png" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image-thumb.png" />
+  <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
 <div class="max-w-sm mx-auto">

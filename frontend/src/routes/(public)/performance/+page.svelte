@@ -18,14 +18,18 @@
   <meta property="og:description" content="Real-time view of RamboQuant's holdings, positions, and portfolio P&L." />
   <meta property="og:url" content="https://ramboq.com/performance" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image-card.png" />
+  <meta property="og:image" content="https://ramboq.com/og-image-thumb.png" />
+  <meta property="og:image:width" content="600" />
+  <meta property="og:image:height" content="600" />
+  <meta property="og:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
   <meta property="og:site_name" content="RamboQuant Analytics" />
 
   <!-- Twitter -->
-  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="Live Portfolio Performance | RamboQuant Analytics" />
   <meta name="twitter:description" content="Real-time view of RamboQuant's holdings, positions, and portfolio P&L." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image-card.png" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image-thumb.png" />
+  <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
 <PerformancePage />
