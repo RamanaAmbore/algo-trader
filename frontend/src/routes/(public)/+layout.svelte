@@ -509,7 +509,13 @@
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
-    border-top: 1px solid rgba(200,168,75,0.45);
+    /* Symmetric champagne hairlines top + bottom — mirrors .pub-navbar
+       which has a 2px gold border-bottom at the navbar/card seam.
+       Without the matching border-bottom, the footer's bottom edge
+       fades straight into the accent-bottom strip, leaving the footer
+       visually unanchored on its lower side. */
+    border-top:    1px solid rgba(200,168,75,0.45);
+    border-bottom: 1px solid rgba(200,168,75,0.45);
     height: 1.4rem;
     display: flex;
     align-items: center;

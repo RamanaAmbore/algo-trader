@@ -104,11 +104,18 @@
     color: #d4920c;
   }
   .stat-creds {
-    font-size: 0.9rem;
+    /* Aligned vertically with .stat-num — the numeric stats render at
+       font-size: 2rem with line-height: 1 (= 2rem block height).
+       Earlier the credentials line was 0.9rem at line-height 1.3
+       (~1.17rem block), leaving the credentials baseline noticeably
+       higher than the 22%+ / 25+ baselines. Bumping font-size to
+       1.15rem + line-height to 2rem makes the three stat lines sit
+       on the same baseline and read at comparable visual weight. */
+    font-size: 1.15rem;
     font-weight: 800;
     color: #1a2744;
-    letter-spacing: 0.04em;
-    line-height: 1.3;
+    letter-spacing: 0.03em;
+    line-height: 2rem;
   }
   .stat-label {
     font-size: 0.6rem;
