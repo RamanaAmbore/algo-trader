@@ -92,7 +92,19 @@ _spa_fallback       = None
 _spa_root           = None
 
 if _FRONTEND_BUILD.exists():
-    _index_html = _FRONTEND_BUILD / "_spa.html"
+    # SvelteKit's adapter-static writes TWO root-level HTMLs:
+    #   - index.html  — the PRERENDERED homepage. Contains the full
+    #     <svelte:head> block from (public)/+page.svelte, including
+    #     og:image / og:title / twitter:image meta tags that WhatsApp,
+    #     Twitter, LinkedIn, Slack unfurlers scrape on link share.
+    #   - _spa.html   — the bare SPA shell. No per-page meta tags —
+    #     used only for client-side-only routes (algo console, admin
+    #     pages, anything that hydrates after JS runs).
+    # Serve index.html at "/" so OG unfurlers see the right tags;
+    # fall back to _spa.html for hydration-only routes.
+    _index_html      = _FRONTEND_BUILD / "_spa.html"
+    _home_html       = _FRONTEND_BUILD / "index.html"
+    _root_html       = _home_html if _home_html.is_file() else _index_html
 
     _static_router = create_static_files_router(
         path="/_app",
@@ -124,13 +136,13 @@ if _FRONTEND_BUILD.exists():
     async def _spa_fallback(path: str) -> File:  # noqa: F811
         # Guard against directory traversal
         if ".." in path:
-            return _serve(_index_html, filename="index.html")
+            return _serve(_root_html, filename="index.html")
         # Litestar's `{path:path}` capture includes the leading slash; pathlib's
         # `/` operator replaces the base when given an absolute path, so always
         # strip leading + trailing slashes before joining.
         rel = path.strip("/")
         if not rel:
-            return _serve(_index_html, filename="index.html")
+            return _serve(_root_html, filename="index.html")
         static_file = _FRONTEND_BUILD / rel
         # 1. Exact match (PNG, SVG, robots.txt, etc.)
         if static_file.is_file():
@@ -144,7 +156,7 @@ if _FRONTEND_BUILD.exists():
 
     @get("/", include_in_schema=False)
     async def _spa_root() -> File:  # noqa: F811
-        return _serve(_index_html, filename="index.html")
+        return _serve(_root_html, filename="index.html")
 
     logger.info(f"Serving SvelteKit build from {_FRONTEND_BUILD}")
 else:
