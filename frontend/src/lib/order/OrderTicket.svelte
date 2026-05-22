@@ -28,7 +28,7 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
-  import { placeTicketOrder, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
   import { getInstrument } from '$lib/data/instruments';
@@ -458,6 +458,72 @@
 
   let submitting = $state(false);
   /** @type {string} */ let submitErr = $state('');
+
+  // ── Margin / cash preview ────────────────────────────────────────
+  // Calls /api/orders/preflight on field change (debounced 350 ms) so
+  // the operator sees the SPAN + premium / cash cost of the order BEFORE
+  // they click Submit. Mirrors IB TWS's "Order Confirmation / what-if"
+  // preview and NinjaTrader's buying-power panel — standard for any
+  // trading desk where margin gates the order. Backend reuses the same
+  // preflight that the live-order submit path runs, so the numbers the
+  // operator sees here are the same numbers the broker will charge.
+  let _marginPreview = $state(/** @type {any} */ (null));
+  let _marginLoading = $state(false);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _marginTimer = null;
+
+  $effect(() => {
+    // Track everything that materially affects the basket_margin number.
+    // (Svelte 5 picks up reads inside this function automatically.)
+    const _watchers = [
+      _side, _qty, _account, _product, _type, _variety,
+      _price, _trigger, symbol, exchange,
+    ];
+    void _watchers;
+
+    if (_marginTimer) {
+      clearTimeout(_marginTimer);
+      _marginTimer = null;
+    }
+    // Skip when the ticket is incomplete — no point hitting Kite with
+    // a half-typed form. Also skip drafts (no broker; cost is the limit
+    // × qty multiplication which the operator can already see).
+    if (!_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
+      _marginPreview = null;
+      _marginLoading = false;
+      return;
+    }
+    _marginLoading = true;
+    _marginTimer = setTimeout(async () => {
+      try {
+        const payload = {
+          account: _account,
+          tradingsymbol: symbol,
+          exchange: exchange || 'NFO',
+          quantity: Number(_qty),
+          side: _side,
+          order_type: _type,
+          product: _product,
+          variety: _variety,
+          price: showLimit ? Number(_price) || 0 : 0,
+          trigger_price: showTrigger ? Number(_trigger) || 0 : 0,
+        };
+        _marginPreview = await previewOrderMargin(payload);
+      } catch (e) {
+        _marginPreview = { error: (e?.message || 'preview failed').slice(0, 60) };
+      } finally {
+        _marginLoading = false;
+      }
+    }, 350);
+
+    return () => {
+      if (_marginTimer) {
+        clearTimeout(_marginTimer);
+        _marginTimer = null;
+      }
+    };
+  });
+
   // Inline success state — shown briefly inside the modal after a
   // successful PAPER / LIVE submit so the operator sees confirmation
   // before the modal closes. Without it the modal disappears silently
@@ -922,6 +988,49 @@
     {#if validationErr}
       <div class="ot-err">{validationErr}</div>
     {/if}
+    {#if _mode !== 'draft' && _account && Number(_qty) > 0 && symbol}
+      <!-- Pre-submit cost / margin preview — Kite basket_margin via the
+           same preflight endpoint that gates live placement. Shown only
+           when the form has enough state to compute (account + qty +
+           symbol). Drafts skip this; they're page-local what-ifs. -->
+      <div class="ot-margin">
+        {#if _marginLoading && !_marginPreview}
+          <span class="ot-margin-label">Computing margin…</span>
+        {:else if _marginPreview?.error}
+          <span class="ot-margin-err">⚠ {_marginPreview.error}</span>
+        {:else if _marginPreview}
+          {@const _d = _marginPreview.diagnostics ?? {}}
+          {@const _required  = Number(_d.basket_margin_used)  || 0}
+          {@const _available = _d.available_margin}
+          {@const _shortfall = Number(_d.margin_shortfall)    || 0}
+          {@const _label = (_side === 'BUY' && (_type === 'LIMIT' || _type === 'MARKET') && isOption)
+                              ? 'COST'   /* long-option debit = premium × qty */
+                              : 'MARGIN' /* SPAN + exposure / shorts / futures */}
+          <div class="ot-margin-row">
+            <span class="ot-margin-label">{_label}</span>
+            <span class="ot-margin-value">₹{aggFmt(_required)}</span>
+          </div>
+          {#if typeof _available === 'number'}
+            <div class="ot-margin-row ot-margin-row-sub">
+              <span class="ot-margin-label">Available</span>
+              <span class="ot-margin-value">₹{aggFmt(_available)}</span>
+            </div>
+          {/if}
+          {#if _shortfall > 0}
+            <div class="ot-margin-row ot-margin-row-err">
+              <span class="ot-margin-label">Shortfall</span>
+              <span class="ot-margin-value">−₹{aggFmt(_shortfall)}</span>
+            </div>
+          {/if}
+          {#if (_marginPreview.blocked || []).length}
+            {#each _marginPreview.blocked as _b}
+              <div class="ot-margin-blocked">⚠ {_b.reason}</div>
+            {/each}
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
     {#if submitErr}
       <!-- Surface backend rejections (preflight 422, 503, broker errors)
            inline. Silent failure was causing operators to believe orders
@@ -1396,6 +1505,57 @@
     border-radius: 3px;
     font-size: 0.62rem;
     margin: 0.4rem 0;
+  }
+  /* ── Margin / cash preview ─────────────────────────────────────────
+     Compact two-column strip sitting between the form fields and the
+     err/ok rows. Amber accent on the primary row (matches the algo
+     palette's "money" tone — same hue as the gold ring in the brand
+     icon). Sub-rows render in cooler grey so the eye anchors on the
+     primary line first. */
+  .ot-margin {
+    margin: 0.5rem 0 0.2rem 0;
+    padding: 0.35rem 0.55rem 0.45rem;
+    background: rgba(251,191,36,0.05);
+    border-left: 2px solid rgba(251,191,36,0.55);
+    border-radius: 2px;
+    font-size: 0.62rem;
+  }
+  .ot-margin-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .ot-margin-row + .ot-margin-row { margin-top: 0.15rem; }
+  .ot-margin-label {
+    color: #fbbf24;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 0.58rem;
+  }
+  .ot-margin-value {
+    color: #c8d8f0;
+    font-weight: 700;
+    font-size: 0.7rem;
+  }
+  /* Sub-row — Available, etc. Lower contrast so the primary row dominates. */
+  .ot-margin-row-sub .ot-margin-label { color: rgba(200,216,240,0.55); font-weight: 500; }
+  .ot-margin-row-sub .ot-margin-value { color: rgba(200,216,240,0.75); font-weight: 500; font-size: 0.62rem; }
+  /* Shortfall row — red so the operator sees they can't afford this. */
+  .ot-margin-row-err .ot-margin-label,
+  .ot-margin-row-err .ot-margin-value { color: #f87171; font-weight: 700; }
+  /* Preflight blockers (segment inactive, freeze qty, etc.) */
+  .ot-margin-blocked {
+    color: #f87171;
+    font-size: 0.58rem;
+    margin-top: 0.2rem;
+    line-height: 1.35;
+  }
+  .ot-margin-err {
+    color: rgba(248,113,113,0.85);
+    font-size: 0.6rem;
   }
   .ot-ok {
     background: rgba(74,222,128,0.10);

@@ -466,6 +466,18 @@ export async function placeTicketOrder(payload) {
   return _post('/orders/ticket', payload, { auth: true });
 }
 
+/** POST /api/orders/preflight — pre-submit cost/margin estimate. Reuses
+ *  the live-order safety preflight to compute basket_margin (required)
+ *  + available_margin via Kite. OrderTicket calls this on field change
+ *  (debounced) to show "MARGIN ₹X" / "AVAILABLE ₹Y" inline above Submit.
+ *
+ *  Returns `{ok, blocked[], diagnostics:{basket_margin_used,
+ *  available_margin, margin_shortfall}}`. Never throws on Kite errors —
+ *  returns the structured response and the caller handles empty fields. */
+export async function previewOrderMargin(payload) {
+  return _post('/orders/preflight', payload, { auth: true });
+}
+
 /** GET /api/charts/batch — N charts in one round-trip. Returns
  *  `{mode, charts: [ChartResponse, …]}` in the order of `symbols`. */
 export async function fetchChartBatch(mode, symbols, since = null, limit = 600) {
