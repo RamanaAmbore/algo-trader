@@ -10,27 +10,27 @@
 
     <!-- 3D ring main gradient: cream highlight at top, deep brown at bottom. -->
     <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff5d0" />
-      <stop offset="18%"  stop-color="#f0d070" />
-      <stop offset="48%"  stop-color="#c8a84b" />
-      <stop offset="78%"  stop-color="#7a5a20" />
-      <stop offset="100%" stop-color="#2a1808" />
+      <stop offset="0%"   stop-color="#f0d588" />
+      <stop offset="25%"  stop-color="#e8c468" />
+      <stop offset="50%"  stop-color="#c8a84b" />
+      <stop offset="78%"  stop-color="#9a7e38" />
+      <stop offset="100%" stop-color="#6a4a18" />
     </linearGradient>
 
     <!-- Top-only cream sheen — riding along the inner edge for torus bevel. -->
     <linearGradient id="ring-rim-highlight" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff8dc" stop-opacity="1.00" />
-      <stop offset="28%"  stop-color="#fff8dc" stop-opacity="0.55" />
-      <stop offset="50%"  stop-color="#fff8dc" stop-opacity="0.00" />
+      <stop offset="0%"   stop-color="#fff8dc" stop-opacity="0.45" />
+      <stop offset="28%"  stop-color="#fff8dc" stop-opacity="0.22" />
+      <stop offset="55%"  stop-color="#fff8dc" stop-opacity="0.00" />
       <stop offset="100%" stop-color="#fff8dc" stop-opacity="0.00" />
     </linearGradient>
 
     <!-- Bottom-only dark rim — riding along the outer edge for torus bevel. -->
     <linearGradient id="ring-rim-shadow" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#1a0d00" stop-opacity="0.00" />
-      <stop offset="50%"  stop-color="#1a0d00" stop-opacity="0.00" />
-      <stop offset="72%"  stop-color="#1a0d00" stop-opacity="0.55" />
-      <stop offset="100%" stop-color="#1a0d00" stop-opacity="0.90" />
+      <stop offset="0%"   stop-color="#3a2810" stop-opacity="0.00" />
+      <stop offset="45%"  stop-color="#3a2810" stop-opacity="0.00" />
+      <stop offset="72%"  stop-color="#3a2810" stop-opacity="0.30" />
+      <stop offset="100%" stop-color="#3a2810" stop-opacity="0.55" />
     </linearGradient>
 
     <!-- Three-layer gold halo on the bull: wide bloom + outer + tight inner.
