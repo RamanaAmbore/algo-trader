@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
 
-from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -114,17 +113,20 @@ class ChaseConfig:
     # 1-order/sec rate limit and gives the operator time to react.
 
 
-def _get_kite(account: str):
-    """Get authenticated Kite connection for an account."""
-    conns = Connections()
-    return conns.conn[account].get_kite_conn()
+def _get_broker(account: str):
+    """Return the `Broker` adapter for `account`. Routes through the
+    registry so the chase engine doesn't know or care whether the
+    backing broker is Kite, Groww, Dhan, or anything we add later —
+    every method called below is on the `Broker` ABC."""
+    from backend.shared.brokers.registry import get_broker
+    return get_broker(account)
 
 
 def _get_depth(account: str, exchange: str, symbol: str) -> dict:
     """Fetch market depth for a symbol. Returns {buy: [...], sell: [...]}."""
-    kite = _get_kite(account)
+    broker = _get_broker(account)
     key = f"{exchange}:{symbol}"
-    data = kite.quote([key])
+    data = broker.quote([key])
     if key not in data:
         raise ValueError(f"No quote data for {key}")
     return data[key].get("depth", {})
@@ -132,9 +134,9 @@ def _get_depth(account: str, exchange: str, symbol: str) -> dict:
 
 def _get_ltp(account: str, exchange: str, symbol: str) -> float:
     """Fetch last traded price."""
-    kite = _get_kite(account)
+    broker = _get_broker(account)
     key = f"{exchange}:{symbol}"
-    data = kite.ltp([key])
+    data = broker.ltp([key])
     return data.get(key, {}).get("last_price", 0.0)
 
 
@@ -248,16 +250,18 @@ def _snap_to_tick(price: float, tick: float) -> float:
 def _place_order(account: str, symbol: str, transaction_type: str,
                  quantity: int, price: float, cfg: ChaseConfig) -> str:
     """Place a limit order. Returns order_id."""
-    from backend.shared.brokers.kite import to_kite_qty
-    kite      = _get_kite(account)
+    broker    = _get_broker(account)
     lot_size  = _lot_size_sync(cfg.exchange, symbol)
-    kite_qty  = to_kite_qty(cfg.exchange, quantity, lot_size)
-    order_id = kite.place_order(
+    # normalise_qty handles per-broker contract↔lot translation
+    # (Kite needs lots for MCX/NCO, qty for everything else). Default
+    # is a no-op for brokers that always accept contracts.
+    broker_qty = broker.normalise_qty(cfg.exchange, quantity, lot_size)
+    order_id = broker.place_order(
         variety=cfg.variety,
         exchange=cfg.exchange,
         tradingsymbol=symbol,
         transaction_type=transaction_type,
-        quantity=kite_qty,
+        quantity=broker_qty,
         product=cfg.product,
         order_type="LIMIT",
         price=price,
@@ -268,14 +272,14 @@ def _place_order(account: str, symbol: str, transaction_type: str,
 
 def _cancel_order(account: str, order_id: str, variety: str = "regular"):
     """Cancel an open order."""
-    kite = _get_kite(account)
-    kite.cancel_order(variety=variety, order_id=order_id)
+    broker = _get_broker(account)
+    broker.cancel_order(order_id, variety=variety)
 
 
 def _order_status(account: str, order_id: str) -> dict:
     """Get order status. Returns dict with status, filled_quantity, etc."""
-    kite = _get_kite(account)
-    orders = kite.orders()
+    broker = _get_broker(account)
+    orders = broker.orders()
     for o in orders:
         if str(o.get("order_id")) == order_id:
             return o

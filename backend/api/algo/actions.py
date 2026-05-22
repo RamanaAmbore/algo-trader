@@ -535,13 +535,12 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
             "price":            order.get("price"),
             "variety":          order.get("variety", "regular"),
         }
-        # KiteConnect exposes `basket_margin` which validates a list of
-        # orders without placing them. Raises on malformed parameters.
-        # broker.kite.basket_order_margins is a synchronous requests call; run it
-        # in a thread executor so the event loop is not blocked.
+        # basket_order_margins lives on the Broker ABC — every adapter
+        # validates orders without placing them. Sync HTTP under the
+        # hood, so offload to a thread to keep the event loop free.
         import asyncio
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, broker.kite.basket_order_margins, [basket_order])
+        await loop.run_in_executor(None, broker.basket_order_margins, [basket_order])
         return True, "basket_margin OK"
     except Exception as e:
         return False, str(e)[:240]
@@ -597,8 +596,12 @@ async def run_preflight(account: str, order: dict) -> dict:
         })
         return {"ok": False, "blocked": blocked, "diagnostics": diagnostics}
 
-    kite_conn = conns.conn[account]
-    kite = kite_conn.get_kite_conn()
+    # Resolve via the Broker registry — every method below is on the
+    # Broker ABC (profile / instruments / basket_order_margins / margins),
+    # so this function is broker-agnostic. When a Groww or Dhan account
+    # lands, no further change here is needed.
+    from backend.shared.brokers.registry import get_broker
+    broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
     exchange  = str(order.get("exchange", "NFO"))
@@ -612,7 +615,7 @@ async def run_preflight(account: str, order: dict) -> dict:
 
     # ── 2. SEGMENT_INACTIVE ───────────────────────────────────────────────
     try:
-        profile = await loop.run_in_executor(None, kite.profile)
+        profile = await loop.run_in_executor(None, broker.profile)
         enabled_exchanges = set(profile.get("exchanges") or [])
         if exchange not in enabled_exchanges:
             blocked.append({
@@ -629,7 +632,7 @@ async def run_preflight(account: str, order: dict) -> dict:
     if exchange in ("NFO", "BFO", "MCX", "CDS") and qty > 0:
         try:
             raw_instruments = await loop.run_in_executor(
-                None, kite.instruments, exchange
+                None, broker.instruments, exchange
             )
             freeze_qty: int | None = None
             lot_size: int = 1
@@ -659,14 +662,14 @@ async def run_preflight(account: str, order: dict) -> dict:
             logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
 
     # ── 4. MARGIN_SHORTFALL ───────────────────────────────────────────────
-    from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+    from backend.shared.brokers.kite import get_lot_size
     _lot_size = await get_lot_size(exchange, symbol)
-    _kite_qty = to_kite_qty(exchange, qty, _lot_size)
+    _broker_qty = broker.normalise_qty(exchange, qty, _lot_size)
     basket_order = {
         "exchange":         exchange,
         "tradingsymbol":    symbol,
         "transaction_type": side,
-        "quantity":         _kite_qty,
+        "quantity":         _broker_qty,
         "order_type":       order_type,
         "product":          product,
         "price":            float(price) if price else 0.0,
@@ -674,7 +677,7 @@ async def run_preflight(account: str, order: dict) -> dict:
     }
     try:
         bm_result = await loop.run_in_executor(
-            None, kite.basket_order_margins, [basket_order]
+            None, broker.basket_order_margins, [basket_order]
         )
         # Kite returns a list; take the first element.
         if isinstance(bm_result, list) and bm_result:
@@ -695,19 +698,18 @@ async def run_preflight(account: str, order: dict) -> dict:
         available = None
         m_enabled = None
         try:
-            # Use the un-segmented kite.margins() call which returns both
-            # equity + commodity. Counter-intuitively, kite.margins("equity")
-            # with the segment arg returns enabled=False for accounts that
-            # the un-segmented call shows as enabled=True with real net.
-            # API quirk; documented by Kite as the segment arg requiring
-            # a separate API scope. Fall back to segmented if all-call
-            # throws.
+            # Use the un-segmented broker.margins() call which returns both
+            # equity + commodity. Counter-intuitively, calling with the
+            # segment arg can return enabled=False for accounts the
+            # un-segmented call reports as enabled=True (Kite API quirk:
+            # the segment arg requires a separate API scope). Fall back to
+            # segmented if the un-segmented call throws.
             try:
-                m_all = await loop.run_in_executor(None, kite.margins)
+                m_all = await loop.run_in_executor(None, broker.margins)
                 m = (m_all or {}).get(segment, {})
             except TypeError:
-                # Some kite SDK versions don't accept zero args.
-                m = await loop.run_in_executor(None, kite.margins, segment)
+                # Some adapters / SDK versions don't accept zero args.
+                m = await loop.run_in_executor(None, broker.margins, segment)
             m_enabled = bool(m.get("enabled"))
             net = m.get("net")
             if isinstance(net, (int, float)) and not math.isnan(float(net)):
@@ -807,36 +809,43 @@ async def run_preflight(account: str, order: dict) -> dict:
     }
 
 
-async def diagnose_live_failure(kite_or_broker, order: dict, kite_error: str) -> str:
+async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     """
-    When kite.place_order raises, run basket_margin to distinguish the
-    likely cause. Kite returns "Insufficient permission for that call"
-    for several distinct conditions (segment scope, account activation,
-    margin shortfall) — basket_margin gives us a second signal:
+    When a place_order call raises, re-run basket_order_margins to
+    distinguish the likely root cause:
 
-      - basket_margin succeeds  →  margin OK; place_order failure is
-                                   likely a segment-permission issue
+      - basket_margin succeeds  →  margin OK; the failure was likely a
+                                   segment-permission issue
       - basket_margin fails with margin/fund/shortfall keywords → margin
-      - basket_margin fails with the same generic error              → unclear
+      - basket_margin fails with the same generic error → unclear
 
-    `kite_or_broker` may be either a raw KiteConnect instance or a
-    `Broker` adapter (which exposes `.kite`). Returns a one-line
-    diagnostic suitable for both the log line and the operator-facing
-    HTTP detail.
+    `broker` is a `Broker` adapter from the registry. For backwards
+    compatibility we still accept a raw SDK handle and reach for its
+    `basket_order_margins` method — callers should pass the adapter.
     """
     import asyncio
-    from backend.shared.brokers.kite import to_kite_qty, get_lot_size
-    kite = getattr(kite_or_broker, "kite", kite_or_broker)
+    from backend.shared.brokers.kite import get_lot_size
+    # Accept either a Broker adapter or a legacy SDK handle.
+    basket_margin_fn = (
+        broker.basket_order_margins
+        if hasattr(broker, "basket_order_margins")
+        else getattr(broker, "kite", broker).basket_order_margins
+    )
+    normalise = (
+        broker.normalise_qty
+        if hasattr(broker, "normalise_qty")
+        else (lambda _exch, _qty, _ls: _qty)
+    )
     _exch   = order.get("exchange", "NFO")
     _sym    = order.get("symbol") or order.get("tradingsymbol") or ""
     _raw_q  = int(order.get("qty") or order.get("quantity") or 0)
     _ls     = await get_lot_size(_exch, _sym)
-    _kq     = to_kite_qty(_exch, _raw_q, _ls)
+    _bq     = normalise(_exch, _raw_q, _ls)
     basket_order = {
         "exchange":         _exch,
         "tradingsymbol":    _sym,
         "transaction_type": order.get("side") or order.get("transaction_type"),
-        "quantity":         _kq,
+        "quantity":         _bq,
         "order_type":       order.get("order_type", "LIMIT"),
         "product":          order.get("product", "NRML"),
         "price":            order.get("price") or 0,
@@ -844,10 +853,10 @@ async def diagnose_live_failure(kite_or_broker, order: dict, kite_error: str) ->
     }
     try:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, kite.basket_order_margins, [basket_order])
+        await loop.run_in_executor(None, basket_margin_fn, [basket_order])
         return ("margin OK via basket_margin — likely segment permission "
                 "(check Account → Segments + API key exchange scope at "
-                "developers.kite.trade)")
+                "the broker's developer console)")
     except Exception as bm_e:
         bm_msg = str(bm_e)
         low = bm_msg.lower()
@@ -1104,7 +1113,7 @@ async def _action_place_order(context: dict, params: dict):
             broker = get_broker(account)
             loop = asyncio.get_running_loop()
             ltp_data = await loop.run_in_executor(
-                None, broker.kite.ltp, [f"{exchange}:{symbol}"]
+                None, broker.ltp, [f"{exchange}:{symbol}"]
             )
             key = f"{exchange}:{symbol}"
             price = float((ltp_data.get(key) or {}).get("last_price") or 0) or None
@@ -1305,7 +1314,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         broker = get_broker(account)
         loop = asyncio.get_running_loop()
         ltp_data = await loop.run_in_executor(
-            None, broker.kite.ltp, [f"{exchange}:{symbol}"]
+            None, broker.ltp, [f"{exchange}:{symbol}"]
         )
         key = f"{exchange}:{symbol}"
         price = float((ltp_data.get(key) or {}).get("last_price") or 0) or None
@@ -1384,7 +1393,7 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     try:
         await loop.run_in_executor(
             None,
-            lambda: broker.kite.modify_order(variety=variety, order_id=order_id, **kwargs)
+            lambda: broker.modify_order(order_id, variety=variety, **kwargs)
         )
     except Exception as e:
         # Update the AlgoOrder row to REJECTED so the operator can see it.
@@ -1427,7 +1436,7 @@ async def _action_live_cancel_order(agent, context: dict, params: dict):
 
     try:
         await loop.run_in_executor(
-            None, broker.kite.cancel_order, variety, order_id
+            None, lambda: broker.cancel_order(order_id, variety=variety)
         )
     except Exception as e:
         raise
@@ -1450,26 +1459,26 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     """
     Cancel every open order across all accounts (or a scoped account).
 
-    Iterates Connections().conn, calls kite.orders() to get the open
-    order list, then kite.cancel_order() for each.  All broker calls are
-    wrapped in run_in_executor.  Returns aggregate cancelled count via log.
+    Routes through the Broker registry — broker.orders() lists the
+    account's open orders, broker.cancel_order() fires the cancel. All
+    calls are wrapped in run_in_executor since the underlying SDKs are
+    synchronous.  Returns aggregate cancelled count via log.
     """
     import asyncio
-    from backend.shared.helpers.connections import Connections
+    from backend.shared.brokers.registry import all_brokers
 
     loop = asyncio.get_running_loop()
     scope_account = str(params.get("account") or "")
-    conns = Connections().conn
 
     total_cancelled = 0
     total_errors = 0
 
-    for acct, kite_conn in conns.items():
+    for broker in all_brokers():
+        acct = broker.account
         if scope_account and acct != scope_account:
             continue
         try:
-            kite = kite_conn.get_kite_conn()
-            orders = await loop.run_in_executor(None, kite.orders)
+            orders = await loop.run_in_executor(None, broker.orders)
             open_orders = [o for o in (orders or [])
                            if str(o.get("status", "")).upper() in
                            ("OPEN", "TRIGGER PENDING", "AMO REQ RECEIVED")]
@@ -1480,7 +1489,9 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
                     continue
                 try:
                     await loop.run_in_executor(
-                        None, kite.cancel_order, variety, oid
+                        None,
+                        lambda _oid=oid, _v=variety:
+                            broker.cancel_order(_oid, variety=_v),
                     )
                     total_cancelled += 1
                     logger.info(f"[LIVE] cancel_all_orders: cancelled {oid} [{acct}]")

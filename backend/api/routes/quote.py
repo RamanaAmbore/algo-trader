@@ -44,9 +44,12 @@ class QuoteResponse(msgspec.Struct):
 
 
 def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
-    conns = Connections()
-    account = next(iter(conns.conn))
-    kite = conns.conn[account].get_kite_conn()
+    # Shared market-data fetch — route through get_price_broker() so
+    # the operator's `connections.price_account` setting decides which
+    # account's API handle services chart-data calls. Broker-agnostic
+    # path; any vendor's adapter will work the same.
+    from backend.shared.brokers.registry import get_price_broker
+    broker = get_price_broker()
     key = f"{exchange}:{tradingsymbol}"
 
     bid = ask = None
@@ -56,7 +59,7 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
     ltp = 0.0
 
     try:
-        full = kite.quote([key]).get(key) or {}
+        full = broker.quote([key]).get(key) or {}
         ltp = float(full.get("last_price") or 0.0)
         volume = int(full.get("volume") or 0)
         depth = full.get("depth") or {}
@@ -76,7 +79,7 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
         # Fallback to ltp-only
         logger.warning(f"Quote depth failed for {key}: {e}")
         try:
-            data = kite.ltp([key])
+            data = broker.ltp([key])
             row = data.get(key) or {}
             ltp = float(row.get("last_price") or 0.0)
         except Exception as e2:
@@ -335,7 +338,7 @@ class SparklineController(Controller):
             return SparklineResponse(data=result, refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
         # Fetch historical data for all resolved tokens, concurrency cap = 5.
-        kite = broker.kite  # type: ignore[attr-defined]
+        # `historical_data` is on the Broker ABC — broker-agnostic path.
         to_d   = datetime.now()
         from_d = to_d - timedelta(days=days + 5)  # +5 buffer for weekends/holidays
 
@@ -345,7 +348,7 @@ class SparklineController(Controller):
             async with sem:
                 try:
                     raw = await asyncio.to_thread(
-                        kite.historical_data, token, from_d, to_d, "day"
+                        broker.historical_data, token, from_d, to_d, "day"
                     ) or []
                     closes = [float(b["close"]) for b in raw if b.get("close") is not None]
                     # Keep the last `days` closes (oldest first).

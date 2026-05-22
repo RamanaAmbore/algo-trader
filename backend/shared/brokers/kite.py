@@ -109,6 +109,9 @@ class KiteBroker(Broker):
     def orders(self) -> list[dict]:
         return self.kite.orders()
 
+    def trades(self) -> list[dict]:
+        return self.kite.trades()
+
     # ── Market data ───────────────────────────────────────────────────
 
     def ltp(self, symbols: list[str]) -> dict:

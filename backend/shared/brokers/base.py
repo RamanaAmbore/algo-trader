@@ -71,6 +71,12 @@ class Broker(ABC):
     @abstractmethod
     def orders(self) -> list[dict]: ...
 
+    @abstractmethod
+    def trades(self) -> list[dict]:
+        """Executed trades for the current trading day. Returns Kite-shape
+        rows: tradingsymbol, exchange, order_id, transaction_type, quantity,
+        average_price, exchange_timestamp."""
+
     # ── Market data ───────────────────────────────────────────────────
 
     @abstractmethod

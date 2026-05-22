@@ -204,7 +204,7 @@ class ReplayDriver:
                 logger.warning(f"[REPLAY] No instrument token for {sym}, skipping")
                 continue
             try:
-                candles = broker.kite.historical_data(
+                candles = broker.historical_data(
                     instrument_token=token,
                     from_date=date_from,
                     to_date=date_to,
@@ -226,7 +226,7 @@ class ReplayDriver:
                 if not remaining:
                     break
                 try:
-                    instruments = broker.kite.instruments(exchange)
+                    instruments = broker.instruments(exchange)
                 except Exception:
                     continue
                 inst_map = {i["tradingsymbol"]: i["instrument_token"] for i in instruments}

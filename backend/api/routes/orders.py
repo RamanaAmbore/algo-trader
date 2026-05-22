@@ -187,11 +187,18 @@ async def _align_price_to_tick(exchange: str, symbol: str,
     return aligned
 
 
-def _kite_for(account: str):
-    conn = Connections().conn
-    if account not in conn:
+def _broker_for(account: str):
+    """Return the `Broker` adapter for `account`. Replaces the prior
+    `_kite_for(account)` helper that exposed a raw KiteConnect handle.
+    All downstream callers use Broker ABC methods (place_order,
+    modify_order, cancel_order, orders, etc.) so the order routes are
+    now broker-agnostic — adding a Groww/Dhan account requires no
+    edits here."""
+    from backend.shared.brokers.registry import get_broker
+    try:
+        return get_broker(account)
+    except KeyError:
         raise HTTPException(status_code=404, detail=f"Account '{account}' not found")
-    return conn[account].get_kite_conn()
 
 
 def _live_chase_config(aggressiveness: str):
@@ -325,12 +332,12 @@ def _row_from_dict(d: dict, account: str) -> OrderRow:
 
 
 def _fetch_orders() -> OrdersResponse:
-    conn = Connections().conn
+    from backend.shared.brokers.registry import all_brokers
     rows: list[OrderRow] = []
-    for account, kite_conn in conn.items():
+    for broker in all_brokers():
+        account = broker.account
         try:
-            kite = kite_conn.get_kite_conn()
-            for o in reversed(kite.orders() or []):
+            for o in reversed(broker.orders() or []):
                 rows.append(_row_from_dict(o, account))
         except Exception as e:
             logger.error(f"Orders list failed for {account}: {e}")
@@ -618,7 +625,7 @@ class OrdersController(Controller):
             raise HTTPException(status_code=403,
                 detail="Demo: use OrderTicket → PAPER.")
         _validate_place(data)
-        kite   = _kite_for(data.account)
+        broker = _broker_for(data.account)
         masked = mask_column(pd.Series([data.account]))[0]
         # Surface a deprecation warning every time this path is used
         # so we can spot any lingering callers in the logs and migrate
@@ -632,7 +639,7 @@ class OrdersController(Controller):
             from backend.shared.brokers.kite import to_kite_qty, get_lot_size
             _ls_dep = await get_lot_size(data.exchange, data.tradingsymbol.upper())
             _kq_dep = to_kite_qty(data.exchange, data.quantity, _ls_dep)
-            order_id = kite.place_order(
+            order_id = broker.place_order(
                 variety=data.variety,
                 exchange=data.exchange,
                 tradingsymbol=data.tradingsymbol.upper(),
@@ -945,8 +952,8 @@ class OrdersController(Controller):
                     from backend.shared.brokers.kite import to_kite_qty, get_lot_size
                     _ls_ticket = await get_lot_size(data.exchange or "NFO", sym)
                     _kq_ticket = to_kite_qty(data.exchange or "NFO", qty, _ls_ticket)
-                    kite = _kite_for(account)
-                    order_id = kite.place_order(
+                    broker = _broker_for(account)
+                    order_id = broker.place_order(
                         variety=(data.variety or "regular"),
                         exchange=(data.exchange or "NFO"),
                         tradingsymbol=sym,
@@ -1010,7 +1017,7 @@ class OrdersController(Controller):
                     "variety":  data.variety or "regular",
                 }
                 try:
-                    diag = await diagnose_live_failure(_kite_for(account), diag_order, kite_msg)
+                    diag = await diagnose_live_failure(_broker_for(account), diag_order, kite_msg)
                 except Exception:
                     diag = "diagnosis unavailable"
                 logger.error(
@@ -1189,7 +1196,7 @@ class OrdersController(Controller):
         if not is_admin_request(request):
             raise HTTPException(status_code=403,
                 detail="Admin access required to modify orders.")
-        kite   = _kite_for(data.account)
+        broker = _broker_for(data.account)
         masked = mask_column(pd.Series([data.account]))[0]
         # Note: MCX qty translation (to_kite_qty) is NOT applied here because
         # ModifyOrderRequest carries no exchange/tradingsymbol — the operator is
@@ -1204,7 +1211,7 @@ class OrdersController(Controller):
             "validity":      data.validity,
         }.items() if v is not None}
         try:
-            kite.modify_order(variety=data.variety, order_id=order_id, **kwargs)
+            broker.modify_order(order_id, variety=data.variety, **kwargs)
             invalidate("orders")
             logger.info(f"Order modified: {order_id} [{masked}]")
             return ModifyOrderResponse(order_id=order_id)
@@ -1375,10 +1382,10 @@ class OrdersController(Controller):
         if not is_admin_request(request):
             raise HTTPException(status_code=403,
                 detail="Admin access required to cancel orders.")
-        kite   = _kite_for(account)
+        broker = _broker_for(account)
         masked = mask_column(pd.Series([account]))[0]
         try:
-            kite.cancel_order(variety=variety, order_id=order_id)
+            broker.cancel_order(order_id, variety=variety)
             invalidate("orders")
             logger.info(f"Order cancelled: {order_id} [{masked}]")
             return CancelOrderResponse(order_id=order_id)

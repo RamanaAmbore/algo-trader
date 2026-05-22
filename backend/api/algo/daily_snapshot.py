@@ -54,11 +54,14 @@ def kite_seg_from_exchange(exchange: str) -> str:
 # Per-account fetch helpers (sync — run in executor)
 # ---------------------------------------------------------------------------
 
-def _fetch_account_data(kite, account: str, target_date: date) -> dict:
+def _fetch_account_data(broker, account: str, target_date: date) -> dict:
     """
     Fetch holdings, positions, and (if target_date == today) trades for one
     account. Returns a dict with keys 'holdings', 'positions', 'trades', each
     being a list of raw row dicts.
+
+    Takes a `Broker` adapter from the registry — broker-agnostic path,
+    so a Groww/Dhan account snapshots the same way.
 
     Errors are caught per-kind; a failure in one kind does NOT abort the
     others.
@@ -70,19 +73,19 @@ def _fetch_account_data(kite, account: str, target_date: date) -> dict:
     out: dict[str, list[dict]] = {"holdings": [], "positions": [], "trades": []}
 
     try:
-        out["holdings"] = kite.holdings() or []
+        out["holdings"] = broker.holdings() or []
     except Exception as e:
         logger.warning(f"Snapshot [{account}] holdings fetch failed: {e}")
 
     try:
-        raw_pos = kite.positions() or {}
+        raw_pos = broker.positions() or {}
         out["positions"] = raw_pos.get("net", [])
     except Exception as e:
         logger.warning(f"Snapshot [{account}] positions fetch failed: {e}")
 
     if is_today:
         try:
-            out["trades"] = kite.trades() or []
+            out["trades"] = broker.trades() or []
         except Exception as e:
             logger.warning(f"Snapshot [{account}] trades fetch failed: {e}")
     else:
@@ -257,11 +260,12 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
     errors: list[str] = []
     processed: list[str] = []
 
-    for account, kite_conn in connections.conn.items():
+    from backend.shared.brokers.registry import all_brokers
+    for broker in all_brokers():
+        account = broker.account
         try:
-            kite = kite_conn.get_kite_conn()
             raw = await loop.run_in_executor(
-                _local_executor, _fetch_account_data, kite, account, target_date
+                _local_executor, _fetch_account_data, broker, account, target_date
             )
 
             h_rows = _holdings_rows(account,  target_date, raw["holdings"])
