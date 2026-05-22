@@ -23,13 +23,49 @@
  */
 
 /**
- * Stretch the grid's visible columns to fill the available container
- * width. Locks each column's current actualWidth as its minWidth so
- * sizeColumnsToFit never shrinks below operator-set widths.
+ * Pre-process column defs so each column's declared `width` is mirrored
+ * into its `minWidth`. This is the project-wide standard: operator-set
+ * column widths are the FLOOR, never the cap. `sizeColumnsToFit` can
+ * stretch columns above this floor when the container has spare
+ * width, but ag-Grid honours minWidth as the lower bound on every
+ * subsequent shrink (e.g. a viewport resize from desktop to mobile).
+ *
+ * Earlier we tried locking minWidth at runtime from `actualWidth` on
+ * grid-ready — but `defaultColDef.flex: 1` made columns shrink to
+ * `defaultColDef.minWidth` on the first fit (before our lock ran), and
+ * mobile-first sessions ended up with columns at 55 px regardless of
+ * their declared width. Pre-processing the column defs at construction
+ * time bypasses that race.
+ *
+ * @template {{ width?: number, minWidth?: number }} ColDef
+ * @param {ColDef[]} defs
+ * @returns {ColDef[]}
+ */
+export function enrichColDefs(defs) {
+  return (defs || []).map((c) => ({
+    ...c,
+    minWidth: c.minWidth ?? c.width,
+  }));
+}
+
+/**
+ * Lock each visible column's CURRENT actualWidth as its `minWidth`.
+ *
+ * Intent: capture the operator's DECLARED widths (the values set in
+ * the column definitions) as a permanent floor BEFORE the first
+ * `sizeColumnsToFit` call runs. Once we lock these declared widths,
+ * subsequent calls to `sizeColumnsToFit` will stretch the columns
+ * upward when the container is wider than the sum, but never shrink
+ * them below the floors — and equally importantly, won't widen them
+ * past the operator's intent on a subsequent narrower-viewport fit.
+ *
+ * Must be called ONCE on `onGridReady` BEFORE any fit. Calling it
+ * again after a fit would lock the stretched (post-fit) widths,
+ * which is exactly the regression we're avoiding.
  *
  * @param {import('ag-grid-community').GridApi | null | undefined} api
  */
-export function fitGridColumns(api) {
+function lockDeclaredWidths(api) {
   if (!api || api.isDestroyed?.()) return;
   try {
     api.getColumns?.()?.forEach((col) => {
@@ -39,6 +75,28 @@ export function fitGridColumns(api) {
         def.minWidth = w;
       }
     });
+  } catch (e) {
+    if (typeof console !== 'undefined') {
+      console.debug('[agGridUtils] lockDeclaredWidths skipped:', e?.message);
+    }
+  }
+}
+
+/**
+ * Stretch the grid's columns to fill the available container width.
+ *
+ * Pure call to `sizeColumnsToFit` — does NOT touch `minWidth`. Earlier
+ * versions locked `actualWidth` as `minWidth` on every call, which
+ * caused desktop-first sessions to permanently lock columns at
+ * desktop-fitted widths and break the mobile re-fit when the
+ * viewport shrank. Now the floors are captured ONCE via
+ * `lockDeclaredWidths` and every subsequent fit respects them.
+ *
+ * @param {import('ag-grid-community').GridApi | null | undefined} api
+ */
+export function fitGridColumns(api) {
+  if (!api || api.isDestroyed?.()) return;
+  try {
     api.sizeColumnsToFit();
   } catch (e) {
     // ag-Grid occasionally throws if called during destroy or
@@ -51,9 +109,10 @@ export function fitGridColumns(api) {
 
 /**
  * Wire fit-to-fill on a freshly created grid:
- *   1. Run once now (the caller passes the api from onGridReady).
- *   2. Re-run on every window resize until the returned teardown
- *      callback fires.
+ *   1. Lock each column's declared width as `minWidth` (one-time).
+ *   2. Run an initial `sizeColumnsToFit`.
+ *   3. Re-run `sizeColumnsToFit` on every viewport resize until the
+ *      returned teardown callback fires (collected in onDestroy).
  *
  * Usage:
  *   const grid = createGrid(el, {
@@ -67,6 +126,7 @@ export function fitGridColumns(api) {
  * @returns {() => void} teardown callback
  */
 export function attachGridFit(api) {
+  lockDeclaredWidths(api);
   fitGridColumns(api);
   const onResize = () => fitGridColumns(api);
   if (typeof window !== 'undefined') {

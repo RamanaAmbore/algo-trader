@@ -11,7 +11,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
-  import { fitGridColumns, attachGridFit } from '$lib/agGridUtils';
+  import { fitGridColumns, attachGridFit, enrichColDefs } from '$lib/agGridUtils';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -351,7 +351,13 @@
       // don't have to migrate the palette + density rules to the new
       // API right now.
       theme: 'legacy',
-      columnDefs: colDefs,
+      // enrichColDefs copies each column's declared `width` into its
+      // `minWidth` so sizeColumnsToFit can stretch upward when the
+      // container has spare width but never shrinks below operator
+      // intent — keeps mobile resizes from collapsing the column to
+      // defaultColDef.minWidth (55). Project-wide standard, see
+      // $lib/agGridUtils.
+      columnDefs: enrichColDefs(colDefs),
       rowData,
       defaultColDef: defaultCol,
       // Three-state sort cycle: ASC → DESC → no-sort (back to the

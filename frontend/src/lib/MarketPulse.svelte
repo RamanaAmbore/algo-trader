@@ -28,7 +28,7 @@
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
-  import { fitGridColumns, attachGridFit } from '$lib/agGridUtils';
+  import { fitGridColumns, attachGridFit, enrichColDefs } from '$lib/agGridUtils';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
@@ -1253,7 +1253,7 @@
 
     grid = createGrid(gridEl, {
       theme: 'legacy',
-      columnDefs: colDefs,
+      columnDefs: enrichColDefs(colDefs),
       rowData: unifiedRows,
       defaultColDef: {
         resizable: true, sortable: true, suppressMovable: true,
@@ -1299,7 +1299,7 @@
       ];
       positionsSummaryGrid = createGrid(positionsSummaryEl, {
         theme: 'legacy',
-        columnDefs: posSummaryCols,
+        columnDefs: enrichColDefs(posSummaryCols),
         rowData: [],
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
@@ -1342,7 +1342,7 @@
       ];
       holdingsSummaryGrid = createGrid(holdingsSummaryEl, {
         theme: 'legacy',
-        columnDefs: holdSummaryCols,
+        columnDefs: enrichColDefs(holdSummaryCols),
         rowData: [],
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
@@ -1403,7 +1403,7 @@
       ];
       fundsGrid = createGrid(fundsEl, {
         theme: 'legacy',
-        columnDefs: fundsCols,
+        columnDefs: enrichColDefs(fundsCols),
         rowData: [],
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
