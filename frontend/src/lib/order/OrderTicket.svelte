@@ -1026,7 +1026,7 @@
         <button type="button" class="ot-exit"
                 onclick={onClose}>Exit</button>
       {:else}
-        <button type="button" class="ot-cancel" onclick={onClose}>Cancel</button>
+        <button type="button" class="ot-exit" onclick={onClose}>Exit</button>
         {#if onAddToBasket && action === 'open'}
           <!-- "+ Basket" — stages the leg into the caller's basket
                panel instead of placing now. Shown only when the
@@ -1470,13 +1470,18 @@
      Cancel/Submit buttons. No outer container — the footer's top
      border + the buttons' visual weight provide enough containment. */
   .ot-margin-row {
+    /* Label + value sit side-by-side with a small gap — earlier this
+       row used `justify-content: space-between` which stretched the
+       two ends across the full footer-info width, leaving a wide gap
+       between MARGIN/Avail/Short labels and their amounts. Operator
+       wants them clustered tightly so the eye reads "MARGIN ₹X / Avail
+       ₹Y / Short ₹Z" as a compact stack, not three wide rows. */
     display: flex;
-    justify-content: space-between;
     align-items: baseline;
-    gap: 0.5rem;
+    gap: 0.4rem;
     font-variant-numeric: tabular-nums;
   }
-  .ot-margin-row + .ot-margin-row { margin-top: 0.15rem; }
+  .ot-margin-row + .ot-margin-row { margin-top: 0.05rem; }
   .ot-margin-label {
     color: #fbbf24;
     font-weight: 700;

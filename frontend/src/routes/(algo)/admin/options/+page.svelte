@@ -1663,8 +1663,9 @@
      saw two chains simultaneously (one with +W watchlist buttons,
      one without). Single source of truth now lives in OptionChainTab. -->
 
+<div class="opt-payoff-legs-row">
 {#if strategy}
-  <div class="opt-payoff opt-payoff-full mb-3">
+  <div class="opt-payoff opt-payoff-full">
     <!-- Single-row header — title + Net debit/credit + Max profit /
          Max loss chips. SPOT / TDAY / EXP / DTE / σ / LEGS live in
          the on-chart stat overlay. Both the chips and the overlay
@@ -1713,7 +1714,7 @@
      analytics (IV / Δ / Θ / 𝒱) joined from the latest strategy
      response by symbol. Horizontal + vertical overflow scrolling. -->
 {#if selectedUnderlying || drafts.length}
-  <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
+  <div class="algo-status-card cmd-surface p-3 opt-legs-card" data-status="inactive">
     <button type="button"
             class="legs-header"
             aria-expanded={legsOpen}
@@ -1866,6 +1867,7 @@
     {/if}
   </div>
 {/if}
+</div>
 
 <!-- Aggregate / Greeks / Risk cards — three cards in a horizontal
      flex row under the candidates panel. Each card has its own
@@ -2281,6 +2283,27 @@
   .opt-payoff {
     display: flex;
     flex-direction: column;
+  }
+
+  /* Payoff + Legs side-by-side wrapper.
+     Stacked column on narrow viewports; on >= 1180 px laptops the
+     chart shrinks to ~1.4fr (≈ 58 %) and the legs panel slots into
+     the remaining 1fr (≈ 42 %). The cand-scroll inside legs handles
+     its own horizontal overflow if the column gets tight. Without the
+     `:has(.opt-legs-card)` guard the lone-payoff state would also
+     compress to 58 % and leave dead space on the right. */
+  .opt-payoff-legs-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-bottom: 0.75rem;
+  }
+  @media (min-width: 1180px) {
+    .opt-payoff-legs-row:has(.opt-legs-card) {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      align-items: start;
+    }
   }
   /* Leg builder — compact monospace grid mirroring the simulator's
      custom-positions panel so the two read as siblings. */
