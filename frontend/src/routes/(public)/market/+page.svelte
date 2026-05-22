@@ -193,6 +193,19 @@
       <div class="text-center text-text/40 text-sm animate-pulse py-8">
         Loading market report…
       </div>
+    {:else if content && content.startsWith('Market report is temporarily')}
+      <!-- API returned the standby fallback string — the AI fetch
+           failed or is rate-limited. Render a friendly empty-state with
+           a manual retry button instead of dropping the bare sentence
+           into the markdown surface. -->
+      <div class="market-empty">
+        <div class="market-empty-icon">⏳</div>
+        <p class="market-empty-title">Today's market report isn't ready yet.</p>
+        <p class="market-empty-sub">The next scheduled refresh runs at <b>08:30 IST</b>. You can also retry now — the AI summary takes ~15 seconds to generate.</p>
+        <button type="button" class="market-empty-retry" onclick={load} disabled={loading}>
+          {loading ? 'Retrying…' : 'Retry now'}
+        </button>
+      </div>
     {:else if content}
       <div class="market-report w-full">
         {@html renderMarkdown(content)}
@@ -359,5 +372,54 @@
   @media (max-width: 600px) {
     .news-row { grid-template-columns: max-content 1fr; }
     .news-src { display: none; }
+  }
+
+  /* ── Empty / waiting state — shown when the API returns the standby
+       fallback string (Gemini failed / rate-limited / cap-disabled). */
+  .market-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 2.5rem 1rem;
+    color: #1a1e35;
+  }
+  .market-empty-icon {
+    font-size: 2rem;
+    margin-bottom: 0.6rem;
+    opacity: 0.55;
+  }
+  .market-empty-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #0c1830;
+    margin-bottom: 0.35rem;
+  }
+  .market-empty-sub {
+    font-size: 0.78rem;
+    max-width: 36rem;
+    line-height: 1.5;
+    color: #4a5168;
+    margin-bottom: 1rem;
+  }
+  .market-empty-retry {
+    background: #0c1830;
+    color: #f0d070;
+    border: 1px solid #c8a84b;
+    padding: 0.42rem 1.1rem;
+    border-radius: 0.35rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background-color 0.1s, color 0.1s;
+  }
+  .market-empty-retry:hover:not(:disabled) {
+    background: #1a2e4a;
+    color: #f5d97e;
+  }
+  .market-empty-retry:disabled {
+    opacity: 0.55;
+    cursor: wait;
   }
 </style>

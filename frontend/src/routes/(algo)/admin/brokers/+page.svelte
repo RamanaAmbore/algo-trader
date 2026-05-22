@@ -82,9 +82,13 @@
     return CREDENTIAL_SCHEMA[brokerId] || CREDENTIAL_SCHEMA.zerodha_kite;
   }
 
-  // Form state — reused for Create + Edit. `editing = ''` means we're
-  // in Create mode (account code editable); `editing = 'ZG0790'` puts
-  // us in Edit mode for that row.
+  // Form state — reused for Create + Edit. Three modes:
+  //   editing = ''     · idle (form hidden when accounts exist)
+  //   editing = '__new__' · create mode (form visible, account input editable)
+  //   editing = 'ZG0790'  · edit mode (form visible, account input disabled)
+  // The sentinel keeps the existing `if (editing)` save-path branch
+  // (truthy = mutate existing row) simple — see save().
+  const NEW_SENTINEL = '__new__';
   let editing = $state(/** @type {string} */ (''));
   let form    = $state({
     account: '', broker_id: 'zerodha_kite',
@@ -110,8 +114,12 @@
 
   function resetForm(/** @type {string} */ acct = '') {
     editing = acct;
+    // When entering create mode (acct === NEW_SENTINEL), the form's
+    // `account` input must start blank so the operator can type the
+    // code; for Edit, callers pass the row's actual account code.
+    const accountInput = (acct === NEW_SENTINEL) ? '' : acct;
     form = {
-      account: acct, broker_id: 'zerodha_kite',
+      account: accountInput, broker_id: 'zerodha_kite',
       api_key: '', client_id: '',
       api_secret: '', password: '', totp_function: '', totp_token: '',
       access_token: '',
@@ -167,8 +175,9 @@
         return;
       }
       const fieldsForThisBroker = credentialFields(form.broker_id);
+      const isCreating = (editing === NEW_SENTINEL);
 
-      if (editing) {
+      if (editing && !isCreating) {
         // PATCH — only send fields with values; empty secret fields are
         // explicitly omitted so the backend's "leave unchanged" logic
         // gets the right signal.
@@ -284,8 +293,8 @@
       Accounts <span class="opacity-60 font-normal ml-1">({accounts.length})</span>
     </h2>
     <button type="button" class="btn-primary text-[0.6rem] py-1 px-3"
-            onclick={() => resetForm('')}
-            disabled={editing === ''}>+ New account</button>
+            onclick={() => resetForm(NEW_SENTINEL)}
+            disabled={editing !== ''}>+ New account</button>
   </div>
   {#if loading}
     <div class="text-[0.6rem] text-[#7e97b8] italic">Loading…</div>
@@ -359,14 +368,14 @@
 {#if editing !== '' || !accounts.length}
   <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
     <h2 class="brokers-h" style="border-bottom:1px solid rgba(251,191,36,0.18); padding-bottom:0.3rem; margin-bottom:0.5rem;">
-      {editing ? `Edit ${editing}` : 'New account'}
+      {editing && editing !== NEW_SENTINEL ? `Edit ${editing}` : 'New account'}
     </h2>
     <div class="brokers-form">
       <div class="bf-field">
         <label class="field-label" for="bf-acct">Account code</label>
         <input id="bf-acct" type="text" class="field-input font-mono"
                placeholder="ZG0790"
-               disabled={!!editing}
+               disabled={!!editing && editing !== NEW_SENTINEL}
                bind:value={form.account} />
       </div>
       <div class="bf-field">

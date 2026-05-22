@@ -39,7 +39,7 @@
 <!-- Minimal above-fold content for Googlebot. The client-side
      router will take over and render the full (public) layout after
      hydration; this block is what the prerendered HTML contains. -->
-<div style="font-family: 'Trebuchet MS', Arial, sans-serif; max-width: 820px; margin: 3rem auto; padding: 2rem 1.5rem; color: #1a1e35;">
+<div style="font-family: 'Trebuchet MS', Arial, sans-serif; margin: 3rem auto; padding: 2rem 1.5rem; color: #1a1e35;">
   <h1 style="font-size: 1.6rem; font-weight: 900; color: #0c1830; letter-spacing: -0.01em; margin-bottom: 0.5rem;">
     RamboQuant Analytics LLP
   </h1>
