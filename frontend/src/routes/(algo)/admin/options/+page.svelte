@@ -2430,49 +2430,51 @@
      Column order (post-Apr-2026 reshuffle): checkbox · Symbol ·
      Account · Qty · P&L · Cost · LTP · IV · Δ · Θ · 𝒱 · Source.
      P&L sits between Qty and Cost so the operator's eye scans
-     "what I have → what I'm making/losing → what I paid". */
-  /* Content-sized tracks across the board so the row reads dense
-     instead of stretched. Numeric columns (qty / P&L / cost / LTP /
-     greeks) use `max-content` so each cell sizes to its widest
-     value; the row keeps a tight 0.6 rem gap. Earlier `fr` units
-     stretched columns to fill the wrapper width, leaving lots of
-     empty space between cells when the panel sat in a wide card. */
+     "what I have → what I'm making/losing → what I paid".
+
+     Track sizing: `minmax(max-content, 1fr)` per column — each track
+     is AT LEAST as wide as its widest cell (so digits never truncate
+     and the row reads dense at minimum size), then shares any spare
+     container width equally with its peers. Earlier `max-content`
+     pinned tracks to their content size and left a blank strip on
+     the right of the panel when it sat in a wide card; now extra
+     width is distributed instead of wasted. The wrapping
+     .cand-scroll still triggers horizontal scroll when the viewport
+     can't even fit every track's max-content minimum. */
   .cand-grid {
     display: grid;
     grid-template-columns:
-      auto         /* checkbox */
-      max-content  /* symbol */
-      max-content  /* account */
-      max-content  /* qty */
-      max-content  /* pnl */
-      max-content  /* cost */
-      max-content  /* ltp */
-      max-content  /* iv */
-      max-content  /* delta */
-      max-content  /* theta */
-      max-content; /* vega */
+      auto                       /* checkbox */
+      minmax(max-content, 1.4fr) /* symbol (longest content — give it more share) */
+      minmax(max-content, 1fr)   /* account */
+      minmax(max-content, 1fr)   /* qty */
+      minmax(max-content, 1fr)   /* pnl */
+      minmax(max-content, 1fr)   /* cost */
+      minmax(max-content, 1fr)   /* ltp */
+      minmax(max-content, 1fr)   /* iv */
+      minmax(max-content, 1fr)   /* delta */
+      minmax(max-content, 1fr)   /* theta */
+      minmax(max-content, 1fr);  /* vega */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
-    /* No min-width — the grid is naturally as wide as its content.
-       The wrapping .cand-scroll still handles overflow when the
-       viewport is narrower than the row. */
-    width: max-content;
+    width: 100%;
+    min-width: max-content;
   }
   /* When the operator filters to a single account, the Account
      column is implicit (every row carries the same value) — drop
      the column entirely. */
   .cand-grid-noacct {
     grid-template-columns:
-      auto         /* checkbox */
-      max-content  /* symbol */
-      max-content  /* qty */
-      max-content  /* pnl */
-      max-content  /* cost */
-      max-content  /* ltp */
-      max-content  /* iv */
-      max-content  /* delta */
-      max-content  /* theta */
-      max-content; /* vega */
+      auto                       /* checkbox */
+      minmax(max-content, 1.4fr) /* symbol */
+      minmax(max-content, 1fr)   /* qty */
+      minmax(max-content, 1fr)   /* pnl */
+      minmax(max-content, 1fr)   /* cost */
+      minmax(max-content, 1fr)   /* ltp */
+      minmax(max-content, 1fr)   /* iv */
+      minmax(max-content, 1fr)   /* delta */
+      minmax(max-content, 1fr)   /* theta */
+      minmax(max-content, 1fr);  /* vega */
   }
   /* Single parent grid via subgrid. Each row inherits the parent's
      column tracks — so headers and data cells line up exactly,
