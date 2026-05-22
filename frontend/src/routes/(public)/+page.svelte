@@ -13,19 +13,27 @@
   <meta name="description" content="RamboQuant builds systematic, transparent portfolios for partner-investors. Track real-time performance, market reports, and risk metrics." />
   <link rel="canonical" href="https://ramboq.com/" />
 
-  <!-- Open Graph -->
+  <!-- Open Graph — HOME variant. Uses og-image-home.png (full-canvas
+       brand hero, no text inside the image) so the card shows a clean
+       picture and the og:title / og:description text below carry the
+       narrative. og-image.png (icon + wordmark) is used by every other
+       public page. -->
   <meta property="og:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
   <meta property="og:description" content="RamboQuant builds systematic, transparent portfolios for partner-investors. Track real-time performance, market reports, and risk metrics." />
   <meta property="og:url" content="https://ramboq.com/" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image.png" />
+  <meta property="og:image" content="https://ramboq.com/og-image-home.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
   <meta property="og:site_name" content="RamboQuant Analytics" />
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
   <meta name="twitter:description" content="RamboQuant builds systematic, transparent portfolios for partner-investors. Track real-time performance, market reports, and risk metrics." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image.png" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image-home.png" />
+  <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
 <!-- Minimal above-fold content for Googlebot. The client-side
