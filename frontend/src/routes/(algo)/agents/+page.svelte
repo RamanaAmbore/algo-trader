@@ -84,11 +84,22 @@
     cooldown_minutes: number, scope: string, schedule: string,
     lifespan_type: string, lifespan_max_fires: number|string,
     lifespan_expires_at: string,
+    tier: string, topic: string, digest_window_sec: number,
   }} */ ({
     name: '', description: '', conditions: '{}', events: '[]', actions: '[]',
     cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
     lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
+    tier: 'medium', topic: 'general', digest_window_sec: 30,
   }));
+
+  // Tier order matters — UI segmented control lists them critical → low
+  // so the eye reads them as severity descending.
+  const TIER_PILLS = [
+    { value: 'critical', label: 'Critical', desc: 'Suppresses every lower tier in the same topic' },
+    { value: 'high',     label: 'High',     desc: 'Suppressed by critical; suppresses medium + low' },
+    { value: 'medium',   label: 'Medium',   desc: 'Default — suppressed by higher tiers in same topic' },
+    { value: 'low',      label: 'Low',      desc: 'Always-suppressible — logs only when a peer fires' },
+  ];
   // ── Trade-mode confirm modal ──────────────────────────────────────────
   let pendingLiveAgent = $state(/** @type {any} */ (null));
 
@@ -213,6 +224,13 @@
       lifespan_expires_at:  agent.lifespan_expires_at
         ? String(agent.lifespan_expires_at).slice(0, 16)
         : '',
+      // Alert hierarchy — tier and topic drive run_cycle's topic-scoped
+      // suppression; digest_window_sec is reserved for the future
+      // dispatch-batching pass (currently unused but persisted).
+      tier:                 agent.tier  || 'medium',
+      topic:                agent.topic || 'general',
+      digest_window_sec:    typeof agent.digest_window_sec === 'number'
+                              ? agent.digest_window_sec : 30,
     };
   }
 
@@ -337,6 +355,9 @@
         lifespan_expires_at: (editForm.lifespan_type === 'until_date'
           && editForm.lifespan_expires_at)
           ? String(editForm.lifespan_expires_at) : null,
+        tier:               editForm.tier  || 'medium',
+        topic:              editForm.topic || 'general',
+        digest_window_sec:  Number(editForm.digest_window_sec) || 30,
       });
       editing = null;
       validationErrors = []; validationGrammar = '';
@@ -693,6 +714,56 @@
                   </div>
                 {/if}
               </div>
+
+              <!-- ── Alert hierarchy strip (tier + topic + digest) ─────
+                   Single tight row. Tier as a 4-pill segmented control
+                   so all severity options are visible without a dropdown
+                   click. Topic as a small text input with datalist
+                   autocomplete (writes the existing topics back, so
+                   ops can group new agents alongside the loss-* ones
+                   in a single click). Digest stepper to the right —
+                   reserved for future batching, hidden behind a tiny
+                   label so it doesn't dominate. -->
+              <div class="tier-strip">
+                <div class="tier-strip-left">
+                  <label class="field-label" style="margin-right: 0.5rem">Tier</label>
+                  <div class="tier-pill-row">
+                    {#each TIER_PILLS as t}
+                      <button type="button"
+                              class={'tier-pill tier-pill-' + t.value}
+                              class:on={editForm.tier === t.value}
+                              onclick={() => { editForm.tier = t.value; }}
+                              title={t.desc}>
+                        {t.label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="tier-strip-right">
+                  <div>
+                    <label class="field-label">Topic</label>
+                    <input list="agent-topics"
+                           bind:value={editForm.topic}
+                           class="field-input"
+                           placeholder="general"
+                           title="Agents sharing a topic get cross-suppressed by tier. 'general' (default) opts out — no suppression." />
+                    <datalist id="agent-topics">
+                      <option value="holdings_loss"></option>
+                      <option value="positions_loss"></option>
+                      <option value="funds_warning"></option>
+                      <option value="general"></option>
+                    </datalist>
+                  </div>
+                  <div>
+                    <label class="field-label" title="Reserved for future digest batching. 0 = fire immediately.">Digest&nbsp;(s)</label>
+                    <input type="number" min="0" max="600"
+                           bind:value={editForm.digest_window_sec}
+                           class="field-input"
+                           style="max-width: 5rem" />
+                  </div>
+                </div>
+              </div>
+
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <div>
                   <label class="field-label">Conditions (JSON)</label>
@@ -861,8 +932,20 @@
                 <div class="text-[0.6rem] text-[#c8d8f0]/60 italic">no conditions</div>
               {/if}
 
-              <div class="text-[0.6rem] text-[#c8d8f0]/75 mt-2 mb-1">
-                <span class="text-[#7e97b8]">Alert via:</span> {channelSummary(agent.events)}
+              <div class="text-[0.6rem] text-[#c8d8f0]/75 mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
+                <span class="text-[#7e97b8]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
+                {#if agent.tier && agent.tier !== 'medium'}
+                  <span class={'tier-badge tier-badge-' + agent.tier}
+                        title="Severity tier — drives topic-scoped suppression in run_cycle.">
+                    {agent.tier}
+                  </span>
+                {/if}
+                {#if agent.topic && agent.topic !== 'general'}
+                  <span class="topic-badge"
+                        title="Agents sharing a topic get cross-suppressed by tier.">
+                    {agent.topic}
+                  </span>
+                {/if}
               </div>
               <!-- Actions list — surface each action and its params so
                    close_position / place_order / chase_close_positions are
@@ -1210,6 +1293,92 @@
     border-radius: 2px;
     margin-top: 0.2rem;
     overflow-x: auto;
+  }
+
+  /* ── Tier + topic + digest strip ───────────────────────────────────────
+     Single row, two halves. Left half hosts the 4-tier pill row; right
+     half hosts the topic input + a compact digest stepper. Built as a
+     flex strip so the left collapses to 4 inline pills (saves vertical
+     space vs a dropdown) and the right wraps gracefully on narrow
+     viewports. */
+  .tier-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 1rem;
+    margin-top: 0.6rem;
+    padding: 0.5rem 0.6rem;
+    background: rgba(8, 14, 30, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 3px;
+  }
+  .tier-strip-left {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+  .tier-strip-right {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.6rem;
+  }
+  .tier-pill-row {
+    display: inline-flex;
+    gap: 0.2rem;
+  }
+  .tier-pill {
+    font-size: 0.6rem;
+    padding: 0.22rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: transparent;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background-color 0.08s, color 0.08s, border-color 0.08s;
+  }
+  .tier-pill:hover { color: #c8d8f0; border-color: rgba(255,255,255,0.3); }
+  /* When ON, pill picks its severity colour. Match the algo palette
+     (red/orange/amber/grey for crit/high/med/low). */
+  .tier-pill-critical.on { background: rgba(248,113,113,0.18); color: #f87171; border-color: #f87171; }
+  .tier-pill-high.on     { background: rgba(251,146,60,0.18);  color: #fb923c; border-color: #fb923c; }
+  .tier-pill-medium.on   { background: rgba(251,191,36,0.18);  color: #fbbf24; border-color: #fbbf24; }
+  .tier-pill-low.on      { background: rgba(125,211,252,0.16); color: #7dd3fc; border-color: #7dd3fc; }
+
+  /* Tier badge — non-editable mini-pill rendered in each agent's row to
+     surface severity at a glance. Same colour family as the edit pills
+     but smaller + lowercase to read as a status marker rather than a
+     button. Hidden when tier=medium (the default) so default rows stay
+     visually quiet. */
+  .tier-badge {
+    font-size: 0.55rem;
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.05rem 0.32rem;
+    border-radius: 999px;
+    border: 1px solid;
+    text-transform: lowercase;
+  }
+  .tier-badge-critical { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.55); }
+  .tier-badge-high     { background: rgba(251,146,60,0.15);  color: #fb923c; border-color: rgba(251,146,60,0.55); }
+  .tier-badge-low      { background: rgba(125,211,252,0.15); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
+
+  /* Topic badge — secondary identifier shown alongside the tier so the
+     operator can see grouped agents at a glance ("these three fires are
+     all about holdings_loss"). Lower-key palette than the tier badge. */
+  .topic-badge {
+    font-size: 0.55rem;
+    font-family: ui-monospace, monospace;
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.05);
+    color: #c8d8f0;
+    border: 1px solid rgba(255,255,255,0.12);
   }
 
   /* Alert-channel checkbox grid — replaces the prior raw-JSON textarea.
