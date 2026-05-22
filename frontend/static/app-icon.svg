@@ -41,14 +41,14 @@
       <feFlood flood-color="#c8a84b" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
-        <feFuncA type="linear" slope="0.30" />
+        <feFuncA type="linear" slope="0.50" />
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="mid-blur" />
       <feFlood flood-color="#e2c267" result="mid-color" />
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
       <feComponentTransfer in="mid-raw" result="halo-mid">
-        <feFuncA type="linear" slope="0.42" />
+        <feFuncA type="linear" slope="0.65" />
       </feComponentTransfer>
       <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
@@ -56,7 +56,7 @@
       <feFlood flood-color="#fff5d0" result="inner-color" />
       <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
       <feComponentTransfer in="inner-raw" result="halo-inner">
-        <feFuncA type="linear" slope="0.40" />
+        <feFuncA type="linear" slope="0.55" />
       </feComponentTransfer>
       <feMerge>
         <feMergeNode in="halo-bloom" />

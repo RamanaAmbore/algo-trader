@@ -13,20 +13,20 @@
       <feFlood flood-color="#c8a84b" result="halo-bloom-color"/>
       <feComposite in="halo-bloom-color" in2="halo-bloom-blur" operator="in" result="halo-bloom-raw"/>
       <feComponentTransfer in="halo-bloom-raw" result="halo-bloom">
-        <feFuncA type="linear" slope="0.30"/>
+        <feFuncA type="linear" slope="0.50"/>
       </feComponentTransfer>
       <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="halo-mid-blur"/>
       <feFlood flood-color="#e2c267" result="halo-mid-color"/>
       <feComposite in="halo-mid-color" in2="halo-mid-blur" operator="in" result="halo-mid-raw"/>
       <feComponentTransfer in="halo-mid-raw" result="halo-mid">
-        <feFuncA type="linear" slope="0.42"/>
+        <feFuncA type="linear" slope="0.65"/>
       </feComponentTransfer>
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner"/>
       <feGaussianBlur in="dil-inner" stdDeviation="2.5" result="halo-inner-blur"/>
       <feFlood flood-color="#fff5d0" result="halo-inner-color"/>
       <feComposite in="halo-inner-color" in2="halo-inner-blur" operator="in" result="halo-inner-raw"/>
       <feComponentTransfer in="halo-inner-raw" result="halo-inner">
-        <feFuncA type="linear" slope="0.40"/>
+        <feFuncA type="linear" slope="0.55"/>
       </feComponentTransfer>
       <feMerge>
         <feMergeNode in="halo-bloom"/>
