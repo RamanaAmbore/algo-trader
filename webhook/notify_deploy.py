@@ -11,12 +11,8 @@ Flags:
   --reason <text>    failure reason, shown when --status fail (optional)
 """
 import argparse
-import smtplib
 import sys
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formataddr
 from zoneinfo import ZoneInfo
 
 import requests
@@ -110,9 +106,10 @@ def main():
     svc_text = " | ".join(services_status)
 
     # notify_on_deploy is the single gate for the deploy message — by the time
-    # we reach here we've already confirmed it's on (or we're on prod). Telegram
-    # and email both fire if their credentials are configured; cap_in_dev.telegram
-    # / cap_in_dev.mail gate runtime alerts, not this deploy ping.
+    # we reach here we've already confirmed it's on (or we're on prod). Deploy
+    # pings ship Telegram-only by operator preference (May 2026); the prior
+    # email path was retired because deploy noise was cluttering the inbox
+    # while the same information already lands instantly on the ops channel.
 
     # --- Telegram ---
     # Prefer dedicated deploy-bot keys so deploy pings can go to a
@@ -137,81 +134,11 @@ def main():
         except Exception as e:
             errors.append(f"Telegram error: {e}")
 
-    # --- Email ---
-    if True:
-        smtp_server   = sec.get("smtp_server", "")
-        smtp_port     = int(sec.get("smtp_port", 587))
-        smtp_user     = sec.get("smtp_user", "")
-        smtp_pass     = sec.get("smtp_pass", "")
-        smtp_name     = sec.get("smtp_user_name", "")
-        # Prefer dedicated deploy_emails list so deploy pings can go to
-        # a separate inbox (operator wants both prod + dev deploys to
-        # land in website.ramboquant@gmail.com). Falls back to the
-        # shared alert_emails so existing deployments require no
-        # secrets.yaml change.
-        alert_emails  = sec.get("deploy_emails") or sec.get("alert_emails", [])
-
-        subject = f"RamboQuant {event_label}: {ts}"
-
-        branch_banner = ""
-        if is_non_main:
-            branch_banner = (
-                f"<div style='background-color:#fff3cd;border:1px solid #ffc107;"
-                f"border-radius:4px;padding:8px 14px;margin-bottom:12px;"
-                f"font-family:sans-serif;font-size:13px;color:#856404'>"
-                f"&#9888; <strong>Non-production branch: {branch}</strong>"
-                f"</div>"
-            )
-
-        fail_banner = ""
-        if status == "fail":
-            fail_banner = (
-                f"<div style='background-color:#f8d7da;border:1px solid #f5c6cb;"
-                f"border-radius:4px;padding:8px 14px;margin-bottom:12px;"
-                f"font-family:sans-serif;font-size:13px;color:#721c24'>"
-                f"&#9888; <strong>DEPLOY FAILED</strong>"
-                + (f": {reason}" if reason else "")
-                + f"</div>"
-            )
-
-        html_body = (
-            f"<html><body style='font-family:sans-serif'>"
-            f"{branch_banner}"
-            f"{fail_banner}"
-            f"<table style='border-collapse:collapse;width:100%'>"
-            f"<thead><tr>"
-            f"<th style='background-color:#1a3a5c;color:#fff;padding:8px 12px;text-align:left;font-size:13px'>Event</th>"
-            f"<th style='background-color:#1a3a5c;color:#fff;padding:8px 12px;text-align:left;font-size:13px'>Detail</th>"
-            f"<th style='background-color:#1a3a5c;color:#fff;padding:8px 12px;text-align:left;font-size:13px'>Timestamp</th>"
-            f"</tr></thead>"
-            f"<tbody><tr>"
-            f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea'><b>{event_label}</b></td>"
-            f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea;font-family:monospace'>{detail_line}</td>"
-            f"<td style='padding:6px 12px;font-size:13px;border-bottom:1px solid #dce3ea;font-family:monospace'>{ts}</td>"
-            f"</tr><tr>"
-            f"<td style='padding:6px 12px;font-size:12px;border-bottom:1px solid #dce3ea'>Services</td>"
-            f"<td colspan='2' style='padding:6px 12px;font-size:12px;border-bottom:1px solid #dce3ea;font-family:monospace'>{svc_text}</td>"
-            f"</tr></tbody>"
-            f"</table>"
-            f"</body></html>"
-        )
-
-        for email in alert_emails:
-            try:
-                msg = MIMEMultipart()
-                msg["From"]    = formataddr((smtp_name, smtp_user))
-                msg["To"]      = email
-                msg["Cc"]      = msg["From"]
-                msg["Subject"] = subject
-                msg.attach(MIMEText(html_body, "html"))
-
-                with smtplib.SMTP(smtp_server, smtp_port) as server:
-                    server.starttls()
-                    server.login(smtp_user, smtp_pass)
-                    server.sendmail(smtp_user, email, msg.as_string())
-                print(f"notify_deploy: email sent to {email}")
-            except Exception as e:
-                errors.append(f"Email failed for {email}: {e}")
+    # Email path retired. Deploy noise was cluttering the inbox; the
+    # Telegram ping above carries the same information and lands
+    # instantly on the ops channel. If a future operator wants email
+    # back, restore the prior block from git history (it lived here)
+    # plus add a `deploy_emails` list to secrets.yaml.
 
     if errors:
         print("notify_deploy: errors:", "; ".join(errors), file=sys.stderr)

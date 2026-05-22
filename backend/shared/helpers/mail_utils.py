@@ -73,11 +73,11 @@ def send_email(name, email_id, subject, html_body):
 
 
 if __name__ == "__main__":
-    # Test run
+    # Test run — fires to the operator inbox configured in
+    # secrets.alert_emails[0] (sanity check that SMTP credentials work).
     name = "Rambo"
-    recipients = "ramboquant@gmail.com"
-    phone = "9876543210"
-    query = "Testing multiple recipient email functionality."
+    recipients = (secrets.get('alert_emails') or [secrets.get('smtp_user', '')])[0]
+    query = "Testing single-recipient email functionality."
 
     success, msg = send_email(name, recipients, query)
     if success:

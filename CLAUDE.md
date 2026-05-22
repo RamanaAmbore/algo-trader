@@ -80,7 +80,7 @@ Both branches (`main`, `dev`) are kept in sync — every feature is developed on
 
 ### Webhook / Deployment (`webhook/`)
 - **`deploy.sh`** — Unified deploy script. Called as `deploy.sh <ENV> <REF>` where ENV is `prod|dev`. Common section handles git update, config merge, writing `deploy_branch` into `backend_config.yaml`, service restart, and `notify_deploy.py`. Env-specific sections: nginx sync (prod only), `pip install` + `npm run build` (prod/dev).
-- **`notify_deploy.py`** — Standalone deploy notification script; sends Telegram + email immediately after each deploy without importing app modules (avoids log file permission conflict with running service). Reads `backend_config.yaml` and `secrets.yaml` directly. Gated by `cap_in_dev` and `notify_on_startup` flags
+- **`notify_deploy.py`** — Standalone deploy notification script; sends Telegram immediately after each deploy without importing app modules (avoids log file permission conflict with running service). Reads `backend_config.yaml` and `secrets.yaml` directly. Gated by `cap_in_dev` and `notify_on_deploy` flags. Email path was retired in May 2026 — restore from git history if email deploy pings are wanted back.
 - **`initial_deploy.sh`** — One-time setup script; run once on a fresh server before first push. Accepts `--env prod|dev|both`, `--ssh-key-prod`, `--ssh-key-dev`, `--branch-dev`. Automates everything except secrets, certbot, Cloudflare DNS, and GitHub webhook
 - **`hooks.json`** — Single `ramboq-deploy` hook; validates push event, repo name, and HMAC-SHA256 signature; passes `ref` to `dispatch.sh`. **Deployed to `/etc/webhook/hooks.json`** (independent of all deployment directories). Copy manually after changes: `sudo cp /opt/ramboq/webhook/hooks.json /etc/webhook/hooks.json && sudo systemctl restart ramboq_hook.service`
 - **`dispatch.sh`** — Thin router at `/etc/webhook/dispatch.sh`; reads branch from `ref`, calls `deploy.sh` with the right ENV arg (`prod` for `main`, `dev` for everything else). Copy after changes: `sudo cp /opt/ramboq/webhook/dispatch.sh /etc/webhook/dispatch.sh`
@@ -204,11 +204,37 @@ agents (`loss-funds-cash-negative` / `loss-funds-margin-negative`) fire on
 - Bot: **@RamboQuantBot**
 
 ### Email Recipients
+
+Three audiences, three separate lists in `secrets.yaml`:
+
 ```yaml
 # secrets.yaml
+
+# Operator alerts — loss / agent fires / open-close summaries.
+# Stays small + private: just the trading-ops inbox.
 alert_emails:
   - "rambo@ramboq.com"
+
+# Public-website inbound mail — contact form submissions.
+# Kept separate so marketing leads don't bleed into the alert thread.
+market_emails:
+  - "website.ramboquant@gmail.com"
+  - "afridihajayt@gmail.com"
 ```
+
+**Deploy notifications** ship Telegram-only (May 2026) — the prior
+email path in `notify_deploy.py` was retired because deploy noise was
+cluttering the operator inbox; the Telegram ping carries the same
+information. To bring email back, restore the block from git history
+and re-add a `deploy_emails` list.
+
+**Routing helpers** (`backend/shared/helpers/alert_utils.py`):
+- `get_alert_recipients()` — merges DB-derived users (admin opt-in +
+  designated) with `secrets.alert_emails`. Used by every loss / agent /
+  summary dispatch.
+- `get_market_recipients()` — reads `secrets.market_emails`, falls
+  back to `smtp_user`. Used only by the contact form
+  (`backend/api/routes/contact.py`).
 
 ---
 

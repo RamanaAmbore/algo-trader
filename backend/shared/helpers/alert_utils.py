@@ -68,7 +68,7 @@ _alert_recipients_lock = Lock()
 def get_alert_recipients() -> list[str]:
     """Sync — returns the current merged recipient list (designated +
     opted-in admins + secrets fallback), deduped. Used by every alert
-    dispatch path."""
+    dispatch path (loss / agent / summary)."""
     with _alert_recipients_lock:
         db_part = list(_alert_recipients_cache)
     static_part = secrets.get('alert_emails', []) or []
@@ -78,6 +78,30 @@ def get_alert_recipients() -> list[str]:
         if e and e not in seen:
             seen.add(e)
             out.append(e)
+    return out
+
+
+def get_market_recipients() -> list[str]:
+    """Sync — returns the recipient list for PUBLIC-WEBSITE inbound mail
+    (contact form, market inquiries). Operator-facing alerts (loss /
+    agent / order summary) use `get_alert_recipients()` instead; the
+    two audiences are kept separate so the trading-ops inbox stays
+    clean of marketing / inbound-lead noise.
+
+    Reads `market_emails` from secrets.yaml. Falls back to smtp_user
+    if the key is missing or empty (defensive — never silently swallow
+    a contact submission)."""
+    raw = secrets.get('market_emails', []) or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for e in raw:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    if not out:
+        fallback = secrets.get('smtp_user', '')
+        if fallback:
+            out.append(fallback)
     return out
 
 

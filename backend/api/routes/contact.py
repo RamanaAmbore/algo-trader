@@ -43,12 +43,18 @@ class ContactController(Controller):
             raise HTTPException(status_code=429, detail="Please wait before submitting again")
 
         try:
-            from backend.shared.helpers.alert_utils import get_alert_recipients
+            from backend.shared.helpers.alert_utils import get_market_recipients
             from backend.shared.helpers.mail_utils import send_email
-            from backend.shared.helpers.utils import secrets
 
-            recipients = get_alert_recipients() or [secrets.get("smtp_user", "")]
-            to_email = recipients[0] if isinstance(recipients, list) else recipients
+            # Public-website inbound mail routes to `market_emails` in
+            # secrets.yaml (e.g. website.ramboquant@gmail.com,
+            # afridihajayt@gmail.com). Kept separate from the operator
+            # alert inbox so trading-ops notifications and inbound leads
+            # don't bleed into the same thread.
+            recipients = get_market_recipients()
+            if not recipients:
+                logger.error("Contact form: no market_emails recipients configured")
+                raise HTTPException(status_code=500, detail="Failed to send message")
 
             subject = f"RamboQuant Contact: {data.name}"
             html_body = (
@@ -57,13 +63,27 @@ class ContactController(Controller):
                 f"<p><strong>Message:</strong></p>"
                 f"<p>{data.message.replace(chr(10), '<br>')}</p>"
             )
-            success, msg = send_email(data.name, to_email, subject, html_body)
-            if not success:
-                logger.error(f"Contact form email failed: {msg}")
+            # send_email takes one recipient at a time; loop so every
+            # configured market address gets a copy. Any individual
+            # failure is logged but doesn't block the rest from going
+            # through (partial-success path beats all-or-nothing).
+            sent = 0
+            last_err = ''
+            for to_email in recipients:
+                success, msg = send_email(data.name, to_email, subject, html_body)
+                if success:
+                    sent += 1
+                else:
+                    last_err = msg
+                    logger.error(f"Contact form email failed for {to_email}: {msg}")
+            if sent == 0:
                 raise HTTPException(status_code=500, detail="Failed to send message")
 
             _cooldown[data.email] = now
-            logger.info(f"Contact form submitted by {data.email!r}")
+            logger.info(
+                f"Contact form submitted by {data.email!r} — sent to "
+                f"{sent}/{len(recipients)} market recipients"
+            )
             return ContactResponse(detail="Your message has been sent. We will get back to you shortly.")
 
         except HTTPException:
