@@ -100,7 +100,7 @@
   <meta property="og:description" content="Sign in to your RamboQuant partner account." />
   <meta property="og:url" content="https://ramboq.com/signin" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image-thumb.png" />
+  <meta property="og:image" content="https://ramboq.com/og-image-thumb.png?v=2" />
   <meta property="og:image:width" content="600" />
   <meta property="og:image:height" content="600" />
   <meta property="og:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
@@ -110,7 +110,7 @@
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="Sign In | RamboQuant Analytics" />
   <meta name="twitter:description" content="Sign in to your RamboQuant partner account." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image-thumb.png" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image-thumb.png?v=2" />
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
