@@ -28,6 +28,7 @@
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
+  import { fitGridColumns, attachGridFit } from '$lib/agGridUtils';
   import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
@@ -253,6 +254,10 @@
   let positionsSummaryGrid;
   let holdingsSummaryGrid;
   let fundsGrid;
+  // Per-grid window-resize teardown — appended on grid ready, all
+  // cleared in onDestroy so leaving the page doesn't leak listeners.
+  /** @type {Array<() => void>} */
+  let _gridFitTeardowns = [];
   // Sentinel that flips to true once createGrid runs — used by the
   // $effect below to push unifiedRows into ag-Grid the moment both
   // (a) the grid is mounted and (b) the derived row set has populated.
@@ -495,6 +500,8 @@
     stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.(); stopSparkPoll?.();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
+    _gridFitTeardowns.forEach((fn) => fn?.());
+    _gridFitTeardowns = [];
     grid?.destroy?.();
     positionsSummaryGrid?.destroy?.();
     holdingsSummaryGrid?.destroy?.();
@@ -1261,7 +1268,11 @@
       onRowClicked: handleRowClick,
       onSortChanged: saveColumnState,
       onColumnResized: saveColumnState,
-      onGridReady: () => { restoreColumnState(); },
+      onGridReady: ({ api }) => {
+        restoreColumnState();
+        _gridFitTeardowns.push(attachGridFit(api));
+      },
+      onFirstDataRendered: ({ api }) => fitGridColumns(api),
       onCellContextMenu: (ev) => {
         if (ev.data) openContextMenu(ev.event, ev.data);
       },
@@ -1298,6 +1309,8 @@
         domLayout: 'autoHeight',
         rowHeight: 26,
         headerHeight: 26,
+        onGridReady: ({ api }) => { _gridFitTeardowns.push(attachGridFit(api)); },
+        onFirstDataRendered: ({ api }) => fitGridColumns(api),
       });
       positionsSummaryReady = true;
     }
@@ -1339,6 +1352,8 @@
         domLayout: 'autoHeight',
         rowHeight: 26,
         headerHeight: 26,
+        onGridReady: ({ api }) => { _gridFitTeardowns.push(attachGridFit(api)); },
+        onFirstDataRendered: ({ api }) => fitGridColumns(api),
       });
       holdingsSummaryReady = true;
     }
@@ -1398,6 +1413,8 @@
         domLayout: 'autoHeight',
         rowHeight: 26,
         headerHeight: 26,
+        onGridReady: ({ api }) => { _gridFitTeardowns.push(attachGridFit(api)); },
+        onFirstDataRendered: ({ api }) => fitGridColumns(api),
       });
       fundsReady = true;
     }

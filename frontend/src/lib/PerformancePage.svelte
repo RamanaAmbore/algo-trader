@@ -11,6 +11,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { fitGridColumns, attachGridFit } from '$lib/agGridUtils';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -327,6 +328,12 @@
     { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
+  // Per-grid resize-listener teardown — registered when the grid mounts
+  // (attachGridFit returns the cleanup fn) and called from onDestroy so
+  // we don't leak window listeners across navigations.
+  /** @type {Array<() => void>} */
+  let _gridFitTeardowns = [];
+
   function makeGrid(el, colDefs, rowData = [], onRowClick = null) {
     return createGrid(el, {
       // ag-Grid v33 changed the default theme to the Theming-API
@@ -350,6 +357,12 @@
       domLayout: 'autoHeight',
       getRowClass,
       pinnedBottomRowData: [],
+      // Project-wide standard (see $lib/agGridUtils): stretch columns
+      // to fill available container width on mount, on first data
+      // render, and on viewport resize — never leaves blank space at
+      // the right edge when total column width < container.
+      onGridReady: ({ api }) => { _gridFitTeardowns.push(attachGridFit(api)); },
+      onFirstDataRendered: ({ api }) => fitGridColumns(api),
       ...(onRowClick ? { onRowClicked: (e) => onRowClick(e.data) } : {}),
     });
   }
@@ -652,6 +665,8 @@
 
   onDestroy(() => {
     unsub?.();
+    _gridFitTeardowns.forEach((fn) => fn?.());
+    _gridFitTeardowns = [];
     [fundsGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());
