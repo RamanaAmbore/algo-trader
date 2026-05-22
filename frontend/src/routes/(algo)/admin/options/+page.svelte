@@ -2432,36 +2432,39 @@
      P&L sits between Qty and Cost so the operator's eye scans
      "what I have → what I'm making/losing → what I paid".
 
-     Track sizing: `minmax(max-content, 1fr)` per column. The
-     max-content floor means each column NEVER shrinks below its
-     widest cell — cell content always renders in full (no
-     truncation). When the container has spare width beyond the
-     max-content sum, 1fr distributes the leftover so columns expand
-     proportionally and the grid fills the panel. When the container
-     is narrower than the max-content sum (e.g. the side-by-side
-     legs panel on a 1440 px laptop where a long F&O ticker pushes
-     content past the 520 px allocation), `min-width: max-content`
-     keeps the grid at max-content size and the wrapping
-     `.cand-scroll` triggers a horizontal scrollbar — preferred over
-     truncating numeric values that the operator needs to read. */
+     Track sizing — split into two policies:
+       • Symbol + Account: `minmax(max-content, Nfr)`. Min stays at
+         the widest cell so the F&O ticker + account code never
+         truncate. These are the identifying columns; the operator
+         needs to read them in full.
+       • Numeric (qty / pnl / cost / ltp / iv / delta / theta / vega):
+         `minmax(34px, 1fr)`. The 34 px floor is ~half the natural
+         max-content for a typical numeric cell (≈ 60-70 px), per the
+         operator's "halve the min width of every numeric column"
+         request — lets the grid fit narrower containers without
+         spawning a horizontal scrollbar. Numerics that don't fit at
+         34 px ellipsis-truncate (cell-level rule below); the row's
+         `title` attribute carries the full value for hover lookup.
+     `min-width: max-content` removed: the grid's intrinsic minimum
+     is now driven by Symbol + Account alone, not the sum of every
+     column's max-content. */
   .cand-grid {
     display: grid;
     grid-template-columns:
       auto                        /* checkbox */
-      minmax(max-content, 1.4fr)  /* symbol (largest share — longest content) */
+      minmax(max-content, 1.4fr)  /* symbol (longest content — full readout always) */
       minmax(max-content, 1fr)    /* account */
-      minmax(max-content, 1fr)    /* qty */
-      minmax(max-content, 1fr)    /* pnl */
-      minmax(max-content, 1fr)    /* cost */
-      minmax(max-content, 1fr)    /* ltp */
-      minmax(max-content, 1fr)    /* iv */
-      minmax(max-content, 1fr)    /* delta */
-      minmax(max-content, 1fr)    /* theta */
-      minmax(max-content, 1fr);   /* vega */
+      minmax(34px, 1fr)           /* qty */
+      minmax(34px, 1fr)           /* pnl */
+      minmax(34px, 1fr)           /* cost */
+      minmax(34px, 1fr)           /* ltp */
+      minmax(34px, 1fr)           /* iv */
+      minmax(34px, 1fr)           /* delta */
+      minmax(34px, 1fr)           /* theta */
+      minmax(34px, 1fr);          /* vega */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
     width: 100%;
-    min-width: max-content;
   }
   /* When the operator filters to a single account, the Account
      column is implicit (every row carries the same value) — drop
@@ -2470,14 +2473,25 @@
     grid-template-columns:
       auto                        /* checkbox */
       minmax(max-content, 1.4fr)  /* symbol */
-      minmax(max-content, 1fr)    /* qty */
-      minmax(max-content, 1fr)    /* pnl */
-      minmax(max-content, 1fr)    /* cost */
-      minmax(max-content, 1fr)    /* ltp */
-      minmax(max-content, 1fr)    /* iv */
-      minmax(max-content, 1fr)    /* delta */
-      minmax(max-content, 1fr)    /* theta */
-      minmax(max-content, 1fr);   /* vega */
+      minmax(34px, 1fr)           /* qty */
+      minmax(34px, 1fr)           /* pnl */
+      minmax(34px, 1fr)           /* cost */
+      minmax(34px, 1fr)           /* ltp */
+      minmax(34px, 1fr)           /* iv */
+      minmax(34px, 1fr)           /* delta */
+      minmax(34px, 1fr)           /* theta */
+      minmax(34px, 1fr);          /* vega */
+  }
+  /* Cell-level truncation so numeric tracks can shrink below their
+     natural max-content without breaking row layout. Symbol and
+     Account never need this (their min stays at max-content) but
+     the rule applies uniformly for safety. */
+  .cand-headrow > *,
+  .cand-row > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* Single parent grid via subgrid. Each row inherits the parent's
      column tracks — so headers and data cells line up exactly,
