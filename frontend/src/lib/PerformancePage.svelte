@@ -302,15 +302,9 @@
     return span;
   }
 
-  // F&O tradingsymbols can run to ~19 chars (e.g. HDFCBANK26MAY1700PE).
-  // At the grid's monospace 12 px ≈ 7 px/char + 16 px cell padding that's
-  // a 149 px floor — earlier 110/100 px widths truncated even on wide
-  // laptops, with the operator seeing only "HDFCBANK26MAY17…" in the
-  // pinned column. 160 / 150 leave breathing room for the longest
-  // banking F&O contract plus the options-link pill (when enabled).
   const positionsSymbolCol = $derived(enableOptionsLink
-    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 160, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
-    : { field: 'tradingsymbol', headerName: 'Symbol', width: 150, pinned: 'left', cellClass: symFill, headerClass: symFill });
+    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 110, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
+    : { field: 'tradingsymbol', headerName: 'Symbol', width: 100, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
