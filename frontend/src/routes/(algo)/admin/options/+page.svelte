@@ -2454,7 +2454,7 @@
       auto                        /* checkbox */
       minmax(max-content, 1.4fr)  /* symbol (longest content — full readout always) */
       minmax(max-content, 1fr)    /* account */
-      minmax(34px, 1fr)           /* qty */
+      minmax(26px, 1fr)           /* qty (-25 % of the 34 px numeric floor per operator) */
       minmax(34px, 1fr)           /* pnl */
       minmax(34px, 1fr)           /* cost */
       minmax(34px, 1fr)           /* ltp */
@@ -2473,7 +2473,7 @@
     grid-template-columns:
       auto                        /* checkbox */
       minmax(max-content, 1.4fr)  /* symbol */
-      minmax(34px, 1fr)           /* qty */
+      minmax(26px, 1fr)           /* qty */
       minmax(34px, 1fr)           /* pnl */
       minmax(34px, 1fr)           /* cost */
       minmax(34px, 1fr)           /* ltp */

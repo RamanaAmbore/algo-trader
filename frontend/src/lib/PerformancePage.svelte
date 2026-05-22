@@ -301,9 +301,12 @@
     return span;
   }
 
+  // Symbol column +20% (operator request): 110 → 132 with options-link,
+  // 100 → 120 plain. Gives the F&O ticker more breathing room before
+  // ag-Grid's default flex distribution kicks in.
   const positionsSymbolCol = $derived(enableOptionsLink
-    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 110, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
-    : { field: 'tradingsymbol', headerName: 'Symbol', width: 100, pinned: 'left', cellClass: symFill, headerClass: symFill });
+    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
+    : { field: 'tradingsymbol', headerName: 'Symbol', width: 120, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
