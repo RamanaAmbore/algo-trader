@@ -9,9 +9,17 @@ Background refresh (holdings/positions/funds, market warm, alerts, open/close
 summaries) runs as asyncio tasks within this same process — no Redis, no ARQ.
 """
 
+import mimetypes
 from pathlib import Path
 
 from litestar import Litestar, get
+
+# Litestar's `File` response defaults to application/octet-stream when no
+# media_type is supplied, which causes PWA installers / favicon handlers to
+# silently reject the icon files. Register the W3C MIME for .webmanifest
+# (Python stdlib's mimetypes doesn't ship it) and rely on guess_type() for
+# the rest (PNG, SVG, ICO, etc. all come back correctly).
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 from litestar.config.cors import CORSConfig
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
@@ -99,31 +107,44 @@ if _FRONTEND_BUILD.exists():
         html_mode=False,
     )
 
+    def _serve(file_path: Path, *, filename: str | None = None) -> File:
+        """Build a Litestar File response with the correct media_type so PWA
+        manifest parsers, favicon handlers, and OG-image unfurlers accept the
+        bytes. Without media_type Litestar defaults to application/octet-stream
+        and clients silently reject the asset."""
+        media_type, _ = mimetypes.guess_type(file_path.name)
+        return File(
+            path=file_path,
+            filename=filename,
+            content_disposition_type="inline",
+            media_type=media_type or "application/octet-stream",
+        )
+
     @get("/{path:path}", include_in_schema=False)
     async def _spa_fallback(path: str) -> File:  # noqa: F811
         # Guard against directory traversal
         if ".." in path:
-            return File(path=_index_html, filename="index.html", content_disposition_type="inline")
+            return _serve(_index_html, filename="index.html")
         # Litestar's `{path:path}` capture includes the leading slash; pathlib's
         # `/` operator replaces the base when given an absolute path, so always
         # strip leading + trailing slashes before joining.
         rel = path.strip("/")
         if not rel:
-            return File(path=_index_html, filename="index.html", content_disposition_type="inline")
+            return _serve(_index_html, filename="index.html")
         static_file = _FRONTEND_BUILD / rel
         # 1. Exact match (PNG, SVG, robots.txt, etc.)
         if static_file.is_file():
-            return File(path=static_file, content_disposition_type="inline")
+            return _serve(static_file)
         # 2. Prerendered page — adapter-static writes /about → about.html
         html_file = _FRONTEND_BUILD / (rel + ".html")
         if html_file.is_file():
-            return File(path=html_file, filename="index.html", content_disposition_type="inline")
+            return _serve(html_file, filename="index.html")
         # 3. SPA fallback for (algo) routes and anything else
-        return File(path=_index_html, filename="index.html", content_disposition_type="inline")
+        return _serve(_index_html, filename="index.html")
 
     @get("/", include_in_schema=False)
     async def _spa_root() -> File:  # noqa: F811
-        return File(path=_index_html, filename="index.html", content_disposition_type="inline")
+        return _serve(_index_html, filename="index.html")
 
     logger.info(f"Serving SvelteKit build from {_FRONTEND_BUILD}")
 else:
