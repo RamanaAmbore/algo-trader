@@ -212,17 +212,20 @@
   }
 
   .pub-accent-top, .pub-accent-bottom {
-    /* Full viewport width so on screens wider than the 1280px card the
-       top 4 px doesn't reveal the card's white background outside the
-       gradient strip. (Was max-width: 1280px centered, which left two
-       white slivers either side that visually appeared to scroll
-       relative to the fixed centered strip.) */
+    /* Bounded to the 1280px card width + centered, so the accent
+       strip reads as the top/bottom *border of the card* — same
+       visual contract as .pub-footer's gold top border (which is
+       naturally bounded by .pub-card). On viewports wider than
+       1280px the outer area shows the body's cream + diagonal-hatch
+       background, not white, since the card itself is now 1280px on
+       every public route (no more .pub-card-wide variant). */
     position: fixed;
     height: 4px;
     z-index: 200;
+    max-width: 1280px;
     width: 100%;
-    left: 0;
-    right: 0;
+    left: 50%;
+    transform: translateX(-50%);
     background: linear-gradient(90deg, #0c1830 0%, #c8a84b 30%, #f0d878 50%, #c8a84b 70%, #0c1830 100%);
   }
   .pub-accent-top    { top: 0; }
