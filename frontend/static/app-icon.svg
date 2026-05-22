@@ -10,28 +10,28 @@
 
     <!-- 3D ring main gradient: cream highlight at top, deep brown at bottom. -->
     <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff2c4" />
-      <stop offset="12%"  stop-color="#f5d97a" />
-      <stop offset="32%"  stop-color="#e0b740" />
-      <stop offset="55%"  stop-color="#b08020" />
-      <stop offset="80%"  stop-color="#6a4612" />
-      <stop offset="100%" stop-color="#3a2606" />
+      <stop offset="0%"   stop-color="#f0c66e" />
+      <stop offset="20%"  stop-color="#e8aa3a" />
+      <stop offset="45%"  stop-color="#d4920c" />
+      <stop offset="68%"  stop-color="#b07804" />
+      <stop offset="88%"  stop-color="#8a5d02" />
+      <stop offset="100%" stop-color="#5a3d02" />
     </linearGradient>
 
     <!-- Top-only cream sheen — riding along the inner edge for torus bevel. -->
     <linearGradient id="ring-rim-highlight" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff8dc" stop-opacity="0.85" />
-      <stop offset="28%"  stop-color="#fff8dc" stop-opacity="0.40" />
-      <stop offset="55%"  stop-color="#fff8dc" stop-opacity="0.00" />
-      <stop offset="100%" stop-color="#fff8dc" stop-opacity="0.00" />
+      <stop offset="0%"   stop-color="#fbe0a8" stop-opacity="0.55" />
+      <stop offset="28%"  stop-color="#fbe0a8" stop-opacity="0.25" />
+      <stop offset="55%"  stop-color="#fbe0a8" stop-opacity="0.00" />
+      <stop offset="100%" stop-color="#fbe0a8" stop-opacity="0.00" />
     </linearGradient>
 
     <!-- Bottom-only dark rim — riding along the outer edge for torus bevel. -->
     <linearGradient id="ring-rim-shadow" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#1a0d00" stop-opacity="0.00" />
-      <stop offset="48%"  stop-color="#1a0d00" stop-opacity="0.00" />
-      <stop offset="72%"  stop-color="#1a0d00" stop-opacity="0.50" />
-      <stop offset="100%" stop-color="#1a0d00" stop-opacity="0.85" />
+      <stop offset="0%"   stop-color="#5a3d02" stop-opacity="0.00" />
+      <stop offset="50%"  stop-color="#5a3d02" stop-opacity="0.00" />
+      <stop offset="75%"  stop-color="#5a3d02" stop-opacity="0.35" />
+      <stop offset="100%" stop-color="#5a3d02" stop-opacity="0.55" />
     </linearGradient>
 
     <!-- Three-layer gold halo on the bull: wide bloom + outer + tight inner.
@@ -39,14 +39,14 @@
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <!-- Wide warm bloom — softened both in spread and alpha. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="bloom-blur" />
-      <feFlood flood-color="#c8a84b" result="bloom-color" />
+      <feFlood flood-color="#d4920c" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.50" />
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="mid-blur" />
-      <feFlood flood-color="#e2c267" result="mid-color" />
+      <feFlood flood-color="#ec9c25" result="mid-color" />
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
       <feComponentTransfer in="mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.65" />
@@ -54,7 +54,7 @@
       <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
       <feGaussianBlur in="dil-inner" stdDeviation="2.5" result="inner-blur" />
-      <feFlood flood-color="#fff5d0" result="inner-color" />
+      <feFlood flood-color="#ffd58a" result="inner-color" />
       <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
       <feComponentTransfer in="inner-raw" result="halo-inner">
         <feFuncA type="linear" slope="0.55" />

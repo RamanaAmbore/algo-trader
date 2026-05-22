@@ -10,20 +10,20 @@
     </linearGradient>
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="halo-bloom-blur"/>
-      <feFlood flood-color="#c8a84b" result="halo-bloom-color"/>
+      <feFlood flood-color="#d4920c" result="halo-bloom-color"/>
       <feComposite in="halo-bloom-color" in2="halo-bloom-blur" operator="in" result="halo-bloom-raw"/>
       <feComponentTransfer in="halo-bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.50"/>
       </feComponentTransfer>
       <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="halo-mid-blur"/>
-      <feFlood flood-color="#e2c267" result="halo-mid-color"/>
+      <feFlood flood-color="#ec9c25" result="halo-mid-color"/>
       <feComposite in="halo-mid-color" in2="halo-mid-blur" operator="in" result="halo-mid-raw"/>
       <feComponentTransfer in="halo-mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.65"/>
       </feComponentTransfer>
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner"/>
       <feGaussianBlur in="dil-inner" stdDeviation="2.5" result="halo-inner-blur"/>
-      <feFlood flood-color="#fff5d0" result="halo-inner-color"/>
+      <feFlood flood-color="#ffd58a" result="halo-inner-color"/>
       <feComposite in="halo-inner-color" in2="halo-inner-blur" operator="in" result="halo-inner-raw"/>
       <feComponentTransfer in="halo-inner-raw" result="halo-inner">
         <feFuncA type="linear" slope="0.55"/>
@@ -36,24 +36,24 @@
       </feMerge>
     </filter>
     <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff2c4"/>
-      <stop offset="12%"  stop-color="#f5d97a"/>
-      <stop offset="32%"  stop-color="#e0b740"/>
-      <stop offset="55%"  stop-color="#b08020"/>
-      <stop offset="80%"  stop-color="#6a4612"/>
-      <stop offset="100%" stop-color="#3a2606"/>
+      <stop offset="0%"   stop-color="#f0c66e"/>
+      <stop offset="20%"  stop-color="#e8aa3a"/>
+      <stop offset="45%"  stop-color="#d4920c"/>
+      <stop offset="68%"  stop-color="#b07804"/>
+      <stop offset="88%"  stop-color="#8a5d02"/>
+      <stop offset="100%" stop-color="#5a3d02"/>
     </linearGradient>
     <linearGradient id="ring-rim-highlight" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff8dc" stop-opacity="0.85"/>
-      <stop offset="28%"  stop-color="#fff8dc" stop-opacity="0.40"/>
-      <stop offset="55%"  stop-color="#fff8dc" stop-opacity="0.00"/>
-      <stop offset="100%" stop-color="#fff8dc" stop-opacity="0.00"/>
+      <stop offset="0%"   stop-color="#fbe0a8" stop-opacity="0.55"/>
+      <stop offset="28%"  stop-color="#fbe0a8" stop-opacity="0.25"/>
+      <stop offset="55%"  stop-color="#fbe0a8" stop-opacity="0.00"/>
+      <stop offset="100%" stop-color="#fbe0a8" stop-opacity="0.00"/>
     </linearGradient>
     <linearGradient id="ring-rim-shadow" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#1a0d00" stop-opacity="0.00"/>
-      <stop offset="48%"  stop-color="#1a0d00" stop-opacity="0.00"/>
-      <stop offset="72%"  stop-color="#1a0d00" stop-opacity="0.50"/>
-      <stop offset="100%" stop-color="#1a0d00" stop-opacity="0.85"/>
+      <stop offset="0%"   stop-color="#5a3d02" stop-opacity="0.00"/>
+      <stop offset="50%"  stop-color="#5a3d02" stop-opacity="0.00"/>
+      <stop offset="75%"  stop-color="#5a3d02" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#5a3d02" stop-opacity="0.55"/>
     </linearGradient>
     <filter id="ring-shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#0a0a0a" flood-opacity="0.6"/>

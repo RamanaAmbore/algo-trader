@@ -6,12 +6,12 @@
       <stop offset="100%" stop-color="#0a2030" />
     </radialGradient>
     <linearGradient id="ring-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#fff2c4" />
-      <stop offset="12%"  stop-color="#f5d97a" />
-      <stop offset="32%"  stop-color="#e0b740" />
-      <stop offset="55%"  stop-color="#b08020" />
-      <stop offset="80%"  stop-color="#6a4612" />
-      <stop offset="100%" stop-color="#3a2606" />
+      <stop offset="0%"   stop-color="#f0c66e" />
+      <stop offset="20%"  stop-color="#e8aa3a" />
+      <stop offset="45%"  stop-color="#d4920c" />
+      <stop offset="68%"  stop-color="#b07804" />
+      <stop offset="88%"  stop-color="#8a5d02" />
+      <stop offset="100%" stop-color="#5a3d02" />
     </linearGradient>
   </defs>
 
