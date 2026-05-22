@@ -420,74 +420,206 @@ class KiteConnection:
 
 
 class DhanConnection:
-    """Dhan client wrapper. Holds a `dhanhq.dhanhq(client_id, access_token)`
-    handle and re-instantiates it when the operator pastes a fresh access
-    token via /admin/brokers.
+    """Dhan client wrapper with Partner-API auto-login.
 
-    Dhan access tokens expire in ≤ 24 h. v0 expects the operator to
-    refresh manually from Dhan's portal and paste into the admin UI;
-    every save triggers `Connections.rebuild_from_db()` which builds a
-    new DhanConnection with the new token. Auto-refresh via Partner
-    API (api_key + api_secret + TOTP) lands when a sandbox token is
-    available — credential columns are already in place.
+    Mirrors KiteConnection's lifecycle: long-lived credentials
+    (`api_key + api_secret + pin + totp_token + client_id`, all
+    ~1-year valid) are persisted in `broker_accounts`; this class
+    runs Dhan's Partner-API login flow on first use and re-runs it
+    every `CONN_RESET_HOURS` (default 23 h) — no daily token paste.
 
-    No IPv6 source-binding here; Dhan doesn't enforce per-IP whitelisting
-    the way Kite does. `source_ip` on the broker_accounts row is read
-    but unused for Dhan (kept for future symmetry).
+    Login dance (DhanLogin SDK):
+      1. `generate_login_session(api_key, api_secret)` → token_id
+      2. `generate_token(pin, totp)` — PIN + TOTP authenticate the
+         session
+      3. `consume_token_id(token_id, api_key, api_secret)` → 24h
+         access_token
+
+    Access tokens are cached to `dhan_tokens.json` (next to
+    `kite_tokens.json`) so a restart within the 23 h window skips
+    the login dance entirely. Cross-process lock (same pattern as
+    Kite) prevents prod + dev from racing two parallel logins for
+    the same Partner-API app.
+
+    No IPv6 source-binding here; Dhan doesn't enforce per-IP
+    whitelisting the way Kite does. `source_ip` is accepted on the
+    constructor for future symmetry but unused today.
     """
 
-    def __init__(self, account: str, *, client_id: str, access_token: str,
+    def __init__(self, account: str, *,
+                 client_id: str, api_key: str, api_secret: str,
+                 pin: str, totp_token: str,
                  source_ip: str | None = None) -> None:
         self.account       = account
         self.client_id     = client_id
-        self._access_token = access_token
+        self._api_key      = api_key
+        self._api_secret   = api_secret
+        self._pin          = pin
+        self._totp_token   = totp_token
         self._source_ip    = source_ip
+        self._access_token: str | None = None
+        self._conn_created_at: datetime | None = None
         self._dhan         = None
-        self._build()
+        self._import_error = None
+        self._login_lock   = threading.Lock()
+        # Try to restore from on-disk cache so a restart within the
+        # 23 h window doesn't re-run the login dance.
+        self._try_restore_token()
 
-    def _build(self) -> None:
-        """Lazily construct the dhanhq client. Imported inside the method
-        so the module is importable on systems where `dhanhq` isn't yet
-        installed (e.g. during a deploy that hasn't pip-installed the
-        new requirement). The first real call will then surface the
-        ImportError with a clear message.
+    # ── Token cache ──────────────────────────────────────────────────
+    # Reuses the Kite token cache file layout — separate top-level
+    # account key prefixed with `dhan:` to avoid collision with Kite
+    # accounts. Both prod + dev write to the same file (locked).
 
-        dhanhq 2.x changed the constructor shape — pre-2.0 took
-        `(client_id, access_token)` directly; 2.x takes a `DhanContext`.
-        We probe for both so an in-flight version bump on the server
-        doesn't break boot."""
+    def _cache_key(self) -> str:
+        return f"dhan:{self.account}"
+
+    def _try_restore_token(self) -> None:
+        token, created = _load_cached_token(self._cache_key())
+        if token:
+            self._access_token   = token
+            self._conn_created_at = timestamp_indian()
+            self._build_client(token)
+            logger.info(f"Restored cached Dhan token for {self.account} "
+                        f"(age: {(datetime.now(timezone.utc) - created).seconds // 3600}h)")
+
+    def _save_token(self, token: str) -> None:
+        _save_cached_token(self._cache_key(), token)
+
+    # ── SDK client construction ──────────────────────────────────────
+
+    def _build_client(self, access_token: str) -> None:
+        """Construct the `dhanhq` runtime client from a known-good
+        access_token. SDK import is deferred so the module is loadable
+        without dhanhq installed (deploys land in stages)."""
         try:
             from dhanhq import dhanhq  # type: ignore[import-not-found]
         except ImportError as e:
             logger.error(
                 f"dhanhq SDK not installed; run `pip install dhanhq`. "
-                f"Account {self.account!r} will be inactive until "
+                f"Account {self.account!r} will stay inactive until "
                 f"the dependency is available."
             )
             self._dhan = None
             self._import_error = e
             return
         try:
-            # 2.x path — DhanContext wraps the credentials.
             from dhanhq import DhanContext  # type: ignore[import-not-found]
-            ctx = DhanContext(self.client_id, self._access_token)
+            ctx = DhanContext(self.client_id, access_token)
             self._dhan = dhanhq(ctx)
         except ImportError:
-            # 1.x fallback — direct positional args.
-            self._dhan = dhanhq(self.client_id, self._access_token)
+            # dhanhq 1.x fallback (positional args).
+            self._dhan = dhanhq(self.client_id, access_token)
         self._import_error = None
 
-    def get_dhan_conn(self):
-        """Return the dhanhq client. Raises if the SDK isn't installed."""
-        if self._dhan is None:
-            err = getattr(self, "_import_error", None)
+    # ── Login flow ───────────────────────────────────────────────────
+
+    def _do_login(self) -> str:
+        """Run the Partner-API login dance and return a fresh access_token.
+
+        Raises with a clear message on any failure — the caller (
+        `get_dhan_conn`) re-raises after logging, exactly like Kite's
+        retry-then-give-up loop."""
+        try:
+            from dhanhq import DhanLogin  # type: ignore[import-not-found]
+        except ImportError as e:
             raise RuntimeError(
-                f"DhanConnection for {self.account!r} is not initialised "
-                f"(dhanhq SDK missing? {err})"
+                f"dhanhq SDK missing — cannot run Dhan login for "
+                f"{self.account!r}: {e}"
+            ) from e
+
+        if not all([self._api_key, self._api_secret, self._pin,
+                    self._totp_token, self.client_id]):
+            raise RuntimeError(
+                f"Dhan account {self.account!r} missing one or more "
+                f"required credentials (client_id / api_key / api_secret "
+                f"/ pin / totp_token). Fill them in /admin/brokers."
+            )
+
+        # Step 1 — start the login session (api_key + api_secret).
+        login = DhanLogin(self.client_id)
+        session = login.generate_login_session(self._api_key, self._api_secret)
+        # Expected shape: {"status": ..., "data": {"tokenId": "..."}}
+        if isinstance(session, dict):
+            session_data = session.get("data") or session
+            token_id = (session_data.get("tokenId")
+                        or session_data.get("token_id"))
+        else:
+            token_id = None
+        if not token_id:
+            raise RuntimeError(
+                f"Dhan generate_login_session returned no tokenId: {session!r}"
+            )
+
+        # Step 2 — PIN + TOTP 2FA.
+        totp = generate_totp(self._totp_token)
+        login.generate_token(self._pin, totp)  # raises on bad PIN/TOTP
+
+        # Step 3 — consume the token_id for an access_token.
+        consumed = login.consume_token_id(token_id, self._api_key,
+                                          self._api_secret)
+        consumed_data = (consumed.get("data") if isinstance(consumed, dict)
+                         else None) or consumed or {}
+        access_token = (consumed_data.get("accessToken")
+                        or consumed_data.get("access_token"))
+        if not access_token:
+            raise RuntimeError(
+                f"Dhan consume_token_id returned no accessToken: {consumed!r}"
+            )
+        return str(access_token)
+
+    def get_dhan_conn(self, test_conn: bool = False):
+        """Return a ready dhanhq client.
+
+        Mirrors `KiteConnection.get_kite_conn` — refreshes when older
+        than CONN_RESET_HOURS, or whenever `test_conn=True`. Re-auth
+        runs under the per-account login lock + the cross-process file
+        lock so concurrent callers don't race two logins against the
+        same Partner-API app.
+        """
+        now = timestamp_indian()
+        expired = (
+            self._conn_created_at is None
+            or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
+        )
+
+        if not (expired or test_conn) and self._dhan is not None:
+            return self._dhan
+
+        with self._login_lock, _cross_process_login_lock(self._cache_key()):
+            # Double-check under the lock — a peer may have just minted
+            # a fresh token while we were waiting.
+            now = timestamp_indian()
+            expired = (
+                self._conn_created_at is None
+                or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
+            )
+            if not (expired or test_conn) and self._dhan is not None:
+                return self._dhan
+
+            # Try the on-disk cache (peer may have just written a token).
+            if not self._access_token:
+                self._try_restore_token()
+
+            if self._access_token and self._dhan is not None and not test_conn:
+                return self._dhan
+
+            access_token = self._do_login()
+            self._access_token   = access_token
+            self._conn_created_at = timestamp_indian()
+            self._save_token(access_token)
+            self._build_client(access_token)
+            logger.info(f"Dhan login complete for {self.account} "
+                        f"(token cached, valid ~24h)")
+
+        if self._dhan is None:
+            raise RuntimeError(
+                f"DhanConnection for {self.account!r} failed to build "
+                f"after login (dhanhq SDK missing?)"
             )
         return self._dhan
 
-    def get_access_token(self) -> str:
+    def get_access_token(self) -> str | None:
         return self._access_token
 
 
@@ -641,25 +773,45 @@ class Connections(SingletonBase):
             broker_id = (r.broker_id or "zerodha_kite").lower()
             try:
                 if broker_id == "dhan":
-                    # Dhan path — uses client_id (plaintext) + access_token
-                    # (encrypted). Operator pastes a fresh token daily from
-                    # Dhan's portal until auto-refresh via Partner API lands.
-                    access_token = (decrypt(r.access_token_enc)
-                                    if r.access_token_enc else "")
+                    # Dhan path — Partner-API auto-login.
+                    # broker_accounts columns reused for Dhan:
+                    #   client_id       → Dhan client ID (plaintext)
+                    #   api_key         → Partner-API app key (plaintext)
+                    #   api_secret_enc  → Partner-API app secret
+                    #   password_enc    → Dhan trading PIN (semantic reuse —
+                    #                     "password" is the Kite analogue;
+                    #                     for Dhan rows it stores the PIN)
+                    #   totp_token_enc  → Dhan TOTP seed
+                    # Connection runs the 4-step DhanLogin flow on first
+                    # use + every 23 h; no operator paste needed after
+                    # initial setup.
                     if not r.client_id:
                         logger.warning(f"Dhan account {r.account!r} missing "
                                        f"client_id; skipping.")
                         continue
-                    if not access_token:
-                        logger.warning(f"Dhan account {r.account!r} has no "
-                                       f"access_token; paste one from Dhan's "
-                                       f"portal in /admin/brokers and the "
-                                       f"connection will load on next save.")
+                    try:
+                        api_secret = decrypt(r.api_secret_enc) if r.api_secret_enc else ""
+                        pin        = decrypt(r.password_enc)   if r.password_enc   else ""
+                        totp_token = decrypt(r.totp_token_enc) if r.totp_token_enc else ""
+                    except Exception as e:
+                        logger.error(f"Dhan credential decrypt failed for "
+                                     f"{r.account!r}: {e}")
+                        continue
+                    if not (r.api_key and api_secret and pin and totp_token):
+                        logger.warning(
+                            f"Dhan account {r.account!r} is missing one or "
+                            f"more credentials (api_key / api_secret / pin / "
+                            f"totp_token). Fill them in /admin/brokers and "
+                            f"the connection will load on next save."
+                        )
                         continue
                     new_conn[r.account] = DhanConnection(
                         r.account,
                         client_id=r.client_id,
-                        access_token=access_token,
+                        api_key=r.api_key,
+                        api_secret=api_secret,
+                        pin=pin,
+                        totp_token=totp_token,
                         source_ip=r.source_ip,
                     )
                     continue
