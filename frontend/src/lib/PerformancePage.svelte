@@ -584,9 +584,71 @@
 
     unsub = createPerformanceSocket((msg) => {
       lastRefresh = msg.refreshed_at ?? lastRefresh;
-      loadAll();
+      if (msg.event === 'position_filled') {
+        // Kite postback says an order JUST filled — patch the local
+        // positions table in place so the operator sees the new qty
+        // within a frame, not on the next 5-min performance poll.
+        // We also kick off a fresh fetch behind it so the canonical
+        // row replaces our optimistic patch within ~500 ms. The patch
+        // is additive; if the fetch reveals different numbers (Kite
+        // split the fill, partial, etc.) the fresh row overwrites.
+        _applyFillDelta(msg);
+        _flashFillToast(msg);
+        loadAll({ fresh: true });
+      } else {
+        loadAll();
+      }
     });
   });
+
+  /** Optimistic position patch from a Kite postback `position_filled`
+   *  message. msg = {event, account (masked), exchange, tradingsymbol,
+   *  qty (signed), fill_price, ts, order_id}. We mutate rawPositions
+   *  in place so any reactive derivations (filter, grid feed) pick the
+   *  change up immediately; loadAll() runs in parallel to reconcile. */
+  function _applyFillDelta(msg) {
+    if (!msg || typeof msg.qty !== 'number' || !msg.tradingsymbol) return;
+    const acct = msg.account || '';
+    const sym  = msg.tradingsymbol;
+    const exch = msg.exchange || '';
+    const idx = rawPositions.findIndex(r =>
+      r.tradingsymbol === sym &&
+      r.account       === acct &&
+      (!exch || r.exchange === exch));
+    if (idx >= 0) {
+      // Existing row — apply delta to a copy so Svelte sees the
+      // reference change.
+      const next = { ...rawPositions[idx] };
+      next.quantity   = Number(next.quantity || 0) + Number(msg.qty);
+      next.last_price = Number(msg.fill_price) || next.last_price;
+      // Mark the row so the grid can flash it briefly.
+      next._just_filled = msg.ts || Date.now();
+      const copy = rawPositions.slice();
+      copy[idx] = next;
+      rawPositions = copy;
+    }
+    // No `else` add-new branch — letting the in-flight loadAll() fetch
+    // populate brand-new positions avoids inventing fields (avg_price,
+    // close_price, pnl) we can't honestly compute from a fill alone.
+    applyAccountFilter();
+  }
+
+  /** Brief amber toast at the top-right confirming the fill. Auto-clears
+   *  after 3 s. Multiple concurrent fills collapse into the most recent
+   *  message — operator doesn't care about old fills. */
+  let _fillToast = $state(/** @type {string} */ (''));
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _fillToastTimer = null;
+  function _flashFillToast(msg) {
+    const side  = (Number(msg.qty) > 0) ? 'BUY' : 'SELL';
+    const qty   = Math.abs(Number(msg.qty));
+    const sym   = msg.tradingsymbol;
+    const price = Number(msg.fill_price);
+    _fillToast = `✓ Filled: ${side} ${qty} ${sym}` +
+      (price > 0 ? ` @₹${price.toFixed(2)}` : '');
+    if (_fillToastTimer) clearTimeout(_fillToastTimer);
+    _fillToastTimer = setTimeout(() => { _fillToast = ''; }, 3000);
+  }
 
   onDestroy(() => {
     unsub?.();
@@ -597,6 +659,14 @@
 </script>
 
 <div class:perf-dark={isDark}>
+
+{#if _fillToast}
+  <!-- Fill confirmation — fires within a frame of the Kite postback
+       `position_filled` event. Lives only 3 s; an actively-trading
+       operator sees the broker's ack arrive before they look away from
+       the page. -->
+  <div class="perf-fill-toast" role="status" aria-live="polite">{_fillToast}</div>
+{/if}
 
 {#if error}
   <!-- Graceful banner. Errors fall into two buckets:
@@ -771,6 +841,30 @@
     line-height: 1.25;
     margin-bottom: 0.75rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  /* Fill toast — momentary confirmation that a Kite postback fired.
+     Sticks to the top-right, fades in/out, doesn't push the page
+     content down (position: fixed). Amber accent matches the algo
+     theme's "money" tone. */
+  .perf-fill-toast {
+    position: fixed;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 1000;
+    background: rgba(251,191,36,0.18);
+    border: 1px solid rgba(251,191,36,0.55);
+    color: #fbbf24;
+    padding: 0.4rem 0.7rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    animation: perf-fill-toast-in 0.18s ease-out;
+  }
+  @keyframes perf-fill-toast-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
   .perf-banner-icon {
     font-size: 0.95rem;

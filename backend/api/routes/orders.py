@@ -1327,6 +1327,33 @@ class OrdersController(Controller):
                 "status_message": status_msg,
             }))
 
+            # On a FILL (Kite status='COMPLETE') broadcast a separate
+            # `position_filled` event with the signed qty delta. The
+            # frontend patches its local sum_positions table immediately
+            # — no waiting for the 5-min performance poll to roll over.
+            # The poll remains the source of truth: if a postback is ever
+            # dropped (Kite delivery is best-effort), the next refresh
+            # reconciles. Optimistic-add is additive and self-correcting.
+            if status == "COMPLETE":
+                try:
+                    _qty_int = int(qty or 0)
+                    if _qty_int > 0:
+                        _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+                        broadcast(json.dumps({
+                            "event": "position_filled",
+                            "account": masked,
+                            "exchange": body.get("exchange", ""),
+                            "tradingsymbol": tradingsymbol,
+                            "qty": _qty_int * _side_sign,
+                            "fill_price": float(price or 0),
+                            "ts": int(_time.time() * 1000),
+                            "order_id": order_id,
+                        }))
+                except Exception as _pe:
+                    # Never let a malformed delta payload break the
+                    # postback ACK — Kite retries on a non-2xx response.
+                    logger.debug(f"position_filled broadcast skipped: {_pe}")
+
             return {"status": "ok"}
         except HTTPException:
             raise
