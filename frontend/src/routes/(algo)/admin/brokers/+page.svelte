@@ -66,9 +66,7 @@
       { key: 'totp_token', label: 'TOTP seed',   secret: true,  required: true },
     ],
     groww: [
-      { key: 'api_key',    label: 'API key',     secret: false, required: true },
-      { key: 'api_secret', label: 'API secret',  secret: true,  required: true },
-      { key: 'totp_token', label: 'TOTP seed',   secret: true,  required: true },
+      { key: 'access_token', label: 'Access token', secret: true, required: true },
     ],
     dhan: [
       { key: 'client_id',    label: 'Client ID',     secret: false, required: true },

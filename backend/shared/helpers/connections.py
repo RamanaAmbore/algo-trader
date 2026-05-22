@@ -491,6 +491,51 @@ class DhanConnection:
         return self._access_token
 
 
+class GrowwConnection:
+    """Groww client wrapper. Holds a `growwapi.GrowwAPI(access_token)`
+    handle. Same v0 contract as DhanConnection — operator pastes a
+    fresh access token via /admin/brokers when the current one expires.
+
+    Groww supports two token-mint flows: dashboard-generated (typically
+    24 h) and programmatic (api_key + api_secret + TOTP, like Kite).
+    The schema already exposes api_key / api_secret / totp_token
+    columns; auto-refresh wiring lands when a sandbox token is
+    available for verification.
+    """
+
+    def __init__(self, account: str, *, access_token: str) -> None:
+        self.account       = account
+        self._access_token = access_token
+        self._groww        = None
+        self._import_error = None
+        self._build()
+
+    def _build(self) -> None:
+        try:
+            from growwapi import GrowwAPI  # type: ignore[import-not-found]
+        except ImportError as e:
+            logger.error(
+                f"growwapi SDK not installed; run `pip install growwapi`. "
+                f"Account {self.account!r} will be inactive until "
+                f"the dependency is available."
+            )
+            self._groww = None
+            self._import_error = e
+            return
+        self._groww = GrowwAPI(self._access_token)
+
+    def get_groww_conn(self):
+        if self._groww is None:
+            raise RuntimeError(
+                f"GrowwConnection for {self.account!r} is not initialised "
+                f"(growwapi SDK missing? {self._import_error})"
+            )
+        return self._groww
+
+    def get_access_token(self) -> str:
+        return self._access_token
+
+
 class Connections(SingletonBase):
     # Serialises the one-time init — SingletonBase's own lock protects
     # the _instances dict, not the body of this __init__. Two concurrent
@@ -616,6 +661,25 @@ class Connections(SingletonBase):
                         client_id=r.client_id,
                         access_token=access_token,
                         source_ip=r.source_ip,
+                    )
+                    continue
+
+                if broker_id == "groww":
+                    # Groww path — single access_token (encrypted). Same
+                    # 24 h manual-refresh model as Dhan; auto-refresh via
+                    # api_key + api_secret + TOTP lands when sandbox
+                    # access is available.
+                    access_token = (decrypt(r.access_token_enc)
+                                    if r.access_token_enc else "")
+                    if not access_token:
+                        logger.warning(f"Groww account {r.account!r} has no "
+                                       f"access_token; paste one from "
+                                       f"Groww's developer dashboard in "
+                                       f"/admin/brokers and the connection "
+                                       f"will load on next save.")
+                        continue
+                    new_conn[r.account] = GrowwConnection(
+                        r.account, access_token=access_token,
                     )
                     continue
 
