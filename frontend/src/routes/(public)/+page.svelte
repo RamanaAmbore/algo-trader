@@ -16,8 +16,8 @@
   <!-- Open Graph — HOME variant. Uses og-image-home.png (full-canvas
        brand hero, no text inside the image) so the card shows a clean
        picture and the og:title / og:description text below carry the
-       narrative. og-image.png (icon + wordmark) is used by every other
-       public page. -->
+       narrative. og-image-card.png (icon + wordmark) is used by every
+       other public page. -->
   <meta property="og:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
   <meta property="og:description" content="RamboQuant builds systematic, transparent portfolios for partner-investors. Track real-time performance, market reports, and risk metrics." />
   <meta property="og:url" content="https://ramboq.com/" />

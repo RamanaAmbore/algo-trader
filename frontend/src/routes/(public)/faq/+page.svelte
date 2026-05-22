@@ -134,14 +134,14 @@
   <meta property="og:description" content="Answers to common questions about RamboQuant's investment strategies, partnership terms, fees, and operations." />
   <meta property="og:url" content="https://ramboq.com/faq" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image.png" />
+  <meta property="og:image" content="https://ramboq.com/og-image-card.png" />
   <meta property="og:site_name" content="RamboQuant Analytics" />
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Frequently Asked Questions | RamboQuant Analytics" />
   <meta name="twitter:description" content="Answers to common questions about RamboQuant's investment strategies, partnership terms, fees, and operations." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image.png" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image-card.png" />
 
   <!-- FAQPage structured data — generated from the faqs array above -->
   {@html `<script type="application/ld+json">${JSON.stringify({

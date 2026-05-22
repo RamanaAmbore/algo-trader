@@ -31,14 +31,14 @@
   <meta property="og:description" content="Get in touch with RamboQuant Analytics LLP — for partnership inquiries, support, or general questions." />
   <meta property="og:url" content="https://ramboq.com/contact" />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://ramboq.com/og-image.png" />
+  <meta property="og:image" content="https://ramboq.com/og-image-card.png" />
   <meta property="og:site_name" content="RamboQuant Analytics" />
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Contact Us | RamboQuant Analytics" />
   <meta name="twitter:description" content="Get in touch with RamboQuant Analytics LLP — for partnership inquiries, support, or general questions." />
-  <meta name="twitter:image" content="https://ramboq.com/og-image.png" />
+  <meta name="twitter:image" content="https://ramboq.com/og-image-card.png" />
 </svelte:head>
 
 <div class="max-w-sm mx-auto">

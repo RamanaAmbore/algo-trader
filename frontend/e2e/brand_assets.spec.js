@@ -23,8 +23,8 @@ const TIMEOUT = 20_000;
 const STATIC_OK = [
   { path: '/favicon.ico',      mime: /image\/(x-icon|vnd\.microsoft\.icon)|^$/ },
   { path: '/favicon.png',      mime: /image\/png/ },
-  { path: '/og-image.png',     mime: /image\/png/ },
-  { path: '/og-image.svg',     mime: /image\/svg\+xml/ },
+  { path: '/og-image-card.png',     mime: /image\/png/ },
+  { path: '/og-image-card.svg',     mime: /image\/svg\+xml/ },
   { path: '/app-icon-192.png', mime: /image\/png/ },
   { path: '/app-icon-512.png', mime: /image\/png/ },
 ];
