@@ -2483,11 +2483,14 @@
       minmax(34px, 1fr);          /* vega */
   }
   /* Cell-level truncation so numeric tracks can shrink below their
-     natural max-content without breaking row layout. Symbol and
-     Account never need this (their min stays at max-content) but
-     the rule applies uniformly for safety. */
-  .cand-headrow > *,
-  .cand-row > * {
+     natural max-content without breaking row layout. Scoped to
+     `.num` only — applying it row-wide also clipped .cand-actions
+     and the SymbolActions popover menu inside it (the menu is
+     absolutely positioned but `overflow: hidden` on its ancestor
+     still clips it visually). Symbol and Account don't need
+     truncation because their column min stays at max-content. */
+  .cand-headrow > .num,
+  .cand-row > .num {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
