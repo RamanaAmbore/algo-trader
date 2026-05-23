@@ -3,13 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- Site-wide favicon: teal face, inset 3D gold ring, teal bull.
-         ?v=31 cache-busts the icons so browsers + installed PWAs re-fetch
-         after the May 2026 brand redesign (was amber bull / navy face). -->
-    <link rel="icon" type="image/svg+xml" href="%sveltekit.assets%/public-favicon.svg?v=31" />
-    <link rel="alternate icon" href="%sveltekit.assets%/favicon.ico?v=31" />
-    <link rel="alternate icon" href="%sveltekit.assets%/favicon.png?v=31" />
-    <link rel="manifest" href="%sveltekit.assets%/manifest.webmanifest?v=31" />
+    <!-- Site-wide favicon: teal face, orange-gold ring + bull halo.
+         The SVG favicon points directly at app-icon.svg so the design
+         stays in sync with every other icon variant (PWA tile, apple-
+         touch, OG cards) — all rendered from the same SVG via
+         scripts/build_app_icons.py. -->
+    <link rel="icon" type="image/svg+xml" href="%sveltekit.assets%/app-icon.svg?v=32" />
+    <link rel="alternate icon" href="%sveltekit.assets%/favicon.ico?v=32" />
+    <link rel="alternate icon" href="%sveltekit.assets%/favicon.png?v=32" />
+    <link rel="manifest" href="%sveltekit.assets%/manifest.webmanifest?v=32" />
 
     <!-- SEO & Metadata for RamboQuant Analytics LLP -->
     <title>RamboQuant Analytics</title>
@@ -60,10 +62,10 @@
     </script>
 
     <!-- Theme color — matches manifest background_color + icon face teal -->
-    <meta name="theme-color" content="#0a2030" />
+    <meta name="theme-color" content="#114858" />
 
     <!-- apple-touch-icon explicit version pin so iOS re-fetches when icons change -->
-    <link rel="apple-touch-icon" sizes="192x192" href="%sveltekit.assets%/apple-touch-icon.png?v=31" />
+    <link rel="apple-touch-icon" sizes="192x192" href="%sveltekit.assets%/apple-touch-icon.png?v=32" />
 
     %sveltekit.head%
   </head>
