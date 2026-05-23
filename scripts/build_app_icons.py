@@ -11,7 +11,7 @@ NAVY = (12, 24, 48, 255)            # #0c1830 — matches the investor navbar
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
 GLOW_COLOR = (200, 168, 75)         # #c8a84b — champagne-gold, public-site palette
 RING_RADIUS_FRAC = 200 / 512  # ring centre radius (gap from bull bounds = 70 px)
-RING_WIDTH_FRAC  = 16 / 512   # 16 px stroke at 512 — leaner bevel
+RING_WIDTH_FRAC  = 20 / 512   # 20 px stroke at 512 — wider bevel for visible 3D
 
 
 def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
@@ -20,6 +20,8 @@ def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Imag
     halo = Image.new("RGBA", bull.size, GLOW_COLOR + (0,))
     halo.putalpha(blurred.point(lambda v: int(v * opacity)))
     return halo
+
+
 
 
 def _vertical_gradient(size: int, stops: list[tuple[float, tuple[int, int, int]]]) -> Image.Image:
@@ -80,8 +82,8 @@ def build(size: int, source: Image.Image) -> Image.Image:
     bloom_std = 22 * size / 512
     outer_std = 12 * size / 512
     inner_std = 6  * size / 512
-    canvas.alpha_composite(_glow_layer(bull, bloom_std, 0.40), (bx, by))
-    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.75), (bx, by))
+    canvas.alpha_composite(_glow_layer(bull, bloom_std, 0.55), (bx, by))
+    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.95), (bx, by))
     canvas.alpha_composite(_glow_layer(bull, inner_std, 1.00), (bx, by))
     canvas.alpha_composite(bull, (bx, by))
 
@@ -93,13 +95,13 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        # Champagne palette — matches the investor site's goldGrad
-        # (#c8a84b → #f0d070 → #c8a84b) plus a warm-cream highlight on
-        # top and a deep umber shadow on bottom for the bevel.
-        (0.00, (0xe8, 0xd9, 0xa8)),  # warm-champagne highlight
-        (0.35, (0xf0, 0xd0, 0x70)),  # soft warm gold (matches goldGrad mid)
-        (0.65, (0x9a, 0x7e, 0x38)),  # champagne deep
-        (1.00, (0x5a, 0x40, 0x10)),  # warm umber bottom
+        # Symmetric uniform gold — same bright cream-gold highlight at
+        # the top AND bottom edges, with the metallic-gold body across
+        # the middle. Reads as a polished metal ring whose inner and
+        # outer rims catch light identically (no top-lit torus look).
+        (0.00, (0xf2, 0xdc, 0x8e)),  # cream highlight (top edge)
+        (0.50, (0xd6, 0xb4, 0x3c)),  # main metallic gold (body)
+        (1.00, (0xf2, 0xdc, 0x8e)),  # cream highlight (bottom edge)
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
