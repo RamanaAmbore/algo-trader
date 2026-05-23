@@ -1,160 +1,82 @@
-"""Generate every PNG/ICO brand asset from bull.png — re-run after editing bull.png."""
+"""Generate every PNG/ICO brand asset from app-icon.svg via cairosvg.
+
+The SVG (frontend/static/app-icon.svg) is the single source of truth —
+all favicon / app-icon / maskable / apple-touch-icon PNGs are rendered
+from it at the appropriate size. Edit the SVG to change the design,
+then re-run this script.
+
+Maskable variants are rendered at 75% inner size and pasted onto a
+teal canvas so Android Chrome's adaptive-icon crop never reaches the
+ring or bull (W3C maskable safe-zone = center 80% of the canvas).
+"""
 
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFilter
+from io import BytesIO
+
+import cairosvg
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
-BULL_SRC = STATIC / "bull.png"
+SOURCE_SVG = STATIC / "app-icon.svg"
 
-NAVY = (17, 72, 88, 255)            # #114858 — uniform teal face (midpoint of previous centre+edge)
-BULL_INSET = 260 / 512   # bull width as fraction of canvas
-GLOW_COLOR = (245, 148, 16)         # #f59410 — more vivid orange-gold
-RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
-RING_WIDTH_FRAC  = 20 / 512   # 20 px stroke at 512 — wider bevel for visible 3D
+# Teal face colour (matches the flat fill in app-icon.svg) — used to
+# pad the maskable canvas so the OS crop stays inside the navy margin.
+TEAL_FACE = (17, 72, 88, 255)  # #114858
 
 
-def _glow_layer(bull: Image.Image, std_dev: float, opacity: float) -> Image.Image:
-    alpha = bull.getchannel("A")
-    blurred = alpha.filter(ImageFilter.GaussianBlur(radius=std_dev))
-    halo = Image.new("RGBA", bull.size, GLOW_COLOR + (0,))
-    halo.putalpha(blurred.point(lambda v: int(v * opacity)))
-    return halo
+def _render_svg(size: int) -> Image.Image:
+    """Render app-icon.svg to a transparent-background PIL Image at the
+    target size. cairosvg respects the SVG's viewBox so the design
+    scales cleanly to any pixel size."""
+    png_bytes = cairosvg.svg2png(
+        url=str(SOURCE_SVG),
+        output_width=size,
+        output_height=size,
+    )
+    return Image.open(BytesIO(png_bytes)).convert("RGBA")
 
 
-
-
-def _vertical_gradient(size: int, stops: list[tuple[float, tuple[int, int, int]]]) -> Image.Image:
-    """Vertical RGBA gradient sized for the full canvas — bevel mask source."""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    px = img.load()
-    for y in range(size):
-        t = y / (size - 1)
-        for i in range(len(stops) - 1):
-            o0, c0 = stops[i]
-            o1, c1 = stops[i + 1]
-            if o0 <= t <= o1:
-                f = (t - o0) / (o1 - o0) if o1 > o0 else 0
-                r = int(c0[0] + (c1[0] - c0[0]) * f)
-                g = int(c0[1] + (c1[1] - c0[1]) * f)
-                b = int(c0[2] + (c1[2] - c0[2]) * f)
-                for x in range(size):
-                    px[x, y] = (r, g, b, 255)
-                break
-    return img
-
-
-def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
-    m = Image.new("L", (size, size), 0)
-    d = ImageDraw.Draw(m)
-    cx = cy = size / 2
-    d.ellipse((cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer), fill=255)
-    d.ellipse((cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner), fill=0)
-    return m
-
-
-def _radial_face(size: int) -> Image.Image:
-    """Uniform teal face — flat #114858 across the whole canvas, no
-    gradient. The vivid orange-gold ring + halo carry the visual
-    energy; the face is a calm single-tone teal backdrop."""
-    return Image.new("RGBA", (size, size), NAVY)
-
-
-def build(size: int, source: Image.Image) -> Image.Image:
-    canvas = _radial_face(size)
-    bull_size = int(round(size * BULL_INSET))
-    bull = source.resize((bull_size, bull_size), Image.LANCZOS)
-    cx_px = cy_px = size / 2
-    bx = int(cx_px - bull_size / 2)
-    by = int(cy_px - bull_size / 2)
-
-    # Single very tight gold rim — Gaussian-blur the bull alpha by just
-    # 1 px stdDeviation so the gold spreads ~2-3 px outside the
-    # silhouette and no farther. Anything wider was reading as a halo
-    # bleeding into the uniform teal face. The bull's own white outline
-    # in bull.png carries the rest of the visual punch.
-    rim_std = 1.0 * size / 512
-    canvas.alpha_composite(_glow_layer(bull, rim_std, 1.00), (bx, by))
-    canvas.alpha_composite(bull, (bx, by))
-
-    # 3D beveled gold ring — vertical gradient masked to an annulus +
-    # drop-shadow filter for lift.
-    ring_center_r = size * RING_RADIUS_FRAC
-    ring_w        = max(2, int(round(size * RING_WIDTH_FRAC)))
-    r_outer       = ring_center_r + ring_w / 2
-    r_inner       = ring_center_r - ring_w / 2
-
-    grad = _vertical_gradient(size, [
-        # Vibrant orange-gold ring — body at #f59410 with punchier
-        # #ffd848 highlights at both rims. Saturation pushed up so the
-        # gold reads vibrantly against the new teal-to-navy face.
-        (0.00, (0xff, 0xd8, 0x48)),  # punchy gold highlight (top)
-        (0.50, (0xf5, 0x94, 0x10)),  # vibrant orange-gold body
-        (1.00, (0xff, 0xd8, 0x48)),  # punchy gold highlight (bottom)
-    ])
-    annulus = _ring_mask(size, r_outer, r_inner)
-    ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ring_layer = Image.composite(grad, ring_layer, annulus)
-    # Keep the ring close to full opacity — the brand now leans on the
-    # vivid orange-gold ring as a primary visual; muting it to 60% as
-    # before washed out the saturation.
-
-    # Ring composited directly onto the uniform teal — the offset
-    # drop-shadow that used to sit beneath the ring was creating an
-    # asymmetric dark band at the bottom of the face, which read as a
-    # top-to-bottom gradient against the otherwise flat background.
-    canvas.alpha_composite(ring_layer)
-
-    # Inner highlight — 1 px line just inside the bevel. Alpha tuned
-    # down (140 → 90) so it reads as a quiet bevel cue, not a second
-    # bright ring competing with the muted main ring.
-    hl = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    hd = ImageDraw.Draw(hl)
-    r_hl = r_inner - 1
-    hd.ellipse((cx_px - r_hl, cy_px - r_hl, cx_px + r_hl, cy_px + r_hl),
-               outline=(255, 232, 160, 110), width=max(1, size // 512))
-    canvas.alpha_composite(hl)
-    return canvas
-
-
-def _maskable(size: int, source: Image.Image) -> Image.Image:
-    """Maskable PWA icon — W3C spec says the OS may crop a circle of
-    radius 40% of the icon's min dimension, so all visible content must
-    sit inside the centre 80% safe zone. We render the full design at
-    75% of the target size (slightly more conservative than the spec
-    minimum) and paste it onto a teal-navy canvas; this absorbs every
-    real-world adaptive-icon mask shape — Chrome's circle, Android's
-    squircles, OEM rounded-squares — without clipping the ring or bull."""
+def _maskable(size: int) -> Image.Image:
+    """Maskable PWA icon — render the design at 75% size and paste it
+    onto a teal canvas. Any adaptive-icon mask shape (Chrome circle,
+    Samsung squircle, OEM rounded-square) crops only into the teal
+    margin, leaving the ring + bull intact."""
     inner_size = int(round(size * 0.75))
-    inner = build(inner_size, source)
-    canvas = Image.new("RGBA", (size, size), NAVY)
+    inner = _render_svg(inner_size)
+    canvas = Image.new("RGBA", (size, size), TEAL_FACE)
     offset = (size - inner_size) // 2
     canvas.alpha_composite(inner, (offset, offset))
     return canvas
 
 
+def _save(img: Image.Image, name: str) -> None:
+    out = STATIC / name
+    img.save(out, format="PNG", optimize=True)
+    print(f"wrote {out} ({out.stat().st_size:,} bytes)")
+
+
 def main() -> None:
-    source = Image.open(BULL_SRC).convert("RGBA")
+    # Square PNGs at every size the manifest + favicon links reference.
     for size in (192, 512):
-        img = build(size, source)
-        out = STATIC / f"app-icon-{size}.png"
-        img.save(out, format="PNG", optimize=True)
-        print(f"wrote {out} ({out.stat().st_size:,} bytes)")
-    # Maskable variants — navy-padded so Android Chrome's circle crop
-    # never reaches the ring or bull. Apple-touch-icon stays untouched
-    # because iOS renders apple-touch-icon as-is (no mask, no crop).
+        _save(_render_svg(size), f"app-icon-{size}.png")
+
+    # Maskable variants — teal-padded.
     for size in (192, 512):
-        img = _maskable(size, source)
-        out = STATIC / f"app-icon-{size}-maskable.png"
-        img.save(out, format="PNG", optimize=True)
-        print(f"wrote {out} ({out.stat().st_size:,} bytes)")
-    fav_master = build(256, source)
-    fav_png = STATIC / "favicon.png"
-    fav_master.save(fav_png, format="PNG", optimize=True)
-    print(f"wrote {fav_png} ({fav_png.stat().st_size:,} bytes)")
+        _save(_maskable(size), f"app-icon-{size}-maskable.png")
+
+    # iOS home-screen icon — 180×180 is the spec size; rendered straight
+    # from the SVG, no mask padding (iOS doesn't apply adaptive masks).
+    _save(_render_svg(180), "apple-touch-icon.png")
+
+    # Browser tab favicon — 256×256 master, plus multi-size .ico.
+    fav_master = _render_svg(256)
+    _save(fav_master, "favicon.png")
     fav_ico = STATIC / "favicon.ico"
-    fav_master.save(fav_ico, format="ICO",
-                    sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    fav_master.save(
+        fav_ico, format="ICO",
+        sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
     print(f"wrote {fav_ico} ({fav_ico.stat().st_size:,} bytes)")
 
 
