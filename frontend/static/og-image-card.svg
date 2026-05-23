@@ -37,10 +37,10 @@
     </filter>
     <radialGradient id="face-radial" cx="50%" cy="50%" r="55%">
       <stop offset="0%"   stop-color="#14525e"/>
-      <stop offset="100%" stop-color="#0f2638"/>
+      <stop offset="100%" stop-color="#0f3548"/>
     </radialGradient>
   </defs>
-  <rect width="1200" height="630" fill="#0f2638"/>
+  <rect width="1200" height="630" fill="#0f3548"/>
   <rect width="1200" height="630" fill="url(#stripe)"/>
   <rect x="0" y="0"   width="1200" height="6" fill="url(#goldGrad)"/>
   <rect x="0" y="624" width="1200" height="6" fill="url(#goldGrad)"/>

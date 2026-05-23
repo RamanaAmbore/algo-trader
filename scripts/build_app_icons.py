@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
-NAVY = (15, 38, 56, 255)            # #0f2638 — navy diluted ~20% toward teal, radial edge + maskable pad
+NAVY = (15, 53, 72, 255)            # #0f3548 — teal-leaning dark navy (~50% between navbar navy and teal centre)
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
 GLOW_COLOR = (245, 148, 16)         # #f59410 — more vivid orange-gold
 RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
@@ -58,7 +58,7 @@ def _radial_face(size: int) -> Image.Image:
     the centre fades to the navbar navy (#0c1830) at the edge — gives
     the icon depth without competing with the orange-gold ring + halo.
     """
-    img = Image.new("RGBA", (size, size), NAVY)  # #0f2638 edge (navy diluted ~20% toward teal)
+    img = Image.new("RGBA", (size, size), NAVY)  # #0f3548 edge — teal-leaning dark navy
     overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
     cx = cy = size / 2
