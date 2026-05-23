@@ -8,16 +8,10 @@
       <stop offset="100%" stop-color="#0a2030" />
     </radialGradient>
 
-    <!-- 3D ring main gradient: cream highlight at top, deep brown at bottom. -->
-
-    <!-- Top-only cream sheen — riding along the inner edge for torus bevel. -->
-
-    <!-- Bottom-only dark rim — riding along the outer edge for torus bevel. -->
-
-    <!-- Three-layer gold halo on the bull: wide bloom + outer + tight inner.
-         Matches the og-image's bull-glow at the same scale. -->
+    <!-- Three-layer gold halo on the bull: wide bloom + mid + tight inner.
+         All flood colours pulled from the public-site palette. -->
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
-      <!-- Wide warm bloom — softened both in spread and alpha. -->
+      <!-- Wide champagne-gold bloom (palette token #c8a84b). -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="bloom-blur" />
       <feFlood flood-color="#c8a84b" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />

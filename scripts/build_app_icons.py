@@ -143,10 +143,6 @@ def main() -> None:
         out = STATIC / f"app-icon-{size}.png"
         img.save(out, format="PNG", optimize=True)
         print(f"wrote {out} ({out.stat().st_size:,} bytes)")
-        if size == 512:
-            logo = STATIC / "logo.png"
-            img.save(logo, format="PNG", optimize=True)
-            print(f"wrote {logo} ({logo.stat().st_size:,} bytes)")
     fav_master = build(256, source)
     fav_png = STATIC / "favicon.png"
     fav_master.save(fav_png, format="PNG", optimize=True)
