@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
-NAVY = (12, 24, 48, 255)            # #0c1830 — matches the investor navbar
+NAVY = (10, 50, 62, 255)            # #0a323e — deep teal-navy (icon face palette)
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
 GLOW_COLOR = (208, 160, 64)         # #d0a040 — orange-gold, warmer than palette champagne
 RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
@@ -54,15 +54,15 @@ def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
 
 
 def _radial_face(size: int) -> Image.Image:
-    """Navy face with a subtle radial highlight — investor navbar navy
-    (#0c1830) at the edge, slightly brighter (#10223e) at the centre."""
-    img = Image.new("RGBA", (size, size), NAVY)            # #0c1830 edge
-    # Centre-brighter ellipse — same investor navy, lifted a few stops.
+    """Teal-navy face with a subtle radial highlight — #0a323e at the
+    edge, lifted to #14525e at the centre. Teal-dominant palette."""
+    img = Image.new("RGBA", (size, size), NAVY)            # #0a323e edge
+    # Centre-brighter ellipse — clear deep teal, lifted from the edge.
     overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
     cx = cy = size / 2
     r = size * 0.30
-    od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(16, 34, 62, 77))
+    od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(20, 82, 94, 100))
     img = Image.alpha_composite(img, overlay)
     return img
 

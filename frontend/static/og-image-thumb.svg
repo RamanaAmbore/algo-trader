@@ -9,8 +9,8 @@
       <stop offset="100%" stop-color="#d0a040"/>
     </linearGradient>
     <radialGradient id="face-radial" cx="50%" cy="50%" r="55%">
-      <stop offset="0%"   stop-color="#10223e"/>
-      <stop offset="100%" stop-color="#0c1830"/>
+      <stop offset="0%"   stop-color="#14525e"/>
+      <stop offset="100%" stop-color="#0a323e"/>
     </radialGradient>
     <!-- Highlight rim — softened so the top isn't over-bright. -->
     <!-- Shadow rim — dialed WAY back. The previous rim peaked at 0.55
@@ -48,7 +48,7 @@
   </defs>
 
   <!-- Full opaque teal bg — no transparent corners. -->
-  <rect width="600" height="600" fill="#0c1830"/>
+  <rect width="600" height="600" fill="#0a323e"/>
   <rect width="600" height="600" fill="url(#stripe)"/>
   <!-- Gold strips top + bottom, same as the home hero. -->
   <rect x="0" y="0"   width="600" height="5" fill="url(#goldGrad)"/>
