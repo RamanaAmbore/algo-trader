@@ -301,12 +301,14 @@
     return span;
   }
 
-  // Symbol column +20% (operator request): 110 → 132 with options-link,
-  // 100 → 120 plain. Gives the F&O ticker more breathing room before
-  // ag-Grid's default flex distribution kicks in.
+  // Symbol column (operator request, second bump): 132 → 180 with
+  // options-link, 120 → 160 plain. F&O tickers up to 19 chars
+  // (HDFCBANK26MAY1700PE) now read in full at the column's flex-
+  // starting size on a 1280 px-wide /performance card, before the
+  // grid's default distribution adds more room.
   const positionsSymbolCol = $derived(enableOptionsLink
-    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
-    : { field: 'tradingsymbol', headerName: 'Symbol', width: 120, pinned: 'left', cellClass: symFill, headerClass: symFill });
+    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 180, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
+    : { field: 'tradingsymbol', headerName: 'Symbol', width: 160, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },

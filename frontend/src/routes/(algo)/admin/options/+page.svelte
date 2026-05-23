@@ -2520,6 +2520,15 @@
     letter-spacing: 0.04em;
     padding-bottom: 0.15rem;
     border-bottom: 1px solid rgba(251,191,36,0.18);
+    /* Sticky header — operator scrolls data rows under it instead of
+       the whole grid sliding up. Pinned to top of .cand-scroll (the
+       overflow-y container); the card-bottom navy of the parent card
+       gradient is reused as a solid fill so data rows don't bleed
+       through, and z-index lifts the header above .cand-row hovers. */
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #1d2a44;
   }
   /* Numeric column cells — right-aligned (industry-standard for
      trade panels) so digits in different rows line up cleanly under
