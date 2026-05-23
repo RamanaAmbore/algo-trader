@@ -126,6 +126,12 @@
   let _chartLoading = $state(false);
   let _chartError = $state('');
   let _chartLoaded = $state(false);   // sentinel — only fetch once per panel open
+  // Range selector — 1W / 1M / 3M. Default 1 M matches the retired
+  // SymbolChartModal's behaviour.
+  let _chartDays = $state(/** @type {number} */ (30));
+  // Hover crosshair (lifted from the retired SymbolChartModal).
+  /** @type {{x:number,y:number,bar:any}|null} */
+  let _chartHover = $state(null);
 
   // ── Watchlist add — flash feedback ───────────────────────────────
   // Mirrors the toast pattern from the retired SymbolActions
@@ -156,11 +162,12 @@
     }
   }
 
-  async function _loadChart() {
-    if (!symbol || _chartLoaded) return;
+  async function _loadChart(/** @type {boolean} */ force = false) {
+    if (!symbol) return;
+    if (!force && _chartLoaded) return;
     _chartLoading = true; _chartError = '';
     try {
-      const r = await fetchOptionsHistorical(symbol, { days: 30, exchange });
+      const r = await fetchOptionsHistorical(symbol, { days: _chartDays, exchange });
       _chartBars = Array.isArray(r?.bars) ? r.bars : [];
       if (!_chartBars.length) _chartError = 'No bars available — broker may not list this contract.';
       _chartLoaded = true;
@@ -172,10 +179,20 @@
     }
   }
 
-  // Auto-load when the Chart tab becomes active.
+  // Auto-load when the Chart tab becomes active OR the range changes.
+  // `_chartLoaded` resets to false on range switch so the force path
+  // refetches; subsequent activations without a range change skip.
   $effect(() => {
     if (_activeTab === 'chart') _loadChart();
   });
+
+  function _setChartRange(/** @type {number} */ days) {
+    if (days === _chartDays) return;
+    _chartDays = days;
+    _chartLoaded = false;
+    _chartHover = null;
+    _loadChart(true);
+  }
 
   // ── Chart geometry (mirrors SymbolChartModal) ─────────────────────
   const CW = 720;
@@ -545,11 +562,29 @@
     <!-- Tab content -->
     <div class="oes-body">
       {#if _activeTab === 'chart'}
-        <!-- Chart tab — lifted from the retired SymbolChartModal.
-             30-day OHLCV line + hover crosshair. Triggers
-             /api/options/historical the first time the tab is
-             activated (lazy load — see $effect above). -->
+        <!-- Chart tab — close-price line over the selected window
+             with a hover crosshair (OHLCV tooltip). Range buttons
+             (1W/1M/3M) above the SVG refire /api/options/historical
+             with the new `days` parameter. -->
         <div class="oes-chart">
+          <!-- Range selector — sits above the chart, right-aligned.
+               Buttons mirror the LogPanel toggle palette so the
+               operator's eye sees them as a familiar segmented
+               control. -->
+          <div class="oes-chart-controls">
+            <button type="button" class="oes-chart-range"
+                    class:active={_chartDays === 7}
+                    title="Past 1 week"
+                    onclick={() => _setChartRange(7)}>1W</button>
+            <button type="button" class="oes-chart-range"
+                    class:active={_chartDays === 30}
+                    title="Past 1 month"
+                    onclick={() => _setChartRange(30)}>1M</button>
+            <button type="button" class="oes-chart-range"
+                    class:active={_chartDays === 90}
+                    title="Past 3 months"
+                    onclick={() => _setChartRange(90)}>3M</button>
+          </div>
           {#if _chartLoading && !_chartBars.length}
             <div class="oes-chart-state">Loading bars…</div>
           {:else if _chartError}
@@ -557,7 +592,23 @@
           {:else if !_chartBars.length}
             <div class="oes-chart-state">No bars to plot.</div>
           {:else}
-            <svg viewBox="0 0 {CW} {CH}" preserveAspectRatio="none" class="oes-chart-svg">
+            <svg viewBox="0 0 {CW} {CH}" preserveAspectRatio="none"
+                 class="oes-chart-svg"
+                 onpointermove={(ev) => {
+                   if (!_chartBars.length || !_chartXDomain) { _chartHover = null; return; }
+                   const svg = /** @type {SVGSVGElement} */ (ev.currentTarget);
+                   const rect = svg.getBoundingClientRect();
+                   const xRel = ((ev.clientX - rect.left) / rect.width) * CW;
+                   const tMs = _chartXDomain.lo + ((xRel - CPAD_L) / _chartInnerW) * (_chartXDomain.hi - _chartXDomain.lo);
+                   let best = _chartBars[0], bestD = Infinity;
+                   for (const b of _chartBars) {
+                     const d = Math.abs(Date.parse(b.ts) - tMs);
+                     if (d < bestD) { bestD = d; best = b; }
+                   }
+                   const tx = Date.parse(best.ts);
+                   _chartHover = { x: _chartXOf(tx), y: _chartYOf(Number(best.close)), bar: best };
+                 }}
+                 onpointerleave={() => { _chartHover = null; }}>
               {#each _chartYTicks as v}
                 <line x1={CPAD_L} x2={CW - CPAD_R} y1={_chartYOf(v)} y2={_chartYOf(v)}
                       stroke="rgba(200,216,240,0.08)" stroke-width="0.7" stroke-dasharray="2 3" />
@@ -573,8 +624,36 @@
               <path d={_chartLinePath} fill="none"
                     stroke="#fbbf24" stroke-width="1.8"
                     stroke-linejoin="round" stroke-linecap="round" />
+              {#if _chartHover}
+                <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CH - CPAD_B}
+                      stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2" />
+                <circle cx={_chartHover.x} cy={_chartHover.y} r="3"
+                        fill="#fbbf24" stroke="#fff" stroke-width="1" />
+                {@const _tx = Math.min(CW - 150 - CPAD_R, Math.max(CPAD_L, _chartHover.x + 8))}
+                {@const _ty = Math.max(CPAD_T + 4, _chartHover.y - 64)}
+                <rect x={_tx} y={_ty} width="150" height="62" rx="3"
+                      fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1" />
+                <text x={_tx + 6} y={_ty + 14} fill="#fbbf24"
+                      font-size="10" font-weight="800" font-family="monospace">
+                  {_chartHover.bar.ts.slice(0, 10)}
+                </text>
+                <text x={_tx + 6} y={_ty + 28} fill="#c8d8f0"
+                      font-size="9" font-family="monospace">
+                  O ₹{priceFmt(_chartHover.bar.open)}  H ₹{priceFmt(_chartHover.bar.high)}
+                </text>
+                <text x={_tx + 6} y={_ty + 42} fill="#c8d8f0"
+                      font-size="9" font-family="monospace">
+                  L ₹{priceFmt(_chartHover.bar.low)}  C ₹{priceFmt(_chartHover.bar.close)}
+                </text>
+                <text x={_tx + 6} y={_ty + 56} fill="#7e97b8"
+                      font-size="9" font-family="monospace">
+                  Vol {Number(_chartHover.bar.volume || 0).toLocaleString()}
+                </text>
+              {/if}
             </svg>
-            <div class="oes-chart-meta">{_chartBars.length} bars · last 30 d</div>
+            <div class="oes-chart-meta">
+              {_chartBars.length} bars · last {_chartDays === 7 ? '1 w' : _chartDays === 30 ? '1 m' : '3 m'}
+            </div>
           {/if}
         </div>
 
@@ -952,6 +1031,35 @@
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
     align-self: flex-end;
+  }
+  /* Range selector — segmented pill row right-aligned above the
+     chart. Active state matches the algo amber palette so it reads
+     as a primary selection chip. */
+  .oes-chart-controls {
+    display: flex;
+    gap: 0.2rem;
+    align-self: flex-end;
+  }
+  .oes-chart-range {
+    background: transparent;
+    border: 1px solid rgba(126,151,184,0.32);
+    color: #94a3b8;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .oes-chart-range:hover {
+    border-color: rgba(251,191,36,0.55);
+    color: #fbbf24;
+  }
+  .oes-chart-range.active {
+    background: rgba(251,191,36,0.14);
+    border-color: rgba(251,191,36,0.7);
+    color: #fbbf24;
   }
   .oes-close {
     background: transparent;

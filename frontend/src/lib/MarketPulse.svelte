@@ -1253,7 +1253,19 @@
       },
       sortingOrder: ['asc', 'desc', null],
       overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">No rows — add symbols to your watchlist or load positions/holdings</span>',
-      domLayout: 'autoHeight',
+      // Fixed-height layout (not autoHeight) so ag-Grid's built-in
+      // sticky header behaviour kicks in — data rows scroll inside
+      // the grid viewport while the column headers stay pinned at
+      // the top of the grid box. autoHeight was making the grid
+      // grow with every new row, so when the operator scrolled the
+      // page the header slid out of view with the rows. Fixed
+      // height = sticky header + scrolling data area.
+      // 28 px header + 28 px row × 18 rows + 6 px slack = ~520 px.
+      // Long lists scroll inside the grid; short lists just leave
+      // empty white space at the bottom which the operator can
+      // tolerate (we'd otherwise have to swap autoHeight in
+      // dynamically — overkill for the current row counts).
+      domLayout: 'normal',
       getRowClass,
       rowHeight: 28,
       headerHeight: 28,
@@ -2023,7 +2035,15 @@
   /* Grid containers */
   .unified-grid {
     width: 100%;
-    min-height: 60px;
+    /* Fixed-height grid pairs with `domLayout: 'normal'` (set when the
+       grid is created) so ag-Grid pins the column header at the top
+       of this box and only the data area scrolls when row count
+       exceeds visible space. Height tuned for ~18 rows at 28 px each
+       + 28 px header + 6 px slack. Operators with longer watchlists
+       scroll inside the grid; the surrounding page no longer carries
+       the header away when it scrolls. */
+    height: 520px;
+    min-height: 520px;
   }
   .summary-grid,
   .funds-grid {
