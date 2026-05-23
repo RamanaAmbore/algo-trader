@@ -1978,9 +1978,9 @@
   {/if}
 
   {#if enableWatchlists || enableSourceToggles || accountPicker}
-    <!-- Single combined toolbar: pills + add-symbol + account/source. -->
-    <div class="flex flex-wrap items-center gap-1 mb-1.5 relative">
-      {#if enableWatchlists}
+    <!-- Row 1 — Watchlist tabs (+ "new list" affordance on the right). -->
+    {#if enableWatchlists}
+      <div class="flex flex-wrap items-center gap-1 mb-1">
         {#each lists as l}
           {@const selected = activeIds.has(l.id)}
           {@const focused  = focusedListId === l.id}
@@ -2011,21 +2011,25 @@
             }}
             class="field-input text-[0.65rem] py-0.5 px-2 w-32" placeholder="List name" />
           <button onclick={makeListAndCollapse} disabled={!newListName.trim()}
-            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 disabled:opacity-40">
-            Save
-          </button>
+            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 disabled:opacity-40"
+            title="Save new watchlist">Save</button>
           <button onclick={closeListInput}
-            class="px-1.5 py-0.5 text-[0.65rem] text-[#7e97b8] border border-[#7e97b8]/30 rounded hover:bg-white/5">
-            ✕
-          </button>
+            class="px-1.5 py-0.5 text-[0.65rem] text-[#7e97b8] border border-[#7e97b8]/30 rounded hover:bg-white/5"
+            title="Cancel">✕</button>
         {:else}
-          <button onclick={openListInput}
-            title="New watchlist"
-            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
-            +
+          <button onclick={openListInput} title="New watchlist"
+            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 ml-auto">
+            + List
           </button>
         {/if}
-        <!-- Add-symbol input + exchange selector + Add button — inline on same row. -->
+      </div>
+    {/if}
+
+    <!-- Row 2 — Add-symbol input on the left, source/account filters on the right. -->
+    <div class="flex flex-wrap items-center gap-1 mb-1.5 relative">
+      {#if enableWatchlists}
+        <!-- Symbol input — placeholder is the field's purpose, not a hint about
+             keystroke counts. Width is constrained but flex-grows on wide screens. -->
         <input bind:this={symInputEl} bind:value={symInput}
           oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
           onfocus={() => typeaheadOpen = true}
@@ -2036,8 +2040,8 @@
               else addRow();
             } else if (e.key === 'Escape') { typeaheadOpen = false; }
           }}
-          class="field-input text-[0.65rem] py-0.5 px-2 flex-1 min-w-32"
-          placeholder="Add symbol — type 3+ chars" />
+          class="field-input text-[0.65rem] py-0.5 px-2 flex-1 min-w-32 max-w-56"
+          placeholder="Symbol" />
         <div class="w-16">
           <Select ariaLabel="Exchange" bind:value={exchInput}
             options={[
@@ -2049,9 +2053,10 @@
             ]} />
         </div>
         <button onclick={addRow} disabled={!symInput.trim()}
-          class="btn-primary text-[0.65rem] py-0.5 px-2.5 disabled:opacity-50">Add</button>
+          class="btn-primary text-[0.65rem] py-0.5 px-2.5 disabled:opacity-50"
+          title="Add to focused watchlist">Add</button>
         {#if typeaheadOpen && typeahead.length}
-          <div class="absolute top-7 left-0 right-0 max-h-60 overflow-y-auto bg-[#0c1830] border border-[#fbbf24]/30 rounded shadow-lg z-10">
+          <div class="absolute top-7 left-0 w-80 max-w-full max-h-60 overflow-y-auto bg-[#0c1830] border border-[#fbbf24]/30 rounded shadow-lg z-10">
             {#each typeahead as inst}
               <button onclick={() => pickFromTypeahead(inst)}
                 class="block w-full text-left px-3 py-1.5 text-xs hover:bg-[#fbbf24]/10">
