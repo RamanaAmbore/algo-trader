@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
-NAVY = (15, 53, 72, 255)            # #0f3548 — teal-leaning dark navy (~50% between navbar navy and teal centre)
+NAVY = (17, 72, 88, 255)            # #114858 — uniform teal face (midpoint of previous centre+edge)
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
 GLOW_COLOR = (245, 148, 16)         # #f59410 — more vivid orange-gold
 RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
@@ -54,25 +54,10 @@ def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
 
 
 def _radial_face(size: int) -> Image.Image:
-    """Teal-centre + navy-edge radial face. Bright teal (#14525e) in
-    the centre fades to the navbar navy (#0c1830) at the edge — gives
-    the icon depth without competing with the orange-gold ring + halo.
-    """
-    img = Image.new("RGBA", (size, size), NAVY)  # #0f3548 edge — teal-leaning dark navy
-    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    cx = cy = size / 2
-    # Radial gradient via concentric ellipses with decreasing alpha from
-    # the centre outward. 18 rings is enough for a smooth blend at 512 px.
-    inner = (20, 82, 94)  # #14525e teal centre
-    rings = 18
-    for i in range(rings, 0, -1):
-        t = i / rings
-        r = size * 0.5 * t
-        # Quadratic falloff so the lift concentrates in the centre.
-        a = int(round((1 - t) ** 2 * 220))
-        od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=inner + (a,))
-    return Image.alpha_composite(img, overlay)
+    """Uniform teal face — flat #114858 across the whole canvas, no
+    gradient. The vivid orange-gold ring + halo carry the visual
+    energy; the face is a calm single-tone teal backdrop."""
+    return Image.new("RGBA", (size, size), NAVY)
 
 
 def build(size: int, source: Image.Image) -> Image.Image:

@@ -4,8 +4,7 @@
     <!-- Teal + navy radial face — teal centre lift (#14525e) fading to
          navbar navy (#0f3548) at the edge. -->
     <radialGradient id="face-radial" cx="50%" cy="50%" r="60%">
-      <stop offset="0%"   stop-color="#14525e" />
-      <stop offset="100%" stop-color="#0f3548" />
+      <stop offset="0%" stop-color="#114858" /><stop offset="100%" stop-color="#114858" />
     </radialGradient>
 
     <!-- Three-layer gold halo on the bull: wide bloom + mid + tight inner.
@@ -42,8 +41,8 @@
     </filter>
   </defs>
 
-  <!-- Teal + navy face -->
-  <circle cx="256" cy="256" r="256" fill="url(#face-radial)" />
+  <!-- Uniform teal face -->
+  <circle cx="256" cy="256" r="256" fill="#114858" />
 
   <!-- Bull with strong gold halo, rendered before the ring so the rim
        overlaps the glow's outer fringe cleanly. -->
