@@ -1113,14 +1113,19 @@ class OptionsController(Controller):
             return HistoricalResponse(symbol=sym, instrument_token=None,
                                       interval=interval, bars=[])
 
-        # Kite historical_data returns list[dict] with OHLCV. Failures
-        # here (rate-limited, contract not yet listed, off-hours quirks)
-        # also degrade to empty bars instead of 502.
+        # broker.historical_data returns list[dict] with OHLCV via
+        # the Broker ABC — works for every adapter (Kite + Dhan +
+        # Groww, with PriceBroker auto-failing-over). Earlier this
+        # call routed through `broker.kite.historical_data(...)`, but
+        # PriceBroker has no `.kite` escape hatch (that lives only on
+        # KiteBroker), so every chart fetch silently died in the
+        # except below and returned empty bars — the operator saw
+        # "No bars available" for every symbol they tried.
         try:
-            kite = broker.kite  # type: ignore[attr-defined]
             to_d   = datetime.now()
             from_d = to_d - timedelta(days=days)
-            raw    = await asyncio.to_thread(kite.historical_data, token, from_d, to_d, interval) or []
+            raw    = await asyncio.to_thread(broker.historical_data,
+                                              token, from_d, to_d, interval) or []
         except Exception as e:
             logger.warning(f"options historical_data failed for {sym}: {e}")
             return HistoricalResponse(symbol=sym, instrument_token=token,
