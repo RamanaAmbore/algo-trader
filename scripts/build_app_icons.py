@@ -95,13 +95,13 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        # Symmetric uniform gold — same bright cream-gold highlight at
-        # the top AND bottom edges, with the metallic-gold body across
-        # the middle. Reads as a polished metal ring whose inner and
-        # outer rims catch light identically (no top-lit torus look).
-        (0.00, (0xf2, 0xdc, 0x8e)),  # cream highlight (top edge)
-        (0.50, (0xd6, 0xb4, 0x3c)),  # main metallic gold (body)
-        (1.00, (0xf2, 0xdc, 0x8e)),  # cream highlight (bottom edge)
+        # Symmetric uniform gold using the public-site palette — same
+        # #f0d878 light gold highlight at top AND bottom edges, #c8a84b
+        # champagne gold body. Tokens lifted verbatim from the public
+        # layout's gold palette so the icon reads as part of the brand.
+        (0.00, (0xf0, 0xd8, 0x78)),  # light gold highlight (top)
+        (0.50, (0xc8, 0xa8, 0x4b)),  # champagne gold body
+        (1.00, (0xf0, 0xd8, 0x78)),  # light gold highlight (bottom)
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))

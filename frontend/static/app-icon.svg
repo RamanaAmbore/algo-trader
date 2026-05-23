@@ -19,14 +19,14 @@
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <!-- Wide warm bloom — softened both in spread and alpha. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="bloom-blur" />
-      <feFlood flood-color="#c9a936" result="bloom-color" />
+      <feFlood flood-color="#c8a84b" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.70" />
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="mid-blur" />
-      <feFlood flood-color="#dec050" result="mid-color" />
+      <feFlood flood-color="#f0d070" result="mid-color" />
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
       <feComponentTransfer in="mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.90" />
@@ -34,7 +34,7 @@
       <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
       <feGaussianBlur in="dil-inner" stdDeviation="2.5" result="inner-blur" />
-      <feFlood flood-color="#ffd58a" result="inner-color" />
+      <feFlood flood-color="#f0d878" result="inner-color" />
       <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
       <feComponentTransfer in="inner-raw" result="halo-inner">
         <feFuncA type="linear" slope="0.85" />
@@ -58,21 +58,21 @@
          filter="url(#bull-glow)" />
 
   <!-- Main metallic-gold ring, inset 32 px from outer edge.
-       Uniform-gold body (#c9a936) with two thin edge bevels — a lighter
+       Uniform-gold body (#c8a84b) with two thin edge bevels — a lighter
        inner rim + a deeper outer rim — for subtle 3D without disturbing
        the uniform colour appearance. -->
   <circle cx="256" cy="256" r="232"
           fill="none"
-          stroke="#f2dc8e"
+          stroke="#f0d878"
           stroke-width="2"
           opacity="0.85" />
   <circle cx="256" cy="256" r="224"
           fill="none"
-          stroke="#c9a936"
+          stroke="#c8a84b"
           stroke-width="22" />
   <circle cx="256" cy="256" r="215"
           fill="none"
-          stroke="#f2dc8e"
+          stroke="#f0d878"
           stroke-width="2"
           opacity="0.85" />
 </svg>
