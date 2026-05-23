@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
-NAVY = (15, 74, 85, 255)            # #0f4a55 — uniform teal face colour
+NAVY = (12, 24, 48, 255)            # #0c1830 — navbar navy, used as the radial edge + maskable pad
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
-GLOW_COLOR = (232, 160, 32)         # #e8a020 — vivid orange-gold
+GLOW_COLOR = (245, 148, 16)         # #f59410 — more vivid orange-gold
 RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
 RING_WIDTH_FRAC  = 20 / 512   # 20 px stroke at 512 — wider bevel for visible 3D
 
@@ -54,9 +54,25 @@ def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
 
 
 def _radial_face(size: int) -> Image.Image:
-    """Uniform teal face — flat #0f4a55 across the whole canvas, no
-    radial gradient. The strong gold ring + halo do the visual work."""
-    return Image.new("RGBA", (size, size), NAVY)
+    """Teal-centre + navy-edge radial face. Bright teal (#14525e) in
+    the centre fades to the navbar navy (#0c1830) at the edge — gives
+    the icon depth without competing with the orange-gold ring + halo.
+    """
+    img = Image.new("RGBA", (size, size), NAVY)  # #0c1830 edge
+    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    cx = cy = size / 2
+    # Radial gradient via concentric ellipses with decreasing alpha from
+    # the centre outward. 18 rings is enough for a smooth blend at 512 px.
+    inner = (20, 82, 94)  # #14525e teal centre
+    rings = 18
+    for i in range(rings, 0, -1):
+        t = i / rings
+        r = size * 0.5 * t
+        # Quadratic falloff so the lift concentrates in the centre.
+        a = int(round((1 - t) ** 2 * 220))
+        od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=inner + (a,))
+    return Image.alpha_composite(img, overlay)
 
 
 def build(size: int, source: Image.Image) -> Image.Image:
@@ -87,12 +103,12 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        # Vivid orange-gold ring — body at #e8a020 with bright #fce070
-        # highlights at both rims. Far more saturated than the previous
-        # muted champagne, so the gold pops against the uniform teal face.
-        (0.00, (0xfc, 0xe0, 0x70)),  # bright gold highlight (top)
-        (0.50, (0xe8, 0xa0, 0x20)),  # vivid orange-gold body
-        (1.00, (0xfc, 0xe0, 0x70)),  # bright gold highlight (bottom)
+        # Vibrant orange-gold ring — body at #f59410 with punchier
+        # #ffd848 highlights at both rims. Saturation pushed up so the
+        # gold reads vibrantly against the new teal-to-navy face.
+        (0.00, (0xff, 0xd8, 0x48)),  # punchy gold highlight (top)
+        (0.50, (0xf5, 0x94, 0x10)),  # vibrant orange-gold body
+        (1.00, (0xff, 0xd8, 0x48)),  # punchy gold highlight (bottom)
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
