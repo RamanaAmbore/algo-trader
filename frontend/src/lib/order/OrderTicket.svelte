@@ -1019,6 +1019,23 @@
                 <span class="ot-margin-label">Avail</span>
                 <span class="ot-margin-value">₹{aggFmt(_available)}</span>
               </div>
+              <!-- "After" = what the operator will have left if they
+                   click Submit. Most actionable single number on this
+                   surface — answers "can I afford this AND still have
+                   buffer?". Coloured by remaining-margin band:
+                     ≥40 % avail → calm sky
+                     10–40 %    → amber warning
+                     <10 % / negative → red. -->
+              {@const _after = _available - _required}
+              {@const _afterPct = _available > 0 ? (_after / _available) * 100 : 0}
+              {@const _afterCls = _after < 0 ? 'ot-margin-row-err'
+                                  : _afterPct < 10 ? 'ot-margin-row-err'
+                                  : _afterPct < 40 ? 'ot-margin-row-warn'
+                                  : 'ot-margin-row-sub'}
+              <div class="ot-margin-row {_afterCls}">
+                <span class="ot-margin-label">After</span>
+                <span class="ot-margin-value">{_after < 0 ? '−' : ''}₹{aggFmt(Math.abs(_after))}</span>
+              </div>
             {/if}
             {#if _shortfall > 0}
               <div class="ot-margin-row ot-margin-row-err">
@@ -1084,7 +1101,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 100;
+    /* z-index 300: above the OrderTimelineDrawer (z=200), the
+       PositionStrip (z=49), the navbar (z=50), and any per-page
+       sticky LogPanel that might be in the operator's way when the
+       ticket opens. Operators reported the Submit row getting
+       clipped by bottom panels — this guarantees the ticket sits
+       on top. */
+    z-index: 300;
     padding: 1rem;
   }
   .ot-modal {
@@ -1517,6 +1540,11 @@
   /* Shortfall row — red so the operator sees they can't afford this. */
   .ot-margin-row-err .ot-margin-label,
   .ot-margin-row-err .ot-margin-value { color: #f87171; font-weight: 700; }
+  /* "After" row when remaining margin is in the 10-40 % band — amber
+     warning instead of red. Sub-row size so it doesn't compete with
+     the headline COST/MARGIN row above. */
+  .ot-margin-row-warn .ot-margin-label,
+  .ot-margin-row-warn .ot-margin-value { color: #fbbf24; font-weight: 600; font-size: 0.62rem; }
   /* Preflight blockers (segment inactive, freeze qty, etc.) */
   .ot-margin-blocked {
     color: #f87171;
