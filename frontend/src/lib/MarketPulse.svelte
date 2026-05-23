@@ -484,30 +484,56 @@
     }
   }
 
-  // Indices + commodities that pin to the very top of the grid as a
-  // watchlist sub-bucket. They bypass column sort via ag-Grid's
-  // pinnedTopRowData so "Sort by P&L" / "Sort by Day %" / any other
-  // column click never moves them. ANY row whose underlying matches
-  // (spot, futures, or options) pins as long as it's in the watchlist
-  // — operator can detach individual rows from the pin group via the
-  // ⋯ context menu if a particular row is noisy.
-  const PINNED_INDEX_UNDERLYINGS = new Set([
-    // NSE/BSE benchmarks
-    'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
-    'SMALLCAP', 'SENSEX', 'BANKEX',
-    // Volatility
-    'INDIAVIX',
-    // MCX commodities (front-month + spot variants)
-    'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'SILVERMIC',
-    'CRUDEOIL', 'CRUDEOILM', 'COPPER',
-  ]);
+  // Pinned-top group — any watchlist row whose underlying is in
+  // this set bypasses column sort via ag-Grid's pinnedTopRowData.
+  // Display order within the pinned block is operator-meaningful:
+  // broad indices first, narrowing down, then BSE, volatility,
+  // currency, and finally commodities (precious → energy → base).
+  // Operator can detach individual rows via the ⋯ context menu.
+  const PIN_ORDER = {
+    // ── Indices (NSE broad → NSE sector → NSE narrow → BSE) ──
+    NIFTY:        1,
+    BANKNIFTY:    2,
+    FINNIFTY:     3,
+    MIDCPNIFTY:   4,
+    SMALLCAP:     5,
+    NIFTYNXT50:   6,
+    SENSEX:       7,
+    BANKEX:       8,
+    // ── Volatility ──
+    INDIAVIX:     9,
+    // ── Currencies (NSE CDS) ──
+    USDINR:      10,
+    // ── Commodities (MCX): precious → energy → base ──
+    GOLD:        11,
+    GOLDM:       12,
+    SILVER:      13,
+    SILVERM:     14,
+    SILVERMIC:   15,
+    CRUDEOIL:    16,
+    CRUDEOILM:   17,
+    NATURALGAS:  18,
+    COPPER:      19,
+  };
+  const PINNED_INDEX_UNDERLYINGS = new Set(Object.keys(PIN_ORDER));
   function isPinnedIndexRow(r) {
     if (!r?.src?.w) return false;
     if (isDetached(r.tradingsymbol)) return false;  // operator override
     const u = String(r.underlying || '').toUpperCase();
     return PINNED_INDEX_UNDERLYINGS.has(u);
   }
-  const pinnedTopRows = $derived(unifiedRows.filter(isPinnedIndexRow));
+  function pinRank(r) {
+    return PIN_ORDER[String(r.underlying || '').toUpperCase()] ?? 999;
+  }
+  // ag-Grid renders pinnedTopRowData in array order (no column-sort
+  // applied), so this sorted slice IS the effective display order.
+  const pinnedTopRows = $derived(
+    unifiedRows.filter(isPinnedIndexRow).slice().sort((a, b) => {
+      const ra = pinRank(a), rb = pinRank(b);
+      if (ra !== rb) return ra - rb;
+      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+    })
+  );
   const mainRows = $derived(unifiedRows.filter(r => !isPinnedIndexRow(r)));
 
   $effect(() => {
