@@ -9,8 +9,8 @@ BULL_SRC = STATIC / "bull.png"
 
 NAVY = (12, 24, 48, 255)            # #0c1830 — matches the investor navbar
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
-GLOW_COLOR = (200, 168, 75)         # #c8a84b — champagne-gold, public-site palette
-RING_RADIUS_FRAC = 200 / 512  # ring centre radius (gap from bull bounds = 70 px)
+GLOW_COLOR = (208, 160, 64)         # #d0a040 — orange-gold, warmer than palette champagne
+RING_RADIUS_FRAC = 235 / 512  # ring centre 235/256 from centre — sits ~5 px from canvas edge
 RING_WIDTH_FRAC  = 20 / 512   # 20 px stroke at 512 — wider bevel for visible 3D
 
 
@@ -95,13 +95,13 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        # Symmetric uniform gold using the public-site palette — same
-        # #f0d878 light gold highlight at top AND bottom edges, #c8a84b
-        # champagne gold body. Tokens lifted verbatim from the public
-        # layout's gold palette so the icon reads as part of the brand.
-        (0.00, (0xf0, 0xd8, 0x78)),  # light gold highlight (top)
-        (0.50, (0xc8, 0xa8, 0x4b)),  # champagne gold body
-        (1.00, (0xf0, 0xd8, 0x78)),  # light gold highlight (bottom)
+        # Symmetric warm orange-gold — body shifted from palette champagne
+        # #c8a84b toward orange (#d0a040), rims swapped from light gold
+        # #f0d878 to the slightly warmer goldGrad mid (#f0d070). Reads
+        # noticeably warmer than the pure palette tokens.
+        (0.00, (0xf0, 0xd0, 0x70)),  # warm light-gold highlight (top)
+        (0.50, (0xd0, 0xa0, 0x40)),  # orange-gold body
+        (1.00, (0xf0, 0xd0, 0x70)),  # warm light-gold highlight (bottom)
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -131,7 +131,7 @@ def build(size: int, source: Image.Image) -> Image.Image:
     hd = ImageDraw.Draw(hl)
     r_hl = r_inner - 1
     hd.ellipse((cx_px - r_hl, cy_px - r_hl, cx_px + r_hl, cy_px + r_hl),
-               outline=(255, 236, 160, 90), width=max(1, size // 512))
+               outline=(255, 224, 144, 90), width=max(1, size // 512))
     canvas.alpha_composite(hl)
     return canvas
 
