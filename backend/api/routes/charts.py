@@ -345,3 +345,16 @@ class ChartsController(Controller):
 
         return ChartResponse(mode=mode, symbol=symbol, kind=kind,
                              underlying=underlying, ticks=ticks, events=events)
+
+    @get("/intraday-equity")
+    async def get_intraday_equity(self, n: int = 200) -> dict:
+        """Recent intraday-equity buffer points — feeds the dashboard's
+        P&L-over-the-day chart. Each point is (timestamp, day_pnl, cum_pnl).
+        Wiped on IST date rollover so the buffer always reflects the
+        current trading day. Skips sim ticks."""
+        from backend.api.background import _intraday_equity
+        pts = list(_intraday_equity)[-max(1, min(n, 200)):]
+        return {"points": [
+            {"ts": ts, "day_pnl": day, "cum_pnl": cum}
+            for (ts, day, cum) in pts
+        ]}

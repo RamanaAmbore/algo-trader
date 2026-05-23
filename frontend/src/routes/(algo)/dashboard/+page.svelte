@@ -5,7 +5,11 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
-  import { fetchPositions, fetchHoldings, fetchRecentAgentEvents } from '$lib/api';
+  import {
+    fetchPositions, fetchHoldings, fetchRecentAgentEvents,
+    fetchFunds, fetchBrokerAccounts, fetchIntradayEquity,
+  } from '$lib/api';
+  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
   // IST-midnight-as-UTC for "today" date-window filters. Indian markets
   // (and operators) live in Asia/Kolkata; using the browser's local
@@ -22,47 +26,278 @@
     const d = parts.find(p => p.type === 'day').value;
     return new Date(`${y}-${m}-${d}T00:00:00+05:30`);
   }
-  import { priceFmt } from '$lib/format';
 
   // ── Demo banner — sourced from the layout's shared context ─────────
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
   let bannerDismissed = $state(false);
 
-  // ── Hero row: "what changed since I last looked?" ───────────────────
-  // Compact strip above PnlAnalysis answering the executive question
-  // first — total day P&L, agent fires today, open paper orders.
+  // ── Hero row state ─────────────────────────────────────────────────
   let _todayPnl     = $state(/** @type {number|null} */ (null));
+  let _startingNav  = $state(/** @type {number|null} */ (null));
+  let _niftyDayPct  = $state(/** @type {number|null} */ (null));
   let _firesToday   = $state(0);
   let _paperOpen    = $state(0);
+  let _conn         = $state({ loaded: 0, total: 0 });
   let _heroLoadedAt = $state(/** @type {string|null} */ (null));
   let _heroTeardown;
-  // Agent log collapsed by default. Operators glance at the count
-  // chip first; expand only when they want to inspect specific fires.
+
+  // Agent log collapsed by default.
   let _agentLogOpen = $state(false);
+
+  // ── Row 1: Intraday equity curve ───────────────────────────────────
+  /** @type {{ ts: string, day_pnl: number, cum_pnl: number }[]} */
+  let _equityPoints = $state([]);
+
+  // ── Row 1: Margin utilisation gauges ──────────────────────────────
+  /**
+   * @type {{ account: string, used: number, avail: number, util_pct: number }[]}
+   */
+  let _margins = $state([]);
+
+  // ── Derived hero values ────────────────────────────────────────────
+  const _todayPct = $derived(
+    (_todayPnl != null && _startingNav != null && _startingNav !== 0)
+      ? (_todayPnl / _startingNav) * 100
+      : null
+  );
+
+  const _vsNifty = $derived(
+    (_todayPct != null && _niftyDayPct != null)
+      ? _todayPct - _niftyDayPct
+      : null
+  );
+
+  const _pnlClass = $derived(
+    _todayPnl == null ? 'hero-pnl-neutral'
+    : _todayPnl > 0   ? 'hero-pnl-up'
+    : _todayPnl < 0   ? 'hero-pnl-down' : 'hero-pnl-neutral'
+  );
+
+  const _todayPctClass = $derived(
+    _todayPct == null ? 'hero-pnl-neutral'
+    : _todayPct > 0   ? 'hero-pnl-up'
+    : _todayPct < 0   ? 'hero-pnl-down' : 'hero-pnl-neutral'
+  );
+
+  const _vsNiftyClass = $derived(
+    _vsNifty == null ? 'hero-pnl-neutral'
+    : _vsNifty > 0   ? 'hero-pnl-up'
+    : _vsNifty < 0   ? 'hero-pnl-down' : 'hero-pnl-neutral'
+  );
+
+  const _connIcon = $derived(
+    _conn.total === 0     ? '—'
+    : _conn.loaded === 0  ? '✗'
+    : _conn.loaded < _conn.total ? '⚠'
+    : '✓'
+  );
+
+  const _connClass = $derived(
+    _conn.total === 0     ? 'hero-chip-conn-neutral'
+    : _conn.loaded === 0  ? 'hero-chip-conn-red'
+    : _conn.loaded < _conn.total ? 'hero-chip-conn-amber'
+    : 'hero-chip-conn-green'
+  );
+
+  // ── Equity chart SVG constants ─────────────────────────────────────
+  const CHART_W = 600;
+  const CHART_H = 220;
+  const PAD_L = 8;
+  const PAD_R = 52;
+  const PAD_T = 12;
+  const PAD_B = 28;
+  const INNER_W = CHART_W - PAD_L - PAD_R;
+  const INNER_H = CHART_H - PAD_T - PAD_B;
+
+  // ── Equity chart derived state ─────────────────────────────────────
+  const _equityDomain = $derived.by(() => {
+    if (!_equityPoints.length) return null;
+    const vals = _equityPoints.map(p => p.cum_pnl);
+    let yMin = Math.min(...vals);
+    let yMax = Math.max(...vals);
+    // ensure zero is always visible; add 10% padding
+    yMin = Math.min(yMin, 0);
+    yMax = Math.max(yMax, 0);
+    const pad = Math.max((yMax - yMin) * 0.10, 500);
+    yMin -= pad; yMax += pad;
+    const ts = _equityPoints.map(p => new Date(p.ts).getTime());
+    return { yMin, yMax, tMin: Math.min(...ts), tMax: Math.max(...ts) };
+  });
+
+  function _eqX(ts) {
+    const d = _equityDomain;
+    if (!d || d.tMax === d.tMin) return PAD_L;
+    return PAD_L + ((new Date(ts).getTime() - d.tMin) / (d.tMax - d.tMin)) * INNER_W;
+  }
+
+  function _eqY(val) {
+    const d = _equityDomain;
+    if (!d || d.yMax === d.yMin) return PAD_T + INNER_H / 2;
+    return PAD_T + (1 - (val - d.yMin) / (d.yMax - d.yMin)) * INNER_H;
+  }
+
+  const _eqPolyline = $derived.by(() => {
+    if (!_equityPoints.length || !_equityDomain) return '';
+    return _equityPoints.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.cum_pnl).toFixed(1)}`).join(' ');
+  });
+
+  const _eqAreaPath = $derived.by(() => {
+    if (!_equityPoints.length || !_equityDomain) return '';
+    const pts = _equityPoints;
+    const zero = _eqY(0);
+    const first = `${_eqX(pts[0].ts).toFixed(1)},${zero}`;
+    const last  = `${_eqX(pts[pts.length - 1].ts).toFixed(1)},${zero}`;
+    const line  = pts.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.cum_pnl).toFixed(1)}`).join(' L ');
+    return `M ${first} L ${line} L ${last} Z`;
+  });
+
+  const _eqZeroY = $derived(_equityDomain ? _eqY(0) : null);
+
+  const _eqPositive = $derived(
+    _equityPoints.length ? _equityPoints[_equityPoints.length - 1].cum_pnl >= 0 : true
+  );
+
+  const _eqLineColor  = $derived(_eqPositive ? '#4ade80' : '#f87171');
+  const _eqFillColor  = $derived(_eqPositive ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)');
+
+  // Y-axis labels for equity chart (5 ticks)
+  const _eqYLabels = $derived.by(() => {
+    const d = _equityDomain;
+    if (!d) return [];
+    return Array.from({ length: 5 }, (_, i) => {
+      const frac = i / 4;
+      const val  = d.yMin + frac * (d.yMax - d.yMin);
+      const y    = _eqY(val);
+      return { y: y.toFixed(1), label: aggCompact(val) };
+    });
+  });
+
+  // X-axis time labels (up to 5)
+  const _eqXLabels = $derived.by(() => {
+    const d = _equityDomain;
+    if (!d || _equityPoints.length < 2) return [];
+    const count = Math.min(5, _equityPoints.length);
+    const step = Math.floor((_equityPoints.length - 1) / (count - 1 || 1));
+    return Array.from({ length: count }, (_, i) => {
+      const pt = _equityPoints[Math.min(i * step, _equityPoints.length - 1)];
+      const x  = _eqX(pt.ts).toFixed(1);
+      // times from backend are UTC; display in IST
+      const d2  = new Date(pt.ts);
+      const ist = new Date(d2.getTime() + 5.5 * 3600 * 1000);
+      const ih  = String(ist.getUTCHours()).padStart(2, '0');
+      const im  = String(ist.getUTCMinutes()).padStart(2, '0');
+      return { x, label: `${ih}:${im}` };
+    });
+  });
+
+  // Hover crosshair state
+  let _hoverIdx = $state(/** @type {number|null} */ (null));
+  let _hoverX   = $state(0);
+  let _hoverY   = $state(0);
+
+  const _hoverPt = $derived(
+    _hoverIdx != null && _equityPoints[_hoverIdx]
+      ? _equityPoints[_hoverIdx]
+      : null
+  );
+
+  function _eqMouseMove(/** @type {MouseEvent} */ e) {
+    if (!_equityPoints.length || !_equityDomain) return;
+    const svg = /** @type {SVGSVGElement} */ (e.currentTarget);
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((e.clientX - rect.left) / rect.width) * CHART_W;
+    const frac = Math.max(0, Math.min(1, (svgX - PAD_L) / INNER_W));
+    const ts   = _equityDomain.tMin + frac * (_equityDomain.tMax - _equityDomain.tMin);
+    // find nearest point
+    let best = 0, bestDt = Infinity;
+    for (let i = 0; i < _equityPoints.length; i++) {
+      const dt = Math.abs(new Date(_equityPoints[i].ts).getTime() - ts);
+      if (dt < bestDt) { bestDt = dt; best = i; }
+    }
+    _hoverIdx = best;
+    _hoverX   = parseFloat(_eqX(_equityPoints[best].ts).toFixed(1));
+    _hoverY   = parseFloat(_eqY(_equityPoints[best].cum_pnl).toFixed(1));
+  }
+
+  function _eqMouseLeave() { _hoverIdx = null; }
+
+  // ── Margin gauge helpers ───────────────────────────────────────────
+  const GAUGE_R = 32;
+  const GAUGE_SW = 6;
+  const GAUGE_CIRC = 2 * Math.PI * GAUGE_R;
+
+  function _gaugeColor(pct) {
+    if (pct < 0.50) return '#4ade80';
+    if (pct < 0.70) return '#fbbf24';
+    if (pct < 0.85) return '#f59410';
+    return '#f87171';
+  }
+
+  function _gaugeDash(pct) {
+    const used = Math.max(0, Math.min(1, pct)) * GAUGE_CIRC;
+    return `${used.toFixed(2)} ${GAUGE_CIRC.toFixed(2)}`;
+  }
+
+  // ── Fetch functions ────────────────────────────────────────────────
+  async function _fetchEquity() {
+    try {
+      const res = await fetchIntradayEquity(200);
+      _equityPoints = (res?.points ?? []);
+    } catch (_) { /* leave stale */ }
+  }
+
+  async function _fetchMargins() {
+    try {
+      const rows = await fetchFunds();
+      if (!Array.isArray(rows) || !rows.length) { _margins = []; return; }
+      _margins = rows
+        .filter(r => r.account && !r.account.includes('TOTAL'))
+        .map(r => {
+          const used  = Number(r.used_margin) || 0;
+          const avail = Number(r.available_margin) || 0;
+          const total = used + avail;
+          return {
+            account: String(r.account),
+            used,
+            avail,
+            util_pct: total > 0 ? used / total : 0,
+          };
+        });
+    } catch (_) { _margins = []; }
+  }
+
+  async function _fetchConn() {
+    try {
+      const accounts = await fetchBrokerAccounts();
+      if (!Array.isArray(accounts)) return;
+      _conn = {
+        total:  accounts.length,
+        loaded: accounts.filter(a => a.loaded).length,
+      };
+    } catch (_) { /* leave stale */ }
+  }
 
   async function loadHero() {
     try {
       const [positions, holdings, events] = await Promise.all([
         fetchPositions().catch(() => []),
         fetchHoldings().catch(() => []),
-        // Was: fetchAgentEvents(50) — passed `50` as the slug, hit
-        //   /api/agents/50/events?n=50 and 404'd every load (hero
-        //   chip silently showed 0). Use the all-agents recent feed.
         fetchRecentAgentEvents(100).catch(() => []),
       ]);
       // Sum day's P&L from positions (day-pnl) + holdings (day_change).
       let dayPnl = 0;
+      let invVal  = 0;
       for (const p of (positions || [])) dayPnl += Number(p.pnl) || 0;
       for (const h of (holdings || [])) {
         const dc = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
         dayPnl += dc;
+        invVal += Number(h.inv_val ?? 0);
       }
-      _todayPnl = dayPnl;
-      // Agent fires today — count of events with kind=agent_fire, today
-      // (IST). Was using `setHours(0,0,0,0)` which is browser-local
-      // midnight; for an operator outside India (or even at IST
-      // midnight rollover) the count was wrong.
+      _todayPnl    = dayPnl;
+      _startingNav = invVal > 0 ? invVal : null;
+
+      // Agent fires today (IST midnight boundary).
       const todayStart = istMidnightTodayAsDate();
       _firesToday = (events || []).filter((e) => {
         const k = e.kind ?? e.event_type ?? '';
@@ -70,9 +305,12 @@
         const t = new Date(e.timestamp ?? e.created_at ?? 0);
         return t >= todayStart;
       }).length;
-      // Open paper orders — read from layout's shared paperStatus.
+
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
+
+      // Parallel: equity curve + margins + conn health
+      await Promise.all([_fetchEquity(), _fetchMargins(), _fetchConn()]);
     } catch (_) { /* leave previous values up */ }
   }
 
@@ -87,12 +325,6 @@
     bannerDismissed = true;
     localStorage.setItem('ramboq.demo_banner_dismissed', '1');
   }
-
-  const _pnlClass = $derived(
-    _todayPnl == null ? 'hero-pnl-neutral'
-    : _todayPnl > 0   ? 'hero-pnl-up'
-    : _todayPnl < 0   ? 'hero-pnl-down' : 'hero-pnl-neutral'
-  );
 </script>
 
 <svelte:head>
@@ -116,38 +348,221 @@
   <span class="algo-ts">{clientTimestamp()}</span>
 </div>
 
-<!-- Hero row — answers "what changed since I last looked?" before any
-     detailed breakdowns. Three glanceable chips: today's total P&L,
-     agent fires today, open paper orders. Refreshes every 30s on
-     visible tab; pauses when backgrounded. -->
+<!-- Hero row — 6 chips answering "what changed since I last looked?" -->
 <div class="hero-row" role="status">
+  <!-- 1. P&L TODAY -->
   <div class="hero-chip {_pnlClass}">
     <span class="hero-label">P&amp;L TODAY</span>
     <span class="hero-value">
       {#if _todayPnl == null}—{:else}{_todayPnl >= 0 ? '+' : ''}₹{priceFmt(_todayPnl)}{/if}
     </span>
   </div>
+
+  <!-- 2. TODAY % — portfolio day return -->
+  <div class="hero-chip {_todayPctClass}">
+    <span class="hero-label">TODAY %</span>
+    <span class="hero-value">
+      {#if _todayPct == null}—{:else}{_todayPct >= 0 ? '+' : ''}{pctFmt(_todayPct)}%{/if}
+    </span>
+    {#if _startingNav != null}
+      <span class="hero-meta">of ₹{aggCompact(_startingNav)}</span>
+    {/if}
+  </div>
+
+  <!-- 3. vs NIFTY — outperformance spread -->
+  <div class="hero-chip {_vsNiftyClass}">
+    <span class="hero-label">vs NIFTY</span>
+    <span class="hero-value">
+      {#if _vsNifty == null}—{:else}{_vsNifty >= 0 ? '+' : ''}{pctFmt(_vsNifty)}%{/if}
+    </span>
+    {#if _niftyDayPct != null}
+      <span class="hero-meta">NIFTY {_niftyDayPct >= 0 ? '+' : ''}{pctFmt(_niftyDayPct)}%</span>
+    {/if}
+  </div>
+
+  <!-- 4. AGENT FIRES -->
   <div class="hero-chip hero-chip-fires">
     <span class="hero-label">AGENT FIRES</span>
     <span class="hero-value">{_firesToday}</span>
     <span class="hero-meta">today</span>
   </div>
+
+  <!-- 5. PAPER OPEN -->
   <div class="hero-chip hero-chip-paper">
     <span class="hero-label">PAPER OPEN</span>
     <span class="hero-value">{_paperOpen}</span>
     <span class="hero-meta">orders</span>
   </div>
+
+  <!-- 6. CONN — broker connection health -->
+  <div class="hero-chip hero-chip-conn {_connClass}">
+    <span class="hero-label">CONN</span>
+    <span class="hero-value conn-icon">{_connIcon}</span>
+    {#if _conn.total > 0}
+      <span class="hero-meta">{_conn.loaded}/{_conn.total}</span>
+    {/if}
+  </div>
+
   {#if _heroLoadedAt}
     <span class="hero-refresh">refreshed {_heroLoadedAt}</span>
   {/if}
 </div>
 
+<!-- Row 1: Intraday equity curve (left) + Margin gauges (right) -->
+<div class="dash-row1">
+  <!-- Left: Intraday equity curve -->
+  <section class="row1-col row1-col-chart">
+    <div class="mp-section-label">Intraday Equity Curve</div>
+    {#if !_equityPoints.length}
+      <div class="eq-empty">
+        No data yet — markets open at 09:15 IST
+      </div>
+    {:else}
+      <svg
+        class="eq-svg"
+        viewBox="0 0 {CHART_W} {CHART_H}"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="Intraday cumulative P&L curve"
+        onmousemove={_eqMouseMove}
+        onmouseleave={_eqMouseLeave}
+      >
+        <!-- Grid lines (horizontal) -->
+        {#each [0.0, 0.25, 0.5, 0.75, 1.0] as frac}
+          {@const gy = PAD_T + frac * INNER_H}
+          <line
+            x1={PAD_L} y1={gy} x2={PAD_L + INNER_W} y2={gy}
+            stroke="rgba(200,216,240,0.10)" stroke-width="1" />
+        {/each}
+
+        <!-- Zero baseline (dotted) -->
+        {#if _eqZeroY != null}
+          <line
+            x1={PAD_L} y1={_eqZeroY} x2={PAD_L + INNER_W} y2={_eqZeroY}
+            stroke="rgba(200,216,240,0.45)" stroke-width="1"
+            stroke-dasharray="4 3" />
+        {/if}
+
+        <!-- Filled area -->
+        {#if _eqAreaPath}
+          <path d={_eqAreaPath} fill={_eqFillColor} />
+        {/if}
+
+        <!-- Line -->
+        {#if _eqPolyline}
+          <polyline
+            points={_eqPolyline}
+            fill="none"
+            stroke={_eqLineColor}
+            stroke-width="1.5"
+            stroke-linejoin="round"
+            stroke-linecap="round" />
+        {/if}
+
+        <!-- Y-axis labels (right) -->
+        {#each _eqYLabels as lbl}
+          <text
+            x={PAD_L + INNER_W + 4} y={parseFloat(lbl.y) + 3.5}
+            font-size="9" fill="#7e97b8" font-family="ui-monospace,monospace"
+            text-anchor="start">{lbl.label}</text>
+        {/each}
+
+        <!-- X-axis labels -->
+        {#each _eqXLabels as lbl}
+          <text
+            x={parseFloat(lbl.x)} y={CHART_H - 6}
+            font-size="9" fill="#7e97b8" font-family="ui-monospace,monospace"
+            text-anchor="middle">{lbl.label}</text>
+        {/each}
+
+        <!-- Hover crosshair -->
+        {#if _hoverPt != null}
+          <line
+            x1={_hoverX} y1={PAD_T} x2={_hoverX} y2={PAD_T + INNER_H}
+            stroke="rgba(200,216,240,0.55)" stroke-width="1"
+            stroke-dasharray="3 2" />
+          <circle cx={_hoverX} cy={_hoverY} r="3"
+            fill={_eqLineColor} stroke="#0a1428" stroke-width="1.5" />
+          <!-- Tooltip box -->
+          {@const _tipX = _hoverX > INNER_W * 0.65 ? _hoverX - 108 : _hoverX + 8}
+          {@const _tipY = Math.max(PAD_T, Math.min(_hoverY - 28, PAD_T + INNER_H - 58))}
+          <rect x={_tipX} y={_tipY} width="100" height="54"
+            rx="3" fill="rgba(10,20,40,0.92)"
+            stroke="rgba(126,151,184,0.35)" stroke-width="1" />
+          {#if _hoverPt}
+            {@const _ist = new Date(new Date(_hoverPt.ts).getTime() + 5.5*3600*1000)}
+            {@const _th = String(_ist.getUTCHours()).padStart(2,'0')}
+            {@const _tm = String(_ist.getUTCMinutes()).padStart(2,'0')}
+            <text x={_tipX + 6} y={_tipY + 13}
+              font-size="8.5" fill="#7dd3fc" font-family="ui-monospace,monospace">{_th}:{_tm} IST</text>
+            <text x={_tipX + 6} y={_tipY + 26}
+              font-size="8" fill="#7e97b8" font-family="ui-monospace,monospace">Day P&amp;L</text>
+            <text x={_tipX + 6} y={_tipY + 37}
+              font-size="9" font-weight="700" fill={_hoverPt.day_pnl >= 0 ? '#4ade80' : '#f87171'}
+              font-family="ui-monospace,monospace"
+              style="font-variant-numeric:tabular-nums">
+              {_hoverPt.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.day_pnl)}
+            </text>
+            <text x={_tipX + 6} y={_tipY + 49}
+              font-size="9" font-weight="700" fill={_hoverPt.cum_pnl >= 0 ? '#4ade80' : '#f87171'}
+              font-family="ui-monospace,monospace"
+              style="font-variant-numeric:tabular-nums">
+              cum {_hoverPt.cum_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.cum_pnl)}
+            </text>
+          {/if}
+        {/if}
+      </svg>
+    {/if}
+  </section>
+
+  <!-- Right: Margin utilisation gauges -->
+  <section class="row1-col row1-col-gauges">
+    <div class="mp-section-label">Margin Utilisation</div>
+    {#if !_margins.length}
+      <div class="gauge-empty">No accounts connected</div>
+    {:else}
+      <div class="gauge-grid">
+        {#each _margins as acct}
+          {@const color = _gaugeColor(acct.util_pct)}
+          {@const dash  = _gaugeDash(acct.util_pct)}
+          <div class="gauge-tile">
+            <svg class="gauge-svg" viewBox="0 0 80 80" width="80" height="80"
+              role="img" aria-label="{acct.account} margin utilisation {(acct.util_pct*100).toFixed(0)}%">
+              <!-- Track -->
+              <circle
+                cx="40" cy="40" r={GAUGE_R}
+                fill="none"
+                stroke="rgba(126,151,184,0.18)"
+                stroke-width={GAUGE_SW} />
+              <!-- Arc — starts at top (−90 deg) via transform -->
+              <circle
+                cx="40" cy="40" r={GAUGE_R}
+                fill="none"
+                stroke={color}
+                stroke-width={GAUGE_SW}
+                stroke-dasharray={dash}
+                stroke-linecap="round"
+                transform="rotate(-90 40 40)" />
+              <!-- Percentage label inside -->
+              <text x="40" y="44" text-anchor="middle"
+                font-size="13" font-weight="800"
+                font-family="ui-monospace,monospace"
+                style="font-variant-numeric:tabular-nums"
+                fill={color}>{(acct.util_pct * 100).toFixed(0)}%</text>
+            </svg>
+            <span class="gauge-label">{acct.account}</span>
+            <span class="gauge-detail">
+              ₹{aggCompact(acct.used)} / ₹{aggCompact(acct.used + acct.avail)}
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
+</div>
+
 <!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
-     stack (Funds + Positions Summary + Holdings Summary) on the right.
-     Below 1200px collapses to a single column, preserving the same
-     vertical order. Operators check P&L and account balances together,
-     so putting them side-by-side cuts the dashboard scroll roughly in
-     half on desktop. -->
+     stack (Funds + Positions Summary + Holdings Summary) on the right. -->
 <div class="dash-grid">
   <section class="dash-col dash-col-pnl">
     <div class="mp-section-label">P&amp;L Analysis</div>
@@ -166,10 +581,7 @@
   </section>
 </div>
 
-<!-- Agent activity — collapsed by default (showing just count + last-
-     fire chip). UnifiedLog reveals on expand. Most days the panel is
-     forensic detail; surface the count first so a glance answers
-     "anything firing today?" without scrolling. -->
+<!-- Agent activity — collapsed by default. -->
 <details class="dash-agent" bind:open={_agentLogOpen}>
   <summary class="dash-agent-summary">
     <span class="mp-section-label">Agent activity</span>
@@ -201,12 +613,7 @@
     margin-bottom: 0.3rem;
   }
 
-  /* Section labels — demoted from amber to muted blue with amber
-     uppercase tracking. Three-tier heading hierarchy: page title
-     (amber bold), section label (muted blue uppercase), section
-     heading inside MarketPulse (light blue). Without the demotion
-     all three rendered in the same amber and the hierarchy collapsed
-     visually. */
+  /* Section labels */
   .mp-section-label {
     font-size: 0.6rem;
     font-family: ui-monospace, monospace;
@@ -217,7 +624,7 @@
     margin-bottom: 0.25rem;
   }
 
-  /* Hero row — three glanceable chips with a "refreshed at" tail. */
+  /* ── Hero row ────────────────────────────────────────────────────── */
   .hero-row {
     display: flex;
     flex-wrap: wrap;
@@ -258,13 +665,27 @@
     font-size: 0.55rem;
     letter-spacing: 0.04em;
   }
-  .hero-pnl-up    { border-left-color: #4ade80; }
-  .hero-pnl-up    .hero-value { color: #4ade80; }
-  .hero-pnl-down  { border-left-color: #f87171; }
-  .hero-pnl-down  .hero-value { color: #f87171; }
+  .hero-pnl-up      { border-left-color: #4ade80; }
+  .hero-pnl-up      .hero-value { color: #4ade80; }
+  .hero-pnl-down    { border-left-color: #f87171; }
+  .hero-pnl-down    .hero-value { color: #f87171; }
   .hero-pnl-neutral { border-left-color: #7e97b8; }
   .hero-chip-fires  { border-left-color: #fbbf24; }
   .hero-chip-paper  { border-left-color: #7dd3fc; }
+
+  /* CONN chip — border driven by conn state class */
+  .hero-chip-conn { border-left-color: #7e97b8; }
+  .hero-chip-conn-green { border-left-color: #4ade80; }
+  .hero-chip-conn-green .hero-value,
+  .hero-chip-conn-green .conn-icon { color: #4ade80; }
+  .hero-chip-conn-amber { border-left-color: #fbbf24; }
+  .hero-chip-conn-amber .hero-value,
+  .hero-chip-conn-amber .conn-icon { color: #fbbf24; }
+  .hero-chip-conn-red   { border-left-color: #f87171; }
+  .hero-chip-conn-red   .hero-value,
+  .hero-chip-conn-red   .conn-icon { color: #f87171; }
+  .hero-chip-conn-neutral { border-left-color: #7e97b8; }
+
   .hero-refresh {
     margin-left: auto;
     color: #7e97b8;
@@ -273,11 +694,92 @@
     letter-spacing: 0.04em;
   }
 
-  /* Two-column dashboard grid — desktop only. Mobile and narrow
-     desktops (laptops) collapse to single-column to keep grids
-     readable. P&L Analysis (long horizontal rows) gets ~58% width
-     since its columns are wider; MarketPulse stack (vertical card
-     grids) takes the remaining ~42%. */
+  /* ── Row 1: equity curve + margin gauges ─────────────────────────── */
+  .dash-row1 {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+  @media (min-width: 1024px) {
+    .dash-row1 {
+      grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+      gap: 1rem;
+      align-items: start;
+    }
+  }
+  .row1-col {
+    min-width: 0;
+    padding: 0.55rem 0.65rem 0.5rem;
+    background: rgba(15, 25, 45, 0.55);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 4px;
+  }
+
+  /* Equity curve */
+  .eq-svg {
+    display: block;
+    width: 100%;
+    height: 220px;
+    cursor: crosshair;
+    overflow: visible;
+  }
+  .eq-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 220px;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+  }
+
+  /* Margin gauges */
+  .gauge-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100px;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+  }
+  .gauge-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.2rem 1.5rem;
+    padding: 0.4rem 0 0.2rem;
+    justify-content: center;
+  }
+  .gauge-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .gauge-svg {
+    display: block;
+    flex-shrink: 0;
+  }
+  .gauge-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #7e97b8;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .gauge-detail {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    color: #7e97b8;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.03em;
+  }
+
+  /* ── Two-column dash-grid (below row1) ──────────────────────────── */
   .dash-grid {
     display: grid;
     grid-template-columns: 1fr;
@@ -295,8 +797,7 @@
   .dash-col-pnl   { display: flex; flex-direction: column; }
   .dash-col-pulse { display: flex; flex-direction: column; }
 
-  /* Agent log details/summary — collapsed by default, hover-revealing
-     chevron + "show log" label. open state shows the full UnifiedLog. */
+  /* Agent log */
   .dash-agent {
     margin-top: 0.6rem;
   }
@@ -351,8 +852,7 @@
     margin-bottom: 0.3rem;
   }
 
-  /* Demo-mode onboarding banner — purple-tinted to match the DEMO
-     navbar badge. One-line dismissible; stored in localStorage. */
+  /* Demo banner */
   .demo-banner {
     display: flex;
     align-items: center;

@@ -15,8 +15,9 @@ All three tasks are cancelled cleanly on Litestar shutdown.
 """
 
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta, time as dtime
+from datetime import date, timedelta, time as dtime
 
 import pandas as pd
 
@@ -28,6 +29,16 @@ logger = get_logger(__name__)
 
 # Thread pool for blocking broker calls (keeps async loop responsive)
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ramboq-bg")
+
+# ---------------------------------------------------------------------------
+# Intraday equity-curve buffer
+# ---------------------------------------------------------------------------
+# (ist_timestamp_iso, day_pnl_inr, cum_pnl_inr) — one point per performance
+# tick (~5 min during market hours). maxlen=200 covers a full 6.5-hour
+# Indian trading day at 5-min cadence (~78 points) plus generous headroom.
+# Wiped on IST date rollover so the buffer always reflects the current day.
+_intraday_equity: deque[tuple[str, float, float]] = deque(maxlen=200)
+_intraday_equity_date: date | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +350,44 @@ async def _task_performance(state: dict) -> None:
             # Full portfolio summaries (no segment filtering)
             all_sum_h = _summarise_holdings(df_holdings, sum_holdings, None)
             all_sum_p = _summarise_positions(df_positions)
+
+            # Intraday equity-curve — one point per tick during market hours.
+            # Skipped while the simulator is active so fabricated P&L never
+            # pollutes the real intraday history.
+            if not sim_active:
+                global _intraday_equity, _intraday_equity_date
+                try:
+                    # Date rollover: wipe the buffer at the start of a new
+                    # IST trading day so the chart always reflects today only.
+                    if _intraday_equity_date != today:
+                        _intraday_equity.clear()
+                        _intraday_equity_date = today
+
+                    h_total = all_sum_h.loc[all_sum_h['account'] == 'TOTAL']
+                    p_total = all_sum_p.loc[all_sum_p['account'] == 'TOTAL']
+
+                    h_day  = float(h_total['day_change_val'].iloc[0]) if (
+                        not h_total.empty and 'day_change_val' in h_total.columns
+                        and pd.notna(h_total['day_change_val'].iloc[0])
+                    ) else 0.0
+                    h_pnl  = float(h_total['pnl'].iloc[0]) if (
+                        not h_total.empty and 'pnl' in h_total.columns
+                        and pd.notna(h_total['pnl'].iloc[0])
+                    ) else 0.0
+                    p_pnl  = float(p_total['pnl'].iloc[0]) if (
+                        not p_total.empty and 'pnl' in p_total.columns
+                        and pd.notna(p_total['pnl'].iloc[0])
+                    ) else 0.0
+
+                    day_pnl = h_day + p_pnl
+                    cum_pnl = h_pnl + p_pnl
+                    _intraday_equity.append((now.isoformat(), day_pnl, cum_pnl))
+                    logger.info(
+                        f"Equity-curve point: day=₹{day_pnl:.0f} "
+                        f"cum=₹{cum_pnl:.0f} (n={len(_intraday_equity)})"
+                    )
+                except Exception as _eq_err:
+                    logger.warning(f"Background: equity-curve append skipped: {_eq_err}")
 
             for seg in open_segments:
                 ss = seg_state[seg['name']]

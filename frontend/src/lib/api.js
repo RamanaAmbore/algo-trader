@@ -478,6 +478,12 @@ export async function previewOrderMargin(payload) {
   return _post('/orders/preflight', payload, { auth: true });
 }
 
+/** GET /api/charts/intraday-equity?n=… — rolling intraday P&L buffer.
+ *  Returns `{points: [{ts, day_pnl, cum_pnl}]}`. One point per ~5 min
+ *  tick during market hours; wiped on IST date rollover. Admin-guarded. */
+export const fetchIntradayEquity = (n = 200) =>
+  _get(`/charts/intraday-equity?n=${n}`, { auth: true });
+
 /** GET /api/charts/batch — N charts in one round-trip. Returns
  *  `{mode, charts: [ChartResponse, …]}` in the order of `symbols`. */
 export async function fetchChartBatch(mode, symbols, since = null, limit = 600) {
