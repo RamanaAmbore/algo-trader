@@ -484,10 +484,29 @@
     }
   }
 
+  // Indices that pin to the very top of the grid as a watchlist
+  // sub-bucket — they bypass column sort via ag-Grid's
+  // pinnedTopRowData so the operator's "Sort by P&L" or any other
+  // column click never moves them. Only the spot rows pin; their
+  // derivatives (futures, options) sort normally within the
+  // watchlist bucket beneath.
+  const PINNED_INDEX_UNDERLYINGS = new Set([
+    'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
+    'SENSEX', 'BANKEX', 'INDIAVIX',
+  ]);
+  function isPinnedIndexRow(r) {
+    if (!r?.src?.w) return false;
+    if (r.kind !== 'spot') return false;
+    const u = String(r.underlying || '').toUpperCase();
+    return PINNED_INDEX_UNDERLYINGS.has(u);
+  }
+  const pinnedTopRows = $derived(unifiedRows.filter(isPinnedIndexRow));
+  const mainRows = $derived(unifiedRows.filter(r => !isPinnedIndexRow(r)));
+
   $effect(() => {
-    const rows = unifiedRows;
     if (!gridReady || !grid) return;
-    grid.setGridOption('rowData', rows);
+    grid.setGridOption('rowData', mainRows);
+    grid.setGridOption('pinnedTopRowData', pinnedTopRows);
   });
 
   // Per-source summary derivations for the two separate summary grids.
