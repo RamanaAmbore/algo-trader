@@ -9,13 +9,13 @@
       <stop offset="100%" stop-color="#f59410"/>
     </linearGradient>
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="halo-bloom-blur"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4" result="halo-bloom-blur"/>
       <feFlood flood-color="#f59410" result="halo-bloom-color"/>
       <feComposite in="halo-bloom-color" in2="halo-bloom-blur" operator="in" result="halo-bloom-raw"/>
       <feComponentTransfer in="halo-bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.70"/>
       </feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="halo-mid-blur"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="halo-mid-blur"/>
       <feFlood flood-color="#ffd848" result="halo-mid-color"/>
       <feComposite in="halo-mid-color" in2="halo-mid-blur" operator="in" result="halo-mid-raw"/>
       <feComponentTransfer in="halo-mid-raw" result="halo-mid">

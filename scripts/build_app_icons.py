@@ -68,15 +68,14 @@ def build(size: int, source: Image.Image) -> Image.Image:
     bx = int(cx_px - bull_size / 2)
     by = int(cy_px - bull_size / 2)
 
-    # Amber halo — three-layer bloom: an extra-wide low-alpha outer
-    # bloom plus the main outer/inner glow layers at higher intensity
-    # than before. The bull is the focal point; the gold glow should
-    # read like emitted light, not a faint halo.
-    bloom_std = 22 * size / 512
-    outer_std = 12 * size / 512
-    inner_std = 6  * size / 512
-    canvas.alpha_composite(_glow_layer(bull, bloom_std, 0.55), (bx, by))
-    canvas.alpha_composite(_glow_layer(bull, outer_std, 0.95), (bx, by))
+    # Tight gold rim hugging the bull silhouette — dropped the wide
+    # bloom (22 px stdDeviation) that was bleeding into the teal face
+    # and creating perceived background gradient near the bull. Two
+    # tight layers stay so the bull still reads as outlined in gold
+    # without the halo spreading more than a few pixels outward.
+    outer_std = 4 * size / 512
+    inner_std = 2 * size / 512
+    canvas.alpha_composite(_glow_layer(bull, outer_std, 1.00), (bx, by))
     canvas.alpha_composite(_glow_layer(bull, inner_std, 1.00), (bx, by))
     canvas.alpha_composite(bull, (bx, by))
 
