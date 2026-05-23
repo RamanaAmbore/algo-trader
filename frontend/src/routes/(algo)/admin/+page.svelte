@@ -9,6 +9,13 @@
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
+
+  // Shared confirm modal — replaces native confirm() which silently
+  // no-ops in iOS PWA standalone mode and looks jarring in the dark
+  // UI. `confirmRef.ask(opts)` returns Promise<boolean>.
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let confirmRef = $state(null);
 
   let users      = $state([]);
   let loading    = $state(true);
@@ -46,7 +53,12 @@
   // Each is a single PUT; the table reloads after success so the new
   // pills + status badges flow in without a manual refresh.
   async function suspend(/** @type {string} */ username) {
-    if (!confirm(`Suspend ${username}? They'll be locked out until reinstated.`)) return;
+    if (!await confirmRef.ask({
+      title: 'Suspend user?',
+      message: `<b>${username}</b> will be locked out until reinstated.`,
+      danger: true,
+      confirmLabel: 'Suspend',
+    })) return;
     try { await suspendUser(username); success = `${username} suspended`; await load(); }
     catch (e) { error = e.message; }
   }
@@ -57,14 +69,23 @@
   }
 
   async function terminate(/** @type {string} */ username) {
-    if (!confirm(`Terminate ${username}? This is logged + reversible only via DB.`)) return;
+    if (!await confirmRef.ask({
+      title: 'Terminate user?',
+      message: `<b>${username}</b> will be terminated. This is logged + reversible only via direct DB intervention.`,
+      danger: true,
+      confirmLabel: 'Terminate',
+    })) return;
     try { await terminateUser(username); success = `${username} terminated`; await load(); }
     catch (e) { error = e.message; }
   }
 
   async function flipDesignated(/** @type {any} */ user) {
     const next = user.role !== 'designated';
-    if (!confirm(`${next ? 'Promote' : 'Demote'} ${user.username} ${next ? 'to' : 'from'} designated?`)) return;
+    if (!await confirmRef.ask({
+      title: next ? 'Promote to designated?' : 'Demote from designated?',
+      message: `<b>${user.username}</b> will ${next ? 'gain' : 'lose'} designated-partner role.`,
+      confirmLabel: next ? 'Promote' : 'Demote',
+    })) return;
     try {
       await toggleDesignated(user.username, next);
       success = `${user.username} role=${next ? 'designated' : 'admin'}`;
@@ -80,7 +101,11 @@
   }
 
   async function resendVerify(/** @type {string} */ username) {
-    if (!confirm(`Resend verification email to ${username}?`)) return;
+    if (!await confirmRef.ask({
+      title: 'Resend verification email?',
+      message: `Send a fresh verification link to <b>${username}</b>.`,
+      confirmLabel: 'Resend',
+    })) return;
     try {
       const r = await resendVerification(username);
       success = r?.detail || `Verification email re-sent to ${username}`;
@@ -88,7 +113,11 @@
   }
 
   async function markVerifiedNow(/** @type {string} */ username) {
-    if (!confirm(`Mark ${username} as email-verified directly (no email)?`)) return;
+    if (!await confirmRef.ask({
+      title: 'Mark email-verified?',
+      message: `Flip <b>${username}</b>'s email-verified flag directly. No verification email is sent.`,
+      confirmLabel: 'Mark verified',
+    })) return;
     try {
       await markVerified(username);
       success = `${username} marked verified`;
@@ -417,3 +446,8 @@
     </div>
   {/if}
 </div>
+
+<!-- Shared confirm dialog — every destructive admin action funnels
+     through confirmRef.ask(). Replaces native confirm() which is
+     silently no-op'd in iOS PWA standalone mode. -->
+<ConfirmModal bind:this={confirmRef} />
