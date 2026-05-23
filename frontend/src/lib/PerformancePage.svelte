@@ -301,14 +301,13 @@
     return span;
   }
 
-  // Symbol column (operator request, second bump): 132 → 180 with
-  // options-link, 120 → 160 plain. F&O tickers up to 19 chars
-  // (HDFCBANK26MAY1700PE) now read in full at the column's flex-
-  // starting size on a 1280 px-wide /performance card, before the
-  // grid's default distribution adds more room.
+  // Symbol column (operator trim, -5 %): 180 → 171 with options-link,
+  // 160 → 152 plain. Trims the column back without sacrificing the
+  // 19-char F&O ticker fit; preserves the previous two-step bump
+  // (132→180 / 120→160) less the operator-requested 5 % nudge.
   const positionsSymbolCol = $derived(enableOptionsLink
-    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 180, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
-    : { field: 'tradingsymbol', headerName: 'Symbol', width: 160, pinned: 'left', cellClass: symFill, headerClass: symFill });
+    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 171, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
+    : { field: 'tradingsymbol', headerName: 'Symbol', width: 152, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
   const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
