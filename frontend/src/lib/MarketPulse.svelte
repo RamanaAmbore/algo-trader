@@ -484,19 +484,26 @@
     }
   }
 
-  // Indices that pin to the very top of the grid as a watchlist
-  // sub-bucket — they bypass column sort via ag-Grid's
-  // pinnedTopRowData so the operator's "Sort by P&L" or any other
-  // column click never moves them. Only the spot rows pin; their
-  // derivatives (futures, options) sort normally within the
-  // watchlist bucket beneath.
+  // Indices + commodities that pin to the very top of the grid as a
+  // watchlist sub-bucket. They bypass column sort via ag-Grid's
+  // pinnedTopRowData so "Sort by P&L" / "Sort by Day %" / any other
+  // column click never moves them. ANY row whose underlying matches
+  // (spot, futures, or options) pins as long as it's in the watchlist
+  // — operator can detach individual rows from the pin group via the
+  // ⋯ context menu if a particular row is noisy.
   const PINNED_INDEX_UNDERLYINGS = new Set([
+    // NSE/BSE benchmarks
     'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
-    'SENSEX', 'BANKEX', 'INDIAVIX',
+    'SMALLCAP', 'SENSEX', 'BANKEX',
+    // Volatility
+    'INDIAVIX',
+    // MCX commodities (front-month + spot variants)
+    'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'SILVERMIC',
+    'CRUDEOIL', 'CRUDEOILM', 'COPPER',
   ]);
   function isPinnedIndexRow(r) {
     if (!r?.src?.w) return false;
-    if (r.kind !== 'spot') return false;
+    if (isDetached(r.tradingsymbol)) return false;  // operator override
     const u = String(r.underlying || '').toUpperCase();
     return PINNED_INDEX_UNDERLYINGS.has(u);
   }
@@ -1130,16 +1137,20 @@
     // 6. Watched indices: re-tag tradingsymbol → underlying so the
     //    sort groups them with their derivatives.
     const INDEX_TO_UNDERLYING = {
-      'NIFTY 50':         'NIFTY',
-      'NIFTY BANK':       'BANKNIFTY',
-      'NIFTY FIN SERVICE':'FINNIFTY',
-      'NIFTY MID SELECT': 'MIDCPNIFTY',
-      'NIFTY NXT 50':     'NIFTYNXT50',
-      'SENSEX':           'SENSEX',
-      'BANKEX':           'BANKEX',
+      'NIFTY 50':              'NIFTY',
+      'NIFTY BANK':            'BANKNIFTY',
+      'NIFTY FIN SERVICE':     'FINNIFTY',
+      'NIFTY MID SELECT':      'MIDCPNIFTY',
+      'NIFTY NXT 50':          'NIFTYNXT50',
+      // NSE small-cap benchmark — tag so the pin bucket catches it.
+      'NIFTY SMLCAP 250':      'SMALLCAP',
+      'NIFTY SMALLCAP 100':    'SMALLCAP',
+      'NIFTY SMALLCAP 50':     'SMALLCAP',
+      'SENSEX':                'SENSEX',
+      'BANKEX':                'BANKEX',
       // Volatility — tag INDIA VIX so it joins the pin bucket and
       // groups under the same underlying as VIX-derived rows.
-      'INDIA VIX':        'INDIAVIX',
+      'INDIA VIX':             'INDIAVIX',
     };
     for (const row of Object.values(byKey)) {
       const tag = INDEX_TO_UNDERLYING[String(row.tradingsymbol || '').toUpperCase()];
