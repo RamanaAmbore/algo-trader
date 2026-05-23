@@ -1,14 +1,17 @@
-"""Generate every PNG/ICO brand asset from app-icon.svg via resvg.
+"""Generate every PNG/ICO brand asset from the source SVGs via resvg.
 
 resvg (not cairosvg) is used because the bull-glow SVG filter chain
 (feGaussianBlur + feFlood + feComposite + feMerge) is silently
 dropped by cairosvg's partial filter implementation — which made the
 bull glow invisible. resvg-py has full SVG filter support.
 
-The SVG (frontend/static/app-icon.svg) is the single source of truth —
-all favicon / app-icon / maskable / apple-touch-icon PNGs are rendered
-from it at the appropriate size. Edit the SVG to change the design,
-then re-run this script.
+Sources of truth (all under frontend/static/):
+- app-icon.svg       → favicon, PWA icons, apple-touch-icon
+- og-image-card.svg  → social card (1200×630), subpages
+- og-image-home.svg  → social card (1200×630), homepage
+- og-image-thumb.svg → social thumb (600×600)
+
+Edit the relevant SVG, then re-run this script.
 
 Maskable variants are rendered at 75% inner size and pasted onto a
 teal canvas so Android Chrome's adaptive-icon crop never reaches the
@@ -33,18 +36,31 @@ TEAL_FACE = (17, 72, 88, 255)  # #114858
 _SVG_TEXT = SOURCE_SVG.read_text()
 
 
-def _render_svg(size: int) -> Image.Image:
-    """Render app-icon.svg to a transparent-background PIL Image at the
-    target size. Uses resvg (not cairosvg) so the bull-glow SVG filter
-    actually renders — cairosvg silently drops feComposite/feMerge
-    filter chains. resvg respects the SVG's viewBox so the design
-    scales cleanly to any pixel size."""
+def _render_svg_text(svg_text: str, width: int, height: int) -> Image.Image:
+    """Render an arbitrary SVG string at the target dimensions via
+    resvg. Used by both _render_svg (for app-icon.svg) and the og-image
+    renderers (which have non-square aspect ratios)."""
     png_bytes = bytes(resvg_py.svg_to_bytes(
-        svg_string=_SVG_TEXT,
-        width=size,
-        height=size,
+        svg_string=svg_text,
+        width=width,
+        height=height,
     ))
     return Image.open(BytesIO(png_bytes)).convert("RGBA")
+
+
+def _render_svg(size: int) -> Image.Image:
+    """Render app-icon.svg square to a transparent-background PIL
+    Image at the target size. resvg honours the bull-glow filter
+    chain (cairosvg silently drops feComposite/feMerge)."""
+    return _render_svg_text(_SVG_TEXT, size, size)
+
+
+def _render_og(svg_name: str, width: int, height: int) -> Image.Image:
+    """Render an og-image-*.svg at its native aspect ratio. Uses the
+    same resvg path so the bull-glow filter inside renders correctly
+    in social cards / Slack unfurls / WhatsApp link previews."""
+    text = (STATIC / svg_name).read_text()
+    return _render_svg_text(text, width, height)
 
 
 def _maskable(size: int) -> Image.Image:
@@ -88,6 +104,15 @@ def main() -> None:
         sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
     print(f"wrote {fav_ico} ({fav_ico.stat().st_size:,} bytes)")
+
+    # Open Graph share images — social cards (1200×630) + square thumb
+    # (600×600). Rendered through resvg so the bull-glow filter inside
+    # each SVG actually shows up on the resulting PNG (cairosvg was
+    # silently dropping the filter chain, leaving bare-silhouette bulls
+    # in every social preview, Slack unfurl, and WhatsApp link share).
+    _save(_render_og("og-image-card.svg",  1200, 630), "og-image-card.png")
+    _save(_render_og("og-image-home.svg",  1200, 630), "og-image-home.png")
+    _save(_render_og("og-image-thumb.svg",  600, 600), "og-image-thumb.png")
 
 
 if __name__ == "__main__":
