@@ -56,16 +56,16 @@
        (#d0a040) body with two thin edge bevels — a lighter inner rim
        + a lighter outer rim — for subtle 3D without disturbing the
        uniform colour appearance. -->
-  <circle cx="256" cy="256" r="251"
+  <circle cx="256" cy="256" r="245"
           fill="none"
           stroke="#f0d070"
           stroke-width="2"
           opacity="0.85" />
-  <circle cx="256" cy="256" r="240"
+  <circle cx="256" cy="256" r="234"
           fill="none"
           stroke="#d0a040"
           stroke-width="22" />
-  <circle cx="256" cy="256" r="229"
+  <circle cx="256" cy="256" r="223"
           fill="none"
           stroke="#f0d070"
           stroke-width="2"
