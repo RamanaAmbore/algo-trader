@@ -19,13 +19,13 @@
          INTO the dark face beyond the ring. New peak is 0.22; just
          enough to define the bevel, not enough to eat the rim. -->
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="9" result="bloom-blur"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="bloom-blur"/>
       <feFlood flood-color="#f59410" result="bloom-color"/>
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw"/>
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
-        <feFuncA type="linear" slope="0.70"/>
+        <feFuncA type="linear" slope="0.95"/>
       </feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="9" result="mid-blur"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="mid-blur"/>
       <feFlood flood-color="#f59410" result="mid-color"/>
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw"/>
       <feComponentTransfer in="mid-raw" result="halo-mid">

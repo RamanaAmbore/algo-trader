@@ -11,11 +11,11 @@
          All flood colours pulled from the public-site palette. -->
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <!-- Wide orange-gold bloom — warmer than palette #c8a84b. -->
-      <feGaussianBlur in="SourceAlpha" stdDeviation="9" result="bloom-blur" />
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14" result="bloom-blur" />
       <feFlood flood-color="#f59410" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
-        <feFuncA type="linear" slope="0.70" />
+        <feFuncA type="linear" slope="0.95" />
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="mid-blur" />
