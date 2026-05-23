@@ -1,26 +1,21 @@
 <?xml version='1.0' encoding='utf-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <!-- Teal-dominant face — deep teal edge (#0a323e) with a clear
-         teal centre lift (#14525e) for radial depth. -->
-    <radialGradient id="face-radial" cx="50%" cy="50%" r="60%">
-      <stop offset="0%" stop-color="#14525e" />
-      <stop offset="100%" stop-color="#0a323e" />
-    </radialGradient>
+    <!-- Uniform teal face — #0f4a55 across the whole circle, no gradient. -->
 
     <!-- Three-layer gold halo on the bull: wide bloom + mid + tight inner.
          All flood colours pulled from the public-site palette. -->
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <!-- Wide orange-gold bloom — warmer than palette #c8a84b. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="bloom-blur" />
-      <feFlood flood-color="#d0a040" result="bloom-color" />
+      <feFlood flood-color="#e8a020" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.70" />
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="mid-blur" />
-      <feFlood flood-color="#f0d070" result="mid-color" />
+      <feFlood flood-color="#fce070" result="mid-color" />
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
       <feComponentTransfer in="mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.90" />
@@ -28,7 +23,7 @@
       <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
       <feGaussianBlur in="dil-inner" stdDeviation="2.5" result="inner-blur" />
-      <feFlood flood-color="#f0d070" result="inner-color" />
+      <feFlood flood-color="#fce070" result="inner-color" />
       <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
       <feComponentTransfer in="inner-raw" result="halo-inner">
         <feFuncA type="linear" slope="0.85" />
@@ -42,8 +37,8 @@
     </filter>
   </defs>
 
-  <!-- Teal face -->
-  <circle cx="256" cy="256" r="256" fill="url(#face-radial)" />
+  <!-- Uniform teal face -->
+  <circle cx="256" cy="256" r="256" fill="#0f4a55" />
 
   <!-- Bull with strong gold halo, rendered before the ring so the rim
        overlaps the glow's outer fringe cleanly. -->
@@ -53,21 +48,21 @@
 
   <!-- Main metallic-gold ring, inset only ~5 px from outer edge so the
        ring reads as a tight bezel rather than a halo. Warm orange-gold
-       (#d0a040) body with two thin edge bevels — a lighter inner rim
+       (#e8a020) body with two thin edge bevels — a lighter inner rim
        + a lighter outer rim — for subtle 3D without disturbing the
        uniform colour appearance. -->
   <circle cx="256" cy="256" r="242"
           fill="none"
-          stroke="#f0d070"
+          stroke="#fce070"
           stroke-width="2"
           opacity="0.85" />
   <circle cx="256" cy="256" r="231"
           fill="none"
-          stroke="#d0a040"
+          stroke="#e8a020"
           stroke-width="22" />
   <circle cx="256" cy="256" r="220"
           fill="none"
-          stroke="#f0d070"
+          stroke="#fce070"
           stroke-width="2"
           opacity="0.85" />
 </svg>

@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "frontend" / "static"
 BULL_SRC = STATIC / "bull.png"
 
-NAVY = (10, 50, 62, 255)            # #0a323e — deep teal-navy (icon face palette)
+NAVY = (15, 74, 85, 255)            # #0f4a55 — uniform teal face colour
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
-GLOW_COLOR = (208, 160, 64)         # #d0a040 — orange-gold, warmer than palette champagne
+GLOW_COLOR = (232, 160, 32)         # #e8a020 — vivid orange-gold
 RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
 RING_WIDTH_FRAC  = 20 / 512   # 20 px stroke at 512 — wider bevel for visible 3D
 
@@ -54,17 +54,9 @@ def _ring_mask(size: int, r_outer: float, r_inner: float) -> Image.Image:
 
 
 def _radial_face(size: int) -> Image.Image:
-    """Teal-navy face with a subtle radial highlight — #0a323e at the
-    edge, lifted to #14525e at the centre. Teal-dominant palette."""
-    img = Image.new("RGBA", (size, size), NAVY)            # #0a323e edge
-    # Centre-brighter ellipse — clear deep teal, lifted from the edge.
-    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    cx = cy = size / 2
-    r = size * 0.30
-    od.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(20, 82, 94, 100))
-    img = Image.alpha_composite(img, overlay)
-    return img
+    """Uniform teal face — flat #0f4a55 across the whole canvas, no
+    radial gradient. The strong gold ring + halo do the visual work."""
+    return Image.new("RGBA", (size, size), NAVY)
 
 
 def build(size: int, source: Image.Image) -> Image.Image:
@@ -95,23 +87,19 @@ def build(size: int, source: Image.Image) -> Image.Image:
     r_inner       = ring_center_r - ring_w / 2
 
     grad = _vertical_gradient(size, [
-        # Symmetric warm orange-gold — body shifted from palette champagne
-        # #c8a84b toward orange (#d0a040), rims swapped from light gold
-        # #f0d878 to the slightly warmer goldGrad mid (#f0d070). Reads
-        # noticeably warmer than the pure palette tokens.
-        (0.00, (0xf0, 0xd0, 0x70)),  # warm light-gold highlight (top)
-        (0.50, (0xd0, 0xa0, 0x40)),  # orange-gold body
-        (1.00, (0xf0, 0xd0, 0x70)),  # warm light-gold highlight (bottom)
+        # Vivid orange-gold ring — body at #e8a020 with bright #fce070
+        # highlights at both rims. Far more saturated than the previous
+        # muted champagne, so the gold pops against the uniform teal face.
+        (0.00, (0xfc, 0xe0, 0x70)),  # bright gold highlight (top)
+        (0.50, (0xe8, 0xa0, 0x20)),  # vivid orange-gold body
+        (1.00, (0xfc, 0xe0, 0x70)),  # bright gold highlight (bottom)
     ])
     annulus = _ring_mask(size, r_outer, r_inner)
     ring_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ring_layer = Image.composite(grad, ring_layer, annulus)
-    # Mute the ring's overall presence so the bull's amber bloom stays
-    # the focal point. We keep the bevel hue but drop the alpha to ~60 %
-    # so the navy face shows through and the ring reads as a quiet
-    # frame, not a competing colour mass.
-    r, g, b, a = ring_layer.split()
-    ring_layer = Image.merge("RGBA", (r, g, b, a.point(lambda v: int(v * 0.60))))
+    # Keep the ring close to full opacity — the brand now leans on the
+    # vivid orange-gold ring as a primary visual; muting it to 60% as
+    # before washed out the saturation.
 
     # Drop shadow under the ring — push it off the navy face.
     shadow_alpha = annulus.filter(ImageFilter.GaussianBlur(radius=size * 0.012))
@@ -131,7 +119,7 @@ def build(size: int, source: Image.Image) -> Image.Image:
     hd = ImageDraw.Draw(hl)
     r_hl = r_inner - 1
     hd.ellipse((cx_px - r_hl, cy_px - r_hl, cx_px + r_hl, cy_px + r_hl),
-               outline=(255, 224, 144, 90), width=max(1, size // 512))
+               outline=(255, 232, 160, 110), width=max(1, size // 512))
     canvas.alpha_composite(hl)
     return canvas
 
