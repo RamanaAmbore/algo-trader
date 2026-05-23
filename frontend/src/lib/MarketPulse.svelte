@@ -1495,7 +1495,7 @@
       { field: 'tradingsymbol', headerName: '', width: 56, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: true,
         cellClass: 'spark-cell' },
-      { field: 'ltp', headerName: 'LTP', width: 60,
+      { field: 'ltp', headerName: 'LTP', width: 80,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
