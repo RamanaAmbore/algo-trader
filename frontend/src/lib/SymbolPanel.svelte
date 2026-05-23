@@ -129,6 +129,15 @@
   // Range selector — 1W / 1M / 3M. Default 1 M matches the retired
   // SymbolChartModal's behaviour.
   let _chartDays = $state(/** @type {number} */ (30));
+  // Chart-type toggle — line (default) / area / candle. Computed
+  // entirely client-side from the same OHLCV bar stream; no extra
+  // /api/options/historical fetch.
+  let _chartType = $state(/** @type {'line'|'area'|'candle'} */ ('line'));
+  // Indicator toggles — SMA(20), SMA(50), volume bars. Each
+  // computed lazily from `_chartBars` via $derived below.
+  let _showSma20 = $state(false);
+  let _showSma50 = $state(false);
+  let _showVol   = $state(false);
   // Hover crosshair (lifted from the retired SymbolChartModal).
   /** @type {{x:number,y:number,bar:any}|null} */
   let _chartHover = $state(null);
@@ -239,6 +248,100 @@
                     : ` L${x.toFixed(2)},${y.toFixed(2)}`);
     }
     return d;
+  });
+
+  // Area path — same close-price polyline as the line chart, closed
+  // back to the bottom-of-plot baseline so the SVG fill paints the
+  // triangle below the curve. Re-uses _chartLinePath's geometry.
+  const _chartAreaPath = $derived.by(() => {
+    if (!_chartBars.length || !_chartXDomain) return '';
+    const last = _chartBars[_chartBars.length - 1];
+    const lastT = Date.parse(last.ts);
+    if (!Number.isFinite(lastT)) return '';
+    const baselineY = (CH - CPAD_B).toFixed(2);
+    return `${_chartLinePath} L${_chartXOf(lastT).toFixed(2)},${baselineY} L${_chartXOf(Date.parse(_chartBars[0].ts)).toFixed(2)},${baselineY} Z`;
+  });
+
+  // Candle geometry — one rect (body) + one line (wick) per bar.
+  // Width auto-sized to ~60 % of the per-bar slot so candles don't
+  // touch but don't get lost either.
+  const _chartCandles = $derived.by(() => {
+    if (!_chartBars.length || !_chartXDomain) return [];
+    const n = _chartBars.length;
+    const slot = n > 1 ? _chartInnerW / (n - 1) : _chartInnerW;
+    const w = Math.max(2, Math.min(12, slot * 0.6));
+    /** @type {Array<{x:number,bodyY:number,bodyH:number,w:number,wickTop:number,wickBot:number,up:boolean}>} */
+    const out = [];
+    for (const b of _chartBars) {
+      const t = Date.parse(b.ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _chartXOf(t);
+      const o = Number(b.open), c = Number(b.close);
+      const hi = Number(b.high), lo = Number(b.low);
+      const up = c >= o;
+      const yTop = _chartYOf(Math.max(o, c));
+      const yBot = _chartYOf(Math.min(o, c));
+      out.push({
+        x, bodyY: yTop, bodyH: Math.max(1, yBot - yTop), w,
+        wickTop: _chartYOf(hi), wickBot: _chartYOf(lo), up,
+      });
+    }
+    return out;
+  });
+
+  /** Simple moving average path for the given window (e.g. 20, 50).
+   * Returns '' if fewer than `window` bars are available — silently
+   * hides the line instead of plotting a partial curve. */
+  function _smaPath(/** @type {number} */ window) {
+    if (!_chartBars.length || !_chartXDomain || _chartBars.length < window) return '';
+    let d = '';
+    let started = false;
+    for (let i = window - 1; i < _chartBars.length; i++) {
+      let sum = 0;
+      for (let j = i - window + 1; j <= i; j++) sum += Number(_chartBars[j].close);
+      const avg = sum / window;
+      const t = Date.parse(_chartBars[i].ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _chartXOf(t);
+      const y = _chartYOf(avg);
+      d += (!started ? `M${x.toFixed(2)},${y.toFixed(2)}`
+                     : ` L${x.toFixed(2)},${y.toFixed(2)}`);
+      started = true;
+    }
+    return d;
+  }
+  const _sma20Path = $derived(_showSma20 ? _smaPath(20) : '');
+  const _sma50Path = $derived(_showSma50 ? _smaPath(50) : '');
+
+  // Volume bars — bottom 48 px band of the chart when enabled.
+  // Auto-scales to the period max so the tallest bar fills the band.
+  const VOL_H = 48;
+  const _chartVol = $derived.by(() => {
+    if (!_chartBars.length || !_chartXDomain || !_showVol) return [];
+    let vMax = 0;
+    for (const b of _chartBars) {
+      const v = Number(b.volume || 0);
+      if (v > vMax) vMax = v;
+    }
+    if (vMax <= 0) return [];
+    const n = _chartBars.length;
+    const slot = n > 1 ? _chartInnerW / (n - 1) : _chartInnerW;
+    const w = Math.max(2, Math.min(10, slot * 0.55));
+    const baseline = CH - CPAD_B;
+    const top = baseline - VOL_H;
+    /** @type {Array<{x:number,y:number,h:number,w:number,up:boolean}>} */
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const b = _chartBars[i];
+      const t = Date.parse(b.ts);
+      if (!Number.isFinite(t)) continue;
+      const v = Number(b.volume || 0);
+      const h = (v / vMax) * (VOL_H - 4);
+      const x = _chartXOf(t) - w / 2;
+      const up = Number(b.close) >= Number(b.open);
+      out.push({ x, y: baseline - h, h, w, up });
+    }
+    return out;
   });
   const _chartYTicks = $derived.by(() => {
     if (!_chartBars.length) return [];
@@ -567,23 +670,52 @@
              (1W/1M/3M) above the SVG refire /api/options/historical
              with the new `days` parameter. -->
         <div class="oes-chart">
-          <!-- Range selector — sits above the chart, right-aligned.
-               Buttons mirror the LogPanel toggle palette so the
-               operator's eye sees them as a familiar segmented
-               control. -->
-          <div class="oes-chart-controls">
-            <button type="button" class="oes-chart-range"
-                    class:active={_chartDays === 7}
-                    title="Past 1 week"
-                    onclick={() => _setChartRange(7)}>1W</button>
-            <button type="button" class="oes-chart-range"
-                    class:active={_chartDays === 30}
-                    title="Past 1 month"
-                    onclick={() => _setChartRange(30)}>1M</button>
-            <button type="button" class="oes-chart-range"
-                    class:active={_chartDays === 90}
-                    title="Past 3 months"
-                    onclick={() => _setChartRange(90)}>3M</button>
+          <!-- Toolbar — chart type, range, indicators. Three segmented
+               groups so the operator's eye groups them by purpose
+               (presentation / window / overlays). -->
+          <div class="oes-chart-toolbar">
+            <div class="oes-chart-controls">
+              <button type="button" class="oes-chart-range"
+                      class:active={_chartType === 'line'}
+                      title="Line — close price only"
+                      onclick={() => _chartType = 'line'}>Line</button>
+              <button type="button" class="oes-chart-range"
+                      class:active={_chartType === 'area'}
+                      title="Area — close price with shaded fill below"
+                      onclick={() => _chartType = 'area'}>Area</button>
+              <button type="button" class="oes-chart-range"
+                      class:active={_chartType === 'candle'}
+                      title="Candle — OHLC bars (green up / red down)"
+                      onclick={() => _chartType = 'candle'}>Candle</button>
+            </div>
+            <div class="oes-chart-controls">
+              <button type="button" class="oes-chart-range"
+                      class:active={_chartDays === 7}
+                      title="Past 1 week"
+                      onclick={() => _setChartRange(7)}>1W</button>
+              <button type="button" class="oes-chart-range"
+                      class:active={_chartDays === 30}
+                      title="Past 1 month"
+                      onclick={() => _setChartRange(30)}>1M</button>
+              <button type="button" class="oes-chart-range"
+                      class:active={_chartDays === 90}
+                      title="Past 3 months"
+                      onclick={() => _setChartRange(90)}>3M</button>
+            </div>
+            <div class="oes-chart-controls">
+              <button type="button" class="oes-chart-range"
+                      class:active={_showSma20}
+                      title="20-period simple moving average"
+                      onclick={() => _showSma20 = !_showSma20}>SMA20</button>
+              <button type="button" class="oes-chart-range"
+                      class:active={_showSma50}
+                      title="50-period simple moving average"
+                      onclick={() => _showSma50 = !_showSma50}>SMA50</button>
+              <button type="button" class="oes-chart-range"
+                      class:active={_showVol}
+                      title="Volume bars in lower band"
+                      onclick={() => _showVol = !_showVol}>Vol</button>
+            </div>
           </div>
           {#if _chartLoading && !_chartBars.length}
             <div class="oes-chart-state">Loading bars…</div>
@@ -621,9 +753,53 @@
                 <text x={l.x} y={CH - CPAD_B + 14} text-anchor="middle"
                       fill="#7e97b8" font-size="10">{l.label}</text>
               {/each}
-              <path d={_chartLinePath} fill="none"
-                    stroke="#fbbf24" stroke-width="1.8"
-                    stroke-linejoin="round" stroke-linecap="round" />
+              <!-- Volume bars (lower band, when enabled) — drawn
+                   BEFORE the price layer so the line/candle sits on
+                   top and hover crosshair logic isn't shadowed. -->
+              {#if _showVol}
+                {#each _chartVol as v}
+                  <rect x={v.x} y={v.y} width={v.w} height={v.h}
+                        fill={v.up ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)'} />
+                {/each}
+              {/if}
+
+              <!-- Price layer — chart-type branch. Line keeps the
+                   original amber polyline. Area paints the same
+                   polyline + a translucent fill below. Candle draws
+                   one OHLC rect+wick per bar (green up / red down). -->
+              {#if _chartType === 'area'}
+                <path d={_chartAreaPath} fill="rgba(251,191,36,0.16)"
+                      stroke="none" />
+                <path d={_chartLinePath} fill="none"
+                      stroke="#fbbf24" stroke-width="1.8"
+                      stroke-linejoin="round" stroke-linecap="round" />
+              {:else if _chartType === 'candle'}
+                {#each _chartCandles as c}
+                  <line x1={c.x} x2={c.x} y1={c.wickTop} y2={c.wickBot}
+                        stroke={c.up ? '#4ade80' : '#f87171'} stroke-width="1" />
+                  <rect x={c.x - c.w / 2} y={c.bodyY} width={c.w} height={c.bodyH}
+                        fill={c.up ? '#4ade80' : '#f87171'} />
+                {/each}
+              {:else}
+                <path d={_chartLinePath} fill="none"
+                      stroke="#fbbf24" stroke-width="1.8"
+                      stroke-linejoin="round" stroke-linecap="round" />
+              {/if}
+
+              <!-- SMA overlays — dashed coloured lines on top of the
+                   price layer when their respective toggles are on. -->
+              {#if _sma20Path}
+                <path d={_sma20Path} fill="none"
+                      stroke="#7dd3fc" stroke-width="1.4"
+                      stroke-dasharray="4 3"
+                      stroke-linejoin="round" stroke-linecap="round" />
+              {/if}
+              {#if _sma50Path}
+                <path d={_sma50Path} fill="none"
+                      stroke="#c084fc" stroke-width="1.4"
+                      stroke-dasharray="6 3"
+                      stroke-linejoin="round" stroke-linecap="round" />
+              {/if}
               {#if _chartHover}
                 <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CH - CPAD_B}
                       stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2" />
@@ -1032,13 +1208,23 @@
     font-size: 0.58rem;
     align-self: flex-end;
   }
+  /* Toolbar — three groups of segmented buttons (type / range /
+     indicators), each a horizontal pill cluster, flex-wrapped so
+     narrow viewports stack groups vertically instead of overflowing
+     the chart card. */
+  .oes-chart-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.8rem;
+    justify-content: flex-end;
+  }
   /* Range selector — segmented pill row right-aligned above the
      chart. Active state matches the algo amber palette so it reads
      as a primary selection chip. */
   .oes-chart-controls {
     display: flex;
     gap: 0.2rem;
-    align-self: flex-end;
   }
   .oes-chart-range {
     background: transparent;
