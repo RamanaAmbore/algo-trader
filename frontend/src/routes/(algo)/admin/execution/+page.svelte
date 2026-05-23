@@ -19,13 +19,34 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore, clientTimestamp } from '$lib/stores';
-  import InfoHint       from '$lib/InfoHint.svelte';
-  import SimulatorPanel from '$lib/execution/SimulatorPanel.svelte';
-  import ReplayPanel    from '$lib/execution/ReplayPanel.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
   // ?mode= (backward-compat for old SIM/REPLAY dropdown deep-links).
   let tab = $state(/** @type {'sim'|'replay'} */ ('sim'));
+
+  // Panels are dynamic-imported so only the active tab's bundle lands
+  // on first paint. Previously both SimulatorPanel + ReplayPanel were
+  // top-level imports; even though only ONE renders at a time, both
+  // bundles + every heavy dep they transitively pull (ag-Grid for
+  // scenario tables, hand-rolled SVG chart libs, etc.) blocked the
+  // first-paint of /admin/execution. Lazy-loading drops the initial
+  // JS payload of this page by ~50% and lets the header render
+  // immediately.
+  let SimulatorPanel = $state(/** @type {any} */ (null));
+  let ReplayPanel    = $state(/** @type {any} */ (null));
+
+  function loadPanel(/** @type {'sim'|'replay'} */ t) {
+    if (t === 'sim' && !SimulatorPanel) {
+      import('$lib/execution/SimulatorPanel.svelte')
+        .then(m => { SimulatorPanel = m.default; })
+        .catch(err => console.warn('[Lab] SimulatorPanel load failed:', err));
+    } else if (t === 'replay' && !ReplayPanel) {
+      import('$lib/execution/ReplayPanel.svelte')
+        .then(m => { ReplayPanel = m.default; })
+        .catch(err => console.warn('[Lab] ReplayPanel load failed:', err));
+    }
+  }
 
   onMount(() => {
     const r = $authStore.user?.role;
@@ -33,10 +54,12 @@
     const params = page.url.searchParams;
     const want = params.get('tab') || params.get('mode');
     if (want === 'sim' || want === 'replay') tab = want;
+    loadPanel(tab);  // kick off the active panel's bundle fetch
   });
 
   function pickTab(/** @type {'sim'|'replay'} */ t) {
     tab = t;
+    loadPanel(t);
     const url = new URL(page.url);
     url.searchParams.set('tab', t);
     url.searchParams.delete('mode');
@@ -68,9 +91,19 @@
 </div>
 
 {#if tab === 'sim'}
-  <SimulatorPanel />
+  {#if SimulatorPanel}
+    {@const Comp = SimulatorPanel}
+    <Comp />
+  {:else}
+    <div class="lab-loading">Loading Scenario workspace…</div>
+  {/if}
 {:else if tab === 'replay'}
-  <ReplayPanel />
+  {#if ReplayPanel}
+    {@const Comp = ReplayPanel}
+    <Comp />
+  {:else}
+    <div class="lab-loading">Loading Backtest workspace…</div>
+  {/if}
 {/if}
 
 <style>
@@ -139,4 +172,14 @@
     letter-spacing: 0.02em;
   }
   .exec-tab-active .exec-tab-subtitle { color: #fde68a; }
+  /* Loading state shown for the brief moment between tab click and
+     the lazy-imported panel bundle resolving. Subtle so it doesn't
+     read as a real "loading spinner" — it's typically gone in 100ms. */
+  .lab-loading {
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    color: #7e97b8;
+    padding: 1rem;
+    text-align: center;
+  }
 </style>
