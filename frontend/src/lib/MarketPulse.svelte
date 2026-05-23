@@ -357,17 +357,12 @@
 
   // Bucket-of helper — mirrors the bucket logic inside buildUnified
   // so moveGroup can constrain its swap to the same bucket.
+  // Order: watchlist → positions → holdings → everything else.
   function bucketOf(row) {
-    const u = String(row?.underlying || '').toUpperCase();
-    const PINNED = ['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY','NIFTYNXT50','SENSEX','BANKEX',
-                    'INDIAVIX','GOLD','GOLDM','SILVER','SILVERM','SILVERMIC',
-                    'CRUDEOIL','CRUDEOILM','NATURALGAS','NATGASMINI',
-                    'COPPER','ALUMINIUM','ALUMINI','ZINC','LEAD','LEADMINI',
-                    'NICKEL','COTTON','MENTHAOIL','CARDAMOM'];
-    if (PINNED.includes(u))                     return 0;
-    if (row?.src?.w)                            return 1;
-    if (row?.src?.p || row?.src?.h)             return 2;
-    return 3;
+    if (row?.src?.w) return 1;
+    if (row?.src?.p) return 2;
+    if (row?.src?.h) return 3;
+    return 4;
   }
   let stopPoll, stopPulsePoll;
   let gridEl;
@@ -1003,12 +998,16 @@
       }
     }
 
-    // 2. Positions.
+    // 2. Positions. Keyed by `${sym}__P` so the same tradingsymbol
+    //    that ALSO appears as a holding renders as its OWN row (user
+    //    explicitly wants the position/holding split kept). Multiple
+    //    accounts holding the same position symbol still merge here
+    //    because the suffix is per-source, not per-account.
     for (const r of (includePos === false ? [] : pos)) {
       const exch = r.exchange || 'NFO';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const row = get(sym);
+      const row = get(`${sym}__P`);
       row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.p = true;
@@ -1032,12 +1031,13 @@
       fill(row, sym);
     }
 
-    // 3. Holdings.
+    // 3. Holdings. Keyed by `${sym}__H` for the same reason — keep
+    //    a position vs holding for the same symbol as TWO rows.
     for (const r of (includeHold === false ? [] : hold)) {
       const exch = r.exchange || 'NSE';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const row = get(sym);
+      const row = get(`${sym}__H`);
       row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.h = true;
@@ -1161,36 +1161,18 @@
       return 3;
     };
     const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
-    // Pin-bucket: indices + India VIX + MCX commodities are always
-    // surfaced first as a sticky context group, regardless of any
-    // column sort the operator applies. Mirrors the public-site
-    // dashboard convention — these rows are *context*, not just data.
-    const INDEX_UNDERLYINGS = new Set([
-      // NSE/BSE indices
-      'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
-      'SENSEX', 'BANKEX',
-      // Volatility
-      'INDIAVIX',
-      // MCX commodities (front-month + spot)
-      'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'SILVERMIC',
-      'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
-      'COPPER', 'ALUMINIUM', 'ALUMINI', 'ZINC', 'LEAD', 'LEADMINI',
-      'NICKEL', 'COTTON', 'MENTHAOIL', 'CARDAMOM',
-    ]);
+    // Bucket priority — operator picked: watchlist first, then
+    // positions, then holdings, then everything else (option
+    // underlyings, movers, detached symbols). No automatic index pin
+    // — indices appear in whichever bucket their source dictates
+    // (they're watched, so they end up in the watchlist bucket).
     const groupBucket = /** @type {Record<string, number>} */ ({});
     for (const r of out) {
       const g = String(groupKey(r));
-      const u = String(r.underlying || '').toUpperCase();
-      const isIdx = INDEX_UNDERLYINGS.has(u);
-      // Pulse priority — operator wants watchlist symbols (the
-      // platform's curated/default set plus any saved manually)
-      // surfaced before broker positions/holdings, so the page leads
-      // with "what I'm watching" instead of "what I happen to be
-      // holding". Indices stay at the top (always-relevant context).
-      const bucket = isIdx ? 0
-                   : r.src?.w ? 1
-                   : (r.src?.p || r.src?.h) ? 2
-                   : 3;
+      const bucket = r.src?.w ? 1
+                   : r.src?.p ? 2
+                   : r.src?.h ? 3
+                   : 4;
       if (groupBucket[g] == null || bucket < groupBucket[g]) {
         groupBucket[g] = bucket;
       }
@@ -2275,6 +2257,17 @@
   :global(.sym-move:hover) {
     color: #fbbf24;
     background: rgba(251,191,36,0.12);
+  }
+
+  /* Mobile / touch screens — hover doesn't trigger reliably, so the
+     ▲/▼ buttons stay visible at low opacity by default. The ⋯ menu
+     trigger is already always-visible. */
+  @media (hover: none), (max-width: 768px) {
+    :global(.sym-move) { opacity: 0.55; }
+    :global(.sym-move:active) {
+      color: #fbbf24;
+      background: rgba(251,191,36,0.18);
+    }
   }
 
   /* Day Δ / P&L cells. */
