@@ -140,10 +140,11 @@ def _maskable(size: int, source: Image.Image) -> Image.Image:
     """Maskable PWA icon — W3C spec says the OS may crop a circle of
     radius 40% of the icon's min dimension, so all visible content must
     sit inside the centre 80% safe zone. We render the full design at
-    80% of the target size and paste it onto a navy canvas; any crop
-    the OS applies stays inside the navy margin and the ring + bull
-    survive intact."""
-    inner_size = int(round(size * 0.80))
+    75% of the target size (slightly more conservative than the spec
+    minimum) and paste it onto a teal-navy canvas; this absorbs every
+    real-world adaptive-icon mask shape — Chrome's circle, Android's
+    squircles, OEM rounded-squares — without clipping the ring or bull."""
+    inner_size = int(round(size * 0.75))
     inner = build(inner_size, source)
     canvas = Image.new("RGBA", (size, size), NAVY)
     offset = (size - inner_size) // 2
