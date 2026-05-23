@@ -428,7 +428,16 @@
       if (live && live.paper_trading_mode === false && live.branch === 'main') basketMode2 = 'live';
     } catch { /* safe default */ }
 
-    for (const leg of basketLegs) {
+    // Track failed-leg indices explicitly. The earlier code pruned
+    // legs by `i >= ok` which assumed all failures were at the END of
+    // the array — but the loop continues on error, so `ok` is a
+    // counter of successes, not a positional index. A failing leg in
+    // the MIDDLE would survive while a passing leg at the end got
+    // dropped. Bug now fixed with an explicit failedIdx set.
+    /** @type {Set<number>} */
+    const failedIdx = new Set();
+    for (let i = 0; i < basketLegs.length; i++) {
+      const leg = basketLegs[i];
       try {
         const hasLimit = Number(leg.limit) > 0;
         if (!hasLimit) {
@@ -438,6 +447,7 @@
           // a no-op (MARKET fills immediately). Force the operator to
           // either wait for the quote or override per-leg manually.
           fails.push(`${leg.side} ${leg.sym}: no quote yet — re-open the chain so the bid/ask price loads, then submit again.`);
+          failedIdx.add(i);
           continue;
         }
         await placeTicketOrder({
@@ -458,6 +468,7 @@
         onSubmit?.({ ...leg, _basketLeg: true });
       } catch (e) {
         fails.push(`${leg.side} ${leg.sym}: ${/** @type {any} */ (e)?.message || 'failed'}`);
+        failedIdx.add(i);
       }
     }
     basketSubmitting = false;
@@ -468,8 +479,9 @@
       setTimeout(onClose, 1500);
     } else if (ok > 0) {
       basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}`;
-      // Keep only failed legs in the basket.
-      basketLegs = basketLegs.filter((_, i) => i >= ok);
+      // Keep ONLY the legs that failed so the operator can retry just
+      // those (after fixing the quote / limit / etc.).
+      basketLegs = basketLegs.filter((_, i) => failedIdx.has(i));
     } else {
       basketResultMsg = `Failed: ${fails[0]}`;
     }

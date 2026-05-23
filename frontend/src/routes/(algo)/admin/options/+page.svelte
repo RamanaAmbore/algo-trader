@@ -83,8 +83,15 @@
    *  Multi-select — operator can view candidates from multiple expiries
    *  simultaneously. The strategy endpoint now accepts cross-expiry baskets. */
   let selectedExpiries = $state([]);
-  /** @type {Record<string, boolean>} symbol → enabled flag */
+  /** @type {Record<string, boolean>} `${account}|${symbol}` → enabled flag.
+   * Composite key so the same option symbol in two broker accounts gets
+   * an independent checkbox + isn't double-counted in P&L. */
   let enabledSymbols = $state({});
+  // Composite key for the enabledSymbols map. Plain symbol collided
+  // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
+  // ZJ#### would share one checkbox, and the candidatesActualPnl
+  // counter summed both rows even though only one was "checked".
+  function enKey(c) { return `${c.account || ''}|${c.symbol || ''}`; }
 
   // Legs sent to the strategy endpoint — built from candidate positions
   // (live or sim, depending on simActive) plus drafts that match the
@@ -272,7 +279,7 @@
   const candidatesActualPnl = $derived.by(() => {
     let s = 0;
     for (const c of candidatePositions) {
-      if (enabledSymbols[c.symbol] === false) continue;
+      if (enabledSymbols[enKey(c)] === false) continue;
       s += Number(c.pnl || 0);
     }
     return s;
@@ -287,11 +294,11 @@
   let allCandidatesEl = $state(/** @type {HTMLInputElement|null} */ (null));
   const allCandidatesOn = $derived.by(() => {
     if (!candidatePositions.length) return false;
-    return candidatePositions.every(c => enabledSymbols[c.symbol] !== false);
+    return candidatePositions.every(c => enabledSymbols[enKey(c)] !== false);
   });
   const someCandidatesOn = $derived.by(() => {
     if (!candidatePositions.length) return false;
-    return candidatePositions.some(c => enabledSymbols[c.symbol] !== false);
+    return candidatePositions.some(c => enabledSymbols[enKey(c)] !== false);
   });
   $effect(() => {
     if (!allCandidatesEl) return;
@@ -305,7 +312,7 @@
     /** @type {Record<string, boolean>} */
     const next = {};
     const target = !allCandidatesOn;
-    for (const c of candidatePositions) next[c.symbol] = target;
+    for (const c of candidatePositions) next[enKey(c)] = target;
     enabledSymbols = next;
   }
 
@@ -362,10 +369,9 @@
       const prevKeys = Object.keys(enabledSymbols);
       if (prevKeys.length !== cands.length) changed = true;
       for (const c of cands) {
-        if (!(c.symbol in enabledSymbols)) changed = true;
-        next[c.symbol] = (c.symbol in enabledSymbols)
-          ? enabledSymbols[c.symbol]
-          : true;
+        const k = enKey(c);
+        if (!(k in enabledSymbols)) changed = true;
+        next[k] = (k in enabledSymbols) ? enabledSymbols[k] : true;
       }
       // Skip the write entirely when nothing meaningful changed —
       // assigning a new ref would still trigger downstream effects.
@@ -380,7 +386,7 @@
     void candidatePositions; void enabledSymbols;
     untrack(() => {
       legs = candidatePositions
-        .filter(c => enabledSymbols[c.symbol] !== false)
+        .filter(c => enabledSymbols[enKey(c)] !== false)
         .map(c => ({
           symbol:   c.symbol,
           qty:      c.qty,
@@ -1767,7 +1773,7 @@
             {@const isDraft = c.source === 'draft'}
             {@const isActionable = isDraft || isClosable}
             <div class="cand-row cand-row-{dir}"
-                 class:cand-disabled={enabledSymbols[c.symbol] === false}
+                 class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
                  role="button"
@@ -1808,11 +1814,11 @@
                    }
                  }}>
               <input type="checkbox"
-                     checked={enabledSymbols[c.symbol] !== false}
+                     checked={enabledSymbols[enKey(c)] !== false}
                      onclick={(e) => e.stopPropagation()}
                      onchange={(e) => {
                        const next = { ...enabledSymbols };
-                       next[c.symbol] = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
+                       next[enKey(c)] = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
                        enabledSymbols = next;
                      }} />
               <span class="font-mono cand-sym">

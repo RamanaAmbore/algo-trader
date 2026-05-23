@@ -170,6 +170,22 @@
       : 1
   );
   let _qty     = $state(qty || _lotSize || (isEquity ? 1 : 0));
+  // Track whether the operator has touched _lots manually. If they
+  // haven't, late-resolving _lotSize (instrument cache warming after
+  // ticket mount) should recompute _lots from the original `qty` prop
+  // so the ticket displays "2 Lots" instead of staying stuck at the
+  // fallback "1 Lot". Set true by the +/- steppers + direct input.
+  let _lotsTouched = $state(false);
+  // When _lotSize transitions from 0 → positive (instrument cache
+  // resolved after mount), recompute _lots from the caller's original
+  // qty prop. Skipped once the operator has manually adjusted.
+  let _prevLotSize = _lotSize;
+  $effect(() => {
+    if (_prevLotSize === 0 && _lotSize > 0 && !_lotsTouched) {
+      _lots = Math.max(1, Math.round((Number(qty) || _lotSize) / _lotSize));
+    }
+    _prevLotSize = _lotSize;
+  });
   // Keep _qty in sync with _lots × _lotSize so submit + validation see
   // the resolved raw quantity. Skipped when _lotSize=0 (operator types
   // qty directly).
@@ -197,6 +213,7 @@
 
   function stepLots(/** @type {number} */ delta) {
     _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
+    _lotsTouched = true;  // operator owns _lots from here
   }
   let _type    = $state(orderType);
   let _variety = $state(variety);
@@ -1597,7 +1614,6 @@
     gap: 0.15rem;
   }
   .ot-footer-info:empty { display: none; }
-  .ot-cancel,
   .ot-exit,
   .ot-basket,
   .ot-submit {
@@ -1609,21 +1625,15 @@
     border: 1px solid transparent;
     flex-shrink: 0;
   }
-  /* Exit — appears in place of Cancel + Submit after a successful
-     order. Outlined champagne so it reads as "you've completed the
-     action; close when ready", not as another primary submit. */
+  /* Exit — replaces Cancel + Submit after a successful order, and also
+     stands in for Cancel before submit. Outlined champagne — reads as
+     "close when ready", not as another primary action. */
   .ot-exit {
     background: rgba(212,146,12,0.12);
     border-color: rgba(212,146,12,0.55);
     color: #d4920c;
   }
   .ot-exit:hover { background: rgba(212,146,12,0.22); border-color: rgba(212,146,12,0.85); }
-  .ot-cancel {
-    background: transparent;
-    border-color: rgba(255,255,255,0.18);
-    color: #c8d8f0;
-  }
-  .ot-cancel:hover { border-color: rgba(255,255,255,0.35); }
   /* Stage-into-basket — outlined amber, distinct from the filled
      green/red Submit. Reads as a secondary action: the operator
      can stack legs before placing the whole basket together. */
