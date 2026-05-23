@@ -2066,12 +2066,19 @@
     min-height: calc(100vh - 7rem);
   }
   .mp-flat-wrap .unified-grid {
-    /* Take whatever vertical space remains after the toolbar — the
-       fixed 520 px height is the dashboard's small-grid default, but
-       on /pulse the operator wants the grid to fill the page. */
-    flex: 1 1 auto;
-    height: auto;
+    /* Explicit calc-based height so ag-Grid's domLayout:normal viewport
+       measurement is reliable on first mount. The previous
+       `flex: 1 1 auto; height: auto;` setup rendered correctly in dev
+       preview but in production the grid's container measured at 0 px
+       during ag-Grid's synchronous mount, leaving subsequent
+       setGridOption('rowData') calls invisible. A definite pixel
+       height computed from viewport units sidesteps the issue while
+       still filling the page (the calc subtracts navbar + page chrome
+       + toolbar + sticky banners that sit between the navbar and
+       the grid). */
+    height: calc(100vh - 11rem);
     min-height: 320px;
+    flex: none;
   }
   .summary-grid,
   .funds-grid {
