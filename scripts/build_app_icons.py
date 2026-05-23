@@ -10,7 +10,7 @@ BULL_SRC = STATIC / "bull.png"
 NAVY = (12, 24, 48, 255)            # #0c1830 — matches the investor navbar
 BULL_INSET = 260 / 512   # bull width as fraction of canvas
 GLOW_COLOR = (208, 160, 64)         # #d0a040 — orange-gold, warmer than palette champagne
-RING_RADIUS_FRAC = 229 / 512  # ring centre 229/256 — ~11 px navy margin to canvas edge
+RING_RADIUS_FRAC = 226 / 512  # ring centre 226/256 — ~14 px navy margin to canvas edge
 RING_WIDTH_FRAC  = 20 / 512   # 20 px stroke at 512 — wider bevel for visible 3D
 
 
