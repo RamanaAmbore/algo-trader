@@ -266,6 +266,109 @@
 
   let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
   let stopSparkPoll;
+
+  // ── Manual group order + symbol detachment (per-browser overrides) ──
+  // Operator clicks ↑ / ↓ on a row → that row's underlying group moves
+  // up or down within its bucket. Clicks the ⋯ menu → "Detach from
+  // group" pulls the symbol out of its underlying group entirely so
+  // it sorts by itself at the end of the bucket.
+  //
+  // Persistence: localStorage, per-browser. Backend sync would need a
+  // schema migration we don't want yet. Reset clears both overrides.
+  const LS_GROUP_ORDER = 'pulse:groupOrder';   // { NIFTY: 0, BANKNIFTY: 1, ... }
+  const LS_DETACHED    = 'pulse:detached';     // ["NIFTY25APR21000PE", ...]
+  let groupOrder       = $state(/** @type {Record<string, number>} */ ({}));
+  let detachedSymbols  = $state(/** @type {string[]} */ ([]));
+
+  function loadOverrides() {
+    try {
+      const g = JSON.parse(localStorage.getItem(LS_GROUP_ORDER) || '{}');
+      if (g && typeof g === 'object') groupOrder = g;
+    } catch (_) { /* corrupt JSON — start fresh */ }
+    try {
+      const d = JSON.parse(localStorage.getItem(LS_DETACHED) || '[]');
+      if (Array.isArray(d)) detachedSymbols = d;
+    } catch (_) { /* corrupt JSON — start fresh */ }
+  }
+
+  function saveGroupOrder() {
+    try { localStorage.setItem(LS_GROUP_ORDER, JSON.stringify(groupOrder)); } catch (_) {}
+  }
+  function saveDetached() {
+    try { localStorage.setItem(LS_DETACHED, JSON.stringify(detachedSymbols)); } catch (_) {}
+  }
+
+  /** Move the row's underlying group up (-1) or down (+1) within its bucket. */
+  function moveGroup(row, dir) {
+    const g = String(row?.underlying || row?.tradingsymbol || '').toUpperCase();
+    if (!g) return;
+    // Build the visible group list at the row's bucket, sorted current.
+    const myBucket = unifiedRows
+      .filter(r => bucketOf(r) === bucketOf(row))
+      .map(r => String(r.underlying || `~~${r.tradingsymbol || ''}`).toUpperCase());
+    // Preserve order of first appearance — that's the current sort.
+    const seen = new Set();
+    const ordered = [];
+    for (const k of myBucket) {
+      if (!seen.has(k)) { seen.add(k); ordered.push(k); }
+    }
+    const idx = ordered.indexOf(g);
+    if (idx < 0) return;
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= ordered.length) return;
+    // Swap into the new position and persist ALL groups in the bucket
+    // with the new ranks so the comparator can read them back.
+    [ordered[idx], ordered[newIdx]] = [ordered[newIdx], ordered[idx]];
+    const next = { ...groupOrder };
+    ordered.forEach((k, i) => { next[k] = i; });
+    groupOrder = next;
+    saveGroupOrder();
+  }
+
+  /** True iff the symbol is currently in the detached set. */
+  function isDetached(sym) {
+    return detachedSymbols.includes(String(sym || '').toUpperCase());
+  }
+
+  function detachSymbol(row) {
+    const sym = String(row?.tradingsymbol || '').toUpperCase();
+    if (!sym || isDetached(sym)) return;
+    detachedSymbols = [...detachedSymbols, sym];
+    saveDetached();
+  }
+
+  function reattachSymbol(row) {
+    const sym = String(row?.tradingsymbol || '').toUpperCase();
+    if (!sym) return;
+    detachedSymbols = detachedSymbols.filter(s => s !== sym);
+    saveDetached();
+  }
+
+  function resetOverrides() {
+    groupOrder = {};
+    detachedSymbols = [];
+    saveGroupOrder();
+    saveDetached();
+  }
+
+  const hasOverrides = $derived(
+    Object.keys(groupOrder).length > 0 || detachedSymbols.length > 0
+  );
+
+  // Bucket-of helper — mirrors the bucket logic inside buildUnified
+  // so moveGroup can constrain its swap to the same bucket.
+  function bucketOf(row) {
+    const u = String(row?.underlying || '').toUpperCase();
+    const PINNED = ['NIFTY','BANKNIFTY','FINNIFTY','MIDCPNIFTY','NIFTYNXT50','SENSEX','BANKEX',
+                    'INDIAVIX','GOLD','GOLDM','SILVER','SILVERM','SILVERMIC',
+                    'CRUDEOIL','CRUDEOILM','NATURALGAS','NATGASMINI',
+                    'COPPER','ALUMINIUM','ALUMINI','ZINC','LEAD','LEADMINI',
+                    'NICKEL','COTTON','MENTHAOIL','CARDAMOM'];
+    if (PINNED.includes(u))                     return 0;
+    if (row?.src?.w)                            return 1;
+    if (row?.src?.p || row?.src?.h)             return 2;
+    return 3;
+  }
   let stopPoll, stopPulsePoll;
   let gridEl;
   // $state on the bind:this refs so Svelte 5's reactive-update
@@ -332,6 +435,7 @@
     // Auth is enforced by the (algo) layout — no goto('/signin')
     // here so this component can also be embedded in flows that
     // intentionally allow anonymous demo viewers.
+    loadOverrides();
     await tick();
     mountGrid();
 
@@ -803,10 +907,13 @@
       : holdings.filter(r => String(r.account || '') === selectedAccount)
   );
 
-  const unifiedRows = $derived(buildUnified(
+  // The two override-state vars are read inside buildUnified's
+  // closure; declare them here so Svelte 5 tracks them as deps and
+  // re-derives unifiedRows when the operator clicks ↑/↓/Detach.
+  const unifiedRows = $derived(((groupOrder, detachedSymbols), buildUnified(
     activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
     showPositions, showHoldings, movers, showMovers,
-  ));
+  )));
 
   function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
     const inst = instCache ? instCache(sym) : null;
@@ -1037,7 +1144,16 @@
     // bare underlyings. Within a group: spot → fut → opt (strike ASC,
     // CE before PE).
     const out = Object.values(byKey);
-    const groupKey = (r) => r.underlying || `~~${r.tradingsymbol || ''}`;
+    // Detached symbols → each becomes its own single-row group keyed
+    // off the tradingsymbol with a `__DETACHED__` prefix so it sorts
+    // distinctly from the auto-group. The prefix puts detached rows
+    // at the bottom of the bucket via localeCompare ordering.
+    const detachedSet = new Set(detachedSymbols.map(s => s.toUpperCase()));
+    const groupKey = (r) => {
+      const sym = String(r.tradingsymbol || '').toUpperCase();
+      if (detachedSet.has(sym)) return `__DETACHED__${sym}`;
+      return r.underlying || `~~${r.tradingsymbol || ''}`;
+    };
     const tierRank = (r) => {
       if (r.kind === 'spot')                 return 0;
       if (r.kind === 'fut')                  return 1;
@@ -1079,11 +1195,25 @@
         groupBucket[g] = bucket;
       }
     }
+    // Manual group order — operator's ↑/↓ overrides take precedence
+    // within a bucket. Groups without a manual rank sort alphabetically
+    // AFTER manually-ranked groups.
+    const order = groupOrder || {};
+    const rankOf = (g) => {
+      const u = String(g || '').toUpperCase();
+      return order[u] != null ? order[u] : null;
+    };
     out.sort((a, b) => {
       const ga = String(groupKey(a)), gb = String(groupKey(b));
       const ba = groupBucket[ga] ?? 2, bb = groupBucket[gb] ?? 2;
       if (ba !== bb) return ba - bb;
-      if (ga !== gb) return ga.localeCompare(gb);
+      if (ga !== gb) {
+        const ra = rankOf(ga), rb = rankOf(gb);
+        if (ra != null && rb != null && ra !== rb) return ra - rb;
+        if (ra != null && rb == null) return -1;
+        if (ra == null && rb != null) return  1;
+        return ga.localeCompare(gb);
+      }
       const ta = tierRank(a), tb = tierRank(b);
       if (ta !== tb) return ta - tb;
       if (a.kind === 'opt' && b.kind === 'opt') {
@@ -1218,7 +1348,15 @@
     const actionsBtn = sym
       ? `<span class="sym-actions" data-sym="${sym}" data-exch="${exch}" data-watchitem="${row.watchlist_item_id ?? ''}" title="Symbol actions">⋯</span>`
       : '';
-    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}${actionsBtn}`;
+    // Per-row ↑/↓ buttons — move the row's whole underlying group up
+    // or down within its bucket. Visible on row hover (CSS handles
+    // the hover-only display); the actual move happens in
+    // handleRowClick via data-attr dispatch.
+    const moveBtns = sym
+      ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
+        `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
+      : '';
+    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
   }
 
   /**
@@ -1492,6 +1630,16 @@
       const itemId = Number(rmBtn.getAttribute('data-item'));
       const listId = Number(rmBtn.getAttribute('data-list'));
       if (itemId && listId) removeItem(listId, itemId);
+      return;
+    }
+    // ▲/▼ group-move buttons — bump the row's whole underlying group
+    // up or down. The bucket stays the same (pinned indices stay in
+    // pinned, watchlist in watchlist) so swaps are constrained.
+    const moveBtn = target?.closest?.('.sym-move');
+    if (moveBtn) {
+      ev.event?.stopPropagation?.();
+      const dir = Number(moveBtn.getAttribute('data-dir')) || 0;
+      if (dir !== 0) moveGroup(ev.data, dir);
       return;
     }
     // ⋯ actions button — re-uses the existing right-click context
@@ -2023,6 +2171,15 @@
     {/if}
     <button class="ctx-item" onclick={() => ctxCopySymbol(ctxMenu.row)}>Copy symbol</button>
     <button class="ctx-item" onclick={() => ctxSetAlert(ctxMenu.row)}>Set price alert</button>
+    <div class="ctx-sep"></div>
+    {#if isDetached(ctxMenu.row?.tradingsymbol)}
+      <button class="ctx-item" onclick={() => { reattachSymbol(ctxMenu.row); closeContextMenu(); }}>↩ Re-attach to group</button>
+    {:else if ctxMenu.row?.underlying}
+      <button class="ctx-item" onclick={() => { detachSymbol(ctxMenu.row); closeContextMenu(); }}>↗ Detach from group</button>
+    {/if}
+    {#if hasOverrides}
+      <button class="ctx-item" onclick={() => { resetOverrides(); closeContextMenu(); }}>↻ Reset all overrides</button>
+    {/if}
     {#if ctxMenu.row?.src?.w && ctxMenu.row?.watchlist_item_id != null}
       <div class="ctx-sep"></div>
       <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu.row)}>Remove from watchlist</button>
@@ -2096,6 +2253,28 @@
   :global(.sym-actions:hover) {
     color: #fbbf24;
     background: rgba(251,191,36,0.10);
+  }
+
+  /* ▲ / ▼ group-move buttons. Hidden by default, revealed on row
+     hover so the icons don't compete with the symbol/badge content
+     in the resting state. */
+  :global(.sym-move) {
+    display: inline-block;
+    margin-left: 2px;
+    padding: 0 3px;
+    color: rgba(126,151,184,0.45);
+    font-size: 0.55rem;
+    line-height: 12px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 2px;
+    opacity: 0;
+    transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+  :global(.ag-row:hover .sym-move) { opacity: 1; }
+  :global(.sym-move:hover) {
+    color: #fbbf24;
+    background: rgba(251,191,36,0.12);
   }
 
   /* Day Δ / P&L cells. */
