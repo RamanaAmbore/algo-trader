@@ -7,7 +7,7 @@
   import { clientTimestamp } from '$lib/stores';
   import InfoHint        from '$lib/InfoHint.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
-  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
 
   let logTab = $state('terminal');
 </script>
@@ -23,7 +23,7 @@
 
   <!-- 3-tab order-entry shell rendered inline (no modal chrome). -->
   <div class="terminal-shell-wrap">
-    <OrderEntryShell
+    <SymbolPanel
       inline
       defaultTab="command"
       symbol=""

@@ -4,7 +4,7 @@
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { dataCache, authStore } from '$lib/stores';
-  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
@@ -781,7 +781,7 @@
   <!-- PerformancePage always opens on Ticket tab — no chain for a
        close-position row click, no command bar needed. Chain tab is
        auto-disabled for equity symbols by the shell. -->
-  <OrderEntryShell
+  <SymbolPanel
     defaultTab="ticket"
     symbol={orderTicketProps.symbol}
     exchange={orderTicketProps.exchange}

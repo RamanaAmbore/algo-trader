@@ -6,19 +6,18 @@
   // with per-row source badges (W=watchlist, H=holding, P=position,
   // U=option-underlying) so the same symbol never appears twice.
   // The merge engine, batch-quote pipeline, symbol-cell renderer,
-  // row-tint CSS, and OrderEntryShell wiring all live here — pages
+  // row-tint CSS, and SymbolPanel wiring all live here — pages
   // compose by toggling props:
   //
   //   enableWatchlists    — show tab strip / add row / remove ×
   //   enableSourceToggles — show "P · Positions" / "H · Holdings" pills
-  //   allowOrders         — row click opens OrderEntryShell
+  //   allowOrders         — row click opens SymbolPanel
   //
   // Phase 2 additions (not wired yet): accountFilter, showSummaryRows,
   // showFundsCard.
 
   import { onMount, onDestroy, tick } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
-  import SymbolChartModal from '$lib/SymbolChartModal.svelte';
   import {
     fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
@@ -28,7 +27,7 @@
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
-  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
 
@@ -274,7 +273,7 @@
   // the page red. Show the banner only after 3 consecutive failures.
   let quoteFailStreak = 0;
 
-  // Order-ticket integration — row click opens the OrderEntryShell
+  // Order-ticket integration — row click opens the SymbolPanel
   // pre-filled with the row's symbol / exchange / lot size. Stays
   // null when no ticket is open. Real broker accounts (unmasked
   // account_id) fetched once on mount so the operator can pick.
@@ -1510,16 +1509,21 @@
     closeContextMenu();
     console.info('[MarketPulse] set price alert placeholder:', row.tradingsymbol);
   }
-  /** 📈 Chart action — opens the SymbolChartModal for the row's
-   *  symbol. Historical bars fetched on open via /api/options/historical. */
+  /** 📈 Chart action — opens SymbolPanel on the Chart tab for the
+   *  row's symbol. Historical bars fetched lazily inside the panel
+   *  when the Chart tab activates. Earlier this opened a separate
+   *  SymbolChartModal; folded into the unified panel so chart +
+   *  ticket + chain all live in one symbol-keyed surface. */
   function ctxOpenChart(row) {
     closeContextMenu();
     const sym = String(row.tradingsymbol || '').trim();
     if (!sym) return;
-    _chartModal = { symbol: sym, exchange: String(row.exchange || '').trim() };
+    openTicket({
+      symbol:    sym,
+      exchange:  String(row.exchange || '').trim(),
+      defaultTab: 'chart',
+    });
   }
-  /** @type {{symbol:string,exchange?:string}|null} */
-  let _chartModal = $state(null);
 
   async function ctxRemoveWatch(row) {
     closeContextMenu();
@@ -1899,7 +1903,7 @@
 </div>
 
 {#if allowOrders && ticketProps}
-  <OrderEntryShell
+  <SymbolPanel
     {...ticketProps}
     onSubmit={() => closeTicket()}
     onClose={closeTicket} />
@@ -1928,17 +1932,6 @@
       <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu.row)}>Remove from watchlist</button>
     {/if}
   </div>
-{/if}
-
-<!-- Symbol chart modal — single page-level instance shared across
-     every row's ⋯ → 📈 Chart click. Historical OHLCV bars from
-     /api/options/historical. -->
-{#if _chartModal}
-  <SymbolChartModal
-    symbol={_chartModal.symbol}
-    exchange={_chartModal.exchange}
-    open={true}
-    onClose={() => { _chartModal = null; }} />
 {/if}
 
 <style>

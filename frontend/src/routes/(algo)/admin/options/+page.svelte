@@ -16,9 +16,7 @@
     fetchWatchlists, addWatchlistItem,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
-  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
-  import SymbolActions from '$lib/SymbolActions.svelte';
-  import SymbolChartModal from '$lib/SymbolChartModal.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
@@ -926,20 +924,11 @@
   });
 
   // Order-ticket state — chain clicks open the reusable
-  // <OrderEntryShell> modal; on DRAFT submit we append to drafts.
+  // <SymbolPanel> modal; on DRAFT submit we append to drafts.
   /** @type {any} */
   let ticketProps = $state(null);
   function openTicket(/** @type {any} */ p) { ticketProps = { defaultTab: 'ticket', ...p }; }
 
-  // SymbolChartModal — opened by the ⋯ → 📈 Chart item on any
-  // candidate row. Fetches /api/options/historical for the picked
-  // symbol and renders a close-price line chart with hover OHLCV.
-  /** @type {{symbol:string,exchange?:string}|null} */
-  let chartModal = $state(null);
-  function openSymbolChart(/** @type {string} */ sym,
-                           /** @type {string|undefined} */ exch) {
-    chartModal = { symbol: sym, exchange: exch || 'NFO' };
-  }
   function closeTicket() { ticketProps = null; }
 
   // Chain "+" handlers — open the OrderTicket pre-filled. The ticket
@@ -1231,7 +1220,7 @@
    *     which account a basket leg should land on — operator could
    *     pick the wrong one in the ticket and split a strategy across
    *     accounts by accident.
-   *  Account selection now lives inside the OrderEntryShell's order
+   *  Account selection now lives inside the SymbolPanel's order
    *  panel — the Chain button on this page bar is always enabled,
    *  and the operator picks the routable account from the modal. */
 
@@ -1658,7 +1647,7 @@
      match the page's selected underlying then auto-show in Candidates,
      re-running the strategy analytics with the new leg included. -->
 <!-- In-page Option-chain panel removed — the canonical chain UI is
-     the OrderEntryShell modal opened by the Chain button. Earlier
+     the SymbolPanel modal opened by the Chain button. Earlier
      this file rendered a second chain panel inline so the operator
      saw two chains simultaneously (one with +W watchlist buttons,
      one without). Single source of truth now lives in OptionChainTab. -->
@@ -1782,23 +1771,40 @@
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
                  role="button"
-                 tabindex={isActionable ? 0 : -1}
-                 aria-disabled={!isActionable}
+                 tabindex="0"
                  title={isDraft
-                   ? `Execute draft — open the order ticket pre-filled (PAPER / LIVE)`
+                   ? `Execute draft — open SymbolPanel on Ticket tab pre-filled`
                    : isClosable
-                     ? `Close ${Math.abs(c.qty)} ${c.symbol}`
-                     : isClosed ? 'Closed position' : ''}
+                     ? `Close ${Math.abs(c.qty)} ${c.symbol} — SymbolPanel on Ticket tab`
+                     : `${c.symbol} — open SymbolPanel on Chart tab`}
                  onclick={() => {
+                   // Actionable rows open the Ticket tab pre-filled
+                   // for close/execute; non-actionable rows (closed
+                   // positions, etc.) open the Chart tab — SymbolPanel
+                   // is the single entry point for any per-symbol
+                   // workflow, no separate ⋯ menu.
                    if (isDraft) executeDraft(c);
                    else if (isClosable) closePosition(c);
+                   else openTicket({
+                     symbol:    c.symbol,
+                     exchange:  'NFO',
+                     defaultTab:'chart',
+                     accounts:  ticketAccounts,
+                     account:   _rowTicketAccount(c),
+                   });
                  }}
                  onkeydown={(e) => {
-                   if (!isActionable) return;
                    if (e.key === 'Enter' || e.key === ' ') {
                      e.preventDefault();
                      if (isDraft) executeDraft(c);
-                     else closePosition(c);
+                     else if (isClosable) closePosition(c);
+                     else openTicket({
+                       symbol:    c.symbol,
+                       exchange:  'NFO',
+                       defaultTab:'chart',
+                       accounts:  ticketAccounts,
+                       account:   _rowTicketAccount(c),
+                     });
                    }
                  }}>
               <input type="checkbox"
@@ -1838,21 +1844,6 @@
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
               <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
               <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
-              <span class="cand-actions" onclick={(e) => e.stopPropagation()}>
-                <SymbolActions
-                  symbol={c.symbol}
-                  exchange="NFO"
-                  defaultTicketSide={c.qty < 0 ? 'BUY' : 'SELL'}
-                  defaultTicketAccount={_isRealAccount(c.account) ? c.account : ''}
-                  onOpenChart={openSymbolChart}
-                  onAddToWatchlist={defaultWatchlistId != null ? addSymbolToWatchlist : null}
-                  onOpenTicket={(props) => openTicket({
-                    ...props,
-                    qty:      Math.abs(c.qty),
-                    action:   'open',
-                    accounts: ticketAccounts,
-                  })} />
-              </span>
             </div>
           {/each}
         </div>
@@ -1966,11 +1957,11 @@
      submit). Phase 2 / 3: PAPER + LIVE submit paths land in the
      ticket itself; this page won't need to change. -->
 {#if ticketProps}
-  <!-- OrderEntryShell replaces the raw OrderTicket here. All ticketProps
+  <!-- SymbolPanel replaces the raw OrderTicket here. All ticketProps
        spread through to the Ticket tab unchanged. defaultTab is set on
        openTicket() so chain (i) buttons open on the Ticket tab; future
        callsites that want the Chain tab default can set defaultTab:'chain'. -->
-  <OrderEntryShell
+  <SymbolPanel
     {...ticketProps}
     onSubmit={onTicketSubmit}
     onClose={closeTicket}
@@ -2001,18 +1992,6 @@
       }];
       basketError = '';
     }} />
-{/if}
-
-<!-- Symbol chart modal — triggered by the SymbolActions ⋯ → 📈 Chart
-     item on any candidate row. Renders historical OHLCV bars fetched
-     from /api/options/historical. Single instance at page level so a
-     click anywhere shares one overlay; null = closed. -->
-{#if chartModal}
-  <SymbolChartModal
-    symbol={chartModal.symbol}
-    exchange={chartModal.exchange}
-    open={true}
-    onClose={() => { chartModal = null; }} />
 {/if}
 
 <style>

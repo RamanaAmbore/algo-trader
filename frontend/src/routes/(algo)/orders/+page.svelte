@@ -6,7 +6,7 @@
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
-  import OrderEntryShell from '$lib/order/OrderEntryShell.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
@@ -328,7 +328,7 @@
 </div>
 
 {#if orderTicketProps}
-  <OrderEntryShell
+  <SymbolPanel
     defaultTab='ticket'
     symbol={orderTicketProps.symbol}
     exchange={orderTicketProps.exchange}

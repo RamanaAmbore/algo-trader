@@ -1,21 +1,28 @@
 <script>
-  // OrderEntryShell — tabbed order-entry modal.
+  // SymbolPanel — unified symbol-keyed modal. Replaces three older
+  // surfaces: OrderEntryShell (tabbed order entry), SymbolChartModal
+  // (standalone chart popup), and SymbolActions (the ⋯ row-menu).
   //
-  // Three tabs:
-  //   command  — terminal-style command input (CommandLineTab)
-  //   ticket   — single-leg ticket (OrderTicket body)
-  //   chain    — option-chain basket builder (OptionChainTab)
+  // Four tabs:
+  //   chart    — 30 d historical OHLCV line (lifted from
+  //              SymbolChartModal). Default when invoked from a row
+  //              click — operator's intent is "what does this look
+  //              like?", not "place a trade".
+  //   ticket   — single-leg OrderTicket. Default when an explicit
+  //              "trade this" intent is signalled (chain +CE / +PE
+  //              click, Trade row action).
+  //   chain    — option-chain basket builder (OptionChainTab).
+  //              Disabled for cash-equity symbols.
+  //   command  — terminal-style command input (CommandLineTab).
+  //              Power-user surface; lands last in the tab strip.
   //
-  // Default tab is set by `defaultTab` prop. When the instrument is
-  // equity (kind='equity', or exchange NSE/BSE with no FUT/CE/PE suffix)
-  // the Chain tab is disabled and falls through to 'ticket'.
-  //
-  // All current OrderTicket props pass through transparently to the
-  // Ticket tab so existing callsites only need to swap the import
-  // from OrderTicket → OrderEntryShell and add a `defaultTab` prop.
+  // Industry shape — matches IB TWS "Symbol Detail", ThinkOrSwim
+  // "Active Trader", and TradingView "Order Form" patterns: one
+  // symbol-keyed panel, tabs for the different actions on that
+  // symbol, no hidden context menus.
 
-  import { onMount } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
+  import { onMount, onDestroy } from 'svelte';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent, fetchOptionsHistorical } from '$lib/api';
   import { logTime } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
@@ -24,7 +31,7 @@
   import UnifiedLog       from '$lib/UnifiedLog.svelte';
 
   /** @type {{
-   *   defaultTab?:     'command' | 'ticket' | 'chain',
+   *   defaultTab?:     'chart' | 'command' | 'ticket' | 'chain',
    *   symbol?:         string,
    *   exchange?:       string,
    *   instrument?:     { kind?: string, exchange?: string },
@@ -49,7 +56,7 @@
    *   inline?:         boolean,
    * }} */
   let {
-    defaultTab     = /** @type {'command'|'ticket'|'chain'} */ ('ticket'),
+    defaultTab     = /** @type {'chart'|'command'|'ticket'|'chain'} */ ('ticket'),
     symbol         = '',
     exchange       = '',
     instrument     = /** @type {{kind?:string,exchange?:string}} */ ({}),
@@ -96,7 +103,112 @@
     if (req === 'chain' && chainDisabled) return 'ticket';
     return req;
   }
-  let _activeTab = $state(/** @type {'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
+  let _activeTab = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
+
+  // ── Chart tab state ───────────────────────────────────────────────
+  // Mirrors the body of the retired SymbolChartModal — same fetch +
+  // SVG plot, just lifted into a tab. Lazy load: only triggers when
+  // the Chart tab activates so opening the panel on Ticket doesn't
+  // hit /api/options/historical unnecessarily.
+  /** @type {Array<{ts: string, open: number, high: number, low: number, close: number, volume: number}>} */
+  let _chartBars = $state([]);
+  let _chartLoading = $state(false);
+  let _chartError = $state('');
+  let _chartLoaded = $state(false);   // sentinel — only fetch once per panel open
+
+  async function _loadChart() {
+    if (!symbol || _chartLoaded) return;
+    _chartLoading = true; _chartError = '';
+    try {
+      const r = await fetchOptionsHistorical(symbol, { days: 30, exchange });
+      _chartBars = Array.isArray(r?.bars) ? r.bars : [];
+      if (!_chartBars.length) _chartError = 'No bars available — broker may not list this contract.';
+      _chartLoaded = true;
+    } catch (e) {
+      _chartError = /** @type {any} */ (e)?.message || String(e);
+      _chartBars = [];
+    } finally {
+      _chartLoading = false;
+    }
+  }
+
+  // Auto-load when the Chart tab becomes active.
+  $effect(() => {
+    if (_activeTab === 'chart') _loadChart();
+  });
+
+  // ── Chart geometry (mirrors SymbolChartModal) ─────────────────────
+  const CW = 720;
+  const CH = 360;
+  const CPAD_L = 56;
+  const CPAD_R = 16;
+  const CPAD_T = 16;
+  const CPAD_B = 30;
+  const _chartInnerW = CW - CPAD_L - CPAD_R;
+  const _chartInnerH = CH - CPAD_T - CPAD_B;
+
+  const _chartXs = $derived(_chartBars.map((b) => Date.parse(b.ts)).filter(Number.isFinite));
+  const _chartXDomain = $derived(_chartXs.length
+    ? { lo: Math.min(..._chartXs), hi: Math.max(..._chartXs) }
+    : null);
+  const _chartYDomain = $derived.by(() => {
+    if (!_chartBars.length) return { lo: 0, hi: 1 };
+    let lo = Infinity, hi = -Infinity;
+    for (const b of _chartBars) {
+      const l = Number(b.low), h = Number(b.high);
+      if (Number.isFinite(l)) lo = Math.min(lo, l);
+      if (Number.isFinite(h)) hi = Math.max(hi, h);
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { lo: 0, hi: 1 };
+    const pad = (hi - lo) * 0.06 || 1;
+    return { lo: lo - pad, hi: hi + pad };
+  });
+  const _chartXOf = (/** @type {number} */ ts) => {
+    if (!_chartXDomain) return CPAD_L;
+    if (_chartXDomain.hi === _chartXDomain.lo) return CPAD_L + _chartInnerW / 2;
+    return CPAD_L + ((ts - _chartXDomain.lo) / (_chartXDomain.hi - _chartXDomain.lo)) * _chartInnerW;
+  };
+  const _chartYOf = (/** @type {number} */ v) =>
+    CPAD_T + ((_chartYDomain.hi - v) / (_chartYDomain.hi - _chartYDomain.lo)) * _chartInnerH;
+  const _chartLinePath = $derived.by(() => {
+    if (!_chartBars.length || !_chartXDomain) return '';
+    let d = '';
+    for (let i = 0; i < _chartBars.length; i++) {
+      const t = Date.parse(_chartBars[i].ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _chartXOf(t);
+      const y = _chartYOf(Number(_chartBars[i].close));
+      d += (i === 0 ? `M${x.toFixed(2)},${y.toFixed(2)}`
+                    : ` L${x.toFixed(2)},${y.toFixed(2)}`);
+    }
+    return d;
+  });
+  const _chartYTicks = $derived.by(() => {
+    if (!_chartBars.length) return [];
+    const out = [];
+    const step = (_chartYDomain.hi - _chartYDomain.lo) / 4;
+    for (let i = 0; i <= 4; i++) out.push(_chartYDomain.lo + i * step);
+    return out;
+  });
+  const _chartXLabels = $derived.by(() => {
+    if (!_chartXDomain) return [];
+    const out = [];
+    for (let i = 0; i < 5; i++) {
+      const t = _chartXDomain.lo + ((_chartXDomain.hi - _chartXDomain.lo) * i) / 4;
+      const d = new Date(t);
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      out.push({ x: _chartXOf(t), label: `${dd}/${mm}` });
+    }
+    return out;
+  });
+  const _chartFirstClose = $derived(_chartBars[0]?.close);
+  const _chartLastClose = $derived(_chartBars[_chartBars.length - 1]?.close);
+  const _chartPct = $derived(
+    (_chartFirstClose && _chartLastClose)
+      ? ((_chartLastClose - _chartFirstClose) / _chartFirstClose) * 100
+      : null,
+  );
 
   // ── Bottom-panel tab state ───────────────────────────────────────────
   let _bottomTab = $state(/** @type {'log'|'orders'} */ ('log'));
@@ -283,13 +395,18 @@
     };
   });
 
+  // Tab order — Chart first (most common row-click intent: analyse
+  // before acting), then Ticket (most common write action), Chain
+  // (specialised), Command (power-user). Mirrors TWS / ToS shape.
   const TABS = /** @type {const} */ ([
-    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc',
-      activeBg: 'rgba(125,211,252,0.14)' },
+    { id: 'chart',   label: 'Chart',        dot: '#f0d070', activeTxt: '#f0d070', activeBorder: '#f0d070',
+      activeBg: 'rgba(240,208,112,0.14)' },
     { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24',
       activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80',
       activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc',
+      activeBg: 'rgba(125,211,252,0.14)' },
   ]);
 
   // Effective OrderTicket props — merge _cmdOrderProps (from Command tab
@@ -309,7 +426,7 @@
      class:oes-inline={inline}
      role={inline ? undefined : 'dialog'}
      aria-modal={inline ? undefined : 'true'}
-     aria-label={inline ? undefined : 'Order entry'}
+     aria-label={inline ? undefined : (symbol || 'Symbol panel')}
      onclick={inline ? undefined : onClose}>
   <div class="oes-modal" class:oes-modal-inline={inline}
        role="document"
@@ -317,7 +434,16 @@
 
     <!-- Header (close button hidden in inline mode) -->
     <div class="oes-header">
-      <span class="oes-title">Order entry{symbol ? ' · ' + symbol : ''}</span>
+      <span class="oes-title">{symbol || 'Symbol'}</span>
+      {#if exchange}<span class="oes-exch">{exchange}</span>{/if}
+      {#if _chartLastClose != null}
+        <span class="oes-last">₹{priceFmt(_chartLastClose)}</span>
+      {/if}
+      {#if _chartPct != null}
+        <span class="oes-pct {_chartPct >= 0 ? 'up' : 'down'}">
+          {_chartPct >= 0 ? '+' : ''}{_chartPct.toFixed(2)}%
+        </span>
+      {/if}
       {#if !inline}
         <button type="button" class="oes-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
       {/if}
@@ -359,7 +485,41 @@
 
     <!-- Tab content -->
     <div class="oes-body">
-      {#if _activeTab === 'command'}
+      {#if _activeTab === 'chart'}
+        <!-- Chart tab — lifted from the retired SymbolChartModal.
+             30-day OHLCV line + hover crosshair. Triggers
+             /api/options/historical the first time the tab is
+             activated (lazy load — see $effect above). -->
+        <div class="oes-chart">
+          {#if _chartLoading && !_chartBars.length}
+            <div class="oes-chart-state">Loading bars…</div>
+          {:else if _chartError}
+            <div class="oes-chart-state oes-chart-err">{_chartError}</div>
+          {:else if !_chartBars.length}
+            <div class="oes-chart-state">No bars to plot.</div>
+          {:else}
+            <svg viewBox="0 0 {CW} {CH}" preserveAspectRatio="none" class="oes-chart-svg">
+              {#each _chartYTicks as v}
+                <line x1={CPAD_L} x2={CW - CPAD_R} y1={_chartYOf(v)} y2={_chartYOf(v)}
+                      stroke="rgba(200,216,240,0.08)" stroke-width="0.7" stroke-dasharray="2 3" />
+                <text x={CPAD_L - 6} y={_chartYOf(v) + 3} text-anchor="end"
+                      fill="#7e97b8" font-size="10">₹{priceFmt(v)}</text>
+              {/each}
+              {#each _chartXLabels as l}
+                <line x1={l.x} x2={l.x} y1={CPAD_T} y2={CH - CPAD_B}
+                      stroke="rgba(200,216,240,0.07)" stroke-width="0.7" stroke-dasharray="2 3" />
+                <text x={l.x} y={CH - CPAD_B + 14} text-anchor="middle"
+                      fill="#7e97b8" font-size="10">{l.label}</text>
+              {/each}
+              <path d={_chartLinePath} fill="none"
+                    stroke="#fbbf24" stroke-width="1.8"
+                    stroke-linejoin="round" stroke-linecap="round" />
+            </svg>
+            <div class="oes-chart-meta">{_chartBars.length} bars · last 30 d</div>
+          {/if}
+        </div>
+
+      {:else if _activeTab === 'command'}
         <CommandLineTab
           onParsedOrder={handleParsedOrder}
           onAddToBasket={handleCmdAddToBasket}
@@ -602,16 +762,80 @@
   .oes-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 0.55rem;
     padding: 0.7rem 1rem 0.5rem;
     border-bottom: 1px solid rgba(251,191,36,0.15);
     flex-shrink: 0;
   }
   .oes-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #c8d8f0;
+    font-size: 0.85rem;
+    font-weight: 800;
+    color: #fbbf24;
     letter-spacing: 0.04em;
+    font-family: ui-monospace, monospace;
+  }
+  /* Exchange tag — small, muted, matches the LogPanel chip palette. */
+  .oes-exch {
+    color: #7e97b8;
+    background: rgba(126, 151, 184, 0.15);
+    border: 1px solid rgba(126, 151, 184, 0.32);
+    padding: 0.06rem 0.32rem;
+    border-radius: 2px;
+    font-size: 0.55rem;
+    letter-spacing: 0.06em;
+    font-family: ui-monospace, monospace;
+  }
+  /* Last price / pct chips — read from the chart fetch when the
+     Chart tab has loaded its bars. Hidden cleanly when no bars
+     are present yet (the conditional in the template). */
+  .oes-last {
+    color: #f1f7ff;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.72rem;
+    font-family: ui-monospace, monospace;
+  }
+  .oes-pct {
+    padding: 0.1rem 0.4rem;
+    border-radius: 2px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.68rem;
+    font-family: ui-monospace, monospace;
+  }
+  .oes-pct.up   { color: #4ade80; background: rgba(74, 222, 128, 0.12); }
+  .oes-pct.down { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+  /* Push the close button to the right edge regardless of how many
+     header chips render. */
+  .oes-close { margin-left: auto; }
+
+  /* Chart tab body — same SVG plot style as the retired
+     SymbolChartModal, just laid out as a tab content slot inside
+     the panel. */
+  .oes-chart {
+    padding: 0.6rem 0.85rem 0.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .oes-chart-svg {
+    width: 100%;
+    display: block;
+    cursor: crosshair;
+  }
+  .oes-chart-state {
+    text-align: center;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    padding: 3rem 1rem;
+  }
+  .oes-chart-state.oes-chart-err { color: #fda4a4; }
+  .oes-chart-meta {
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    align-self: flex-end;
   }
   .oes-close {
     background: transparent;
