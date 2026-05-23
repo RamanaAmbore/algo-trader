@@ -550,17 +550,39 @@
   function pinRank(r) {
     return PIN_ORDER[String(r.underlying || '').toUpperCase()] ?? 999;
   }
+  // Pinned-area sub-category for visual grouping (indices / forex /
+  // commodity). Ranks 1-9 = indices (incl. VIX); rank 10 = forex
+  // (USDINR); 11-19 = commodity. Each sub-group gets a thin amber
+  // top-border on its first row to visually separate from the prior
+  // group. Operator sees three distinct mini-sections at the top:
+  //   INDICES   — NIFTY, BANKNIFTY, …, INDIA VIX
+  //   FOREX     — USDINR (and any future currency pairs)
+  //   COMMODITY — GOLD, SILVER, CRUDE, …
+  function pinCategory(rank) {
+    if (rank <= 9)   return 'idx';
+    if (rank === 10) return 'fx';
+    if (rank <= 19)  return 'commodity';
+    return 'other';
+  }
   // ag-Grid renders pinnedTopRowData in array order (no column-sort
   // applied), so this sorted slice IS the effective display order.
-  const pinnedTopRows = $derived(
-    !showPinned
-      ? []
-      : unifiedRows.filter(isPinnedIndexRow).slice().sort((a, b) => {
-          const ra = pinRank(a), rb = pinRank(b);
-          if (ra !== rb) return ra - rb;
-          return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
-        })
-  );
+  // Each row is tagged with _pinCategory + _pinFirst so getRowClass
+  // can paint a divider line at sub-group boundaries.
+  const pinnedTopRows = $derived.by(() => {
+    if (!showPinned) return [];
+    const sorted = unifiedRows.filter(isPinnedIndexRow).slice().sort((a, b) => {
+      const ra = pinRank(a), rb = pinRank(b);
+      if (ra !== rb) return ra - rb;
+      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+    });
+    let lastCat = null;
+    return sorted.map(r => {
+      const cat = pinCategory(pinRank(r));
+      const tagged = { ...r, _pinCategory: cat, _pinFirst: cat !== lastCat };
+      lastCat = cat;
+      return tagged;
+    });
+  });
   // mainRows respects the Watchlist filter (positions/holdings/movers
   // already filter at the buildUnified entry via show* booleans, so we
   // don't double-filter them here). Rows that are SOLELY watchlist
@@ -1496,16 +1518,23 @@
   function getRowClass(params) {
     const r = params.data || {};
     const s = r.src || {};
+    const classes = [];
+    // Pin-category divider — first row of each pinned sub-group
+    // (indices → forex → commodity) gets a top-border so the three
+    // mini-sections at the very top of the grid feel distinct.
+    if (r._pinFirst && r._pinCategory) {
+      classes.push(`pin-divider pin-cat-${r._pinCategory}`);
+    }
     if (s.p) {
       const q = Number(r.qty_pos) || 0;
-      if (q < 0) return 'pos-short';
-      if (q > 0) return 'pos-long';
-      return 'row-pos';
+      if (q < 0) classes.push('pos-short');
+      else if (q > 0) classes.push('pos-long');
+      else classes.push('row-pos');
     }
-    if (s.h) return 'row-hold';
-    if (s.w) return 'row-watch';
-    if (s.u) return 'row-und';
-    return '';
+    else if (s.h) classes.push('row-hold');
+    else if (s.w) classes.push('row-watch');
+    else if (s.u) classes.push('row-und');
+    return classes.join(' ');
   }
 
   function mountGrid() {
@@ -2443,6 +2472,19 @@
   :global(.cell-neg)  { color: #f87171 !important; }
   :global(.cell-flat) { color: #94a3b8 !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
+
+  /* Pinned sub-group dividers — first row of each pinned category
+     (idx / fx / commodity) carries `.pin-divider` so the three
+     mini-sections at the top of the grid feel distinct. Thin amber
+     top-border, no other visual change to row contents. The FIRST
+     idx row (very first row in the grid) skips the divider since
+     there's nothing above it to separate from. */
+  :global(.ag-theme-algo .ag-row.pin-divider) {
+    border-top: 1px solid rgba(251,191,36,0.30);
+  }
+  :global(.ag-theme-algo .ag-row.pin-divider.pin-cat-idx:first-of-type) {
+    border-top: none;
+  }
 
   /* Grid containers */
   .unified-grid {
