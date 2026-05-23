@@ -1906,7 +1906,19 @@
   <SymbolPanel
     {...ticketProps}
     onSubmit={() => closeTicket()}
-    onClose={closeTicket} />
+    onClose={closeTicket}
+    onAddToWatchlist={async (sym, exch) => {
+      // Adds the symbol to whichever watchlist the operator currently
+      // has focused (or the first active one). Surfaces in the panel
+      // header as a `+W` button. Useful when the operator opens
+      // SymbolPanel for a contract they don't yet own — e.g. an
+      // option strike from a chain pick on /admin/options that
+      // they want to track here too.
+      const targetId = focusedListId ?? [...activeIds][0];
+      if (!targetId) throw new Error('No active watchlist');
+      await addWatchlistItem(targetId, sym, exch || 'NFO');
+      await loadActive();
+    }} />
 {/if}
 
 <!-- Context menu (item 2) -->

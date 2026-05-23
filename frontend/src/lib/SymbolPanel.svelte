@@ -53,6 +53,7 @@
    *   onSubmit:        (payload: any) => void | Promise<void>,
    *   onClose:         () => void,
    *   onAddToBasket?:  ((payload: any) => void) | null,
+   *   onAddToWatchlist?: ((sym: string, exch?: string) => void | Promise<void>) | null,
    *   inline?:         boolean,
    * }} */
   let {
@@ -78,6 +79,16 @@
     onSubmit,
     onClose,
     onAddToBasket  = /** @type {((payload:any)=>void)|null} */ (null),
+    // Optional — when provided, renders a `+W` (add to watchlist)
+    // affordance in the panel header. Callers wire it conditionally:
+    //   • options chain pick → wire it so operator can track a
+    //     not-yet-owned strike
+    //   • MarketPulse "add symbol" picker → same
+    //   • Performance row click → omit (positions/holdings are
+    //     already auto-merged into MarketPulse's watchlist)
+    // Receives (symbol, exchange); returning a promise lets the
+    // panel show a brief success/error flash without blocking.
+    onAddToWatchlist = /** @type {((sym:string,exch?:string)=>void|Promise<void>)|null} */ (null),
     // When true, render flat inline (no overlay, no fixed positioning,
     // no close button). Used by /console which hosts the shell as the
     // page's primary content rather than as a popup over another page.
@@ -115,6 +126,35 @@
   let _chartLoading = $state(false);
   let _chartError = $state('');
   let _chartLoaded = $state(false);   // sentinel — only fetch once per panel open
+
+  // ── Watchlist add — flash feedback ───────────────────────────────
+  // Mirrors the toast pattern from the retired SymbolActions
+  // component. State lives here (not in the parent) so callers don't
+  // have to wire a separate toast queue per page.
+  /** @type {{msg: string, ok: boolean} | null} */
+  let _wlToast = $state(null);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _wlToastTimer = null;
+  let _wlInFlight = $state(false);
+
+  function _wlFlash(/** @type {string} */ msg, /** @type {boolean} */ ok = true) {
+    _wlToast = { msg, ok };
+    if (_wlToastTimer) clearTimeout(_wlToastTimer);
+    _wlToastTimer = setTimeout(() => { _wlToast = null; }, 1600);
+  }
+
+  async function _addToWatchlist() {
+    if (!onAddToWatchlist || _wlInFlight || !symbol) return;
+    _wlInFlight = true;
+    try {
+      await onAddToWatchlist(symbol, exchange);
+      _wlFlash('✓ added to watchlist', true);
+    } catch (e) {
+      _wlFlash(`Watchlist: ${/** @type {any} */ (e)?.message || 'failed'}`, false);
+    } finally {
+      _wlInFlight = false;
+    }
+  }
 
   async function _loadChart() {
     if (!symbol || _chartLoaded) return;
@@ -392,6 +432,7 @@
     return () => {
       window.removeEventListener('keydown', onKey);
       if (_ordersPoll) { clearInterval(_ordersPoll); _ordersPoll = undefined; }
+      if (_wlToastTimer) { clearTimeout(_wlToastTimer); _wlToastTimer = null; }
     };
   });
 
@@ -442,6 +483,24 @@
       {#if _chartPct != null}
         <span class="oes-pct {_chartPct >= 0 ? 'up' : 'down'}">
           {_chartPct >= 0 ? '+' : ''}{_chartPct.toFixed(2)}%
+        </span>
+      {/if}
+      {#if onAddToWatchlist}
+        <!-- +W (add to watchlist) — visible only when the caller
+             wired the callback. Callers that already have the symbol
+             on a tracked surface (Performance row click, etc.) omit
+             this prop so the button hides automatically. -->
+        <button type="button" class="oes-wl-add"
+                disabled={_wlInFlight}
+                title={`Add ${symbol} to watchlist`}
+                aria-label={`Add ${symbol} to watchlist`}
+                onclick={_addToWatchlist}>
+          ★ +W
+        </button>
+      {/if}
+      {#if _wlToast}
+        <span class="oes-wl-toast" class:ok={_wlToast.ok} class:err={!_wlToast.ok}>
+          {_wlToast.msg}
         </span>
       {/if}
       {#if !inline}
@@ -808,6 +867,44 @@
   /* Push the close button to the right edge regardless of how many
      header chips render. */
   .oes-close { margin-left: auto; }
+
+  /* +W (add to watchlist) — outlined champagne button, sits between
+     the price chips and the close button. Visible only when the
+     caller wires `onAddToWatchlist`. */
+  .oes-wl-add {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid rgba(251,191,36,0.45);
+    color: #fbbf24;
+    padding: 0.18rem 0.55rem;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    line-height: 1;
+  }
+  .oes-wl-add:hover:not(:disabled) {
+    background: rgba(251,191,36,0.10);
+    border-color: rgba(251,191,36,0.7);
+  }
+  .oes-wl-add:disabled { opacity: 0.55; cursor: wait; }
+  /* When +W is rendered, the close button no longer needs to push
+     itself; +W has margin-left:auto and close sits next to it. */
+  .oes-wl-add ~ .oes-close { margin-left: 0.35rem; }
+  /* Brief success/error flash next to the +W button after a click. */
+  .oes-wl-toast {
+    padding: 0.18rem 0.45rem;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .oes-wl-toast.ok  { color: #4ade80; background: rgba(74,222,128,0.16); }
+  .oes-wl-toast.err { color: #f87171; background: rgba(248,113,113,0.16); }
 
   /* Chart tab body — same SVG plot style as the retired
      SymbolChartModal, just laid out as a tab content slot inside

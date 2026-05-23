@@ -1965,6 +1965,7 @@
     {...ticketProps}
     onSubmit={onTicketSubmit}
     onClose={closeTicket}
+    onAddToWatchlist={defaultWatchlistId != null ? addSymbolToWatchlist : null}
     onAddToBasket={(payload) => {
       // Same shape as a quick-add chain leg so the basket pill renders
       // identically. Symbol's CE/PE/FUT suffix decides the type accent.
