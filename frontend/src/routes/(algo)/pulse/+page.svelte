@@ -6,6 +6,6 @@
   import MarketPulse from '$lib/MarketPulse.svelte';
 </script>
 
-<svelte:head><title>Pulse | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>Market Pulse | RamboQuant Analytics</title></svelte:head>
 
-<MarketPulse title="Pulse" flat={true} />
+<MarketPulse title="Market Pulse" flat={true} />

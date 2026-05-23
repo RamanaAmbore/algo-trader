@@ -162,6 +162,27 @@
     optionPickerStrikes    = [];
   }
 
+  /**
+   * Add-to-watchlist with silent dedup against live positions + holdings.
+   * If the symbol is already in either book, we skip the underlying
+   * `addWatchlistItem` call entirely — the unified grid would have shown
+   * it twice (once as the position/holding row, once as the watchlist
+   * row), which is exactly the kind of duplication /pulse is meant to
+   * eliminate. Returns true if the row was actually appended.
+   */
+  async function addToWatchlistDeduped(targetId, sym, exch) {
+    const needle = String(sym || '').toUpperCase();
+    if (!needle) return false;
+    const already = (rows) => rows.some(
+      r => String(r.symbol || r.tradingsymbol || '').toUpperCase() === needle
+    );
+    if (already(positions) || already(holdings)) {
+      return false;  // silent skip — already present in positions/holdings
+    }
+    await addWatchlistItem(targetId, sym, exch);
+    return true;
+  }
+
   async function addOptionFromPicker() {
     if (!optionPickerUnderlying || !optionPickerExpiry || optionPickerStrike == null) return;
     const targetId = focusedListId ?? [...activeIds][0];
@@ -175,7 +196,7 @@
         optionPickerExpiry,
       );
       if (!inst) { error = 'Symbol not in cache — retry.'; return; }
-      await addWatchlistItem(targetId, inst.s, inst.e || 'NFO');
+      await addToWatchlistDeduped(targetId, inst.s, inst.e || 'NFO');
       symInput = ''; typeahead = []; typeaheadOpen = false;
       closeOptionPicker();
       await loadActive();
@@ -194,7 +215,7 @@
     const sym  = KEY[optionPickerUnderlying.name] ?? optionPickerUnderlying.name;
     const exch = (sym === 'SENSEX' || sym === 'BANKEX') ? 'BSE' : 'NSE';
     try {
-      await addWatchlistItem(targetId, sym, exch);
+      await addToWatchlistDeduped(targetId, sym, exch);
       symInput = ''; typeahead = []; typeaheadOpen = false;
       closeOptionPicker();
       await loadActive();
@@ -788,18 +809,46 @@
   ));
 
   function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
-    if (!instCache) return { underlying: null, kind: null, strike: null, opt_type: null, expiry: null };
-    const inst = instCache(sym);
-    if (!inst) return { underlying: null, kind: null, strike: null, opt_type: null, expiry: null };
-    const t = String(inst.t || '').toUpperCase();
-    const k = inst.k != null ? Number(inst.k) : null;
-    let optType = null;
-    if (t === 'CE' || t === 'PE') optType = t;
-    else if (/CE$/i.test(sym)) optType = 'CE';
-    else if (/PE$/i.test(sym)) optType = 'PE';
-    const kind = optType ? 'opt' : (t === 'FUT' ? 'fut' : (t === 'EQ' ? 'eq' : null));
-    const expiry = inst.x || null;
-    return { underlying: inst.u || null, kind, strike: k, opt_type: optType, expiry };
+    const inst = instCache ? instCache(sym) : null;
+    // Cache lookup is preferred but commodity options + brand-new
+    // contracts may not be indexed yet — fall back to a regex parser
+    // so the row still gets the right underlying/strike/opt_type for
+    // grouping + sorting.
+    if (inst) {
+      const t = String(inst.t || '').toUpperCase();
+      const k = inst.k != null ? Number(inst.k) : null;
+      let optType = null;
+      if (t === 'CE' || t === 'PE') optType = t;
+      else if (/CE$/i.test(sym)) optType = 'CE';
+      else if (/PE$/i.test(sym)) optType = 'PE';
+      const kind = optType ? 'opt' : (t === 'FUT' ? 'fut' : (t === 'EQ' ? 'eq' : null));
+      return { underlying: inst.u || null, kind, strike: k, opt_type: optType, expiry: inst.x || null };
+    }
+    return parseSymbolFallback(sym);
+  }
+
+  /**
+   * Regex-only parser for F&O tradingsymbols when the instruments
+   * cache misses (commodity options, new contracts, dev fixtures).
+   * Pulls underlying / strike / opt_type so group + sort logic still
+   * lands the row in its correct bucket.
+   *
+   * Matches:
+   *   CRUDEOIL26JUN10000CE → CRUDEOIL / 10000 / CE / opt
+   *   NIFTY25APR21500PE    → NIFTY / 21500 / PE / opt
+   *   NIFTY25APRFUT        → NIFTY / null  / null / fut
+   *   GOLDM26JUN78000CE    → GOLDM / 78000 / CE / opt
+   */
+  function parseSymbolFallback(/** @type {string} */ sym) {
+    const empty = { underlying: null, kind: null, strike: null, opt_type: null, expiry: null };
+    if (!sym) return empty;
+    const m = /^([A-Z][A-Z&]+?)(\d{2}[A-Z]{3})(\d+)?(CE|PE|FUT)$/.exec(sym);
+    if (!m) return empty;
+    const [, underlying, expiry, strikeStr, suffix] = m;
+    const strike = strikeStr ? Number(strikeStr) : null;
+    const opt_type = (suffix === 'CE' || suffix === 'PE') ? suffix : null;
+    const kind = opt_type ? 'opt' : (suffix === 'FUT' ? 'fut' : null);
+    return { underlying, kind, strike, opt_type, expiry };
   }
 
   function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers) {
@@ -962,6 +1011,9 @@
       'NIFTY NXT 50':     'NIFTYNXT50',
       'SENSEX':           'SENSEX',
       'BANKEX':           'BANKEX',
+      // Volatility — tag INDIA VIX so it joins the pin bucket and
+      // groups under the same underlying as VIX-derived rows.
+      'INDIA VIX':        'INDIAVIX',
     };
     for (const row of Object.values(byKey)) {
       const tag = INDEX_TO_UNDERLYING[String(row.tradingsymbol || '').toUpperCase()];
@@ -993,8 +1045,21 @@
       return 3;
     };
     const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
+    // Pin-bucket: indices + India VIX + MCX commodities are always
+    // surfaced first as a sticky context group, regardless of any
+    // column sort the operator applies. Mirrors the public-site
+    // dashboard convention — these rows are *context*, not just data.
     const INDEX_UNDERLYINGS = new Set([
-      'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
+      // NSE/BSE indices
+      'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
+      'SENSEX', 'BANKEX',
+      // Volatility
+      'INDIAVIX',
+      // MCX commodities (front-month + spot)
+      'GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'SILVERMIC',
+      'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
+      'COPPER', 'ALUMINIUM', 'ALUMINI', 'ZINC', 'LEAD', 'LEADMINI',
+      'NICKEL', 'COTTON', 'MENTHAOIL', 'CARDAMOM',
     ]);
     const groupBucket = /** @type {Record<string, number>} */ ({});
     for (const r of out) {
@@ -1045,7 +1110,7 @@
     const targetId = focusedListId ?? [...activeIds][0];
     if (!symInput.trim() || targetId == null) return;
     try {
-      await addWatchlistItem(targetId, symInput.trim().toUpperCase(), exchInput);
+      await addToWatchlistDeduped(targetId, symInput.trim().toUpperCase(), exchInput);
       symInput = ''; typeahead = []; typeaheadOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
@@ -1062,7 +1127,7 @@
     const targetId = focusedListId ?? [...activeIds][0];
     if (targetId == null) return;
     try {
-      await addWatchlistItem(targetId, inst.s, inst.e);
+      await addToWatchlistDeduped(targetId, inst.s, inst.e);
       symInput = ''; typeahead = []; typeaheadOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
@@ -1558,7 +1623,7 @@
     const targetId = focusedListId ?? [...activeIds][0];
     if (!targetId) return;
     try {
-      await addWatchlistItem(targetId, sym, exch);
+      await addToWatchlistDeduped(targetId, sym, exch);
       // Reload active watchlists so the row materialises immediately
       // without waiting for the next refresh cycle.
       await loadActive();
@@ -1935,7 +2000,7 @@
       // they want to track here too.
       const targetId = focusedListId ?? [...activeIds][0];
       if (!targetId) throw new Error('No active watchlist');
-      await addWatchlistItem(targetId, sym, exch || 'NFO');
+      await addToWatchlistDeduped(targetId, sym, exch || 'NFO');
       await loadActive();
     }} />
 {/if}

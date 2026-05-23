@@ -80,7 +80,7 @@
   //   absent = always shown
   const _algoLinksAll = [
     // ── Monitor ──
-    { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
+    { href: '/pulse',            label: 'Market Pulse', group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
