@@ -4,10 +4,12 @@
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
     fetchFunds, fetchBrokerAccounts, fetchIntradayEquity,
+    batchQuote,
   } from '$lib/api';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
@@ -44,6 +46,15 @@
 
   // Agent log collapsed by default.
   let _agentLogOpen = $state(false);
+
+  // ── Raw positions + holdings (reused for winners/losers) ──────────
+  /** @type {any[]} */
+  let _positions = $state([]);
+  /** @type {any[]} */
+  let _holdings  = $state([]);
+
+  // ── SymbolPanel for winners/losers tile click ──────────────────────
+  let _ticketProps = $state(/** @type {any} */ (null));
 
   // ── Row 1: Intraday equity curve ───────────────────────────────────
   /** @type {{ ts: string, day_pnl: number, cum_pnl: number }[]} */
@@ -84,6 +95,54 @@
     _vsNifty == null ? 'hero-pnl-neutral'
     : _vsNifty > 0   ? 'hero-pnl-up'
     : _vsNifty < 0   ? 'hero-pnl-down' : 'hero-pnl-neutral'
+  );
+
+  // ── Open orders (from layout's algoStatus poll) ───────────────────
+  const _openOrders = $derived(
+    /** @type {any[]} */ (algoStatus.paperStatus?.open_order_details ?? [])
+  );
+
+  // ── Winners / Losers — top-3 by P&L across positions + holdings ───
+  const _combinedBook = $derived.by(() => {
+    /** @type {{symbol: string, account: string, pnl: number, inv_val: number, src: string}[]} */
+    const rows = [];
+    for (const p of _positions) {
+      const pnl = Number(p.pnl) || 0;
+      if (pnl === 0) continue;
+      rows.push({
+        symbol:  String(p.tradingsymbol || p.symbol || ''),
+        account: String(p.account || ''),
+        pnl,
+        inv_val: 0,
+        src: 'pos',
+      });
+    }
+    for (const h of _holdings) {
+      const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
+      if (pnl === 0) continue;
+      rows.push({
+        symbol:  String(h.tradingsymbol || h.symbol || ''),
+        account: String(h.account || ''),
+        pnl,
+        inv_val: Number(h.inv_val ?? 0),
+        src: 'holding',
+      });
+    }
+    return rows;
+  });
+
+  const _winners = $derived(
+    [..._combinedBook]
+      .filter(r => r.pnl > 0)
+      .sort((a, b) => b.pnl - a.pnl)
+      .slice(0, 3)
+  );
+
+  const _losers = $derived(
+    [..._combinedBook]
+      .filter(r => r.pnl < 0)
+      .sort((a, b) => a.pnl - b.pnl)
+      .slice(0, 3)
   );
 
   const _connIcon = $derived(
@@ -285,11 +344,16 @@
         fetchHoldings().catch(() => []),
         fetchRecentAgentEvents(100).catch(() => []),
       ]);
+
+      // Expose for winners/losers derivation.
+      _positions = Array.isArray(positions) ? positions : [];
+      _holdings  = Array.isArray(holdings)  ? holdings  : [];
+
       // Sum day's P&L from positions (day-pnl) + holdings (day_change).
       let dayPnl = 0;
       let invVal  = 0;
-      for (const p of (positions || [])) dayPnl += Number(p.pnl) || 0;
-      for (const h of (holdings || [])) {
+      for (const p of _positions) dayPnl += Number(p.pnl) || 0;
+      for (const h of _holdings) {
         const dc = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
         dayPnl += dc;
         invVal += Number(h.inv_val ?? 0);
@@ -309,9 +373,28 @@
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
 
-      // Parallel: equity curve + margins + conn health
-      await Promise.all([_fetchEquity(), _fetchMargins(), _fetchConn()]);
+      // Parallel: equity curve + margins + conn health + NIFTY quote
+      await Promise.all([
+        _fetchEquity(),
+        _fetchMargins(),
+        _fetchConn(),
+        _fetchNifty(),
+      ]);
     } catch (_) { /* leave previous values up */ }
+  }
+
+  async function _fetchNifty() {
+    try {
+      const res = await batchQuote(['NSE:NIFTY 50']);
+      const q = res?.quotes?.['NSE:NIFTY 50'] ?? res?.['NSE:NIFTY 50'] ?? null;
+      if (!q) return;
+      // Prefer change_percent / change_pct; fall back to (ltp-close)/close*100
+      if (q.change_percent != null)     { _niftyDayPct = Number(q.change_percent); return; }
+      if (q.change_pct    != null)     { _niftyDayPct = Number(q.change_pct);     return; }
+      const ltp   = Number(q.last_price  ?? q.ltp  ?? 0);
+      const close = Number(q.ohlc?.close ?? q.close ?? 0);
+      if (close > 0 && ltp > 0) _niftyDayPct = ((ltp - close) / close) * 100;
+    } catch (_) { /* leave null — chip stays "—" */ }
   }
 
   onMount(() => {
@@ -407,6 +490,36 @@
     <span class="hero-refresh">refreshed {_heroLoadedAt}</span>
   {/if}
 </div>
+
+<!-- Open orders strip — hidden when nothing is chasing -->
+{#if _openOrders.length > 0}
+  <div class="dash-open-orders">
+    <div class="oo-header">
+      <span class="mp-section-label">OPEN ORDERS</span>
+      <span class="oo-count">
+        <span class="oo-dot" aria-hidden="true"></span>
+        {_openOrders.length} chasing
+      </span>
+    </div>
+    <div class="oo-pills">
+      {#each _openOrders as ord}
+        {@const isBuy = (ord.side ?? '').toUpperCase() === 'BUY'}
+        <a
+          href="/orders{ord.order_id ? `?order_id=${encodeURIComponent(ord.order_id)}` : ''}"
+          class="oo-pill {isBuy ? 'oo-pill-buy' : 'oo-pill-sell'}"
+        >
+          <span class="oo-side">{isBuy ? 'BUY' : 'SELL'}</span>
+          <span class="oo-qty">{ord.qty ?? ord.quantity ?? ''}</span>
+          <span class="oo-sym">{ord.symbol ?? ord.tradingsymbol ?? ''}</span>
+          <span class="oo-price">@ ₹{priceFmt(ord.limit_price ?? ord.price ?? 0)}</span>
+          {#if (ord.attempts ?? 0) > 0}
+            <span class="oo-attempts">({ord.attempts})</span>
+          {/if}
+        </a>
+      {/each}
+    </div>
+  </div>
+{/if}
 
 <!-- Row 1: Intraday equity curve (left) + Margin gauges (right) -->
 <div class="dash-row1">
@@ -561,6 +674,71 @@
   </section>
 </div>
 
+<!-- Row 2: Top winners (left) + Top losers (right) — hidden when book is empty -->
+{#if _winners.length > 0 || _losers.length > 0}
+  <div class="dash-row2">
+    <!-- Winners tile -->
+    {#if _winners.length > 0}
+      <section class="wl-tile wl-tile-win">
+        <div class="mp-section-label wl-tile-label">TOP WINNERS</div>
+        <div class="wl-rows">
+          {#each _winners as row}
+            <button
+              class="wl-row"
+              onclick={() => {
+                const sym = row.symbol.trim();
+                if (!sym) return;
+                _ticketProps = {
+                  symbol:     sym,
+                  defaultTab: 'chart',
+                  onClose:    () => { _ticketProps = null; },
+                  onSubmit:   () => { _ticketProps = null; },
+                };
+              }}
+            >
+              <span class="wl-sym">{row.symbol}</span>
+              <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
+              {#if row.inv_val > 0}
+                <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
+    <!-- Losers tile -->
+    {#if _losers.length > 0}
+      <section class="wl-tile wl-tile-loss">
+        <div class="mp-section-label wl-tile-label">TOP LOSERS</div>
+        <div class="wl-rows">
+          {#each _losers as row}
+            <button
+              class="wl-row"
+              onclick={() => {
+                const sym = row.symbol.trim();
+                if (!sym) return;
+                _ticketProps = {
+                  symbol:     sym,
+                  defaultTab: 'chart',
+                  onClose:    () => { _ticketProps = null; },
+                  onSubmit:   () => { _ticketProps = null; },
+                };
+              }}
+            >
+              <span class="wl-sym">{row.symbol}</span>
+              <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
+              {#if row.inv_val > 0}
+                <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </section>
+    {/if}
+  </div>
+{/if}
+
 <!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
      stack (Funds + Positions Summary + Holdings Summary) on the right. -->
 <div class="dash-grid">
@@ -580,6 +758,14 @@
       showSymbolsGrid={false} />
   </section>
 </div>
+
+<!-- SymbolPanel — opened by winners/losers tile clicks -->
+{#if _ticketProps}
+  <SymbolPanel
+    {..._ticketProps}
+    onClose={() => { _ticketProps = null; }}
+    onSubmit={() => { _ticketProps = null; }} />
+{/if}
 
 <!-- Agent activity — collapsed by default. -->
 <details class="dash-agent" bind:open={_agentLogOpen}>
@@ -850,6 +1036,154 @@
   .pnl-section-label {
     margin-top: 0.75rem;
     margin-bottom: 0.3rem;
+  }
+
+  /* ── Open orders strip ───────────────────────────────────────────── */
+  .dash-open-orders {
+    margin-bottom: 0.6rem;
+    padding: 0.4rem 0.55rem;
+    background: rgba(15, 25, 45, 0.55);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 4px;
+  }
+  .oo-header {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 0.35rem;
+  }
+  .oo-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    color: #7dd3fc;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .oo-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #7dd3fc;
+    animation: oo-pulse 2s ease-in-out infinite;
+  }
+  @keyframes oo-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+  .oo-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+  .oo-pill {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    text-decoration: none;
+    border: 1px solid;
+    font-variant-numeric: tabular-nums;
+    transition: filter 0.12s;
+    white-space: nowrap;
+  }
+  .oo-pill:hover { filter: brightness(1.15); }
+  .oo-pill-buy {
+    background: rgba(74, 222, 128, 0.10);
+    border-color: rgba(74, 222, 128, 0.30);
+    color: #a7f3c0;
+  }
+  .oo-pill-sell {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.30);
+    color: #fca5a5;
+  }
+  .oo-side   { font-weight: 800; font-size: 0.58rem; letter-spacing: 0.06em; }
+  .oo-qty    { font-weight: 700; }
+  .oo-sym    { font-weight: 700; }
+  .oo-price  { color: #c8d8f0; }
+  .oo-attempts { color: #7e97b8; font-size: 0.58rem; }
+
+  /* ── Row 2: Winners / Losers ─────────────────────────────────────── */
+  .dash-row2 {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+  @media (min-width: 1024px) {
+    .dash-row2 {
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+  }
+  .wl-tile {
+    padding: 0.55rem 0.65rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid;
+    min-width: 0;
+  }
+  .wl-tile-win {
+    background: rgba(74, 222, 128, 0.07);
+    border-color: rgba(74, 222, 128, 0.22);
+  }
+  .wl-tile-loss {
+    background: rgba(248, 113, 113, 0.07);
+    border-color: rgba(248, 113, 113, 0.22);
+  }
+  .wl-tile-label {
+    margin-bottom: 0.35rem;
+  }
+  .wl-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .wl-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.22rem 0.3rem;
+    border-radius: 3px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font-family: ui-monospace, monospace;
+    transition: background 0.1s;
+  }
+  .wl-row:hover { background: rgba(255, 255, 255, 0.04); }
+  .wl-sym {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #e2ecff;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wl-pnl {
+    font-size: 0.75rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  .wl-pnl-up   { color: #4ade80; }
+  .wl-pnl-down { color: #f87171; }
+  .wl-pct {
+    font-size: 0.6rem;
+    color: #7e97b8;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
   }
 
   /* Demo banner */
