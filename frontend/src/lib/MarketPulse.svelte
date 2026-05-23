@@ -26,6 +26,7 @@
     fetchMovers, fetchSparklines,
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
+  import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
@@ -225,15 +226,21 @@
   // New-list form state.
   let newListName = $state('');
 
-  // Source toggles — driven by the MultiSelect below.
+  // Source toggles — driven by the MultiSelect below. Watchlist +
+  // the pinned-index/commodity group are now first-class filters so
+  // the operator can hide either bucket without leaving the page.
   const SOURCE_OPTIONS = [
+    { value: 'pinned',    label: 'Pinned'    },  // indices + commodities + USDINR
+    { value: 'watchlist', label: 'Watchlist' },
     { value: 'positions', label: 'Positions' },
     { value: 'holdings',  label: 'Holdings'  },
     { value: 'movers',    label: 'Movers'    },
   ];
-  let selectedSources = $state(['positions', 'holdings', 'movers']);
+  let selectedSources = $state(['pinned', 'watchlist', 'positions', 'holdings', 'movers']);
 
   // Keep individual booleans so buildUnified + other callsites are unchanged.
+  let showWatchlist = $state(true);
+  let showPinned    = $state(true);
   let showPositions = $state(true);
   let showHoldings  = $state(true);
 
@@ -243,6 +250,8 @@
   let showMovers = $state(true);
 
   $effect(() => {
+    showPinned    = selectedSources.includes('pinned');
+    showWatchlist = selectedSources.includes('watchlist');
     showPositions = selectedSources.includes('positions');
     showHoldings  = selectedSources.includes('holdings');
     showMovers    = selectedSources.includes('movers');
@@ -266,6 +275,7 @@
 
   let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
   let stopSparkPoll;
+  let stopWS;
 
   // ── Manual group order + symbol detachment (per-browser overrides) ──
   // Operator clicks ↑ / ↓ on a row → that row's underlying group moves
@@ -463,6 +473,21 @@
     await loadSparklines();
     stopSparkPoll   = visibleInterval(loadSparklines, 60000);
 
+    // Real-time order-fill push — Kite postback fires a WS event
+    // `position_filled` the moment an order fills. Subscribe so
+    // Market Pulse refreshes positions + holdings IMMEDIATELY
+    // instead of waiting up to 10 s for the next loadPulse tick.
+    // Other (non-fill) events on the same socket also trigger a
+    // refresh — cheap to over-fetch, expensive to lag a fill.
+    stopWS = createPerformanceSocket((msg) => {
+      if (msg?.event === 'position_filled') {
+        // Order just filled — refresh both books right now so the
+        // grid shows the new qty within a tick. The 10 s pulse
+        // poll keeps running as a backstop.
+        loadPulse();
+      }
+    });
+
     // Keyboard shortcuts — scoped to this wrapper only.
     document.addEventListener('keydown', handleKeydown);
     document.addEventListener('click', onDocClick);
@@ -528,13 +553,24 @@
   // ag-Grid renders pinnedTopRowData in array order (no column-sort
   // applied), so this sorted slice IS the effective display order.
   const pinnedTopRows = $derived(
-    unifiedRows.filter(isPinnedIndexRow).slice().sort((a, b) => {
-      const ra = pinRank(a), rb = pinRank(b);
-      if (ra !== rb) return ra - rb;
-      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
-    })
+    !showPinned
+      ? []
+      : unifiedRows.filter(isPinnedIndexRow).slice().sort((a, b) => {
+          const ra = pinRank(a), rb = pinRank(b);
+          if (ra !== rb) return ra - rb;
+          return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+        })
   );
-  const mainRows = $derived(unifiedRows.filter(r => !isPinnedIndexRow(r)));
+  // mainRows respects the Watchlist filter (positions/holdings/movers
+  // already filter at the buildUnified entry via show* booleans, so we
+  // don't double-filter them here). Rows that are SOLELY watchlist
+  // entries hide when showWatchlist is off; rows that are also a
+  // position/holding stay visible via their other source flag.
+  const mainRows = $derived(unifiedRows.filter(r => {
+    if (isPinnedIndexRow(r)) return false;  // pinned, never in main
+    if (!showWatchlist && r.src?.w && !r.src?.p && !r.src?.h && !r.src?.u && !r.src?.m) return false;
+    return true;
+  }));
 
   $effect(() => {
     if (!gridReady || !grid) return;
@@ -668,7 +704,7 @@
   });
 
   onDestroy(() => {
-    stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.(); stopSparkPoll?.();
+    stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.(); stopSparkPoll?.(); stopWS?.();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     grid?.destroy?.();
