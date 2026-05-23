@@ -68,15 +68,13 @@ def build(size: int, source: Image.Image) -> Image.Image:
     bx = int(cx_px - bull_size / 2)
     by = int(cy_px - bull_size / 2)
 
-    # Tight gold rim hugging the bull silhouette — dropped the wide
-    # bloom (22 px stdDeviation) that was bleeding into the teal face
-    # and creating perceived background gradient near the bull. Two
-    # tight layers stay so the bull still reads as outlined in gold
-    # without the halo spreading more than a few pixels outward.
-    outer_std = 4 * size / 512
-    inner_std = 2 * size / 512
-    canvas.alpha_composite(_glow_layer(bull, outer_std, 1.00), (bx, by))
-    canvas.alpha_composite(_glow_layer(bull, inner_std, 1.00), (bx, by))
+    # Single very tight gold rim — Gaussian-blur the bull alpha by just
+    # 1 px stdDeviation so the gold spreads ~2-3 px outside the
+    # silhouette and no farther. Anything wider was reading as a halo
+    # bleeding into the uniform teal face. The bull's own white outline
+    # in bull.png carries the rest of the visual punch.
+    rim_std = 1.0 * size / 512
+    canvas.alpha_composite(_glow_layer(bull, rim_std, 1.00), (bx, by))
     canvas.alpha_composite(bull, (bx, by))
 
     # 3D beveled gold ring — vertical gradient masked to an annulus +
