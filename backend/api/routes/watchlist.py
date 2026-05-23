@@ -144,7 +144,12 @@ _QUOTE_CACHE: dict[int, tuple[float, WatchlistQuotes]] = {}
 _QUOTE_TTL_SECONDS = 5.0
 
 
-MOVER_THRESHOLD_PCT: float = 5.0
+MOVER_THRESHOLD_PCT: float = 1.5
+# How many top movers to surface even when nothing crossed the
+# threshold — keeps the section populated on calm days. Anything that
+# DID cross the threshold (and stuck for the session) is added on top
+# of this count.
+MOVER_TOP_N: int = 6
 
 # ---------------------------------------------------------------------------
 # Session-sticky movers state
@@ -641,7 +646,11 @@ class WatchlistController(Controller):
         quote_data: dict = await _gof(cache_key, _fetch_movers_quotes,
                                       ttl_seconds=_MOVERS_QUOTE_TTL)
 
-        # Compute change_pct for every underlying; update sticky state.
+        # Compute change_pct for every underlying. Update session-sticky
+        # state for anything that crossed the threshold. Always collect
+        # a separate "live snapshot" so the section is populated even on
+        # calm days when nothing crossed the threshold.
+        live_snapshot: dict[str, dict] = {}
         for kite_key, underlying in key_to_underlying.items():
             q = quote_data.get(kite_key) or {}
             ltp = float(q.get("last_price") or 0.0)
@@ -654,6 +663,13 @@ class WatchlistController(Controller):
                         _session_movers[underlying]["last_price"] = ltp
                 continue
             change_pct = (ltp - prev_close) / prev_close * 100.0
+            live_snapshot[underlying] = {
+                "peak_pct": change_pct,
+                "last_pct": change_pct,
+                "last_price": ltp,
+                "previous_close": prev_close,
+                "exchange": "NSE",
+            }
 
             if underlying in _session_movers:
                 entry = _session_movers[underlying]
@@ -672,8 +688,25 @@ class WatchlistController(Controller):
                     "exchange": "NSE",  # all non-MCX underlyings resolve via NSE
                 }
 
+        # Combine: every session-sticky underlying (crossed the threshold
+        # today) + top-N from the live snapshot to keep the section
+        # populated on calm days. Sticky entries override snapshot when
+        # both have data for the same underlying.
+        combined: dict[str, dict] = {}
+        # Top-N live first (lower priority).
+        snapshot_sorted = sorted(
+            live_snapshot.items(),
+            key=lambda kv: abs(kv[1]["last_pct"]),
+            reverse=True,
+        )[:MOVER_TOP_N]
+        for u, entry in snapshot_sorted:
+            combined[u] = entry
+        # Then sticky entries overlay (higher priority).
+        for u, entry in _session_movers.items():
+            combined[u] = entry
+
         rows: list[MoverRow] = []
-        for underlying, entry in _session_movers.items():
+        for underlying, entry in combined.items():
             change_pct = entry["last_pct"]
             rows.append(MoverRow(
                 tradingsymbol=underlying,
@@ -681,8 +714,13 @@ class WatchlistController(Controller):
                 last_price=entry["last_price"],
                 previous_close=entry["previous_close"],
                 change_pct=change_pct,
-                peak_pct=entry["peak_pct"],
-                sticky=(abs(change_pct) < MOVER_THRESHOLD_PCT),
+                peak_pct=entry.get("peak_pct", change_pct),
+                # `sticky` now means: this underlying DID cross the
+                # threshold today and is being held in the session-list
+                # even if it has since reverted under the threshold.
+                # Top-N live entries that never crossed are NOT sticky.
+                sticky=(underlying in _session_movers
+                        and abs(change_pct) < MOVER_THRESHOLD_PCT),
             ))
 
         rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
