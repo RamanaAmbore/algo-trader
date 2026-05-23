@@ -5,7 +5,23 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
-  import { fetchPositions, fetchHoldings, fetchAgentEvents } from '$lib/api';
+  import { fetchPositions, fetchHoldings, fetchRecentAgentEvents } from '$lib/api';
+
+  // IST-midnight-as-UTC for "today" date-window filters. Indian markets
+  // (and operators) live in Asia/Kolkata; using the browser's local
+  // midnight via setHours(0,0,0,0) gave wrong counts whenever the
+  // browser TZ differed from IST (or even across IST midnight rollover
+  // when the operator was outside India).
+  function istMidnightTodayAsDate() {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year').value;
+    const m = parts.find(p => p.type === 'month').value;
+    const d = parts.find(p => p.type === 'day').value;
+    return new Date(`${y}-${m}-${d}T00:00:00+05:30`);
+  }
   import { priceFmt } from '$lib/format';
 
   // ── Demo banner — sourced from the layout's shared context ─────────
@@ -30,7 +46,10 @@
       const [positions, holdings, events] = await Promise.all([
         fetchPositions().catch(() => []),
         fetchHoldings().catch(() => []),
-        fetchAgentEvents(50).catch(() => []),
+        // Was: fetchAgentEvents(50) — passed `50` as the slug, hit
+        //   /api/agents/50/events?n=50 and 404'd every load (hero
+        //   chip silently showed 0). Use the all-agents recent feed.
+        fetchRecentAgentEvents(100).catch(() => []),
       ]);
       // Sum day's P&L from positions (day-pnl) + holdings (day_change).
       let dayPnl = 0;
@@ -40,9 +59,11 @@
         dayPnl += dc;
       }
       _todayPnl = dayPnl;
-      // Agent fires today — count of events with kind=agent_fire, today (IST).
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      // Agent fires today — count of events with kind=agent_fire, today
+      // (IST). Was using `setHours(0,0,0,0)` which is browser-local
+      // midnight; for an operator outside India (or even at IST
+      // midnight rollover) the count was wrong.
+      const todayStart = istMidnightTodayAsDate();
       _firesToday = (events || []).filter((e) => {
         const k = e.kind ?? e.event_type ?? '';
         if (k !== 'agent_fire') return false;

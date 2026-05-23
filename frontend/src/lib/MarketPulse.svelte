@@ -990,13 +990,21 @@
       : holdings.filter(r => String(r.account || '') === selectedAccount)
   );
 
-  // The two override-state vars are read inside buildUnified's
-  // closure; declare them here so Svelte 5 tracks them as deps and
-  // re-derives unifiedRows when the operator clicks ↑/↓/Detach.
-  const unifiedRows = $derived(((groupOrder, detachedSymbols), buildUnified(
-    activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
-    showPositions, showHoldings, movers, showMovers,
-  )));
+  // buildUnified reads groupOrder + detachedSymbols from module scope.
+  // The previous comma-operator dep-tracking trick
+  //   $derived(((groupOrder, detachedSymbols), buildUnified(...)))
+  // was fragile — Svelte 5's compiler doesn't always pick up state
+  // reads inside a function call evaluated as a comma-expression
+  // sibling. Switched to $derived.by with explicit touches so the
+  // compiler unambiguously sees both reads inside the derivation body.
+  const unifiedRows = $derived.by(() => {
+    // eslint-disable-next-line no-unused-expressions
+    groupOrder; detachedSymbols;
+    return buildUnified(
+      activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
+      showPositions, showHoldings, movers, showMovers,
+    );
+  });
 
   function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
     const inst = instCache ? instCache(sym) : null;
@@ -1361,8 +1369,30 @@
     } catch (e) { error = e.message; }
   }
 
+  // Two-click delete confirmation — first click flips the × into
+  // "× Confirm" for 4 seconds; second click within that window actually
+  // deletes. Replaces the native confirm() dialog, which silently no-ops
+  // in iOS PWA standalone mode and looks jarring inside the dark UI.
+  let _pendingDeleteList = $state(/** @type {number|null} */ (null));
+  let _pendingDeleteTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+
+  function armDeleteList(id) {
+    if (_pendingDeleteList === id) {
+      // Second click → actually delete.
+      _pendingDeleteList = null;
+      if (_pendingDeleteTimer) { clearTimeout(_pendingDeleteTimer); _pendingDeleteTimer = null; }
+      return dropList(id);
+    }
+    // First click → arm the confirm window.
+    _pendingDeleteList = id;
+    if (_pendingDeleteTimer) clearTimeout(_pendingDeleteTimer);
+    _pendingDeleteTimer = setTimeout(() => {
+      _pendingDeleteList = null;
+      _pendingDeleteTimer = null;
+    }, 4000);
+  }
+
   async function dropList(/** @type {number} */ id) {
-    if (!confirm('Delete this watchlist?')) return;
     try {
       await deleteWatchlist(id);
       const next = new Set(activeIds);
@@ -1809,11 +1839,7 @@
     closeContextMenu();
     try { await navigator.clipboard.writeText(row.tradingsymbol || ''); } catch (_) {}
   }
-  function ctxSetAlert(row) {
-    closeContextMenu();
-    console.info('[MarketPulse] set price alert placeholder:', row.tradingsymbol);
-  }
-  /** 📈 Chart action — opens SymbolPanel on the Chart tab for the
+/** 📈 Chart action — opens SymbolPanel on the Chart tab for the
    *  row's symbol. Historical bars fetched lazily inside the panel
    *  when the Chart tab activates. Earlier this opened a separate
    *  SymbolChartModal; folded into the unified panel so chart +
@@ -1996,9 +2022,14 @@
               <span
                 role="button"
                 tabindex="0"
-                onclick={(e) => { e.stopPropagation(); dropList(l.id); }}
-                onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), dropList(l.id))}
-                class="ml-1 text-[0.6rem] text-red-300 hover:text-red-400 cursor-pointer">×</span>
+                title={_pendingDeleteList === l.id ? 'Click again to confirm' : 'Delete watchlist'}
+                onclick={(e) => { e.stopPropagation(); armDeleteList(l.id); }}
+                onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), armDeleteList(l.id))}
+                class="ml-1 text-[0.6rem] cursor-pointer
+                       {_pendingDeleteList === l.id
+                         ? 'text-red-400 font-bold animate-pulse'
+                         : 'text-red-300 hover:text-red-400'}"
+              >{_pendingDeleteList === l.id ? '× Confirm?' : '×'}</span>
             {/if}
           </button>
         {/each}
@@ -2249,7 +2280,6 @@
       <button class="ctx-item" onclick={() => ctxAddWatch(ctxMenu.row)}>★ Add to watchlist</button>
     {/if}
     <button class="ctx-item" onclick={() => ctxCopySymbol(ctxMenu.row)}>Copy symbol</button>
-    <button class="ctx-item" onclick={() => ctxSetAlert(ctxMenu.row)}>Set price alert</button>
     <div class="ctx-sep"></div>
     {#if isDetached(ctxMenu.row?.tradingsymbol)}
       <button class="ctx-item" onclick={() => { reattachSymbol(ctxMenu.row); closeContextMenu(); }}>↩ Re-attach to group</button>
