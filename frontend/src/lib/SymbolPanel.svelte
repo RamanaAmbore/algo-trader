@@ -782,10 +782,16 @@
     inset: 0;
     background: rgba(0,0,0,0.55);
     display: flex;
-    align-items: center;
+    /* Anchor modal to a fixed Y from the top instead of vertically
+       centering — earlier `align-items: center` caused the modal to
+       re-center every time the body grew (chart bars arriving,
+       margin preview rendering, etc.), producing a visible "open
+       then resize" jump. With flex-start the modal opens at the
+       same Y position and grows downward without moving. */
+    align-items: flex-start;
     justify-content: center;
     z-index: 100;
-    padding: 1rem;
+    padding: 3rem 1rem 1rem;
   }
   /* Inline mode strips the modal chrome — used by /console which hosts
      the shell as the page's primary content. */
@@ -801,8 +807,13 @@
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1px solid rgba(251,191,36,0.35);
     border-radius: 8px;
-    width: min(34rem, calc(100vw - 2rem));
-    max-height: calc(100vh - 2rem);
+    /* Widened to 50 rem so the 720 px chart SVG fits at its native
+       aspect ratio without forcing the modal to grow on Chart-tab
+       activation. Earlier 34 rem (~544 px) was sized for the order
+       ticket only — chart bars arriving pushed the modal wider,
+       contributing to the "open then resize" jank. */
+    width: min(50rem, calc(100vw - 2rem));
+    max-height: calc(100vh - 4rem);
     overflow-y: auto;
     color: #c8d8f0;
     font-family: ui-monospace, monospace;
@@ -908,12 +919,20 @@
 
   /* Chart tab body — same SVG plot style as the retired
      SymbolChartModal, just laid out as a tab content slot inside
-     the panel. */
+     the panel.
+
+     `min-height: 380 px` reserves vertical space for the SVG
+     (viewBox is 360 px + ~20 px chrome / meta line) BEFORE the
+     bars arrive — without it the modal jumped from ~80 px (the
+     "Loading bars…" line) to ~440 px once /api/options/historical
+     responded, producing the visible "open then resize" jank the
+     operator reported. */
   .oes-chart {
     padding: 0.6rem 0.85rem 0.4rem;
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+    min-height: 380px;
   }
   .oes-chart-svg {
     width: 100%;
