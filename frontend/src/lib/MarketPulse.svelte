@@ -1581,6 +1581,47 @@
       getRowClass,
       rowHeight: 28,
       headerHeight: 28,
+      // Sort never breaks bucket/group integrity. ag-Grid sorts normally
+      // first (by whatever column the operator clicked), then this hook
+      // re-stitches the sorted rows so:
+      //   1. Bucket order (positions → holdings → other) is preserved
+      //      regardless of sort direction.
+      //   2. Within each bucket, rows are grouped by their underlying;
+      //      the group's first-appearance position in the column-sorted
+      //      list determines group order (so sorting by P&L surfaces
+      //      the best-performing group first, not interleaved).
+      //   3. Within each group, the column-sort order survives — so
+      //      strikes still sort by LTP / Day P&L / whatever within
+      //      their NIFTY (or BANKNIFTY, etc.) cluster.
+      postSortRows: (params) => {
+        const nodes = params.nodes;
+        if (!nodes || nodes.length === 0) return;
+        const groupOf = (n) =>
+          String(n.data?.underlying || n.data?.tradingsymbol || '').toUpperCase();
+        // Group by bucket → group key, recording first-appearance index
+        // so we can order groups by their best column-sorted row.
+        const bucketMap = /** @type {Record<number, Record<string, any[]>>} */ ({});
+        const groupFirstSeen = /** @type {Record<string, number>} */ ({});
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          const b = bucketOf(n.data || {});
+          const g = groupOf(n);
+          (bucketMap[b] ??= {})[g] ??= [];
+          bucketMap[b][g].push(n);
+          if (!(g in groupFirstSeen)) groupFirstSeen[g] = i;
+        }
+        const out = [];
+        const bucketKeys = Object.keys(bucketMap).map(Number).sort((a, b) => a - b);
+        for (const b of bucketKeys) {
+          const groups = bucketMap[b];
+          const groupKeys = Object.keys(groups).sort(
+            (a, b) => groupFirstSeen[a] - groupFirstSeen[b]
+          );
+          for (const gk of groupKeys) out.push(...groups[gk]);
+        }
+        params.nodes.length = 0;
+        params.nodes.push(...out);
+      },
       onRowClicked: handleRowClick,
       onSortChanged: saveColumnState,
       onColumnResized: saveColumnState,
