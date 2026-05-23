@@ -11,14 +11,14 @@
          All flood colours pulled from the public-site palette. -->
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
       <!-- Wide orange-gold bloom — warmer than palette #c8a84b. -->
-      <feGaussianBlur in="SourceAlpha" stdDeviation="1" result="bloom-blur" />
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="bloom-blur" />
       <feFlood flood-color="#f59410" result="bloom-color" />
       <feComposite in="bloom-color" in2="bloom-blur" operator="in" result="bloom-raw" />
       <feComponentTransfer in="bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.70" />
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
-      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5" result="mid-blur" />
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="mid-blur" />
       <feFlood flood-color="#f59410" result="mid-color" />
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
       <feComponentTransfer in="mid-raw" result="halo-mid">
@@ -26,7 +26,7 @@
       </feComponentTransfer>
       <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
-      <feGaussianBlur in="dil-inner" stdDeviation="0.5" result="inner-blur" />
+      <feGaussianBlur in="dil-inner" stdDeviation="2" result="inner-blur" />
       <feFlood flood-color="#f59410" result="inner-color" />
       <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
       <feComponentTransfer in="inner-raw" result="halo-inner">

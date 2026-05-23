@@ -1,4 +1,9 @@
-"""Generate every PNG/ICO brand asset from app-icon.svg via cairosvg.
+"""Generate every PNG/ICO brand asset from app-icon.svg via resvg.
+
+resvg (not cairosvg) is used because the bull-glow SVG filter chain
+(feGaussianBlur + feFlood + feComposite + feMerge) is silently
+dropped by cairosvg's partial filter implementation — which made the
+bull glow invisible. resvg-py has full SVG filter support.
 
 The SVG (frontend/static/app-icon.svg) is the single source of truth —
 all favicon / app-icon / maskable / apple-touch-icon PNGs are rendered
@@ -13,7 +18,7 @@ ring or bull (W3C maskable safe-zone = center 80% of the canvas).
 from pathlib import Path
 from io import BytesIO
 
-import cairosvg
+import resvg_py
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,15 +30,20 @@ SOURCE_SVG = STATIC / "app-icon.svg"
 TEAL_FACE = (17, 72, 88, 255)  # #114858
 
 
+_SVG_TEXT = SOURCE_SVG.read_text()
+
+
 def _render_svg(size: int) -> Image.Image:
     """Render app-icon.svg to a transparent-background PIL Image at the
-    target size. cairosvg respects the SVG's viewBox so the design
+    target size. Uses resvg (not cairosvg) so the bull-glow SVG filter
+    actually renders — cairosvg silently drops feComposite/feMerge
+    filter chains. resvg respects the SVG's viewBox so the design
     scales cleanly to any pixel size."""
-    png_bytes = cairosvg.svg2png(
-        url=str(SOURCE_SVG),
-        output_width=size,
-        output_height=size,
-    )
+    png_bytes = bytes(resvg_py.svg_to_bytes(
+        svg_string=_SVG_TEXT,
+        width=size,
+        height=size,
+    ))
     return Image.open(BytesIO(png_bytes)).convert("RGBA")
 
 

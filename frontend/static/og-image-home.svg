@@ -9,20 +9,20 @@
       <stop offset="100%" stop-color="#f59410"/>
     </linearGradient>
     <filter id="bull-glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="1" result="halo-bloom-blur"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="halo-bloom-blur"/>
       <feFlood flood-color="#f59410" result="halo-bloom-color"/>
       <feComposite in="halo-bloom-color" in2="halo-bloom-blur" operator="in" result="halo-bloom-raw"/>
       <feComponentTransfer in="halo-bloom-raw" result="halo-bloom">
         <feFuncA type="linear" slope="0.70"/>
       </feComponentTransfer>
-      <feGaussianBlur in="SourceAlpha" stdDeviation="0.5" result="halo-mid-blur"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="halo-mid-blur"/>
       <feFlood flood-color="#f59410" result="halo-mid-color"/>
       <feComposite in="halo-mid-color" in2="halo-mid-blur" operator="in" result="halo-mid-raw"/>
       <feComponentTransfer in="halo-mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.90"/>
       </feComponentTransfer>
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner"/>
-      <feGaussianBlur in="dil-inner" stdDeviation="0.5" result="halo-inner-blur"/>
+      <feGaussianBlur in="dil-inner" stdDeviation="2" result="halo-inner-blur"/>
       <feFlood flood-color="#f59410" result="halo-inner-color"/>
       <feComposite in="halo-inner-color" in2="halo-inner-blur" operator="in" result="halo-inner-raw"/>
       <feComponentTransfer in="halo-inner-raw" result="halo-inner">
