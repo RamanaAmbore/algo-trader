@@ -102,15 +102,10 @@ def build(size: int, source: Image.Image) -> Image.Image:
     # vivid orange-gold ring as a primary visual; muting it to 60% as
     # before washed out the saturation.
 
-    # Drop shadow under the ring — push it off the navy face.
-    shadow_alpha = annulus.filter(ImageFilter.GaussianBlur(radius=size * 0.012))
-    shadow_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    shadow_color = Image.new("RGBA", (size, size), (10, 10, 10, 153))  # flood-opacity 0.6
-    shadow_layer = Image.composite(shadow_color, shadow_layer, shadow_alpha)
-    offset = int(round(size * (4 / 512)))
-    shifted = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    shifted.paste(shadow_layer, (0, offset), shadow_layer)
-    canvas.alpha_composite(shifted)
+    # Ring composited directly onto the uniform teal — the offset
+    # drop-shadow that used to sit beneath the ring was creating an
+    # asymmetric dark band at the bottom of the face, which read as a
+    # top-to-bottom gradient against the otherwise flat background.
     canvas.alpha_composite(ring_layer)
 
     # Inner highlight — 1 px line just inside the bevel. Alpha tuned
