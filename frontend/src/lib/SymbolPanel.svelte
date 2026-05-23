@@ -137,6 +137,12 @@
   // computed lazily from `_chartBars` via $derived below.
   let _showSma20 = $state(false);
   let _showSma50 = $state(false);
+  // Fullscreen mode — modal expands to fill the viewport so the chart
+  // gets max screen real estate for inspection. The rest of the panel
+  // (ticket / chain / command tabs) stays accessible — only the modal
+  // size changes; chart fills its enlarged container naturally.
+  let _fullscreen = $state(false);
+  function _toggleFullscreen() { _fullscreen = !_fullscreen; }
   let _showVol   = $state(false);
   // Hover crosshair (lifted from the retired SymbolChartModal).
   /** @type {{x:number,y:number,bar:any}|null} */
@@ -556,7 +562,11 @@
   // Close on Escape + always-on order-data poll (bottom panel is always visible).
   onMount(() => {
     const onKey = (/** @type {KeyboardEvent} */ e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        // Fullscreen exits first; second Esc closes the panel.
+        if (_fullscreen) { _fullscreen = false; return; }
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
     _loadOrdersData();
@@ -602,6 +612,7 @@
      aria-label={inline ? undefined : (symbol || 'Symbol panel')}
      onclick={inline ? undefined : onClose}>
   <div class="oes-modal" class:oes-modal-inline={inline}
+       class:oes-modal-fs={_fullscreen}
        role="document"
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
 
@@ -728,6 +739,16 @@
                       title="Volume bars in lower band"
                       onclick={() => _showVol = !_showVol}>Vol</button>
             </div>
+            <!-- Fullscreen toggle — sits at the end of the toolbar so
+                 it doesn't compete visually with the chart-type /
+                 range / indicator clusters. Esc also exits FS. -->
+            <button type="button" class="oes-chart-fs"
+                    class:active={_fullscreen}
+                    title={_fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen chart'}
+                    aria-label={_fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                    onclick={_toggleFullscreen}>
+              {_fullscreen ? '⤡' : '⤢'}
+            </button>
           </div>
           {#if _chartLoading && !_chartBars.length}
             <div class="oes-chart-state">Loading bars…</div>
@@ -1093,6 +1114,46 @@
     max-height: none;
     border-radius: 6px;
     box-shadow: none;
+  }
+  /* Fullscreen — chart fills the viewport with minimal chrome around
+     it. Click ⤡ in the toolbar or press Esc to exit. The chart SVG
+     stretches into the enlarged container via flex; no extra layout
+     tricks needed. */
+  .oes-modal.oes-modal-fs {
+    width: calc(100vw - 1rem);
+    max-width: none;
+    height: calc(100vh - 1rem);
+    max-height: calc(100vh - 1rem);
+    border-radius: 4px;
+  }
+  /* In fullscreen, let the chart container grow vertically into the
+     available space (it was fixed to ~380px to prevent open-then-
+     resize jank in the regular modal). */
+  .oes-modal.oes-modal-fs :global(.oes-chart) {
+    min-height: calc(100vh - 14rem);
+  }
+  .oes-modal.oes-modal-fs :global(.oes-chart svg) {
+    height: 100%;
+  }
+
+  /* Fullscreen toggle button in the chart toolbar. */
+  .oes-chart-fs {
+    background: rgba(251,191,36,0.10);
+    border: 1px solid rgba(251,191,36,0.30);
+    color: #c8d8f0;
+    padding: 0.18rem 0.45rem;
+    font-size: 0.72rem;
+    font-family: ui-monospace, monospace;
+    border-radius: 3px;
+    cursor: pointer;
+    margin-left: auto;  /* push to right edge of toolbar */
+    line-height: 1;
+  }
+  .oes-chart-fs:hover { background: rgba(251,191,36,0.18); }
+  .oes-chart-fs.active {
+    background: rgba(251,191,36,0.25);
+    color: #fbbf24;
+    border-color: rgba(251,191,36,0.60);
   }
 
   /* Header */
