@@ -14,7 +14,10 @@
   // Shared confirm modal — replaces native confirm() which silently
   // no-ops in iOS PWA standalone mode and looks jarring in the dark
   // UI. `confirmRef.ask(opts)` returns Promise<boolean>.
-  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  /** @type {{
+   *   ask: (opts: any) => Promise<boolean>,
+   *   prompt: (opts: any) => Promise<string|null>,
+   * } | null} */
   let confirmRef = $state(null);
 
   let users      = $state([]);
@@ -94,7 +97,15 @@
   }
 
   async function resetPw(/** @type {string} */ username) {
-    const pw = prompt(`Set a new password for ${username}. They'll be force-logged-out.`);
+    const pw = await confirmRef.prompt({
+      title: 'Reset password',
+      message: `Set a new password for <b>${username}</b>. They'll be force-logged-out from any active session.`,
+      label: 'New password',
+      placeholder: 'minimum 8 characters',
+      inputType: 'password',
+      confirmLabel: 'Reset password',
+      danger: true,
+    });
     if (!pw) return;
     try { await adminResetPassword(username, pw); success = `Password reset for ${username}`; }
     catch (e) { error = e.message; }

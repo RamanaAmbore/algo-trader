@@ -28,7 +28,14 @@
   let _danger  = $state(false);
   let _confirmLabel = $state('Confirm');
   let _cancelLabel  = $state('Cancel');
-  /** @type {((ok: boolean) => void) | null} */
+  // Prompt mode — when _inputType !== null the modal also renders an
+  // <input> and the resolver receives the typed value (or null on
+  // cancel). Used for password resets, list-rename, etc.
+  let _inputType  = $state(/** @type {'text'|'password'|null} */ (null));
+  let _inputLabel = $state('');
+  let _inputValue = $state('');
+  let _inputPlaceholder = $state('');
+  /** @type {((ok: boolean) => void) | ((val: string|null) => void) | null} */
   let _resolve = null;
 
   /**
@@ -42,15 +49,50 @@
     _danger        = !!opts.danger;
     _confirmLabel  = opts.confirmLabel  ?? (opts.danger ? 'Delete' : 'Confirm');
     _cancelLabel   = opts.cancelLabel   ?? 'Cancel';
+    _inputType     = null;
+    _inputValue    = '';
+    _open = true;
+    return new Promise((res) => { _resolve = res; });
+  }
+
+  /**
+   * Prompt mode — like ask() but also collects an input value.
+   * Resolves to the typed value on confirm or null on cancel.
+   *
+   * @param {{title?:string, message?:string, label?:string,
+   *          placeholder?:string, defaultValue?:string,
+   *          inputType?:'text'|'password', danger?:boolean,
+   *          confirmLabel?:string, cancelLabel?:string}} opts
+   * @returns {Promise<string|null>}
+   */
+  export function prompt(opts = {}) {
+    _title         = opts.title         ?? 'Enter value';
+    _message       = opts.message       ?? '';
+    _danger        = !!opts.danger;
+    _confirmLabel  = opts.confirmLabel  ?? (opts.danger ? 'Delete' : 'OK');
+    _cancelLabel   = opts.cancelLabel   ?? 'Cancel';
+    _inputType     = opts.inputType     ?? 'text';
+    _inputLabel    = opts.label         ?? '';
+    _inputPlaceholder = opts.placeholder ?? '';
+    _inputValue    = opts.defaultValue  ?? '';
     _open = true;
     return new Promise((res) => { _resolve = res; });
   }
 
   function _resolve_and_close(/** @type {boolean} */ ok) {
-    _open = false;
+    const isPrompt = _inputType !== null;
     const r = _resolve;
     _resolve = null;
-    r?.(ok);
+    _open = false;
+    if (isPrompt) {
+      // Prompt mode resolves to the typed value (or null on cancel).
+      // Empty string on confirm counts as null — most callers want a
+      // single non-empty-string-or-cancel branch.
+      const v = ok ? (_inputValue || null) : null;
+      r?.(v);
+    } else {
+      r?.(ok);
+    }
   }
 
   function onKey(/** @type {KeyboardEvent} */ e) {
@@ -69,10 +111,21 @@
          onclick={(e) => e.stopPropagation()}>
       <div class="cm-title">{_title}</div>
       {#if _message}<div class="cm-message">{@html _message}</div>{/if}
+      {#if _inputType}
+        <div class="cm-input-wrap">
+          {#if _inputLabel}<label class="cm-input-label">{_inputLabel}</label>{/if}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input type={_inputType}
+                 class="cm-input"
+                 placeholder={_inputPlaceholder}
+                 bind:value={_inputValue}
+                 autofocus
+                 autocomplete="off" />
+        </div>
+      {/if}
       <div class="cm-footer">
         <button type="button" class="cm-cancel"
-                onclick={() => _resolve_and_close(false)}
-                autofocus>{_cancelLabel}</button>
+                onclick={() => _resolve_and_close(false)}>{_cancelLabel}</button>
         <button type="button" class="cm-confirm" class:cm-confirm-danger={_danger}
                 onclick={() => _resolve_and_close(true)}>{_confirmLabel}</button>
       </div>
@@ -122,6 +175,31 @@
     gap: 0.45rem;
     justify-content: flex-end;
   }
+  /* Prompt-mode input — text or password. Sits between the message
+     and the button row. */
+  .cm-input-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-bottom: 0.85rem;
+  }
+  .cm-input-label {
+    font-size: 0.6rem;
+    color: rgba(200,216,240,0.6);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .cm-input {
+    background: rgba(10,16,32,0.6);
+    border: 1px solid rgba(251,191,36,0.30);
+    border-radius: 3px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    padding: 0.4rem 0.55rem;
+    outline: none;
+  }
+  .cm-input:focus { border-color: rgba(251,191,36,0.65); }
   .cm-cancel,
   .cm-confirm {
     padding: 0.4rem 0.95rem;
