@@ -8,4 +8,4 @@
 
 <svelte:head><title>Pulse | RamboQuant Analytics</title></svelte:head>
 
-<MarketPulse title="Pulse" />
+<MarketPulse title="Pulse" flat={true} />

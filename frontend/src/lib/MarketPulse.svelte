@@ -41,6 +41,11 @@
     showSummary        = false, // small per-account summary grid above the main grid
     showFunds          = false, // small per-account funds grid below the main grid
     showSymbolsGrid    = true,  // unified symbols grid at the bottom; /dashboard passes false
+    // /pulse passes `flat=true` to drop the outer .algo-status-card
+    // chrome — the unified grid (with its own fixed-header scroll
+    // behaviour) becomes the page's primary surface instead of being
+    // boxed inside a non-scrolling navy card.
+    flat               = false,
   } = $props();
 
   // AG Grid valueFormatter wrappers — the canonical idiom every other
@@ -1677,7 +1682,9 @@
   );
 </script>
 
-<div bind:this={pulseWrapper} class="algo-status-card p-1.5" data-status="inactive">
+<div bind:this={pulseWrapper}
+     class={flat ? 'mp-flat-wrap' : 'algo-status-card p-1.5'}
+     data-status="inactive">
 
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
@@ -2044,6 +2051,27 @@
        the header away when it scrolls. */
     height: 520px;
     min-height: 520px;
+  }
+  /* Flat-mode wrapper — used by /pulse to drop the .algo-status-card
+     navy chrome. The page becomes a flex column whose unified grid
+     grows to fill the remaining viewport height, so the operator
+     gets the maximum number of rows on-screen with the column
+     header pinned at the top. */
+  .mp-flat-wrap {
+    padding: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    /* 100vh minus navbar (4 rem) + page chrome (~3 rem). Fits inside
+       the algo layout without overflowing the viewport. */
+    min-height: calc(100vh - 7rem);
+  }
+  .mp-flat-wrap .unified-grid {
+    /* Take whatever vertical space remains after the toolbar — the
+       fixed 520 px height is the dashboard's small-grid default, but
+       on /pulse the operator wants the grid to fill the page. */
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 320px;
   }
   .summary-grid,
   .funds-grid {
