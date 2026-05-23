@@ -16,14 +16,14 @@
         <feFuncA type="linear" slope="0.70"/>
       </feComponentTransfer>
       <feGaussianBlur in="SourceAlpha" stdDeviation="0.5" result="halo-mid-blur"/>
-      <feFlood flood-color="#ffd848" result="halo-mid-color"/>
+      <feFlood flood-color="#f59410" result="halo-mid-color"/>
       <feComposite in="halo-mid-color" in2="halo-mid-blur" operator="in" result="halo-mid-raw"/>
       <feComponentTransfer in="halo-mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.90"/>
       </feComponentTransfer>
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner"/>
       <feGaussianBlur in="dil-inner" stdDeviation="0.5" result="halo-inner-blur"/>
-      <feFlood flood-color="#ffd848" result="halo-inner-color"/>
+      <feFlood flood-color="#f59410" result="halo-inner-color"/>
       <feComposite in="halo-inner-color" in2="halo-inner-blur" operator="in" result="halo-inner-raw"/>
       <feComponentTransfer in="halo-inner-raw" result="halo-inner">
         <feFuncA type="linear" slope="0.85"/>

@@ -19,7 +19,7 @@
       </feComponentTransfer>
       <!-- Mid halo — slightly outside silhouette but no longer dilated. -->
       <feGaussianBlur in="SourceAlpha" stdDeviation="0.5" result="mid-blur" />
-      <feFlood flood-color="#ffd848" result="mid-color" />
+      <feFlood flood-color="#f59410" result="mid-color" />
       <feComposite in="mid-color" in2="mid-blur" operator="in" result="mid-raw" />
       <feComponentTransfer in="mid-raw" result="halo-mid">
         <feFuncA type="linear" slope="0.90" />
@@ -27,7 +27,7 @@
       <!-- Tight inner rim — kept but dimmed so it doesn't overpower. -->
       <feMorphology in="SourceAlpha" operator="dilate" radius="1" result="dil-inner" />
       <feGaussianBlur in="dil-inner" stdDeviation="0.5" result="inner-blur" />
-      <feFlood flood-color="#ffd848" result="inner-color" />
+      <feFlood flood-color="#f59410" result="inner-color" />
       <feComposite in="inner-color" in2="inner-blur" operator="in" result="inner-raw" />
       <feComponentTransfer in="inner-raw" result="halo-inner">
         <feFuncA type="linear" slope="0.85" />
