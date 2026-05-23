@@ -77,7 +77,7 @@
 </script>
 
 <svelte:head>
-  <title>{slug || 'Iteration'} | RamboQuant Algo</title>
+  <title>{slug || 'Iteration'} | RamboQuant Analytics</title>
 </svelte:head>
 
 <div class="page-header">

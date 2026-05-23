@@ -95,7 +95,7 @@
 </script>
 
 <svelte:head>
-  <title>Simulator iterations | RamboQuant Algo</title>
+  <title>Simulator iterations | RamboQuant Analytics</title>
 </svelte:head>
 
 <div class="page-header">

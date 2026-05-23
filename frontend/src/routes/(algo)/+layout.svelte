@@ -65,14 +65,20 @@
     goto('/about');
   }
 
-  // Grouped by operator activity + branch-aware mode entries.
+  // Grouped by operator activity, ordered by daily-touch frequency:
   //
-  //   Monitor  — Dashboard, Agents, Orders. Touched daily.
-  //   Analyze  — Options.
-  //   Modes    — branch-filtered: dev gets Simulator + Replay;
-  //              prod gets Paper + Shadow + Live + Replay.
-  //   Build    — Terminal, Tokens.
-  //   Config   — Settings, Brokers, Users.
+  //   Monitor  — Market Pulse, Dashboard, Agents, Orders, Alerts.
+  //              Top-of-funnel "what's happening" surfaces. Hit every
+  //              session.
+  //   Analyze  — Options. Drill-down workspace.
+  //   Modes    — Lab (sim / replay / paper / shadow / live hub). The
+  //              mode dropdown is a separate UI element; this is the
+  //              workspace router.
+  //   Build    — Terminal, Tokens. For extending the agent grammar
+  //              and dry-running commands.
+  //   Config   — Brokers, Settings, Users, Health. Ordered by
+  //              edit-frequency: Brokers first (credential setup),
+  //              Health last (diagnostic only).
   //
   // The `branches` field controls visibility:
   //   'dev'  = non-main branch only
@@ -99,11 +105,15 @@
     // ── Build / extend ──
     { href: '/console',          label: 'Terminal',  group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
-    // ── Config ──
-    { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
-    { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
+    // ── Config ── ordered by edit frequency, not alphabetic.
+    //   Brokers — most-touched (account creds, IP binding, secrets).
+    //   Settings — occasional threshold tuning during volatile days.
+    //   Users — invitation-only, rare.
+    //   Health — diagnostic surface, glance-only, last.
     { href: '/admin/brokers',    label: 'Brokers',   adminOnly: true, group: 'config' },
+    { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
     { href: '/admin',            label: 'Users',     adminOnly: true, group: 'config' },
+    { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
   ];
   // Branch-aware + demo-aware + mode-aware filter.
   // `modes: [...]` on a link entry means "show only when the current

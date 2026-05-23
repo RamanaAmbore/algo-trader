@@ -96,7 +96,7 @@
 </script>
 
 <svelte:head>
-  <title>Dashboard | RamboQuant Algo</title>
+  <title>Dashboard | RamboQuant Analytics</title>
 </svelte:head>
 
 {#if isDemo && !bannerDismissed}
