@@ -9,7 +9,7 @@
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
     fetchFunds, fetchBrokerAccounts, fetchIntradayEquity,
-    batchQuote,
+    batchQuote, fetchNews,
   } from '$lib/api';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
@@ -46,6 +46,15 @@
 
   // Agent log collapsed by default.
   let _agentLogOpen = $state(false);
+
+  // PnlAnalysis collapse — persisted to localStorage.
+  let _pnlOpen = $state(false);
+
+  // News strip state.
+  /** @type {Array<{title:string, link:string, source:string, timestamp:string}>} */
+  let _news         = $state([]);
+  let _newsRefresh  = $state(/** @type {string|null} */ (null));
+  let _newsTeardown;
 
   // ── Raw positions + holdings (reused for winners/losers) ──────────
   /** @type {any[]} */
@@ -298,6 +307,29 @@
     return `${used.toFixed(2)} ${GAUGE_CIRC.toFixed(2)}`;
   }
 
+  // ── News helpers ───────────────────────────────────────────────────
+  function timeSince(/** @type {string|null|undefined} */ iso) {
+    if (!iso) return '—';
+    const ts = new Date(iso);
+    if (isNaN(ts.getTime())) return '—';
+    const diffMs = Date.now() - ts.getTime();
+    if (diffMs < 0) return 'now';
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return 'now';
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+  }
+
+  async function _fetchNewsData() {
+    try {
+      const r = await fetchNews();
+      _news = r?.items ?? [];
+      _newsRefresh = r?.refreshed_at ?? null;
+    } catch (_) { /* leave stale */ }
+  }
+
   // ── Fetch functions ────────────────────────────────────────────────
   async function _fetchEquity() {
     try {
@@ -399,10 +431,13 @@
 
   onMount(() => {
     bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
+    _pnlOpen = localStorage.getItem('dash.pnlOpen') === '1';
     loadHero();
     _heroTeardown = visibleInterval(loadHero, 30000);
+    _fetchNewsData();
+    _newsTeardown = visibleInterval(_fetchNewsData, 5 * 60 * 1000);
   });
-  onDestroy(() => { _heroTeardown?.(); });
+  onDestroy(() => { _heroTeardown?.(); _newsTeardown?.(); });
 
   function dismissBanner() {
     bannerDismissed = true;
@@ -739,12 +774,52 @@
   </div>
 {/if}
 
+<!-- Row 3: Market news strip — single column, hidden when no headlines. -->
+{#if _news.length > 0}
+  <div class="dash-row3">
+    <div class="row3-header">
+      <span class="mp-section-label">MARKET NEWS</span>
+      {#if _newsRefresh}
+        <span class="row3-refresh">· refreshed {timeSince(_newsRefresh)} ago</span>
+      {/if}
+    </div>
+    <ul class="dash-news-list">
+      {#each _news.slice(0, 5) as item}
+        <li class="dash-news-row">
+          <span class="dash-news-time">{timeSince(item.timestamp)}</span>
+          <a
+            class="dash-news-title"
+            href={item.link}
+            target="_blank"
+            rel="noopener"
+          >{item.title}</a>
+          {#if item.source}
+            <span class="dash-news-src">{item.source}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </div>
+{/if}
+
 <!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
      stack (Funds + Positions Summary + Holdings Summary) on the right. -->
 <div class="dash-grid">
   <section class="dash-col dash-col-pnl">
-    <div class="mp-section-label">P&amp;L Analysis</div>
-    <PnlAnalysis />
+    <!-- P&L Analysis — collapsed by default; state persisted to localStorage. -->
+    <details
+      class="dash-pnl-details"
+      bind:open={_pnlOpen}
+      ontoggle={() => localStorage.setItem('dash.pnlOpen', _pnlOpen ? '1' : '0')}
+    >
+      <summary class="dash-pnl-summary">
+        <span class="mp-section-label">P&amp;L ANALYSIS</span>
+        <span class="dash-pnl-toggle">{_pnlOpen ? '▾ collapse' : '▸ expand'}</span>
+      </summary>
+      <div class="dash-pnl-body">
+        <PnlAnalysis />
+      </div>
+    </details>
   </section>
   <section class="dash-col dash-col-pulse">
     <MarketPulse
@@ -1184,6 +1259,108 @@
     color: #7e97b8;
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
+  }
+
+  /* ── Row 3: Market news strip ───────────────────────────────────── */
+  .dash-row3 {
+    margin-bottom: 0.6rem;
+    padding: 0.4rem 0.55rem 0.45rem;
+    background: rgba(15, 25, 45, 0.55);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 4px;
+  }
+  .row3-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-bottom: 0.3rem;
+  }
+  .row3-refresh {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    color: #7e97b8;
+    letter-spacing: 0.03em;
+  }
+  .dash-news-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .dash-news-row {
+    display: grid;
+    grid-template-columns: 2.8rem 1fr max-content;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.28rem 0;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.12);
+    font-family: ui-monospace, monospace;
+  }
+  .dash-news-row:last-child { border-bottom: none; }
+  .dash-news-time {
+    font-size: 0.58rem;
+    color: #7dd3fc;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .dash-news-title {
+    font-size: 0.68rem;
+    color: #c8d8f0;
+    text-decoration: none;
+    font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color 0.1s;
+  }
+  .dash-news-title:hover { color: #fbbf24; }
+  .dash-news-src {
+    font-size: 0.55rem;
+    color: #7e97b8;
+    background: rgba(126, 151, 184, 0.10);
+    border: 1px solid rgba(126, 151, 184, 0.20);
+    padding: 1px 5px;
+    border-radius: 2px;
+    white-space: nowrap;
+    max-width: 12ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+  }
+  @media (max-width: 600px) {
+    .dash-news-row { grid-template-columns: 2.8rem 1fr; }
+    .dash-news-src { display: none; }
+  }
+
+  /* ── P&L Analysis collapsible ────────────────────────────────────── */
+  .dash-pnl-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    padding: 0.35rem 0.55rem;
+    border-radius: 3px;
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    background: rgba(15, 25, 45, 0.55);
+  }
+  .dash-pnl-summary::-webkit-details-marker { display: none; }
+  .dash-pnl-summary:hover {
+    border-color: rgba(251, 191, 36, 0.35);
+  }
+  .dash-pnl-toggle {
+    margin-left: auto;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.04em;
+  }
+  .dash-pnl-body {
+    margin-top: 0.4rem;
   }
 
   /* Demo banner */
