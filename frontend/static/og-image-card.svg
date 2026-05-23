@@ -36,11 +36,11 @@
       </feMerge>
     </filter>
     <radialGradient id="face-radial" cx="50%" cy="50%" r="55%">
-      <stop offset="0%"   stop-color="#0e2a3a"/>
-      <stop offset="100%" stop-color="#0a2030"/>
+      <stop offset="0%"   stop-color="#10223e"/>
+      <stop offset="100%" stop-color="#0c1830"/>
     </radialGradient>
   </defs>
-  <rect width="1200" height="630" fill="#0a2030"/>
+  <rect width="1200" height="630" fill="#0c1830"/>
   <rect width="1200" height="630" fill="url(#stripe)"/>
   <rect x="0" y="0"   width="1200" height="6" fill="url(#goldGrad)"/>
   <rect x="0" y="624" width="1200" height="6" fill="url(#goldGrad)"/>

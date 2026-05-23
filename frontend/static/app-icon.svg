@@ -1,11 +1,11 @@
 <?xml version='1.0' encoding='utf-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <!-- Teal face matching the public-site navbar palette
-         (#0e2a3a / #0a2030 — same teal-navy used by og-image). -->
+    <!-- Navy face — public-site navbar palette (#0c1830) with a slight
+         centre lift (#10223e) for radial depth. No teal cast. -->
     <radialGradient id="face-radial" cx="50%" cy="50%" r="60%">
-      <stop offset="0%" stop-color="#0e2a3a" />
-      <stop offset="100%" stop-color="#0a2030" />
+      <stop offset="0%" stop-color="#10223e" />
+      <stop offset="100%" stop-color="#0c1830" />
     </radialGradient>
 
     <!-- Three-layer gold halo on the bull: wide bloom + mid + tight inner.
