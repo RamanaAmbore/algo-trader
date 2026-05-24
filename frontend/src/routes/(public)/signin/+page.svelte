@@ -45,13 +45,16 @@
       // The backend rejects every protected route except
       // /api/auth/change-password until the flag clears, so the only
       // sensible UX is an immediate redirect to the change-password
-      // page; the operator can't reach /dashboard anyway.
+      // page; the operator can't reach /pulse anyway.
       if (data.must_change_password) {
         goto('/auth/change-password');
         return;
       }
-      const isAdmin = data.role === 'admin' || data.role === 'designated';
-      goto(isAdmin ? '/dashboard' : '/performance');
+      // Everyone lands on Market Pulse — admins, designated, partners
+      // alike. It's the "what's happening right now" view with live
+      // positions + holdings + watchlist, and is the most useful
+      // single entry point regardless of role.
+      goto('/pulse');
     } catch (e) {
       error = e.message;
     } finally { loading = false; }
