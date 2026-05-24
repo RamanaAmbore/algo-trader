@@ -1341,10 +1341,21 @@
     // 4. Option-underlying anchors. Each anchor carries the major of
     //    its trigger context (positions / holdings) so the anchor
     //    lands in the same major as the options it's grouping.
+    //
+    //    Source-toggle gate: the anchor is a derived sibling-summary
+    //    for option positions/holdings. If those are filtered off,
+    //    the anchor row dangles (INDIGO / GOLDM / CRUDEOIL futures
+    //    appearing with no child options to anchor). Skip anchor
+    //    creation when its trigger major's toggle is off. Watchlist
+    //    + pinned anchors are gated downstream by mainRows /
+    //    pinnedTopRows via the _majorGroup filter; the includePos /
+    //    includeHold flags only reach buildUnified.
     for (const [logicalName, q] of Object.entries(uq)) {
       const info = q._resolved;
       if (!info) continue;
       const anchorMajor = info._major || 'positions';
+      if (anchorMajor === 'positions' && includePos  === false) continue;
+      if (anchorMajor === 'holdings'  && includeHold === false) continue;
       const row = get(info.tradingsymbol, anchorMajor);
       row.exchange      = row.exchange || info.exchange;
       row.tradingsymbol = info.tradingsymbol;
