@@ -35,9 +35,13 @@
   const _agUtilFmt  = ({ value }) => value == null ? '—' : `${Math.round(value * 100)}%`;
   const _numericHdr = 'ag-right-aligned-header';
 
-  // Direction-coloured numeric cell — green positive / red negative.
+  // Direction-coloured numeric cell — reuse the algo theme's
+  // existing pnl-gain / pnl-loss / pnl-zero classes (defined in
+  // app.css with `!important` to win against the theme's row
+  // colour). Same idiom as MarketPulse + PerformancePage so the
+  // visual treatment matches across every algo page.
   const _agDirCell = (p) =>
-    `ag-right-aligned-cell ${p.value > 0 ? 'cell-up' : p.value < 0 ? 'cell-down' : ''}`;
+    `ag-right-aligned-cell ${p.value > 0 ? 'pnl-gain' : p.value < 0 ? 'pnl-loss' : 'pnl-zero'}`;
 
   // IST-midnight-as-UTC for "today" date-window filters. Indian markets
   // (and operators) live in Asia/Kolkata; using the browser's local
@@ -919,9 +923,14 @@
     if (!_fundsEl || _fundsGrid) return;
     _fundsGrid = createGrid(_fundsEl, {
       ..._baseGridOpts,
+      // Tag the pinned-bottom TOTAL row with the algo theme's
+      // `totals-row` class so it inherits the amber accent +
+      // background tint defined in app.css. Mirrors the PerformancePage
+      // funds-grid behaviour.
+      getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
         { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
-          cellClass: 'cell-acct' },
+          cellClass: 'ag-col-fill' },
         { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
@@ -953,7 +962,7 @@
       ..._baseGridOpts,
       columnDefs: [
         { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
-          cellClass: 'cell-acct' },
+          cellClass: 'ag-col-fill' },
         { field: 'used', headerName: 'Used', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
@@ -965,11 +974,15 @@
         { field: 'util_pct', headerName: 'Util', minWidth: 56, flex: 0.7,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: (p) => {
+            // Util % colour ramp using the algo theme's pnl-* classes
+            // — green when well under-utilised, red when close to a
+            // margin call. Same colour family operators see on every
+            // other algo grid for "is this number good or bad".
             const v = Number(p.value) || 0;
-            const cls = v >= 0.85 ? 'cell-down'
-                      : v >= 0.70 ? 'cell-warn'
-                      : v >= 0.50 ? 'cell-mild'
-                      : 'cell-up';
+            const cls = v >= 0.85 ? 'pnl-loss'
+                      : v >= 0.70 ? 'util-warn'
+                      : v >= 0.50 ? 'util-mild'
+                      : 'pnl-gain';
             return `ag-right-aligned-cell ${cls}`;
           },
           valueFormatter: _agUtilFmt },
@@ -989,15 +1002,15 @@
       ..._baseGridOpts,
       columnDefs: [
         { field: 'symbol', headerName: 'Symbol', minWidth: 110, flex: 2,
-          pinned: 'left', cellClass: 'cell-sym',
+          pinned: 'left', cellClass: 'ag-col-fill ag-col-sym',
           sortable: true },
         { field: 'ltp', headerName: 'LTP', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: 'ag-right-aligned-cell cell-muted',
+          cellClass: 'ag-right-aligned-cell',
           valueFormatter: _agNumFmt },
         { field: 'pct', headerName: 'Δ %', minWidth: 64, flex: 0.9,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: () => `ag-right-aligned-cell ${kind === 'win' ? 'cell-up' : 'cell-down'}`,
+          cellClass: () => `ag-right-aligned-cell ${kind === 'win' ? 'pnl-gain' : 'pnl-loss'}`,
           valueFormatter: ({ value }) =>
             value == null ? '—'
             : (value > 0 ? '+' : '') + pctFmt(value) + '%',
@@ -2293,31 +2306,18 @@
     min-height: calc(100vh - 14rem);
   }
 
-  /* Direction cells shared across all dashboard grids.
-     - cell-up    : green (positive value / underutilised margin)
-     - cell-down  : red   (negative value / overutilised margin)
-     - cell-warn  : amber (margin 70-85 %)
-     - cell-mild  : light amber (margin 50-70 %)
-     - cell-muted : slate, used for neutral numerics (LTP)
-     - cell-acct  : account-code cell — fontweight + tighter letter-spacing
-     - cell-sym   : symbol cell — bolder, brighter foreground */
-  :global(.ag-theme-algo .cell-up)    { color: #4ade80; }
-  :global(.ag-theme-algo .cell-down)  { color: #f87171; }
-  :global(.ag-theme-algo .cell-warn)  { color: #fbbf24; }
-  :global(.ag-theme-algo .cell-mild)  { color: #e5c87a; }
-  :global(.ag-theme-algo .cell-muted) { color: #c8d8f0; }
-  :global(.ag-theme-algo .cell-acct)  {
-    color: #e2ecff;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+  /* Util-% gradient bands — pnl-gain (green, low util) and pnl-loss
+     (red, dangerous util) already live in the algo theme; util-warn
+     + util-mild fill the amber middle of the colour ramp.
+     `!important` so they win against the theme's row-level `color`. */
+  :global(.ag-theme-algo .util-warn) {
+    color: #fbbf24 !important;
+    background-color: rgba(251,191,36,0.08) !important;
   }
-  :global(.ag-theme-algo .cell-sym) {
-    color: #e2ecff;
-    font-weight: 700;
+  :global(.ag-theme-algo .util-mild) {
+    color: #e5c87a !important;
+    background-color: rgba(251,191,36,0.04) !important;
   }
-  /* TOTAL row (pinned bottom in Funds grid) — amber accent. */
-  :global(.ag-theme-algo .ag-row-pinned)  { background: rgba(251, 191, 36, 0.05); }
-  :global(.ag-theme-algo .ag-row-pinned .cell-acct) { color: #fbbf24; }
 
   /* Scrollable rows container — default-size cards cap the visible
      height so 10 rows don't bloat the card; fullscreen mode lifts
