@@ -90,7 +90,7 @@
         <span class="fork-tag fork-tag-alt">Platform &amp; Technology</span>
         <span class="fork-arrow">→</span>
       </div>
-      <h2 class="fork-title">Open the platform</h2>
+      <h2 class="fork-title">Explore the platform</h2>
       <p class="fork-sub">Production quant infrastructure that executes the strategy end-to-end — stock entries, multi-leg option writes, basket-margin checks, chase fills, risk overlays. Built by one engineer; demo runs against live broker data with accounts masked.</p>
       <ul class="fork-bullets">
         <li>5-mode execution ladder — Sim → Replay → Paper → Live → Shadow</li>
