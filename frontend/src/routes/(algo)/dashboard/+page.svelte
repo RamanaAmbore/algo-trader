@@ -994,7 +994,11 @@
           sort: kind === 'win' ? 'desc' : 'asc' },
       ],
       rowData: [],
-      domLayout: 'autoHeight',
+      // Normal layout (not autoHeight) — the wrapper carries an
+      // explicit height; ag-Grid scrolls internally. autoHeight +
+      // overflow:auto on the container had ag-Grid mis-measuring
+      // and rendering invisible headers on the W/L cards.
+      domLayout: 'normal',
       onRowClicked: (ev) => _openSymbol(ev.data?.symbol),
       overlayNoRowsTemplate:
         `<span style="font-size:0.65rem;color:#7e97b8">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
@@ -2263,19 +2267,20 @@
   }
   .dash-mini-grid + .bucket-subheader { margin-top: 0.55rem; }
 
-  /* W/L grid — taller cap with internal scroll when many rows. The
-     fullscreen mode lifts the cap (handled via .fs-card-on rule
-     below). Hover row → amber cursor + slight background tint.
-     SymbolPanel opens on row click via onRowClicked. */
+  /* W/L grid — explicit height so ag-Grid (domLayout: 'normal')
+     measures + scrolls internally. Earlier max-height + overflow:auto
+     on the wrapper with autoHeight on the grid caused ag-Grid to
+     mis-measure and render an invisible header. Fullscreen mode
+     fills the modal via flex:1 + min-height. */
   .dash-wl-grid {
     width: 100%;
-    min-height: 60px;
-    max-height: 18rem;
-    overflow: auto;
+    height: 18rem;
     cursor: pointer;
   }
   .fs-card-on .dash-wl-grid {
-    max-height: calc(100vh - 14rem);
+    flex: 1;
+    height: auto;
+    min-height: calc(100vh - 14rem);
   }
 
   /* Direction cells shared across all dashboard grids.
