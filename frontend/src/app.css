@@ -952,3 +952,23 @@
   }
 }
 
+/* Card header icon cluster — once one element gains a left auto
+   margin (AccountMultiSelect via .ams, or CollapseButton, or
+   FullscreenButton when standalone), adjacent siblings drop their
+   own auto-margin and sit tight. Result: title left, picker +
+   collapse + fullscreen cluster right with a small gap. */
+.ams + .collapse-btn,
+.ams + .fs-btn,
+.collapse-btn + .fs-btn {
+  margin-left: 0.3rem !important;
+}
+
+/* Collapsed card — strips trailing padding so the card body
+   doesn't reserve a vertical gap below the header when the body
+   isn't rendered. Cards opt in via class:is-collapsed={state}. */
+.is-collapsed {
+  padding-bottom: 0 !important;
+}
+.is-collapsed > :is(.bucket-header, .card-header-row, .row3-header) {
+  margin-bottom: 0 !important;
+}

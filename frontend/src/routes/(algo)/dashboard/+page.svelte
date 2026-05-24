@@ -6,6 +6,7 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import CollapseButton from '$lib/CollapseButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
@@ -158,6 +159,17 @@
   let _fsNews        = $state(false);
   let _fsPnl         = $state(false);
   let _fsAgent       = $state(false);
+
+  // Per-card collapse toggles. CollapseButton hydrates each from
+  // localStorage on mount (keyed by user + cardId), so these
+  // initial `false` values are placeholders only — the component
+  // overwrites after the first onMount tick.
+  let _colEquityCurve = $state(false);
+  let _colCapital     = $state(false);
+  let _colEquity      = $state(false);
+  let _colWinners     = $state(false);
+  let _colLosers      = $state(false);
+  let _colNews        = $state(false);
 
   // ── ag-Grid bindings for the dashboard cards ────────────────────
   // Each card mounts its own grid imperatively via bind:this + a
@@ -1321,12 +1333,17 @@
        moved into the Capital card below, so the chart gets the
        full page width. Reads like Bloomberg's portfolio chart
        on a desktop PRTU page. -->
-  <section class="row1-col row1-col-chart" class:fs-card-on={_fsEquityCurve}>
+  <section class="row1-col row1-col-chart"
+    class:fs-card-on={_fsEquityCurve}
+    class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
       <div class="mp-section-label">Intraday Equity Curve</div>
+      <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Intraday Equity Curve" />
       <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Intraday Equity Curve" />
     </div>
-    {#if !_equityPoints.length}
+    {#if _colEquityCurve}
+      <!-- Collapsed — only the header is visible. -->
+    {:else if !_equityPoints.length}
       <div class="eq-empty">
         No data yet — markets open at 09:15 IST
       </div>
@@ -1442,34 +1459,37 @@
   <!-- Capital card — funds + margin utilisation. The two natural
        siblings: "what cash do I have" + "how much of my margin is
        in use" answer the same question (can I take on more risk?). -->
-  <section class="bucket-card bucket-cap" class:fs-card-on={_fsCapital}>
+  <section class="bucket-card bucket-cap"
+    class:fs-card-on={_fsCapital}
+    class:is-collapsed={_colCapital}>
     <div class="bucket-header">
       <span class="mp-section-label">Capital</span>
+      <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
       <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
     </div>
 
-    <!-- Margin Utilisation — ag-Grid replaces the SVG donuts.
-         Tabular view aligns visually with the Funds grid below. -->
-    {#if _marginRows.length > 0}
-      <div class="bucket-subheader">Margin Utilisation</div>
-    {/if}
-    <div
-      bind:this={_marginEl}
-      class="ag-theme-algo dash-mini-grid"
-      class:is-empty={_marginRows.length === 0}></div>
+    {#if !_colCapital}
+      <!-- Margin Utilisation — ag-Grid replaces the SVG donuts. -->
+      {#if _marginRows.length > 0}
+        <div class="bucket-subheader">Margin Utilisation</div>
+      {/if}
+      <div
+        bind:this={_marginEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_marginRows.length === 0}></div>
 
-    <!-- Funds — per-account cash + collateral + avail/used margin
-         + TOTAL pinned at bottom. -->
-    {#if _fundsBody.length > 0}
-      <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
-    {/if}
-    <div
-      bind:this={_fundsEl}
-      class="ag-theme-algo dash-mini-grid"
-      class:is-empty={_fundsBody.length === 0}></div>
+      <!-- Funds — per-account cash + collateral + avail/used margin. -->
+      {#if _fundsBody.length > 0}
+        <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
+      {/if}
+      <div
+        bind:this={_fundsEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_fundsBody.length === 0}></div>
 
-    {#if _marginRows.length === 0 && _fundsBody.length === 0}
-      <EmptyState message="No accounts connected" />
+      {#if _marginRows.length === 0 && _fundsBody.length === 0}
+        <EmptyState message="No accounts connected" />
+      {/if}
     {/if}
   </section>
 
@@ -1480,48 +1500,46 @@
        (intraday-relevant, glanced first), holdings below. Both are
        compact HTML tables sharing the same .cap-table treatment as
        Capital. Counts are inline next to each sub-heading. -->
-  <section class="bucket-card bucket-eq" class:fs-card-on={_fsEquity}>
+  <section class="bucket-card bucket-eq"
+    class:fs-card-on={_fsEquity}
+    class:is-collapsed={_colEquity}>
     <div class="bucket-header">
       <span class="mp-section-label">Equity</span>
-      <!-- Equity card always shows Positions + Holdings — picker stays
-           enabled (the global AccountMultiSelect rule allows it). -->
       <AccountMultiSelect
         bind:value={_selectedAccounts}
         options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
       <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
     </div>
 
-    <!-- Positions Summary — intraday, glanced first. Sub-heading
-         hides when no positions are loaded (zero-row autoHeight grid
-         would otherwise still take ~28 px header strip + 1.5 rem
-         subheader for an empty section). -->
-    {#if _positionsSummary.length > 0}
-      <div class="bucket-subheader">
-        Positions
-        <span class="eq-count">{_positionsCount}</span>
-      </div>
-    {/if}
-    <div
-      bind:this={_eqPosEl}
-      class="ag-theme-algo dash-mini-grid"
-      class:is-empty={_positionsSummary.length === 0}></div>
+    {#if !_colEquity}
+      <!-- Positions Summary — intraday, glanced first. -->
+      {#if _positionsSummary.length > 0}
+        <div class="bucket-subheader">
+          Positions
+          <span class="eq-count">{_positionsCount}</span>
+        </div>
+      {/if}
+      <div
+        bind:this={_eqPosEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_positionsSummary.length === 0}></div>
 
-    <!-- Holdings Summary — EOD picture, sits below positions. -->
-    {#if _holdingsSummary.length > 0}
-      <div class="bucket-subheader bucket-subheader-spaced">
-        Holdings
-        <span class="eq-count">{_holdingsCount}</span>
-      </div>
-    {/if}
-    <div
-      bind:this={_eqHoldEl}
-      class="ag-theme-algo dash-mini-grid"
-      class:is-empty={_holdingsSummary.length === 0}></div>
+      <!-- Holdings Summary — EOD picture, sits below positions. -->
+      {#if _holdingsSummary.length > 0}
+        <div class="bucket-subheader bucket-subheader-spaced">
+          Holdings
+          <span class="eq-count">{_holdingsCount}</span>
+        </div>
+      {/if}
+      <div
+        bind:this={_eqHoldEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_holdingsSummary.length === 0}></div>
 
-    <!-- Cold-start: positions + holdings both empty. Show a single
-         compact message instead of stacking two empty grid headers. -->
-    {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
-      <EmptyState message="No equity exposure" />
+      {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
+        <EmptyState message="No equity exposure" />
+      {/if}
     {/if}
   </section>
 </div>
@@ -1540,45 +1558,46 @@
   <div class="dash-row2">
     {#if _hasWinners}
       {@const winRows = (_winnerBuckets.find(b => b.label === _winTabLabel(_winTab)))?.rows ?? []}
-      <section class="wl-tile wl-tile-win" class:fs-card-on={_fsWinners}>
+      <section class="wl-tile wl-tile-win"
+        class:fs-card-on={_fsWinners}
+        class:is-collapsed={_colWinners}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP WINNERS</span>
-          <!-- Shared account multiselect — auto-disables on market
-               tabs (Underlying / Midcap / Smallcap) since those
-               universes don't depend on the operator's accounts.
-               Holdings + Positions tabs honour the filter. -->
-          <!-- Picker disables on Underlying/Midcap/Smallcap tabs
-               (market-wide, account-agnostic) per the global rule. -->
           <AccountMultiSelect
             bind:value={_selectedAccounts}
             options={_availableAccounts.map(a => ({ value: a, label: a }))}
             disabled={_winAcctDisabled}
             disabledReason="Account filter applies only to Holdings + Positions tabs" />
+          <CollapseButton bind:isCollapsed={_colWinners} cardId="winners" label="Top Winners" />
           <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
         </div>
-        <div class="wl-tabs" role="tablist">
-          {#each _winnerBuckets as bucket}
-            {@const key = _bucketKey(bucket.label)}
-            <button
-              type="button"
-              role="tab"
-              class="wl-tab"
-              class:wl-tab-on={_winTab === key}
-              aria-selected={_winTab === key}
-              onclick={() => _winTab = key}>
-              {_tabShort(bucket.label)}
-            </button>
-          {/each}
-        </div>
-        <div
-          bind:this={_winEl}
-          class="ag-theme-algo dash-wl-grid"
-          class:is-empty={_winRowsAg.length === 0}></div>
+        {#if !_colWinners}
+          <div class="wl-tabs" role="tablist">
+            {#each _winnerBuckets as bucket}
+              {@const key = _bucketKey(bucket.label)}
+              <button
+                type="button"
+                role="tab"
+                class="wl-tab"
+                class:wl-tab-on={_winTab === key}
+                aria-selected={_winTab === key}
+                onclick={() => _winTab = key}>
+                {_tabShort(bucket.label)}
+              </button>
+            {/each}
+          </div>
+          <div
+            bind:this={_winEl}
+            class="ag-theme-algo dash-wl-grid"
+            class:is-empty={_winRowsAg.length === 0}></div>
+        {/if}
       </section>
     {/if}
 
     {#if _hasLosers}
-      <section class="wl-tile wl-tile-loss" class:fs-card-on={_fsLosers}>
+      <section class="wl-tile wl-tile-loss"
+        class:fs-card-on={_fsLosers}
+        class:is-collapsed={_colLosers}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
           <AccountMultiSelect
@@ -1586,38 +1605,46 @@
             options={_availableAccounts.map(a => ({ value: a, label: a }))}
             disabled={_losAcctDisabled}
             disabledReason="Account filter applies only to Holdings + Positions tabs" />
+          <CollapseButton bind:isCollapsed={_colLosers} cardId="losers" label="Top Losers" />
           <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
         </div>
-        <div class="wl-tabs" role="tablist">
-          {#each _loserBuckets as bucket}
-            {@const key = _bucketKey(bucket.label)}
-            <button
-              type="button"
-              role="tab"
-              class="wl-tab"
-              class:wl-tab-on={_losTab === key}
-              aria-selected={_losTab === key}
-              onclick={() => _losTab = key}>
-              {_tabShort(bucket.label)}
-            </button>
-          {/each}
-        </div>
-        <div
-          bind:this={_losEl}
-          class="ag-theme-algo dash-wl-grid"
-          class:is-empty={_losRowsAg.length === 0}></div>
+        {#if !_colLosers}
+          <div class="wl-tabs" role="tablist">
+            {#each _loserBuckets as bucket}
+              {@const key = _bucketKey(bucket.label)}
+              <button
+                type="button"
+                role="tab"
+                class="wl-tab"
+                class:wl-tab-on={_losTab === key}
+                aria-selected={_losTab === key}
+                onclick={() => _losTab = key}>
+                {_tabShort(bucket.label)}
+              </button>
+            {/each}
+          </div>
+          <div
+            bind:this={_losEl}
+            class="ag-theme-algo dash-wl-grid"
+            class:is-empty={_losRowsAg.length === 0}></div>
+        {/if}
       </section>
     {/if}
   </div>
 {/if}
 
 <!-- Row 3: Market news strip — single column. -->
-<div class="dash-row3" class:fs-card-on={_fsNews}>
+<div class="dash-row3"
+  class:fs-card-on={_fsNews}
+  class:is-collapsed={_colNews}>
   <div class="row3-header">
     <span class="mp-section-label">MARKET NEWS</span>
+    <CollapseButton bind:isCollapsed={_colNews} cardId="news" label="Market News" />
     <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
   </div>
-  <NewsList limit={5} showRefreshTime={true} />
+  {#if !_colNews}
+    <NewsList limit={5} showRefreshTime={true} />
+  {/if}
 </div>
 
 <!-- P&L Analysis — full-width collapsible. Capital + Equity buckets
