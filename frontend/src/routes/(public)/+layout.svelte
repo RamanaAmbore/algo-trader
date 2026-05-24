@@ -343,11 +343,13 @@
 
   /* Nav buttons — laptop / desktop. About / Market / Performance / FAQ /
      Contact get the prominent treatment; the right-side context-switch
-     pills (Platform Demo, Sign In) stay tighter. Padding kept compact
-     so the hover/active background pill hugs the text rather than
-     ballooning around it — font-size carries the prominence. */
+     pills (Platform Demo, Sign In) stay tighter. Padding kept minimal
+     so the hover/active background pill hugs the text. Click target
+     stays comfortable because the navbar row itself is h-14 — every
+     button is vertically centred in a 3.5rem strip regardless of its
+     own intrinsic height. */
   :global(.pub-nav-btn) {
-    padding: 0.22rem 0.6rem;
+    padding: 0.14rem 0.4rem;
     font-size: 0.95rem;
     font-weight: 500;
     border-radius: 0.25rem;
