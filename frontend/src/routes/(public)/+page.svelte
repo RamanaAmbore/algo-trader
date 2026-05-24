@@ -112,8 +112,8 @@
     <div class="terms-grid">
       <div class="term">
         <div class="term-lbl">Minimum</div>
-        <div class="term-val">By invitation</div>
-        <div class="term-note">Discussed with active partners</div>
+        <div class="term-val">₹10 lakh</div>
+        <div class="term-note">Higher tiers by invitation</div>
       </div>
       <div class="term">
         <div class="term-lbl">Fees</div>

@@ -99,7 +99,7 @@
   ];
 
   const facts = [
-    { val: '~25k', lbl: 'lines of code' },
+    { val: '~70k', lbl: 'lines of code' },
     { val: '5',    lbl: 'execution modes' },
     { val: '3',    lbl: 'broker adapters' },
     { val: '14+',  lbl: 'loss/risk agents' },
