@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { fetchMarket, fetchNews } from '$lib/api';
+  import { fetchMarket } from '$lib/api';
+  import NewsList from '$lib/NewsList.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { dataCache } from '$lib/stores';
 
@@ -18,39 +19,8 @@
   /** @type {'summary' | 'news'} */
   let tab = $state('summary');
 
-  // Market news — same /api/news feed the algo LogPanel consumes, but
-  // styled in the public-site palette and labelled "Market News" (no
-  // "log" / "feed" jargon). Refreshes every 10 minutes alongside the
-  // market summary.
-  /** @type {Array<{title:string, link:string, source:string, timestamp:string}>} */
-  let news         = $state([]);
-  let newsRefresh  = $state('');
-  let newsLoading  = $state(false);
-  let newsError    = $state('');
-  let newsTimer;
-
-  async function loadNews() {
-    newsLoading = true;
-    try {
-      const r = await fetchNews();
-      news        = r?.items || [];
-      newsRefresh = r?.refreshed_at || '';
-      newsError   = '';
-    } catch (e) {
-      newsError = e?.message || 'Failed to load news';
-    } finally {
-      newsLoading = false;
-    }
-  }
-
-  function newsTime(/** @type {string} */ ts) {
-    if (!ts) return '';
-    // The /api/news payload includes a presentational timestamp — pull
-    // out HH:MM if it's an ISO string, else show whatever the API gave us.
-    if (ts.length >= 19 && ts[10] === 'T') return ts.slice(11, 16);
-    const m = ts.match(/\d\d:\d\d/);
-    return m ? m[0] : ts;
-  }
+  // News tab — rendered via shared NewsList component (theme="public").
+  // State (fetch, poll, refresh timestamp) is owned by NewsList.
 
   function renderMarkdown(/** @type {string} */ md) {
     const lines = md.split('\n');
@@ -105,16 +75,10 @@
     }
     await load();
     unsub = createPerformanceSocket(() => load());
-    // News refreshes independently — server caps the upstream feed at
-    // ~10 min so polling faster wastes calls. First load is immediate;
-    // subsequent reloads on a 10-min cadence keep the section live.
-    loadNews();
-    newsTimer = setInterval(loadNews, 10 * 60 * 1000);
   });
 
   onDestroy(() => {
     unsub?.();
-    if (newsTimer) clearInterval(newsTimer);
   });
 </script>
 <svelte:head>
@@ -165,10 +129,6 @@
     {#if tab === 'summary'}
       {#if loading && !content}Loading…
       {:else if loading}Refreshing…{/if}
-    {:else if newsLoading && !news.length}
-      Loading…
-    {:else if newsLoading}
-      Refreshing…
     {/if}
   </div>
 </div>
@@ -181,8 +141,6 @@
        has horizontal padding to absorb the overflow. -->
   {#if tab === 'summary' && lastRefresh}
     <div class="text-[0.65rem] text-muted perf-ts market-refresh-line">Refreshed at {lastRefresh}</div>
-  {:else if tab === 'news' && newsRefresh}
-    <div class="text-[0.65rem] text-muted perf-ts market-refresh-line">Refreshed at {newsRefresh}</div>
   {/if}
 
   {#if tab === 'summary'}
@@ -214,28 +172,13 @@
       <p class="text-text/40 text-sm">No market update available.</p>
     {/if}
   {:else}
-    {#if newsError}
-      <div class="pub-banner-error p-2 rounded text-xs mb-2">
-        {newsError}
-      </div>
-    {/if}
-    {#if news.length}
-      <ul class="news-list">
-        {#each news as n}
-          <li class="news-row">
-            <span class="news-time">{newsTime(n.timestamp)}</span>
-            <a class="news-title" href={n.link} target="_blank" rel="noopener">
-              {n.title}
-            </a>
-            {#if n.source}
-              <span class="news-src" title={n.source}>{n.source}</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {:else if !newsLoading}
-      <p class="text-text/40 text-sm">No headlines available right now.</p>
-    {/if}
+    <NewsList
+      theme="public"
+      limit={20}
+      showRefreshTime={true}
+      pollMs={10 * 60 * 1000}
+      emptyMessage="No headlines available right now."
+    />
   {/if}
 </div>
 
@@ -318,60 +261,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  /* Market News — same palette as the rest of the public market page
-     (cream + navy + champagne accent). */
-  .news-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-  }
-  .news-row {
-    display: grid;
-    grid-template-columns: max-content 1fr max-content;
-    align-items: baseline;
-    gap: 0.6rem;
-    padding: 0.45rem 0;
-    border-bottom: 1px solid #e7e0cf;
-    font-size: 0.85rem;
-    color: #1e3050;
-    line-height: 1.5;
-  }
-  .news-row:last-child { border-bottom: 0; }
-  .news-time {
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    color: #6b7894;
-    min-width: 3rem;
-  }
-  .news-title {
-    color: #1a2744;
-    text-decoration: none;
-    font-weight: 500;
-  }
-  .news-title:hover {
-    color: #b27908;
-    text-decoration: underline;
-    text-decoration-thickness: 1px;
-    text-underline-offset: 2px;
-  }
-  .news-src {
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
-    color: #6b7894;
-    background: #f4ead4;
-    border: 1px solid #ead7a6;
-    padding: 1px 6px;
-    border-radius: 2px;
-    white-space: nowrap;
-    max-width: 14ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  @media (max-width: 600px) {
-    .news-row { grid-template-columns: max-content 1fr; }
-    .news-src { display: none; }
   }
 
   /* ── Empty / waiting state — shown when the API returns the standby

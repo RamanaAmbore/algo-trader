@@ -6,10 +6,11 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
+  import NewsList from '$lib/NewsList.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
     fetchFunds, fetchBrokerAccounts, fetchIntradayEquity,
-    batchQuote, fetchNews,
+    batchQuote,
   } from '$lib/api';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
@@ -60,11 +61,6 @@
   // PnlAnalysis collapse — persisted to localStorage.
   let _pnlOpen = $state(false);
 
-  // News strip state.
-  /** @type {Array<{title:string, link:string, source:string, timestamp:string}>} */
-  let _news         = $state([]);
-  let _newsRefresh  = $state(/** @type {string|null} */ (null));
-  let _newsTeardown;
 
   // ── Raw positions + holdings (reused for winners/losers) ──────────
   /** @type {any[]} */
@@ -317,29 +313,6 @@
     return `${used.toFixed(2)} ${GAUGE_CIRC.toFixed(2)}`;
   }
 
-  // ── News helpers ───────────────────────────────────────────────────
-  function timeSince(/** @type {string|null|undefined} */ iso) {
-    if (!iso) return '—';
-    const ts = new Date(iso);
-    if (isNaN(ts.getTime())) return '—';
-    const diffMs = Date.now() - ts.getTime();
-    if (diffMs < 0) return 'now';
-    const mins = Math.floor(diffMs / 60000);
-    if (mins < 1) return 'now';
-    if (mins < 60) return `${mins}m`;
-    const hrs = Math.floor(mins / 60);
-    const rem = mins % 60;
-    return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
-  }
-
-  async function _fetchNewsData() {
-    try {
-      const r = await fetchNews();
-      _news = r?.items ?? [];
-      _newsRefresh = r?.refreshed_at ?? null;
-    } catch (_) { /* leave stale */ }
-  }
-
   // ── Fetch functions ────────────────────────────────────────────────
   async function _fetchEquity() {
     try {
@@ -444,10 +417,8 @@
     _pnlOpen = localStorage.getItem('dash.pnlOpen') === '1';
     loadHero();
     _heroTeardown = visibleInterval(loadHero, 30000);
-    _fetchNewsData();
-    _newsTeardown = visibleInterval(_fetchNewsData, 5 * 60 * 1000);
   });
-  onDestroy(() => { _heroTeardown?.(); _newsTeardown?.(); });
+  onDestroy(() => { _heroTeardown?.(); });
 
   function dismissBanner() {
     bannerDismissed = true;
@@ -784,48 +755,13 @@
   </div>
 {/if}
 
-<!-- Row 3: Market news strip — single column, hidden when no headlines. -->
-{#if _news.length > 0}
-  <div class="dash-row3">
-    <div class="row3-header">
-      <span class="mp-section-label">MARKET NEWS</span>
-      {#if _newsRefresh}
-        <span class="row3-refresh">· refreshed {timeSince(_newsRefresh)} ago</span>
-      {/if}
-    </div>
-    <ul class="dash-news-list">
-      {#each _news.slice(0, 5) as item}
-        {@const _stamp = item.timestamp ? new Date(item.timestamp) : null}
-        {@const _dateStr = _stamp && !isNaN(_stamp.getTime())
-          ? _stamp.toLocaleString('en-IN', {
-              day: '2-digit', month: 'short',
-              hour: '2-digit', minute: '2-digit', hour12: false,
-              timeZone: 'Asia/Kolkata',
-            })
-          : ''}
-        <li class="dash-news-row">
-          <!-- Relative "12m" pill stays the headline scanner; full
-               IST datestamp sits as a sub-line so operators can
-               glance both formats. Hover tooltip carries the exact
-               ISO for click-to-copy-into-bug-reports. -->
-          <span class="dash-news-time" title={item.timestamp || ''}>
-            {timeSince(item.timestamp)}
-            {#if _dateStr}<span class="dash-news-time-abs">{_dateStr}</span>{/if}
-          </span>
-          <a
-            class="dash-news-title"
-            href={item.link}
-            target="_blank"
-            rel="noopener"
-          >{item.title}</a>
-          {#if item.source}
-            <span class="dash-news-src">{item.source}</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+<!-- Row 3: Market news strip — single column. -->
+<div class="dash-row3">
+  <div class="row3-header">
+    <span class="mp-section-label">MARKET NEWS</span>
   </div>
-{/if}
+  <NewsList theme="algo" limit={5} showRefreshTime={true} />
+</div>
 
 <!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
      stack (Funds + Positions Summary + Holdings Summary) on the right. -->
@@ -1356,78 +1292,6 @@
     align-items: baseline;
     gap: 0.4rem;
     margin-bottom: 0.3rem;
-  }
-  .row3-refresh {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    color: #7e97b8;
-    letter-spacing: 0.03em;
-  }
-  .dash-news-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .dash-news-row {
-    display: grid;
-    grid-template-columns: 6.2rem 1fr max-content;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.28rem 0;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.12);
-    font-family: ui-monospace, monospace;
-  }
-  .dash-news-row:last-child { border-bottom: none; }
-  .dash-news-time {
-    font-size: 0.58rem;
-    color: #7dd3fc;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    white-space: nowrap;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    line-height: 1.15;
-  }
-  /* Absolute IST datestamp sits below the relative ago-pill. Same
-     column width, dimmer colour so the eye lands on the relative
-     first; the absolute is reference. */
-  .dash-news-time-abs {
-    font-size: 0.52rem;
-    color: rgba(126,151,184,0.65);
-    font-weight: 400;
-  }
-  .dash-news-title {
-    font-size: 0.68rem;
-    color: #c8d8f0;
-    text-decoration: none;
-    font-weight: 500;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    transition: color 0.1s;
-  }
-  .dash-news-title:hover { color: #fbbf24; }
-  .dash-news-src {
-    font-size: 0.55rem;
-    color: #7e97b8;
-    background: rgba(126, 151, 184, 0.10);
-    border: 1px solid rgba(126, 151, 184, 0.20);
-    padding: 1px 5px;
-    border-radius: 2px;
-    white-space: nowrap;
-    max-width: 12ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-shrink: 0;
-  }
-  @media (max-width: 600px) {
-    .dash-news-row { grid-template-columns: 4.4rem 1fr; }
-    .dash-news-src { display: none; }
-    .dash-news-time-abs { font-size: 0.48rem; }
   }
 
   /* ── P&L Analysis collapsible ────────────────────────────────────── */

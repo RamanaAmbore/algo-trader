@@ -2,10 +2,10 @@
   import { onDestroy, onMount } from 'svelte';
   import { parseLogLineTime, logTime, logTimeIst, logTimeEdt } from '$lib/stores';
   import {
-    fetchNews,
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
   } from '$lib/api';
+  import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
 
@@ -131,26 +131,6 @@
     if (tabs.includes('terminal'))  _every(_loadOrders);  // Terminal tab embeds order rows
   });
   onDestroy(() => { for (const id of _intervals) clearInterval(id); });
-  let newsItems = $state(/** @type {Array<{title:string,link:string,source:string,timestamp:string}>} */ ([]));
-  let newsRefresh = $state('');
-  let newsLoading = $state(false);
-  let newsInterval;
-
-  async function loadNews() {
-    newsLoading = true;
-    try {
-      const data = await fetchNews();
-      newsItems   = data?.items || [];
-      newsRefresh = data?.refreshed_at || '';
-    } catch (_) { /* ignore */ }
-    newsLoading = false;
-  }
-
-  onMount(() => {
-    loadNews();
-    newsInterval = setInterval(loadNews, 10 * 60 * 1000);
-    return () => { if (newsInterval) clearInterval(newsInterval); };
-  });
 
   const _ALL_TABS = [
     ['order',     'Order'],
@@ -428,31 +408,15 @@
 </div>
 
 {#if logTab === 'news'}
-  <!-- News tab — proper row layout (matches the public /performance
-       Market News card structure: time / title / source per row) but
-       in the algo dark palette. Pulled out of the shared <pre> so each
-       row gets real padding + a hairline separator instead of being
-       squashed onto a single monospace line. -->
+  <!-- News tab — rendered via shared NewsList component in algo palette. -->
   <div class="log-panel log-news-panel {heightClass}">
-    {#if newsRefresh}
-      <div class="log-news-head">Refreshed at {newsRefresh}</div>
-    {/if}
-    {#if newsLoading && !newsItems.length}
-      <div class="log-debug">Loading headlines…</div>
-    {:else if newsItems.length}
-      <ul class="log-news-list">
-        {#each newsItems as n}
-          <li class="log-news-row">
-            <span class="log-news-time">{_newsTime(n.timestamp)}</span>
-            <a class="log-news-title" href={n.link} target="_blank" rel="noopener">
-              {n.title}{#if n.source}<span class="log-news-src">{n.source}</span>{/if}
-            </a>
-          </li>
-        {/each}
-      </ul>
-    {:else}
-      <div class="log-debug">No headlines.</div>
-    {/if}
+    <NewsList
+      theme="algo"
+      limit={50}
+      showRefreshTime={true}
+      pollMs={10 * 60 * 1000}
+      emptyMessage="No headlines."
+    />
   </div>
 {:else if logTab === 'order'}
   <!-- Order tab — [All] uses the unified merged feed (orders + agent
