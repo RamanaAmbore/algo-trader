@@ -229,15 +229,31 @@
         <div><label class="field-label">Full Name</label><input bind:value={createForm.display_name} class="field-input" /></div>
         <div><label class="field-label">Email</label><input type="email" bind:value={createForm.email} class="field-input" /></div>
         <div><label class="field-label">Phone</label><input bind:value={createForm.phone} class="field-input" /></div>
+        {@const iAmDesignatedCreate = $authStore.user?.role === 'designated'}
+        <!-- Role picker — admin can only create partners. Designated
+             can create any role (partner / admin / designated).
+             Backend (admin.py::create_user) coerces non-designated
+             attempts to 'partner' anyway, but the UI hides the
+             elevated choices to match the mental model. -->
         <div><label class="field-label">Role</label>
-          <Select ariaLabel="Role" bind:value={createForm.role}
-            options={[
-              { value: 'partner', label: 'Partner' },
-              { value: 'admin',   label: 'Admin'   },
-            ]} />
+          {#if iAmDesignatedCreate}
+            <Select ariaLabel="Role" bind:value={createForm.role}
+              options={[
+                { value: 'partner',    label: 'Partner'    },
+                { value: 'admin',      label: 'Admin'      },
+                { value: 'designated', label: 'Designated' },
+              ]} />
+          {:else}
+            <div class="field-input field-input-readonly">Partner</div>
+          {/if}
         </div>
-        <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={createForm.contribution} class="field-input" /></div>
-        <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={createForm.share_pct} class="field-input" /></div>
+        <!-- Capital + share % — designated-only. Backend silently
+             coerces non-designated attempts to 0.0, but the inputs
+             are hidden for admin so the form matches the policy. -->
+        {#if iAmDesignatedCreate}
+          <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={createForm.contribution} class="field-input" /></div>
+          <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={createForm.share_pct} class="field-input" /></div>
+        {/if}
         <div class="flex items-end">
           <button onclick={doCreate} disabled={creating || !createForm.username || !createForm.password}
             class="btn-primary text-[0.65rem] py-1.5 px-4 disabled:opacity-50">
@@ -420,9 +436,17 @@
                         { value: 'admin',   label: 'Admin'   },
                       ]} />
                   </div>
-                  <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={editForm.contribution} class="field-input" /></div>
-                  <div><label class="field-label">Contribution Date</label><input type="date" bind:value={editForm.contribution_date} class="field-input" /></div>
-                  <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={editForm.share_pct} class="field-input" /></div>
+                  <!-- Capital + share % + contribution date — designated-
+                       only. Backend (admin.py::update_user) silently
+                       drops these from non-designated PATCH bodies; the
+                       UI hides the inputs to match the policy. Admin
+                       still SEES the values in the user-card display
+                       above (read-only). -->
+                  {#if iAmDesignated}
+                    <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={editForm.contribution} class="field-input" /></div>
+                    <div><label class="field-label">Contribution Date</label><input type="date" bind:value={editForm.contribution_date} class="field-input" /></div>
+                    <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={editForm.share_pct} class="field-input" /></div>
+                  {/if}
                   <div><label class="field-label">Join Date</label><input type="date" bind:value={editForm.join_date} class="field-input" /></div>
                 </div>
               </div>

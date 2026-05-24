@@ -786,6 +786,16 @@
     transition: border-color 0.05s;
   }
   .field-input:focus { border-color: #0c1830; }
+  /* Readonly chip — used when an input is replaced with a fixed-value
+     display (e.g. admin sees "Partner" as the only role choice they
+     can assign, hidden behind designated_only gating). Same dimensions
+     as .field-input so the form grid stays aligned, dimmer text + grey
+     bg to make the read-only nature obvious. */
+  .field-input-readonly {
+    background: #f4f6fa;
+    color: #5a6a82;
+    cursor: not-allowed;
+  }
 
   /* Bloomberg-inspired: deep slate bg, amber left-rule, subtle depth */
   .cmd-input {
