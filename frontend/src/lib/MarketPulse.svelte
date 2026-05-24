@@ -284,13 +284,35 @@
   });
   let stopMoversPoll;
 
-  // Account picker state (dashboard mode). `selectedAccount === 'all'`
-  // shows everything; a specific account id filters the positions /
-  // holdings INPUTS to buildUnified so the merged rows + summaries
-  // reflect just that account. Watchlist + option-underlying rows
-  // are not account-scoped — they always show.
-  let selectedAccount = $state('all');
+  // Account-picker state. Now a MultiSelect — operator can scope
+  // positions / holdings INPUTS to buildUnified to any subset of
+  // broker accounts. EMPTY array = all accounts (no filter); the
+  // sentinel here is `length === 0` rather than the old 'all' string.
+  // Watchlist + option-underlying rows are not account-scoped —
+  // they always show.
+  //
+  // Both the old single-value `selectedAccount` and the new array
+  // `selectedAccounts` co-exist here only as a one-call mental model
+  // — every downstream check reads `selectedAccounts`. The picker
+  // persists to sessionStorage so the filter survives a refresh.
+  let selectedAccounts = $state(/** @type {string[]} */ ([]));
+  // Derived membership predicate — `true` when EITHER no filter is
+  // applied (length === 0) OR the given account is in the chosen set.
+  // Acts as a hot-path helper used by every per-account derivation
+  // below.
+  const _includesAccount = $derived((acct) =>
+    selectedAccounts.length === 0 || selectedAccounts.includes(String(acct || ''))
+  );
   let availableAccounts = $state(/** @type {string[]} */ ([]));
+
+  // Persist account-multiselect to sessionStorage on change so the
+  // filter survives a tab refresh; cleared per session.
+  $effect(() => {
+    if (typeof sessionStorage === 'undefined') return;
+    try {
+      sessionStorage.setItem('mp.selectedAccounts', JSON.stringify(selectedAccounts));
+    } catch (_) { /* quota / blocked — silent. */ }
+  });
   // Per-source summary rows from the backend (positions / holdings
   // endpoints return precomputed per-account totals in .summary).
   // Combined into one row-set for the summary grid above the main one.
@@ -475,6 +497,16 @@
     // here so this component can also be embedded in flows that
     // intentionally allow anonymous demo viewers.
     loadOverrides();
+    // Restore previous account-multiselect from sessionStorage so
+    // the filter survives a tab refresh. Wrapped in try/catch
+    // because cached account codes may no longer exist on the
+    // current server (operator switched broker accounts).
+    if (accountPicker) {
+      try {
+        const cached = sessionStorage.getItem('mp.selectedAccounts');
+        if (cached) selectedAccounts = JSON.parse(cached) || [];
+      } catch (_) { selectedAccounts = []; }
+    }
     await tick();
     mountGrid();
 
@@ -728,16 +760,12 @@
   });
 
   const positionsSummaryBody  = $derived(
-    selectedAccount === 'all'
-      ? positionsSummaryData.filter(r => !isTotalRow(r))
-      : positionsSummaryData.filter(r => r.account === selectedAccount)
+    positionsSummaryData.filter(r => !isTotalRow(r) && _includesAccount(r.account))
   );
   const positionsSummaryTotal = $derived(positionsSummaryData.filter(isTotalRow));
 
   const holdingsSummaryBody  = $derived(
-    selectedAccount === 'all'
-      ? holdingsSummaryData.filter(r => !isTotalRow(r))
-      : holdingsSummaryData.filter(r => r.account === selectedAccount)
+    holdingsSummaryData.filter(r => !isTotalRow(r) && _includesAccount(r.account))
   );
   const holdingsSummaryTotal = $derived(holdingsSummaryData.filter(isTotalRow));
 
@@ -786,9 +814,8 @@
   });
 
   const scopedFunds = $derived.by(() => {
-    const list = selectedAccount === 'all'
-      ? funds
-      : funds.filter(r => String(r.account || '') === selectedAccount);
+    // Filter funds by the active account-multiselect (empty = all).
+    const list = funds.filter(r => isTotalRow(r) || _includesAccount(r.account));
     // Inject _long_opt_cash so the grid's `cash_total` valueGetter
     // can pick it up without poking back into the positions array.
     return list.map(r => ({
@@ -1127,19 +1154,20 @@
     } catch (_) { /* nothing fatal */ }
   }
 
-  // Account-scoped inputs to buildUnified. When selectedAccount is
-  // 'all' (default), pass the raw arrays straight through. Otherwise
-  // filter positions / holdings to that account — watchlist items and
-  // option underlyings are not account-scoped so they remain visible.
+  // Account-scoped inputs to buildUnified. Empty selectedAccounts
+  // (default) passes the raw arrays straight through. Otherwise
+  // filter positions / holdings to the chosen set — watchlist items
+  // and option underlyings are not account-scoped so they remain
+  // visible.
   const scopedPositions = $derived(
-    selectedAccount === 'all'
+    selectedAccounts.length === 0
       ? positions
-      : positions.filter(r => String(r.account || '') === selectedAccount)
+      : positions.filter(r => _includesAccount(r.account))
   );
   const scopedHoldings = $derived(
-    selectedAccount === 'all'
+    selectedAccounts.length === 0
       ? holdings
-      : holdings.filter(r => String(r.account || '') === selectedAccount)
+      : holdings.filter(r => _includesAccount(r.account))
   );
 
   // buildUnified reads groupOrder + detachedSymbols from module scope.
@@ -2395,12 +2423,10 @@
       {#if accountPicker || enableSourceToggles}
         <div class="ml-auto flex items-center gap-1">
           {#if accountPicker && availableAccounts.length > 0}
-            <div class="w-32" title="Filter by broker account">
-              <Select ariaLabel="Account filter" bind:value={selectedAccount}
-                options={[
-                  { value: 'all', label: 'All accounts' },
-                  ...availableAccounts.map(a => ({ value: a, label: a })),
-                ]} />
+            <div class="w-32" title="Filter by broker account (multi-select)">
+              <MultiSelect ariaLabel="Account filter" bind:value={selectedAccounts}
+                placeholder="All accounts"
+                options={availableAccounts.map(a => ({ value: a, label: a }))} />
             </div>
           {/if}
           {#if enableSourceToggles}

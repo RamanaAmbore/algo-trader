@@ -6,7 +6,6 @@
   import { dataCache, authStore } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
-  import Select      from '$lib/Select.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
@@ -121,7 +120,12 @@
   let loading     = $state(false);
   let error       = $state('');
 
-  let selectedAccount = $state('all');
+  // Account-scope filter. Now MultiSelect-backed — empty array =
+  // all accounts (no filter), any non-empty array = scope every
+  // grid to that subset. Replaces the older single-select
+  // `selectedAccount` string which only let the operator look at
+  // one account at a time (or all).
+  let selectedAccounts = $state(/** @type {string[]} */ ([]));
   // Multi-select: empty array ⇒ "all symbols". Populated array ⇒ only
   // those symbols show in the detail grid under the active tab.
   let selectedSymbols = $state(/** @type {string[]} */([]));
@@ -455,9 +459,9 @@
     // SYMBOL filter scopes ONLY the last (detail) aggrid — summary and
     // funds are per-account aggregates that don't reduce cleanly to a
     // single symbol, so they stay on the account-level view.
-    const keepAcct = (r) => selectedAccount === 'all'
+    const keepAcct = (r) => selectedAccounts.length === 0
       ? true
-      : (r.account === selectedAccount);
+      : selectedAccounts.includes(String(r.account || ''));
     // Empty selection ⇒ "all". Otherwise a row matches when either its
     // full tradingsymbol or its derived underlying is in the set. That
     // dual match lets the Positions tab filter by underlying (NIFTY,
@@ -508,11 +512,11 @@
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
     updateGrid(fundsGrid, fBody);
     fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
-    // Account column hides across every grid when a specific account
-    // is picked. Symbol column stays visible even when filtered —
-    // operators asked to keep it so they can read which symbol(s) each
-    // row belongs to at a glance.
-    const showAcct = selectedAccount === 'all';
+    // Account column hides across every grid when exactly ONE account
+    // is picked (no need to repeat the same account on every row).
+    // Empty selection (all accounts) and multi-pick keep the column
+    // visible so the operator can read which row belongs where.
+    const showAcct = selectedAccounts.length !== 1;
     for (const g of [holdingsAllGrid, positionsAllGrid, fundsGrid, holdingsSummaryGrid, positionsSummaryGrid]) {
       try { g?.setColumnsVisible?.(['account'], showAcct); } catch (_) { /* older AG API */ }
     }
@@ -566,7 +570,7 @@
     // refresh, but re-running on tab-switch guards against any edge
     // case where the tab-scoped symbol list reconciliation runs
     // mid-flight).
-    selectedAccount; selectedSymbols; activeTab;
+    selectedAccounts; selectedSymbols; activeTab;
     applyAccountFilter();
   });
 
@@ -759,17 +763,15 @@
     {/each}
   </div>
   {#if accounts.length > 0}
-    <!-- Account picker uses the themed <Select> so it visually matches
-         the MultiSelect next to it. Single-select — account scope.
-         Theme mirrors the page (dark on the algo dashboard, light on
-         the public /performance). -->
+    <!-- Account MultiSelect — empty selection ⇒ "all accounts";
+         any non-empty subset scopes every grid (detail + summary +
+         funds). Mirrors the Symbol MultiSelect next to it for
+         visual consistency. -->
     <div class="acct-multi">
-      <Select
-        bind:value={selectedAccount}
-        options={[
-          { value: 'all', label: 'Accounts' },
-          ...accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a })),
-        ]}
+      <MultiSelect
+        bind:value={selectedAccounts}
+        options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
+        placeholder="Accounts"
         theme={compactHeader ? 'dark' : 'light'} />
     </div>
   {/if}

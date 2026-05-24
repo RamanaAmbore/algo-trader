@@ -8,4 +8,9 @@
 
 <svelte:head><title>Market Pulse | RamboQuant Analytics</title></svelte:head>
 
-<MarketPulse title="Market Pulse" flat={true} />
+<!-- accountPicker=true mounts the broker-account MultiSelect in the
+     toolbar (right cluster, next to source toggles). Empty selection
+     = all accounts; otherwise positions + holdings inputs to
+     buildUnified are scoped to the chosen set. Watchlist + option
+     underlyings stay visible. -->
+<MarketPulse title="Market Pulse" flat={true} accountPicker={true} />
