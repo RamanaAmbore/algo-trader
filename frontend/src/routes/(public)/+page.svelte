@@ -11,7 +11,7 @@
 
 <svelte:head>
   <title>Quantitative Investment Analytics for Indian Markets | RamboQuant Analytics</title>
-  <meta name="description" content="RamboQuant Analytics LLP — algo-executed equity + options strategy built for long-term compounding. 25-year track record, 22%+ XIRR, LLP registered. Open platform showcase included." />
+  <meta name="description" content="RamboQuant Analytics LLP — long-term stock investments enhanced with algo-executed covered calls and margin-efficient options overlays. 25-year track record, 22%+ XIRR, LLP registered. Open platform showcase included." />
   <link rel="canonical" href="https://ramboq.com/" />
 
   <!-- Open Graph — HOME variant. Uses og-image-home.png (full-canvas
@@ -19,7 +19,7 @@
        picture and the og:title / og:description text below carry the
        narrative. -->
   <meta property="og:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
-  <meta property="og:description" content="Algo-executed equity + options strategy built for long-term compounding. 25-year track record, 22%+ XIRR. Open platform showcase included." />
+  <meta property="og:description" content="Long-term stock investments enhanced with algo-executed covered calls and margin-efficient options overlays. 25-year track record, 22%+ XIRR." />
   <meta property="og:url" content="https://ramboq.com/" />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="https://ramboq.com/og-image-home.png?v=2" />
@@ -40,7 +40,7 @@
   <!-- Hero — credibility-first headline + 4-cell trust strip. -->
   <section class="hero">
     <h1 class="hero-title">RamboQuant Analytics LLP</h1>
-    <p class="hero-tag">Algo-executed equity + options strategy, built for long-term compounding — and an open showcase of the platform that runs it.</p>
+    <p class="hero-tag">Long-term stock investments enhanced with algo-executed covered calls and margin-efficient options overlays. Stocks appreciate, premiums compound.</p>
 
     <div class="trust-strip">
       <div class="trust-cell">
@@ -76,11 +76,11 @@
         <span class="fork-arrow">→</span>
       </div>
       <h2 class="fork-title">Partner with us</h2>
-      <p class="fork-sub">An algo-executed long-equity strategy with selective options overlays (covered calls, hedges). Built for long-term compounding, run by a 25-year practitioner. Annual cycle, transparent reporting.</p>
+      <p class="fork-sub">We hold high-conviction stocks for the long term, then use them — along with cash — as margin to write covered calls and similar premium-harvesting strategies. Algo handles entry, exit, and risk. Two return streams: stock appreciation + option premium.</p>
       <ul class="fork-bullets">
-        <li>Algo execution across stocks + options</li>
+        <li>Long stock book as the compounding base</li>
+        <li>Covered calls + margin-efficient overlays for yield</li>
         <li>Live performance — real holdings, real P&amp;L</li>
-        <li>Daily AI-assisted market commentary</li>
       </ul>
       <span class="fork-cta">See partnership →</span>
     </a>
@@ -91,7 +91,7 @@
         <span class="fork-arrow">→</span>
       </div>
       <h2 class="fork-title">Open the platform</h2>
-      <p class="fork-sub">Production quant infrastructure that executes real algo trades — equity, options, long-term positions. Built end-to-end by one engineer. Demo runs against live broker data with accounts masked.</p>
+      <p class="fork-sub">Production quant infrastructure that executes the strategy end-to-end — stock entries, covered-call writes, margin checks, chase fills, risk overlays. Built by one engineer; demo runs against live broker data with accounts masked.</p>
       <ul class="fork-bullets">
         <li>5-mode execution ladder — Sim → Replay → Paper → Live → Shadow</li>
         <li>Declarative agent grammar + 24/7 risk engine</li>
@@ -127,8 +127,8 @@
       </div>
       <div class="term">
         <div class="term-lbl">Strategy</div>
-        <div class="term-val">Algo equity + options</div>
-        <div class="term-note">Long-term holdings, F&amp;O overlays</div>
+        <div class="term-val">Stocks + covered calls</div>
+        <div class="term-note">Long holdings, margin-efficient option overlays</div>
       </div>
     </div>
   </section>

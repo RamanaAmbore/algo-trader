@@ -117,7 +117,7 @@
   <!-- Hero -->
   <header class="show-hero">
     <h1 class="show-title">RamboQuant Platform — Tour</h1>
-    <p class="show-tag">A production quant trading platform that executes real algo trades across stocks and options for a long-term investment mandate. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
+    <p class="show-tag">A production quant trading platform that runs a real strategy: hold high-conviction stocks long, use them (and cash) as margin to write covered calls and similar premium-harvesting overlays, let the algo handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
     <div class="show-facts">
       {#each facts as f}
         <div class="show-fact">
