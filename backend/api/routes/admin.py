@@ -295,13 +295,27 @@ class AdminController(Controller):
         return UsersResponse(users=[_to_info(u) for u in users])
 
     @post("/users")
-    async def create_user(self, data: CreateUserRequest) -> dict:
-        """Admin creates a user (pre-approved). Share password via other channel."""
+    async def create_user(self, data: CreateUserRequest, request: Request) -> dict:
+        """Admin creates a user (pre-approved). Share password via other channel.
+
+        Capital fields (contribution, share_pct) and admin/designated
+        role assignment are designated-only. Admin can create partner
+        rows with role='partner' + share_pct=0 + contribution=0, but
+        promoting them or seeding a stake requires designated.
+        """
         from backend.api.routes.auth import hash_password
         from backend.shared.helpers.utils import validate_password_standard
         ok, msg = validate_password_standard(data.password)
         if not ok:
             raise HTTPException(status_code=422, detail=msg)
+        # Designated-only fields. Silently coerce to safe defaults when
+        # an admin (non-designated) tries to set them — keeps the route
+        # forward-compat for old client builds that still send share_pct.
+        actor_role = (getattr(request.state, "token_payload", None) or {}).get("role", "")
+        is_designated = (actor_role == "designated")
+        eff_role         = data.role if is_designated else ("partner" if data.role in ("admin", "designated") else data.role)
+        eff_contribution = data.contribution if is_designated else 0.0
+        eff_share_pct    = data.share_pct    if is_designated else 0.0
         async with async_session() as session:
             existing = await session.execute(
                 select(User).where(User.username == data.username)
@@ -311,12 +325,12 @@ class AdminController(Controller):
             user = User(
                 username=data.username,
                 password_hash=hash_password(data.password),
-                role=data.role,
+                role=eff_role,
                 display_name=data.display_name or data.username,
                 email=data.email or None,
                 phone=data.phone or None,
-                contribution=data.contribution,
-                share_pct=data.share_pct,
+                contribution=eff_contribution,
+                share_pct=eff_share_pct,
                 is_approved=data.is_approved,
                 receive_alerts=data.receive_alerts,
             )
@@ -331,7 +345,7 @@ class AdminController(Controller):
             await seed_default_watchlists_for_user(new_user_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Admin: watchlist seed failed for {data.username!r}: {exc}")
-        logger.info(f"Admin: created user {data.username!r} role={data.role}")
+        logger.info(f"Admin: created user {data.username!r} role={eff_role} (actor={actor_role})")
         return {"detail": f"User {data.username!r} created"}
 
     @put("/users/{username:str}/approve", status_code=200)
@@ -420,6 +434,14 @@ class AdminController(Controller):
                     # /resend-verification endpoint but cannot mark a
                     # user verified directly. Field is silently dropped
                     # for non-designated actors.
+                    if not allowed_role_change:
+                        continue
+                if field in ('share_pct', 'contribution', 'contribution_date'):
+                    # Capital + share split — designated-only. Admin can
+                    # operate the platform on designated's behalf but
+                    # cannot change a partner's economic stake without
+                    # the principal's authority. Silently dropped for
+                    # non-designated actors (UI hides the inputs too).
                     if not allowed_role_change:
                         continue
                 if field == 'pan':
