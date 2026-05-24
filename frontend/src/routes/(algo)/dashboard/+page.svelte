@@ -433,7 +433,7 @@
 {#if isDemo && !bannerDismissed}
   <div class="demo-banner" role="status">
     <span class="demo-banner-text">
-      <strong>Live production platform</strong> · real broker data · accounts masked · paper-only writes.
+      <strong>Rambo Terminal — live production</strong> · real broker data · accounts masked · paper-only writes.
       <a href="/showcase" class="demo-banner-link">Take the tour</a>
       <span class="demo-banner-sep">·</span>
       <a href="/signin" class="demo-banner-link">Sign in</a>

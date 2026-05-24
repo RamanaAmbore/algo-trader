@@ -108,7 +108,12 @@
     // backward-compat with deep links + bookmarks.
     { href: '/admin/execution',  label: 'Lab',                           group: 'modes' },
     // ── Build / extend ──
-    { href: '/console',          label: 'Terminal',  group: 'build' },
+    // /console keeps the URL but the navbar label aligns with the URL
+    // ('Console') now that 'Terminal' is the brand name of the whole
+    // umbrella (Rambo Terminal). Avoids the visual collision where a
+    // first-time visitor sees 'Terminal' in the nav and wonders if it's
+    // the whole platform or just one tool.
+    { href: '/console',          label: 'Console',   group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
     // ── Config ── ordered by edit frequency, not alphabetic.
     //   Brokers — most-touched (account creds, IP binding, secrets).

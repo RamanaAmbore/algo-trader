@@ -87,17 +87,17 @@
 
     <a href="/dashboard" class="fork-card fork-quant">
       <div class="fork-head">
-        <span class="fork-tag fork-tag-alt">Platform &amp; Technology</span>
+        <span class="fork-tag fork-tag-alt">Rambo Terminal</span>
         <span class="fork-arrow">→</span>
       </div>
-      <h2 class="fork-title">Explore the platform</h2>
+      <h2 class="fork-title">Explore Rambo Terminal</h2>
       <p class="fork-sub">Production quant infrastructure that executes the strategy end-to-end — stock entries, multi-leg option writes, basket-margin checks, chase fills, risk overlays. Built by one engineer; demo runs against live broker data with accounts masked.</p>
       <ul class="fork-bullets">
         <li>5-mode execution ladder — Sim → Replay → Paper → Live → Shadow</li>
         <li>Declarative agent grammar + 24/7 risk engine</li>
         <li>Black-Scholes options analytics with σ-driven payoff</li>
       </ul>
-      <span class="fork-cta">Open demo →</span>
+      <span class="fork-cta">Open Rambo Terminal →</span>
     </a>
   </section>
 

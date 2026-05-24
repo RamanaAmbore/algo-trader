@@ -120,15 +120,15 @@
 </script>
 
 <svelte:head>
-  <title>Platform Tour | RamboQuant</title>
-  <meta name="description" content="A walkthrough of RamboQuant's quant trading platform: 5-mode execution ladder, declarative agent grammar, Black-Scholes options analytics, multi-broker abstraction." />
+  <title>Rambo Terminal — Tour | RamboQuant</title>
+  <meta name="description" content="Rambo Terminal — a walkthrough of RamboQuant's quant trading terminal: 5-mode execution ladder, declarative agent grammar, Black-Scholes derivatives analytics, multi-broker abstraction." />
 </svelte:head>
 
 <div class="show" class:show-ready={_mounted}>
   <!-- Hero -->
   <header class="show-hero">
-    <h1 class="show-title">RamboQuant Platform — Tour</h1>
-    <p class="show-tag">A production quant trading platform that runs a real strategy: hold high-conviction stocks long, then use them (and cash) as margin for a toolkit of options strategies — covered calls, cash-secured puts, vertical / calendar spreads, collars, wheels, hedges — letting the algo pick the right tool for the market and handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
+    <h1 class="show-title">Rambo Terminal — Tour</h1>
+    <p class="show-tag">A production quant trading terminal that runs a real strategy: hold high-conviction stocks long, then use them (and cash) as margin for a toolkit of derivative strategies — covered calls, cash-secured puts, vertical / calendar spreads, collars, wheels, futures, hedges — letting the algo pick the right tool for the market and handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
     <div class="show-facts">
       {#each facts as f}
         <div class="show-fact">
