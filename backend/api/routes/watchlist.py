@@ -55,6 +55,7 @@ class WatchlistInfo(msgspec.Struct):
     name: str
     sort_order: int
     is_default: bool
+    is_pinned: bool
     item_count: int
     created_at: str
     updated_at: str
@@ -66,6 +67,7 @@ class WatchlistFull(msgspec.Struct):
     name: str
     sort_order: int
     is_default: bool
+    is_pinned: bool
     created_at: str
     updated_at: str
     items: list[WatchlistItemInfo]
@@ -79,6 +81,7 @@ class RenameWatchlistRequest(msgspec.Struct):
     name: Optional[str] = None
     sort_order: Optional[int] = None
     is_default: Optional[bool] = None
+    is_pinned: Optional[bool] = None
 
 
 class AddItemRequest(msgspec.Struct):
@@ -424,12 +427,17 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
                 )
         return
     now = datetime.now(timezone.utc)
+    # Both auto-seeded lists land in the Pinned major group on Market
+    # Pulse (is_pinned=True). User-created lists default to is_pinned
+    # =False and land in the Watchlist major group.
     default_list = Watchlist(
-        user_id=user_id, name="Default", sort_order=0, is_default=True,
+        user_id=user_id, name="Default", sort_order=0,
+        is_default=True, is_pinned=True,
         created_at=now, updated_at=now,
     )
     markets_list = Watchlist(
-        user_id=user_id, name="Markets", sort_order=1, is_default=False,
+        user_id=user_id, name="Markets", sort_order=1,
+        is_default=False, is_pinned=True,
         created_at=now, updated_at=now,
     )
     session.add(default_list)
@@ -450,7 +458,8 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
 def _wl_info(wl: Watchlist, item_count: int) -> WatchlistInfo:
     return WatchlistInfo(
         id=wl.id, name=wl.name, sort_order=wl.sort_order,
-        is_default=wl.is_default, item_count=item_count,
+        is_default=wl.is_default, is_pinned=wl.is_pinned,
+        item_count=item_count,
         created_at=wl.created_at.isoformat() if wl.created_at else "",
         updated_at=wl.updated_at.isoformat() if wl.updated_at else "",
     )
@@ -489,7 +498,7 @@ class WatchlistController(Controller):
             items = _demo_watchlist_items()
             return [WatchlistInfo(
                 id=DEMO_WATCHLIST_ID, name=DEMO_WATCHLIST_NAME,
-                sort_order=0, is_default=True,
+                sort_order=0, is_default=True, is_pinned=True,
                 item_count=len(items),
                 created_at="", updated_at="",
             )]
@@ -543,7 +552,8 @@ class WatchlistController(Controller):
             wl = Watchlist(
                 user_id=user_id, name=name,
                 sort_order=int(max_sort.scalar() or -1) + 1,
-                is_default=False, created_at=now, updated_at=now,
+                is_default=False, is_pinned=False,
+                created_at=now, updated_at=now,
             )
             session.add(wl)
             await session.commit()
@@ -556,7 +566,7 @@ class WatchlistController(Controller):
                 raise HTTPException(status_code=404, detail="Watchlist not found")
             return WatchlistFull(
                 id=DEMO_WATCHLIST_ID, name=DEMO_WATCHLIST_NAME,
-                sort_order=0, is_default=True,
+                sort_order=0, is_default=True, is_pinned=True,
                 created_at="", updated_at="",
                 items=_demo_watchlist_items(),
             )
@@ -579,7 +589,7 @@ class WatchlistController(Controller):
             items = items_row.scalars().all()
         return WatchlistFull(
             id=wl.id, name=wl.name, sort_order=wl.sort_order,
-            is_default=wl.is_default,
+            is_default=wl.is_default, is_pinned=wl.is_pinned,
             created_at=wl.created_at.isoformat() if wl.created_at else "",
             updated_at=wl.updated_at.isoformat() if wl.updated_at else "",
             items=[_item_info(it) for it in items],
@@ -620,6 +630,11 @@ class WatchlistController(Controller):
                         .values(is_default=False)
                     )
                 wl.is_default = bool(data.is_default)
+            if data.is_pinned is not None:
+                # Unlike is_default, multiple lists can be pinned at the
+                # same time (Default + Markets ship pinned out of the
+                # box). No "unmark others" pass.
+                wl.is_pinned = bool(data.is_pinned)
             wl.updated_at = datetime.now(timezone.utc)
             await session.commit()
             # Recount items for the return payload.

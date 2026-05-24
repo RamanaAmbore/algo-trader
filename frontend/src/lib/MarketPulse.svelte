@@ -592,10 +592,15 @@
   };
   const PINNED_INDEX_UNDERLYINGS = new Set(Object.keys(PIN_ORDER));
   function isPinnedIndexRow(r) {
-    if (!r?.src?.w) return false;
-    if (isDetached(r.tradingsymbol)) return false;  // operator override
-    const u = String(r.underlying || '').toUpperCase();
-    return PINNED_INDEX_UNDERLYINGS.has(u);
+    // Pinned membership is now DB-driven via the watchlist's is_pinned
+    // flag (propagated to rows as _fromPinnedList by buildUnified). The
+    // legacy PIN_ORDER hardcode survives only as a sort-rank hint for
+    // visual sub-grouping inside the pinned strip (Indices → Forex →
+    // Commodities). Operator-detached symbols still drop out via the
+    // detach override regardless of source.
+    if (isDetached(r.tradingsymbol)) return false;
+    if (r?._fromPinnedList) return true;
+    return false;
   }
   function pinRank(r) {
     return PIN_ORDER[String(r.underlying || '').toUpperCase()] ?? 999;
@@ -1007,14 +1012,20 @@
       // Keyed by underlying_group so MCX options with different
       // contract months (CRUDEOIL26MAY vs CRUDEOIL26JUN) each map to
       // their own same-month future. Indices/stocks share one key.
+      //
+      // Derivative-grouping rule: anchors are injected ONLY for
+      // options (CE/PE). Futures stand alone — each future is its own
+      // row, no underlying-anchor pulled in alongside. This stops a
+      // standalone NIFTY25APRFUT position from also surfacing a NIFTY
+      // anchor row (the future IS the tradable instrument; grouping
+      // it under spot adds no signal).
       const addUnderlying = (inst) => {
         if (!inst?.u) return;
         const t = String(inst.t || '').toUpperCase();
-        if (t === 'EQ') return;
+        if (t === 'EQ' || t === 'FUT') return;
         const isOpt = (t === 'CE' || t === 'PE');
-        const info = isOpt
-          ? resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts)
-          : resolveUnderlying(inst.u, nearestFut);
+        if (!isOpt) return;
+        const info = resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts);
         if (info && !underlyingInfos.has(info.underlying_group)) {
           underlyingInfos.set(info.underlying_group, info);
         }
@@ -1151,8 +1162,16 @@
       if (row.expiry     == null) row.expiry     = p.expiry;
     }
 
-    // 1. Watchlist (all selected lists).
+    // 1. Watchlist (all selected lists). Each list carries an is_pinned
+    //    flag (true for the auto-seeded Default + Markets lists, false
+    //    for operator-created lists). Tagged onto the row as
+    //    `_fromPinnedList` so the downstream pinned-vs-main split can
+    //    use list membership instead of the legacy PIN_ORDER hardcode.
+    //    A row that appears in BOTH a pinned and a user list gets
+    //    _fromPinnedList=true (pinned wins) — pinned membership is the
+    //    "stronger" signal.
     for (const list of (actLists || [])) {
+      const listPinned = !!list?.is_pinned;
       for (const it of (list?.items || [])) {
         const q = wq[it.id];
         const sym = String(q?.quote_symbol || it.tradingsymbol).toUpperCase();
@@ -1165,6 +1184,7 @@
           row.watchlist_list_id = list.id;
         }
         row.src.w  = true;
+        if (listPinned) row._fromPinnedList = true;
         row.ltp    = q?.ltp    ?? row.ltp    ?? null;
         row.bid    = q?.bid    ?? row.bid    ?? null;
         row.ask    = q?.ask    ?? row.ask    ?? null;

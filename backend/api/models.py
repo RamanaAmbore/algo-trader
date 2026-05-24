@@ -157,6 +157,12 @@ class Watchlist(Base):
     # is_default flags the user's primary watchlist. UI uses this to pick
     # which list a "+ Watch" affordance on /admin/options adds to.
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # is_pinned flags lists whose contents land in the "Pinned" major group
+    # on Market Pulse (top of the unified grid). Both auto-seeded lists
+    # ("Default" + "Markets") get is_pinned=True at user creation; operator-
+    # created lists default to False (they land in the "Watchlist" major
+    # group). Operator can later flip the flag on any list.
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

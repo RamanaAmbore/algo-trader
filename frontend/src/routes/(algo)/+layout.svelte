@@ -90,7 +90,7 @@
     // before clicking into the live surfaces.
     { href: '/showcase',         label: 'Tour',      group: 'monitor' },
     // ── Monitor ──
-    { href: '/pulse',            label: 'Market Pulse', group: 'monitor' },
+    { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
