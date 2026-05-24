@@ -697,8 +697,11 @@
        ops". Hidden on the algo dashboard (compactHeader=true). -->
   <div class="perf-strategy">
     <span class="perf-strategy-lbl">Strategy:</span>
-    <span class="perf-strategy-val">Long stocks + algo-executed options overlay</span>
-    <span class="perf-strategy-meta">· stocks &amp; cash as margin for covered calls, cash-secured puts, spreads, and more · positions update live during market hours</span>
+    <span class="perf-strategy-val">Long stocks + algo-executed derivatives overlay</span>
+    <span class="perf-strategy-sep" aria-hidden="true">·</span>
+    <span class="perf-strategy-meta">cash + stock-backed margin fund covered calls, futures, spreads, and more</span>
+    <span class="perf-strategy-sep" aria-hidden="true">·</span>
+    <span class="perf-strategy-meta">positions update live during market hours</span>
   </div>
 {/if}
 
@@ -876,8 +879,24 @@
     color: #5a7090;
     font-size: 0.7rem;
   }
+  /* Inline separator dot — explicit baseline alignment so it doesn't
+     float relative to the surrounding text the way an inline '·'
+     literal does (the unicode middle-dot's metrics put it noticeably
+     above the cap-line of the headline font). margin gives the dot
+     consistent breathing room on both sides. Hidden on mobile where
+     the meta clauses each break to their own line. */
+  .perf-strategy-sep {
+    display: inline-block;
+    color: #c8a84b;
+    font-weight: 600;
+    margin: 0 0.45rem;
+    vertical-align: baseline;
+    position: relative;
+    top: -0.05em;
+  }
   @media (max-width: 600px) {
     .perf-strategy-meta { display: block; margin-top: 0.15rem; font-size: 0.65rem; }
+    .perf-strategy-sep  { display: none; }
   }
 
   /* Mobile-only swipe hint — ag-Grid handles horizontal scroll natively
