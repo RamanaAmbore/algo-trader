@@ -566,29 +566,35 @@
   // currency, and finally commodities (precious → energy → base).
   // Operator can detach individual rows via the ⋯ context menu.
   const PIN_ORDER = {
-    // ── Indices (NSE broad → NSE sector → NSE narrow → BSE) ──
-    NIFTY:        1,
-    BANKNIFTY:    2,
-    FINNIFTY:     3,
-    MIDCPNIFTY:   4,
-    SMALLCAP:     5,
-    NIFTYNXT50:   6,
-    SENSEX:       7,
-    BANKEX:       8,
-    // ── Volatility ──
-    INDIAVIX:     9,
+    // ── Indices ── operator-preferred sequence (Nifty 50 first as
+    // broad benchmark, Sensex as the BSE counterpart, then Bank Nifty
+    // for financials, Nifty IT for tech, broad mid + small caps,
+    // VIX last as the volatility gauge). Less-frequented indices
+    // (FinNifty, Nifty Next 50, Bankex) come after the canonical 7.
+    NIFTY:        1,   // Nifty 50
+    SENSEX:       2,   // BSE benchmark
+    BANKNIFTY:    3,   // Bank Nifty
+    NIFTYIT:      4,   // Nifty IT
+    MIDCPNIFTY:   5,   // Mid Cap
+    SMALLCAP:     6,   // Small Cap
+    INDIAVIX:     7,   // Volatility
+    // Less-frequented after the operator's preferred 7
+    FINNIFTY:     8,
+    NIFTYNXT50:   9,
+    BANKEX:      10,
+    // Slot 11-12 reserved for future indices
     // ── Currencies (NSE CDS) ──
-    USDINR:      10,
+    USDINR:      13,
     // ── Commodities (MCX): precious → energy → base ──
-    GOLD:        11,
-    GOLDM:       12,
-    SILVER:      13,
-    SILVERM:     14,
-    SILVERMIC:   15,
-    CRUDEOIL:    16,
-    CRUDEOILM:   17,
-    NATURALGAS:  18,
-    COPPER:      19,
+    GOLD:        14,
+    GOLDM:       15,
+    SILVER:      16,
+    SILVERM:     17,
+    SILVERMIC:   18,
+    CRUDEOIL:    19,
+    CRUDEOILM:   20,
+    NATURALGAS:  21,
+    COPPER:      22,
   };
   const PINNED_INDEX_UNDERLYINGS = new Set(Object.keys(PIN_ORDER));
   function isPinnedIndexRow(r) {
@@ -614,9 +620,9 @@
   //   FOREX     — USDINR (and any future currency pairs)
   //   COMMODITY — GOLD, SILVER, CRUDE, …
   function pinCategory(rank) {
-    if (rank <= 9)   return 'idx';
-    if (rank === 10) return 'fx';
-    if (rank <= 19)  return 'commodity';
+    if (rank <= 12) return 'idx';
+    if (rank === 13) return 'fx';
+    if (rank <= 29) return 'commodity';
     return 'other';
   }
   // ag-Grid renders pinnedTopRowData in array order (no column-sort
@@ -1393,6 +1399,7 @@
       'NIFTY 50':              'NIFTY',
       'NIFTY BANK':            'BANKNIFTY',
       'NIFTY FIN SERVICE':     'FINNIFTY',
+      'NIFTY IT':              'NIFTYIT',
       // Mid-cap variants — Kite returns 'NIFTY MIDCAP 100' literally
       // in the watchlist seed; the older 'NIFTY MID SELECT' label is
       // a different ticker but we treat both as the mid-cap pin slot.

@@ -23,12 +23,17 @@ operator never has to update them month-over-month. Index symbols
 MARKETS_DEFAULT: list[tuple[str, str]] = [
     # Indices — quote endpoint maps these via the broker.quote() key
     # form `NSE:NIFTY 50` etc. Stable across months.
+    # Order: operator-preferred sequence — Nifty 50, Sensex, Bank
+    # Nifty, Nifty IT, Mid Cap, Small Cap, VIX. PIN_ORDER on the
+    # frontend mirrors this so the watchlist UI and the pinned-strip
+    # display agree.
     ("NIFTY 50",            "NSE"),
+    ("SENSEX",              "BSE"),
     ("NIFTY BANK",          "NSE"),
+    ("NIFTY IT",            "NSE"),
     ("NIFTY MIDCAP 100",    "NSE"),
     ("NIFTY SMLCAP 100",    "NSE"),   # Kite's abbreviated key (not "SMALLCAP")
     ("INDIA VIX",           "NSE"),
-    ("SENSEX",              "BSE"),
 
     # MCX commodities — stored as bare commodity name; the quote
     # endpoint resolves to the near-month future at fetch time.
