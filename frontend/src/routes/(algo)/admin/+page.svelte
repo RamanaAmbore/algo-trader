@@ -6,7 +6,9 @@
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
     resendVerification, markVerified,
+    sendPartnerEmail, fetchEmailEvents,
   } from '$lib/api';
+  import MultiSelect from '$lib/MultiSelect.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -191,10 +193,117 @@
     } catch (e) { error = e.message; }
   }
 
+  // ── Email Partners panel ─────────────────────────────────────────────
+  /** @type {'preset'|'pick'} */
+  let emailMode        = $state('preset');
+  let emailPreset      = $state('');   // '' | 'all_partners' | 'all_designated' | 'all_users'
+  let emailPicked      = $state(/** @type {string[]} */ ([]));
+  let emailSubject     = $state('');
+  let emailBody        = $state('');
+  let sending          = $state(false);
+  let emailResult      = $state(/** @type {{kind:'ok'|'partial'|'fail', msg:string}|null} */ (null));
+  let emailResultTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  let showEmailHistory = $state(false);
+  let emailEvents      = $state(/** @type {any[]} */ ([]));
+  let emailEventsLoading = $state(false);
+  let lastSentSummary  = $state(/** @type {{sent:number,total:number,at:Date}|null} */ (null));
+
+  // When a preset is chosen, clear any specific picks (and vice-versa:
+  // when the user starts picking specific users, clear the preset).
+  $effect(() => {
+    if (emailPreset) emailPicked = [];
+  });
+  $effect(() => {
+    if (emailPicked.length) emailPreset = '';
+  });
+
+  const PRESET_OPTIONS = [
+    { value: '',               label: 'Pick recipients…' },
+    { value: 'all_partners',   label: 'All partners'     },
+    { value: 'all_designated', label: 'All designated'   },
+    { value: 'all_users',      label: 'All users'        },
+  ];
+
+  /** Active users with an email, available for specific-pick. */
+  const pickableUsers = $derived(
+    users
+      .filter(u => u.is_active && u.email)
+      .map(u => ({ value: u.username, label: `${u.display_name} (${u.username})`, hint: u.email }))
+  );
+
+  /** True when enough data exists to submit. */
+  const emailReady = $derived(
+    emailSubject.trim().length > 0 &&
+    emailBody.trim().length > 0 &&
+    (emailPreset !== '' || emailPicked.length > 0)
+  );
+
+  /** Computed recipient count label for the confirm dialog. */
+  const emailRecipientLabel = $derived(() => {
+    if (emailPreset === 'all_partners')   return `all partners (${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length})`;
+    if (emailPreset === 'all_designated') return `all designated (${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length})`;
+    if (emailPreset === 'all_users')      return `all users (${users.filter(u=>u.is_active&&u.email).length})`;
+    return `${emailPicked.length} partner(s)`;
+  });
+
+  function _relTime(/** @type {string} */ iso) {
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 60)   return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+    return `${Math.floor(diff/86400)}d ago`;
+  }
+
+  async function loadEmailEvents() {
+    emailEventsLoading = true;
+    try { emailEvents = (await fetchEmailEvents(10))?.events ?? []; }
+    catch { emailEvents = []; }
+    finally { emailEventsLoading = false; }
+  }
+
+  async function doSendEmail() {
+    if (!emailReady) return;
+    const label = emailRecipientLabel();
+    if (!await confirmRef.ask({
+      title: 'Send email?',
+      message: `Send to <b>${label}</b>? This cannot be unsent.`,
+      confirmLabel: 'Send',
+      danger: false,
+    })) return;
+
+    sending = true; emailResult = null;
+    if (emailResultTimer) { clearTimeout(emailResultTimer); emailResultTimer = null; }
+    try {
+      const body = {
+        recipients: emailPreset || emailPicked,
+        subject: emailSubject.trim(),
+        body: emailBody.trim(),
+      };
+      const r = await sendPartnerEmail(body);
+      const { sent_count, failed_count, total, event_id } = r;
+      const eid = event_id ? ` — event #${event_id}` : '';
+      if (failed_count === 0) {
+        emailResult = { kind: 'ok', msg: `Sent to ${sent_count}/${total}${eid}` };
+      } else if (sent_count > 0) {
+        emailResult = { kind: 'partial', msg: `Sent to ${sent_count}/${total} — see history for failures${eid}` };
+      } else {
+        emailResult = { kind: 'fail', msg: `All ${total} failed — see history${eid}` };
+      }
+      lastSentSummary = { sent: sent_count, total, at: new Date() };
+      await loadEmailEvents();
+      emailResultTimer = setTimeout(() => { emailResult = null; }, 5000);
+    } catch (e) {
+      emailResult = { kind: 'fail', msg: e.message };
+    } finally { sending = false; }
+  }
+
+  // ── End Email Partners panel ──────────────────────────────────────────
+
   onMount(() => {
     const r = $authStore.user?.role;
     if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
     load();
+    loadEmailEvents();
   });
 </script>
 
@@ -482,6 +591,132 @@
     </div>
   {/if}
 </div>
+
+{#if users.length > 0}
+<!-- ── Email Partners panel ─────────────────────────────────────────── -->
+<section class="email-panel algo-status-card p-5 pt-4 mt-4" data-status="inactive">
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
+    <h2 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">Email Partners</h2>
+    <button
+      onclick={() => { showEmailHistory = !showEmailHistory; if (showEmailHistory) loadEmailEvents(); }}
+      class="text-[0.62rem] text-[#7dd3fc] hover:text-[#bae6fd] font-mono flex items-center gap-1 transition-colors">
+      {showEmailHistory ? 'hide history ▴' : 'show history ▾'}
+    </button>
+  </div>
+  <div class="border-b border-[rgba(251,191,36,0.25)] mb-4"></div>
+
+  <!-- History panel -->
+  {#if showEmailHistory}
+    <div class="mb-4 rounded border border-[rgba(125,211,252,0.25)] bg-[rgba(14,22,44,0.5)] p-3">
+      <div class="text-[0.6rem] text-[#7e97b8] uppercase font-bold mb-2 tracking-wider">Recent send history</div>
+      {#if emailEventsLoading}
+        <div class="text-xs text-[#7e97b8] animate-pulse">Loading…</div>
+      {:else if emailEvents.length === 0}
+        <div class="text-xs text-[#7e97b8]">No sends yet.</div>
+      {:else}
+        <div class="space-y-1.5">
+          {#each emailEvents as ev}
+            {@const hasFail = (ev.failed_count ?? 0) > 0}
+            <div class="font-mono text-[0.6rem] flex flex-wrap gap-x-2 gap-y-0.5 leading-relaxed
+              {hasFail ? 'text-red-300' : 'text-[#c8d8f0]/80'}">
+              <span class="tabular-nums opacity-70">{_relTime(ev.created_at)}</span>
+              <span>·</span>
+              <span class="text-[#fbbf24]/80">{ev.actor ?? '—'}</span>
+              <span>→</span>
+              <span>{ev.recipients_label ?? ev.recipients ?? '—'}</span>
+              <span>·</span>
+              <span class="tabular-nums">{ev.sent_count ?? 0}/{ev.total ?? 0}</span>
+              <span>·</span>
+              <span class="truncate max-w-[16rem]" title={ev.subject}>{ev.subject ?? '—'}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Recipient row -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+    <div>
+      <label class="field-label">Preset recipients</label>
+      <Select ariaLabel="Recipient preset" bind:value={emailPreset}
+        options={PRESET_OPTIONS} />
+    </div>
+    <div>
+      <label class="field-label" class:opacity-40={emailPreset !== ''}>Or pick specific</label>
+      <MultiSelect
+        ariaLabel="Pick recipients"
+        bind:value={emailPicked}
+        options={pickableUsers}
+        placeholder="Select users…"
+        disabled={emailPreset !== ''} />
+    </div>
+  </div>
+
+  <!-- Subject -->
+  <div class="mb-1">
+    <label class="field-label">Subject</label>
+    <input
+      bind:value={emailSubject}
+      maxlength="200"
+      class="field-input w-full"
+      placeholder="Email subject…" />
+    <div class="text-[0.58rem] text-[#7e97b8] text-right tabular-nums mt-0.5">{emailSubject.length}/200</div>
+  </div>
+
+  <!-- Body -->
+  <div class="mb-3">
+    <label class="field-label">Body</label>
+    <textarea
+      bind:value={emailBody}
+      rows="8"
+      maxlength="50000"
+      class="field-input w-full resize-y font-mono text-[0.65rem]"
+      placeholder="Message body…"></textarea>
+    <div class="text-[0.58rem] text-[#7e97b8] flex justify-between tabular-nums mt-0.5">
+      <span>{emailBody.split('\n').length} lines</span>
+      <span>{emailBody.length}/50000</span>
+    </div>
+  </div>
+
+  <!-- Footer: Send button + last-sent summary -->
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <button
+      onclick={doSendEmail}
+      disabled={!emailReady || sending}
+      class="btn-primary text-[0.65rem] py-1.5 px-5 disabled:opacity-40 flex items-center gap-2">
+      {#if sending}
+        <span class="inline-block h-3 w-3 rounded-full border-2 border-[#fbbf24] border-t-transparent animate-spin"></span>
+        Sending…
+      {:else}
+        Send to {
+          emailPreset === 'all_partners'   ? `${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length} partner(s)` :
+          emailPreset === 'all_designated' ? `${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length} designated` :
+          emailPreset === 'all_users'      ? `${users.filter(u=>u.is_active&&u.email).length} user(s)` :
+          emailPicked.length > 0           ? `${emailPicked.length} partner(s)` :
+          'partners'
+        }
+      {/if}
+    </button>
+    {#if lastSentSummary && !emailResult}
+      <span class="text-[0.6rem] text-[#7e97b8] tabular-nums font-mono">
+        last sent: {_relTime(lastSentSummary.at.toISOString())} — sent {lastSentSummary.sent}/{lastSentSummary.total}
+      </span>
+    {/if}
+  </div>
+
+  <!-- Result strip -->
+  {#if emailResult}
+    <div class="mt-3 p-2 rounded text-xs border font-mono tabular-nums
+      {emailResult.kind === 'ok'      ? 'bg-green-500/15 text-green-300 border-green-500/40' :
+       emailResult.kind === 'partial' ? 'bg-amber-500/15 text-amber-300 border-amber-500/40' :
+                                        'bg-red-500/15 text-red-300 border-red-500/40'}">
+      {emailResult.kind === 'ok' ? '✓' : emailResult.kind === 'partial' ? '⚠' : '✗'} {emailResult.msg}
+    </div>
+  {/if}
+</section>
+{/if}
 
 <!-- Shared confirm dialog — every destructive admin action funnels
      through confirmRef.ask(). Replaces native confirm() which is

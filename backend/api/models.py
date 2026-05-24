@@ -612,6 +612,30 @@ class DailyBook(Base):
     )
 
 
+class AdminEmailEvent(Base):
+    """Audit row for admin/designated outbound emails to partners.
+    One row per /api/admin/email-partners POST — captures who sent
+    what to whom, when, and how many deliveries succeeded."""
+    __tablename__ = "admin_email_events"
+
+    id:               Mapped[int]      = mapped_column(primary_key=True, autoincrement=True)
+    created_at:       Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    actor_username:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
+    actor_role:       Mapped[str]      = mapped_column(String(16), nullable=False)
+    # JSON array of usernames actually sent to (post-resolution of presets).
+    recipients:       Mapped[list]     = mapped_column(JSONB, nullable=False, default=list)
+    subject:          Mapped[str]      = mapped_column(String(256), nullable=False)
+    # First 500 chars of body — full body NOT persisted to bound PII risk + DB size.
+    body_preview:     Mapped[str]      = mapped_column(Text, nullable=False, default="")
+    sent_count:       Mapped[int]      = mapped_column(Integer, nullable=False, default=0)
+    failed_count:     Mapped[int]      = mapped_column(Integer, nullable=False, default=0)
+    # First 200 chars of per-recipient failure notes; empty when all sent.
+    failures_summary: Mapped[str]      = mapped_column(Text, nullable=False, default="")
+
+
 class BrokerAccount(Base):
     __tablename__ = "broker_accounts"
 

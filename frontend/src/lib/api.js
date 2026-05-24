@@ -530,6 +530,19 @@ export async function testBrokerAccount(acct) {
 }
 
 
+// ── Admin outbound email (admin/designated) ─────────────────────────────────
+
+/** POST /api/admin/email-partners — blast a plain-text message to selected partners.
+ *  Body: { recipients: string[] | 'all-partners' | 'all-designated' | 'all',
+ *           subject: string, body: string }
+ *  Returns: { sent_count, failed_count, total, event_id, failures[] } */
+export const sendPartnerEmail = (body) =>
+  _post('/admin/email-partners', body, { auth: true });
+
+/** GET /api/admin/email-events?n=25 — recent outbound-email audit rows. */
+export const fetchEmailEvents = (n = 25) =>
+  _get(`/admin/email-events?n=${n}`, { auth: true });
+
 /** POST /api/options/strategy-analytics — multi-leg aggregate analytics. */
 export async function fetchStrategyAnalytics(legs, opts = {}) {
   return _post('/options/strategy-analytics',

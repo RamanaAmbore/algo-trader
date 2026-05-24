@@ -28,7 +28,7 @@ from sqlalchemy import select, text
 
 from backend.api.auth_guard import admin_guard, designated_guard
 from backend.api.database import async_session
-from backend.api.models import User
+from backend.api.models import AdminEmailEvent, User
 from backend.shared.helpers.alert_utils import refresh_alert_recipients
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
@@ -122,6 +122,21 @@ class SnapshotResponse(msgspec.Struct):
     positions_rows: int
     trades_rows: int
     errors: list[str]
+
+
+class EmailPartnersRequest(msgspec.Struct):
+    """Body for POST /api/admin/email-partners.
+
+    recipients — either a list of usernames OR one preset string:
+      'all-partners'   → active users with role in (partner, designated) AND share_pct > 0
+      'all-designated' → active users with role='designated'
+      'all'            → every active user that has an email address
+    subject — max 200 chars.
+    body    — plain text, max 50 000 chars. NOT logged (PII risk).
+    """
+    recipients: list[str] | str
+    subject: str
+    body: str
 
 
 class ExecRequest(msgspec.Struct):
@@ -1230,6 +1245,191 @@ class AdminController(Controller):
             trades_rows=result["trades_rows"],
             errors=result["errors"],
         )
+
+    # ------------------------------------------------------------------
+    # Outbound partner email blast
+    # ------------------------------------------------------------------
+
+    @get("/email-events")
+    async def list_email_events(self, n: int = 25) -> list[dict]:
+        """Recent admin/designated outbound-email events (audit log).
+        Latest first. Used by the admin UI's email-history panel."""
+        limit = min(max(1, n), 200)
+        async with async_session() as session:
+            result = await session.execute(
+                select(AdminEmailEvent)
+                .order_by(AdminEmailEvent.created_at.desc())
+                .limit(limit)
+            )
+            rows = result.scalars().all()
+        return [
+            {
+                "id":               r.id,
+                "created_at":       r.created_at.isoformat(),
+                "actor_username":   r.actor_username,
+                "actor_role":       r.actor_role,
+                "recipients":       r.recipients,
+                "subject":          r.subject,
+                "body_preview":     r.body_preview,
+                "sent_count":       r.sent_count,
+                "failed_count":     r.failed_count,
+                "failures_summary": r.failures_summary,
+            }
+            for r in rows
+        ]
+
+    @post("/email-partners")
+    async def email_partners(self, data: EmailPartnersRequest, request: Request) -> dict:
+        """Send a plain-text email to selected partners.
+
+        Both admin + designated can fire (admin_guard admits both). Returns
+        { sent_count, failed_count, total, event_id, failures: [{recipient, error}] }.
+        """
+        import asyncio
+
+        from backend.shared.helpers.mail_utils import send_email
+
+        # ── Validation ──────────────────────────────────────────────
+        subject = (data.subject or "").strip()
+        if not subject:
+            raise HTTPException(status_code=422, detail="subject is required")
+        if len(subject) > 200:
+            raise HTTPException(status_code=422, detail="subject exceeds 200 chars")
+
+        body = (data.body or "").strip()
+        if not body:
+            raise HTTPException(status_code=422, detail="body is required")
+        if len(body) > 50_000:
+            raise HTTPException(status_code=422, detail="body exceeds 50 000 chars")
+
+        # ── Recipient resolution ──────────────────────────────────────
+        async with async_session() as session:
+            preset = data.recipients if isinstance(data.recipients, str) else None
+
+            if preset == "all-partners":
+                res = await session.execute(
+                    select(User).where(
+                        User.is_active == True,
+                        User.role.in_(("partner", "designated")),
+                        User.share_pct > 0,
+                        User.email.isnot(None),
+                    )
+                )
+                candidates = res.scalars().all()
+
+            elif preset == "all-designated":
+                res = await session.execute(
+                    select(User).where(
+                        User.is_active == True,
+                        User.role == "designated",
+                        User.email.isnot(None),
+                    )
+                )
+                candidates = res.scalars().all()
+
+            elif preset == "all":
+                res = await session.execute(
+                    select(User).where(
+                        User.is_active == True,
+                        User.email.isnot(None),
+                    )
+                )
+                candidates = res.scalars().all()
+
+            elif isinstance(data.recipients, list):
+                if not data.recipients:
+                    raise HTTPException(status_code=422, detail="recipients list is empty")
+                res = await session.execute(
+                    select(User).where(
+                        User.username.in_(data.recipients),
+                        User.is_active == True,
+                    )
+                )
+                candidates = res.scalars().all()
+
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail="recipients must be a list of usernames or one of: "
+                           "'all-partners', 'all-designated', 'all'",
+                )
+
+        # ── Cap check ─────────────────────────────────────────────────
+        if len(candidates) > 100:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Recipient count {len(candidates)} exceeds the 100-recipient cap per call",
+            )
+
+        # ── Actor identity ─────────────────────────────────────────────
+        payload = getattr(request.state, "token_payload", {}) or {}
+        actor_username = payload.get("sub", "unknown")
+        actor_role = payload.get("role", "unknown")
+
+        # ── Send loop (sequential — SMTP rate limit) ──────────────────
+        failures: list[dict] = []
+        sent_count = 0
+        recipient_usernames: list[str] = []
+
+        for user in candidates:
+            if not user.email:
+                failures.append({"recipient": user.username, "error": "no email on file"})
+                continue
+
+            recipient_usernames.append(user.username)
+            display = user.display_name or user.username
+
+            # Build a minimal HTML wrapper around the plain-text body so
+            # MIMEText('html') renders it properly in every client.
+            html_body = (
+                "<div style='font-family:sans-serif;font-size:14px;line-height:1.6'>"
+                + body.replace("\n", "<br>")
+                + "</div>"
+            )
+
+            ok, msg = send_email(display, user.email, subject, html_body)
+            if ok:
+                sent_count += 1
+            else:
+                failures.append({"recipient": user.username, "error": str(msg)[:200]})
+
+            # 100ms gap between sends to respect SMTP relay rate limits.
+            await asyncio.sleep(0.1)
+
+        failed_count = len(failures)
+
+        # ── Audit row ──────────────────────────────────────────────────
+        failures_summary = "; ".join(
+            f"{f['recipient']}: {f['error']}" for f in failures
+        )[:200] if failures else ""
+
+        async with async_session() as session:
+            event = AdminEmailEvent(
+                actor_username=actor_username,
+                actor_role=actor_role,
+                recipients=recipient_usernames,
+                subject=subject,
+                body_preview=body[:500],
+                sent_count=sent_count,
+                failed_count=failed_count,
+                failures_summary=failures_summary,
+            )
+            session.add(event)
+            await session.commit()
+            event_id = event.id
+
+        logger.info(
+            f"Email-partners: actor={actor_username} "
+            f"sent={sent_count}/{len(candidates)} subject={subject!r}"
+        )
+
+        return {
+            "sent_count":   sent_count,
+            "failed_count": failed_count,
+            "total":        len(candidates),
+            "event_id":     event_id,
+            "failures":     failures,
+        }
 
     @delete("/users/{username:str}", status_code=200)
     async def delete_user(self, username: str, request: Request) -> dict:
