@@ -7,6 +7,7 @@
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
     resendVerification, markVerified,
     sendPartnerEmail, fetchEmailEvents,
+    impersonateUser,
   } from '$lib/api';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -52,6 +53,26 @@
   async function reject(/** @type {string} */ username) {
     try { await rejectUser(username); success = `${username} rejected`; await load(); }
     catch (e) { error = e.message; }
+  }
+
+  /** Start a support session as the target user. Stashes the current
+   *  admin/designated token in sessionStorage (via authStore) so the
+   *  yellow banner's End button can revert without re-login. */
+  async function viewAs(/** @type {any} */ user) {
+    try {
+      const r = await impersonateUser(user.username);
+      authStore.startImpersonation(r.token, {
+        username: r.username, role: r.role,
+        display_name: r.display_name,
+      });
+      success = `Support session started as ${user.username}`;
+      // Send the actor to the surface most useful for diagnosing the
+      // partner's issue. /pulse is the default landing after sign-in,
+      // so it's also the right place for a "view as" entry.
+      goto('/pulse');
+    } catch (e) {
+      error = e.message;
+    }
   }
 
   // Suspend / reinstate / terminate / toggle-super / reset-password.
@@ -464,6 +485,20 @@
                    _check_action(admin_self_ok=True, admin_partner_ok=True). -->
               {#if editing !== user.username && !user.terminated_at && (iAmDesignated || isSelf || (iAmAdmin && targetIsPartner))}
                 <button onclick={() => startEdit(user)} class="btn-secondary text-[0.65rem] py-1 px-2">Edit</button>
+              {/if}
+              <!-- View as — start a 30-min support session as this
+                   user. Designated can view ANY user; admin can only
+                   view partners. Never self (no point), never a
+                   terminated/suspended row (backend rejects). Backend
+                   gates duplicate this; the UI filter just avoids
+                   surfacing a button that'd fail. -->
+              {#if !isSelf && !user.terminated_at && !user.suspended_at
+                   && (iAmDesignated || (iAmAdmin && targetIsPartner))}
+                <button
+                  onclick={() => viewAs(user)}
+                  class="btn-secondary text-[0.65rem] py-1 px-2 border-amber-400/50 text-amber-300"
+                  title="Start a 30-min support session as {user.username} — view the platform exactly as they do"
+                >View as</button>
               {/if}
             </div>
           </div>

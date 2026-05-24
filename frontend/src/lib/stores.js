@@ -34,11 +34,16 @@ function _decodeJwt(/** @type {string|null} */ tok) {
 }
 
 function _readSession() {
-  if (!browser) return { token: null, user: null };
+  if (!browser) return { token: null, user: null, impBy: null };
   try {
     const token = sessionStorage.getItem('ramboq_token');
     const raw   = sessionStorage.getItem('ramboq_user');
     let user    = raw ? JSON.parse(raw) : null;
+    // impBy is read from the JWT each time so an admin who refreshes
+    // a tab mid-impersonation still sees the banner. Set by the
+    // claim, not by a separate storage key.
+    const _claims = _decodeJwt(token);
+    const impBy   = _claims?.imp_by || null;
     if (token && !user) {
       // sessionStorage half-cleared (devtools / partial logout / browser
       // cache hiccup): the token survived but `ramboq_user` is gone.
@@ -69,9 +74,9 @@ function _readSession() {
         delete user.is_super;
       }
     }
-    return { token, user };
+    return { token, user, impBy };
   } catch {
-    return { token: null, user: null };
+    return { token: null, user: null, impBy: null };
   }
 }
 
@@ -87,7 +92,8 @@ function createAuthStore() {
         sessionStorage.setItem('ramboq_token', token);
         sessionStorage.setItem('ramboq_user', JSON.stringify(user));
       }
-      set({ token, user });
+      const claims = _decodeJwt(token);
+      set({ token, user, impBy: claims?.imp_by || null });
     },
 
     /** Call on logout or 401. */
@@ -95,13 +101,44 @@ function createAuthStore() {
       if (browser) {
         sessionStorage.removeItem('ramboq_token');
         sessionStorage.removeItem('ramboq_user');
+        sessionStorage.removeItem('ramboq_orig_token');
+        sessionStorage.removeItem('ramboq_orig_user');
       }
-      set({ token: null, user: null });
+      set({ token: null, user: null, impBy: null });
     },
 
     /** Read token directly (non-reactive). */
     getToken() {
       return browser ? sessionStorage.getItem('ramboq_token') : null;
+    },
+
+    /** Start an impersonation session. Stashes the current admin
+     *  token/user under separate keys so a tab refresh during
+     *  impersonation can recover both ends. */
+    startImpersonation(token, user) {
+      if (browser) {
+        const origTok  = sessionStorage.getItem('ramboq_token');
+        const origUser = sessionStorage.getItem('ramboq_user');
+        if (origTok)  sessionStorage.setItem('ramboq_orig_token', origTok);
+        if (origUser) sessionStorage.setItem('ramboq_orig_user', origUser);
+        sessionStorage.setItem('ramboq_token', token);
+        sessionStorage.setItem('ramboq_user', JSON.stringify(user));
+      }
+      const claims = _decodeJwt(token);
+      set({ token, user, impBy: claims?.imp_by || null });
+    },
+
+    /** End the current impersonation. The caller has already POSTed
+     *  /stop-impersonate and received a fresh JWT for the original
+     *  actor — pass it in. Clears the stashed orig_* keys. */
+    stopImpersonation(token, user) {
+      if (browser) {
+        sessionStorage.setItem('ramboq_token', token);
+        sessionStorage.setItem('ramboq_user', JSON.stringify(user));
+        sessionStorage.removeItem('ramboq_orig_token');
+        sessionStorage.removeItem('ramboq_orig_user');
+      }
+      set({ token, user, impBy: null });
     },
   };
 }

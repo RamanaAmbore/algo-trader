@@ -227,6 +227,19 @@ export const changePassword = (password) =>
 /** GET /api/auth/me/nav — operator's NAV slice (share_pct × firm NAV). */
 export const fetchMyNav = () => _get('/auth/me/nav', { auth: true });
 
+/** POST /api/auth/impersonate/{username} — start a support session as
+ *  the target user. Returns a LoginResponse-shaped object with a fresh
+ *  30-min JWT carrying imp_by=actor. Caller should hand the response
+ *  to authStore.startImpersonation. */
+export const impersonateUser = (username) =>
+  _post(`/auth/impersonate/${encodeURIComponent(username)}`, null, { auth: true });
+
+/** POST /api/auth/stop-impersonate — end the current support session.
+ *  Returns a LoginResponse for the ORIGINAL actor. Caller hands the
+ *  response to authStore.stopImpersonation. */
+export const stopImpersonation = () =>
+  _post('/auth/stop-impersonate', null, { auth: true });
+
 // ── Public data endpoints (read-only — no JWT required) ──────────────────────
 // Pass auth header if available — backend masks accounts for non-admin
 // Pass `fresh=true` to make the server bypass its 30-second cache and

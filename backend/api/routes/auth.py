@@ -30,7 +30,7 @@ from sqlalchemy import func, or_, select, update
 
 from backend.api.auth_guard import jwt_guard
 from backend.api.database import async_session
-from backend.api.models import AuthToken, User
+from backend.api.models import AuthToken, ImpersonationEvent, User
 from backend.api.rate_limit import make_rate_limit_guard
 from backend.shared.helpers.mail_utils import send_email
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -66,12 +66,25 @@ def _jwt_secret() -> str:
     return secret
 
 
-def _make_token(user: User) -> str:
+_IMPERSONATE_TTL_SECONDS = 30 * 60  # 30 minutes
+
+
+def _make_token(user: User, *, imp_by: Optional[str] = None, ttl_seconds: Optional[int] = None) -> str:
     """Encode every claim future guards may need: role, email_verified,
     token_version (tv). The legacy `is_super` claim was retired —
     role='designated' is the new top tier. Bumping User.token_version
     invalidates every JWT that carries the old tv on the next request
-    that hits a guard performing the DB check."""
+    that hits a guard performing the DB check.
+
+    Impersonation: when an admin / designated takes a support session,
+    they call POST /api/auth/impersonate/{target_username}, which mints
+    a JWT for `user=target` BUT stamped with `imp_by=actor.username`
+    and a shortened TTL (30 min default). Routes that block or
+    decorate based on impersonation read `imp_by` from the decoded
+    payload. POST /api/auth/stop-impersonate returns a fresh normal
+    JWT for the actor (no imp_by claim).
+    """
+    ttl = ttl_seconds if ttl_seconds is not None else _TOKEN_TTL_SECONDS
     payload = {
         "sub":            user.username,
         "role":           user.role,
@@ -80,8 +93,10 @@ def _make_token(user: User) -> str:
         "email_verified": bool(user.email_verified),
         "tv":             int(user.token_version or 1),
         "iat":            int(time.time()),
-        "exp":            int(time.time()) + _TOKEN_TTL_SECONDS,
+        "exp":            int(time.time()) + ttl,
     }
+    if imp_by:
+        payload["imp_by"] = imp_by
     return jwt.encode(payload, _jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
@@ -441,6 +456,107 @@ class AuthController(Controller):
     @post("/logout")
     async def logout(self) -> LogoutResponse:
         return LogoutResponse(detail="Logged out")
+
+    # ------------------------------------------------------------------
+    # Impersonation — support sessions for admin / designated.
+    # ------------------------------------------------------------------
+    # POST /impersonate/{target_username}  → mint a 30-min JWT for the
+    #   target user, stamped with imp_by=actor. Permission ladder:
+    #     - designated → anyone
+    #     - admin      → partners only
+    #     - partner    → 401
+    # POST /stop-impersonate               → revert. Requires JWT with
+    #   imp_by claim; returns a fresh full-TTL JWT for the original
+    #   actor.
+    # Every event written to impersonation_events for audit.
+
+    @post("/impersonate/{target_username:str}", guards=[jwt_guard])
+    async def impersonate(self, target_username: str, request: Request) -> LoginResponse:
+        payload = getattr(request.state, "token_payload", {}) or {}
+        actor_username = str(payload.get("sub", "")).strip()
+        actor_role     = str(payload.get("role", "")).strip()
+        already_impersonating = bool(payload.get("imp_by"))
+
+        if actor_role not in ("admin", "designated"):
+            raise HTTPException(status_code=403, detail="Only admin or designated can impersonate")
+        if already_impersonating:
+            # Disallow nested impersonation — end the current one first.
+            raise HTTPException(status_code=409, detail="Already in an impersonation session — stop the current one first")
+        if target_username == actor_username:
+            raise HTTPException(status_code=422, detail="Cannot impersonate yourself")
+
+        async with async_session() as session:
+            target = (await session.execute(
+                select(User).where(User.username == target_username)
+            )).scalar_one_or_none()
+            if not target:
+                raise HTTPException(status_code=404, detail="Target user not found")
+            if target.terminated_at is not None or not target.is_active:
+                raise HTTPException(status_code=400, detail="Target user is terminated / inactive")
+            if target.suspended_at is not None:
+                raise HTTPException(status_code=400, detail="Target user is suspended")
+
+            # Permission ladder.
+            if actor_role == "admin" and target.role != "partner":
+                raise HTTPException(status_code=403, detail="Admin can only impersonate partners")
+
+            # Audit row first — if token mint fails, we still have the
+            # attempt logged. ended_at left NULL; will be filled by
+            # /stop-impersonate or post-hoc expiry sweep.
+            ev = ImpersonationEvent(
+                actor_username=actor_username, actor_role_at_time=actor_role,
+                target_username=target.username, target_role_at_time=target.role,
+            )
+            session.add(ev)
+            await session.commit()
+            logger.warning(
+                f"IMPERSONATE start: actor={actor_username!r} ({actor_role}) "
+                f"→ target={target.username!r} ({target.role}) event_id={ev.id}"
+            )
+
+            token = _make_token(target, imp_by=actor_username, ttl_seconds=_IMPERSONATE_TTL_SECONDS)
+            return LoginResponse(
+                token=token, username=target.username, role=target.role,
+                display_name=target.display_name or "",
+                must_change_password=False,
+            )
+
+    @post("/stop-impersonate", guards=[jwt_guard])
+    async def stop_impersonate(self, request: Request) -> LoginResponse:
+        payload = getattr(request.state, "token_payload", {}) or {}
+        imp_by = str(payload.get("imp_by", "")).strip()
+        target_username = str(payload.get("sub", "")).strip()
+        if not imp_by:
+            raise HTTPException(status_code=400, detail="Not an impersonation session")
+
+        async with async_session() as session:
+            # Close out the most recent open audit row.
+            from sqlalchemy import update
+            await session.execute(
+                update(ImpersonationEvent)
+                .where(
+                    ImpersonationEvent.actor_username == imp_by,
+                    ImpersonationEvent.target_username == target_username,
+                    ImpersonationEvent.ended_at.is_(None),
+                )
+                .values(ended_at=datetime.now(timezone.utc), end_reason="stopped")
+            )
+            await session.commit()
+
+            actor = (await session.execute(
+                select(User).where(User.username == imp_by)
+            )).scalar_one_or_none()
+            if not actor:
+                raise HTTPException(status_code=404, detail="Original actor not found")
+            logger.warning(
+                f"IMPERSONATE end: actor={imp_by!r} ← target={target_username!r}"
+            )
+            new_token = _make_token(actor)
+            return LoginResponse(
+                token=new_token, username=actor.username, role=actor.role,
+                display_name=actor.display_name or "",
+                must_change_password=False,
+            )
 
     # ------------------------------------------------------------------
     # Email verification + password reset

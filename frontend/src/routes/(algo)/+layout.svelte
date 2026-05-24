@@ -11,6 +11,7 @@
   } from '$lib/api';
   import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
   import PositionStrip from '$lib/PositionStrip.svelte';
+  import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
 
   const { children } = $props();
 
@@ -377,6 +378,12 @@
       $authStore.user
       && $authStore.user.role !== 'admin'
       && $authStore.user.role !== 'designated'
+      // Impersonation exception: when an admin / designated is
+      // viewing the platform as a partner (impBy set), let them
+      // stay on the algo surfaces so they can reproduce whatever
+      // the partner is hitting. The session expires after 30 min
+      // server-side; the banner offers an End button to revert.
+      && !$authStore.impBy
     ) {
       goto('/signin');
     }
@@ -685,6 +692,8 @@
       orders={chaseOrders}
       onClose={() => { drawerOpen = false; }}
     />
+
+    <ImpersonationBanner />
 
     <main class="algo-content">
       {@render children()}

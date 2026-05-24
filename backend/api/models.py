@@ -112,6 +112,42 @@ class User(Base):
 
 
 # ---------------------------------------------------------------------------
+# Impersonation — admin / designated views the platform as a partner
+# ---------------------------------------------------------------------------
+
+class ImpersonationEvent(Base):
+    """
+    Audit row for every impersonation start + end. An actor (admin or
+    designated) starts impersonating a target via POST /api/auth/
+    impersonate/{target_username}; the row is created at start with
+    `ended_at = NULL`. POST /api/auth/stop-impersonate (or token
+    expiry, currently 30 min TTL) fills `ended_at` + `end_reason`.
+
+    Write endpoints triggered under an impersonation JWT emit
+    WARNING-level logs with `imp_by` so the forensic trail outside this
+    table is complete (writes themselves persist via their normal
+    audit rows — orders, agent events, settings — but the imp_by
+    annotation links them back to the impersonator).
+    """
+    __tablename__ = "impersonation_events"
+
+    id:                Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    actor_username:    Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    actor_role_at_time: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_username:   Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_role_at_time: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at:        Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    # NULL while session is active. Set on POST /stop-impersonate, on
+    # token expiry detection, or on revoke (admin Suspend / Terminate).
+    ended_at:          Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 'stopped' | 'expired' | 'revoked' — populated when ended_at is set.
+    end_reason:        Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # Auth — short-lived tokens for email verification + password reset
 # ---------------------------------------------------------------------------
 

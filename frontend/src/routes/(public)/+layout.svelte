@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore } from '$lib/stores';
+  import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
 
   const { children } = $props();
 
@@ -156,6 +157,8 @@
         </nav>
       {/if}
     </header>
+
+    <ImpersonationBanner />
 
     <main class="pub-content">
       {@render children()}

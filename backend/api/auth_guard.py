@@ -86,6 +86,25 @@ async def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> No
     payload["role"] = row.role
     connection.state.token_payload = payload
 
+    # Impersonation forensic trail — when a write request comes in under
+    # an impersonation JWT (imp_by claim present), emit a WARNING log
+    # entry so the audit reconstruction has the actor's identity at
+    # write time. The impersonation_events table tracks session start
+    # / end; the log here links every mid-session write to the actor.
+    imp_by = payload.get("imp_by")
+    if imp_by:
+        method = (connection.scope.get("method") or "").upper()
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
+            path = connection.scope.get("path", "") or ""
+            # Allow the stop-impersonate hop itself to land quietly.
+            if path != "/api/auth/stop-impersonate":
+                from backend.shared.helpers.ramboq_logger import get_logger
+                _logger = get_logger("backend.api.auth_guard")
+                _logger.warning(
+                    f"IMPERSONATE write: actor={imp_by!r} → target={sub!r} "
+                    f"method={method} path={path}"
+                )
+
 
 async def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
     """Require a valid JWT with role in ('admin', 'designated'). The
