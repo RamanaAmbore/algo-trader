@@ -697,8 +697,8 @@
        ops". Hidden on the algo dashboard (compactHeader=true). -->
   <div class="perf-strategy">
     <span class="perf-strategy-lbl">Strategy:</span>
-    <span class="perf-strategy-val">Long stocks + algo-executed covered calls</span>
-    <span class="perf-strategy-meta">· stocks &amp; cash as margin for premium-harvesting overlays · positions update live during market hours</span>
+    <span class="perf-strategy-val">Long stocks + algo-executed options overlay</span>
+    <span class="perf-strategy-meta">· stocks &amp; cash as margin for covered calls, cash-secured puts, spreads, and more · positions update live during market hours</span>
   </div>
 {/if}
 

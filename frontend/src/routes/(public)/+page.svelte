@@ -11,7 +11,7 @@
 
 <svelte:head>
   <title>Quantitative Investment Analytics for Indian Markets | RamboQuant Analytics</title>
-  <meta name="description" content="RamboQuant Analytics LLP — long-term stock investments enhanced with algo-executed covered calls and margin-efficient options overlays. 25-year track record, 22%+ XIRR, LLP registered. Open platform showcase included." />
+  <meta name="description" content="RamboQuant Analytics LLP — long-term stock investments paired with algo-executed options strategies (covered calls, cash-secured puts, spreads, and more) using stocks and cash as margin. 25-year track record, 22%+ XIRR, LLP registered. Open platform showcase included." />
   <link rel="canonical" href="https://ramboq.com/" />
 
   <!-- Open Graph — HOME variant. Uses og-image-home.png (full-canvas
@@ -19,7 +19,7 @@
        picture and the og:title / og:description text below carry the
        narrative. -->
   <meta property="og:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
-  <meta property="og:description" content="Long-term stock investments enhanced with algo-executed covered calls and margin-efficient options overlays. 25-year track record, 22%+ XIRR." />
+  <meta property="og:description" content="Long-term stock investments paired with a toolkit of algo-executed options strategies — covered calls, cash-secured puts, spreads, and more — using stocks and cash as margin. 25-year track record, 22%+ XIRR." />
   <meta property="og:url" content="https://ramboq.com/" />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="https://ramboq.com/og-image-home.png?v=2" />
@@ -40,7 +40,7 @@
   <!-- Hero — credibility-first headline + 4-cell trust strip. -->
   <section class="hero">
     <h1 class="hero-title">RamboQuant Analytics LLP</h1>
-    <p class="hero-tag">Long-term stock investments enhanced with algo-executed covered calls and margin-efficient options overlays. Stocks appreciate, premiums compound.</p>
+    <p class="hero-tag">Long-term stock investments paired with a toolkit of algo-executed options strategies — covered calls, cash-secured puts, spreads, and more — using stocks and cash as margin. Stocks appreciate, premiums compound.</p>
 
     <div class="trust-strip">
       <div class="trust-cell">
@@ -76,10 +76,10 @@
         <span class="fork-arrow">→</span>
       </div>
       <h2 class="fork-title">Partner with us</h2>
-      <p class="fork-sub">We hold high-conviction stocks for the long term, then use them — along with cash — as margin to write covered calls and similar premium-harvesting strategies. Algo handles entry, exit, and risk. Two return streams: stock appreciation + option premium.</p>
+      <p class="fork-sub">We hold high-conviction stocks for the long term, then use them — along with cash — as margin for a full toolkit of options strategies (covered calls, cash-secured puts, spreads, collars, wheels, hedges). Algo picks the right tool for the market and handles execution + risk. Two return streams: stock appreciation + option premium.</p>
       <ul class="fork-bullets">
         <li>Long stock book as the compounding base</li>
-        <li>Covered calls + margin-efficient overlays for yield</li>
+        <li>Multi-strategy options overlay for yield</li>
         <li>Live performance — real holdings, real P&amp;L</li>
       </ul>
       <span class="fork-cta">See partnership →</span>
@@ -91,7 +91,7 @@
         <span class="fork-arrow">→</span>
       </div>
       <h2 class="fork-title">Open the platform</h2>
-      <p class="fork-sub">Production quant infrastructure that executes the strategy end-to-end — stock entries, covered-call writes, margin checks, chase fills, risk overlays. Built by one engineer; demo runs against live broker data with accounts masked.</p>
+      <p class="fork-sub">Production quant infrastructure that executes the strategy end-to-end — stock entries, multi-leg option writes, basket-margin checks, chase fills, risk overlays. Built by one engineer; demo runs against live broker data with accounts masked.</p>
       <ul class="fork-bullets">
         <li>5-mode execution ladder — Sim → Replay → Paper → Live → Shadow</li>
         <li>Declarative agent grammar + 24/7 risk engine</li>
@@ -127,8 +127,8 @@
       </div>
       <div class="term">
         <div class="term-lbl">Strategy</div>
-        <div class="term-val">Stocks + covered calls</div>
-        <div class="term-note">Long holdings, margin-efficient option overlays</div>
+        <div class="term-val">Stocks + options overlay</div>
+        <div class="term-note">Multi-strategy: calls, puts, spreads, wheels</div>
       </div>
     </div>
   </section>
