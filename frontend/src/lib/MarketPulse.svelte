@@ -1773,6 +1773,14 @@
       theme: 'legacy',
       columnDefs: colDefs,
       rowData: unifiedRows,
+      // Stable row identity — without this, ag-Grid treats every
+      // rowData update (every 10 s poll) as a fresh dataset and
+      // resets the scroll position to the top. The operator scrolls
+      // down to see Holdings, the next poll fires, and the grid
+      // yanks back to row 0. Defining getRowId via the key field
+      // (set in buildUnified per (symbol, major)) lets ag-Grid match
+      // pre/post rows and preserve scroll position + row state.
+      getRowId: ({ data }) => String(data?.key || data?.tradingsymbol || ''),
       defaultColDef: {
         resizable: true, sortable: true, suppressMovable: true,
         suppressHeaderMenuButton: true,
@@ -2740,6 +2748,26 @@
     height: calc(100vh - 11rem);
     min-height: 320px;
     flex: none;
+  }
+  /* Mobile — the grid was rendering taller than the visible viewport,
+     so the page itself scrolled (navbar disappeared as the operator
+     swiped to see Holdings). Shrink the grid + lock the wrap to the
+     dynamic viewport so the page chrome stays anchored and only the
+     grid's internal scroll moves rows under a fixed header.
+     `dvh` (dynamic viewport height) follows the URL-bar show/hide on
+     mobile browsers, unlike plain `vh`. Buffer is 13rem: navbar
+     (3rem) + accent strip + toolbar (multi-line on narrow viewports)
+     + impersonation/sim/paper banners (sticky, occasionally up). */
+  @media (max-width: 600px) {
+    .mp-flat-wrap {
+      min-height: 0;
+      overflow: hidden;
+      padding: 0.3rem;
+    }
+    .mp-flat-wrap .unified-grid {
+      height: calc(100dvh - 13rem);
+      min-height: 240px;
+    }
   }
   .summary-grid,
   .funds-grid {
