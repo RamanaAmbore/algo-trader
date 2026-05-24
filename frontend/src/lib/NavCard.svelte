@@ -1,0 +1,303 @@
+<script>
+  /**
+   * NavCard — partner NAV slice + optional firm-aggregate panel.
+   *
+   * Rendered at the top of /performance, between the page header and the
+   * existing tab strip. Hidden entirely for anonymous / demo sessions.
+   *
+   * Role rules:
+   *   partner              → single "YOUR SHARE" panel
+   *   designated / admin   → two panels: YOUR SHARE (left) + FIRM NAV (right)
+   *                          YOUR SHARE panel hides when share_pct === 0
+   *   anonymous / 401      → card hidden (silent swallow)
+   */
+  import { onMount, onDestroy } from 'svelte';
+  import { fetchMyNav } from '$lib/api';
+  import { authStore, visibleInterval } from '$lib/stores';
+  import { priceFmt, pctFmt } from '$lib/format';
+
+  // Reactive auth state — bridged through $state so reactivity is stable
+  // across CSR hydration (avoids the stale-derived $store.x pattern).
+  let _auth = $state({ token: null, user: null });
+  const _unsub = authStore.subscribe(v => { _auth = v; });
+  onDestroy(() => _unsub());
+
+  // Is the visitor authenticated?
+  const isLoggedIn  = $derived(!!_auth.token && !!_auth.user);
+  const role        = $derived(_auth.user?.role ?? '');
+  // Roles that can see firm aggregate
+  const canSeeFirm  = $derived(role === 'admin' || role === 'designated');
+
+  /** @type {'loading'|'ready'|'hidden'} */
+  let status      = $state('loading');
+  let nav         = $state(/** @type {any} */ (null));
+
+  // Computed display values — all derived from the `nav` state atom.
+  const sharePct    = $derived(nav ? Number(nav.share_pct ?? 0) : 0);
+  const shareNav    = $derived(nav ? Number(nav.share_nav ?? 0) : 0);
+  const shareDayPnl = $derived(nav ? Number(nav.share_day_pnl ?? 0) : 0);
+  const shareCumPnl = $derived(nav ? Number(nav.share_cum_pnl ?? 0) : 0);
+  const contribution= $derived(nav ? Number(nav.contribution ?? 0) : 0);
+  const firmNav     = $derived(nav ? Number(nav.firm_nav ?? 0) : 0);
+  const firmDayPnl  = $derived(nav ? Number(nav.firm_day_pnl ?? 0) : 0);
+  const firmCumPnl  = $derived(nav ? Number(nav.firm_cum_pnl ?? 0) : 0);
+  const partnerCount= $derived(nav ? (nav.partner_count ?? 0) : 0);
+  const asOf        = $derived(nav?.as_of ?? '');
+
+  // Day P&L % relative to NAV (avoids /0 when nav is fresh/zero)
+  const shareDayPct = $derived(shareNav > 0 ? (shareDayPnl / shareNav * 100) : 0);
+  const firmDayPct  = $derived(firmNav  > 0 ? (firmDayPnl  / firmNav  * 100) : 0);
+
+  // Show YOUR SHARE panel only when the user has a stake
+  const showMyShare = $derived(isLoggedIn && sharePct > 0);
+  // Show FIRM NAV panel only for designated/admin
+  const showFirm    = $derived(isLoggedIn && canSeeFirm);
+  // Card is visible when at least one panel should render
+  const cardVisible = $derived(showMyShare || showFirm);
+
+  async function load() {
+    if (!isLoggedIn) {
+      status = 'hidden';
+      return;
+    }
+    try {
+      const data = await fetchMyNav();
+      nav    = data;
+      status = 'ready';
+    } catch (_) {
+      // Silently collapse — 401 means demo/anon, other errors shouldn't
+      // paint a red strip on the public page.
+      status = 'hidden';
+    }
+  }
+
+  let stopInterval = () => {};
+
+  onMount(() => {
+    load();
+    stopInterval = visibleInterval(load, 60_000);
+  });
+
+  onDestroy(() => {
+    stopInterval();
+  });
+
+  // Re-fetch when auth state changes (e.g. user logs in mid-session)
+  $effect(() => {
+    isLoggedIn;
+    load();
+  });
+
+  function signLabel(val) {
+    if (val > 0) return '+';
+    if (val < 0) return '';   // minus already in number
+    return '';
+  }
+
+  function pnlClass(val) {
+    if (val > 0) return 'nav-gain';
+    if (val < 0) return 'nav-loss';
+    return 'nav-zero';
+  }
+</script>
+
+{#if status === 'loading' && isLoggedIn}
+  <!-- Skeleton — shown only for ~1 s on first paint when the user is
+       authenticated. Anonymous sessions skip straight to hidden. -->
+  <div class="nav-card nav-skeleton" aria-hidden="true">
+    <div class="nav-skel-bar nav-skel-title"></div>
+    <div class="nav-skel-bar nav-skel-val"></div>
+    <div class="nav-skel-bar nav-skel-sub"></div>
+  </div>
+{:else if status === 'ready' && cardVisible}
+  <div class="nav-card" class:nav-two-panels={showMyShare && showFirm}>
+
+    {#if showMyShare}
+      <div class="nav-panel">
+        <div class="nav-panel-label">YOUR SHARE</div>
+        <div class="nav-big tabular-nums">
+          <span class="nav-currency">₹</span>{priceFmt(shareNav)}
+        </div>
+        <div class="nav-sub {pnlClass(shareDayPnl)} tabular-nums">
+          {signLabel(shareDayPnl)}₹{priceFmt(Math.abs(shareDayPnl))} today
+          ({signLabel(shareDayPct)}{pctFmt(Math.abs(shareDayPct))}%)
+        </div>
+        <div class="nav-meta tabular-nums">
+          contribution: ₹{priceFmt(contribution)}
+          &nbsp;·&nbsp;
+          share: {pctFmt(sharePct)}%
+        </div>
+        {#if shareCumPnl !== 0}
+          <div class="nav-cum {pnlClass(shareCumPnl)} tabular-nums">
+            Cumulative: {signLabel(shareCumPnl)}₹{priceFmt(Math.abs(shareCumPnl))}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if showFirm}
+      <div class="nav-panel nav-panel-firm" class:nav-panel-divider={showMyShare}>
+        <div class="nav-panel-label">FIRM NAV</div>
+        <div class="nav-big tabular-nums">
+          <span class="nav-currency">₹</span>{priceFmt(firmNav)}
+        </div>
+        <div class="nav-sub {pnlClass(firmDayPnl)} tabular-nums">
+          {signLabel(firmDayPnl)}₹{priceFmt(Math.abs(firmDayPnl))} today
+          ({signLabel(firmDayPct)}{pctFmt(Math.abs(firmDayPct))}%)
+        </div>
+        {#if partnerCount > 0}
+          <div class="nav-meta">{partnerCount} partner{partnerCount === 1 ? '' : 's'}</div>
+        {/if}
+        {#if firmCumPnl !== 0}
+          <div class="nav-cum {pnlClass(firmCumPnl)} tabular-nums">
+            Cumulative: {signLabel(firmCumPnl)}₹{priceFmt(Math.abs(firmCumPnl))}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if asOf}
+      <div class="nav-as-of">as of {asOf}</div>
+    {/if}
+
+  </div>
+{/if}
+
+<style>
+  /* ── Card shell ─────────────────────────────────────────────────── */
+  .nav-card {
+    background: #faf7f0;
+    border: 1px solid #e0d9cc;
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem 0.75rem;
+    margin-bottom: 1rem;
+    position: relative;
+  }
+
+  /* Two-panel mode: CSS grid 1fr 1fr at ≥768px, stacked below */
+  .nav-two-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 1.5rem;
+    /* as-of line spans the full width */
+    grid-template-rows: auto auto;
+  }
+  /* The as-of line should span both columns when in two-panel mode */
+  .nav-two-panels .nav-as-of {
+    grid-column: 1 / -1;
+  }
+
+  @media (max-width: 767px) {
+    .nav-two-panels {
+      grid-template-columns: 1fr;
+      gap: 1rem 0;
+    }
+  }
+
+  /* ── Panel ──────────────────────────────────────────────────────── */
+  .nav-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+
+  /* Vertical divider between panels — replaced by padding gap on mobile */
+  @media (min-width: 768px) {
+    .nav-panel-divider {
+      border-left: 1px solid #e0d9cc;
+      padding-left: 1.25rem;
+    }
+  }
+
+  /* Single-panel (partner): cap width + center */
+  :not(.nav-two-panels) > .nav-panel {
+    max-width: 28rem;
+    margin: 0 auto;
+  }
+
+  /* ── Labels ─────────────────────────────────────────────────────── */
+  .nav-panel-label {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #c8a84b;      /* champagne gold */
+    text-transform: uppercase;
+    margin-bottom: 0.1rem;
+  }
+
+  /* ── Big NAV number ─────────────────────────────────────────────── */
+  .nav-big {
+    font-size: 1.55rem;
+    font-weight: 700;
+    color: #0c1830;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-currency {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #4a5872;
+    margin-right: 0.05em;
+  }
+
+  /* ── Sub-line (day P&L) ─────────────────────────────────────────── */
+  .nav-sub {
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Meta row (contribution · share%) ──────────────────────────── */
+  .nav-meta {
+    font-size: 0.63rem;
+    color: #7a6b52;
+    margin-top: 0.08rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Cumulative P&L ─────────────────────────────────────────────── */
+  .nav-cum {
+    font-size: 0.63rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin-top: 0.05rem;
+  }
+
+  /* ── As-of timestamp ────────────────────────────────────────────── */
+  .nav-as-of {
+    font-size: 0.58rem;
+    color: #a89878;
+    margin-top: 0.55rem;
+    text-align: right;
+  }
+
+  /* ── P&L colour tokens (public palette) ────────────────────────── */
+  .nav-gain { color: #1a6b3a; }
+  .nav-loss { color: #9b1c1c; }
+  .nav-zero { color: #7a6b52; }
+
+  /* ── Skeleton ───────────────────────────────────────────────────── */
+  .nav-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .nav-skel-bar {
+    background: linear-gradient(90deg, #ede8df 25%, #f5f0e8 50%, #ede8df 75%);
+    background-size: 200% 100%;
+    animation: nav-skel-shimmer 1.4s ease-in-out infinite;
+    border-radius: 3px;
+    height: 0.75rem;
+  }
+  .nav-skel-title { width: 5rem; height: 0.55rem; }
+  .nav-skel-val   { width: 8rem; height: 1.4rem; }
+  .nav-skel-sub   { width: 12rem; }
+
+  @keyframes nav-skel-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* tabular-nums helper class applied via inline class on elements */
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+</style>

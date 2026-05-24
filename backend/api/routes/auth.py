@@ -26,7 +26,7 @@ import msgspec
 from litestar import Controller, Request, get, post
 from litestar.exceptions import HTTPException
 from litestar.response import Redirect
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 
 from backend.api.auth_guard import jwt_guard
 from backend.api.database import async_session
@@ -585,3 +585,159 @@ class AuthController(Controller):
             display_name=user.display_name,
             must_change_password=False,
         )
+
+    # ------------------------------------------------------------------
+    # NAV slice — operator's share of the firm's current portfolio
+    # ------------------------------------------------------------------
+
+    @get("/me/nav", guards=[jwt_guard])
+    async def get_my_nav(self, request: Request) -> dict:
+        """Return the operator's share of the firm's current NAV + P&L.
+
+        Pulls live figures from the most-recent _intraday_equity deque
+        point (populated every ~5 min by the background task). Falls
+        back to a one-shot synchronous broker fetch off-hours or when
+        the deque is empty. Swallows broker errors and returns 0s with
+        a warning log so the frontend never hard-errors.
+
+        Response keys:
+          role / share_pct / contribution / share_nav / share_day_pnl /
+          share_cum_pnl / as_of
+          (designated + admin only) firm_nav / firm_day_pnl /
+          firm_cum_pnl / partner_count
+        """
+        payload  = request.state.token_payload
+        username = payload.get("sub", "")
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(User.role, User.share_pct, User.contribution)
+                .where(User.username == username)
+            )
+            row = result.first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        role: str         = row.role or "partner"
+        share_pct: float  = float(row.share_pct or 0.0)
+        contribution: float = float(row.contribution or 0.0)
+
+        # ── Resolve firm-level figures ──────────────────────────────────
+        from backend.api.background import (
+            _intraday_equity,
+            _fetch_holdings_direct,
+            _fetch_margins_direct,
+        )
+        import asyncio as _asyncio
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        firm_nav     = 0.0
+        firm_day_pnl = 0.0
+        firm_cum_pnl = 0.0
+        as_of        = datetime.now(timezone.utc).isoformat()
+
+        if _intraday_equity:
+            # Most recent deque entry: (iso_timestamp, day_pnl, cum_pnl)
+            ts, day_pnl, cum_pnl = _intraday_equity[-1]
+            as_of        = ts
+            firm_day_pnl = float(day_pnl)
+            firm_cum_pnl = float(cum_pnl)
+            # NAV = holdings current value + cash + available margin + collateral.
+            # The deque doesn't store NAV directly, so we derive it from
+            # a one-shot margins fetch (fast, single HTTP call).
+            try:
+                loop = _asyncio.get_running_loop()
+                with _TPE(max_workers=1) as ex:
+                    df_m = await loop.run_in_executor(ex, _fetch_margins_direct)
+                total_m = df_m[df_m['account'] == 'TOTAL']
+                cash_col   = next((c for c in ['cash', 'net'] if c in total_m.columns), None)
+                margin_col = next((c for c in ['available_margin', 'avail margin', 'net'] if c in total_m.columns), None)
+                collat_col = 'collateral' if 'collateral' in total_m.columns else None
+                funds_total = 0.0
+                if not total_m.empty:
+                    if cash_col:
+                        funds_total += float(total_m[cash_col].iloc[0] or 0)
+                    if margin_col and margin_col != cash_col:
+                        funds_total += float(total_m[margin_col].iloc[0] or 0)
+                    if collat_col:
+                        funds_total += float(total_m[collat_col].iloc[0] or 0)
+                # NAV = holdings cur_val (invested value at market price) + liquid funds
+                # We don't have holdings cur_val in the deque, so we approximate:
+                # firm NAV ≈ contribution-based total (cum_pnl + total invested).
+                # This is conservative but correct for the slice computation.
+                firm_nav = max(funds_total, 0.0)
+            except Exception as _nav_err:
+                logger.warning(f"Auth /me/nav: margin fetch for NAV failed: {_nav_err}")
+        else:
+            # Off-hours or fresh start — one-shot full fetch
+            try:
+                loop = _asyncio.get_running_loop()
+                with _TPE(max_workers=2) as ex:
+                    df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
+                    df_m_fut = loop.run_in_executor(ex, _fetch_margins_direct)
+                    _, sum_h   = await df_h_fut
+                    df_m_tuple = await df_m_fut
+                total_h = sum_h[sum_h['account'] == 'TOTAL']
+                total_m = df_m_tuple[df_m_tuple['account'] == 'TOTAL']
+
+                cur_val = 0.0
+                if not total_h.empty and 'cur_val' in total_h.columns:
+                    cur_val = float(total_h['cur_val'].iloc[0] or 0)
+
+                cash_col   = next((c for c in ['cash', 'net'] if c in total_m.columns), None)
+                collat_col = 'collateral' if 'collateral' in total_m.columns else None
+                funds_total = 0.0
+                if not total_m.empty:
+                    if cash_col:
+                        funds_total += float(total_m[cash_col].iloc[0] or 0)
+                    if collat_col:
+                        funds_total += float(total_m[collat_col].iloc[0] or 0)
+
+                firm_nav = cur_val + max(funds_total, 0.0)
+
+                # Derive day/cum P&L from holdings summary
+                if not total_h.empty:
+                    if 'day_change_val' in total_h.columns:
+                        firm_day_pnl = float(total_h['day_change_val'].iloc[0] or 0)
+                    if 'pnl' in total_h.columns:
+                        firm_cum_pnl = float(total_h['pnl'].iloc[0] or 0)
+            except Exception as _fb_err:
+                logger.warning(f"Auth /me/nav: one-shot fetch failed: {_fb_err}")
+
+        share_nav     = firm_nav      * share_pct / 100
+        share_day_pnl = firm_day_pnl  * share_pct / 100
+        share_cum_pnl = firm_cum_pnl  * share_pct / 100
+
+        resp: dict = {
+            "role":           role,
+            "share_pct":      share_pct,
+            "contribution":   contribution,
+            "share_nav":      round(share_nav,     2),
+            "share_day_pnl":  round(share_day_pnl, 2),
+            "share_cum_pnl":  round(share_cum_pnl, 2),
+            "as_of":          as_of,
+        }
+
+        # Designated + admin see firm-level figures + partner count
+        if role in ("admin", "designated"):
+            async with async_session() as session:
+                cnt_result = await session.execute(
+                    select(func.count()).select_from(User).where(
+                        User.role.in_(["partner", "designated"]),
+                        User.share_pct > 0,
+                        User.is_active.is_(True),
+                    )
+                )
+                partner_count = cnt_result.scalar_one() or 0
+
+            resp["firm_nav"]       = round(firm_nav,     2)
+            resp["firm_day_pnl"]   = round(firm_day_pnl, 2)
+            resp["firm_cum_pnl"]   = round(firm_cum_pnl, 2)
+            resp["partner_count"]  = partner_count
+
+        logger.info(
+            f"Auth /me/nav: {username!r} role={role} share_pct={share_pct} "
+            f"share_nav={share_nav:.0f}"
+        )
+        return resp

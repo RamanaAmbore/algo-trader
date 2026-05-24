@@ -11,6 +11,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import NavCard from '$lib/NavCard.svelte';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -686,6 +687,14 @@
     <span class="perf-banner-icon" aria-hidden="true">{isOutage ? '⏳' : '⚠'}</span>
     <span class="perf-banner-text">{error}</span>
   </div>
+{/if}
+
+{#if !compactHeader}
+  <!-- NAV slice card — only visible on the public /performance layout when
+       the visitor is authenticated as partner, designated, or admin. Hidden
+       silently for anonymous / demo sessions (fetchMyNav → 401 → swallowed).
+       Not rendered on the algo dashboard (compactHeader=true). -->
+  <NavCard />
 {/if}
 
 {#if !compactHeader}

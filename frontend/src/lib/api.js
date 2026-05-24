@@ -217,6 +217,9 @@ export const resetPassword = (token, password) =>
 export const changePassword = (password) =>
   _post('/auth/change-password', { password }, { auth: true });
 
+/** GET /api/auth/me/nav — operator's NAV slice (share_pct × firm NAV). */
+export const fetchMyNav = () => _get('/auth/me/nav', { auth: true });
+
 // ── Public data endpoints (read-only — no JWT required) ──────────────────────
 // Pass auth header if available — backend masks accounts for non-admin
 // Pass `fresh=true` to make the server bypass its 30-second cache and

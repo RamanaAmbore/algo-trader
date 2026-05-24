@@ -229,14 +229,15 @@
         <div><label class="field-label">Full Name</label><input bind:value={createForm.display_name} class="field-input" /></div>
         <div><label class="field-label">Email</label><input type="email" bind:value={createForm.email} class="field-input" /></div>
         <div><label class="field-label">Phone</label><input bind:value={createForm.phone} class="field-input" /></div>
-        {@const iAmDesignatedCreate = $authStore.user?.role === 'designated'}
         <!-- Role picker — admin can only create partners. Designated
              can create any role (partner / admin / designated).
              Backend (admin.py::create_user) coerces non-designated
              attempts to 'partner' anyway, but the UI hides the
-             elevated choices to match the mental model. -->
+             elevated choices to match the mental model.
+             {@const} is invalid here (not a direct block child) so
+             the designated check is inlined in both branches. -->
         <div><label class="field-label">Role</label>
-          {#if iAmDesignatedCreate}
+          {#if $authStore.user?.role === 'designated'}
             <Select ariaLabel="Role" bind:value={createForm.role}
               options={[
                 { value: 'partner',    label: 'Partner'    },
@@ -250,7 +251,7 @@
         <!-- Capital + share % — designated-only. Backend silently
              coerces non-designated attempts to 0.0, but the inputs
              are hidden for admin so the form matches the policy. -->
-        {#if iAmDesignatedCreate}
+        {#if $authStore.user?.role === 'designated'}
           <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={createForm.contribution} class="field-input" /></div>
           <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={createForm.share_pct} class="field-input" /></div>
         {/if}
