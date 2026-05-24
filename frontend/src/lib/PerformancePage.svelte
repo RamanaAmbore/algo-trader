@@ -18,7 +18,13 @@
   const {
     theme             = 'ag-theme-ramboq',
     allowOrders       = false,
-    maskAccounts      = true,
+    // Default: mask account IDs in the rendered cells. The override
+    // below ($effect on authStore role) flips it to false when the
+    // signed-in user is admin / designated — they see raw codes.
+    // Partner and demo sessions stay masked even though the backend
+    // already returns ZG#### in those cases; the client-side regex
+    // is a defence-in-depth belt on top of the server's mask.
+    maskAccountsProp  = true,
     // When true, drop the top timestamp+Refresh row and move the refresh
     // timestamp into the tabs row as the last element. Used by the
     // admin /dashboard page; default keeps the public /performance
@@ -30,6 +36,15 @@
     enableOptionsLink = false,
   } = $props();
   const isDark = $derived(theme === 'ag-theme-algo');
+  // Effective mask flag — admin/designated never see masked codes,
+  // regardless of what the parent passed. The prop still wins for
+  // partner / demo (the default `true`) and for any future caller
+  // that wants to force-mask even an admin session.
+  const maskAccounts = $derived(
+    ($authStore.user?.role === 'admin' || $authStore.user?.role === 'designated')
+      ? false
+      : maskAccountsProp
+  );
 
   // Read tab from URL ?tab= param; default to 'positions'
   const validTabs = ['positions', 'holdings'];
