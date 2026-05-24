@@ -73,13 +73,10 @@
   /** @type {any[]} */
   let _funds     = $state([]);
 
-  // ── Equity-card tab state ──────────────────────────────────────────
-  // Industry pattern: IB Mosaic tabs Positions/Orders/Trades to
-  // share rectangle; Bloomberg PRTU tabs by asset class. Default
-  // to Positions (the intraday-relevant view); operator flips to
-  // Holdings for EOD review. Count chips on the tab labels keep
-  // the hidden one in peripheral awareness.
-  let _equityTab = $state(/** @type {'positions' | 'holdings'} */ ('positions'));
+  // Equity card stacks Positions Summary on top and Holdings
+  // Summary below — no tabs. The tab variant left ~half the card
+  // empty whenever one side rendered; stacked uses the card's
+  // full vertical real estate without operator interaction.
 
   // Per-account summary derivations — same shape MarketPulse
   // builds internally, but computed here from the already-loaded
@@ -444,14 +441,19 @@
   async function loadHero() {
     try {
       const [positions, holdings, events] = await Promise.all([
-        fetchPositions().catch(() => []),
-        fetchHoldings().catch(() => []),
+        fetchPositions().catch(() => null),
+        fetchHoldings().catch(() => null),
         fetchRecentAgentEvents(100).catch(() => []),
       ]);
 
-      // Expose for winners/losers derivation.
-      _positions = Array.isArray(positions) ? positions : [];
-      _holdings  = Array.isArray(holdings)  ? holdings  : [];
+      // PositionsResponse / HoldingsResponse are `{rows, summary,
+      // refreshed_at}`. Older fixtures handed us bare arrays — accept
+      // either. The previous Array.isArray(...) guard silently emptied
+      // the state when the actual {rows} object came back, which is
+      // why Positions and Holdings showed 0 in the Equity card even
+      // when the broker had open trades.
+      _positions = Array.isArray(positions) ? positions : (positions?.rows ?? []);
+      _holdings  = Array.isArray(holdings)  ? holdings  : (holdings?.rows  ?? []);
 
       // Sum day's P&L from positions (day-pnl) + holdings (day_change).
       let dayPnl = 0;
@@ -838,98 +840,89 @@
     {/if}
   </section>
 
-  <!-- Equity card — tabbed Positions / Holdings summary.
-       Default tab: Positions (intraday-relevant). Count chips on
-       each tab so the operator sees both denominators without
-       flipping. Same compact HTML table treatment as Funds. -->
+  <!-- Equity card — Positions Summary + Holdings Summary stacked.
+       Earlier this was tabbed [Positions] / [Holdings], but tab-view
+       left the right half of the card empty when one side rendered.
+       Stacked uses the card's full vertical space: positions on top
+       (intraday-relevant, glanced first), holdings below. Both are
+       compact HTML tables sharing the same .cap-table treatment as
+       Capital. Counts are inline next to each sub-heading. -->
   <section class="bucket-card bucket-eq">
     <div class="bucket-header">
       <span class="mp-section-label">Equity</span>
-      <div class="eq-tabs" role="tablist">
-        <button
-          role="tab"
-          aria-selected={_equityTab === 'positions'}
-          class="eq-tab"
-          class:eq-tab-on={_equityTab === 'positions'}
-          onclick={() => _equityTab = 'positions'}>
-          Positions
-          <span class="eq-tab-count">{_positionsCount}</span>
-        </button>
-        <button
-          role="tab"
-          aria-selected={_equityTab === 'holdings'}
-          class="eq-tab"
-          class:eq-tab-on={_equityTab === 'holdings'}
-          onclick={() => _equityTab = 'holdings'}>
-          Holdings
-          <span class="eq-tab-count">{_holdingsCount}</span>
-        </button>
-      </div>
     </div>
 
-    {#if _equityTab === 'positions'}
-      {#if !_positionsSummary.length}
-        <div class="cap-empty">No open positions</div>
-      {:else}
-        <div class="cap-table-wrap">
-        <table class="cap-table">
-          <thead>
-            <tr>
-              <th class="cap-th-l">Account</th>
-              <th>Day P&amp;L</th>
-              <th>Open P&amp;L</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each _positionsSummary as r}
-              <tr>
-                <td class="cap-acct">{r.account}</td>
-                <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
-                <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
-              </tr>
-            {/each}
-            <tr class="cap-total">
-              <td class="cap-acct">TOTAL</td>
-              <td class="cap-num {_pnlColor(_positionsTotal.day_pnl)}">{_positionsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.day_pnl)}</td>
-              <td class="cap-num {_pnlColor(_positionsTotal.pnl)}">{_positionsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.pnl)}</td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
-      {/if}
+    <!-- Positions Summary — intraday, glanced first. -->
+    <div class="bucket-subheader">
+      Positions
+      <span class="eq-count">{_positionsCount}</span>
+    </div>
+    {#if !_positionsSummary.length}
+      <div class="cap-empty">No open positions</div>
     {:else}
-      {#if !_holdingsSummary.length}
-        <div class="cap-empty">No holdings</div>
-      {:else}
-        <div class="cap-table-wrap">
-        <table class="cap-table">
-          <thead>
+      <div class="cap-table-wrap">
+      <table class="cap-table">
+        <thead>
+          <tr>
+            <th class="cap-th-l">Account</th>
+            <th>Day P&amp;L</th>
+            <th>Open P&amp;L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each _positionsSummary as r}
             <tr>
-              <th class="cap-th-l">Account</th>
-              <th>Day P&amp;L</th>
-              <th>Open P&amp;L</th>
-              <th>Cur Val</th>
+              <td class="cap-acct">{r.account}</td>
+              <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
+              <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
             </tr>
-          </thead>
-          <tbody>
-            {#each _holdingsSummary as r}
-              <tr>
-                <td class="cap-acct">{r.account}</td>
-                <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
-                <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
-                <td class="cap-num">₹{aggCompact(r.cur_val)}</td>
-              </tr>
-            {/each}
-            <tr class="cap-total">
-              <td class="cap-acct">TOTAL</td>
-              <td class="cap-num {_pnlColor(_holdingsTotal.day_pnl)}">{_holdingsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.day_pnl)}</td>
-              <td class="cap-num {_pnlColor(_holdingsTotal.pnl)}">{_holdingsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.pnl)}</td>
-              <td class="cap-num">₹{aggCompact(_holdingsTotal.cur_val)}</td>
+          {/each}
+          <tr class="cap-total">
+            <td class="cap-acct">TOTAL</td>
+            <td class="cap-num {_pnlColor(_positionsTotal.day_pnl)}">{_positionsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.day_pnl)}</td>
+            <td class="cap-num {_pnlColor(_positionsTotal.pnl)}">{_positionsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.pnl)}</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    {/if}
+
+    <!-- Holdings Summary — EOD picture, sits below positions. -->
+    <div class="bucket-subheader bucket-subheader-spaced">
+      Holdings
+      <span class="eq-count">{_holdingsCount}</span>
+    </div>
+    {#if !_holdingsSummary.length}
+      <div class="cap-empty">No holdings</div>
+    {:else}
+      <div class="cap-table-wrap">
+      <table class="cap-table">
+        <thead>
+          <tr>
+            <th class="cap-th-l">Account</th>
+            <th>Day P&amp;L</th>
+            <th>Open P&amp;L</th>
+            <th>Cur Val</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each _holdingsSummary as r}
+            <tr>
+              <td class="cap-acct">{r.account}</td>
+              <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
+              <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
+              <td class="cap-num">₹{aggCompact(r.cur_val)}</td>
             </tr>
-          </tbody>
-        </table>
-        </div>
-      {/if}
+          {/each}
+          <tr class="cap-total">
+            <td class="cap-acct">TOTAL</td>
+            <td class="cap-num {_pnlColor(_holdingsTotal.day_pnl)}">{_holdingsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.day_pnl)}</td>
+            <td class="cap-num {_pnlColor(_holdingsTotal.pnl)}">{_holdingsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.pnl)}</td>
+            <td class="cap-num">₹{aggCompact(_holdingsTotal.cur_val)}</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
     {/if}
   </section>
 </div>
@@ -1327,41 +1320,15 @@
   }
   .bucket-subheader-spaced { margin-top: 0.7rem; }
 
-  /* Equity tabs — sit on the right of the bucket header. Active
-     tab carries an amber underline + slightly brighter text.
-     Count chip stays muted; it's an at-a-glance "how many" not
-     a primary action. */
-  .eq-tabs {
-    display: inline-flex;
-    gap: 0.4rem;
-    margin-left: auto;
-  }
-  .eq-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    background: none;
-    border: none;
-    padding: 0.18rem 0.3rem 0.22rem;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .eq-tab:hover { color: #c8d8f0; }
-  .eq-tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
-  .eq-tab-count {
+  /* Inline count chip used inside Equity sub-headings (Positions
+     and Holdings). Small muted pill — at-a-glance "how many", not
+     a primary action. Reads as a subordinate of the sub-heading
+     label, not a separate element. */
+  .eq-count {
     display: inline-flex;
     align-items: center;
     padding: 0.05rem 0.32rem;
+    margin-left: 0.35rem;
     border-radius: 8px;
     background: rgba(126, 151, 184, 0.18);
     color: #c8d8f0;
@@ -1369,10 +1336,7 @@
     font-weight: 800;
     letter-spacing: 0;
     font-variant-numeric: tabular-nums;
-  }
-  .eq-tab-on .eq-tab-count {
-    background: rgba(251, 191, 36, 0.20);
-    color: #fbbf24;
+    text-transform: none;
   }
 
   /* Compact HTML tables — Funds / Positions Summary / Holdings
