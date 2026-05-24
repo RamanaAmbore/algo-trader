@@ -1,6 +1,5 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import MarketPulse from '$lib/MarketPulse.svelte';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -62,11 +61,93 @@
   let _pnlOpen = $state(false);
 
 
-  // ── Raw positions + holdings (reused for winners/losers) ──────────
+  // ── Raw positions + holdings (reused for winners/losers and
+  //     the new Equity-card tabs) ─────────────────────────────────
   /** @type {any[]} */
   let _positions = $state([]);
   /** @type {any[]} */
   let _holdings  = $state([]);
+  // Full funds rows (for the Capital-card Funds table). Kept
+  // separate from _margins (which is the cleaned-down gauge
+  // input) so the table can show cash + collateral + net etc.
+  /** @type {any[]} */
+  let _funds     = $state([]);
+
+  // ── Equity-card tab state ──────────────────────────────────────────
+  // Industry pattern: IB Mosaic tabs Positions/Orders/Trades to
+  // share rectangle; Bloomberg PRTU tabs by asset class. Default
+  // to Positions (the intraday-relevant view); operator flips to
+  // Holdings for EOD review. Count chips on the tab labels keep
+  // the hidden one in peripheral awareness.
+  let _equityTab = $state(/** @type {'positions' | 'holdings'} */ ('positions'));
+
+  // Per-account summary derivations — same shape MarketPulse
+  // builds internally, but computed here from the already-loaded
+  // _positions / _holdings. No extra fetches; the HTML tables
+  // below render directly from these derivations.
+  //
+  // Day-change for positions comes from row.pnl (intraday is the
+  // whole position life). For holdings it's row.day_change (the
+  // delta from yesterday's close). Both sum to the same TOTAL the
+  // existing MarketPulse summary grids show.
+  /** @typedef {{account: string, day_pnl: number, pnl: number, inv_val: number, cur_val: number}} SumRow */
+
+  const _positionsSummary = $derived.by(() => {
+    /** @type {Record<string, SumRow>} */
+    const byAcct = {};
+    for (const r of _positions) {
+      const a = String(r.account || '');
+      if (!a) continue;
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
+      byAcct[a].day_pnl += Number(r.pnl) || 0;
+      byAcct[a].pnl     += Number(r.pnl) || 0;
+    }
+    return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
+  });
+
+  const _holdingsSummary = $derived.by(() => {
+    /** @type {Record<string, SumRow>} */
+    const byAcct = {};
+    for (const r of _holdings) {
+      const a = String(r.account || '');
+      if (!a) continue;
+      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
+      byAcct[a].day_pnl += Number(r.day_change ?? r.day_change_pct_amount ?? 0);
+      byAcct[a].pnl     += Number(r.pnl) || 0;
+      byAcct[a].inv_val += Number(r.inv_val) || 0;
+      byAcct[a].cur_val += Number(r.cur_val) || 0;
+    }
+    return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
+  });
+
+  // Per-account TOTAL rows (sum across accounts) — pinned at the
+  // bottom of each summary table so the operator's eye lands on
+  // the firm-wide number without scrolling.
+  const _positionsTotal = $derived.by(() => {
+    const t = { account: 'TOTAL', day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
+    for (const r of _positionsSummary) {
+      t.day_pnl += r.day_pnl; t.pnl += r.pnl;
+    }
+    return t;
+  });
+
+  const _holdingsTotal = $derived.by(() => {
+    const t = { account: 'TOTAL', day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
+    for (const r of _holdingsSummary) {
+      t.day_pnl += r.day_pnl; t.pnl += r.pnl;
+      t.inv_val += r.inv_val; t.cur_val += r.cur_val;
+    }
+    return t;
+  });
+
+  // Counts shown in the tab strip — symbol count, not row count.
+  // A book of 4 NIFTY contracts across 2 accounts shows as "4".
+  const _positionsCount = $derived(_positions.length);
+  const _holdingsCount  = $derived(_holdings.length);
+
+  // Helpers for table cells.
+  const _pnlColor = (v) =>
+    v > 0 ? 'cap-up' : v < 0 ? 'cap-down' : 'cap-neutral';
 
   // ── SymbolPanel for winners/losers tile click ──────────────────────
   let _ticketProps = $state(/** @type {any} */ (null));
@@ -323,22 +404,30 @@
 
   async function _fetchMargins() {
     try {
-      const rows = await fetchFunds();
-      if (!Array.isArray(rows) || !rows.length) { _margins = []; return; }
-      _margins = rows
-        .filter(r => r.account && !r.account.includes('TOTAL'))
-        .map(r => {
-          const used  = Number(r.used_margin) || 0;
-          const avail = Number(r.available_margin) || 0;
-          const total = used + avail;
-          return {
-            account: String(r.account),
-            used,
-            avail,
-            util_pct: total > 0 ? used / total : 0,
-          };
-        });
-    } catch (_) { _margins = []; }
+      const res = await fetchFunds();
+      // FundsResponse is `{rows, refreshed_at}`; older callers also
+      // hand us a bare array. Accept either.
+      const rows = Array.isArray(res) ? res : (res?.rows ?? []);
+      if (!Array.isArray(rows) || !rows.length) {
+        _margins = []; _funds = []; return;
+      }
+      // Keep full funds rows for the Capital-card table.
+      _funds = rows.filter(r => r.account && r.account !== 'TOTAL');
+      // Build gauge rows. Backend field is `avail_margin` (Polars
+      // rename of the broker's `net` column); older callers used
+      // `available_margin`. Try both.
+      _margins = _funds.map(r => {
+        const used  = Number(r.used_margin) || 0;
+        const avail = Number(r.avail_margin ?? r.available_margin) || 0;
+        const total = used + avail;
+        return {
+          account: String(r.account),
+          used,
+          avail,
+          util_pct: total > 0 ? used / total : 0,
+        };
+      });
+    } catch (_) { _margins = []; _funds = []; }
   }
 
   async function _fetchConn() {
@@ -539,9 +628,12 @@
   </div>
 {/if}
 
-<!-- Row 1: Intraday equity curve (left) + Margin gauges (right) -->
+<!-- Row 1: Intraday equity curve (full width hero) -->
 <div class="dash-row1">
-  <!-- Left: Intraday equity curve -->
+  <!-- Intraday equity curve — full-width hero. Margin gauges
+       moved into the Capital card below, so the chart gets the
+       full page width. Reads like Bloomberg's portfolio chart
+       on a desktop PRTU page. -->
   <section class="row1-col row1-col-chart">
     <div class="mp-section-label">Intraday Equity Curve</div>
     {#if !_equityPoints.length}
@@ -645,10 +737,28 @@
       </svg>
     {/if}
   </section>
+</div>
 
-  <!-- Right: Margin utilisation gauges -->
-  <section class="row1-col row1-col-gauges">
-    <div class="mp-section-label">Margin Utilisation</div>
+<!-- Row 1.5: Capital + Equity buckets — the page's main two-column row.
+     Capital (margin gauges + Funds table) sits left, Equity (tabbed
+     Positions / Holdings summary) sits right. Both natural-height,
+     equal-width on desktop; stacks on mobile.
+
+     Industry reference: IB Mosaic and Bloomberg PRTU tab the
+     positions/orders/holdings panes inside a single rectangle —
+     same idiom. Count chips on each tab keep the hidden one in
+     peripheral awareness. -->
+<div class="dash-buckets">
+  <!-- Capital card — funds + margin utilisation. The two natural
+       siblings: "what cash do I have" + "how much of my margin is
+       in use" answer the same question (can I take on more risk?). -->
+  <section class="bucket-card bucket-cap">
+    <div class="bucket-header">
+      <span class="mp-section-label">Capital</span>
+    </div>
+
+    <!-- Margin gauges — circular utilisation per account. -->
+    <div class="bucket-subheader">Margin Utilisation</div>
     {#if !_margins.length}
       <div class="gauge-empty">No accounts connected</div>
     {:else}
@@ -659,22 +769,12 @@
           <div class="gauge-tile">
             <svg class="gauge-svg" viewBox="0 0 80 80" width="80" height="80"
               role="img" aria-label="{acct.account} margin utilisation {(acct.util_pct*100).toFixed(0)}%">
-              <!-- Track -->
-              <circle
-                cx="40" cy="40" r={GAUGE_R}
-                fill="none"
-                stroke="rgba(126,151,184,0.18)"
-                stroke-width={GAUGE_SW} />
-              <!-- Arc — starts at top (−90 deg) via transform -->
-              <circle
-                cx="40" cy="40" r={GAUGE_R}
-                fill="none"
-                stroke={color}
-                stroke-width={GAUGE_SW}
-                stroke-dasharray={dash}
-                stroke-linecap="round"
+              <circle cx="40" cy="40" r={GAUGE_R} fill="none"
+                stroke="rgba(126,151,184,0.18)" stroke-width={GAUGE_SW} />
+              <circle cx="40" cy="40" r={GAUGE_R} fill="none"
+                stroke={color} stroke-width={GAUGE_SW}
+                stroke-dasharray={dash} stroke-linecap="round"
                 transform="rotate(-90 40 40)" />
-              <!-- Percentage label inside -->
               <text x="40" y="44" text-anchor="middle"
                 font-size="13" font-weight="800"
                 font-family="ui-monospace,monospace"
@@ -688,6 +788,148 @@
           </div>
         {/each}
       </div>
+    {/if}
+
+    <!-- Funds table — per-account cash + collateral + avail/used
+         margin. Compact HTML table; ag-Grid is overkill for 2-3
+         rows + a TOTAL. Right-aligned monospace numbers; muted
+         TOTAL row at the bottom. -->
+    <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
+    {#if !_funds.length}
+      <div class="cap-empty">No fund data — broker not connected</div>
+    {:else}
+      {@const total = {
+        cash:        _funds.reduce((s, r) => s + (Number(r.cash) || 0), 0),
+        collateral:  _funds.reduce((s, r) => s + (Number(r.collateral) || 0), 0),
+        avail_margin:_funds.reduce((s, r) => s + (Number(r.avail_margin ?? r.available_margin) || 0), 0),
+        used_margin: _funds.reduce((s, r) => s + (Number(r.used_margin) || 0), 0),
+      }}
+      <div class="cap-table-wrap">
+      <table class="cap-table">
+        <thead>
+          <tr>
+            <th class="cap-th-l">Account</th>
+            <th>Cash</th>
+            <th>Collat</th>
+            <th>Avail</th>
+            <th>Used</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each _funds as r}
+            <tr>
+              <td class="cap-acct">{r.account}</td>
+              <td class="cap-num">₹{aggCompact(Number(r.cash) || 0)}</td>
+              <td class="cap-num">₹{aggCompact(Number(r.collateral) || 0)}</td>
+              <td class="cap-num">₹{aggCompact(Number(r.avail_margin ?? r.available_margin) || 0)}</td>
+              <td class="cap-num">₹{aggCompact(Number(r.used_margin) || 0)}</td>
+            </tr>
+          {/each}
+          <tr class="cap-total">
+            <td class="cap-acct">TOTAL</td>
+            <td class="cap-num">₹{aggCompact(total.cash)}</td>
+            <td class="cap-num">₹{aggCompact(total.collateral)}</td>
+            <td class="cap-num">₹{aggCompact(total.avail_margin)}</td>
+            <td class="cap-num">₹{aggCompact(total.used_margin)}</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    {/if}
+  </section>
+
+  <!-- Equity card — tabbed Positions / Holdings summary.
+       Default tab: Positions (intraday-relevant). Count chips on
+       each tab so the operator sees both denominators without
+       flipping. Same compact HTML table treatment as Funds. -->
+  <section class="bucket-card bucket-eq">
+    <div class="bucket-header">
+      <span class="mp-section-label">Equity</span>
+      <div class="eq-tabs" role="tablist">
+        <button
+          role="tab"
+          aria-selected={_equityTab === 'positions'}
+          class="eq-tab"
+          class:eq-tab-on={_equityTab === 'positions'}
+          onclick={() => _equityTab = 'positions'}>
+          Positions
+          <span class="eq-tab-count">{_positionsCount}</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={_equityTab === 'holdings'}
+          class="eq-tab"
+          class:eq-tab-on={_equityTab === 'holdings'}
+          onclick={() => _equityTab = 'holdings'}>
+          Holdings
+          <span class="eq-tab-count">{_holdingsCount}</span>
+        </button>
+      </div>
+    </div>
+
+    {#if _equityTab === 'positions'}
+      {#if !_positionsSummary.length}
+        <div class="cap-empty">No open positions</div>
+      {:else}
+        <div class="cap-table-wrap">
+        <table class="cap-table">
+          <thead>
+            <tr>
+              <th class="cap-th-l">Account</th>
+              <th>Day P&amp;L</th>
+              <th>Open P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each _positionsSummary as r}
+              <tr>
+                <td class="cap-acct">{r.account}</td>
+                <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
+                <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
+              </tr>
+            {/each}
+            <tr class="cap-total">
+              <td class="cap-acct">TOTAL</td>
+              <td class="cap-num {_pnlColor(_positionsTotal.day_pnl)}">{_positionsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.day_pnl)}</td>
+              <td class="cap-num {_pnlColor(_positionsTotal.pnl)}">{_positionsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.pnl)}</td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+      {/if}
+    {:else}
+      {#if !_holdingsSummary.length}
+        <div class="cap-empty">No holdings</div>
+      {:else}
+        <div class="cap-table-wrap">
+        <table class="cap-table">
+          <thead>
+            <tr>
+              <th class="cap-th-l">Account</th>
+              <th>Day P&amp;L</th>
+              <th>Open P&amp;L</th>
+              <th>Cur Val</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each _holdingsSummary as r}
+              <tr>
+                <td class="cap-acct">{r.account}</td>
+                <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
+                <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
+                <td class="cap-num">₹{aggCompact(r.cur_val)}</td>
+              </tr>
+            {/each}
+            <tr class="cap-total">
+              <td class="cap-acct">TOTAL</td>
+              <td class="cap-num {_pnlColor(_holdingsTotal.day_pnl)}">{_holdingsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.day_pnl)}</td>
+              <td class="cap-num {_pnlColor(_holdingsTotal.pnl)}">{_holdingsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.pnl)}</td>
+              <td class="cap-num">₹{aggCompact(_holdingsTotal.cur_val)}</td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+      {/if}
     {/if}
   </section>
 </div>
@@ -765,51 +1007,24 @@
   <NewsList limit={5} showRefreshTime={true} />
 </div>
 
-<!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
-     stack (Funds + Positions Summary + Holdings Summary) on the right. -->
-<div class="dash-grid">
-  <section class="dash-col dash-col-pnl">
-    <!-- P&L Analysis — collapsed by default; state persisted to localStorage. -->
-    <details
-      class="dash-pnl-details"
-      bind:open={_pnlOpen}
-      ontoggle={() => localStorage.setItem('dash.pnlOpen', _pnlOpen ? '1' : '0')}
-    >
-      <summary class="dash-pnl-summary">
-        <span class="mp-section-label">P&amp;L ANALYSIS</span>
-        <span class="dash-pnl-toggle">{_pnlOpen ? '▾ collapse' : '▸ expand'}</span>
-      </summary>
-      <div class="dash-pnl-body">
-        <PnlAnalysis />
-      </div>
-    </details>
-  </section>
-  <section class="dash-col dash-col-pulse">
-    <!-- Dashboard scope: positions + holdings only. Funds, watchlist,
-         pinned, and movers are all off — those buckets don't belong
-         on the dashboard and shouldn't clutter the source-picker
-         either. Source toggles stay on so the operator can still
-         show positions-only or holdings-only, but with just those
-         two options surfaced. -->
-    <!-- Dashboard scope: Funds + Positions + Holdings summary, three
-         compact grids. Source-toggle MultiSelect stays off (the
-         watchlist / movers / pinned filters don't apply when only
-         the summary grids render). Funds was briefly dropped per a
-         scope clarification, then restored — operator wants the
-         margin/cash glance alongside positions+holdings on /dashboard. -->
-    <MarketPulse
-      title="Performance"
-      enableWatchlists={false}
-      enableMovers={false}
-      enablePinned={false}
-      enableSourceToggles={false}
-      allowOrders={true}
-      accountPicker={true}
-      showSummary={true}
-      showFunds={true}
-      showSymbolsGrid={false} />
-  </section>
-</div>
+<!-- P&L Analysis — full-width collapsible. Capital + Equity buckets
+     above already cover the per-account summary view (which is what
+     the old MarketPulse instance gave us), so the dashboard now
+     drops MarketPulse entirely. P&L Analysis stays as the deeper
+     "drill into a date / segment / agent" surface below the fold. -->
+<details
+  class="dash-pnl-details dash-pnl-full"
+  bind:open={_pnlOpen}
+  ontoggle={() => localStorage.setItem('dash.pnlOpen', _pnlOpen ? '1' : '0')}
+>
+  <summary class="dash-pnl-summary">
+    <span class="mp-section-label">P&amp;L ANALYSIS</span>
+    <span class="dash-pnl-toggle">{_pnlOpen ? '▾ collapse' : '▸ expand'}</span>
+  </summary>
+  <div class="dash-pnl-body">
+    <PnlAnalysis />
+  </div>
+</details>
 
 <!-- SymbolPanel — opened by winners/losers tile clicks -->
 {#if _ticketProps}
@@ -986,19 +1201,14 @@
     letter-spacing: 0.04em;
   }
 
-  /* ── Row 1: equity curve + margin gauges ─────────────────────────── */
+  /* ── Row 1: equity curve (full-width hero) ───────────────────────── */
+  /* Earlier the equity curve shared this row with the margin gauges
+     at a 1.6:1 ratio (≥1024px). Gauges moved into the Capital bucket
+     so the chart now claims the full width — same idiom as Bloomberg
+     PRTU's portfolio chart at the top of a desktop view. */
   .dash-row1 {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 0.75rem;
-    margin-bottom: 0.6rem;
-  }
-  @media (min-width: 1024px) {
-    .dash-row1 {
-      grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-      gap: 1rem;
-      align-items: start;
-    }
+    display: block;
+    margin-bottom: 0.75rem;
   }
   .row1-col {
     min-width: 0;
@@ -1073,27 +1283,161 @@
     letter-spacing: 0.03em;
   }
 
-  /* ── dash-grid (below row1) ──────────────────────────────────────
-     Stacks the two child sections (P&L Analysis + MarketPulse) as
-     full-width rows at every viewport. Earlier the desktop layout
-     ran them in two columns (1.4fr / 1fr at min-width: 1200px),
-     but P&L Analysis is collapsed by default (~60 px header only)
-     while MarketPulse with Funds + Positions Summary + Holdings
-     Summary is ~600 px tall. align-items: start meant the P&L
-     side left a tall empty band beside the MarketPulse column.
-     Stacked, each section occupies its natural height and full
-     width — no dead space, and MarketPulse gets every pixel for
-     its three grids. Other rows (dash-row1, dash-row2) stay
-     two-column because their pairs have matching natural heights. */
-  .dash-grid {
-    display: flex;
-    flex-direction: column;
+  /* ── Capital + Equity buckets ───────────────────────────────────────
+     The page's main two-column row. Capital (margin gauges + Funds
+     table) and Equity (tabbed Positions / Holdings) are natural
+     siblings and read at equal weight. Stacks on mobile; equal
+     column widths on desktop so neither dominates. */
+  .dash-buckets {
+    display: grid;
+    grid-template-columns: 1fr;
     gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  @media (min-width: 1024px) {
+    .dash-buckets {
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      align-items: start;
+    }
+  }
+  .bucket-card {
+    min-width: 0;
+    padding: 0.65rem 0.75rem 0.7rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+  .bucket-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+  }
+  .bucket-subheader {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #7e97b8;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 0.35rem;
+  }
+  .bucket-subheader-spaced { margin-top: 0.7rem; }
+
+  /* Equity tabs — sit on the right of the bucket header. Active
+     tab carries an amber underline + slightly brighter text.
+     Count chip stays muted; it's an at-a-glance "how many" not
+     a primary action. */
+  .eq-tabs {
+    display: inline-flex;
+    gap: 0.4rem;
+    margin-left: auto;
+  }
+  .eq-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: none;
+    border: none;
+    padding: 0.18rem 0.3rem 0.22rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .eq-tab:hover { color: #c8d8f0; }
+  .eq-tab-on {
+    color: #fbbf24;
+    border-bottom-color: #fbbf24;
+  }
+  .eq-tab-count {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.32rem;
+    border-radius: 8px;
+    background: rgba(126, 151, 184, 0.18);
+    color: #c8d8f0;
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .eq-tab-on .eq-tab-count {
+    background: rgba(251, 191, 36, 0.20);
+    color: #fbbf24;
+  }
+
+  /* Compact HTML tables — Funds / Positions Summary / Holdings
+     Summary all share this treatment. Hairline column rules,
+     right-aligned monospace numbers, muted TOTAL row at the
+     bottom. ag-Grid is overkill for 2-4 rows. */
+  .cap-table-wrap {
+    overflow-x: auto;
+  }
+  .cap-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+  }
+  .cap-table th, .cap-table td {
+    padding: 0.28rem 0.5rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .cap-table th {
+    color: #7e97b8;
+    font-weight: 700;
+    font-size: 0.55rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.20);
+  }
+  .cap-table .cap-th-l { text-align: left; }
+  .cap-table td.cap-acct {
+    text-align: left;
+    color: #e2ecff;
+    font-weight: 700;
+  }
+  .cap-table td.cap-num { color: #c8d8f0; }
+  .cap-table tr.cap-total {
+    border-top: 1px solid rgba(126, 151, 184, 0.30);
+  }
+  .cap-table tr.cap-total td.cap-acct {
+    color: #fbbf24;
+    font-weight: 800;
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
+  }
+  .cap-table tr.cap-total td.cap-num { font-weight: 800; }
+  .cap-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .cap-up      { color: #4ade80; }
+  .cap-down    { color: #f87171; }
+  .cap-neutral { color: #c8d8f0; }
+  .cap-empty {
+    padding: 1rem 0.5rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    text-align: center;
+  }
+
+  /* Full-width P&L details (no longer in a 2-col grid). */
+  .dash-pnl-full {
+    display: block;
     margin-bottom: 0.6rem;
   }
-  .dash-col       { min-width: 0; width: 100%; }
-  .dash-col-pnl   { display: flex; flex-direction: column; }
-  .dash-col-pulse { display: flex; flex-direction: column; }
 
   /* Agent log */
   .dash-agent {
