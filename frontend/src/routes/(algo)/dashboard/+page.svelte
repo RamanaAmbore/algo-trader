@@ -12,6 +12,7 @@
     batchQuote,
   } from '$lib/api';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { classifyByIndex } from '$lib/data/indexConstituents';
 
   // IST-midnight-as-UTC for "today" date-window filters. Indian markets
   // (and operators) live in Asia/Kolkata; using the browser's local
@@ -237,6 +238,126 @@
       .sort((a, b) => a.pnl - b.pnl)
       .slice(0, 3)
   );
+
+  // ── Categorised top-3 movers per bucket ─────────────────────────────
+  // Five buckets, each filtered to its source/classification, sorted
+  // by P&L. Rendered as side-by-side compact lists inside the Top
+  // Winners / Top Losers cards so the operator sees the movement
+  // picture across all instrument classes in one glance.
+  //
+  // Buckets:
+  //   1. Option Underlying — positions aggregated by parsed underlying
+  //      (NIFTY, BANKNIFTY, …). One row per underlying, sum of P&L.
+  //   2. Midcap   — holdings classified as NIFTY MIDCAP 100.
+  //   3. Smallcap — holdings classified as NIFTY SMLCAP 100.
+  //   4. Holdings — top single-stock from holdings (all caps).
+  //   5. Positions — top single-contract from positions (all symbols).
+
+  // Parse the equity ticker prefix from a tradingsymbol — same logic
+  // as instruments.js _derivedUnderlying (longest pure-letter prefix
+  // before any digit). Works for NIFTY25APR22000CE, NIFTY2640722700CE,
+  // CRUDEOIL25APRFUT, RELIANCE26APR1360CE, etc.
+  function _parseUnderlyingPrefix(sym) {
+    if (!sym) return '';
+    const m = String(sym).match(/^([A-Z]+)/);
+    return m ? m[1] : String(sym);
+  }
+
+  // Aggregate positions by parsed underlying. {underlying → sum(pnl)}
+  const _positionsByUnderlying = $derived.by(() => {
+    /** @type {Map<string, {symbol: string, pnl: number, inv_val: number}>} */
+    const byU = new Map();
+    for (const p of _positions) {
+      const sym = String(p.tradingsymbol || p.symbol || '');
+      const pnl = Number(p.pnl) || 0;
+      if (!sym || pnl === 0) continue;
+      const u = _parseUnderlyingPrefix(sym);
+      if (!u) continue;
+      const cur = byU.get(u) ?? { symbol: u, pnl: 0, inv_val: 0 };
+      cur.pnl += pnl;
+      byU.set(u, cur);
+    }
+    return Array.from(byU.values());
+  });
+
+  // Holdings, with optional class filter (midcap / smallcap / null=all).
+  function _holdingsFor(cls) {
+    /** @type {{symbol: string, account: string, pnl: number, inv_val: number}[]} */
+    const out = [];
+    for (const h of _holdings) {
+      const sym = String(h.tradingsymbol || h.symbol || '');
+      const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
+      if (!sym || pnl === 0) continue;
+      if (cls) {
+        const c = classifyByIndex(sym);
+        if (c !== cls) continue;
+      }
+      out.push({
+        symbol: sym,
+        account: String(h.account || ''),
+        pnl,
+        inv_val: Number(h.inv_val ?? 0),
+      });
+    }
+    return out;
+  }
+
+  // Positions as individual contracts (no aggregation).
+  const _positionsRows = $derived.by(() => {
+    /** @type {{symbol: string, account: string, pnl: number, inv_val: number}[]} */
+    const out = [];
+    for (const p of _positions) {
+      const sym = String(p.tradingsymbol || p.symbol || '');
+      const pnl = Number(p.pnl) || 0;
+      if (!sym || pnl === 0) continue;
+      out.push({
+        symbol: sym,
+        account: String(p.account || ''),
+        pnl,
+        inv_val: 0,
+      });
+    }
+    return out;
+  });
+
+  // Top-N picker — winners (pnl > 0, sorted desc) or losers (pnl < 0,
+  // sorted asc). Returns an empty array if nothing in the bucket; the
+  // template renders a "—" placeholder so empty sub-sections still
+  // contribute consistent visual weight.
+  function _top(rows, kind, n = 3) {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+    if (kind === 'win') {
+      return rows.filter(r => r.pnl > 0)
+                 .sort((a, b) => b.pnl - a.pnl)
+                 .slice(0, n);
+    }
+    return rows.filter(r => r.pnl < 0)
+               .sort((a, b) => a.pnl - b.pnl)
+               .slice(0, n);
+  }
+
+  // Five-bucket bundle, one per category. Re-derives whenever
+  // _positions / _holdings change (i.e. every poll tick).
+  const _winnerBuckets = $derived([
+    { label: 'OPTION UNDERLYING', rows: _top(_positionsByUnderlying, 'win') },
+    { label: 'MIDCAP',            rows: _top(_holdingsFor('midcap'),   'win') },
+    { label: 'SMALLCAP',          rows: _top(_holdingsFor('smallcap'), 'win') },
+    { label: 'HOLDINGS',          rows: _top(_holdingsFor(null),       'win') },
+    { label: 'POSITIONS',         rows: _top(_positionsRows,           'win') },
+  ]);
+
+  const _loserBuckets = $derived([
+    { label: 'OPTION UNDERLYING', rows: _top(_positionsByUnderlying, 'lose') },
+    { label: 'MIDCAP',            rows: _top(_holdingsFor('midcap'),   'lose') },
+    { label: 'SMALLCAP',          rows: _top(_holdingsFor('smallcap'), 'lose') },
+    { label: 'HOLDINGS',          rows: _top(_holdingsFor(null),       'lose') },
+    { label: 'POSITIONS',         rows: _top(_positionsRows,           'lose') },
+  ]);
+
+  // Show the categorised section only when SOMETHING is movable. Hides
+  // cleanly outside trading hours when every bucket is empty.
+  const _hasWinners = $derived(_winnerBuckets.some(b => b.rows.length > 0));
+  const _hasLosers  = $derived(_loserBuckets.some(b => b.rows.length > 0));
 
   const _connIcon = $derived(
     _conn.total === 0     ? '—'
@@ -927,66 +1048,90 @@
   </section>
 </div>
 
-<!-- Row 2: Top winners (left) + Top losers (right) — hidden when book is empty -->
-{#if _winners.length > 0 || _losers.length > 0}
+<!-- Row 2: Top Winners (left) + Top Losers (right). Each card carries
+     five sub-buckets so the operator sees movement across every
+     instrument class in one glance:
+       Option Underlying — positions aggregated by parsed underlying
+       Midcap            — holdings in NIFTY MIDCAP 100
+       Smallcap          — holdings in NIFTY SMLCAP 100
+       Holdings          — top single-stock from holdings
+       Positions         — top single-contract from positions
+     Click any row to open SymbolPanel chart view. -->
+{#if _hasWinners || _hasLosers}
   <div class="dash-row2">
-    <!-- Winners tile -->
-    {#if _winners.length > 0}
+    {#if _hasWinners}
       <section class="wl-tile wl-tile-win">
         <div class="mp-section-label wl-tile-label">TOP WINNERS</div>
-        <div class="wl-rows">
-          {#each _winners as row}
-            <button
-              class="wl-row"
-              onclick={() => {
-                const sym = row.symbol.trim();
-                if (!sym) return;
-                _ticketProps = {
-                  symbol:     sym,
-                  defaultTab: 'chart',
-                  onClose:    () => { _ticketProps = null; },
-                  onSubmit:   () => { _ticketProps = null; },
-                };
-              }}
-            >
-              <span class="wl-sym">{row.symbol}</span>
-              <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
-              {#if row.inv_val > 0}
-                <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
-              {/if}
-            </button>
-          {/each}
-        </div>
+        {#each _winnerBuckets as bucket}
+          <div class="wl-bucket">
+            <div class="wl-bucket-label">{bucket.label}</div>
+            {#if bucket.rows.length === 0}
+              <div class="wl-bucket-empty">—</div>
+            {:else}
+              <div class="wl-rows">
+                {#each bucket.rows as row}
+                  <button
+                    class="wl-row"
+                    onclick={() => {
+                      const sym = row.symbol.trim();
+                      if (!sym) return;
+                      _ticketProps = {
+                        symbol:     sym,
+                        defaultTab: 'chart',
+                        onClose:    () => { _ticketProps = null; },
+                        onSubmit:   () => { _ticketProps = null; },
+                      };
+                    }}
+                  >
+                    <span class="wl-sym">{row.symbol}</span>
+                    <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
+                    {#if row.inv_val > 0}
+                      <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/each}
       </section>
     {/if}
 
-    <!-- Losers tile -->
-    {#if _losers.length > 0}
+    {#if _hasLosers}
       <section class="wl-tile wl-tile-loss">
         <div class="mp-section-label wl-tile-label">TOP LOSERS</div>
-        <div class="wl-rows">
-          {#each _losers as row}
-            <button
-              class="wl-row"
-              onclick={() => {
-                const sym = row.symbol.trim();
-                if (!sym) return;
-                _ticketProps = {
-                  symbol:     sym,
-                  defaultTab: 'chart',
-                  onClose:    () => { _ticketProps = null; },
-                  onSubmit:   () => { _ticketProps = null; },
-                };
-              }}
-            >
-              <span class="wl-sym">{row.symbol}</span>
-              <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
-              {#if row.inv_val > 0}
-                <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
-              {/if}
-            </button>
-          {/each}
-        </div>
+        {#each _loserBuckets as bucket}
+          <div class="wl-bucket">
+            <div class="wl-bucket-label">{bucket.label}</div>
+            {#if bucket.rows.length === 0}
+              <div class="wl-bucket-empty">—</div>
+            {:else}
+              <div class="wl-rows">
+                {#each bucket.rows as row}
+                  <button
+                    class="wl-row"
+                    onclick={() => {
+                      const sym = row.symbol.trim();
+                      if (!sym) return;
+                      _ticketProps = {
+                        symbol:     sym,
+                        defaultTab: 'chart',
+                        onClose:    () => { _ticketProps = null; },
+                        onSubmit:   () => { _ticketProps = null; },
+                      };
+                    }}
+                  >
+                    <span class="wl-sym">{row.symbol}</span>
+                    <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
+                    {#if row.inv_val > 0}
+                      <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/each}
       </section>
     {/if}
   </div>
@@ -1291,7 +1436,9 @@
     .dash-buckets {
       grid-template-columns: 1fr 1fr;
       gap: 1rem;
-      align-items: start;
+      /* align-items defaults to stretch — both cards match the
+         tallest sibling's height. Earlier `start` left the shorter
+         card with a visual height-mismatch on desktop. */
     }
   }
   .bucket-card {
@@ -1302,6 +1449,14 @@
     border-radius: 6px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    /* Flex column so the card stretches to the row's height while
+       its content stacks naturally from the top. Without this,
+       grid-stretch makes the .bucket-card box grow but its inner
+       <table>+<div> children stay at their natural height, leaving
+       the visible content top-aligned but the card border bottom-
+       extended — which is what we want. */
+    display: flex;
+    flex-direction: column;
   }
   .bucket-header {
     display: flex;
@@ -1608,6 +1763,34 @@
   .wl-tile-loss { border-top-color: rgba(248, 113, 113, 0.85); }
   .wl-tile-label {
     margin-bottom: 0.35rem;
+  }
+  /* Each Winners / Losers card now stacks five labelled sub-buckets
+     (Option Underlying / Midcap / Smallcap / Holdings / Positions).
+     Sub-headings carry the muted slate-blue treatment so they don't
+     compete with the amber TOP WINNERS / TOP LOSERS section label
+     above. Each bucket sits a little apart from the next via small
+     top margin. */
+  .wl-bucket {
+    margin-top: 0.55rem;
+  }
+  .wl-bucket:first-of-type { margin-top: 0; }
+  .wl-bucket-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    color: #7e97b8;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.18rem;
+    padding-bottom: 0.12rem;
+    border-bottom: 1px dashed rgba(126, 151, 184, 0.18);
+  }
+  .wl-bucket-empty {
+    padding: 0.15rem 0.3rem;
+    color: rgba(126, 151, 184, 0.55);
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.04em;
   }
   .wl-rows {
     display: flex;
