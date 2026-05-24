@@ -995,7 +995,19 @@
           tradingsymbol: same.s,
           exchange: same.e,
           quoteKey: `${same.e}:${same.s}`,
+          // underlying_group keeps the month suffix so multiple option
+          // months for the same commodity each map to their own future
+          // (CRUDEOIL_2026-06 → CRUDEOIL26JUNFUT,
+          //  CRUDEOIL_2026-07 → CRUDEOIL26JULFUT). It's a per-anchor
+          // dedup key for the underlyingInfos Map only.
           underlying_group: `${n}_${ym}`,
+          // displayUnderlying is the BARE commodity name — the value
+          // that goes onto row.underlying so the anchor groups with
+          // its option positions (which carry underlying='CRUDEOIL'
+          // from the instrument cache). Without this, the anchor
+          // ended up in its own 'CRUDEOIL_2026-06' group, floating
+          // off above/below the CRUDEOIL option block.
+          displayUnderlying: n,
           kind: 'fut',
         };
       }
@@ -1337,7 +1349,14 @@
       row.exchange      = row.exchange || info.exchange;
       row.tradingsymbol = info.tradingsymbol;
       row.src.u = true;
-      row.underlying    = info.underlying_group;
+      // Use displayUnderlying for the row's grouping value when the
+      // resolver supplied it (MCX same-month-future case where
+      // underlying_group is suffixed with the year-month for dedup).
+      // Falls back to underlying_group for non-MCX paths where the
+      // two are identical. Without this, MCX option-underlying
+      // anchors end up in their own 'CRUDEOIL_2026-06'-style group
+      // and don't sit alongside their CRUDEOIL options.
+      row.underlying    = info.displayUnderlying || info.underlying_group;
       row.kind          = info.kind;
       row.ltp        = q.ltp        ?? row.ltp        ?? null;
       row.bid        = q.bid        ?? row.bid        ?? null;
