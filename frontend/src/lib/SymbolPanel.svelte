@@ -1012,6 +1012,7 @@
             pollMs={3000}
             maxRows={30}
             heightClass="oes-bottom-scroll"
+            cardMode={true}
           />
 
         {:else}
@@ -1818,32 +1819,12 @@
     overflow-y: auto;
     padding: 0.45rem 0.75rem;
   }
-  /* Height class passed to UnifiedLog inside the bottom panel. */
+  /* Height class passed to UnifiedLog inside the bottom panel.
+     cardMode is on (see the {#if _bottomTab === 'log'} block) so
+     UnifiedLog uses its .ul-card layout; per-row font overrides
+     would conflict with the card styling and are unnecessary. */
   :global(.oes-bottom-scroll) {
     max-height: 13rem;
     padding: 0.1rem 0.25rem;
-  }
-  /* Bump UnifiedLog's row + time + kind font sizes when embedded in
-     the SymbolPanel — the global defaults (0.62 / 0.5 / 0.55 rem)
-     are tuned for the dashboard's narrow agent-activity column and
-     were sub-readable here. The modal has 720+ px of horizontal
-     room, so the log can carry slightly larger text without
-     wrapping. Also tighten the row gap so more entries fit in the
-     14-rem max-height window. */
-  :global(.oes-bottom-scroll .ul-row) {
-    gap: 0.12rem;
-  }
-  :global(.oes-bottom-scroll .ul-row .ul-time) {
-    font-size: 0.62rem;
-  }
-  :global(.oes-bottom-scroll .ul-row .ul-kind) {
-    font-size: 0.65rem;
-  }
-  :global(.oes-bottom-scroll .ul-row .ul-msg) {
-    font-size: 0.72rem;
-    line-height: 1.4;
-  }
-  :global(.oes-bottom-scroll .ul-list) {
-    gap: 0.55rem;
   }
 </style>

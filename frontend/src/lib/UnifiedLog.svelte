@@ -31,6 +31,7 @@
    *   emptyMessage?: string,
    *   heightClass?:  string,
    *   excludeSim?:   boolean,
+   *   cardMode?:     boolean,
    * }} */
   let {
     filter       = /** @type {{ kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null }} */ ({}),
@@ -39,6 +40,13 @@
     emptyMessage = 'No recent events.',
     heightClass  = 'max-h-48',
     excludeSim   = false,
+    // cardMode renders each row as a structured card (header line with
+    // timestamp + kind chip + order/agent refs; message on its own
+    // line) matching the .oes-order-card layout in SymbolPanel. The
+    // default `row` mode stays — used by the dashboard's agent-
+    // activity column where the compressed two-line format keeps the
+    // history dense.
+    cardMode     = false,
   } = $props();
 
   // Merge excludeSim into the filter — single source of truth for the
@@ -104,6 +112,27 @@
     <div class="ul-empty ul-error">{error}</div>
   {:else if rows.length === 0}
     <div class="ul-empty">{emptyMessage}</div>
+  {:else if cardMode}
+    <!-- cardMode — structured cards with a head line (timestamp +
+         kind chip + order/agent refs) and a separate message line.
+         Matches the .oes-order-card layout so the Log and Orders
+         tabs in SymbolPanel read with the same visual rhythm. -->
+    <div class="ul-list ul-list-cards">
+      {#each rows as row (row.source + row.id)}
+        <article class="ul-card">
+          <div class="ul-card-head">
+            <span class="ul-card-kind ul-kind-{row.kind}">{row.kind}</span>
+            {#if row.sim_mode}<span class="ul-card-sim" title="From a simulator run, not a real fire">SIM</span>{/if}
+            {#if row.order_id}<span class="ul-card-ref">#{row.order_id}</span>{/if}
+            {#if row.agent_slug}<span class="ul-card-ref">[{row.agent_slug}]</span>{/if}
+            <span class="ul-card-time">{_fmtTs(row.ts)}</span>
+          </div>
+          {#if row.message}
+            <div class="ul-card-msg">{row.message}</div>
+          {/if}
+        </article>
+      {/each}
+    </div>
   {:else}
     <div class="ul-list">
       {#each rows as row (row.source + row.id)}
@@ -211,5 +240,74 @@
     font-weight: 800;
     letter-spacing: 0.06em;
     flex-shrink: 0;
+  }
+
+  /* ── Card mode ─────────────────────────────────────────────────────
+     Structured cards used by SymbolPanel's bottom Log tab so its
+     visual rhythm matches the Orders tab (also card-style). Each row
+     becomes an <article> with a head line (kind chip + sim badge +
+     order/agent refs + timestamp pushed right) and an optional
+     message line below. */
+  .ul-list-cards {
+    gap: 0.38rem;
+    padding: 0 0.15rem;
+  }
+  .ul-card {
+    background: rgba(15, 25, 45, 0.55);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-left: 2px solid rgba(125, 211, 252, 0.45);
+    border-radius: 3px;
+    padding: 0.32rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+  .ul-card-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    font-size: 0.65rem;
+  }
+  .ul-card-kind {
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.6rem;
+    flex-shrink: 0;
+  }
+  .ul-card-sim {
+    color: #c4b5fd;
+    background: rgba(196, 181, 253, 0.10);
+    border: 1px solid rgba(196, 181, 253, 0.45);
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
+  .ul-card-ref {
+    color: #c8d8f0;
+    background: rgba(126, 151, 184, 0.10);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    padding: 0 0.35rem;
+    border-radius: 2px;
+    font-size: 0.58rem;
+    font-family: ui-monospace, monospace;
+    flex-shrink: 0;
+  }
+  .ul-card-time {
+    margin-left: auto;
+    color: #7e97b8;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.58rem;
+    flex-shrink: 0;
+  }
+  .ul-card-msg {
+    color: #c8d8f0;
+    font-size: 0.7rem;
+    line-height: 1.4;
+    padding-left: 0.1rem;
   }
 </style>
