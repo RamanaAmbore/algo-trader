@@ -35,6 +35,8 @@
   let {
     title              = 'Market Pulse',
     enableWatchlists   = true,
+    enableMovers       = true, // gate the Movers source pill + 30s mover poll
+    enablePinned       = true, // gate the Pinned source pill (indices + commodities + USDINR)
     enableSourceToggles = true,
     allowOrders        = true,
     // Phase 2 presets — dashboard mode turns these on.
@@ -226,17 +228,41 @@
   // New-list form state.
   let newListName = $state('');
 
-  // Source toggles — driven by the MultiSelect below. Watchlist +
-  // the pinned-index/commodity group are now first-class filters so
-  // the operator can hide either bucket without leaving the page.
-  const SOURCE_OPTIONS = [
+  // Source toggles — driven by the MultiSelect below. The dropdown
+  // only surfaces options the caller actually enabled, so consumers
+  // like /dashboard (positions + holdings only — no watchlist, no
+  // movers, no pinned) don't see disabled-but-listed picks. Each
+  // toggle is filtered against its enable* prop; only positions and
+  // holdings are unconditionally available since every embedder cares
+  // about at least one of them.
+  const _ALL_SOURCE_OPTIONS = [
     { value: 'pinned',    label: 'Pinned'    },  // indices + commodities + USDINR
     { value: 'watchlist', label: 'Watchlist' },
     { value: 'positions', label: 'Positions' },
     { value: 'holdings',  label: 'Holdings'  },
     { value: 'movers',    label: 'Movers'    },
   ];
+  const _availableSourceValues = $derived(new Set([
+    ...(enablePinned     ? ['pinned']    : []),
+    ...(enableWatchlists ? ['watchlist'] : []),
+    'positions',
+    'holdings',
+    ...(enableMovers     ? ['movers']    : []),
+  ]));
+  const SOURCE_OPTIONS = $derived(
+    _ALL_SOURCE_OPTIONS.filter(o => _availableSourceValues.has(o.value))
+  );
   let selectedSources = $state(['pinned', 'watchlist', 'positions', 'holdings', 'movers']);
+  // Drop selected entries that aren't available to this embedder (e.g.
+  // 'watchlist' / 'movers' on the dashboard). Without this the disabled
+  // sources stay "selected" silently and re-appear if the caller flips
+  // the prop on at runtime, but more importantly the subtotal counts
+  // would include disabled buckets.
+  $effect(() => {
+    const allowed = _availableSourceValues;
+    const filtered = selectedSources.filter(v => allowed.has(v));
+    if (filtered.length !== selectedSources.length) selectedSources = filtered;
+  });
 
   // Keep individual booleans so buildUnified + other callsites are unchanged.
   let showWatchlist = $state(true);
@@ -481,7 +507,7 @@
       : Promise.resolve();
     const pulseP  = loadPulse();
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
-    const moversP = loadMovers();
+    const moversP = enableMovers ? loadMovers() : Promise.resolve();
 
     // Block onMount only on the data the first paint actually needs.
     // Sparklines run fire-and-forget (cosmetic; missing them shows the
@@ -494,7 +520,7 @@
       await loadPulse();
       if (showFunds) await loadFunds();
     }, 10000);
-    stopMoversPoll  = visibleInterval(loadMovers, 30000);
+    if (enableMovers) stopMoversPoll = visibleInterval(loadMovers, 30000);
     stopSparkPoll   = visibleInterval(loadSparklines, 60000);
 
     // Real-time order-fill push — Kite postback fires a WS event

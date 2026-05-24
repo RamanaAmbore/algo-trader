@@ -785,13 +785,17 @@
     </details>
   </section>
   <section class="dash-col dash-col-pulse">
-    <!-- Dashboard scope: positions + holdings only. Funds grid was
-         dropped (cash/margin lives elsewhere — not the dashboard's
-         job). Source toggles + account picker stay because they
-         filter the pos/hold summary grids. -->
+    <!-- Dashboard scope: positions + holdings only. Funds, watchlist,
+         pinned, and movers are all off — those buckets don't belong
+         on the dashboard and shouldn't clutter the source-picker
+         either. Source toggles stay on so the operator can still
+         show positions-only or holdings-only, but with just those
+         two options surfaced. -->
     <MarketPulse
       title="Performance"
       enableWatchlists={false}
+      enableMovers={false}
+      enablePinned={false}
       enableSourceToggles={true}
       allowOrders={true}
       accountPicker={true}
