@@ -4,6 +4,7 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
@@ -78,6 +79,26 @@
   // Summary below — no tabs. The tab variant left ~half the card
   // empty whenever one side rendered; stacked uses the card's
   // full vertical real estate without operator interaction.
+
+  // Winners / Losers cards each tab through the 5 buckets
+  // (underlying / midcap / smallcap / holdings / positions) instead
+  // of stacking them. Default tab: 'underlying' — the broadest view
+  // that aggregates F&O positions to their underlying name, which
+  // is usually the operator's first question on the dashboard.
+  let _winTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('underlying'));
+  let _losTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('underlying'));
+
+  // Per-card fullscreen toggles. Each card binds its own slot —
+  // multiple cards can theoretically open at once but only one is
+  // visually on top (last-clicked wins via DOM order).
+  let _fsEquityCurve = $state(false);
+  let _fsCapital     = $state(false);
+  let _fsEquity      = $state(false);
+  let _fsWinners     = $state(false);
+  let _fsLosers      = $state(false);
+  let _fsNews        = $state(false);
+  let _fsPnl         = $state(false);
+  let _fsAgent       = $state(false);
 
   // Per-account summary derivations — same shape MarketPulse
   // builds internally, but computed here from the already-loaded
@@ -358,6 +379,31 @@
   // cleanly outside trading hours when every bucket is empty.
   const _hasWinners = $derived(_winnerBuckets.some(b => b.rows.length > 0));
   const _hasLosers  = $derived(_loserBuckets.some(b => b.rows.length > 0));
+
+  // Tab key ↔ bucket label helpers — keeps the template terse and the
+  // state machine canonical.
+  const _BUCKET_KEY = {
+    'OPTION UNDERLYING': 'underlying',
+    'MIDCAP':            'midcap',
+    'SMALLCAP':          'smallcap',
+    'HOLDINGS':          'holdings',
+    'POSITIONS':         'positions',
+  };
+  const _BUCKET_LABEL = Object.fromEntries(
+    Object.entries(_BUCKET_KEY).map(([l, k]) => [k, l])
+  );
+  function _bucketKey(label)   { return _BUCKET_KEY[label] ?? 'underlying'; }
+  function _winTabLabel(key)   { return _BUCKET_LABEL[key] ?? 'OPTION UNDERLYING'; }
+  // Short tab labels — "OPTION UNDERLYING" gets truncated for the
+  // narrow tab strip; the others stay as their full token.
+  const _TAB_SHORT = {
+    'OPTION UNDERLYING': 'Underlying',
+    'MIDCAP':            'Midcap',
+    'SMALLCAP':          'Smallcap',
+    'HOLDINGS':          'Holdings',
+    'POSITIONS':         'Positions',
+  };
+  function _tabShort(label) { return _TAB_SHORT[label] ?? label; }
 
   const _connIcon = $derived(
     _conn.total === 0     ? '—'
@@ -757,8 +803,11 @@
        moved into the Capital card below, so the chart gets the
        full page width. Reads like Bloomberg's portfolio chart
        on a desktop PRTU page. -->
-  <section class="row1-col row1-col-chart">
-    <div class="mp-section-label">Intraday Equity Curve</div>
+  <section class="row1-col row1-col-chart" class:fs-card-on={_fsEquityCurve}>
+    <div class="card-header-row">
+      <div class="mp-section-label">Intraday Equity Curve</div>
+      <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Intraday Equity Curve" />
+    </div>
     {#if !_equityPoints.length}
       <div class="eq-empty">
         No data yet — markets open at 09:15 IST
@@ -875,9 +924,10 @@
   <!-- Capital card — funds + margin utilisation. The two natural
        siblings: "what cash do I have" + "how much of my margin is
        in use" answer the same question (can I take on more risk?). -->
-  <section class="bucket-card bucket-cap">
+  <section class="bucket-card bucket-cap" class:fs-card-on={_fsCapital}>
     <div class="bucket-header">
       <span class="mp-section-label">Capital</span>
+      <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
     </div>
 
     <!-- Margin gauges — circular utilisation per account. -->
@@ -968,9 +1018,10 @@
        (intraday-relevant, glanced first), holdings below. Both are
        compact HTML tables sharing the same .cap-table treatment as
        Capital. Counts are inline next to each sub-heading. -->
-  <section class="bucket-card bucket-eq">
+  <section class="bucket-card bucket-eq" class:fs-card-on={_fsEquity}>
     <div class="bucket-header">
       <span class="mp-section-label">Equity</span>
+      <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
     </div>
 
     <!-- Positions Summary — intraday, glanced first. -->
@@ -1049,98 +1100,128 @@
 </div>
 
 <!-- Row 2: Top Winners (left) + Top Losers (right). Each card carries
-     five sub-buckets so the operator sees movement across every
-     instrument class in one glance:
-       Option Underlying — positions aggregated by parsed underlying
-       Midcap            — holdings in NIFTY MIDCAP 100
-       Smallcap          — holdings in NIFTY SMLCAP 100
-       Holdings          — top single-stock from holdings
-       Positions         — top single-contract from positions
-     Click any row to open SymbolPanel chart view. -->
+     five tabbed buckets — Underlying · Midcap · Smallcap · Holdings ·
+     Positions. Active tab carries the amber underline; count chip on
+     each tab so the operator sees every bucket's denominator without
+     flipping. Default tab: Underlying (the broadest aggregation, the
+     operator's first question on the dashboard).
+
+     Tabbed (not stacked) so each card stays compact — earlier the
+     stacked version filled an extra full screen-height with 5×3 rows
+     per side. -->
 {#if _hasWinners || _hasLosers}
   <div class="dash-row2">
     {#if _hasWinners}
-      <section class="wl-tile wl-tile-win">
-        <div class="mp-section-label wl-tile-label">TOP WINNERS</div>
-        {#each _winnerBuckets as bucket}
-          <div class="wl-bucket">
-            <div class="wl-bucket-label">{bucket.label}</div>
-            {#if bucket.rows.length === 0}
-              <div class="wl-bucket-empty">—</div>
-            {:else}
-              <div class="wl-rows">
-                {#each bucket.rows as row}
-                  <button
-                    class="wl-row"
-                    onclick={() => {
-                      const sym = row.symbol.trim();
-                      if (!sym) return;
-                      _ticketProps = {
-                        symbol:     sym,
-                        defaultTab: 'chart',
-                        onClose:    () => { _ticketProps = null; },
-                        onSubmit:   () => { _ticketProps = null; },
-                      };
-                    }}
-                  >
-                    <span class="wl-sym">{row.symbol}</span>
-                    <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
-                    {#if row.inv_val > 0}
-                      <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
+      {@const winRows = (_winnerBuckets.find(b => b.label === _winTabLabel(_winTab)))?.rows ?? []}
+      <section class="wl-tile wl-tile-win" class:fs-card-on={_fsWinners}>
+        <div class="card-header-row">
+          <span class="mp-section-label wl-tile-label">TOP WINNERS</span>
+          <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
+        </div>
+        <div class="wl-tabs" role="tablist">
+          {#each _winnerBuckets as bucket}
+            {@const key = _bucketKey(bucket.label)}
+            <button
+              type="button"
+              role="tab"
+              class="wl-tab"
+              class:wl-tab-on={_winTab === key}
+              aria-selected={_winTab === key}
+              onclick={() => _winTab = key}>
+              {_tabShort(bucket.label)}
+              <span class="wl-tab-count">{bucket.rows.length}</span>
+            </button>
+          {/each}
+        </div>
+        {#if winRows.length === 0}
+          <div class="wl-bucket-empty">No winners in this bucket</div>
+        {:else}
+          <div class="wl-rows">
+            {#each winRows as row}
+              <button
+                class="wl-row"
+                onclick={() => {
+                  const sym = row.symbol.trim();
+                  if (!sym) return;
+                  _ticketProps = {
+                    symbol:     sym,
+                    defaultTab: 'chart',
+                    onClose:    () => { _ticketProps = null; },
+                    onSubmit:   () => { _ticketProps = null; },
+                  };
+                }}
+              >
+                <span class="wl-sym">{row.symbol}</span>
+                <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
+                {#if row.inv_val > 0}
+                  <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                {/if}
+              </button>
+            {/each}
           </div>
-        {/each}
+        {/if}
       </section>
     {/if}
 
     {#if _hasLosers}
-      <section class="wl-tile wl-tile-loss">
-        <div class="mp-section-label wl-tile-label">TOP LOSERS</div>
-        {#each _loserBuckets as bucket}
-          <div class="wl-bucket">
-            <div class="wl-bucket-label">{bucket.label}</div>
-            {#if bucket.rows.length === 0}
-              <div class="wl-bucket-empty">—</div>
-            {:else}
-              <div class="wl-rows">
-                {#each bucket.rows as row}
-                  <button
-                    class="wl-row"
-                    onclick={() => {
-                      const sym = row.symbol.trim();
-                      if (!sym) return;
-                      _ticketProps = {
-                        symbol:     sym,
-                        defaultTab: 'chart',
-                        onClose:    () => { _ticketProps = null; },
-                        onSubmit:   () => { _ticketProps = null; },
-                      };
-                    }}
-                  >
-                    <span class="wl-sym">{row.symbol}</span>
-                    <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
-                    {#if row.inv_val > 0}
-                      <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
+      {@const losRows = (_loserBuckets.find(b => b.label === _winTabLabel(_losTab)))?.rows ?? []}
+      <section class="wl-tile wl-tile-loss" class:fs-card-on={_fsLosers}>
+        <div class="card-header-row">
+          <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
+          <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
+        </div>
+        <div class="wl-tabs" role="tablist">
+          {#each _loserBuckets as bucket}
+            {@const key = _bucketKey(bucket.label)}
+            <button
+              type="button"
+              role="tab"
+              class="wl-tab"
+              class:wl-tab-on={_losTab === key}
+              aria-selected={_losTab === key}
+              onclick={() => _losTab = key}>
+              {_tabShort(bucket.label)}
+              <span class="wl-tab-count">{bucket.rows.length}</span>
+            </button>
+          {/each}
+        </div>
+        {#if losRows.length === 0}
+          <div class="wl-bucket-empty">No losers in this bucket</div>
+        {:else}
+          <div class="wl-rows">
+            {#each losRows as row}
+              <button
+                class="wl-row"
+                onclick={() => {
+                  const sym = row.symbol.trim();
+                  if (!sym) return;
+                  _ticketProps = {
+                    symbol:     sym,
+                    defaultTab: 'chart',
+                    onClose:    () => { _ticketProps = null; },
+                    onSubmit:   () => { _ticketProps = null; },
+                  };
+                }}
+              >
+                <span class="wl-sym">{row.symbol}</span>
+                <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
+                {#if row.inv_val > 0}
+                  <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                {/if}
+              </button>
+            {/each}
           </div>
-        {/each}
+        {/if}
       </section>
     {/if}
   </div>
 {/if}
 
 <!-- Row 3: Market news strip — single column. -->
-<div class="dash-row3">
+<div class="dash-row3" class:fs-card-on={_fsNews}>
   <div class="row3-header">
     <span class="mp-section-label">MARKET NEWS</span>
+    <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
   </div>
   <NewsList limit={5} showRefreshTime={true} />
 </div>
@@ -1152,12 +1233,14 @@
      "drill into a date / segment / agent" surface below the fold. -->
 <details
   class="dash-pnl-details dash-pnl-full"
+  class:fs-card-on={_fsPnl}
   bind:open={_pnlOpen}
   ontoggle={() => localStorage.setItem('dash.pnlOpen', _pnlOpen ? '1' : '0')}
 >
   <summary class="dash-pnl-summary">
     <span class="mp-section-label">P&amp;L ANALYSIS</span>
     <span class="dash-pnl-toggle">{_pnlOpen ? '▾ collapse' : '▸ expand'}</span>
+    <FullscreenButton bind:isFullscreen={_fsPnl} label="P&L Analysis" />
   </summary>
   <div class="dash-pnl-body">
     <PnlAnalysis />
@@ -1175,7 +1258,7 @@
 <!-- Agent activity — collapsed by default. Expands to a clean
      fires-only log; chip flips to also show action successes/errors
      for the deeper "what did the fire actually do" trace. -->
-<details class="dash-agent" bind:open={_agentLogOpen}>
+<details class="dash-agent" class:fs-card-on={_fsAgent} bind:open={_agentLogOpen}>
   <summary class="dash-agent-summary">
     <span class="mp-section-label">Agent activity</span>
     <span class="dash-agent-chip">
@@ -1183,6 +1266,7 @@
       <span class="dash-agent-label">fires today</span>
     </span>
     <span class="dash-agent-toggle">{_agentLogOpen ? '▾ hide log' : '▸ show log'}</span>
+    <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
   </summary>
   <!-- Inline filter chip — flips fires-only vs fires+actions. Click
        handler stops the click from bubbling up to the <summary>
@@ -1762,35 +1846,74 @@
   .wl-tile-win  { border-top-color: rgba(74, 222, 128, 0.85); }
   .wl-tile-loss { border-top-color: rgba(248, 113, 113, 0.85); }
   .wl-tile-label {
-    margin-bottom: 0.35rem;
+    margin-bottom: 0;
   }
-  /* Each Winners / Losers card now stacks five labelled sub-buckets
-     (Option Underlying / Midcap / Smallcap / Holdings / Positions).
-     Sub-headings carry the muted slate-blue treatment so they don't
-     compete with the amber TOP WINNERS / TOP LOSERS section label
-     above. Each bucket sits a little apart from the next via small
-     top margin. */
-  .wl-bucket {
-    margin-top: 0.55rem;
+  /* Card-header row used by every card carrying a FullscreenButton —
+     section label on the left, expand toggle pushed to the right. */
+  .card-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
   }
-  .wl-bucket:first-of-type { margin-top: 0; }
-  .wl-bucket-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    font-weight: 700;
+  /* Winners / Losers — 5 tabbed buckets per card. Tab strip sits
+     below the card heading; active tab gets the amber underline +
+     brighter text. Count chip stays muted (slate-blue when inactive,
+     amber when active). Tab labels are short ("Underlying" / "Midcap"
+     / …) so the row fits one line on desktop and wraps on mobile. */
+  .wl-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.05rem 0.15rem;
+    margin-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
+    padding-bottom: 0.05rem;
+  }
+  .wl-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: none;
+    border: none;
+    padding: 0.22rem 0.4rem 0.24rem;
     color: #7e97b8;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 0.18rem;
-    padding-bottom: 0.12rem;
-    border-bottom: 1px dashed rgba(126, 151, 184, 0.18);
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .wl-tab:hover { color: #c8d8f0; }
+  .wl-tab-on {
+    color: #fbbf24;
+    border-bottom-color: #fbbf24;
+  }
+  .wl-tab-count {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.02rem 0.3rem;
+    border-radius: 7px;
+    background: rgba(126, 151, 184, 0.18);
+    color: #c8d8f0;
+    font-size: 0.5rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .wl-tab-on .wl-tab-count {
+    background: rgba(251, 191, 36, 0.20);
+    color: #fbbf24;
   }
   .wl-bucket-empty {
-    padding: 0.15rem 0.3rem;
+    padding: 0.5rem 0.3rem;
     color: rgba(126, 151, 184, 0.55);
     font-family: ui-monospace, monospace;
     font-size: 0.65rem;
     letter-spacing: 0.04em;
+    text-align: center;
   }
   .wl-rows {
     display: flex;

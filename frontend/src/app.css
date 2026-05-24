@@ -885,3 +885,44 @@
     color: #2f4a26;
   }
 }
+
+/* ── Fullscreen card pattern (algo terminal) ────────────────────────────
+   Any card with a <FullscreenButton bind:isFullscreen /> in its header
+   becomes a viewport-filling modal when the operator clicks the expand
+   icon. Add `class:fs-card-on={isFullscreen}` to the card root.
+
+   The CSS is intentionally global (not scoped to one component) so any
+   card on /dashboard, /agents, /admin/options, /admin/execution, etc.
+   can opt in by setting the class — no per-card CSS duplication.
+
+   Modal chrome:
+   - fixed inset (with viewport margins)
+   - z-index 9999 (above the .fs-backdrop at 9998)
+   - scrolls internally when content overflows
+   - keeps the card's existing colour palette + border-radius
+*/
+.fs-card-on {
+  position: fixed !important;
+  inset: 2rem !important;
+  z-index: 9999 !important;
+  max-width: none !important;
+  max-height: none !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  overflow: auto !important;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.70),
+              0 0 0 1.5px rgba(251, 191, 36, 0.45) !important;
+  /* Promote stacking context so child elements (tabs, tables,
+     hover popovers) layer correctly inside the modal. */
+  isolation: isolate;
+}
+
+/* Tight viewport: less aggressive inset on phones so the card
+   doesn't waste edge real estate. */
+@media (max-width: 600px) {
+  .fs-card-on {
+    inset: 0.5rem !important;
+  }
+}
+
