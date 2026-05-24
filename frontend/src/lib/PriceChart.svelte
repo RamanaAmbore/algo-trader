@@ -317,8 +317,16 @@
     return `₹${priceFmt(v)}`;
   }
   function fmtTime(/** @type {string} */ ts) {
-    try { return new Date(ts).toLocaleTimeString('en-IN', { hour12: false }); }
-    catch { return ts; }
+    // IST-only HH:MM:SS for the hover tooltip — dual-TZ would crowd the
+    // narrow tooltip box. Suffix marks the zone explicitly so the user
+    // doesn't have to guess (chart tooltips are trading-critical: a
+    // 14:32:48 reading means nothing without a zone tag).
+    try {
+      return new Date(ts).toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false, timeZone: 'Asia/Kolkata',
+      }) + ' IST';
+    } catch { return ts; }
   }
 
   // Y-axis labels — 5 evenly spaced (was 3, but the chart was sparse;

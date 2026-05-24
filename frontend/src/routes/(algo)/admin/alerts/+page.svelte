@@ -89,17 +89,12 @@
   const filtered = $derived(rows);
 
   // ── Helpers ────────────────────────────────────────────────────────
-  /** Short IST time from ISO string. */
+  /** Dual-TZ event timestamp (IST + EST/EDT, with seconds). Routed
+   *  through the canonical `logTime` helper so alert events read in
+   *  the same form as every other trading-critical log row. */
   function _ts(/** @type {string|null|undefined} */ iso) {
     if (!iso) return '—';
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString('en-GB', {
-        day: '2-digit', month: 'short',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        hour12: false, timeZone: 'Asia/Kolkata',
-      }).replace(',', '') + ' IST';
-    } catch (_) { return iso; }
+    return logTime(iso) || '—';
   }
 
   /** CSS class for the event-type chip. */

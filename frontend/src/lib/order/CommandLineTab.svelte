@@ -98,7 +98,15 @@
   }
 
   function addResult(/** @type {string} */ cmd, /** @type {string} */ result) {
-    const time = new Date().toLocaleTimeString('en-IN', { hour12: false });
+    // IST seconds for command history (trading-critical — operator may
+    // need to correlate a manual command with a fill / agent event).
+    // Tight inline display, so IST-only with explicit suffix; the wider
+    // log surfaces (OrderTimelineDrawer, LogPanel) carry the full
+    // dual-TZ form via `logTime` / `dualTsHtml`.
+    const time = new Date().toLocaleTimeString('en-GB', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false, timeZone: 'Asia/Kolkata',
+    }) + ' IST';
     cmdHistory = [{ cmd, result, time }, ...cmdHistory].slice(0, 200);
   }
 

@@ -10,6 +10,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { priceFmt } from '$lib/format';
+  import { logTime } from '$lib/stores';
 
   const { open = false, orders = [], onClose } = $props();
 
@@ -58,18 +59,14 @@
     return 'rgba(148,163,184,0.15)';
   }
 
-  /** Short HH:MM:SS from an ISO timestamp string (IST). Returns ''
-   *  for any unparseable value so "Invalid Date" never leaks. */
+  // Order events are trading-critical — fill time matters per second
+  // across both India and US sessions. Route through the standard
+  // `logTime` helper so this drawer reads in the same dual-TZ form
+  // ("DD-MMM HH:MM:SS IST | DD-MMM HH:MM:SS EST/EDT") as every other
+  // log row on the platform. Returns '' for unparseable input so
+  // "Invalid Date" never leaks.
   function shortTime(iso) {
-    if (!iso || typeof iso !== 'string') return '';
-    try {
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return '';
-      return d.toLocaleTimeString('en-GB', {
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        hour12: false, timeZone: 'Asia/Kolkata',
-      });
-    } catch { return ''; }
+    return iso ? (logTime(iso) || '') : '';
   }
 
   /** Group flat events array into per-order sections.
