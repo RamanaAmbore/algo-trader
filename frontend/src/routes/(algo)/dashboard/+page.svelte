@@ -791,6 +791,12 @@
          either. Source toggles stay on so the operator can still
          show positions-only or holdings-only, but with just those
          two options surfaced. -->
+    <!-- Dashboard scope: Funds + Positions + Holdings summary, three
+         compact grids. Source-toggle MultiSelect stays off (the
+         watchlist / movers / pinned filters don't apply when only
+         the summary grids render). Funds was briefly dropped per a
+         scope clarification, then restored — operator wants the
+         margin/cash glance alongside positions+holdings on /dashboard. -->
     <MarketPulse
       title="Performance"
       enableWatchlists={false}
@@ -800,7 +806,7 @@
       allowOrders={true}
       accountPicker={true}
       showSummary={true}
-      showFunds={false}
+      showFunds={true}
       showSymbolsGrid={false} />
   </section>
 </div>

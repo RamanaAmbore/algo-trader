@@ -1393,9 +1393,19 @@
       'NIFTY 50':              'NIFTY',
       'NIFTY BANK':            'BANKNIFTY',
       'NIFTY FIN SERVICE':     'FINNIFTY',
+      // Mid-cap variants — Kite returns 'NIFTY MIDCAP 100' literally
+      // in the watchlist seed; the older 'NIFTY MID SELECT' label is
+      // a different ticker but we treat both as the mid-cap pin slot.
       'NIFTY MID SELECT':      'MIDCPNIFTY',
+      'NIFTY MIDCAP 100':      'MIDCPNIFTY',
+      'NIFTY MIDCAP 50':       'MIDCPNIFTY',
+      'NIFTY MIDCAP 150':      'MIDCPNIFTY',
       'NIFTY NXT 50':          'NIFTYNXT50',
-      // NSE small-cap benchmark — tag so the pin bucket catches it.
+      // NSE small-cap benchmarks — tag so the pin bucket catches them.
+      // 'NIFTY SMLCAP 100' is Kite's abbreviated name (matches the
+      // watchlist seed); 'NIFTY SMALLCAP *' covers the older full
+      // spellings still present in some payloads.
+      'NIFTY SMLCAP 100':      'SMALLCAP',
       'NIFTY SMLCAP 250':      'SMALLCAP',
       'NIFTY SMALLCAP 100':    'SMALLCAP',
       'NIFTY SMALLCAP 50':     'SMALLCAP',
