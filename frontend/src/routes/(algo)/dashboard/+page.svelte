@@ -111,8 +111,13 @@
   // of stacking them. Default tab: 'underlying' — the broadest view
   // that aggregates F&O positions to their underlying name, which
   // is usually the operator's first question on the dashboard.
-  let _winTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('underlying'));
-  let _losTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('underlying'));
+  // Default tab is HOLDINGS — that bucket consistently has the
+  // deepest stream (operators with a stock-heavy book usually have
+  // 20-100+ holdings vs 2-5 F&O underlyings). The earlier default
+  // 'underlying' often surfaced only 2-3 entries, hiding the
+  // existence of the top-10 cap until the operator clicked away.
+  let _winTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
+  let _losTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
 
   // Per-card fullscreen toggles. Each card binds its own slot —
   // multiple cards can theoretically open at once but only one is
@@ -351,40 +356,44 @@
     return _aggregateBySymbol(raw).filter(r => r.pnl !== 0);
   });
 
-  // Top-N picker — winners (pnl > 0, sorted desc) or losers (pnl < 0,
-  // sorted asc). Returns an empty array if nothing in the bucket; the
-  // template renders an empty-state line so empty sub-sections still
-  // contribute consistent visual weight. Top-10 by default — the
-  // scrollable `.wl-rows` container handles overflow on default-size
-  // cards and shows everything on fullscreen without truncating.
-  function _top(rows, kind, n = 10) {
+  // Eligible-rows picker — sorted by P&L, NOT sliced. Splits the
+  // bucket source into the winner / loser subset.
+  function _eligible(rows, kind) {
     if (!Array.isArray(rows) || rows.length === 0) return [];
     if (kind === 'win') {
-      return rows.filter(r => r.pnl > 0)
-                 .sort((a, b) => b.pnl - a.pnl)
-                 .slice(0, n);
+      return rows.filter(r => r.pnl > 0).sort((a, b) => b.pnl - a.pnl);
     }
-    return rows.filter(r => r.pnl < 0)
-               .sort((a, b) => a.pnl - b.pnl)
-               .slice(0, n);
+    return rows.filter(r => r.pnl < 0).sort((a, b) => a.pnl - b.pnl);
   }
 
-  // Five-bucket bundle, one per category. Re-derives whenever
-  // _positions / _holdings change (i.e. every poll tick).
+  // Cap rows rendered per tab. The scrollable .wl-rows container
+  // handles overflow at default size; fullscreen lifts the cap.
+  // count chip on each tab shows the FULL eligible count (not the
+  // sliced cap), so the operator knows "Holdings · 50" means 50
+  // winners exist with top 10 visible inside.
+  const _TOP_N = 10;
+
+  // Five-bucket bundle, one per category. `count` is the total
+  // eligible count; `rows` is sliced to _TOP_N for rendering.
+  function _bucket(label, source, kind) {
+    const all = _eligible(source, kind);
+    return { label, count: all.length, rows: all.slice(0, _TOP_N) };
+  }
+
   const _winnerBuckets = $derived([
-    { label: 'OPTION UNDERLYING', rows: _top(_positionsByUnderlying, 'win') },
-    { label: 'MIDCAP',            rows: _top(_holdingsFor('midcap'),   'win') },
-    { label: 'SMALLCAP',          rows: _top(_holdingsFor('smallcap'), 'win') },
-    { label: 'HOLDINGS',          rows: _top(_holdingsFor(null),       'win') },
-    { label: 'POSITIONS',         rows: _top(_positionsRows,           'win') },
+    _bucket('OPTION UNDERLYING', _positionsByUnderlying, 'win'),
+    _bucket('MIDCAP',            _holdingsFor('midcap'),  'win'),
+    _bucket('SMALLCAP',          _holdingsFor('smallcap'),'win'),
+    _bucket('HOLDINGS',          _holdingsFor(null),      'win'),
+    _bucket('POSITIONS',         _positionsRows,          'win'),
   ]);
 
   const _loserBuckets = $derived([
-    { label: 'OPTION UNDERLYING', rows: _top(_positionsByUnderlying, 'lose') },
-    { label: 'MIDCAP',            rows: _top(_holdingsFor('midcap'),   'lose') },
-    { label: 'SMALLCAP',          rows: _top(_holdingsFor('smallcap'), 'lose') },
-    { label: 'HOLDINGS',          rows: _top(_holdingsFor(null),       'lose') },
-    { label: 'POSITIONS',         rows: _top(_positionsRows,           'lose') },
+    _bucket('OPTION UNDERLYING', _positionsByUnderlying, 'lose'),
+    _bucket('MIDCAP',            _holdingsFor('midcap'),  'lose'),
+    _bucket('SMALLCAP',          _holdingsFor('smallcap'),'lose'),
+    _bucket('HOLDINGS',          _holdingsFor(null),      'lose'),
+    _bucket('POSITIONS',         _positionsRows,          'lose'),
   ]);
 
   // Show the categorised section only when SOMETHING is movable. Hides
@@ -1182,7 +1191,7 @@
               aria-selected={_winTab === key}
               onclick={() => _winTab = key}>
               {_tabShort(bucket.label)}
-              <span class="wl-tab-count">{bucket.rows.length}</span>
+              <span class="wl-tab-count" title={bucket.count > _TOP_N ? `${bucket.count} total — top ${_TOP_N} shown` : `${bucket.count} total`}>{bucket.count}</span>
             </button>
           {/each}
         </div>
@@ -1241,7 +1250,7 @@
               aria-selected={_losTab === key}
               onclick={() => _losTab = key}>
               {_tabShort(bucket.label)}
-              <span class="wl-tab-count">{bucket.rows.length}</span>
+              <span class="wl-tab-count" title={bucket.count > _TOP_N ? `${bucket.count} total — top ${_TOP_N} shown` : `${bucket.count} total`}>{bucket.count}</span>
             </button>
           {/each}
         </div>
