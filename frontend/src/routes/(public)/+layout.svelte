@@ -66,15 +66,17 @@
           {/each}
         </nav>
 
-        <!-- Algo Site cross-link visible to everyone:
-              - admin → goes to the algo console with full access
-              - anonymous on prod → lands in demo mode (synthetic data,
-                paper-only) so visitors / recruiters can browse the
-                platform without a login.
-              - anonymous on dev → redirects to /signin via the algo
-                layout's auth guard. -->
+        <!-- Platform cross-link visible to everyone. Label reads as
+             "our technology platform" to both audiences — clearer than
+             the prior "Algo Site" which scared investors (sounds like
+             their money goes to algos) and confused recruiters (sounds
+             like a separate product). Behaviour unchanged:
+              - admin → algo console with full access
+              - anonymous on prod → demo mode (real broker data, masked
+                accounts, paper-only writes)
+              - anonymous on dev → /signin via algo layout's auth guard. -->
         <button onclick={() => goto('/dashboard')} class="pub-nav-algo-btn">
-          {$authStore.user ? 'Algo Site' : 'Algo Site Demo'} ↗
+          {$authStore.user ? 'Platform' : 'Platform Demo'} ↗
         </button>
 
         {#if $authStore.user}
@@ -145,7 +147,7 @@
           <button
             onclick={() => { goto('/dashboard'); closeMenu(); }}
             class="pub-mobile-item pub-mobile-algo"
-          >{$authStore.user ? 'Algo Site' : 'Algo Site Demo'} ↗</button>
+          >{$authStore.user ? 'Platform' : 'Platform Demo'} ↗</button>
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="pub-mobile-item">Sign Out</button>
           {:else}
