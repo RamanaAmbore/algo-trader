@@ -85,6 +85,10 @@
   //   'main' = prod only
   //   absent = always shown
   const _algoLinksAll = [
+    // ── Tour ── narrative entry point; recruiter / demo lands here from
+    // the public-side "Platform Demo" link and walks the architecture
+    // before clicking into the live surfaces.
+    { href: '/showcase',         label: 'Tour',      group: 'monitor' },
     // ── Monitor ──
     { href: '/pulse',            label: 'Market Pulse', group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },

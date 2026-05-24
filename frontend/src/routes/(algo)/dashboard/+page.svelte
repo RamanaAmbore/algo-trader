@@ -433,8 +433,10 @@
 {#if isDemo && !bannerDismissed}
   <div class="demo-banner" role="status">
     <span class="demo-banner-text">
-      You're viewing <strong>demo mode</strong> — real prod data with masked accounts.
-      <a href="/signin" class="demo-banner-link">Sign in</a> for the full platform.
+      <strong>Live production platform</strong> · real broker data · accounts masked · paper-only writes.
+      <a href="/showcase" class="demo-banner-link">Take the tour</a>
+      <span class="demo-banner-sep">·</span>
+      <a href="/signin" class="demo-banner-link">Sign in</a>
     </span>
     <button onclick={dismissBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
   </div>
@@ -1345,6 +1347,7 @@
     font-weight: 600;
   }
   .demo-banner-link:hover { color: #e9d5ff; }
+  .demo-banner-sep { color: rgba(168,85,247,0.45); margin: 0 0.35rem; }
   .demo-banner-close {
     flex-shrink: 0;
     background: none;
