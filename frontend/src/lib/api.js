@@ -121,7 +121,14 @@ function _friendlyError(/** @type {number|null} */ status,
     // to a deleted stub) rather than a feature gate — show a clearer
     // hint than the generic demo banner.
     if (status === 404) return 'Not available.';
-    return 'Demo mode — feature unavailable.';
+    // 401 / 403 in demo IS the gating mechanism — surface that.
+    if (status === 401 || status === 403) {
+      return 'Demo mode — feature unavailable.';
+    }
+    // Every other error in demo (5xx, network, 429) is transient and
+    // unrelated to gating — fall through to the same handling auth
+    // users get so the operator/recruiter sees 'Server busy' not
+    // 'Demo mode' when the broker is having a moment.
   }
   if (status === 401) {
     if (detail) return _trimDetail(detail);

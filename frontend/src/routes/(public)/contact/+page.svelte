@@ -45,7 +45,9 @@
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
-<div class="max-w-sm mx-auto">
+<!-- Wider on laptop so the form doesn't float in a sea of cream;
+     mobile keeps the existing tight width via the breakpoint cap. -->
+<div class="contact-wrap mx-auto">
   <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
   <h1 class="page-heading">Contact</h1>
   {#if success}
@@ -76,10 +78,47 @@
     <button
       onclick={submit}
       disabled={submitting || !form.name || !form.email || !form.message}
-      class="btn-primary w-full disabled:opacity-50"
+      class="contact-send-btn w-full disabled:opacity-50 disabled:cursor-not-allowed"
     >
       {submitting ? 'Sending…' : 'Send Message'}
     </button>
   </div>
   </div>
 </div>
+
+<style>
+  /* Contact card width — laptop gets a comfortable medium width so it
+     doesn't float in cream void. Mobile caps at the viewport. */
+  .contact-wrap {
+    max-width: 32rem;
+  }
+  @media (max-width: 480px) {
+    .contact-wrap { max-width: 100%; }
+  }
+
+  /* Send Message — solid champagne CTA, matches the home page's
+     primary buttons. Beige .btn-primary on a cream card read as
+     near-disabled even when enabled. */
+  .contact-send-btn {
+    display: inline-block;
+    font-size: 0.9rem;
+    font-weight: 700;
+    padding: 0.55rem 1.1rem;
+    border-radius: 0.375rem;
+    background: #d4920c;
+    color: #fff;
+    border: 1px solid #d4920c;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    letter-spacing: 0.01em;
+  }
+  .contact-send-btn:hover:not(:disabled) {
+    background: #b87a0a;
+    border-color: #b87a0a;
+  }
+  .contact-send-btn:disabled {
+    background: #d4c898;
+    border-color: #b8a870;
+    color: #5a4010;
+  }
+</style>

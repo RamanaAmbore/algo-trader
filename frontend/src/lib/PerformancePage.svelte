@@ -749,7 +749,7 @@
       <Select
         bind:value={selectedAccount}
         options={[
-          { value: 'all', label: 'All Accounts' },
+          { value: 'all', label: 'Accounts' },
           ...accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a })),
         ]}
         theme={compactHeader ? 'dark' : 'light'} />
@@ -762,7 +762,7 @@
       <MultiSelect
         bind:value={selectedSymbols}
         options={symbols.map(s => ({ value: s, label: s }))}
-        placeholder="All Symbols"
+        placeholder="Symbols"
         theme={compactHeader ? 'dark' : 'light'} />
     </div>
   {/if}

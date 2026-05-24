@@ -99,30 +99,35 @@
     margin: 1rem 0;
   }
   .stat-num {
-    font-size: 2rem;
+    font-size: 2.5rem;
     font-weight: 900;
     color: #1a2744;
     line-height: 1;
     letter-spacing: -0.02em;
   }
   .stat-plus {
-    font-size: 1.2rem;
+    font-size: 1.5rem;
     font-weight: 700;
     color: #d4920c;
   }
   .stat-creds {
     /* Aligned vertically with .stat-num — the numeric stats render at
-       font-size: 2rem with line-height: 1 (= 2rem block height).
-       Earlier the credentials line was 0.9rem at line-height 1.3
-       (~1.17rem block), leaving the credentials baseline noticeably
-       higher than the 22%+ / 25+ baselines. Bumping font-size to
-       1.15rem + line-height to 2rem makes the three stat lines sit
-       on the same baseline and read at comparable visual weight. */
-    font-size: 1.15rem;
+       font-size: 2.5rem with line-height: 1 (= 2.5rem block height).
+       Bumped from 1.15rem to 1.35rem + line-height 2.5rem so the
+       credential lines sit at the same baseline and read with
+       comparable visual weight to the numerics. */
+    font-size: 1.35rem;
     font-weight: 800;
     color: #1a2744;
     letter-spacing: 0.03em;
-    line-height: 2rem;
+    line-height: 2.5rem;
+  }
+  @media (max-width: 600px) {
+    /* Mobile already stacks cleanly; back the numerics off slightly so
+       the column doesn't feel oversized. */
+    .stat-num    { font-size: 2.1rem; }
+    .stat-plus   { font-size: 1.3rem; }
+    .stat-creds  { font-size: 1.15rem; line-height: 2.1rem; }
   }
   .stat-label {
     font-size: 0.6rem;

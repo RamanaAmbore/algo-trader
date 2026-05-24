@@ -882,6 +882,14 @@
      algo-status-card chrome — gradient bg + 1.5px border + box-shadow.
      Match the visual depth of /agents, /admin/options, /admin/execution
      so the dashboard doesn't read as one-generation-back. */
+  /* Hide the CONN chip on narrow viewports — it tends to wrap onto a
+     row of its own (single chip, looks orphaned) and "no accounts
+     connected" has no actionable meaning for a demo / recruiter
+     visitor scanning the dashboard on a phone. Operators on desktop
+     keep it as a glanceable broker-health indicator. */
+  @media (max-width: 600px) {
+    .hero-chip.hero-chip-conn { display: none; }
+  }
   .hero-row {
     display: flex;
     flex-wrap: wrap;

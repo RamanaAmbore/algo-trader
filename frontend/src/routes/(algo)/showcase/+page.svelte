@@ -271,7 +271,7 @@
     line-height: 1.2;
   }
   .show-card-body {
-    font-size: 0.78rem;
+    font-size: 0.85rem;
     color: #9bb0d0;
     line-height: 1.55;
     margin: 0 0 0.6rem;
@@ -283,11 +283,18 @@
     flex: 1;
   }
   .show-card-bullets li {
-    font-size: 0.75rem;
+    font-size: 0.82rem;
     color: #c8d8f0;
     line-height: 1.45;
     padding: 0.18rem 0 0.18rem 1rem;
     position: relative;
+  }
+  /* Mobile bump — keep card body legible without pinch-to-zoom; tag
+     chips also bumped so they don't read as decorative noise. */
+  @media (max-width: 600px) {
+    .show-card-body     { font-size: 0.9rem; }
+    .show-card-bullets li { font-size: 0.88rem; }
+    .show-card-tag      { font-size: 0.65rem; }
   }
   .show-card-bullets li::before {
     content: '▸';

@@ -260,7 +260,23 @@
     letter-spacing: 0.01em;
   }
 
+  /* Diagrams render at their native SVG size and scale down via
+     max-width: 100% on desktop. On mobile the source SVG is wider
+     than 390px and was being squashed — nodes shrank past readable
+     size. Wrap with horizontal scroll under 600px so the operator
+     can pan instead of squinting; min-width keeps the SVG at a
+     usable scale, the parent's overflow-x-auto provides the pan. */
+  :global(.mermaid-container) {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
   :global(.mermaid-container svg) { max-width: 100%; height: auto; }
   :global(.mermaid-container svg .node rect) { rx: 8px; ry: 8px; }
   :global(.mermaid-container svg .node polygon) { rx: 6px; ry: 6px; }
+  @media (max-width: 600px) {
+    :global(.mermaid-container svg) {
+      max-width: none;
+      min-width: 620px;
+    }
+  }
 </style>
