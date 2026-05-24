@@ -1449,13 +1449,27 @@
 
     <!-- Margin Utilisation — ag-Grid replaces the SVG donuts.
          Tabular view aligns visually with the Funds grid below. -->
-    <div class="bucket-subheader">Margin Utilisation</div>
-    <div bind:this={_marginEl} class="ag-theme-algo dash-mini-grid"></div>
+    {#if _marginRows.length > 0}
+      <div class="bucket-subheader">Margin Utilisation</div>
+    {/if}
+    <div
+      bind:this={_marginEl}
+      class="ag-theme-algo dash-mini-grid"
+      class:is-empty={_marginRows.length === 0}></div>
 
     <!-- Funds — per-account cash + collateral + avail/used margin
          + TOTAL pinned at bottom. -->
-    <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
-    <div bind:this={_fundsEl} class="ag-theme-algo dash-mini-grid"></div>
+    {#if _fundsBody.length > 0}
+      <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
+    {/if}
+    <div
+      bind:this={_fundsEl}
+      class="ag-theme-algo dash-mini-grid"
+      class:is-empty={_fundsBody.length === 0}></div>
+
+    {#if _marginRows.length === 0 && _fundsBody.length === 0}
+      <div class="dash-card-empty">No accounts connected</div>
+    {/if}
   </section>
 
   <!-- Equity card — Positions Summary + Holdings Summary stacked.
@@ -1482,19 +1496,38 @@
       <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
     </div>
 
-    <!-- Positions Summary — intraday, glanced first. -->
-    <div class="bucket-subheader">
-      Positions
-      <span class="eq-count">{_positionsCount}</span>
-    </div>
-    <div bind:this={_eqPosEl} class="ag-theme-algo dash-mini-grid"></div>
+    <!-- Positions Summary — intraday, glanced first. Sub-heading
+         hides when no positions are loaded (zero-row autoHeight grid
+         would otherwise still take ~28 px header strip + 1.5 rem
+         subheader for an empty section). -->
+    {#if _positionsSummary.length > 0}
+      <div class="bucket-subheader">
+        Positions
+        <span class="eq-count">{_positionsCount}</span>
+      </div>
+    {/if}
+    <div
+      bind:this={_eqPosEl}
+      class="ag-theme-algo dash-mini-grid"
+      class:is-empty={_positionsSummary.length === 0}></div>
 
     <!-- Holdings Summary — EOD picture, sits below positions. -->
-    <div class="bucket-subheader bucket-subheader-spaced">
-      Holdings
-      <span class="eq-count">{_holdingsCount}</span>
-    </div>
-    <div bind:this={_eqHoldEl} class="ag-theme-algo dash-mini-grid"></div>
+    {#if _holdingsSummary.length > 0}
+      <div class="bucket-subheader bucket-subheader-spaced">
+        Holdings
+        <span class="eq-count">{_holdingsCount}</span>
+      </div>
+    {/if}
+    <div
+      bind:this={_eqHoldEl}
+      class="ag-theme-algo dash-mini-grid"
+      class:is-empty={_holdingsSummary.length === 0}></div>
+
+    <!-- Cold-start: positions + holdings both empty. Show a single
+         compact message instead of stacking two empty grid headers. -->
+    {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
+      <div class="dash-card-empty">No equity exposure</div>
+    {/if}
   </section>
 </div>
 
@@ -1546,7 +1579,10 @@
             </button>
           {/each}
         </div>
-        <div bind:this={_winEl} class="ag-theme-algo dash-wl-grid"></div>
+        <div
+          bind:this={_winEl}
+          class="ag-theme-algo dash-wl-grid"
+          class:is-empty={_winRowsAg.length === 0}></div>
       </section>
     {/if}
 
@@ -1581,7 +1617,10 @@
             </button>
           {/each}
         </div>
-        <div bind:this={_losEl} class="ag-theme-algo dash-wl-grid"></div>
+        <div
+          bind:this={_losEl}
+          class="ag-theme-algo dash-wl-grid"
+          class:is-empty={_losRowsAg.length === 0}></div>
       </section>
     {/if}
   </div>
@@ -1824,7 +1863,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 220px;
+    /* Compact empty state — earlier reserved 220 px which left a
+       big blank band on cold-start or pre-market. 3 rem fits the
+       single-line message and lets the rest of the dashboard pull
+       up. The curve grows back to 220 px once data lands. */
+    height: 3rem;
     color: #7e97b8;
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
@@ -2312,8 +2355,36 @@
   .dash-mini-grid {
     width: 100%;
     min-height: 60px;
+    transition: min-height 0.18s ease;
+  }
+  /* When a mini-grid has no rows, collapse it out of the layout —
+     the surrounding bucket-subheader is already conditionally hidden
+     above, and the dash-card-empty fallback below carries the empty
+     message. Without this rule ag-Grid's autoHeight still reserves
+     a header strip (~28 px) for an empty grid. */
+  .dash-mini-grid.is-empty {
+    min-height: 0;
+    height: 0;
+    overflow: hidden;
+    border: none;
+    box-shadow: none;
   }
   .dash-mini-grid + .bucket-subheader { margin-top: 0.55rem; }
+
+  /* Compact single-line empty state for cards whose every grid is
+     blank (e.g. broker not connected, no equity exposure). Sits
+     inside the card body in place of the grid headers. */
+  .dash-card-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.65rem 0.5rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    font-style: italic;
+  }
 
   /* W/L grid — explicit height so ag-Grid (domLayout: 'normal')
      measures + scrolls internally. Earlier max-height + overflow:auto
@@ -2324,11 +2395,25 @@
     width: 100%;
     height: 18rem;
     cursor: pointer;
+    transition: height 0.18s ease;
+  }
+  /* When the active bucket has no rows, collapse the grid wrapper
+     to just enough height to show the empty-state overlay. ag-Grid
+     keeps the header + overlay sized for the wrapper; this turns a
+     wasteful 18 rem blank into a compact ~3.5 rem strip without
+     destroying the grid (operator can flip tabs and the rows show
+     instantly). */
+  .dash-wl-grid.is-empty {
+    height: 3.5rem;
+    cursor: default;
   }
   .fs-card-on .dash-wl-grid {
     flex: 1;
     height: auto;
     min-height: calc(100vh - 14rem);
+  }
+  .fs-card-on .dash-wl-grid.is-empty {
+    min-height: 3.5rem;
   }
 
   /* Util-% gradient bands — pnl-gain (green, low util) and pnl-loss
