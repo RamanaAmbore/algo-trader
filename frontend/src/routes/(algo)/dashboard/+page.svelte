@@ -159,10 +159,20 @@
   // mount-time $effect. Once mounted, rowData updates flow through
   // a separate reactive $effect that hits setGridOption('rowData').
   // Pattern mirrors MarketPulse for consistency.
-  let _fundsEl, _fundsGrid, _fundsReady = $state(false);
-  let _marginEl, _marginGrid, _marginReady = $state(false);
-  let _winEl, _winGrid, _winReady = $state(false);
-  let _losEl, _losGrid, _losReady = $state(false);
+  // Grid element bindings — MUST be $state so the `$effect` that
+  // mounts the grid re-triggers when `bind:this` assigns. In Svelte 5
+  // a plain `let` is NOT reactive; bind:this would set it but the
+  // effect would only ever run once with the initial undefined value
+  // and the grid would never mount.
+  let _fundsEl     = $state(/** @type {HTMLDivElement|null} */ (null));
+  let _marginEl    = $state(/** @type {HTMLDivElement|null} */ (null));
+  let _winEl       = $state(/** @type {HTMLDivElement|null} */ (null));
+  let _losEl       = $state(/** @type {HTMLDivElement|null} */ (null));
+  let _fundsGrid, _marginGrid, _winGrid, _losGrid;
+  let _fundsReady  = $state(false);
+  let _marginReady = $state(false);
+  let _winReady    = $state(false);
+  let _losReady    = $state(false);
 
   // Click-to-open SymbolPanel from W/L grid rows.
   function _openSymbol(sym) {
