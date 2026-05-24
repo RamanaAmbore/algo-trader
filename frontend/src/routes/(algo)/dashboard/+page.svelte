@@ -14,7 +14,11 @@
     batchQuote,
   } from '$lib/api';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
-  import { classifyByIndex } from '$lib/data/indexConstituents';
+  import {
+    classifyByIndex,
+    FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
+    symbolFromQuoteKey,
+  } from '$lib/data/indexConstituents';
 
   // IST-midnight-as-UTC for "today" date-window filters. Indian markets
   // (and operators) live in Asia/Kolkata; using the browser's local
@@ -277,9 +281,57 @@
     return m ? m[1] : String(sym);
   }
 
+  // Market-wide quotes for Top Winners/Losers — Underlying / Midcap /
+  // Smallcap buckets show top movers across the FULL exchange universe
+  // (NIFTY MIDCAP 100 / NIFTY SMLCAP 100 / curated F&O list),
+  // independent of the operator's positions or holdings. Only the
+  // Holdings + Positions tabs remain user-scoped.
+  //
+  // Single batchQuote payload covers all three universes (~300 symbols),
+  // polled every 60 s. Backend caches under /quote/batch.
+  /** @type {Record<string, any>} */
+  let _marketQuotes = $state({});
+  let _stopMarketPoll;
+
+  // Build a market-wide row list from quotes for the given universe.
+  // Each row carries `kind: 'market'`, with `pnl` holding the day
+  // percentage (used both as the sort key and the display value).
+  // `ltp` rides along so the row can show the live spot alongside
+  // the move. User-scoped rows (Holdings / Positions buckets) use
+  // `kind: 'user'` with pnl in rupees and inv_val for the % cell.
+  function _marketRows(keys) {
+    const out = [];
+    for (const k of keys) {
+      const q = _marketQuotes[k];
+      if (!q) continue;
+      const ltp = Number(q.last_price ?? q.ltp ?? 0);
+      // Prefer Kite's own change_percent / change_pct when present;
+      // fall back to (ltp - close) / close × 100.
+      let pct = null;
+      if (q.change_percent != null) pct = Number(q.change_percent);
+      else if (q.change_pct    != null) pct = Number(q.change_pct);
+      else {
+        const close = Number(q.ohlc?.close ?? q.close ?? 0);
+        if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
+      }
+      if (pct == null || !isFinite(pct) || pct === 0) continue;
+      out.push({
+        symbol: symbolFromQuoteKey(k),
+        pnl:    pct,           // sort key + display %
+        ltp,                   // shown as @ ₹X
+        kind:   'market',
+      });
+    }
+    return out;
+  }
+
   // Aggregate positions by parsed underlying. {underlying → sum(pnl)}
   // Filtered by the shared account multiselect (_filterByAccount —
   // bound to the same _selectedAccounts state the Equity card uses).
+  // Used by the (now retired) user-scoped underlying bucket — keeping
+  // the derivation alive for any future "your underlying exposure"
+  // surface even though Top Winners/Losers Underlying now reads from
+  // _marketRows() instead.
   const _positionsByUnderlying = $derived.by(() => {
     /** @type {Map<string, {symbol: string, pnl: number, inv_val: number}>} */
     const byU = new Map();
@@ -295,6 +347,13 @@
     }
     return Array.from(byU.values());
   });
+
+  // Market-wide rows for the three universe-based buckets.
+  // Re-derives whenever _marketQuotes flips. Each is one bag of
+  // {symbol, pnl=day_pct, inv_val=ltp} ready for _eligible/_top.
+  const _foUnderlyingRows = $derived(_marketRows(FO_QUOTE_KEYS));
+  const _midcapRows       = $derived(_marketRows(MIDCAP_QUOTE_KEYS));
+  const _smlcapRows       = $derived(_marketRows(SMLCAP_QUOTE_KEYS));
 
   // Aggregate by symbol — dedupes the same instrument when held in
   // multiple accounts. Without this, GMDCLTD in both ZG0790 + ZJ6294
@@ -338,7 +397,11 @@
     }
     // Aggregate first, then drop zero-pnl symbols (the dedupe could
     // resolve a +X / -X pair into 0 — still want to hide those).
-    return _aggregateBySymbol(raw).filter(r => r.pnl !== 0);
+    // Tag every survivor as user-scoped so the template renders the
+    // ₹ form (vs market rows which render as %).
+    return _aggregateBySymbol(raw)
+      .filter(r => r.pnl !== 0)
+      .map(r => ({ ...r, kind: 'user' }));
   }
 
   // Positions as individual contracts, aggregated by tradingsymbol
@@ -353,7 +416,9 @@
       if (!sym) continue;
       raw.push({ symbol: sym, pnl, inv_val: 0 });
     }
-    return _aggregateBySymbol(raw).filter(r => r.pnl !== 0);
+    return _aggregateBySymbol(raw)
+      .filter(r => r.pnl !== 0)
+      .map(r => ({ ...r, kind: 'user' }));
   });
 
   // Eligible-rows picker — sorted by P&L, NOT sliced. Splits the
@@ -380,18 +445,23 @@
     return { label, count: all.length, rows: all.slice(0, _TOP_N) };
   }
 
+  // Bucket sources:
+  //   - OPTION UNDERLYING / MIDCAP / SMALLCAP — MARKET-wide (universe
+  //     constants in $lib/data/indexConstituents), independent of
+  //     positions/holdings + the account multiselect.
+  //   - HOLDINGS / POSITIONS — user-scoped, honour the account filter.
   const _winnerBuckets = $derived([
-    _bucket('OPTION UNDERLYING', _positionsByUnderlying, 'win'),
-    _bucket('MIDCAP',            _holdingsFor('midcap'),  'win'),
-    _bucket('SMALLCAP',          _holdingsFor('smallcap'),'win'),
+    _bucket('OPTION UNDERLYING', _foUnderlyingRows,       'win'),
+    _bucket('MIDCAP',            _midcapRows,             'win'),
+    _bucket('SMALLCAP',          _smlcapRows,             'win'),
     _bucket('HOLDINGS',          _holdingsFor(null),      'win'),
     _bucket('POSITIONS',         _positionsRows,          'win'),
   ]);
 
   const _loserBuckets = $derived([
-    _bucket('OPTION UNDERLYING', _positionsByUnderlying, 'lose'),
-    _bucket('MIDCAP',            _holdingsFor('midcap'),  'lose'),
-    _bucket('SMALLCAP',          _holdingsFor('smallcap'),'lose'),
+    _bucket('OPTION UNDERLYING', _foUnderlyingRows,       'lose'),
+    _bucket('MIDCAP',            _midcapRows,             'lose'),
+    _bucket('SMALLCAP',          _smlcapRows,             'lose'),
     _bucket('HOLDINGS',          _holdingsFor(null),      'lose'),
     _bucket('POSITIONS',         _positionsRows,          'lose'),
   ]);
@@ -705,7 +775,29 @@
     } catch (_) { _selectedAccounts = []; }
     loadHero();
     _heroTeardown = visibleInterval(loadHero, 30000);
+    // Market-wide quotes for Underlying / Midcap / Smallcap winners
+    // and losers. One batched request covers all three universes;
+    // 60 s poll keeps the buckets fresh during market hours without
+    // hammering Kite's quote endpoint.
+    loadMarketMovers();
+    _stopMarketPoll = visibleInterval(loadMarketMovers, 60000);
   });
+
+  async function loadMarketMovers() {
+    try {
+      // De-dup keys across universes (e.g. NIFTY MIDCAP 100 appears
+      // in both FO_QUOTE_KEYS and the midcap index — irrelevant on
+      // the server but cleaner on the wire).
+      const keys = [...new Set([
+        ...FO_QUOTE_KEYS, ...MIDCAP_QUOTE_KEYS, ...SMLCAP_QUOTE_KEYS,
+      ])];
+      const res = await batchQuote(keys);
+      const map = res?.quotes ?? res ?? {};
+      // Reassign rather than merge so disappearing symbols clear
+      // out (avoids stale rows lingering in winners/losers buckets).
+      _marketQuotes = map;
+    } catch (_) { /* transient — leave previous map up */ }
+  }
 
   // Persist filter changes — keep in sessionStorage so it survives a
   // page refresh but resets per session (operator's filter intent
@@ -715,7 +807,7 @@
       sessionStorage.setItem('dash.equityAccounts', JSON.stringify(_selectedAccounts));
     } catch (_) { /* sessionStorage quota / blocked — silent. */ }
   });
-  onDestroy(() => { _heroTeardown?.(); });
+  onDestroy(() => { _heroTeardown?.(); _stopMarketPoll?.(); });
 
   function dismissBanner() {
     bannerDismissed = true;
@@ -1214,9 +1306,19 @@
                 }}
               >
                 <span class="wl-sym">{row.symbol}</span>
-                <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
-                {#if row.inv_val > 0}
-                  <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                {#if row.kind === 'market'}
+                  <!-- Market-wide winners — pnl IS the day %; ltp shows
+                       alongside so the operator sees both move + price. -->
+                  <span class="wl-pnl wl-pnl-up">+{pctFmt(row.pnl)}%</span>
+                  {#if row.ltp > 0}
+                    <span class="wl-pct">@ ₹{priceFmt(row.ltp)}</span>
+                  {/if}
+                {:else}
+                  <!-- User-scoped (Holdings / Positions) — pnl is ₹ money. -->
+                  <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
+                  {#if row.inv_val > 0}
+                    <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                  {/if}
                 {/if}
               </button>
             {/each}
@@ -1273,9 +1375,18 @@
                 }}
               >
                 <span class="wl-sym">{row.symbol}</span>
-                <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
-                {#if row.inv_val > 0}
-                  <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                {#if row.kind === 'market'}
+                  <!-- Market-wide losers — pnl is the day % (already negative). -->
+                  <span class="wl-pnl wl-pnl-down">{pctFmt(row.pnl)}%</span>
+                  {#if row.ltp > 0}
+                    <span class="wl-pct">@ ₹{priceFmt(row.ltp)}</span>
+                  {/if}
+                {:else}
+                  <!-- User-scoped — pnl is ₹ money. -->
+                  <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
+                  {#if row.inv_val > 0}
+                    <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
+                  {/if}
                 {/if}
               </button>
             {/each}

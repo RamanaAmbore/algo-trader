@@ -66,6 +66,36 @@ export const NIFTY_SMLCAP_100 = new Set([
   'MMTC', 'MOIL', 'MOTILALOFS', 'NATCOPHARM', 'NAVA',
 ]);
 
+// F&O underlying universe — used by the /dashboard Top Winners/Losers
+// Underlying tab to surface top movers across the broader exchange
+// (not just symbols in the user's positions). Mix of the broad F&O
+// stock list + the major indices that also trade as derivatives.
+// Quarterly review when SEBI / NSE rotate the F&O eligible list.
+export const FO_UNDERLYINGS = new Set([
+  // Major indices
+  'NIFTY 50', 'NIFTY BANK', 'NIFTY FIN SERVICE', 'NIFTY MIDCAP 100',
+  'NIFTY NEXT 50', 'NIFTY IT', 'SENSEX', 'BANKEX', 'INDIA VIX',
+  // Top F&O stocks (representative subset of the ~200 SEBI-eligible names)
+  'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR',
+  'ITC', 'SBIN', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK',
+  'ASIANPAINT', 'MARUTI', 'BAJFINANCE', 'WIPRO', 'HCLTECH', 'SUNPHARMA',
+  'TITAN', 'M&M', 'TATAMOTORS', 'NESTLEIND', 'ULTRACEMCO', 'POWERGRID',
+  'NTPC', 'TATASTEEL', 'GRASIM', 'TECHM', 'HDFCLIFE', 'JSWSTEEL',
+  'INDUSINDBK', 'BAJAJFINSV', 'CIPLA', 'DRREDDY', 'DIVISLAB',
+  'ADANIPORTS', 'COALINDIA', 'HEROMOTOCO', 'BAJAJ-AUTO', 'EICHERMOT',
+  'BPCL', 'HINDALCO', 'BRITANNIA', 'UPL', 'APOLLOHOSP', 'ONGC',
+  'TATACONSUM', 'ADANIENT', 'SBILIFE', 'IOC', 'GAIL', 'IRCTC',
+  'CHOLAFIN', 'NAUKRI', 'SHRIRAMFIN', 'PIDILITIND', 'GODREJCP',
+  'PIIND', 'AUROPHARMA', 'LUPIN', 'TVSMOTOR', 'BANDHANBNK',
+  'DLF', 'GODREJPROP', 'OBEROIRLTY', 'PERSISTENT', 'COFORGE',
+  'MPHASIS', 'LTIM', 'MARICO', 'COLPAL', 'DABUR', 'BERGEPAINT',
+  'SIEMENS', 'ABB', 'BHEL', 'BEL', 'HAL', 'CGPOWER', 'MAZDOCK',
+  'VEDL', 'NMDC', 'SAIL', 'JINDALSTEL', 'NATIONALUM', 'HINDPETRO',
+  'PETRONET', 'BPCL', 'POLYCAB', 'HAVELLS', 'VOLTAS', 'CROMPTON',
+  'TRENT', 'PAGEIND', 'INDIGO', 'IRFC', 'RECLTD', 'PFC', 'IDFCFIRSTB',
+  'CANBK', 'UNIONBANK', 'PNB', 'IDBI', 'YESBANK', 'FEDERALBNK',
+]);
+
 // Quick lookup: classify a tradingsymbol into 'midcap' / 'smallcap' / null.
 // Use the equity symbol — strip exchange prefix if passed (NSE:RELIANCE → RELIANCE).
 export function classifyByIndex(tradingsymbol) {
@@ -74,4 +104,45 @@ export function classifyByIndex(tradingsymbol) {
   if (NIFTY_MIDCAP_100.has(sym)) return 'midcap';
   if (NIFTY_SMLCAP_100.has(sym)) return 'smallcap';
   return null;
+}
+
+// Map an equity symbol to the Kite quote key. Indices use the
+// `NSE:NIFTY 50` style; plain stocks just get the `NSE:` prefix.
+// Mirrors backend.api.algo.derivatives.underlying_ltp_key, kept
+// frontend-local so the dashboard doesn't need a round-trip per
+// symbol.
+const INDEX_QUOTE_KEYS = {
+  'NIFTY 50':            'NSE:NIFTY 50',
+  'NIFTY BANK':          'NSE:NIFTY BANK',
+  'NIFTY FIN SERVICE':   'NSE:NIFTY FIN SERVICE',
+  'NIFTY MIDCAP 100':    'NSE:NIFTY MIDCAP 100',
+  'NIFTY NEXT 50':       'NSE:NIFTY NEXT 50',
+  'NIFTY IT':            'NSE:NIFTY IT',
+  'SENSEX':              'BSE:SENSEX',
+  'BANKEX':              'BSE:BANKEX',
+  'INDIA VIX':           'NSE:INDIA VIX',
+};
+export function quoteKeyFor(symbol) {
+  const k = INDEX_QUOTE_KEYS[symbol];
+  if (k) return k;
+  return `NSE:${symbol}`;
+}
+
+// Pre-built quote-key arrays for the three universes — saves a map
+// allocation on every poll.
+export const FO_QUOTE_KEYS      = [...FO_UNDERLYINGS].map(quoteKeyFor);
+export const MIDCAP_QUOTE_KEYS  = [...NIFTY_MIDCAP_100].map(quoteKeyFor);
+export const SMLCAP_QUOTE_KEYS  = [...NIFTY_SMLCAP_100].map(quoteKeyFor);
+
+// Reverse lookup: quote key → display symbol (strips exchange prefix
+// for stocks; keeps the full index name for "NSE:NIFTY 50"-style
+// keys). Lets the dashboard render a clean symbol cell from quote
+// responses without parsing each key separately.
+export function symbolFromQuoteKey(key) {
+  if (!key) return '';
+  const k = String(key);
+  // Index keys carry a space ("NSE:NIFTY 50") — keep the right side
+  // intact so the index name renders fully.
+  const m = k.split(':');
+  return m.length > 1 ? m.slice(1).join(':') : k;
 }
