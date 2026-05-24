@@ -79,7 +79,9 @@ class FundsController(Controller):
             if fresh:
                 invalidate("funds")
             resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
-            if not is_authenticated_request(request):
+            # Account-ID masking — admin/designated only see raw codes.
+            # Partner JWTs are masked alongside demo (audit fix).
+            if not is_admin_request(request):
                 for r in resp.rows:
                     if r.account != 'TOTAL':
                         r.account = mask_column(pd.Series([r.account]))[0]

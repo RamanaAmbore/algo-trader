@@ -386,8 +386,11 @@ class OrdersController(Controller):
     async def list_orders(self, request: Request) -> OrdersResponse:
         try:
             resp = await get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL)
-            # Mask account codes for anonymous callers (demo / public).
-            if not is_authenticated_request(request):
+            # Mask account codes for everyone who is NOT admin/designated.
+            # Partner-tier authenticated users see masked codes alongside
+            # demo (audit fix — was previously gated on
+            # is_authenticated_request which leaked raw codes to partners).
+            if not is_admin_request(request):
                 for r in resp.rows:
                     r.account = mask_column(pd.Series([r.account]))[0]
             return resp
@@ -419,10 +422,10 @@ class OrdersController(Controller):
             if mode in ("live", "sim", "paper", "replay", "shadow"):
                 q = q.where(AlgoOrder.mode == mode)
             rows = (await s.execute(q)).scalars().all()
-        # Mask account codes for anonymous callers (demo + public).
-        # Same masking the /performance grids apply — turns ZG0790
-        # into ZG####.
-        do_mask = not is_authenticated_request(request)
+        # Mask account codes for everyone who is NOT admin/designated.
+        # Partner JWTs see masked codes too (audit fix). Same masking
+        # the /performance grids apply — turns ZG0790 into ZG####.
+        do_mask = not is_admin_request(request)
         masked_acct = (
             (lambda a: mask_column(pd.Series([a]))[0]) if do_mask else (lambda a: a)
         )
@@ -460,7 +463,8 @@ class OrdersController(Controller):
                 .order_by(asc(_AlgoOrderEvent.ts))
             )).scalars().all()
 
-        do_mask = not is_authenticated_request(request)
+        # Admin/designated only — partners + demo see masked codes.
+        do_mask = not is_admin_request(request)
 
         def _mask_payload(raw: str | None) -> str | None:
             if raw is None or not do_mask:
@@ -531,7 +535,8 @@ class OrdersController(Controller):
                     .limit(limit)
                 )).scalars().all()
 
-        do_mask = not is_authenticated_request(request)
+        # Admin/designated only — partners + demo see masked codes.
+        do_mask = not is_admin_request(request)
 
         def _mask_payload(raw: str | None) -> str | None:
             if raw is None or not do_mask:
@@ -1400,11 +1405,12 @@ class AccountsController(Controller):
 
     @get("/")
     async def list_accounts(self, request: Request) -> AccountsResponse:
-        # display = real account_id for any authenticated caller,
-        # masked (ZG####) for anonymous (demo / public). Symmetric
-        # with mask_column() in row endpoints (positions/holdings/funds).
+        # Raw account codes gated to admin/designated only. Partner JWTs
+        # get masked codes (ZG####), symmetric with mask_column() in
+        # row endpoints (positions/holdings/funds). Demo never reaches
+        # this endpoint — controller guard is jwt_guard.
         conn = Connections().conn
-        do_mask = not is_authenticated_request(request)
+        do_mask = not is_admin_request(request)
         accounts = [
             AccountInfo(
                 account_id=account,

@@ -102,7 +102,12 @@ class PositionsController(Controller):
             if fresh:
                 invalidate("positions")
             resp = await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
-            if not is_authenticated_request(request):
+            # Mask account IDs for everyone who is NOT admin/designated.
+            # Partner-tier authenticated users see masked codes (ZG####)
+            # just like demo visitors — they have no need to see raw
+            # broker account codes. is_admin_request() returns True only
+            # for role ∈ {admin, designated}.
+            if not is_admin_request(request):
                 for r in resp.rows:
                     r.account = mask_column(pd.Series([r.account]))[0]
                 for s in resp.summary:
