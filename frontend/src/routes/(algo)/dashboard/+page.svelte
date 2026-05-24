@@ -785,6 +785,10 @@
     </details>
   </section>
   <section class="dash-col dash-col-pulse">
+    <!-- Dashboard scope: positions + holdings only. Funds grid was
+         dropped (cash/margin lives elsewhere — not the dashboard's
+         job). Source toggles + account picker stay because they
+         filter the pos/hold summary grids. -->
     <MarketPulse
       title="Performance"
       enableWatchlists={false}
@@ -792,7 +796,7 @@
       allowOrders={true}
       accountPicker={true}
       showSummary={true}
-      showFunds={true}
+      showFunds={false}
       showSymbolsGrid={false} />
   </section>
 </div>
