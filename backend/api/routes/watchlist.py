@@ -158,6 +158,49 @@ MOVER_TOP_N: int = 6
 _session_movers: dict[str, dict] = {}
 _session_date: Optional[str] = None  # ISO date string — rolls over at IST midnight
 
+# ---------------------------------------------------------------------------
+# Demo synthetic watchlist
+# ---------------------------------------------------------------------------
+# Anonymous prod visitors (demo sessions) have no user_id and so can't be
+# served real watchlists. We synthesise a single "Markets" list with the
+# canonical seed (indices + commodities + USDINR) so demo viewers see the
+# same pinned-underlyings + market-data block a logged-in partner would
+# see on first sign-in. Read-only — every write endpoint stays jwt-only
+# so demo can't mutate.
+DEMO_WATCHLIST_ID = -1
+DEMO_WATCHLIST_NAME = "Markets"
+
+
+def _demo_watchlist_items() -> list[WatchlistItemInfo]:
+    """Synthetic items derived from the same seed real users get. Each
+    gets a deterministic negative id so the frontend's item_id-keyed
+    quote map works without collisions against real ids."""
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    out: list[WatchlistItemInfo] = []
+    for i, (sym, exch) in enumerate(MARKETS_DEFAULT):
+        out.append(WatchlistItemInfo(
+            id=-1000 - i,  # negative so it never collides with real ids
+            watchlist_id=DEMO_WATCHLIST_ID,
+            tradingsymbol=sym, exchange=exch,
+            sort_order=i, added_at="",
+        ))
+    return out
+
+
+def _demo_watchlist_items_as_objs() -> list:
+    """Synthesise transient WatchlistItem-shaped objects for the quote
+    pipeline. _fetch_quotes reads .id / .tradingsymbol / .exchange so a
+    SimpleNamespace works; nothing persists to the DB."""
+    from types import SimpleNamespace
+    return [
+        SimpleNamespace(
+            id=info.id, tradingsymbol=info.tradingsymbol,
+            exchange=info.exchange, watchlist_id=info.watchlist_id,
+            sort_order=info.sort_order,
+        )
+        for info in _demo_watchlist_items()
+    ]
+
 # Per-day cache of "underlyings that have a CE/PE chain in the instruments
 # dump". The instruments cache is 24 h and the set only changes when Kite
 # publishes new contracts (daily). Without this cache, every 30 s movers
@@ -428,17 +471,28 @@ def _item_info(it: WatchlistItem) -> WatchlistItemInfo:
 
 class WatchlistController(Controller):
     path = "/api/watchlist"
-    # Controller-level default — every route needs an authenticated
-    # user EXCEPT the global session-sticky movers feed (overridden
-    # per-route to auth_or_demo_guard so prod demo visitors can see
-    # it from Market Pulse).
-    guards = [jwt_guard]
+    # No controller-level guard — Litestar merges controller + handler
+    # guards additively, so per-handler relaxation is impossible against
+    # a controller-level jwt_guard. Each handler below carries its own
+    # guard: reads (list / get / quotes) use auth_or_demo_guard so demo
+    # sessions see a synthetic "Markets" list; writes use jwt_guard so
+    # only authenticated users can mutate. Movers stays auth_or_demo
+    # too (was already overridden).
 
-    @get("/")
+    @get("/", guards=[auth_or_demo_guard])
     async def list_watchlists(self, request: Request) -> list[WatchlistInfo]:
         """List every watchlist owned by the authenticated user. Auto-
         seeds Default + Markets on first call for any user that doesn't
-        have any lists yet."""
+        have any lists yet. Demo visitors get a single synthetic
+        Markets list (read-only, sourced from the canonical seed)."""
+        if getattr(request.state, "is_demo", False):
+            items = _demo_watchlist_items()
+            return [WatchlistInfo(
+                id=DEMO_WATCHLIST_ID, name=DEMO_WATCHLIST_NAME,
+                sort_order=0, is_default=True,
+                item_count=len(items),
+                created_at="", updated_at="",
+            )]
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
@@ -459,7 +513,7 @@ class WatchlistController(Controller):
                 counts[wl.id] = int(r.scalar() or 0)
         return [_wl_info(wl, counts.get(wl.id, 0)) for wl in wls]
 
-    @post("/")
+    @post("/", guards=[jwt_guard])
     async def create_watchlist(self, data: CreateWatchlistRequest, request: Request) -> WatchlistInfo:
         name = (data.name or "").strip()
         if not name:
@@ -495,8 +549,17 @@ class WatchlistController(Controller):
             await session.commit()
         return _wl_info(wl, 0)
 
-    @get("/{wl_id:int}")
+    @get("/{wl_id:int}", guards=[auth_or_demo_guard])
     async def get_watchlist(self, wl_id: int, request: Request) -> WatchlistFull:
+        if getattr(request.state, "is_demo", False):
+            if wl_id != DEMO_WATCHLIST_ID:
+                raise HTTPException(status_code=404, detail="Watchlist not found")
+            return WatchlistFull(
+                id=DEMO_WATCHLIST_ID, name=DEMO_WATCHLIST_NAME,
+                sort_order=0, is_default=True,
+                created_at="", updated_at="",
+                items=_demo_watchlist_items(),
+            )
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
@@ -522,7 +585,7 @@ class WatchlistController(Controller):
             items=[_item_info(it) for it in items],
         )
 
-    @patch("/{wl_id:int}")
+    @patch("/{wl_id:int}", guards=[jwt_guard])
     async def rename_watchlist(
         self, wl_id: int, data: RenameWatchlistRequest, request: Request,
     ) -> WatchlistInfo:
@@ -568,7 +631,7 @@ class WatchlistController(Controller):
             count = int(r.scalar() or 0)
         return _wl_info(wl, count)
 
-    @delete("/{wl_id:int}", status_code=200)
+    @delete("/{wl_id:int}", status_code=200, guards=[jwt_guard])
     async def delete_watchlist(self, wl_id: int, request: Request) -> dict:
         username = _actor_sub(request)
         async with async_session() as session:
@@ -755,7 +818,7 @@ class WatchlistController(Controller):
 
     # ── Items ─────────────────────────────────────────────────────────
 
-    @post("/{wl_id:int}/items", status_code=201)
+    @post("/{wl_id:int}/items", status_code=201, guards=[jwt_guard])
     async def add_item(
         self, wl_id: int, data: AddItemRequest, request: Request,
     ) -> WatchlistItemInfo:
@@ -814,7 +877,7 @@ class WatchlistController(Controller):
             await session.commit()
         return _item_info(it)
 
-    @patch("/{wl_id:int}/items/{item_id:int}")
+    @patch("/{wl_id:int}/items/{item_id:int}", guards=[jwt_guard])
     async def reorder_item(
         self, wl_id: int, item_id: int, data: ReorderItemRequest, request: Request,
     ) -> WatchlistItemInfo:
@@ -836,30 +899,37 @@ class WatchlistController(Controller):
             await session.commit()
         return _item_info(it)
 
-    @get("/{wl_id:int}/quotes")
+    @get("/{wl_id:int}/quotes", guards=[auth_or_demo_guard])
     async def quotes(self, wl_id: int, request: Request) -> WatchlistQuotes:
         """Batched live quotes for every item in the watchlist. 5-second
         in-process cache so multiple concurrent polls share one Kite
         round-trip. The cache is keyed on watchlist_id only — adds /
-        removes will be reflected on the next refresh (max 5s lag)."""
+        removes will be reflected on the next refresh (max 5s lag).
+        Demo sessions: only the synthetic Markets list (-1) is valid;
+        items are computed from the canonical seed each call (no DB)."""
         import time
         from datetime import datetime, timezone
-        username = _actor_sub(request)
-        async with async_session() as session:
-            user_id = await _resolve_user_id(session, username)
-            wl_row = await session.execute(
-                select(Watchlist).where(
-                    Watchlist.id == wl_id, Watchlist.user_id == user_id,
-                )
-            )
-            wl = wl_row.scalar_one_or_none()
-            if not wl:
+        if getattr(request.state, "is_demo", False):
+            if wl_id != DEMO_WATCHLIST_ID:
                 raise HTTPException(status_code=404, detail="Watchlist not found")
-            items_row = await session.execute(
-                select(WatchlistItem).where(WatchlistItem.watchlist_id == wl_id)
-                .order_by(WatchlistItem.sort_order, WatchlistItem.id)
-            )
-            items = list(items_row.scalars().all())
+            items = _demo_watchlist_items_as_objs()
+        else:
+            username = _actor_sub(request)
+            async with async_session() as session:
+                user_id = await _resolve_user_id(session, username)
+                wl_row = await session.execute(
+                    select(Watchlist).where(
+                        Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                    )
+                )
+                wl = wl_row.scalar_one_or_none()
+                if not wl:
+                    raise HTTPException(status_code=404, detail="Watchlist not found")
+                items_row = await session.execute(
+                    select(WatchlistItem).where(WatchlistItem.watchlist_id == wl_id)
+                    .order_by(WatchlistItem.sort_order, WatchlistItem.id)
+                )
+                items = list(items_row.scalars().all())
 
         # Cache check — same watchlist hit within TTL returns cached.
         now = time.monotonic()
@@ -880,7 +950,7 @@ class WatchlistController(Controller):
         _QUOTE_CACHE[wl_id] = (now, out)
         return out
 
-    @delete("/{wl_id:int}/items/{item_id:int}", status_code=200)
+    @delete("/{wl_id:int}/items/{item_id:int}", status_code=200, guards=[jwt_guard])
     async def remove_item(
         self, wl_id: int, item_id: int, request: Request,
     ) -> dict:
