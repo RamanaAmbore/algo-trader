@@ -45,7 +45,7 @@
       link: { href: '/agents', label: 'Browse agents' },
     },
     {
-      title: 'Options analytics with σ-driven payoff',
+      title: 'Derivatives analytics with σ-driven payoff',
       tag: 'Quant math',
       color: '#a5b4fc',
       body: 'Black-Scholes pricer, calibrated IV per leg, multi-leg payoff with shaded P&L zone + breakevens + POP integrated against the lognormal pdf. Payoff range auto-scales to ±2.5σ × √T so short-DTE options aren\'t squashed into the centre and long-DTE ones aren\'t cut off.',
@@ -55,7 +55,7 @@
         'R:R ratio for bounded structures, ∞ rendered correctly for unbounded legs',
         'Coherent underlying re-pricing — one "NIFTY −1%" tick cascades through every contract',
       ],
-      link: { href: '/admin/options', label: 'Open Options' },
+      link: { href: '/admin/options', label: 'Open Derivatives' },
     },
     {
       title: 'Multi-broker abstraction + IPv6 binding',

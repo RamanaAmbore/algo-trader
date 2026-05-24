@@ -209,7 +209,17 @@
     }
   }
 
-  /* Single-panel (partner): cap width + center */
+  /* Firm NAV — content is centre-aligned inside its panel. In two-
+     panel mode this balances the visual weight (YOUR SHARE flush
+     left, FIRM NAV centred in its column); when FIRM NAV renders
+     alone (designated/admin without a personal share) it sits
+     centred in the card via the rule below. */
+  .nav-panel-firm {
+    align-items: center;
+    text-align: center;
+  }
+
+  /* Single-panel (partner / firm-only): cap width + centre */
   :not(.nav-two-panels) > .nav-panel {
     max-width: 28rem;
     margin: 0 auto;

@@ -1499,10 +1499,10 @@
 
 </script>
 
-<svelte:head><title>Options Analytics | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>Derivatives Analytics | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Options Analytics</h1>
+  <h1 class="page-title-chip">Derivatives Analytics</h1>
   <InfoHint text={'Pick an underlying to load every option / future on it from your ' + (simActive ? '<b>simulator</b> book' : '<b>live</b> book') + '. The payoff diagram below charts the aggregated position; uncheck a row in the Candidates panel to drop it from the payoff. Click <b>+ Add</b> to open the option chain and pick draft strikes (modelled as hypothetical positions). Stats below the chart explain themselves — click any <span class="font-mono">(i)</span> chip for a definition.'} />
   <span class="algo-ts">{clientTimestamp()}</span>
   {#if simActive}

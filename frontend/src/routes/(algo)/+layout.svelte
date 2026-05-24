@@ -97,7 +97,7 @@
     { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
     // ── Analyze ──
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
-    { href: '/admin/options',    label: 'Options',   group: 'analyze' },
+    { href: '/admin/options',    label: 'Derivatives', group: 'analyze' },
     // ── Lab ──
     // "Lab" workspace hosts the two non-execution research surfaces:
     // Scenario (fabricated price moves) and Backtest (historical
