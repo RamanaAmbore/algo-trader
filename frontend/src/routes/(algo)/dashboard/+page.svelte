@@ -933,7 +933,9 @@
       // funds-grid behaviour.
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
+        // 58 px fits comfortably + matches the compact dashboard density.
+        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -965,7 +967,9 @@
     _marginGrid = createGrid(_marginEl, {
       ..._baseGridOpts,
       columnDefs: [
-        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
+        // 58 px fits comfortably + matches the compact dashboard density.
+        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'used', headerName: 'Used', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1056,7 +1060,9 @@
       ..._baseGridOpts,
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
+        // 58 px fits comfortably + matches the compact dashboard density.
+        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1079,7 +1085,9 @@
       ..._baseGridOpts,
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
+        // 58 px fits comfortably + matches the compact dashboard density.
+        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
