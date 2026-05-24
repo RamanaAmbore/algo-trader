@@ -24,7 +24,7 @@ from litestar import Controller, Request, delete, get, patch, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
-from backend.api.auth_guard import jwt_guard
+from backend.api.auth_guard import jwt_guard, auth_or_demo_guard
 from backend.api.algo.watchlist_defaults import markets_default_rows
 from backend.api.database import async_session
 from backend.api.models import User, Watchlist, WatchlistItem
@@ -419,6 +419,10 @@ def _item_info(it: WatchlistItem) -> WatchlistItemInfo:
 
 class WatchlistController(Controller):
     path = "/api/watchlist"
+    # Controller-level default — every route needs an authenticated
+    # user EXCEPT the global session-sticky movers feed (overridden
+    # per-route to auth_or_demo_guard so prod demo visitors can see
+    # it from Market Pulse).
     guards = [jwt_guard]
 
     @get("/")
@@ -576,7 +580,7 @@ class WatchlistController(Controller):
 
     # ── Movers ────────────────────────────────────────────────────────
 
-    @get("/movers")
+    @get("/movers", guards=[auth_or_demo_guard])
     async def get_movers(self) -> MoversResponse:
         """Session-sticky movers: underlyings that have moved ≥5% intraday.
         Once a name crosses the threshold it stays in the result for the rest
