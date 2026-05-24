@@ -831,13 +831,17 @@
 
 <style>
   /* Public /performance: no inner cream card. Content sits directly
-     on the page envelope (.pub-card-wide, applied by (public)/+layout.svelte).
-     The only chrome is the hairline divider below the timestamp/Refresh row. */
+     on the public layout's <main class="pub-content"> wrapper. The
+     only chrome is the hairline divider below the timestamp/Refresh
+     row. */
   .perf-ts-row {
     border-bottom: 1px solid #d8d4cc;
   }
-  /* Tighter heading-to-grid gap on the public side. */
-  :global(.pub-card-wide .section-heading) {
+  /* Tighter heading-to-grid gap on the public side. The .perf-strategy
+     marker (always present on the public route, absent on the algo
+     dashboard) scopes this and every other public-only style below. */
+  :global(.perf-strategy ~ section .section-heading),
+  :global(.perf-strategy ~ .funds-heading-row .funds-heading-title) {
     margin-bottom: 0.25rem;
   }
 
@@ -880,14 +884,16 @@
      but first-time visitors on phones may not realise the grid extends
      past the viewport edge. A small italic hint above the grids on
      narrow screens makes the affordance discoverable without changing
-     the grid itself. Hidden on tablet+ where every column fits. */
-  :global(.pub-card-wide .section-heading + .ag-theme-quartz)::before,
-  :global(.pub-card-wide .funds-heading-row + .ag-theme-quartz)::before {
-    content: '';
-  }
+     the grid itself. Hidden on tablet+ where every column fits.
+
+     Scope: `.perf-strategy ~ ...` confines this to the public layout
+     (where the strategy strip is rendered) — the algo dashboard
+     suppresses .perf-strategy via compactHeader=true, so its section
+     headings never pick up the suffix even though they share the
+     same .section-heading class. */
   @media (max-width: 600px) {
-    :global(.pub-card-wide .section-heading)::after,
-    :global(.pub-card-wide .funds-heading-title)::after {
+    :global(.perf-strategy ~ section .section-heading)::after,
+    :global(.perf-strategy ~ .funds-heading-row .funds-heading-title)::after {
       content: ' · swipe →';
       font-size: 0.6rem;
       font-weight: 500;
