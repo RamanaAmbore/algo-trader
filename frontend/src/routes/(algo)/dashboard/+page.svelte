@@ -172,11 +172,15 @@
   let _marginEl    = $state(/** @type {HTMLDivElement|null} */ (null));
   let _winEl       = $state(/** @type {HTMLDivElement|null} */ (null));
   let _losEl       = $state(/** @type {HTMLDivElement|null} */ (null));
-  let _fundsGrid, _marginGrid, _winGrid, _losGrid;
+  let _eqPosEl     = $state(/** @type {HTMLDivElement|null} */ (null));
+  let _eqHoldEl    = $state(/** @type {HTMLDivElement|null} */ (null));
+  let _fundsGrid, _marginGrid, _winGrid, _losGrid, _eqPosGrid, _eqHoldGrid;
   let _fundsReady  = $state(false);
   let _marginReady = $state(false);
   let _winReady    = $state(false);
   let _losReady    = $state(false);
+  let _eqPosReady  = $state(false);
+  let _eqHoldReady = $state(false);
 
   // Click-to-open SymbolPanel from W/L grid rows.
   function _openSymbol(sym) {
@@ -1001,7 +1005,10 @@
     return createGrid(el, {
       ..._baseGridOpts,
       columnDefs: [
-        { field: 'symbol', headerName: 'Symbol', minWidth: 110, flex: 2,
+        // Symbol column shrunk 35 % vs the original 110 px — the W/L
+        // grids live in a narrow side-by-side card; freeing those
+        // pixels gives LTP + Δ % more room.
+        { field: 'symbol', headerName: 'Symbol', minWidth: 72, flex: 2,
           pinned: 'left', cellClass: 'ag-col-fill ag-col-sym',
           sortable: true },
         { field: 'ltp', headerName: 'LTP', minWidth: 70, flex: 1,
@@ -1037,6 +1044,59 @@
     if (!_losEl || _losGrid) return;
     _losGrid = _makeWlGrid(_losEl, 'lose');
     _losReady = true;
+  });
+
+  // Equity card — Positions Summary + Holdings Summary grids.
+  // Per-account aggregates with TOTAL pinned at bottom. Same algo
+  // theme classes (pnl-gain / pnl-loss / pnl-zero / totals-row /
+  // ag-col-fill) as the other dashboard grids.
+  $effect(() => {
+    if (!_eqPosEl || _eqPosGrid) return;
+    _eqPosGrid = createGrid(_eqPosEl, {
+      ..._baseGridOpts,
+      getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
+      columnDefs: [
+        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+          cellClass: 'ag-col-fill' },
+        { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+        { field: 'pnl', headerName: 'Open P&L', minWidth: 80, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+      ],
+      rowData: [],
+      domLayout: 'autoHeight',
+      overlayNoRowsTemplate:
+        '<span style="font-size:0.65rem;color:#7e97b8">No open positions</span>',
+    });
+    _eqPosReady = true;
+  });
+
+  $effect(() => {
+    if (!_eqHoldEl || _eqHoldGrid) return;
+    _eqHoldGrid = createGrid(_eqHoldEl, {
+      ..._baseGridOpts,
+      getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
+      columnDefs: [
+        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+          cellClass: 'ag-col-fill' },
+        { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+        { field: 'pnl', headerName: 'Open P&L', minWidth: 80, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+        { field: 'cur_val', headerName: 'Cur Val', minWidth: 80, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell', valueFormatter: _agAggFmt },
+      ],
+      rowData: [],
+      domLayout: 'autoHeight',
+      overlayNoRowsTemplate:
+        '<span style="font-size:0.65rem;color:#7e97b8">No holdings</span>',
+    });
+    _eqHoldReady = true;
   });
 
   // Row-data updates flow through here. Each $effect tracks just the
@@ -1095,6 +1155,21 @@
     _losGrid.setGridOption('rowData', _losRowsAg);
   });
 
+  // Equity card — Positions Summary + Holdings Summary feeds.
+  // Body rows from _positionsSummary / _holdingsSummary (already
+  // account-filtered via _filterByAccount); TOTAL row from
+  // _positionsTotal / _holdingsTotal is pinned at bottom.
+  $effect(() => {
+    if (!_eqPosReady || !_eqPosGrid) return;
+    _eqPosGrid.setGridOption('rowData', _positionsSummary);
+    _eqPosGrid.setGridOption('pinnedBottomRowData', [_positionsTotal]);
+  });
+  $effect(() => {
+    if (!_eqHoldReady || !_eqHoldGrid) return;
+    _eqHoldGrid.setGridOption('rowData', _holdingsSummary);
+    _eqHoldGrid.setGridOption('pinnedBottomRowData', [_holdingsTotal]);
+  });
+
   // ── Account-multiselect scope predicate ───────────────────────────
   // The shared _selectedAccounts filter applies only to the user-scoped
   // buckets (Holdings / Positions). Market-wide tabs ignore it. We
@@ -1109,6 +1184,7 @@
     _heroTeardown?.(); _stopMarketPoll?.();
     _fundsGrid?.destroy();  _marginGrid?.destroy();
     _winGrid?.destroy();    _losGrid?.destroy();
+    _eqPosGrid?.destroy();  _eqHoldGrid?.destroy();
   });
 
   function dismissBanner() {
@@ -1403,73 +1479,14 @@
       Positions
       <span class="eq-count">{_positionsCount}</span>
     </div>
-    {#if !_positionsSummary.length}
-      <div class="cap-empty">No open positions</div>
-    {:else}
-      <div class="cap-table-wrap">
-      <table class="cap-table">
-        <thead>
-          <tr>
-            <th class="cap-th-l">Account</th>
-            <th>Day P&amp;L</th>
-            <th>Open P&amp;L</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _positionsSummary as r}
-            <tr>
-              <td class="cap-acct">{r.account}</td>
-              <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
-              <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
-            </tr>
-          {/each}
-          <tr class="cap-total">
-            <td class="cap-acct">TOTAL</td>
-            <td class="cap-num {_pnlColor(_positionsTotal.day_pnl)}">{_positionsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.day_pnl)}</td>
-            <td class="cap-num {_pnlColor(_positionsTotal.pnl)}">{_positionsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_positionsTotal.pnl)}</td>
-          </tr>
-        </tbody>
-      </table>
-      </div>
-    {/if}
+    <div bind:this={_eqPosEl} class="ag-theme-algo dash-mini-grid"></div>
 
     <!-- Holdings Summary — EOD picture, sits below positions. -->
     <div class="bucket-subheader bucket-subheader-spaced">
       Holdings
       <span class="eq-count">{_holdingsCount}</span>
     </div>
-    {#if !_holdingsSummary.length}
-      <div class="cap-empty">No holdings</div>
-    {:else}
-      <div class="cap-table-wrap">
-      <table class="cap-table">
-        <thead>
-          <tr>
-            <th class="cap-th-l">Account</th>
-            <th>Day P&amp;L</th>
-            <th>Open P&amp;L</th>
-            <th>Cur Val</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _holdingsSummary as r}
-            <tr>
-              <td class="cap-acct">{r.account}</td>
-              <td class="cap-num {_pnlColor(r.day_pnl)}">{r.day_pnl >= 0 ? '+' : ''}₹{priceFmt(r.day_pnl)}</td>
-              <td class="cap-num {_pnlColor(r.pnl)}">{r.pnl >= 0 ? '+' : ''}₹{priceFmt(r.pnl)}</td>
-              <td class="cap-num">₹{aggCompact(r.cur_val)}</td>
-            </tr>
-          {/each}
-          <tr class="cap-total">
-            <td class="cap-acct">TOTAL</td>
-            <td class="cap-num {_pnlColor(_holdingsTotal.day_pnl)}">{_holdingsTotal.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.day_pnl)}</td>
-            <td class="cap-num {_pnlColor(_holdingsTotal.pnl)}">{_holdingsTotal.pnl >= 0 ? '+' : ''}₹{priceFmt(_holdingsTotal.pnl)}</td>
-            <td class="cap-num">₹{aggCompact(_holdingsTotal.cur_val)}</td>
-          </tr>
-        </tbody>
-      </table>
-      </div>
-    {/if}
+    <div bind:this={_eqHoldEl} class="ag-theme-algo dash-mini-grid"></div>
   </section>
 </div>
 
