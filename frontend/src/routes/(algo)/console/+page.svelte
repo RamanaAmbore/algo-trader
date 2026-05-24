@@ -17,11 +17,11 @@
   let logTab = $state('terminal');
 </script>
 
-<svelte:head><title>Terminal | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>Console | RamboQuant Analytics</title></svelte:head>
 
 <div class="flex flex-col h-[calc(100vh-8rem)]">
   <div class="page-header">
-    <h1 class="page-title-chip">Terminal</h1>
+    <h1 class="page-title-chip">Console</h1>
     <InfoHint popup text="Order workspace: type commands (<code>buy ZG#### NIFTY25APRFUT 50 limit 22000</code>), use the Ticket form, or build a basket. Tokenized autocomplete drives the Command tab." />
     <span class="algo-ts">{clientTimestamp()}</span>
   </div>
