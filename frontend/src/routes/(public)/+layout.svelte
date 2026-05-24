@@ -57,7 +57,7 @@
           </div>
         </a>
 
-        <nav class="flex items-center gap-0.5 flex-1 justify-center">
+        <nav class="flex items-center gap-3 flex-1 justify-center">
           {#each navLinks() as link}
             <button
               onclick={() => goto(link.href)}
@@ -76,7 +76,7 @@
                 accounts, paper-only writes)
               - anonymous on dev → /signin via algo layout's auth guard. -->
         <button onclick={() => goto('/dashboard')} class="pub-nav-algo-btn">
-          {$authStore.user ? 'Platform' : 'Platform Demo'} ↗
+          Platform ↗
         </button>
 
         {#if $authStore.user}
@@ -147,7 +147,7 @@
           <button
             onclick={() => { goto('/dashboard'); closeMenu(); }}
             class="pub-mobile-item pub-mobile-algo"
-          >{$authStore.user ? 'Platform' : 'Platform Demo'} ↗</button>
+          >Platform ↗</button>
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="pub-mobile-item">Sign Out</button>
           {:else}
@@ -349,7 +349,7 @@
      button is vertically centred in a 3.5rem strip regardless of its
      own intrinsic height. */
   :global(.pub-nav-btn) {
-    padding: 0.14rem 0.4rem;
+    padding: 0.18rem 0.45rem 0.04rem;
     font-size: 0.95rem;
     font-weight: 500;
     border-radius: 0.25rem;
