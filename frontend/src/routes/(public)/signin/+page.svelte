@@ -50,11 +50,21 @@
         goto('/auth/change-password');
         return;
       }
-      // Everyone lands on Market Pulse — admins, designated, partners
-      // alike. It's the "what's happening right now" view with live
-      // positions + holdings + watchlist, and is the most useful
-      // single entry point regardless of role.
-      goto('/pulse');
+      // Role-aware landing:
+      //   designated → /admin/options (Derivatives — the surface they
+      //                spend most of their day on; payoff analytics +
+      //                option chain + multi-leg strategy)
+      //   admin      → /pulse (Market Pulse — operational glance:
+      //                positions / holdings / pinned market data)
+      //   partner    → /pulse (same operational view; they see their
+      //                NAV slice via the NavCard once they navigate to
+      //                /performance)
+      //   anyone else → /pulse fallback
+      if (data.role === 'designated') {
+        goto('/admin/options');
+      } else {
+        goto('/pulse');
+      }
     } catch (e) {
       error = e.message;
     } finally { loading = false; }

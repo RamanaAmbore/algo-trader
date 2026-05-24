@@ -85,7 +85,7 @@
       <span class="fork-cta">See partnership →</span>
     </a>
 
-    <a href="/dashboard" class="fork-card fork-quant">
+    <a href="/pulse" class="fork-card fork-quant">
       <div class="fork-head">
         <span class="fork-tag fork-tag-alt">Rambo Terminal</span>
         <span class="fork-arrow">→</span>

@@ -67,16 +67,17 @@
           {/each}
         </nav>
 
-        <!-- Platform cross-link visible to everyone. Label reads as
-             "our technology platform" to both audiences — clearer than
-             the prior "Algo Site" which scared investors (sounds like
-             their money goes to algos) and confused recruiters (sounds
-             like a separate product). Behaviour unchanged:
-              - admin → algo console with full access
+        <!-- Rambo Terminal cross-link visible to everyone. Lands on
+             /pulse (Market Pulse) — the most useful entry surface
+             regardless of role: live positions / holdings / pinned
+             market data. The previous target /dashboard is more
+             admin-flavoured (P&L analysis + agent fires); operators
+             reach it via the algo navbar from /pulse if they want it.
+              - admin → /pulse with full access
               - anonymous on prod → demo mode (real broker data, masked
                 accounts, paper-only writes)
               - anonymous on dev → /signin via algo layout's auth guard. -->
-        <button onclick={() => goto('/dashboard')} class="pub-nav-algo-btn">
+        <button onclick={() => goto('/pulse')} class="pub-nav-algo-btn">
           Rambo Terminal ↗
         </button>
 
@@ -146,7 +147,7 @@
             >{link.label}</button>
           {/each}
           <button
-            onclick={() => { goto('/dashboard'); closeMenu(); }}
+            onclick={() => { goto('/pulse'); closeMenu(); }}
             class="pub-mobile-item pub-mobile-algo"
           >Rambo Terminal ↗</button>
           {#if $authStore.user}
