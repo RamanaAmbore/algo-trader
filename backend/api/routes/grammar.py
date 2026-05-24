@@ -51,16 +51,17 @@ async def _reload_registry():
 
 class GrammarTokenController(Controller):
     path = "/api/admin/grammar"
-    guards = [admin_guard]
+    # NOTE: no controller-level `guards = [admin_guard]`. Litestar merges
+    # controller guards with handler guards (additive), so a per-handler
+    # auth_or_demo_guard CANNOT relax a controller-level admin_guard —
+    # both still run. Instead, each write handler below carries an
+    # explicit `guards=[admin_guard]`, and each read handler carries
+    # `guards=[auth_or_demo_guard]`. The two reads are demo-readable so
+    # the Tokens page works for anonymous visitors walking the showcase;
+    # the catalog rows carry no secrets (grammar_kind / token_kind /
+    # token / resolver-path / params_schema / template_body).
 
     # ── List ───────────────────────────────────────────────────────────────
-    # Read endpoints (list + single read) override the controller-level
-    # admin_guard with auth_or_demo_guard so the Tokens page works for
-    # anonymous demo visitors too. The catalog rows carry no secrets —
-    # grammar_kind / token_kind / token / resolver-path / params_schema /
-    # template_body — so showing them publicly is part of the recruiter
-    # showcase, not a security leak. Every write endpoint below keeps the
-    # controller-level admin_guard.
     @get("/tokens", guards=[auth_or_demo_guard])
     async def list_tokens(self, grammar: str | None = None) -> list[GrammarTokenOut]:
         """
@@ -90,7 +91,7 @@ class GrammarTokenController(Controller):
         return _to_out(row)
 
     # ── Create ─────────────────────────────────────────────────────────────
-    @post("/tokens")
+    @post("/tokens", guards=[admin_guard])
     async def create_token(self, data: GrammarTokenCreate) -> GrammarTokenOut:
         """
         Create a non-system token. The (grammar_kind, token_kind, token)
@@ -126,7 +127,7 @@ class GrammarTokenController(Controller):
         return _to_out(row)
 
     # ── Update ─────────────────────────────────────────────────────────────
-    @patch("/tokens/{token_id:int}")
+    @patch("/tokens/{token_id:int}", guards=[admin_guard])
     async def patch_token(self, token_id: int, data: GrammarTokenPatch) -> GrammarTokenOut:
         """
         Update an existing token.
@@ -162,7 +163,7 @@ class GrammarTokenController(Controller):
         return _to_out(row)
 
     # ── Delete ─────────────────────────────────────────────────────────────
-    @delete("/tokens/{token_id:int}")
+    @delete("/tokens/{token_id:int}", guards=[admin_guard])
     async def delete_token(self, token_id: int) -> None:
         async with async_session() as s:
             row = await s.get(GrammarToken, token_id)
@@ -178,7 +179,7 @@ class GrammarTokenController(Controller):
         await _reload_registry()
 
     # ── Reload ─────────────────────────────────────────────────────────────
-    @post("/reload")
+    @post("/reload", guards=[admin_guard])
     async def reload(self) -> dict:
         """Hot-rebuild the Grammar Registry dispatch table."""
         from backend.api.algo.grammar_registry import REGISTRY
