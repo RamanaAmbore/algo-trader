@@ -279,10 +279,20 @@ class AdminController(Controller):
 
     @get("/users")
     async def list_users(self) -> UsersResponse:
-        # Both admin and designated see every user row. The action gate
-        # (_check_action) restricts what each tier can DO — not what they
-        # can SEE. Admins need full visibility to know which partners
-        # exist when running password-reset support.
+        # POLICY (reaffirmed 2026-05-24): both admin AND designated see
+        # every user row, INCLUDING financial fields (share_pct,
+        # contribution, contribution_date) and PII (email, phone, PAN,
+        # aadhaar_last4, bank details, nominee). The role hierarchy
+        # established with the user is:
+        #   designated — top tier, full control
+        #   admin      — employee / partner working FOR designated;
+        #                needs partner-financial visibility for ops
+        #   partner    — investor; sees own NAV slice only
+        # The write gate (_check_action) restricts what each tier can
+        # DO — share_pct / contribution / role mutations are
+        # designated-only. Read access for admin to financials is
+        # INTENTIONAL, not a privacy hole. If this changes in the
+        # future, also tighten the controller guard to designated_guard.
         async with async_session() as session:
             result = await session.execute(select(User).order_by(User.id))
             users = result.scalars().all()
