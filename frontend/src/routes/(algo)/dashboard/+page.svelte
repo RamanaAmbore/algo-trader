@@ -1073,21 +1073,25 @@
     letter-spacing: 0.03em;
   }
 
-  /* ── Two-column dash-grid (below row1) ──────────────────────────── */
+  /* ── dash-grid (below row1) ──────────────────────────────────────
+     Stacks the two child sections (P&L Analysis + MarketPulse) as
+     full-width rows at every viewport. Earlier the desktop layout
+     ran them in two columns (1.4fr / 1fr at min-width: 1200px),
+     but P&L Analysis is collapsed by default (~60 px header only)
+     while MarketPulse with Funds + Positions Summary + Holdings
+     Summary is ~600 px tall. align-items: start meant the P&L
+     side left a tall empty band beside the MarketPulse column.
+     Stacked, each section occupies its natural height and full
+     width — no dead space, and MarketPulse gets every pixel for
+     its three grids. Other rows (dash-row1, dash-row2) stay
+     two-column because their pairs have matching natural heights. */
   .dash-grid {
-    display: grid;
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
     gap: 0.75rem;
     margin-bottom: 0.6rem;
   }
-  @media (min-width: 1200px) {
-    .dash-grid {
-      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-      gap: 1rem;
-      align-items: start;
-    }
-  }
-  .dash-col       { min-width: 0; }
+  .dash-col       { min-width: 0; width: 100%; }
   .dash-col-pnl   { display: flex; flex-direction: column; }
   .dash-col-pulse { display: flex; flex-direction: column; }
 
