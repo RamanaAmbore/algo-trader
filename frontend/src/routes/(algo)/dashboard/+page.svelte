@@ -5,6 +5,7 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import MultiSelect from '$lib/MultiSelect.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
@@ -80,6 +81,31 @@
   // empty whenever one side rendered; stacked uses the card's
   // full vertical real estate without operator interaction.
 
+  // Equity-card account filter — MultiSelect in the header lets the
+  // operator scope both Positions Summary AND Holdings Summary to
+  // any subset of broker accounts. Default = all accounts.
+  // selectedAccounts is the SOURCE OF TRUTH; empty list means "all"
+  // (no filter applied), so removing every checkbox doesn't blank
+  // the tables. Persisted to sessionStorage so the filter survives
+  // tab refresh but resets across sessions.
+  let _selectedAccounts = $state(/** @type {string[]} */ ([]));
+
+  // Derived list of distinct accounts seen in current positions +
+  // holdings — feeds the MultiSelect options list. Sorted ascending.
+  const _availableAccounts = $derived.by(() => {
+    const set = new Set();
+    for (const r of _positions) if (r.account) set.add(String(r.account));
+    for (const r of _holdings)  if (r.account) set.add(String(r.account));
+    return [...set].sort();
+  });
+
+  // Apply the account filter to a row list. Empty filter = pass-through.
+  function _filterByAccount(rows) {
+    if (!_selectedAccounts.length) return rows;
+    const allow = new Set(_selectedAccounts);
+    return rows.filter(r => allow.has(String(r.account || '')));
+  }
+
   // Winners / Losers cards each tab through the 5 buckets
   // (underlying / midcap / smallcap / holdings / positions) instead
   // of stacking them. Default tab: 'underlying' — the broadest view
@@ -114,7 +140,7 @@
   const _positionsSummary = $derived.by(() => {
     /** @type {Record<string, SumRow>} */
     const byAcct = {};
-    for (const r of _positions) {
+    for (const r of _filterByAccount(_positions)) {
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
@@ -127,7 +153,7 @@
   const _holdingsSummary = $derived.by(() => {
     /** @type {Record<string, SumRow>} */
     const byAcct = {};
-    for (const r of _holdings) {
+    for (const r of _filterByAccount(_holdings)) {
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
@@ -217,50 +243,12 @@
     /** @type {any[]} */ (algoStatus.paperStatus?.open_order_details ?? [])
   );
 
-  // ── Winners / Losers — top-3 by P&L across positions + holdings ───
-  const _combinedBook = $derived.by(() => {
-    /** @type {{symbol: string, account: string, pnl: number, inv_val: number, src: string}[]} */
-    const rows = [];
-    for (const p of _positions) {
-      const pnl = Number(p.pnl) || 0;
-      if (pnl === 0) continue;
-      rows.push({
-        symbol:  String(p.tradingsymbol || p.symbol || ''),
-        account: String(p.account || ''),
-        pnl,
-        inv_val: 0,
-        src: 'pos',
-      });
-    }
-    for (const h of _holdings) {
-      const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
-      if (pnl === 0) continue;
-      rows.push({
-        symbol:  String(h.tradingsymbol || h.symbol || ''),
-        account: String(h.account || ''),
-        pnl,
-        inv_val: Number(h.inv_val ?? 0),
-        src: 'holding',
-      });
-    }
-    return rows;
-  });
-
-  const _winners = $derived(
-    [..._combinedBook]
-      .filter(r => r.pnl > 0)
-      .sort((a, b) => b.pnl - a.pnl)
-      .slice(0, 3)
-  );
-
-  const _losers = $derived(
-    [..._combinedBook]
-      .filter(r => r.pnl < 0)
-      .sort((a, b) => a.pnl - b.pnl)
-      .slice(0, 3)
-  );
-
   // ── Categorised top-3 movers per bucket ─────────────────────────────
+  // (The earlier merged _combinedBook / _winners / _losers derivations
+  // were retired when the dashboard moved to the 5-bucket tabbed
+  // Winners/Losers cards — every bucket is now built directly from
+  // the _positionsByUnderlying / _holdingsFor / _positionsRows
+  // helpers, all of which aggregate by symbol.)
   // Five buckets, each filtered to its source/classification, sorted
   // by P&L. Rendered as side-by-side compact lists inside the Top
   // Winners / Top Losers cards so the operator sees the movement
@@ -301,44 +289,62 @@
     return Array.from(byU.values());
   });
 
+  // Aggregate by symbol — dedupes the same instrument when held in
+  // multiple accounts. Without this, GMDCLTD in both ZG0790 + ZJ6294
+  // shows up twice in the Winners/Losers list. The winners/losers
+  // surface is about "which symbol moved" not "which (symbol, account)
+  // pair moved" — so collapse by symbol and sum across accounts.
+  function _aggregateBySymbol(rows) {
+    /** @type {Map<string, {symbol: string, pnl: number, inv_val: number}>} */
+    const bySym = new Map();
+    for (const r of rows) {
+      const sym = r.symbol;
+      if (!sym) continue;
+      const cur = bySym.get(sym) ?? { symbol: sym, pnl: 0, inv_val: 0 };
+      cur.pnl     += Number(r.pnl) || 0;
+      cur.inv_val += Number(r.inv_val) || 0;
+      bySym.set(sym, cur);
+    }
+    return Array.from(bySym.values());
+  }
+
   // Holdings, with optional class filter (midcap / smallcap / null=all).
+  // Aggregated by symbol so a stock held in N accounts appears as one
+  // row with summed day P&L + cost basis.
   function _holdingsFor(cls) {
-    /** @type {{symbol: string, account: string, pnl: number, inv_val: number}[]} */
-    const out = [];
+    /** @type {{symbol: string, pnl: number, inv_val: number}[]} */
+    const raw = [];
     for (const h of _holdings) {
       const sym = String(h.tradingsymbol || h.symbol || '');
       const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
-      if (!sym || pnl === 0) continue;
+      if (!sym) continue;
       if (cls) {
         const c = classifyByIndex(sym);
         if (c !== cls) continue;
       }
-      out.push({
+      raw.push({
         symbol: sym,
-        account: String(h.account || ''),
         pnl,
         inv_val: Number(h.inv_val ?? 0),
       });
     }
-    return out;
+    // Aggregate first, then drop zero-pnl symbols (the dedupe could
+    // resolve a +X / -X pair into 0 — still want to hide those).
+    return _aggregateBySymbol(raw).filter(r => r.pnl !== 0);
   }
 
-  // Positions as individual contracts (no aggregation).
+  // Positions as individual contracts, aggregated by tradingsymbol
+  // across accounts (same reason as holdings).
   const _positionsRows = $derived.by(() => {
-    /** @type {{symbol: string, account: string, pnl: number, inv_val: number}[]} */
-    const out = [];
+    /** @type {{symbol: string, pnl: number, inv_val: number}[]} */
+    const raw = [];
     for (const p of _positions) {
       const sym = String(p.tradingsymbol || p.symbol || '');
       const pnl = Number(p.pnl) || 0;
-      if (!sym || pnl === 0) continue;
-      out.push({
-        symbol: sym,
-        account: String(p.account || ''),
-        pnl,
-        inv_val: 0,
-      });
+      if (!sym) continue;
+      raw.push({ symbol: sym, pnl, inv_val: 0 });
     }
-    return out;
+    return _aggregateBySymbol(raw).filter(r => r.pnl !== 0);
   });
 
   // Top-N picker — winners (pnl > 0, sorted desc) or losers (pnl < 0,
@@ -673,8 +679,26 @@
   onMount(() => {
     bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
     _pnlOpen = localStorage.getItem('dash.pnlOpen') === '1';
+    // Restore the Equity-card account filter from sessionStorage.
+    // Stored as a JSON-encoded string array. Wrapped in try/catch
+    // because the cached value's account names may no longer exist
+    // on this server (operator switched broker accounts) — silently
+    // ignore + fall back to all-accounts.
+    try {
+      const cached = sessionStorage.getItem('dash.equityAccounts');
+      if (cached) _selectedAccounts = JSON.parse(cached);
+    } catch (_) { _selectedAccounts = []; }
     loadHero();
     _heroTeardown = visibleInterval(loadHero, 30000);
+  });
+
+  // Persist filter changes — keep in sessionStorage so it survives a
+  // page refresh but resets per session (operator's filter intent
+  // doesn't usually carry across days).
+  $effect(() => {
+    try {
+      sessionStorage.setItem('dash.equityAccounts', JSON.stringify(_selectedAccounts));
+    } catch (_) { /* sessionStorage quota / blocked — silent. */ }
   });
   onDestroy(() => { _heroTeardown?.(); });
 
@@ -1021,6 +1045,17 @@
   <section class="bucket-card bucket-eq" class:fs-card-on={_fsEquity}>
     <div class="bucket-header">
       <span class="mp-section-label">Equity</span>
+      <!-- Account filter — MultiSelect with one option per broker
+           account seen in the current positions + holdings. Empty
+           selection = all accounts (no filter). Applies to BOTH
+           Positions Summary and Holdings Summary tables below. -->
+      <div class="eq-acct-picker" title="Filter Positions + Holdings by account">
+        <MultiSelect
+          bind:value={_selectedAccounts}
+          options={_availableAccounts.map(a => ({ value: a, label: a }))}
+          placeholder="All accounts"
+          ariaLabel="Filter by broker account" />
+      </div>
       <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
     </div>
 
@@ -1558,6 +1593,24 @@
     margin-bottom: 0.35rem;
   }
   .bucket-subheader-spaced { margin-top: 0.7rem; }
+
+  /* Account picker sits between the Equity heading and the
+     fullscreen toggle in the bucket header. margin-left:auto so
+     the heading stays left, the picker + FS button cluster right.
+     Width clamped — operator usually has 2-3 accounts, so a wide
+     dropdown is wasted space. */
+  .eq-acct-picker {
+    margin-left: auto;
+    min-width: 8.5rem;
+    max-width: 14rem;
+    flex-shrink: 1;
+  }
+  @media (max-width: 600px) {
+    .eq-acct-picker {
+      min-width: 6rem;
+      max-width: 9rem;
+    }
+  }
 
   /* Inline count chip used inside Equity sub-headings (Positions
      and Holdings). Small muted pill — at-a-glance "how many", not
