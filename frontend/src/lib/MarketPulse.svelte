@@ -30,6 +30,7 @@
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
 
   let {
@@ -2457,10 +2458,17 @@
       {#if accountPicker || enableSourceToggles}
         <div class="ml-auto flex items-center gap-1">
           {#if accountPicker && availableAccounts.length > 0}
-            <div class="w-32" title="Filter by broker account (multi-select)">
-              <MultiSelect ariaLabel="Account filter" bind:value={selectedAccounts}
-                placeholder="All accounts"
-                options={availableAccounts.map(a => ({ value: a, label: a }))} />
+            <!-- Global rule: disable the picker when neither Positions
+                 nor Holdings is in the active source set — the unified
+                 grid then shows only watchlist + pinned + movers and
+                 the account filter has nothing per-account to scope. -->
+            {@const _acctOff = !selectedSources.includes('positions')
+                            && !selectedSources.includes('holdings')}
+            <div class="w-32">
+              <AccountMultiSelect bind:value={selectedAccounts}
+                options={availableAccounts.map(a => ({ value: a, label: a }))}
+                disabled={_acctOff}
+                disabledReason="Account filter applies only when Positions or Holdings is selected" />
             </div>
           {/if}
           {#if enableSourceToggles}

@@ -6,6 +6,7 @@
   import { dataCache, authStore } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
@@ -763,12 +764,12 @@
     {/each}
   </div>
   {#if accounts.length > 0}
-    <!-- Account MultiSelect — empty selection ⇒ "all accounts";
-         any non-empty subset scopes every grid (detail + summary +
-         funds). Mirrors the Symbol MultiSelect next to it for
-         visual consistency. -->
+    <!-- Account picker — always enabled here because PerformancePage
+         is fundamentally about per-account positions/holdings (no
+         non-account context to disable for). Mirrors the Symbol
+         MultiSelect next to it for visual consistency. -->
     <div class="acct-multi">
-      <MultiSelect
+      <AccountMultiSelect
         bind:value={selectedAccounts}
         options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
         placeholder="Accounts"

@@ -19,6 +19,7 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import {
     loadInstruments, suggestUnderlyings,
@@ -1519,7 +1520,10 @@
 <div class="opt-picker mb-3">
   <div class="opt-field opt-field-grow">
     <label class="field-label" for="opt-acct">Account</label>
-    <MultiSelect id="opt-acct"
+    <!-- /admin/options is fundamentally about positions-based option
+         analysis — picker is always per-account, so AccountMultiSelect
+         here is just a styled passthrough (no disabled state ever). -->
+    <AccountMultiSelect id="opt-acct"
       bind:value={selectedAccounts}
       options={accountChoices.map(a => ({ value: a, label: a }))}
       placeholder={accountChoices.length ? 'All accounts' : 'No accounts loaded'} />

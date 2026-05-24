@@ -6,7 +6,8 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import MultiSelect from '$lib/MultiSelect.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
   import { clientTimestamp, visibleInterval } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
@@ -1468,7 +1469,7 @@
       class:is-empty={_fundsBody.length === 0}></div>
 
     {#if _marginRows.length === 0 && _fundsBody.length === 0}
-      <div class="dash-card-empty">No accounts connected</div>
+      <EmptyState message="No accounts connected" />
     {/if}
   </section>
 
@@ -1482,17 +1483,11 @@
   <section class="bucket-card bucket-eq" class:fs-card-on={_fsEquity}>
     <div class="bucket-header">
       <span class="mp-section-label">Equity</span>
-      <!-- Account filter — MultiSelect with one option per broker
-           account seen in the current positions + holdings. Empty
-           selection = all accounts (no filter). Applies to BOTH
-           Positions Summary and Holdings Summary tables below. -->
-      <div class="eq-acct-picker" title="Filter Positions + Holdings by account">
-        <MultiSelect
-          bind:value={_selectedAccounts}
-          options={_availableAccounts.map(a => ({ value: a, label: a }))}
-          placeholder="All accounts"
-          ariaLabel="Filter by broker account" />
-      </div>
+      <!-- Equity card always shows Positions + Holdings — picker stays
+           enabled (the global AccountMultiSelect rule allows it). -->
+      <AccountMultiSelect
+        bind:value={_selectedAccounts}
+        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
       <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
     </div>
 
@@ -1526,7 +1521,7 @@
     <!-- Cold-start: positions + holdings both empty. Show a single
          compact message instead of stacking two empty grid headers. -->
     {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
-      <div class="dash-card-empty">No equity exposure</div>
+      <EmptyState message="No equity exposure" />
     {/if}
   </section>
 </div>
@@ -1552,17 +1547,13 @@
                tabs (Underlying / Midcap / Smallcap) since those
                universes don't depend on the operator's accounts.
                Holdings + Positions tabs honour the filter. -->
-          <div class="wl-acct-picker"
-            title={_winAcctDisabled
-              ? 'Account filter applies only to Holdings + Positions tabs'
-              : 'Filter by broker account (shared across cards)'}>
-            <MultiSelect
-              bind:value={_selectedAccounts}
-              options={_availableAccounts.map(a => ({ value: a, label: a }))}
-              placeholder="All accounts"
-              disabled={_winAcctDisabled}
-              ariaLabel="Filter Top Winners by broker account" />
-          </div>
+          <!-- Picker disables on Underlying/Midcap/Smallcap tabs
+               (market-wide, account-agnostic) per the global rule. -->
+          <AccountMultiSelect
+            bind:value={_selectedAccounts}
+            options={_availableAccounts.map(a => ({ value: a, label: a }))}
+            disabled={_winAcctDisabled}
+            disabledReason="Account filter applies only to Holdings + Positions tabs" />
           <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
         </div>
         <div class="wl-tabs" role="tablist">
@@ -1590,17 +1581,11 @@
       <section class="wl-tile wl-tile-loss" class:fs-card-on={_fsLosers}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
-          <div class="wl-acct-picker"
-            title={_losAcctDisabled
-              ? 'Account filter applies only to Holdings + Positions tabs'
-              : 'Filter by broker account (shared across cards)'}>
-            <MultiSelect
-              bind:value={_selectedAccounts}
-              options={_availableAccounts.map(a => ({ value: a, label: a }))}
-              placeholder="All accounts"
-              disabled={_losAcctDisabled}
-              ariaLabel="Filter Top Losers by broker account" />
-          </div>
+          <AccountMultiSelect
+            bind:value={_selectedAccounts}
+            options={_availableAccounts.map(a => ({ value: a, label: a }))}
+            disabled={_losAcctDisabled}
+            disabledReason="Account filter applies only to Holdings + Positions tabs" />
           <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
         </div>
         <div class="wl-tabs" role="tablist">
@@ -1972,23 +1957,11 @@
   }
   .bucket-subheader-spaced { margin-top: 0.7rem; }
 
-  /* Account picker sits between the Equity heading and the
-     fullscreen toggle in the bucket header. margin-left:auto so
-     the heading stays left, the picker + FS button cluster right.
-     Width clamped — operator usually has 2-3 accounts, so a wide
-     dropdown is wasted space. */
-  .eq-acct-picker {
-    margin-left: auto;
-    min-width: 8.5rem;
-    max-width: 14rem;
-    flex-shrink: 1;
-  }
-  @media (max-width: 600px) {
-    .eq-acct-picker {
-      min-width: 6rem;
-      max-width: 9rem;
-    }
-  }
+  /* Push the picker + fullscreen-toggle cluster to the right of
+     the bucket header — AccountMultiSelect carries its own width
+     clamps, so the only local rule we need is the margin-left:auto
+     on whichever element follows the heading. */
+  .bucket-header > :global(.ams) { margin-left: auto; }
 
   /* Inline count chip used inside Equity sub-headings (Positions
      and Holdings). Small muted pill — at-a-glance "how many", not
@@ -2331,22 +2304,10 @@
     letter-spacing: 0.04em;
     text-align: center;
   }
-  /* Account picker on Winners / Losers cards. Sits between the
-     section label and the fullscreen toggle in the card header.
-     Width clamped — operator usually has 2-3 accounts; a wide
-     dropdown wastes space. */
-  .wl-acct-picker {
-    margin-left: auto;
-    min-width: 7.5rem;
-    max-width: 12rem;
-    flex-shrink: 1;
-  }
-  @media (max-width: 600px) {
-    .wl-acct-picker {
-      min-width: 5.5rem;
-      max-width: 8rem;
-    }
-  }
+  /* AccountMultiSelect on W/L card headers pushes itself + the
+     fullscreen toggle to the right of the section label. The
+     component carries its own width clamps. */
+  .card-header-row > :global(.ams) { margin-left: auto; }
 
   /* Compact ag-Grid wrappers inside the Capital + W/L cards. Width
      is 100% (grid columns flex to fill); height is driven by the
@@ -2371,20 +2332,9 @@
   }
   .dash-mini-grid + .bucket-subheader { margin-top: 0.55rem; }
 
-  /* Compact single-line empty state for cards whose every grid is
-     blank (e.g. broker not connected, no equity exposure). Sits
-     inside the card body in place of the grid headers. */
-  .dash-card-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.65rem 0.5rem;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
-    letter-spacing: 0.05em;
-    font-style: italic;
-  }
+  /* (Dead .dash-card-empty rule retired — every dashboard empty
+     state now uses the global <EmptyState> component which carries
+     its own styling.) */
 
   /* W/L grid — explicit height so ag-Grid (domLayout: 'normal')
      measures + scrolls internally. Earlier max-height + overflow:auto
