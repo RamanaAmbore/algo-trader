@@ -411,7 +411,6 @@
   <!-- News tab — rendered via shared NewsList component in algo palette. -->
   <div class="log-panel log-news-panel {heightClass}">
     <NewsList
-      theme="algo"
       limit={50}
       showRefreshTime={true}
       pollMs={10 * 60 * 1000}

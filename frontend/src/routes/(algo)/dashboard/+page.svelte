@@ -760,7 +760,7 @@
   <div class="row3-header">
     <span class="mp-section-label">MARKET NEWS</span>
   </div>
-  <NewsList theme="algo" limit={5} showRefreshTime={true} />
+  <NewsList limit={5} showRefreshTime={true} />
 </div>
 
 <!-- Two-column grid (≥1200px): P&L Analysis on the left, MarketPulse
