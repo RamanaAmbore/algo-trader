@@ -3,10 +3,10 @@
   import { visibleInterval } from '$lib/stores';
   import { fetchNews } from '$lib/api';
 
-  // Algo-page news list (dashboard + LogPanel News tab). Palette is
-  // fixed dark/sky — the public /market page uses its own inline
-  // implementation with the cream/champagne palette + the old layout
-  // (operator decided to keep that one as-is).
+  // Algo-page news list (dashboard + LogPanel News tab). Layout mirrors
+  // the public /market page (3-column grid: HH:MM | title | source pill)
+  // so the operator sees the same row shape across surfaces. Palette is
+  // the algo dark theme — sky/navy/amber instead of cream/champagne.
   /** @type {{
    *   limit?: number,
    *   showRefreshTime?: boolean,
@@ -26,19 +26,13 @@
   let _loading    = $state(false);
   let _teardown;
 
-  // Returns 'now' / '5m' / '1h 12m' / '3h' / '—'
-  function timeSince(/** @type {string|null|undefined} */ iso) {
-    if (!iso) return '—';
-    const ts = new Date(iso);
-    if (isNaN(ts.getTime())) return '—';
-    const diffMs = Date.now() - ts.getTime();
-    if (diffMs < 0) return 'now';
-    const mins = Math.floor(diffMs / 60000);
-    if (mins < 1) return 'now';
-    if (mins < 60) return `${mins}m`;
-    const hrs = Math.floor(mins / 60);
-    const rem = mins % 60;
-    return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+  // Pull HH:MM out of the presentational timestamp the API returns.
+  // ISO → slice(11,16); otherwise grab the first HH:MM run; fallback to raw.
+  function newsTime(/** @type {string|null|undefined} */ ts) {
+    if (!ts) return '';
+    if (ts.length >= 19 && ts[10] === 'T') return ts.slice(11, 16);
+    const m = ts.match(/\d\d:\d\d/);
+    return m ? m[0] : ts;
   }
 
   async function _load() {
@@ -61,35 +55,24 @@
 {#if _news.length > 0}
   {#if showRefreshTime && _newsRefresh}
     <div class="newslist-refreshed">
-      Refreshed {timeSince(_newsRefresh)} ago
+      Refreshed at {_newsRefresh}
     </div>
   {/if}
   <ul class="newslist">
     {#each _news.slice(0, limit) as item}
-      {@const _stamp = item.timestamp ? new Date(item.timestamp) : null}
-      {@const _dateStr = _stamp && !isNaN(_stamp.getTime())
-        ? _stamp.toLocaleString('en-IN', {
-            day: '2-digit', month: 'short',
-            hour: '2-digit', minute: '2-digit', hour12: false,
-            timeZone: 'Asia/Kolkata',
-          })
-        : ''}
       <li class="newslist-row">
         <span class="newslist-time" title={item.timestamp || ''}>
-          {timeSince(item.timestamp)}
-          {#if _dateStr}
-            <span class="newslist-time-abs">{_dateStr}</span>
-          {/if}
+          {newsTime(item.timestamp)}
         </span>
         <a class="newslist-title"
            href={item.link}
            target="_blank"
            rel="noopener">
           {item.title}
-          {#if item.source}
-            <span class="newslist-src"> · {item.source}</span>
-          {/if}
         </a>
+        {#if item.source}
+          <span class="newslist-src" title={item.source}>{item.source}</span>
+        {/if}
       </li>
     {/each}
   </ul>
@@ -102,64 +85,63 @@
     list-style: none;
     padding: 0;
     margin: 0;
-    display: flex;
-    flex-direction: column;
   }
 
   .newslist-row {
     display: grid;
-    grid-template-columns: 6.2rem 1fr;
+    grid-template-columns: max-content 1fr max-content;
     align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.28rem 0;
+    gap: 0.6rem;
+    padding: 0.4rem 0;
     border-bottom: 1px solid rgba(126, 151, 184, 0.12);
-    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: #c8d8f0;
+    line-height: 1.45;
   }
   .newslist-row:last-child { border-bottom: none; }
 
   .newslist-time {
-    font-size: 0.58rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
     color: #7dd3fc;
     font-variant-numeric: tabular-nums;
-    text-align: right;
-    white-space: nowrap;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    line-height: 1.15;
-  }
-
-  .newslist-time-abs {
-    font-size: 0.52rem;
-    color: rgba(126, 151, 184, 0.65);
-    font-weight: 400;
+    min-width: 3rem;
   }
 
   .newslist-title {
-    font-size: 0.68rem;
     color: #c8d8f0;
     text-decoration: none;
     font-weight: 500;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     transition: color 0.1s;
   }
-  .newslist-title:hover { color: #fbbf24; }
+  .newslist-title:hover {
+    color: #fbbf24;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
 
   .newslist-src {
-    font-size: 0.55rem;
-    color: rgba(126, 151, 184, 0.70);
-    font-weight: 400;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #7e97b8;
+    background: rgba(126, 151, 184, 0.10);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    padding: 1px 6px;
+    border-radius: 2px;
+    white-space: nowrap;
+    max-width: 14ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .newslist-refreshed {
     font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-size: 0.58rem;
     color: #7e97b8;
     letter-spacing: 0.03em;
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.35rem;
   }
 
   .newslist-empty {
@@ -169,7 +151,7 @@
   }
 
   @media (max-width: 600px) {
-    .newslist-row { grid-template-columns: 4.4rem 1fr; }
-    .newslist-time-abs { font-size: 0.48rem; }
+    .newslist-row { grid-template-columns: max-content 1fr; gap: 0.5rem; }
+    .newslist-src { display: none; }
   }
 </style>
