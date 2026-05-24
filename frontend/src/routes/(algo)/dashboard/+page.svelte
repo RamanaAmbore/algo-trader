@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
+  import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -19,6 +20,24 @@
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
     symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
+
+  // ag-Grid module registration — idempotent across re-mounts.
+  ModuleRegistry.registerModules([AllCommunityModule]);
+
+  // ag-Grid valueFormatter wrappers — single source of truth for
+  // how numbers render across the dashboard's grids: en-IN grouping,
+  // no `+` prefix on positives (direction is colour-coded), '—'
+  // for null. Mirrors MarketPulse / PerformancePage conventions so
+  // a glance across pages reads the same.
+  const _agNumFmt   = ({ value }) => value == null ? '—' : priceFmt(value);
+  const _agAggFmt   = ({ value }) => value == null ? '—' : aggCompact(value);
+  const _agPctFmt   = ({ value }) => value == null ? '—' : `${pctFmt(value)}%`;
+  const _agUtilFmt  = ({ value }) => value == null ? '—' : `${Math.round(value * 100)}%`;
+  const _numericHdr = 'ag-right-aligned-header';
+
+  // Direction-coloured numeric cell — green positive / red negative.
+  const _agDirCell = (p) =>
+    `ag-right-aligned-cell ${p.value > 0 ? 'cell-up' : p.value < 0 ? 'cell-down' : ''}`;
 
   // IST-midnight-as-UTC for "today" date-window filters. Indian markets
   // (and operators) live in Asia/Kolkata; using the browser's local
@@ -134,6 +153,28 @@
   let _fsNews        = $state(false);
   let _fsPnl         = $state(false);
   let _fsAgent       = $state(false);
+
+  // ── ag-Grid bindings for the dashboard cards ────────────────────
+  // Each card mounts its own grid imperatively via bind:this + a
+  // mount-time $effect. Once mounted, rowData updates flow through
+  // a separate reactive $effect that hits setGridOption('rowData').
+  // Pattern mirrors MarketPulse for consistency.
+  let _fundsEl, _fundsGrid, _fundsReady = $state(false);
+  let _marginEl, _marginGrid, _marginReady = $state(false);
+  let _winEl, _winGrid, _winReady = $state(false);
+  let _losEl, _losGrid, _losReady = $state(false);
+
+  // Click-to-open SymbolPanel from W/L grid rows.
+  function _openSymbol(sym) {
+    const s = String(sym || '').trim();
+    if (!s) return;
+    _ticketProps = {
+      symbol: s,
+      defaultTab: 'chart',
+      onClose:  () => { _ticketProps = null; },
+      onSubmit: () => { _ticketProps = null; },
+    };
+  }
 
   // Per-account summary derivations — same shape MarketPulse
   // builds internally, but computed here from the already-loaded
@@ -359,15 +400,18 @@
   // shows up twice in the Winners/Losers list. The winners/losers
   // surface is about "which symbol moved" not "which (symbol, account)
   // pair moved" — so collapse by symbol and sum across accounts.
+  // LTP is a per-symbol global value, not additive — first non-zero
+  // ltp wins.
   function _aggregateBySymbol(rows) {
-    /** @type {Map<string, {symbol: string, pnl: number, inv_val: number}>} */
+    /** @type {Map<string, {symbol: string, pnl: number, inv_val: number, ltp: number}>} */
     const bySym = new Map();
     for (const r of rows) {
       const sym = r.symbol;
       if (!sym) continue;
-      const cur = bySym.get(sym) ?? { symbol: sym, pnl: 0, inv_val: 0 };
+      const cur = bySym.get(sym) ?? { symbol: sym, pnl: 0, inv_val: 0, ltp: 0 };
       cur.pnl     += Number(r.pnl) || 0;
       cur.inv_val += Number(r.inv_val) || 0;
+      if (!cur.ltp && r.ltp) cur.ltp = Number(r.ltp) || 0;
       bySym.set(sym, cur);
     }
     return Array.from(bySym.values());
@@ -378,7 +422,7 @@
   // row with summed day P&L + cost basis. Filtered by the shared
   // _selectedAccounts state.
   function _holdingsFor(cls) {
-    /** @type {{symbol: string, pnl: number, inv_val: number}[]} */
+    /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number}[]} */
     const raw = [];
     for (const h of _filterByAccount(_holdings)) {
       const sym = String(h.tradingsymbol || h.symbol || '');
@@ -392,6 +436,7 @@
         symbol: sym,
         pnl,
         inv_val: Number(h.inv_val ?? 0),
+        ltp:     Number(h.last_price ?? h.ltp ?? 0),
       });
     }
     // Aggregate first, then drop zero-pnl symbols (the dedupe could
@@ -407,13 +452,18 @@
   // across accounts (same reason as holdings). Filtered by the
   // shared _selectedAccounts state.
   const _positionsRows = $derived.by(() => {
-    /** @type {{symbol: string, pnl: number, inv_val: number}[]} */
+    /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number}[]} */
     const raw = [];
     for (const p of _filterByAccount(_positions)) {
       const sym = String(p.tradingsymbol || p.symbol || '');
       const pnl = Number(p.pnl) || 0;
       if (!sym) continue;
-      raw.push({ symbol: sym, pnl, inv_val: 0 });
+      raw.push({
+        symbol: sym,
+        pnl,
+        inv_val: 0,
+        ltp: Number(p.last_price ?? p.ltp ?? 0),
+      });
     }
     return _aggregateBySymbol(raw)
       .filter(r => r.pnl !== 0)
@@ -469,6 +519,20 @@
   // cleanly outside trading hours when every bucket is empty.
   const _hasWinners = $derived(_winnerBuckets.some(b => b.rows.length > 0));
   const _hasLosers  = $derived(_loserBuckets.some(b => b.rows.length > 0));
+
+  // Normalise a bucket row to the shape the W/L ag-Grid expects:
+  // {symbol, ltp, pct, pnl_abs?}. Market rows already carry pnl=pct;
+  // user rows carry pnl=rupees, so we derive pct from (pnl / inv_val).
+  // Adds `pnl_abs` for user rows so a future column can show ₹ alongside
+  // the %.
+  function _toWlRow(r) {
+    if (r.kind === 'market') {
+      return { symbol: r.symbol, ltp: r.ltp || null, pct: r.pnl, pnl_abs: null };
+    }
+    // user row: pct from pnl/inv_val when invested-value is known.
+    const pct = r.inv_val > 0 ? (r.pnl / r.inv_val) * 100 : null;
+    return { symbol: r.symbol, ltp: r.ltp || null, pct, pnl_abs: r.pnl };
+  }
 
   // Tab key ↔ bucket label helpers — keeps the template terse and the
   // state machine canonical.
@@ -820,7 +884,205 @@
       sessionStorage.setItem('dash.equityAccounts', JSON.stringify(_selectedAccounts));
     } catch (_) { /* sessionStorage quota / blocked — silent. */ }
   });
-  onDestroy(() => { _heroTeardown?.(); _stopMarketPoll?.(); });
+  // ── ag-Grid mounts ────────────────────────────────────────────────
+  // Each $effect runs once when the bound element appears in the DOM
+  // (bind:this flips from null → HTMLDivElement). Subsequent
+  // rowData updates flow through separate effects further down.
+  //
+  // Default colDef: resizable, sortable, non-movable, no header menu.
+  // domLayout: 'autoHeight' so the card grows with its rows up to the
+  // card's flexbox cap — keeps the grid compact when only 2 rows are
+  // present and avoids reserving 250 px of empty space.
+  /** @type {any} */
+  const _baseGridOpts = {
+    theme: 'legacy',
+    defaultColDef: {
+      resizable: true, sortable: true, suppressMovable: true,
+      suppressHeaderMenuButton: true,
+    },
+    sortingOrder: ['asc', 'desc', null],
+    headerHeight: 26,
+    rowHeight: 26,
+  };
+
+  $effect(() => {
+    if (!_fundsEl || _fundsGrid) return;
+    _fundsGrid = createGrid(_fundsEl, {
+      ..._baseGridOpts,
+      columnDefs: [
+        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+          cellClass: 'cell-acct' },
+        { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell',
+          valueFormatter: _agAggFmt },
+        { field: 'collateral', headerName: 'Collat', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell',
+          valueFormatter: _agAggFmt },
+        { field: 'avail_margin', headerName: 'Avail', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell',
+          valueFormatter: _agAggFmt },
+        { field: 'used_margin', headerName: 'Used', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell',
+          valueFormatter: _agAggFmt },
+      ],
+      rowData: [],
+      domLayout: 'autoHeight',
+      overlayNoRowsTemplate:
+        '<span style="font-size:0.65rem;color:#7e97b8">No fund data</span>',
+    });
+    _fundsReady = true;
+  });
+
+  $effect(() => {
+    if (!_marginEl || _marginGrid) return;
+    _marginGrid = createGrid(_marginEl, {
+      ..._baseGridOpts,
+      columnDefs: [
+        { field: 'account', headerName: 'Account', minWidth: 90, pinned: 'left',
+          cellClass: 'cell-acct' },
+        { field: 'used', headerName: 'Used', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell',
+          valueFormatter: _agAggFmt },
+        { field: 'avail', headerName: 'Avail', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell',
+          valueFormatter: _agAggFmt },
+        { field: 'util_pct', headerName: 'Util', minWidth: 56, flex: 0.7,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: (p) => {
+            const v = Number(p.value) || 0;
+            const cls = v >= 0.85 ? 'cell-down'
+                      : v >= 0.70 ? 'cell-warn'
+                      : v >= 0.50 ? 'cell-mild'
+                      : 'cell-up';
+            return `ag-right-aligned-cell ${cls}`;
+          },
+          valueFormatter: _agUtilFmt },
+      ],
+      rowData: [],
+      domLayout: 'autoHeight',
+      overlayNoRowsTemplate:
+        '<span style="font-size:0.65rem;color:#7e97b8">No accounts connected</span>',
+    });
+    _marginReady = true;
+  });
+
+  // W/L grid factory — shared shape, separate instances per side.
+  // Direction determines the colour of the % cell (up=green/down=red).
+  function _makeWlGrid(el, kind /* 'win' | 'lose' */) {
+    return createGrid(el, {
+      ..._baseGridOpts,
+      columnDefs: [
+        { field: 'symbol', headerName: 'Symbol', minWidth: 110, flex: 2,
+          pinned: 'left', cellClass: 'cell-sym',
+          sortable: true },
+        { field: 'ltp', headerName: 'LTP', minWidth: 70, flex: 1,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: 'ag-right-aligned-cell cell-muted',
+          valueFormatter: _agNumFmt },
+        { field: 'pct', headerName: 'Δ %', minWidth: 64, flex: 0.9,
+          type: 'numericColumn', headerClass: _numericHdr,
+          cellClass: () => `ag-right-aligned-cell ${kind === 'win' ? 'cell-up' : 'cell-down'}`,
+          valueFormatter: ({ value }) =>
+            value == null ? '—'
+            : (value > 0 ? '+' : '') + pctFmt(value) + '%',
+          sort: kind === 'win' ? 'desc' : 'asc' },
+      ],
+      rowData: [],
+      domLayout: 'autoHeight',
+      onRowClicked: (ev) => _openSymbol(ev.data?.symbol),
+      overlayNoRowsTemplate:
+        `<span style="font-size:0.65rem;color:#7e97b8">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
+    });
+  }
+
+  $effect(() => {
+    if (!_winEl || _winGrid) return;
+    _winGrid = _makeWlGrid(_winEl, 'win');
+    _winReady = true;
+  });
+  $effect(() => {
+    if (!_losEl || _losGrid) return;
+    _losGrid = _makeWlGrid(_losEl, 'lose');
+    _losReady = true;
+  });
+
+  // Row-data updates flow through here. Each $effect tracks just the
+  // derivation it cares about so unrelated state changes don't churn
+  // every grid.
+
+  // Funds grid — body + TOTAL pinned at bottom.
+  const _fundsBody = $derived(_funds.map(r => ({
+    account:      r.account,
+    cash:         Number(r.cash) || 0,
+    collateral:   Number(r.collateral) || 0,
+    avail_margin: Number(r.avail_margin ?? r.available_margin) || 0,
+    used_margin:  Number(r.used_margin) || 0,
+  })));
+  const _fundsTotal = $derived([{
+    account:      'TOTAL',
+    cash:         _fundsBody.reduce((s, r) => s + r.cash, 0),
+    collateral:   _fundsBody.reduce((s, r) => s + r.collateral, 0),
+    avail_margin: _fundsBody.reduce((s, r) => s + r.avail_margin, 0),
+    used_margin:  _fundsBody.reduce((s, r) => s + r.used_margin, 0),
+  }]);
+  $effect(() => {
+    if (!_fundsReady || !_fundsGrid) return;
+    _fundsGrid.setGridOption('rowData', _fundsBody);
+    _fundsGrid.setGridOption('pinnedBottomRowData', _fundsTotal);
+  });
+
+  // Margin grid — same shape as the SVG donuts we retired, but as
+  // a tabular view alongside Funds.
+  const _marginRows = $derived(_margins.map(r => ({
+    account:  r.account,
+    used:     r.used,
+    avail:    r.avail,
+    util_pct: r.util_pct,
+  })));
+  $effect(() => {
+    if (!_marginReady || !_marginGrid) return;
+    _marginGrid.setGridOption('rowData', _marginRows);
+  });
+
+  // W/L grids — active tab's bucket → ag-Grid rows.
+  const _winRowsAg = $derived.by(() => {
+    const b = _winnerBuckets.find(b => b.label === _winTabLabel(_winTab));
+    return (b?.rows ?? []).map(_toWlRow);
+  });
+  const _losRowsAg = $derived.by(() => {
+    const b = _loserBuckets.find(b => b.label === _winTabLabel(_losTab));
+    return (b?.rows ?? []).map(_toWlRow);
+  });
+  $effect(() => {
+    if (!_winReady || !_winGrid) return;
+    _winGrid.setGridOption('rowData', _winRowsAg);
+  });
+  $effect(() => {
+    if (!_losReady || !_losGrid) return;
+    _losGrid.setGridOption('rowData', _losRowsAg);
+  });
+
+  // ── Account-multiselect scope predicate ───────────────────────────
+  // The shared _selectedAccounts filter applies only to the user-scoped
+  // buckets (Holdings / Positions). Market-wide tabs ignore it. We
+  // disable the MultiSelect on each W/L card when the active tab
+  // doesn't honour the filter so the operator doesn't think the
+  // picker is silently being applied.
+  const _USER_TABS = new Set(['holdings', 'positions']);
+  const _winAcctDisabled = $derived(!_USER_TABS.has(_winTab));
+  const _losAcctDisabled = $derived(!_USER_TABS.has(_losTab));
+
+  onDestroy(() => {
+    _heroTeardown?.(); _stopMarketPoll?.();
+    _fundsGrid?.destroy();  _marginGrid?.destroy();
+    _winGrid?.destroy();    _losGrid?.destroy();
+  });
 
   function dismissBanner() {
     bannerDismissed = true;
@@ -1074,85 +1336,15 @@
       <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
     </div>
 
-    <!-- Margin gauges — circular utilisation per account. -->
+    <!-- Margin Utilisation — ag-Grid replaces the SVG donuts.
+         Tabular view aligns visually with the Funds grid below. -->
     <div class="bucket-subheader">Margin Utilisation</div>
-    {#if !_margins.length}
-      <div class="gauge-empty">No accounts connected</div>
-    {:else}
-      <div class="gauge-grid">
-        {#each _margins as acct}
-          {@const color = _gaugeColor(acct.util_pct)}
-          {@const dash  = _gaugeDash(acct.util_pct)}
-          <div class="gauge-tile">
-            <svg class="gauge-svg" viewBox="0 0 80 80" width="80" height="80"
-              role="img" aria-label="{acct.account} margin utilisation {(acct.util_pct*100).toFixed(0)}%">
-              <circle cx="40" cy="40" r={GAUGE_R} fill="none"
-                stroke="rgba(126,151,184,0.18)" stroke-width={GAUGE_SW} />
-              <circle cx="40" cy="40" r={GAUGE_R} fill="none"
-                stroke={color} stroke-width={GAUGE_SW}
-                stroke-dasharray={dash} stroke-linecap="round"
-                transform="rotate(-90 40 40)" />
-              <text x="40" y="44" text-anchor="middle"
-                font-size="13" font-weight="800"
-                font-family="ui-monospace,monospace"
-                style="font-variant-numeric:tabular-nums"
-                fill={color}>{(acct.util_pct * 100).toFixed(0)}%</text>
-            </svg>
-            <span class="gauge-label">{acct.account}</span>
-            <span class="gauge-detail">
-              ₹{aggCompact(acct.used)} / ₹{aggCompact(acct.used + acct.avail)}
-            </span>
-          </div>
-        {/each}
-      </div>
-    {/if}
+    <div bind:this={_marginEl} class="ag-theme-algo dash-mini-grid"></div>
 
-    <!-- Funds table — per-account cash + collateral + avail/used
-         margin. Compact HTML table; ag-Grid is overkill for 2-3
-         rows + a TOTAL. Right-aligned monospace numbers; muted
-         TOTAL row at the bottom. -->
+    <!-- Funds — per-account cash + collateral + avail/used margin
+         + TOTAL pinned at bottom. -->
     <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
-    {#if !_funds.length}
-      <div class="cap-empty">No fund data — broker not connected</div>
-    {:else}
-      {@const total = {
-        cash:        _funds.reduce((s, r) => s + (Number(r.cash) || 0), 0),
-        collateral:  _funds.reduce((s, r) => s + (Number(r.collateral) || 0), 0),
-        avail_margin:_funds.reduce((s, r) => s + (Number(r.avail_margin ?? r.available_margin) || 0), 0),
-        used_margin: _funds.reduce((s, r) => s + (Number(r.used_margin) || 0), 0),
-      }}
-      <div class="cap-table-wrap">
-      <table class="cap-table">
-        <thead>
-          <tr>
-            <th class="cap-th-l">Account</th>
-            <th>Cash</th>
-            <th>Collat</th>
-            <th>Avail</th>
-            <th>Used</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _funds as r}
-            <tr>
-              <td class="cap-acct">{r.account}</td>
-              <td class="cap-num">₹{aggCompact(Number(r.cash) || 0)}</td>
-              <td class="cap-num">₹{aggCompact(Number(r.collateral) || 0)}</td>
-              <td class="cap-num">₹{aggCompact(Number(r.avail_margin ?? r.available_margin) || 0)}</td>
-              <td class="cap-num">₹{aggCompact(Number(r.used_margin) || 0)}</td>
-            </tr>
-          {/each}
-          <tr class="cap-total">
-            <td class="cap-acct">TOTAL</td>
-            <td class="cap-num">₹{aggCompact(total.cash)}</td>
-            <td class="cap-num">₹{aggCompact(total.collateral)}</td>
-            <td class="cap-num">₹{aggCompact(total.avail_margin)}</td>
-            <td class="cap-num">₹{aggCompact(total.used_margin)}</td>
-          </tr>
-        </tbody>
-      </table>
-      </div>
-    {/if}
+    <div bind:this={_fundsEl} class="ag-theme-algo dash-mini-grid"></div>
   </section>
 
   <!-- Equity card — Positions Summary + Holdings Summary stacked.
@@ -1271,16 +1463,19 @@
       <section class="wl-tile wl-tile-win" class:fs-card-on={_fsWinners}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP WINNERS</span>
-          <!-- Same _selectedAccounts state as the Equity card —
-               filter applied here propagates to every bucket
-               source (underlying / midcap / smallcap / holdings /
-               positions). Operator doesn't need to scroll back up
-               to the Equity card to change scope. -->
-          <div class="wl-acct-picker" title="Filter by broker account (shared across cards)">
+          <!-- Shared account multiselect — auto-disables on market
+               tabs (Underlying / Midcap / Smallcap) since those
+               universes don't depend on the operator's accounts.
+               Holdings + Positions tabs honour the filter. -->
+          <div class="wl-acct-picker"
+            title={_winAcctDisabled
+              ? 'Account filter applies only to Holdings + Positions tabs'
+              : 'Filter by broker account (shared across cards)'}>
             <MultiSelect
               bind:value={_selectedAccounts}
               options={_availableAccounts.map(a => ({ value: a, label: a }))}
               placeholder="All accounts"
+              disabled={_winAcctDisabled}
               ariaLabel="Filter Top Winners by broker account" />
           </div>
           <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
@@ -1299,56 +1494,23 @@
             </button>
           {/each}
         </div>
-        {#if winRows.length === 0}
-          <div class="wl-bucket-empty">No winners in this bucket</div>
-        {:else}
-          <div class="wl-rows">
-            {#each winRows as row}
-              <button
-                class="wl-row"
-                onclick={() => {
-                  const sym = row.symbol.trim();
-                  if (!sym) return;
-                  _ticketProps = {
-                    symbol:     sym,
-                    defaultTab: 'chart',
-                    onClose:    () => { _ticketProps = null; },
-                    onSubmit:   () => { _ticketProps = null; },
-                  };
-                }}
-              >
-                <span class="wl-sym">{row.symbol}</span>
-                {#if row.kind === 'market'}
-                  <!-- Market-wide winners — pnl IS the day %; ltp shows
-                       alongside so the operator sees both move + price. -->
-                  <span class="wl-pnl wl-pnl-up">+{pctFmt(row.pnl)}%</span>
-                  {#if row.ltp > 0}
-                    <span class="wl-pct">@ ₹{priceFmt(row.ltp)}</span>
-                  {/if}
-                {:else}
-                  <!-- User-scoped (Holdings / Positions) — pnl is ₹ money. -->
-                  <span class="wl-pnl wl-pnl-up">+₹{priceFmt(row.pnl)}</span>
-                  {#if row.inv_val > 0}
-                    <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
-                  {/if}
-                {/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
+        <div bind:this={_winEl} class="ag-theme-algo dash-wl-grid"></div>
       </section>
     {/if}
 
     {#if _hasLosers}
-      {@const losRows = (_loserBuckets.find(b => b.label === _winTabLabel(_losTab)))?.rows ?? []}
       <section class="wl-tile wl-tile-loss" class:fs-card-on={_fsLosers}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
-          <div class="wl-acct-picker" title="Filter by broker account (shared across cards)">
+          <div class="wl-acct-picker"
+            title={_losAcctDisabled
+              ? 'Account filter applies only to Holdings + Positions tabs'
+              : 'Filter by broker account (shared across cards)'}>
             <MultiSelect
               bind:value={_selectedAccounts}
               options={_availableAccounts.map(a => ({ value: a, label: a }))}
               placeholder="All accounts"
+              disabled={_losAcctDisabled}
               ariaLabel="Filter Top Losers by broker account" />
           </div>
           <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
@@ -1367,42 +1529,7 @@
             </button>
           {/each}
         </div>
-        {#if losRows.length === 0}
-          <div class="wl-bucket-empty">No losers in this bucket</div>
-        {:else}
-          <div class="wl-rows">
-            {#each losRows as row}
-              <button
-                class="wl-row"
-                onclick={() => {
-                  const sym = row.symbol.trim();
-                  if (!sym) return;
-                  _ticketProps = {
-                    symbol:     sym,
-                    defaultTab: 'chart',
-                    onClose:    () => { _ticketProps = null; },
-                    onSubmit:   () => { _ticketProps = null; },
-                  };
-                }}
-              >
-                <span class="wl-sym">{row.symbol}</span>
-                {#if row.kind === 'market'}
-                  <!-- Market-wide losers — pnl is the day % (already negative). -->
-                  <span class="wl-pnl wl-pnl-down">{pctFmt(row.pnl)}%</span>
-                  {#if row.ltp > 0}
-                    <span class="wl-pct">@ ₹{priceFmt(row.ltp)}</span>
-                  {/if}
-                {:else}
-                  <!-- User-scoped — pnl is ₹ money. -->
-                  <span class="wl-pnl wl-pnl-down">-₹{priceFmt(Math.abs(row.pnl))}</span>
-                  {#if row.inv_val > 0}
-                    <span class="wl-pct">({pctFmt((row.pnl / row.inv_val) * 100)}%)</span>
-                  {/if}
-                {/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
+        <div bind:this={_losEl} class="ag-theme-algo dash-wl-grid"></div>
       </section>
     {/if}
   </div>
@@ -2125,6 +2252,57 @@
       max-width: 8rem;
     }
   }
+
+  /* Compact ag-Grid wrappers inside the Capital + W/L cards. Width
+     is 100% (grid columns flex to fill); height is driven by the
+     grid's autoHeight option so the card grows naturally with row
+     count. min-height keeps the header visible even with 0 rows. */
+  .dash-mini-grid {
+    width: 100%;
+    min-height: 60px;
+  }
+  .dash-mini-grid + .bucket-subheader { margin-top: 0.55rem; }
+
+  /* W/L grid — taller cap with internal scroll when many rows. The
+     fullscreen mode lifts the cap (handled via .fs-card-on rule
+     below). Hover row → amber cursor + slight background tint.
+     SymbolPanel opens on row click via onRowClicked. */
+  .dash-wl-grid {
+    width: 100%;
+    min-height: 60px;
+    max-height: 18rem;
+    overflow: auto;
+    cursor: pointer;
+  }
+  .fs-card-on .dash-wl-grid {
+    max-height: calc(100vh - 14rem);
+  }
+
+  /* Direction cells shared across all dashboard grids.
+     - cell-up    : green (positive value / underutilised margin)
+     - cell-down  : red   (negative value / overutilised margin)
+     - cell-warn  : amber (margin 70-85 %)
+     - cell-mild  : light amber (margin 50-70 %)
+     - cell-muted : slate, used for neutral numerics (LTP)
+     - cell-acct  : account-code cell — fontweight + tighter letter-spacing
+     - cell-sym   : symbol cell — bolder, brighter foreground */
+  :global(.ag-theme-algo .cell-up)    { color: #4ade80; }
+  :global(.ag-theme-algo .cell-down)  { color: #f87171; }
+  :global(.ag-theme-algo .cell-warn)  { color: #fbbf24; }
+  :global(.ag-theme-algo .cell-mild)  { color: #e5c87a; }
+  :global(.ag-theme-algo .cell-muted) { color: #c8d8f0; }
+  :global(.ag-theme-algo .cell-acct)  {
+    color: #e2ecff;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  :global(.ag-theme-algo .cell-sym) {
+    color: #e2ecff;
+    font-weight: 700;
+  }
+  /* TOTAL row (pinned bottom in Funds grid) — amber accent. */
+  :global(.ag-theme-algo .ag-row-pinned)  { background: rgba(251, 191, 36, 0.05); }
+  :global(.ag-theme-algo .ag-row-pinned .cell-acct) { color: #fbbf24; }
 
   /* Scrollable rows container — default-size cards cap the visible
      height so 10 rows don't bloat the card; fullscreen mode lifts
