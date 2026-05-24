@@ -77,7 +77,7 @@
                 accounts, paper-only writes)
               - anonymous on dev → /signin via algo layout's auth guard. -->
         <button onclick={() => goto('/dashboard')} class="pub-nav-algo-btn">
-          Terminal ↗
+          Rambo Terminal ↗
         </button>
 
         {#if $authStore.user}
@@ -148,7 +148,7 @@
           <button
             onclick={() => { goto('/dashboard'); closeMenu(); }}
             class="pub-mobile-item pub-mobile-algo"
-          >Terminal ↗</button>
+          >Rambo Terminal ↗</button>
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="pub-mobile-item">Sign Out</button>
           {:else}

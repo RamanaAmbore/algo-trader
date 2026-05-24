@@ -1278,16 +1278,22 @@
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
      a single row; nowrap so the +/− and the dropdown can never
-     break onto two lines on narrow viewports. */
+     break onto two lines on narrow viewports. min-height matches
+     the BUY/SELL pills' rendered height (font 0.72 + padding
+     0.4×2 ≈ 1.5rem) so the two controls in .ot-row sit on the
+     same y-baseline — the previous 1.4rem steppers were 0.1rem
+     shorter, making the lots row feel visually offset above the
+     side toggle. */
   .ot-lots-row {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
     flex-wrap: nowrap;
+    min-height: 1.5rem;
   }
   .ot-lots-step {
-    width: 1.4rem;
-    height: 1.4rem;
+    width: 1.5rem;
+    height: 1.5rem;
     padding: 0;
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.45);
