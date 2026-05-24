@@ -23,7 +23,9 @@
 
 <div class="about-card">
   <h1 class="sr-only">About RamboQuant Analytics LLP</h1>
-  <!-- Stat strip -->
+  <!-- Stat strip — four cells matching the home page trust strip so
+       the trust signal (XIRR / years / creds / LLP) reads identically
+       across both public entry points. -->
   <div class="stat-strip">
     <div class="stat-item">
       <div class="stat-num">22%<span class="stat-plus">+</span></div>
@@ -37,7 +39,12 @@
     <div class="stat-divider"></div>
     <div class="stat-item">
       <div class="stat-creds">FRM · CFA II · XLRI</div>
-      <div class="stat-label">Credentials &amp; Qualifications</div>
+      <div class="stat-label">Founder Credentials</div>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <div class="stat-creds">LLP · ACU-5195</div>
+      <div class="stat-label">Registered Entity</div>
     </div>
   </div>
 

@@ -690,6 +690,19 @@
 {/if}
 
 {#if !compactHeader}
+  <!-- Strategy thesis — frames what an unauth visitor is looking at
+       before they hit a wall of P&L numbers. Authenticated partners
+       already know the strategy, but seeing it consistently above
+       the grid reads as "this is what we do" not "this is internal
+       ops". Hidden on the algo dashboard (compactHeader=true). -->
+  <div class="perf-strategy">
+    <span class="perf-strategy-lbl">Strategy:</span>
+    <span class="perf-strategy-val">Long equity + covered calls + selective F&amp;O</span>
+    <span class="perf-strategy-meta">· positions and holdings update live during market hours</span>
+  </div>
+{/if}
+
+{#if !compactHeader}
   <!-- NAV slice card — only visible on the public /performance layout when
        the visitor is authenticated as partner, designated, or admin. Hidden
        silently for anonymous / demo sessions (fetchMyNav → 401 → swallowed).
@@ -826,6 +839,63 @@
   /* Tighter heading-to-grid gap on the public side. */
   :global(.pub-card-wide .section-heading) {
     margin-bottom: 0.25rem;
+  }
+
+  /* Strategy thesis — single-line frame above the data grids on the
+     public side. Inherits public-side palette tokens (navy text on
+     warm cream chip background, champagne left-accent). On the algo
+     side this block is hidden (compactHeader=true). */
+  .perf-strategy {
+    background: #f5f2eb;
+    border: 1px solid #e7e0cf;
+    border-left: 3px solid #d4920c;
+    border-radius: 0.3rem;
+    padding: 0.45rem 0.75rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: #1e3050;
+  }
+  .perf-strategy-lbl {
+    font-weight: 700;
+    color: #5a7090;
+    text-transform: uppercase;
+    font-size: 0.6rem;
+    letter-spacing: 0.08em;
+    margin-right: 0.4rem;
+  }
+  .perf-strategy-val {
+    font-weight: 700;
+    color: #0c1830;
+  }
+  .perf-strategy-meta {
+    color: #5a7090;
+    font-size: 0.7rem;
+  }
+  @media (max-width: 600px) {
+    .perf-strategy-meta { display: block; margin-top: 0.15rem; font-size: 0.65rem; }
+  }
+
+  /* Mobile-only swipe hint — ag-Grid handles horizontal scroll natively
+     but first-time visitors on phones may not realise the grid extends
+     past the viewport edge. A small italic hint above the grids on
+     narrow screens makes the affordance discoverable without changing
+     the grid itself. Hidden on tablet+ where every column fits. */
+  :global(.pub-card-wide .section-heading + .ag-theme-quartz)::before,
+  :global(.pub-card-wide .funds-heading-row + .ag-theme-quartz)::before {
+    content: '';
+  }
+  @media (max-width: 600px) {
+    :global(.pub-card-wide .section-heading)::after,
+    :global(.pub-card-wide .funds-heading-title)::after {
+      content: ' · swipe →';
+      font-size: 0.6rem;
+      font-weight: 500;
+      color: #8a98b0;
+      font-style: italic;
+      letter-spacing: 0;
+      text-transform: none;
+    }
   }
 
   .hidden { display: none; }
