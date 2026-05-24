@@ -1296,7 +1296,6 @@
               aria-selected={_winTab === key}
               onclick={() => _winTab = key}>
               {_tabShort(bucket.label)}
-              <span class="wl-tab-count" title={bucket.count > _TOP_N ? `${bucket.count} total — top ${_TOP_N} shown` : `${bucket.count} total`}>{bucket.count}</span>
             </button>
           {/each}
         </div>
@@ -1365,7 +1364,6 @@
               aria-selected={_losTab === key}
               onclick={() => _losTab = key}>
               {_tabShort(bucket.label)}
-              <span class="wl-tab-count" title={bucket.count > _TOP_N ? `${bucket.count} total — top ${_TOP_N} shown` : `${bucket.count} total`}>{bucket.count}</span>
             </button>
           {/each}
         </div>
@@ -2102,21 +2100,6 @@
   .wl-tab-on {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
-  }
-  .wl-tab-count {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.02rem 0.3rem;
-    border-radius: 7px;
-    background: rgba(126, 151, 184, 0.18);
-    color: #c8d8f0;
-    font-size: 0.5rem;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-  }
-  .wl-tab-on .wl-tab-count {
-    background: rgba(251, 191, 36, 0.20);
-    color: #fbbf24;
   }
   .wl-bucket-empty {
     padding: 0.5rem 0.3rem;
