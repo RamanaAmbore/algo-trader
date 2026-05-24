@@ -1067,6 +1067,24 @@
         if (lookup) addUnderlying(lookup(sym), 'holdings');
         if (sym) contractKeys.add(`${exch}:${sym}`);
       }
+      // Watchlist option-anchor pass — when the operator has an
+      // option (CE/PE) in any active watchlist, synthesise an
+      // anchor row for that option's underlying so the option sits
+      // under a parent anchor instead of orphaning in the grid.
+      // First-trigger-wins via the underlyingInfos map; positions
+      // anchors (registered above) already in the map are NOT
+      // overwritten — a watchlist option for an underlying that
+      // ALSO appears in positions will still surface the anchor in
+      // the Positions major (the original semantics). The
+      // watchlist anchor only lands when no higher-priority source
+      // claimed the underlying first.
+      for (const list of (activeLists || [])) {
+        const major = list?.is_pinned ? 'pinned' : 'watchlist';
+        for (const it of (list?.items || [])) {
+          const sym = String(it.tradingsymbol || '').toUpperCase();
+          if (sym && lookup) addUnderlying(lookup(sym), major);
+        }
+      }
 
       const allKeys = new Set(contractKeys);
       for (const info of underlyingInfos.values()) allKeys.add(info.quoteKey);
