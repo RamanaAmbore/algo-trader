@@ -20,7 +20,7 @@ from litestar import Controller, get, post, patch, delete
 from litestar.exceptions import HTTPException, NotFoundException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard
+from backend.api.auth_guard import admin_guard, auth_or_demo_guard
 from backend.api.database import async_session
 from backend.api.models import GrammarToken
 from backend.api.schemas import GrammarTokenOut, GrammarTokenCreate, GrammarTokenPatch
@@ -54,7 +54,14 @@ class GrammarTokenController(Controller):
     guards = [admin_guard]
 
     # ── List ───────────────────────────────────────────────────────────────
-    @get("/tokens")
+    # Read endpoints (list + single read) override the controller-level
+    # admin_guard with auth_or_demo_guard so the Tokens page works for
+    # anonymous demo visitors too. The catalog rows carry no secrets —
+    # grammar_kind / token_kind / token / resolver-path / params_schema /
+    # template_body — so showing them publicly is part of the recruiter
+    # showcase, not a security leak. Every write endpoint below keeps the
+    # controller-level admin_guard.
+    @get("/tokens", guards=[auth_or_demo_guard])
     async def list_tokens(self, grammar: str | None = None) -> list[GrammarTokenOut]:
         """
         Return every token, optionally filtered by grammar_kind
@@ -74,7 +81,7 @@ class GrammarTokenController(Controller):
         return [_to_out(r) for r in rows]
 
     # ── Read one ───────────────────────────────────────────────────────────
-    @get("/tokens/{token_id:int}")
+    @get("/tokens/{token_id:int}", guards=[auth_or_demo_guard])
     async def get_token(self, token_id: int) -> GrammarTokenOut:
         async with async_session() as s:
             row = await s.get(GrammarToken, token_id)

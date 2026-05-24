@@ -2,6 +2,14 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp } from '$lib/stores';
+
+  // Demo gate — on dev, anonymous visitors get redirected to /signin by
+  // the algo layout before this page loads, so an unsigned viewer here
+  // can only be a recruiter / cold visitor on the prod (main) branch.
+  // Backend opens GET endpoints to demo (no secrets in catalog rows);
+  // every write button hides so the viewer can't try edits that would
+  // 401 server-side.
+  const isDemo = $derived(!$authStore.user);
   import {
     fetchGrammarTokens, patchGrammarToken, createGrammarToken,
     deleteGrammarToken, reloadGrammarRegistry,
@@ -182,16 +190,31 @@
     <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
     <span class="algo-ts">{refreshedAt}</span>
     <div class="flex gap-2">
-      <button onclick={openCreate}
-        class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
-        + New token
-      </button>
-      <button onclick={doReload} disabled={reloading}
-        class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold disabled:opacity-50">
-        {reloading ? 'Reloading…' : 'Reload registry'}
-      </button>
+      {#if !isDemo}
+        <button onclick={openCreate}
+          class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+          + New token
+        </button>
+        <button onclick={doReload} disabled={reloading}
+          class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold disabled:opacity-50">
+          {reloading ? 'Reloading…' : 'Reload registry'}
+        </button>
+      {/if}
     </div>
   </div>
+  {#if isDemo}
+    <!-- Demo read-only banner. The catalog is shown verbatim — operators
+         can browse every metric / scope / op / action handler the engine
+         supports — but creates / edits / deletes / registry reload hide
+         since the backend rejects them with admin_guard. -->
+    <div class="mt-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
+      <strong class="text-purple-100">Read-only in demo.</strong>
+      Browse every condition / notify / action token the engine supports.
+      The catalog drives every alerting + automation rule — see
+      <a href="/showcase" class="underline hover:text-purple-50">the tour</a>
+      for context.
+    </div>
+  {/if}
 </div>
 
 {#if error}
@@ -358,13 +381,23 @@
               {/if}
             </td>
             <td class="py-1.5 px-2" onclick={(e) => e.stopPropagation()}>
-              <button onclick={() => toggle(t.id, t.is_active)}
-                class="text-[0.6rem] px-2 py-0.5 rounded font-medium border
+              {#if isDemo}
+                <span class="text-[0.6rem] px-2 py-0.5 rounded font-medium border
                   {t.is_active
-                    ? 'bg-green-500/15 text-green-400 border-green-500/40'
-                    : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
-                {t.is_active ? 'ON' : 'OFF'}
-              </button>
+                    ? 'bg-green-500/10 text-green-400/70 border-green-500/30'
+                    : 'bg-slate-700/30 text-slate-400/70 border-slate-500/25'}"
+                  title="Read-only in demo">
+                  {t.is_active ? 'ON' : 'OFF'}
+                </span>
+              {:else}
+                <button onclick={() => toggle(t.id, t.is_active)}
+                  class="text-[0.6rem] px-2 py-0.5 rounded font-medium border
+                    {t.is_active
+                      ? 'bg-green-500/15 text-green-400 border-green-500/40'
+                      : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
+                  {t.is_active ? 'ON' : 'OFF'}
+                </button>
+              {/if}
             </td>
           </tr>
           {#if expandedId === t.id}
@@ -392,7 +425,9 @@
                     </div>
                   {/if}
                   <div class="col-span-2 flex gap-2 mt-1 pt-1 border-t border-white/5">
-                    {#if t.is_system}
+                    {#if isDemo}
+                      <span class="text-[#7e97b8] text-[0.55rem] italic">Read-only in demo.</span>
+                    {:else if t.is_system}
                       <span class="text-[#7e97b8] text-[0.55rem] italic">System tokens edit only via the toggle above.</span>
                     {:else}
                       <button onclick={() => openEdit(t)}
