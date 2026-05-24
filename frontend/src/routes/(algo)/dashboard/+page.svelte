@@ -46,6 +46,16 @@
 
   // Agent log collapsed by default.
   let _agentLogOpen = $state(false);
+  // Operator-facing log declutter: default to agent_fire ONLY so the
+  // expanded log is a thin chronological list of "what fired".
+  // Operator can flip the chip to ALSO include action successes /
+  // errors when they want the deeper "what did the fire DO" trace.
+  let _agentLogShowActions = $state(false);
+  const _agentLogKinds = $derived(
+    _agentLogShowActions
+      ? ['agent_fire', 'agent_action_success', 'agent_action_error']
+      : ['agent_fire'],
+  );
 
   // PnlAnalysis collapse — persisted to localStorage.
   let _pnlOpen = $state(false);
@@ -785,8 +795,23 @@
     </div>
     <ul class="dash-news-list">
       {#each _news.slice(0, 5) as item}
+        {@const _stamp = item.timestamp ? new Date(item.timestamp) : null}
+        {@const _dateStr = _stamp && !isNaN(_stamp.getTime())
+          ? _stamp.toLocaleString('en-IN', {
+              day: '2-digit', month: 'short',
+              hour: '2-digit', minute: '2-digit', hour12: false,
+              timeZone: 'Asia/Kolkata',
+            })
+          : ''}
         <li class="dash-news-row">
-          <span class="dash-news-time">{timeSince(item.timestamp)}</span>
+          <!-- Relative "12m" pill stays the headline scanner; full
+               IST datestamp sits as a sub-line so operators can
+               glance both formats. Hover tooltip carries the exact
+               ISO for click-to-copy-into-bug-reports. -->
+          <span class="dash-news-time" title={item.timestamp || ''}>
+            {timeSince(item.timestamp)}
+            {#if _dateStr}<span class="dash-news-time-abs">{_dateStr}</span>{/if}
+          </span>
           <a
             class="dash-news-title"
             href={item.link}
@@ -842,7 +867,9 @@
     onSubmit={() => { _ticketProps = null; }} />
 {/if}
 
-<!-- Agent activity — collapsed by default. -->
+<!-- Agent activity — collapsed by default. Expands to a clean
+     fires-only log; chip flips to also show action successes/errors
+     for the deeper "what did the fire actually do" trace. -->
 <details class="dash-agent" bind:open={_agentLogOpen}>
   <summary class="dash-agent-summary">
     <span class="mp-section-label">Agent activity</span>
@@ -852,8 +879,26 @@
     </span>
     <span class="dash-agent-toggle">{_agentLogOpen ? '▾ hide log' : '▸ show log'}</span>
   </summary>
+  <!-- Inline filter chip — flips fires-only vs fires+actions. Click
+       handler stops the click from bubbling up to the <summary>
+       (which would toggle the details element instead). -->
+  <div class="dash-agent-filter">
+    <button
+      type="button"
+      class="dash-agent-filter-btn"
+      class:dash-agent-filter-btn-on={_agentLogShowActions}
+      onclick={(e) => { e.preventDefault(); e.stopPropagation();
+                        _agentLogShowActions = !_agentLogShowActions; }}>
+      {_agentLogShowActions ? '✓' : ''} include action events
+    </button>
+    <span class="dash-agent-filter-hint">
+      {_agentLogShowActions
+        ? 'showing fires + action successes/errors'
+        : 'showing fires only — toggle to include actions'}
+    </span>
+  </div>
   <UnifiedLog
-    filter={{ kinds: ['agent_fire', 'agent_action_success', 'agent_action_error'] }}
+    filter={{ kinds: _agentLogKinds }}
     excludeSim={true}
     maxRows={30}
     emptyMessage="No agent fires yet today." />
@@ -1108,6 +1153,43 @@
     font-size: 0.6rem;
     letter-spacing: 0.04em;
   }
+  /* Inline filter strip inside the expanded agent-activity log.
+     The chip on the left is a toggleable pill; the hint on the
+     right just describes what the operator is currently looking at. */
+  .dash-agent-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.35rem 0.5rem;
+    margin-top: 0.35rem;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.15);
+    font-family: ui-monospace, monospace;
+  }
+  .dash-agent-filter-btn {
+    background: rgba(126, 151, 184, 0.10);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    color: #c8d8f0;
+    font-family: inherit;
+    font-size: 0.6rem;
+    padding: 0.18rem 0.5rem;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+  }
+  .dash-agent-filter-btn:hover {
+    background: rgba(251, 191, 36, 0.10);
+    color: #fbbf24;
+  }
+  .dash-agent-filter-btn-on {
+    background: rgba(251, 191, 36, 0.18);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+  }
+  .dash-agent-filter-hint {
+    color: rgba(126, 151, 184, 0.65);
+    font-size: 0.56rem;
+    letter-spacing: 0.02em;
+  }
   .pnl-section-label {
     margin-top: 0.75rem;
     margin-bottom: 0.3rem;
@@ -1290,7 +1372,7 @@
   }
   .dash-news-row {
     display: grid;
-    grid-template-columns: 2.8rem 1fr max-content;
+    grid-template-columns: 6.2rem 1fr max-content;
     align-items: baseline;
     gap: 0.5rem;
     padding: 0.28rem 0;
@@ -1304,6 +1386,18 @@
     font-variant-numeric: tabular-nums;
     text-align: right;
     white-space: nowrap;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    line-height: 1.15;
+  }
+  /* Absolute IST datestamp sits below the relative ago-pill. Same
+     column width, dimmer colour so the eye lands on the relative
+     first; the absolute is reference. */
+  .dash-news-time-abs {
+    font-size: 0.52rem;
+    color: rgba(126,151,184,0.65);
+    font-weight: 400;
   }
   .dash-news-title {
     font-size: 0.68rem;
@@ -1331,8 +1425,9 @@
     flex-shrink: 0;
   }
   @media (max-width: 600px) {
-    .dash-news-row { grid-template-columns: 2.8rem 1fr; }
+    .dash-news-row { grid-template-columns: 4.4rem 1fr; }
     .dash-news-src { display: none; }
+    .dash-news-time-abs { font-size: 0.48rem; }
   }
 
   /* ── P&L Analysis collapsible ────────────────────────────────────── */
