@@ -72,7 +72,7 @@
   <section class="fork">
     <a href="/about" class="fork-card fork-investor">
       <div class="fork-head">
-        <span class="fork-tag">For Investors</span>
+        <span class="fork-tag">Investment Partnership</span>
         <span class="fork-arrow">→</span>
       </div>
       <h2 class="fork-title">Partner with us</h2>
@@ -87,7 +87,7 @@
 
     <a href="/dashboard" class="fork-card fork-quant">
       <div class="fork-head">
-        <span class="fork-tag fork-tag-alt">For Quants &amp; Recruiters</span>
+        <span class="fork-tag fork-tag-alt">Platform &amp; Technology</span>
         <span class="fork-arrow">→</span>
       </div>
       <h2 class="fork-title">Open the platform</h2>

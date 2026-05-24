@@ -343,8 +343,8 @@
 
   /* Nav buttons */
   :global(.pub-nav-btn) {
-    padding: 0.25rem 0.65rem;
-    font-size: 0.7rem;
+    padding: 0.32rem 0.75rem;
+    font-size: 0.82rem;
     font-weight: 500;
     border-radius: 0.25rem;
     background: transparent;
@@ -378,8 +378,8 @@
      amber-pill "Investor site" link so both context-switch buttons
      read with equal visual weight. */
   .pub-nav-algo-btn {
-    padding: 0.2rem 0.6rem;
-    font-size: 0.65rem;
+    padding: 0.28rem 0.75rem;
+    font-size: 0.78rem;
     font-weight: 500;
     border-radius: 0.25rem;
     background: rgba(200,168,75,0.10);
@@ -400,8 +400,8 @@
 
   /* Sign-in button */
   .pub-nav-signin {
-    padding: 0.22rem 0.85rem;
-    font-size: 0.7rem;
+    padding: 0.3rem 0.95rem;
+    font-size: 0.82rem;
     font-weight: 700;
     border-radius: 0.25rem;
     background: rgba(200,168,75,0.22);
@@ -418,10 +418,10 @@
 
   /* User pill */
   .pub-user-pill {
-    font-size: 0.72rem;
+    font-size: 0.8rem;
     font-weight: 500;
     color: rgba(210, 225, 255, 0.72);
-    padding: 0.18rem 0.55rem;
+    padding: 0.22rem 0.65rem;
     border-radius: 999px;
     background: rgba(255,255,255,0.07);
     border: 1px solid rgba(255,255,255,0.12);
@@ -429,7 +429,7 @@
     white-space: nowrap;
   }
   .pub-user-role {
-    font-size: 0.5rem;
+    font-size: 0.58rem;
     color: #f0d070;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -471,8 +471,8 @@
     display: block;
     width: 100%;
     text-align: left;
-    padding: 0.75rem 1.4rem;
-    font-size: 0.82rem;
+    padding: 0.8rem 1.4rem;
+    font-size: 0.92rem;
     font-weight: 500;
     color: rgba(220,232,255,0.8);
     background: transparent;
