@@ -341,10 +341,12 @@
   .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; }
   .pub-brand-mobile .pub-brand-tagline { font-size: 0.4rem; }
 
-  /* Nav buttons */
+  /* Nav buttons — laptop / desktop. About / Market / Performance / FAQ /
+     Contact get the prominent treatment; the right-side context-switch
+     pills (Platform Demo, Sign In) stay tighter. */
   :global(.pub-nav-btn) {
-    padding: 0.32rem 0.75rem;
-    font-size: 0.82rem;
+    padding: 0.4rem 0.95rem;
+    font-size: 0.95rem;
     font-weight: 500;
     border-radius: 0.25rem;
     background: transparent;
