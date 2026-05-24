@@ -375,6 +375,14 @@
     return 4;
   }
   let stopPoll, stopPulsePoll;
+  // Wall-clock timestamp (ms) of the last loadPulse() completion.
+  // The 5 s loadQuotes poll consults this to skip ticks that land
+  // within a 700 ms window of a loadPulse — the two pollers used to
+  // collide on every 10 s boundary, hammering the backend with
+  // /positions + /holdings + /quote/batch + N × /watchlist/{id}/quotes
+  // simultaneously. Within-window skip preserves up-to-5 s freshness
+  // on the watchlist while removing the thundering herd.
+  let _lastPulseAt = 0;
   let gridEl;
   // $state on the bind:this refs so Svelte 5's reactive-update
   // analyzer doesn't warn (gridEl was grandfathered in pre-Phase 2;
@@ -792,6 +800,13 @@
       watchQuotes = {};
       return;
     }
+    // De-thundering-herd: skip this tick if loadPulse just ran. The
+    // backend is already handling /positions + /holdings + a /quote/
+    // batch from that pulse; piling N watchlist /quotes calls on top
+    // of the same network burst stalled the response on slower links.
+    // Watchlist data is still refreshed at most 5 s late vs the
+    // intent — operator can't perceive a sub-second skip.
+    if (Date.now() - _lastPulseAt < 700) return;
     try {
       const results = await Promise.all(
         ids.map(id => fetchWatchlistQuotes(id).catch(() => null))
@@ -1010,6 +1025,7 @@
         pulseQuotes = { underlyings: {}, contracts: {} };
       }
       pulseLastUpdate = Date.now();
+      _lastPulseAt = pulseLastUpdate;
     } catch (_) { /* nothing fatal */ }
   }
 
