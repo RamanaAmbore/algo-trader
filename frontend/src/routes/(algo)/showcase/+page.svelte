@@ -179,7 +179,12 @@
   .show {
     max-width: 1180px;
     margin: 0 auto;
-    padding: 1rem 0.5rem 2rem;
+    /* Top padding tightened (was 1rem) — the algo layout already
+       provides ~0.5rem above the main, plus the hero's own 1.25rem
+       top padding. The double-stack created an unintentional 2.5rem
+       gap above the H1; trimming to 0.25rem here lets the hero
+       breathe at its own natural top-padding. */
+    padding: 0.25rem 0.5rem 2rem;
     color: #c8d8f0;
     /* FOUC gate — hidden until onMount sets .show-ready. Stops the
        brief flash of plain-text hero + bullet lists between the
@@ -194,7 +199,11 @@
   /* ── Hero ─────────────────────────────────────────────────────────── */
   .show-hero {
     text-align: center;
-    padding: 1.5rem 1rem 1.75rem;
+    /* Top padding tightened (was 1.5rem) so the H1 sits closer to
+       the navbar / banners. The bottom padding stays generous so
+       the hero feels intentionally separated from the section
+       grid below. */
+    padding: 0.5rem 1rem 1.75rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.18);
     margin-bottom: 1.5rem;
   }
