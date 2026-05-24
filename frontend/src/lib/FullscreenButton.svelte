@@ -18,16 +18,30 @@
 
   Global CSS provides `.fs-card-on` (fixed modal, full viewport,
   z-index 9999) + `.fs-backdrop`. ESC + backdrop click close.
+
+  Why the backdrop is portalled to document.body
+  ----------------------------------------------
+  The card carries `isolation: isolate` (it has to — children like
+  ag-Grid hover popups need stable stacking). That creates a NEW
+  stacking context, which scopes any child z-index to the card. A
+  backdrop rendered as a sibling of the button (i.e. INSIDE the card)
+  ends up with `backdrop-filter: blur(...)` applying to everything
+  behind it in the card's stacking context — including the card's
+  own content. Result: the card looks blurred.
+
+  Fix: portal the backdrop to document.body so it sits as a true
+  viewport-level sibling of the card. Its `z-index: 9998` then puts
+  it correctly between the page (no stacking context) and the card
+  (`position: fixed; z-index: 9999`). Backdrop-filter blurs only the
+  page behind, not the card itself.
 -->
 <script>
-  import { onMount } from 'svelte';
-
   let { isFullscreen = $bindable(false), label = 'card' } = $props();
 
-  // ESC key + body scroll lock for the active fullscreen card.
-  // Multiple cards on the page may each be bindable to their own
-  // isFullscreen; only the one currently true installs the
-  // keydown + scroll-lock side-effects.
+  // ESC key + body scroll lock + portalled backdrop for the active
+  // fullscreen card. Multiple cards on the page may each be bound
+  // to their own isFullscreen; only the one currently true installs
+  // the side-effects + backdrop node.
   function _onKey(e) {
     if (e.key === 'Escape' && isFullscreen) {
       isFullscreen = false;
@@ -39,9 +53,21 @@
     document.addEventListener('keydown', _onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+
+    // Portal-style backdrop — appended to document.body so its
+    // stacking context is the viewport root, not the parent card.
+    // backdrop-filter blur then applies only to page content, not
+    // to the card itself.
+    const backdrop = document.createElement('div');
+    backdrop.className = 'fs-backdrop';
+    backdrop.setAttribute('aria-hidden', 'true');
+    backdrop.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(backdrop);
+
     return () => {
       document.removeEventListener('keydown', _onKey);
       document.body.style.overflow = prev;
+      backdrop.remove();
     };
   });
 </script>
@@ -68,16 +94,6 @@
     </svg>
   {/if}
 </button>
-
-{#if isFullscreen}
-  <!-- Backdrop — sits BEHIND the .fs-card-on element. Click closes.
-       Rendered as a sibling so its z-index is independent of the
-       parent card's stacking context. -->
-  <div
-    class="fs-backdrop"
-    aria-hidden="true"
-    onclick={() => isFullscreen = false}></div>
-{/if}
 
 <style>
   .fs-btn {
@@ -109,14 +125,16 @@
     outline-offset: 1px;
   }
 
-  /* Backdrop — fixed to viewport, sits under the card. Slightly
-     darker than the SymbolPanel backdrop because the underlying
-     dashboard is visually busy. */
-  .fs-backdrop {
+  /* Backdrop styles are GLOBAL because the element is appended to
+     document.body imperatively (not via Svelte template), so style
+     scoping wouldn't reach it. Mirror in app.css to make the global
+     selector visible to tools and accidentally-overlapping cleanups. */
+  :global(.fs-backdrop) {
     position: fixed;
     inset: 0;
     background: rgba(5, 10, 22, 0.65);
     z-index: 9998;
     backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
   }
 </style>

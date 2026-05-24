@@ -706,10 +706,32 @@
     return rows;
   });
 
+  // True when ANY symbol on the current grid has a sparkline series
+  // loaded. Used to hide the Curve column when no rows have data —
+  // saves ~64 px of horizontal space on a stripped-down view (e.g.
+  // when sparkline endpoint is rate-limited or returns empty).
+  const _anySparkline = $derived.by(() => {
+    for (const r of mainRows) {
+      const s = sparklines[r?.tradingsymbol];
+      if (Array.isArray(s) && s.length > 1) return true;
+    }
+    for (const r of pinnedTopRows) {
+      const s = sparklines[r?.tradingsymbol];
+      if (Array.isArray(s) && s.length > 1) return true;
+    }
+    return false;
+  });
+
   $effect(() => {
     if (!gridReady || !grid) return;
     grid.setGridOption('rowData', mainRows);
     grid.setGridOption('pinnedTopRowData', pinnedTopRows);
+    // Auto-hide the Curve column when no data is available so the
+    // column header doesn't sit empty taking 64 px. Re-shows
+    // automatically when the sparkline poll fills in.
+    try {
+      grid.setColumnsVisible?.(['sparkline'], _anySparkline);
+    } catch (_) { /* older ag-Grid API — best-effort */ }
   });
 
   // Per-source summary derivations for the two separate summary grids.
@@ -1794,9 +1816,21 @@
       { field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
-      { field: 'tradingsymbol', headerName: '', width: 56, colId: 'sparkline',
+      { field: 'tradingsymbol', headerName: 'Curve', width: 64, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: true,
-        cellClass: 'spark-cell' },
+        cellClass: 'spark-cell',
+        headerClass: 'ag-header-cell-spark' },
+      // Net qty held — positions + holdings summed (signed). When both
+      // are zero the cell renders blank. Sortable so the operator can
+      // sort by absolute exposure.
+      { field: 'qty_net', headerName: 'Qty', width: 56, colId: 'qty_net',
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: RA,
+        valueGetter: (p) => {
+          const q = (Number(p.data?.qty_pos) || 0) + (Number(p.data?.qty_hold) || 0);
+          return q === 0 ? null : q;
+        },
+        valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
       { field: 'ltp', headerName: 'LTP', width: 80,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,

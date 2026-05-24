@@ -273,10 +273,12 @@
   }
 
   // Aggregate positions by parsed underlying. {underlying → sum(pnl)}
+  // Filtered by the shared account multiselect (_filterByAccount —
+  // bound to the same _selectedAccounts state the Equity card uses).
   const _positionsByUnderlying = $derived.by(() => {
     /** @type {Map<string, {symbol: string, pnl: number, inv_val: number}>} */
     const byU = new Map();
-    for (const p of _positions) {
+    for (const p of _filterByAccount(_positions)) {
       const sym = String(p.tradingsymbol || p.symbol || '');
       const pnl = Number(p.pnl) || 0;
       if (!sym || pnl === 0) continue;
@@ -310,11 +312,12 @@
 
   // Holdings, with optional class filter (midcap / smallcap / null=all).
   // Aggregated by symbol so a stock held in N accounts appears as one
-  // row with summed day P&L + cost basis.
+  // row with summed day P&L + cost basis. Filtered by the shared
+  // _selectedAccounts state.
   function _holdingsFor(cls) {
     /** @type {{symbol: string, pnl: number, inv_val: number}[]} */
     const raw = [];
-    for (const h of _holdings) {
+    for (const h of _filterByAccount(_holdings)) {
       const sym = String(h.tradingsymbol || h.symbol || '');
       const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
       if (!sym) continue;
@@ -334,11 +337,12 @@
   }
 
   // Positions as individual contracts, aggregated by tradingsymbol
-  // across accounts (same reason as holdings).
+  // across accounts (same reason as holdings). Filtered by the
+  // shared _selectedAccounts state.
   const _positionsRows = $derived.by(() => {
     /** @type {{symbol: string, pnl: number, inv_val: number}[]} */
     const raw = [];
-    for (const p of _positions) {
+    for (const p of _filterByAccount(_positions)) {
       const sym = String(p.tradingsymbol || p.symbol || '');
       const pnl = Number(p.pnl) || 0;
       if (!sym) continue;
@@ -349,9 +353,11 @@
 
   // Top-N picker — winners (pnl > 0, sorted desc) or losers (pnl < 0,
   // sorted asc). Returns an empty array if nothing in the bucket; the
-  // template renders a "—" placeholder so empty sub-sections still
-  // contribute consistent visual weight.
-  function _top(rows, kind, n = 3) {
+  // template renders an empty-state line so empty sub-sections still
+  // contribute consistent visual weight. Top-10 by default — the
+  // scrollable `.wl-rows` container handles overflow on default-size
+  // cards and shows everything on fullscreen without truncating.
+  function _top(rows, kind, n = 10) {
     if (!Array.isArray(rows) || rows.length === 0) return [];
     if (kind === 'win') {
       return rows.filter(r => r.pnl > 0)
@@ -1151,6 +1157,18 @@
       <section class="wl-tile wl-tile-win" class:fs-card-on={_fsWinners}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP WINNERS</span>
+          <!-- Same _selectedAccounts state as the Equity card —
+               filter applied here propagates to every bucket
+               source (underlying / midcap / smallcap / holdings /
+               positions). Operator doesn't need to scroll back up
+               to the Equity card to change scope. -->
+          <div class="wl-acct-picker" title="Filter by broker account (shared across cards)">
+            <MultiSelect
+              bind:value={_selectedAccounts}
+              options={_availableAccounts.map(a => ({ value: a, label: a }))}
+              placeholder="All accounts"
+              ariaLabel="Filter Top Winners by broker account" />
+          </div>
           <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
         </div>
         <div class="wl-tabs" role="tablist">
@@ -1203,6 +1221,13 @@
       <section class="wl-tile wl-tile-loss" class:fs-card-on={_fsLosers}>
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
+          <div class="wl-acct-picker" title="Filter by broker account (shared across cards)">
+            <MultiSelect
+              bind:value={_selectedAccounts}
+              options={_availableAccounts.map(a => ({ value: a, label: a }))}
+              placeholder="All accounts"
+              ariaLabel="Filter Top Losers by broker account" />
+          </div>
           <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
         </div>
         <div class="wl-tabs" role="tablist">
@@ -1968,10 +1993,50 @@
     letter-spacing: 0.04em;
     text-align: center;
   }
+  /* Account picker on Winners / Losers cards. Sits between the
+     section label and the fullscreen toggle in the card header.
+     Width clamped — operator usually has 2-3 accounts; a wide
+     dropdown wastes space. */
+  .wl-acct-picker {
+    margin-left: auto;
+    min-width: 7.5rem;
+    max-width: 12rem;
+    flex-shrink: 1;
+  }
+  @media (max-width: 600px) {
+    .wl-acct-picker {
+      min-width: 5.5rem;
+      max-width: 8rem;
+    }
+  }
+
+  /* Scrollable rows container — default-size cards cap the visible
+     height so 10 rows don't bloat the card; fullscreen mode lifts
+     the cap to fill the modal. Custom scrollbar matches the algo
+     palette (muted slate, amber on hover). */
   .wl-rows {
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
+    max-height: 16rem;
+    overflow-y: auto;
+    /* Firefox + Chrome custom scrollbar */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(126, 151, 184, 0.35) transparent;
+  }
+  .wl-rows::-webkit-scrollbar { width: 6px; }
+  .wl-rows::-webkit-scrollbar-track { background: transparent; }
+  .wl-rows::-webkit-scrollbar-thumb {
+    background: rgba(126, 151, 184, 0.35);
+    border-radius: 3px;
+  }
+  .wl-rows::-webkit-scrollbar-thumb:hover {
+    background: rgba(251, 191, 36, 0.55);
+  }
+  /* Fullscreen mode lifts the height cap so the operator can scan
+     the full top-10 (or top-50 in the future) without scrolling. */
+  .fs-card-on .wl-rows {
+    max-height: calc(100vh - 12rem);
   }
   .wl-row {
     display: flex;
