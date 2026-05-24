@@ -444,33 +444,49 @@
     await tick();
     mountGrid();
 
-    try {
-      const mod = await import('$lib/data/instruments');
-      await mod.loadInstruments();
-      getInstrument     = mod.getInstrument;
-      findNearestFuture = mod.findNearestFuture;
-      listFutures       = mod.listFutures;
-    } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
-    try {
-      const r = await fetchAccounts();
-      realAccounts = (r?.accounts || [])
-        .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
-        .filter(Boolean);
-    } catch (_) { realAccounts = []; }
-    if (enableWatchlists) {
-      await loadLists();
-      if (activeIds.size > 0) await loadActive();
-    }
-    await loadPulse();
-    if (showFunds) await loadFunds();
-    await loadMovers();
+    // Parallel cold-mount fan-out. Previously instruments → accounts →
+    // lists → loadActive → loadPulse → loadFunds → loadMovers ran
+    // strictly serially, blocking first paint for 3–5 s on a cold
+    // cache. None of these depend on each other except (loadLists +
+    // loadActive — loadActive needs activeIds populated from lists),
+    // and the heavy ones (instruments / pulse / movers) can all fire
+    // concurrently. loadSparklines is cosmetic — fire and forget.
+    const instrumentsP = (async () => {
+      try {
+        const mod = await import('$lib/data/instruments');
+        await mod.loadInstruments();
+        getInstrument     = mod.getInstrument;
+        findNearestFuture = mod.findNearestFuture;
+        listFutures       = mod.listFutures;
+      } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
+    })();
+    const accountsP = (async () => {
+      try {
+        const r = await fetchAccounts();
+        realAccounts = (r?.accounts || [])
+          .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
+          .filter(Boolean);
+      } catch (_) { realAccounts = []; }
+    })();
+    const listsP = enableWatchlists
+      ? loadLists().then(() => (activeIds.size > 0 ? loadActive() : null))
+      : Promise.resolve();
+    const pulseP  = loadPulse();
+    const fundsP  = showFunds ? loadFunds() : Promise.resolve();
+    const moversP = loadMovers();
+
+    // Block onMount only on the data the first paint actually needs.
+    // Sparklines run fire-and-forget (cosmetic; missing them shows the
+    // grid without the inline trend column for ≤1 s).
+    await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
+    loadSparklines();
+
     stopPoll      = visibleInterval(async () => { await loadQuotes(); }, 5000);
     stopPulsePoll = visibleInterval(async () => {
       await loadPulse();
       if (showFunds) await loadFunds();
     }, 10000);
     stopMoversPoll  = visibleInterval(loadMovers, 30000);
-    await loadSparklines();
     stopSparkPoll   = visibleInterval(loadSparklines, 60000);
 
     // Real-time order-fill push — Kite postback fires a WS event

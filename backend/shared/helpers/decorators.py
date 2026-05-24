@@ -191,15 +191,40 @@ def for_all_accounts(func):
                 results.append(result)
             return results
 
-        # Case 2: All accounts -> run func for each account
-        for acc in connections.conn.keys():
+        # Case 2: All accounts → run func concurrently across accounts.
+        # Each `func` call is a blocking broker HTTP round-trip (~300-
+        # 600 ms via Kite). Serial was costing N × per_account_latency
+        # on every cached miss; the ThreadPoolExecutor fans the N
+        # calls out simultaneously so wall-clock latency stays flat
+        # as accounts are added. Results preserve the connections.conn
+        # iteration order for any caller that downstream-joins by
+        # position.
+        accs = list(connections.conn.keys())
+        if len(accs) <= 1:
+            # Single account on the box — skip the pool overhead.
+            for acc in accs:
+                new_kwargs = kwargs.copy()
+                new_kwargs["account"] = acc
+                new_kwargs["kite"] = connections.conn[acc].get_kite_conn(test_conn=True)
+                if accepts_broker:
+                    new_kwargs["broker"] = get_broker(acc)
+                results.append(func(*args, **new_kwargs))
+            return results
+
+        def _per_account(acc):
             new_kwargs = kwargs.copy()
             new_kwargs["account"] = acc
             new_kwargs["kite"] = connections.conn[acc].get_kite_conn(test_conn=True)
             if accepts_broker:
                 new_kwargs["broker"] = get_broker(acc)
-            result = func(*args, **new_kwargs)
-            results.append(result)
+            return func(*args, **new_kwargs)
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(len(accs), 2)) as pool:
+            # executor.map preserves input order so the returned list
+            # lines up with accs[] — important for any caller that
+            # later pd.concat()s the results.
+            results = list(pool.map(_per_account, accs))
         return results
 
     return wrapper

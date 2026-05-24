@@ -158,6 +158,15 @@ MOVER_TOP_N: int = 6
 _session_movers: dict[str, dict] = {}
 _session_date: Optional[str] = None  # ISO date string — rolls over at IST midnight
 
+# Per-day cache of "underlyings that have a CE/PE chain in the instruments
+# dump". The instruments cache is 24 h and the set only changes when Kite
+# publishes new contracts (daily). Without this cache, every 30 s movers
+# poll scans the entire 90k-row instruments list to rebuild the same set.
+# Buster = today's IST date, so the set refreshes naturally at midnight
+# alongside the session_movers rollover.
+_underlyings_cache: set[str] = set()
+_underlyings_cache_date: Optional[str] = None
+
 
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
@@ -602,18 +611,28 @@ class WatchlistController(Controller):
             _session_date = ist_today
 
         # Build universe: underlyings that have at least one CE/PE row.
-        try:
-            resp = await get_or_fetch("instruments", _fetch_instruments,
-                                      ttl_seconds=_INST_TTL)
-            all_items = resp.items if resp else []
-        except Exception:
-            all_items = []
-
-        # Collect unique underlyings with options chains.
-        underlyings_with_opts: set[str] = set()
-        for inst in all_items:
-            if inst.t in ("CE", "PE") and inst.u:
-                underlyings_with_opts.add(inst.u.upper())
+        # Per-day cached — the instruments dump only changes when Kite
+        # publishes new contracts (daily). Scanning 90k rows on every
+        # 30 s poll was wasted work; the buster is today's IST date.
+        global _underlyings_cache, _underlyings_cache_date
+        if _underlyings_cache_date != ist_today:
+            try:
+                resp = await get_or_fetch("instruments", _fetch_instruments,
+                                          ttl_seconds=_INST_TTL)
+                all_items = resp.items if resp else []
+            except Exception:
+                all_items = []
+            new_set: set[str] = set()
+            for inst in all_items:
+                if inst.t in ("CE", "PE") and inst.u:
+                    new_set.add(inst.u.upper())
+            # Only commit + flip the date if we actually got data — empty
+            # set on a fetch failure shouldn't pin a stale-zero result for
+            # the rest of the day.
+            if new_set:
+                _underlyings_cache = new_set
+                _underlyings_cache_date = ist_today
+        underlyings_with_opts = _underlyings_cache
 
         if not underlyings_with_opts:
             return MoversResponse(
