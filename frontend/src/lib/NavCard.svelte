@@ -274,11 +274,16 @@
   }
 
   /* ── As-of timestamp ────────────────────────────────────────────── */
+  /* Centred to match the FIRM NAV panel content (label / big number /
+     sub-line / meta / cumulative all centred). The earlier right-
+     alignment broke the visual rhythm — every other element in the
+     card sits on the centre axis, the timestamp was alone hanging
+     off the right edge. */
   .nav-as-of {
     font-size: 0.58rem;
     color: #a89878;
     margin-top: 0.55rem;
-    text-align: right;
+    text-align: center;
   }
 
   /* ── P&L colour tokens (public palette) ────────────────────────── */
