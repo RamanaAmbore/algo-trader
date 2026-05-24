@@ -869,16 +869,23 @@
   }
 
   /* ── Hero row ────────────────────────────────────────────────────── */
+  /* All card-shaped sections on this page (hero row, row1 cols, wl
+     tiles, news strip, collapsible summaries) inherit the canonical
+     algo-status-card chrome — gradient bg + 1.5px border + box-shadow.
+     Match the visual depth of /agents, /admin/options, /admin/execution
+     so the dashboard doesn't read as one-generation-back. */
   .hero-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem 0.6rem;
     margin: 0 0 0.6rem 0;
-    padding: 0.4rem 0.55rem;
-    background: rgba(15, 25, 45, 0.55);
-    border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 4px;
+    padding: 0.5rem 0.7rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
   .hero-chip {
     display: inline-flex;
@@ -954,10 +961,12 @@
   }
   .row1-col {
     min-width: 0;
-    padding: 0.55rem 0.65rem 0.5rem;
-    background: rgba(15, 25, 45, 0.55);
-    border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 4px;
+    padding: 0.65rem 0.75rem 0.6rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   /* Equity curve */
@@ -1052,14 +1061,24 @@
     cursor: pointer;
     list-style: none;
     user-select: none;
-    padding: 0.35rem 0.55rem;
-    border-radius: 3px;
-    border: 1px solid rgba(126, 151, 184, 0.18);
-    background: rgba(15, 25, 45, 0.55);
+    padding: 0.5rem 0.7rem;
+    border-radius: 6px;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
   .dash-agent-summary::-webkit-details-marker { display: none; }
   .dash-agent-summary:hover {
-    border-color: rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.50);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(251, 191, 36, 0.18);
+  }
+  .dash-agent[open] > .dash-agent-summary {
+    border-color: rgba(251, 191, 36, 0.65);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(251, 191, 36, 0.18);
   }
   .dash-agent-chip {
     display: inline-flex;
@@ -1220,19 +1239,20 @@
     }
   }
   .wl-tile {
-    padding: 0.55rem 0.65rem 0.5rem;
-    border-radius: 4px;
-    border: 1px solid;
+    padding: 0.65rem 0.75rem 0.6rem;
+    border-radius: 6px;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-top-width: 3px;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
     min-width: 0;
   }
-  .wl-tile-win {
-    background: rgba(74, 222, 128, 0.07);
-    border-color: rgba(74, 222, 128, 0.22);
-  }
-  .wl-tile-loss {
-    background: rgba(248, 113, 113, 0.07);
-    border-color: rgba(248, 113, 113, 0.22);
-  }
+  /* Coloured top accent on each winner/loser tile — same idiom as
+     /showcase cards. Identity is in the border-top stripe, not in
+     the body tint, so the tiles still belong to the algo card family. */
+  .wl-tile-win  { border-top-color: rgba(74, 222, 128, 0.85); }
+  .wl-tile-loss { border-top-color: rgba(248, 113, 113, 0.85); }
   .wl-tile-label {
     margin-bottom: 0.35rem;
   }
@@ -1284,10 +1304,12 @@
   /* ── Row 3: Market news strip ───────────────────────────────────── */
   .dash-row3 {
     margin-bottom: 0.6rem;
-    padding: 0.4rem 0.55rem 0.45rem;
-    background: rgba(15, 25, 45, 0.55);
-    border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 4px;
+    padding: 0.55rem 0.75rem 0.6rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
   .row3-header {
     display: flex;
@@ -1297,6 +1319,9 @@
   }
 
   /* ── P&L Analysis collapsible ────────────────────────────────────── */
+  /* Summary bar carries the same card chrome as every other section
+     even when collapsed, so the surface reads as a closed accordion
+     panel — not a hairline. Hover lifts the border to amber as before. */
   .dash-pnl-summary {
     display: flex;
     align-items: center;
@@ -1304,14 +1329,26 @@
     cursor: pointer;
     list-style: none;
     user-select: none;
-    padding: 0.35rem 0.55rem;
-    border-radius: 3px;
-    border: 1px solid rgba(126, 151, 184, 0.18);
-    background: rgba(15, 25, 45, 0.55);
+    padding: 0.5rem 0.7rem;
+    border-radius: 6px;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
   .dash-pnl-summary::-webkit-details-marker { display: none; }
   .dash-pnl-summary:hover {
-    border-color: rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.50);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(251, 191, 36, 0.18);
+  }
+  /* Open state — amber accent stays so the operator knows which
+     section is currently exposing its inner content. */
+  .dash-pnl-details[open] > .dash-pnl-summary {
+    border-color: rgba(251, 191, 36, 0.65);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(251, 191, 36, 0.18);
   }
   .dash-pnl-toggle {
     margin-left: auto;
