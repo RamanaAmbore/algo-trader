@@ -1,5 +1,6 @@
 <script>
   import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
 
   // Recruiter-facing narrative page. Single scrollable tour that
   // explains the platform's novel pieces (5-mode execution ladder,
@@ -7,6 +8,16 @@
   // abstraction) and links each one to the live surface where the
   // viewer can poke at it. No data fetches — pure prose + links so
   // the page loads instantly even on a recruiter's flaky phone.
+
+  // FOUC gate. The page lives under (algo)/ which is ssr=false +
+  // prerender=false; on a first-paint navigation the HTML shell + JS
+  // bundle race the scoped CSS chunk, so visitors momentarily saw the
+  // raw text (default browser styling) before the cards snapped into
+  // their decorated form. onMount only fires once both the component
+  // JS and its scoped CSS have arrived, so the gate releases at the
+  // first frame where decoration is guaranteed.
+  let _mounted = $state(false);
+  onMount(() => { _mounted = true; });
 
   /** @type {Array<{
    *   title: string,
@@ -113,7 +124,7 @@
   <meta name="description" content="A walkthrough of RamboQuant's quant trading platform: 5-mode execution ladder, declarative agent grammar, Black-Scholes options analytics, multi-broker abstraction." />
 </svelte:head>
 
-<div class="show">
+<div class="show" class:show-ready={_mounted}>
   <!-- Hero -->
   <header class="show-hero">
     <h1 class="show-title">RamboQuant Platform — Tour</h1>
@@ -170,6 +181,14 @@
     margin: 0 auto;
     padding: 1rem 0.5rem 2rem;
     color: #c8d8f0;
+    /* FOUC gate — hidden until onMount sets .show-ready. Stops the
+       brief flash of plain-text hero + bullet lists between the
+       JS bundle landing and the scoped CSS chunk applying. */
+    opacity: 0;
+    transition: opacity 0.18s ease-out;
+  }
+  .show.show-ready {
+    opacity: 1;
   }
 
   /* ── Hero ─────────────────────────────────────────────────────────── */
