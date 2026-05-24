@@ -287,9 +287,10 @@
   // independent of the operator's positions or holdings. Only the
   // Holdings + Positions tabs remain user-scoped.
   //
-  // Single batchQuote payload covers all three universes (~300 symbols),
-  // polled every 60 s. Backend caches under /quote/batch.
-  /** @type {Record<string, any>} */
+  // /quote/batch response shape: {refreshed_at, items: [BatchQuoteRow]}.
+  // We index by "${exchange}:${tradingsymbol}" so universe queries can
+  // pluck back out by key. Polled every 60 s during active viewing.
+  /** @type {Record<string, {ltp:number, close:number, change_pct:number}>} */
   let _marketQuotes = $state({});
   let _stopMarketPoll;
 
@@ -304,14 +305,12 @@
     for (const k of keys) {
       const q = _marketQuotes[k];
       if (!q) continue;
-      const ltp = Number(q.last_price ?? q.ltp ?? 0);
-      // Prefer Kite's own change_percent / change_pct when present;
-      // fall back to (ltp - close) / close × 100.
-      let pct = null;
-      if (q.change_percent != null) pct = Number(q.change_percent);
-      else if (q.change_pct    != null) pct = Number(q.change_pct);
-      else {
-        const close = Number(q.ohlc?.close ?? q.close ?? 0);
+      const ltp = Number(q.ltp) || 0;
+      // Backend already computes change_pct; fall back to manual
+      // calc only when zero / missing (defensive against partial fills).
+      let pct = Number(q.change_pct);
+      if (!isFinite(pct) || pct === 0) {
+        const close = Number(q.close) || 0;
         if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
       }
       if (pct == null || !isFinite(pct) || pct === 0) continue;
@@ -788,13 +787,27 @@
       // De-dup keys across universes (e.g. NIFTY MIDCAP 100 appears
       // in both FO_QUOTE_KEYS and the midcap index — irrelevant on
       // the server but cleaner on the wire).
-      const keys = [...new Set([
+      // Backend trims keys[] at 300; F&O + Midcap + Smallcap totals
+      // ~300, so we batch in two halves to avoid silent truncation.
+      const allKeys = [...new Set([
         ...FO_QUOTE_KEYS, ...MIDCAP_QUOTE_KEYS, ...SMLCAP_QUOTE_KEYS,
       ])];
-      const res = await batchQuote(keys);
-      const map = res?.quotes ?? res ?? {};
-      // Reassign rather than merge so disappearing symbols clear
-      // out (avoids stale rows lingering in winners/losers buckets).
+      const HALF = Math.ceil(allKeys.length / 2);
+      const batches = [allKeys.slice(0, HALF), allKeys.slice(HALF)];
+      const responses = await Promise.all(batches.map(b => batchQuote(b)));
+      // BatchQuoteResponse is `{refreshed_at, items: [BatchQuoteRow]}`
+      // — each row has its OWN {exchange, tradingsymbol} pair which
+      // we re-key as "exchange:tradingsymbol" to match the universe
+      // key arrays. Reassign the whole map so disappearing symbols
+      // clear out (avoids stale rows in W/L buckets).
+      /** @type {Record<string, any>} */
+      const map = {};
+      for (const r of responses) {
+        for (const it of (r?.items ?? [])) {
+          if (!it?.exchange || !it?.tradingsymbol) continue;
+          map[`${it.exchange}:${it.tradingsymbol}`] = it;
+        }
+      }
       _marketQuotes = map;
     } catch (_) { /* transient — leave previous map up */ }
   }
