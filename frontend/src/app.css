@@ -926,3 +926,29 @@
   }
 }
 
+/* Keep the FullscreenButton (.fs-btn) anchored at the card's
+   top-right corner WHILE FULLSCREEN even when the card scrolls.
+   In default mode the button sits inline in the card header (flex
+   layout pushes it right) — that's already top-right. In fullscreen
+   mode the card has overflow:auto, so the header (and the button
+   inside it) would slide out of view on scroll. Pinning the button
+   via position:fixed keeps it visible at the viewport's top-right
+   corner regardless of how deeply the operator scrolls inside the
+   modal card.
+
+   The offset matches the .fs-card-on inset (2rem desktop / 0.5rem
+   mobile) plus a small inner pad so the button sits just inside
+   the card's top-right edge, not against the viewport border. */
+.fs-card-on .fs-btn {
+  position: fixed !important;
+  top: calc(2rem + 0.55rem) !important;
+  right: calc(2rem + 0.65rem) !important;
+  z-index: 10000 !important;
+}
+@media (max-width: 600px) {
+  .fs-card-on .fs-btn {
+    top: calc(0.5rem + 0.5rem) !important;
+    right: calc(0.5rem + 0.55rem) !important;
+  }
+}
+

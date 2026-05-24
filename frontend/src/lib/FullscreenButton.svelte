@@ -97,16 +97,19 @@
 
 <style>
   .fs-btn {
-    /* Pin to top-right within the card body. Cards either anchor
-       this via flexbox in their header (margin-left:auto) or via
-       absolute positioning — both work. */
+    /* Pin to top-right within the card body. `margin-left: auto`
+       pushes the button to the rightmost slot of any flex parent
+       (card-header-row / bucket-header / row3-header / details
+       summary), guaranteeing top-right placement without needing
+       every card header to opt into justify-content: space-between
+       or a sibling spacer. */
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
     padding: 0;
-    margin: 0;
+    margin: 0 0 0 auto;
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.28);
     border-radius: 3px;
