@@ -796,7 +796,7 @@
       enableWatchlists={false}
       enableMovers={false}
       enablePinned={false}
-      enableSourceToggles={true}
+      enableSourceToggles={false}
       allowOrders={true}
       accountPicker={true}
       showSummary={true}
@@ -865,15 +865,34 @@
     margin-bottom: 0.3rem;
   }
 
-  /* Section labels */
+  /* Section labels — used as the heading inside every dashboard card
+     (Intraday Equity Curve, Margin Utilisation, Top Winners, Top
+     Losers, Market News, P&L Analysis, Agent activity, OPEN ORDERS).
+     Treatment: amber accent bar on the left + amber small-caps text.
+     Reads as a classic trader-platform "section tag" — distinct from
+     the body but tasteful, not shouting. */
   .mp-section-label {
-    font-size: 0.6rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.68rem;
     font-family: ui-monospace, monospace;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #7e97b8;
-    margin-bottom: 0.25rem;
+    letter-spacing: 0.1em;
+    color: #fbbf24;
+    margin-bottom: 0.45rem;
+    padding: 0.05rem 0;
+  }
+  .mp-section-label::before {
+    content: '';
+    display: inline-block;
+    width: 3px;
+    height: 0.85rem;
+    background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+    border-radius: 1px;
+    flex-shrink: 0;
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.45);
   }
 
   /* ── Hero row ────────────────────────────────────────────────────── */
