@@ -1233,15 +1233,21 @@
   .ot-side-block { display: flex; flex-direction: column; }
   .ot-side-block .ot-label { margin-bottom: 0.18rem; }
 
-  /* Side toggle (BUY / SELL) */
+  /* Side toggle (BUY / SELL / ADD / CLOSE). Fixed height + flex
+     centring so it lines up exactly with the lots row + steppers
+     in the sibling .ot-qty-block. The earlier padding-based sizing
+     left the side pill ~0.13rem taller than the 1.5rem steppers,
+     so the BUY/SELL label and the [−] N [+] glyphs sat at slightly
+     different y-centres. */
   .ot-side-toggle {
     display: flex;
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 3px;
     overflow: hidden;
+    height: 1.7rem;
   }
   .ot-side-btn {
-    padding: 0.4rem 0.75rem;
+    padding: 0 0.75rem;
     background: transparent;
     border: 0;
     color: #a3b9d0;
@@ -1249,6 +1255,10 @@
     font-weight: 700;
     cursor: pointer;
     flex: 1 1 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
   }
   .ot-side-buy.on  { background: rgba(74,222,128,0.18);  color: #4ade80; }
   .ot-side-sell.on { background: rgba(248,113,113,0.18); color: #f87171; }
@@ -1278,22 +1288,19 @@
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
      a single row; nowrap so the +/− and the dropdown can never
-     break onto two lines on narrow viewports. min-height matches
-     the BUY/SELL pills' rendered height (font 0.72 + padding
-     0.4×2 ≈ 1.5rem) so the two controls in .ot-row sit on the
-     same y-baseline — the previous 1.4rem steppers were 0.1rem
-     shorter, making the lots row feel visually offset above the
-     side toggle. */
+     break onto two lines on narrow viewports. Height pinned to
+     1.7rem to match the .ot-side-toggle so the [−] N [+] glyphs
+     and the BUY/SELL pill share the same y-baseline + y-centre. */
   .ot-lots-row {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
     flex-wrap: nowrap;
-    min-height: 1.5rem;
+    height: 1.7rem;
   }
   .ot-lots-step {
-    width: 1.5rem;
-    height: 1.5rem;
+    width: 1.7rem;
+    height: 1.7rem;
     padding: 0;
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.45);
