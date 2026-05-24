@@ -625,11 +625,12 @@
   // can paint a divider line at sub-group boundaries.
   const pinnedTopRows = $derived.by(() => {
     if (!showPinned) return [];
-    const sorted = unifiedRows.filter(isPinnedIndexRow).slice().sort((a, b) => {
-      const ra = pinRank(a), rb = pinRank(b);
-      if (ra !== rb) return ra - rb;
-      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
-    });
+    const sorted = unifiedRows.filter(r => r._majorGroup === 'pinned' && !isDetached(r.tradingsymbol))
+      .slice().sort((a, b) => {
+        const ra = pinRank(a), rb = pinRank(b);
+        if (ra !== rb) return ra - rb;
+        return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+      });
     let lastCat = null;
     return sorted.map(r => {
       const cat = pinCategory(pinRank(r));
@@ -638,16 +639,34 @@
       return tagged;
     });
   });
-  // mainRows respects the Watchlist filter (positions/holdings/movers
-  // already filter at the buildUnified entry via show* booleans, so we
-  // don't double-filter them here). Rows that are SOLELY watchlist
-  // entries hide when showWatchlist is off; rows that are also a
-  // position/holding stay visible via their other source flag.
-  const mainRows = $derived(unifiedRows.filter(r => {
-    if (isPinnedIndexRow(r)) return false;  // pinned, never in main
-    if (!showWatchlist && r.src?.w && !r.src?.p && !r.src?.h && !r.src?.u && !r.src?.m) return false;
-    return true;
-  }));
+  // mainRows hosts the Watchlist + Positions + Holdings + Movers
+  // majors below the Pinned strip. Each row carries its major as
+  // `_majorGroup`; the sort comparator lays them out in MAJOR_ORDER
+  // sequence (watchlist 1 → positions 2 → holdings 3 → movers 4).
+  // First row of each major gets `_majorFirst=true` so the row
+  // styling can paint a divider above it.
+  const mainRows = $derived.by(() => {
+    const rows = unifiedRows.filter(r => {
+      // Pinned major lives in pinnedTopRows; never appears in main.
+      if (r._majorGroup === 'pinned') return false;
+      // Watchlist major gated by the operator's source toggle.
+      if (r._majorGroup === 'watchlist' && !showWatchlist) return false;
+      // Positions / Holdings / Movers are pre-filtered at buildUnified
+      // entry via includePos / includeHold / includeMovers, so no
+      // additional gate needed here. (Symbols already absent.)
+      return true;
+    });
+    rows.sort((a, b) => {
+      if (a._majorOrder !== b._majorOrder) return a._majorOrder - b._majorOrder;
+      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+    });
+    let lastMajor = null;
+    for (const r of rows) {
+      r._majorFirst = (r._majorGroup !== lastMajor);
+      lastMajor = r._majorGroup;
+    }
+    return rows;
+  });
 
   $effect(() => {
     if (!gridReady || !grid) return;
@@ -1019,7 +1038,13 @@
       // standalone NIFTY25APRFUT position from also surfacing a NIFTY
       // anchor row (the future IS the tradable instrument; grouping
       // it under spot adds no signal).
-      const addUnderlying = (inst) => {
+      //
+      // The anchor row also carries the major group of its trigger
+      // (positions vs holdings) so buildUnified can land the anchor
+      // in the same major as its options. First wins — if NIFTY
+      // options exist in BOTH positions and holdings, the anchor
+      // gets the positions tag (priority: positions > holdings).
+      const addUnderlying = (inst, triggerMajor) => {
         if (!inst?.u) return;
         const t = String(inst.t || '').toUpperCase();
         if (t === 'EQ' || t === 'FUT') return;
@@ -1027,19 +1052,19 @@
         if (!isOpt) return;
         const info = resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts);
         if (info && !underlyingInfos.has(info.underlying_group)) {
-          underlyingInfos.set(info.underlying_group, info);
+          underlyingInfos.set(info.underlying_group, { ...info, _major: triggerMajor });
         }
       };
       for (const r of positions) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NFO';
-        if (lookup) addUnderlying(lookup(sym));
+        if (lookup) addUnderlying(lookup(sym), 'positions');
         if (sym) contractKeys.add(`${exch}:${sym}`);
       }
       for (const r of holdings) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NSE';
-        if (lookup) addUnderlying(lookup(sym));
+        if (lookup) addUnderlying(lookup(sym), 'holdings');
         if (sym) contractKeys.add(`${exch}:${sym}`);
       }
 
@@ -1140,18 +1165,40 @@
     return { underlying, kind, strike, opt_type, expiry };
   }
 
+  // Major-group ordering. Pinned at top, then user Watchlist, then
+  // Positions (the operator's open derivative book), then Holdings
+  // (CNC equity), then Movers (session signal). Used as the row sort
+  // primary key so the unified grid renders these as five visually
+  // contiguous blocks.
+  const MAJOR_ORDER = { pinned: 0, watchlist: 1, positions: 2, holdings: 3, movers: 4 };
+
   function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers) {
     const uq = pq?.underlyings || {};
     const cq = pq?.contracts   || {};
     const byKey = /** @type {Record<string, any>} */ ({});
-    const get = (key) => byKey[key] || (byKey[key] = {
-      key,
-      src: { w:false, h:false, p:false, u:false, m:false },
-      qty_pos: 0, qty_hold: 0,
-      pnl: null, day_pnl: null,
-      _avg_num: 0,
-      accounts: /** @type {Set<string>} */ (new Set()),
-    });
+    // Per-major keying: a symbol that qualifies for multiple majors
+    // renders as multiple rows (one per major). Within a major,
+    // symbols dedupe (a position in 3 accounts merges to one row).
+    //   __pin   pinned watchlist (Default + Markets + any operator-pinned)
+    //   __wl    user-created watchlist (is_pinned=false)
+    //   __pos   positions
+    //   __hold  holdings
+    //   __mov   movers (only created when symbol has no other major)
+    const MAJOR_SUFFIX = { pinned: '__pin', watchlist: '__wl', positions: '__pos', holdings: '__hold', movers: '__mov' };
+    const get = (sym, major) => {
+      const key = `${sym}${MAJOR_SUFFIX[major]}`;
+      if (byKey[key]) return byKey[key];
+      return byKey[key] = {
+        key,
+        _majorGroup: major,
+        _majorOrder: MAJOR_ORDER[major],
+        src: { w:false, h:false, p:false, u:false, m:false },
+        qty_pos: 0, qty_hold: 0,
+        pnl: null, day_pnl: null,
+        _avg_num: 0,
+        accounts: /** @type {Set<string>} */ (new Set()),
+      };
+    };
 
     function fill(row, sym) {
       const p = parseSymbol(sym, getInst);
@@ -1162,20 +1209,18 @@
       if (row.expiry     == null) row.expiry     = p.expiry;
     }
 
-    // 1. Watchlist (all selected lists). Each list carries an is_pinned
-    //    flag (true for the auto-seeded Default + Markets lists, false
-    //    for operator-created lists). Tagged onto the row as
-    //    `_fromPinnedList` so the downstream pinned-vs-main split can
-    //    use list membership instead of the legacy PIN_ORDER hardcode.
-    //    A row that appears in BOTH a pinned and a user list gets
-    //    _fromPinnedList=true (pinned wins) — pinned membership is the
-    //    "stronger" signal.
+    // 1. Watchlists. Each list carries an is_pinned flag (true for
+    //    auto-seeded Default + Markets, false for operator-created
+    //    lists). Pinned lists feed the Pinned major; non-pinned lists
+    //    feed the Watchlist major. A symbol that appears in BOTH a
+    //    pinned list AND a user list creates TWO rows — once per
+    //    major. Operator-visible overlap by design.
     for (const list of (actLists || [])) {
-      const listPinned = !!list?.is_pinned;
+      const major = list?.is_pinned ? 'pinned' : 'watchlist';
       for (const it of (list?.items || [])) {
         const q = wq[it.id];
         const sym = String(q?.quote_symbol || it.tradingsymbol).toUpperCase();
-        const row = get(sym);
+        const row = get(sym, major);
         row.exchange      = row.exchange || it.exchange;
         row.tradingsymbol = sym;
         row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
@@ -1183,8 +1228,9 @@
           row.watchlist_item_id = it.id;
           row.watchlist_list_id = list.id;
         }
-        row.src.w  = true;
-        if (listPinned) row._fromPinnedList = true;
+        row.src.w = true;
+        // Back-compat tag for the legacy isPinnedIndexRow check.
+        if (major === 'pinned') row._fromPinnedList = true;
         row.ltp    = q?.ltp    ?? row.ltp    ?? null;
         row.bid    = q?.bid    ?? row.bid    ?? null;
         row.ask    = q?.ask    ?? row.ask    ?? null;
@@ -1194,16 +1240,14 @@
       }
     }
 
-    // 2. Positions. Keyed by `${sym}__P` so the same tradingsymbol
-    //    that ALSO appears as a holding renders as its OWN row (user
-    //    explicitly wants the position/holding split kept). Multiple
-    //    accounts holding the same position symbol still merge here
-    //    because the suffix is per-source, not per-account.
+    // 2. Positions — major 'positions'. Multi-account positions for
+    //    the same symbol merge into a single row (qty / avg / pnl
+    //    accumulated across accounts).
     for (const r of (includePos === false ? [] : pos)) {
       const exch = r.exchange || 'NFO';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const row = get(`${sym}__P`);
+      const row = get(sym, 'positions');
       row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.p = true;
@@ -1227,13 +1271,12 @@
       fill(row, sym);
     }
 
-    // 3. Holdings. Keyed by `${sym}__H` for the same reason — keep
-    //    a position vs holding for the same symbol as TWO rows.
+    // 3. Holdings — major 'holdings'.
     for (const r of (includeHold === false ? [] : hold)) {
       const exch = r.exchange || 'NSE';
       const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const row = get(`${sym}__H`);
+      const row = get(sym, 'holdings');
       row.exchange      = row.exchange || exch;
       row.tradingsymbol = sym;
       row.src.h = true;
@@ -1259,11 +1302,14 @@
       fill(row, sym);
     }
 
-    // 4. Option underlyings.
+    // 4. Option-underlying anchors. Each anchor carries the major of
+    //    its trigger context (positions / holdings) so the anchor
+    //    lands in the same major as the options it's grouping.
     for (const [logicalName, q] of Object.entries(uq)) {
       const info = q._resolved;
       if (!info) continue;
-      const row = get(info.tradingsymbol);
+      const anchorMajor = info._major || 'positions';
+      const row = get(info.tradingsymbol, anchorMajor);
       row.exchange      = row.exchange || info.exchange;
       row.tradingsymbol = info.tradingsymbol;
       row.src.u = true;
@@ -1276,31 +1322,50 @@
       if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
     }
 
-    // 5. Movers — badge any symbol that appears in the movers list; if
-    //    it's not already in the grid, add it as a new row.
-    const moverSet = new Set((moverRows || []).map(m => String(m.tradingsymbol || '').toUpperCase()));
+    // 5. Movers — single-place rule. A symbol qualifies for the
+    //    Movers major ONLY if it has no existing row in any other
+    //    major. Symbols that already appear in Pinned / Watchlist /
+    //    Positions / Holdings get the mover badge stamped onto every
+    //    such row, but do NOT create an additional Movers row.
+    //
+    //    This fixes the previous "option underlyings showing in
+    //    movers" complaint — NIFTY moving 6% intraday is captured by
+    //    badging the existing positions / pinned NIFTY rows; it
+    //    doesn't surface as a fresh Movers entry.
+    const existingSymbols = new Set();
+    for (const row of Object.values(byKey)) {
+      if (row.tradingsymbol) existingSymbols.add(row.tradingsymbol);
+    }
     for (const m of (moverRows || [])) {
       const sym = String(m.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const row = get(sym);
+      if (existingSymbols.has(sym)) {
+        // Badge every existing row for this symbol (across majors).
+        for (const row of Object.values(byKey)) {
+          if (row.tradingsymbol === sym) {
+            row.src.m = true;
+            row._mover_sticky    = m.sticky ?? row._mover_sticky    ?? false;
+            row._mover_change_pct = m.change_pct ?? row._mover_change_pct ?? null;
+          }
+        }
+        continue;
+      }
+      // Pure mover — no other major qualification. Create a Movers row.
+      const row = get(sym, 'movers');
       row.src.m = true;
       row.exchange      = row.exchange || m.exchange || 'NSE';
       row.tradingsymbol = sym;
-      // Seed price fields only if not already populated by a higher-priority source.
       if (row.ltp == null && m.last_price != null)    row.ltp        = m.last_price;
       if (row.change_pct == null && m.change_pct != null) row.change_pct = m.change_pct;
       if (m.previous_close != null && row.change == null && row.ltp != null)
         row.change = row.ltp - m.previous_close;
-      // Track sticky flag for title tooltip in the badge.
       row._mover_sticky    = m.sticky ?? false;
       row._mover_change_pct = m.change_pct ?? null;
     }
-    // When showMovers is off, strip rows that are mover-only (no other source).
+    // When showMovers is off, strip the Movers-major rows entirely.
     if (!includeMovers) {
       for (const [k, row] of Object.entries(byKey)) {
-        if (row.src.m && !row.src.w && !row.src.h && !row.src.p && !row.src.u) {
-          delete byKey[k];
-        }
+        if (row._majorGroup === 'movers') delete byKey[k];
       }
     }
 
@@ -1602,6 +1667,13 @@
     // mini-sections at the very top of the grid feel distinct.
     if (r._pinFirst && r._pinCategory) {
       classes.push(`pin-divider pin-cat-${r._pinCategory}`);
+    }
+    // Major-group divider — first row of each major in mainRows
+    // (watchlist → positions → holdings → movers) gets an amber
+    // top-border + section label. Operator sees four visually
+    // distinct blocks below the Pinned strip.
+    if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned') {
+      classes.push(`major-divider major-${r._majorGroup}`);
     }
     if (s.p) {
       const q = Number(r.qty_pos) || 0;
@@ -2562,6 +2634,35 @@
   }
   :global(.ag-theme-algo .ag-row.pin-divider.pin-cat-idx:first-of-type) {
     border-top: none;
+  }
+
+  /* Major-group dividers — first row of each major in mainRows
+     (Watchlist → Positions → Holdings → Movers) gets a thicker
+     amber top-border + a thin amber gradient strip above. The very
+     first major (watchlist when active, else positions) doesn't
+     skip the divider — pinnedTopRowData sits above mainRows so the
+     transition from Pinned → next-major is visually meaningful.
+     Per-major sub-tint controls the colour temperature of the
+     divider (sky for positions/holdings activity-related, amber
+     for watchlist/movers signal-related). */
+  :global(.ag-theme-algo .ag-row.major-divider) {
+    border-top: 2px solid rgba(251, 191, 36, 0.55);
+    box-shadow: inset 0 1px 0 rgba(251, 191, 36, 0.18);
+  }
+  :global(.ag-theme-algo .ag-row.major-watchlist) {
+    border-top-color: rgba(251, 191, 36, 0.55);
+  }
+  :global(.ag-theme-algo .ag-row.major-positions) {
+    border-top-color: rgba(125, 211, 252, 0.55);
+    box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.18);
+  }
+  :global(.ag-theme-algo .ag-row.major-holdings) {
+    border-top-color: rgba(134, 239, 172, 0.55);
+    box-shadow: inset 0 1px 0 rgba(134, 239, 172, 0.18);
+  }
+  :global(.ag-theme-algo .ag-row.major-movers) {
+    border-top-color: rgba(196, 181, 253, 0.55);
+    box-shadow: inset 0 1px 0 rgba(196, 181, 253, 0.18);
   }
 
   /* Grid containers */
