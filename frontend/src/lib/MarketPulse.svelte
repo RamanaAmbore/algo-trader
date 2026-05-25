@@ -1130,29 +1130,44 @@
       // in the same major as its options. First wins — if NIFTY
       // options exist in BOTH positions and holdings, the anchor
       // gets the positions tag (priority: positions > holdings).
-      const addUnderlying = (inst, triggerMajor) => {
-        if (!inst) return;
-        const t = String(inst.t || '').toUpperCase();
-        if (t === 'EQ') return;
-        const isOpt = (t === 'CE' || t === 'PE');
-        const isFut = (t === 'FUT');
+      // Parse a Kite derivative tradingsymbol into underlying / expiry /
+      // kind without consulting the instruments cache. Handles both
+      // monthly-options (NIFTY25APR22000CE), weekly-options
+      // (NIFTY2540422000CE), monthly-futures (NIFTY25APRFUT), and the
+      // commodity variants (CRUDEOIL26JUNFUT, GOLDM26MAY152000PE).
+      // Returns null for equity tradingsymbols. Used as a fallback path
+      // for the anchor-creation loop when the instruments cache hasn't
+      // loaded this contract yet (race on cold start) — instead of
+      // bailing silently, we synthesize the minimum we need.
+      const _MONTH = { JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',
+                       JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12' };
+      const _parseDerivSym = (sym) => {
+        const s = String(sym || '').toUpperCase();
+        // Monthly opt:  PREFIX + YYMMM + STRIKE + CE|PE
+        let m = s.match(/^([A-Z]+)(\d{2})([A-Z]{3})\d+(CE|PE)$/);
+        if (m) return { underlying: m[1], expiry: `20${m[2]}-${_MONTH[m[3]] || '01'}-01`, kind: m[4] };
+        // Weekly opt: PREFIX + YY + MM + DD + STRIKE + CE|PE
+        m = s.match(/^([A-Z]+)(\d{2})(\d{1,2})(\d{1,2})\d+(CE|PE)$/);
+        if (m) return { underlying: m[1], expiry: `20${m[2]}-${String(m[3]).padStart(2,'0')}-${String(m[4]).padStart(2,'0')}`, kind: m[5] };
+        // Monthly fut:  PREFIX + YYMMM + FUT
+        m = s.match(/^([A-Z]+)(\d{2})([A-Z]{3})FUT$/);
+        if (m) return { underlying: m[1], expiry: `20${m[2]}-${_MONTH[m[3]] || '01'}-01`, kind: 'FUT' };
+        return null;
+      };
+
+      const addUnderlying = (sym, triggerMajor, optInst) => {
+        // Bypass the instruments cache — parse the tradingsymbol
+        // directly. Without this, contracts missing from the cache
+        // (cold-start race, new strikes, weekly options Kite
+        // publishes late) silently lost their parent anchor row.
+        const parsed = _parseDerivSym(sym);
+        if (!parsed) return;
+        const { underlying: u, expiry, kind } = parsed;
+        const isOpt = (kind === 'CE' || kind === 'PE');
+        const isFut = (kind === 'FUT');
         if (!isOpt && !isFut) return;
-        // Prefer the underlying ticker derived from the tradingsymbol
-        // prefix over Kite's `name` field (which carries the LONG
-        // company name — "INTERGLOBE AVIATION" for INDIGO options,
-        // "GOLD MINI" for GOLDM). The ticker prefix is what matches
-        // the option-position rows' `underlying` field in
-        // buildUnified, so the anchor groups correctly with its
-        // children. Falls back to inst.u for the rare row whose
-        // tradingsymbol doesn't start with an alpha prefix.
-        const symMatch = String(inst.s || '').match(/^([A-Z]+)/);
-        const u = symMatch ? symMatch[1] : inst.u;
-        if (!u) return;
-        // FUT positions (e.g. CRUDEOIL/GOLD on MCX) also synthesize
-        // an underlying anchor so the futures row sits under a
-        // parent group like options do.
         const info = isOpt
-          ? resolveUnderlyingForOption(u, inst.x, nearestFut, listFuts)
+          ? resolveUnderlyingForOption(u, expiry, nearestFut, listFuts)
           : resolveUnderlying(u, nearestFut);
         if (info && !underlyingInfos.has(info.underlying_group)) {
           underlyingInfos.set(info.underlying_group, { ...info, _major: triggerMajor });
@@ -1161,14 +1176,18 @@
       for (const r of positions) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NFO';
-        if (lookup) addUnderlying(lookup(sym), 'positions');
-        if (sym) contractKeys.add(`${exch}:${sym}`);
+        if (sym) {
+          addUnderlying(sym, 'positions');
+          contractKeys.add(`${exch}:${sym}`);
+        }
       }
       for (const r of holdings) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NSE';
-        if (lookup) addUnderlying(lookup(sym), 'holdings');
-        if (sym) contractKeys.add(`${exch}:${sym}`);
+        if (sym) {
+          addUnderlying(sym, 'holdings');
+          contractKeys.add(`${exch}:${sym}`);
+        }
       }
       // Watchlist option-anchor pass — when the operator has an
       // option (CE/PE) in any active watchlist, synthesise an
@@ -1185,7 +1204,7 @@
         const major = list?.is_pinned ? 'pinned' : 'watchlist';
         for (const it of (list?.items || [])) {
           const sym = String(it.tradingsymbol || '').toUpperCase();
-          if (sym && lookup) addUnderlying(lookup(sym), major);
+          if (sym) addUnderlying(sym, major);
         }
       }
 
