@@ -999,6 +999,9 @@
     if (!_marginEl || _marginGrid) return;
     _marginGrid = createGrid(_marginEl, {
       ..._baseGridOpts,
+      // Pinned-bottom TOTAL row inherits the algo theme's totals-row
+      // amber-accent styling — mirrors the Funds grid pattern.
+      getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
         // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
         // 46 px is the tightest fit that still shows the 6-char code
@@ -1180,9 +1183,24 @@
     avail:    r.avail,
     util_pct: r.util_pct,
   })));
+  // TOTAL row — sum used + avail across accounts, derive util %
+  // from the totals (not an average of per-account ratios — that'd
+  // double-weight small accounts). Pinned at the grid bottom.
+  const _marginTotal = $derived.by(() => {
+    const tu = _marginRows.reduce((s, r) => s + (Number(r.used) || 0), 0);
+    const ta = _marginRows.reduce((s, r) => s + (Number(r.avail) || 0), 0);
+    return [{
+      account:  'TOTAL',
+      used:     tu,
+      avail:    ta,
+      util_pct: (tu + ta) > 0 ? tu / (tu + ta) : 0,
+    }];
+  });
   $effect(() => {
     if (!_marginReady || !_marginGrid) return;
     _marginGrid.setGridOption('rowData', _marginRows);
+    _marginGrid.setGridOption('pinnedBottomRowData',
+      _marginRows.length > 0 ? _marginTotal : []);
   });
 
   // W/L grids — active tab's bucket → ag-Grid rows.
