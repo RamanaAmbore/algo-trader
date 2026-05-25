@@ -561,14 +561,27 @@ async def _task_expiry_check() -> None:
     from backend.api.algo.expiry import ExpiryEngine
     from backend.api.routes.algo import _broadcast_event
 
+    from backend.shared.helpers.settings import get_string
     while True:
         now = timestamp_indian()
-        # Schedule for 09:20 IST daily
-        check_time = now.replace(hour=9, minute=20, second=0, microsecond=0)
+        # Schedule for algo.expiry_check_time IST daily (default 09:20).
+        # Operator can update via /admin/settings (e.g. "15:00" for an
+        # EOD-only close window) — re-read each loop so changes apply
+        # on the next cycle without a service restart.
+        cfg_time = get_string("algo.expiry_check_time", "09:20") or "09:20"
+        try:
+            hh, mm = cfg_time.split(":", 1)
+            hh, mm = int(hh), int(mm)
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError("out of range")
+        except Exception:
+            logger.warning(f"Background: algo.expiry_check_time={cfg_time!r} invalid, defaulting to 09:20")
+            hh, mm = 9, 20
+        check_time = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if now >= check_time:
             check_time += timedelta(days=1)
         sleep_s = (check_time - now).total_seconds()
-        logger.info(f"Background: expiry check sleeping {sleep_s/3600:.1f}h until {check_time.strftime('%H:%M')}")
+        logger.info(f"Background: expiry check sleeping {sleep_s/3600:.1f}h until {check_time.strftime('%H:%M')} IST")
         await asyncio.sleep(sleep_s)
 
         try:

@@ -224,6 +224,12 @@ SEEDS: list[tuple] = [
     ("algo",        "algo.expiry_rescan_minutes",   "int", 30,
      "Re-scan interval (min) on expiry day for new ITM positions.",
      "min", {"min": 1, "max": 120, "step": 1}),
+    ("algo",        "algo.expiry_check_time",       "string", "09:20",
+     "Wall-clock IST time-of-day (HH:MM) when the bg-expiry task "
+     "wakes to scan for expiring positions. Default 09:20 = market "
+     "open + 5 min. Change to e.g. '15:00' for an EOD-only close "
+     "window. Applies to prod only (dev skips bg-expiry entirely).",
+     "HH:MM", {}),
 
     # execution.paper_trading_mode + execution.shadow_mode are owned by
     # /api/admin/execution/mode (navbar combobox) — single source of
