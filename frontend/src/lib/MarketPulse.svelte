@@ -2376,7 +2376,10 @@
     if (ev.key === 'Escape') {
       if (ctxMenu) { closeContextMenu(); return; }
       if (optionPickerUnderlying) { closeOptionPicker(); return; }
-      if (typeaheadOpen) { typeaheadOpen = false; return; }
+      // Only consume Esc for an actually-rendered typeahead (open AND
+      // non-empty). With typeaheadOpen-on-focus + empty list, the old
+      // guard swallowed Esc when there was nothing visible to close.
+      if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; return; }
       if (searchOpen) { closeSearch(); return; }
       ticketProps = null;
       return;
@@ -2753,12 +2756,14 @@
                 if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
                 else addRow();
               } else if (e.key === 'Escape') {
-                // First Esc closes the typeahead suggestions (if open),
-                // second Esc closes the popup. handleKeydown can't see
-                // this event because the global guard bails on
-                // input/textarea targets.
+                // First Esc closes the typeahead suggestions if they're
+                // ACTUALLY rendered (typeaheadOpen AND non-empty); a
+                // second Esc closes the popup. When the dropdown is
+                // invisible — onfocus sets typeaheadOpen=true even when
+                // typeahead is [] — first Esc would otherwise no-op,
+                // forcing operators to press Esc twice to dismiss.
                 e.preventDefault();
-                if (typeaheadOpen) { typeaheadOpen = false; }
+                if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
                 else { closeSearch(); }
               }
             }}
@@ -2802,7 +2807,10 @@
               if (e.key === 'Enter') { e.preventDefault(); makeListAndClose(); }
               else if (e.key === 'Escape') {
                 e.preventDefault();
-                if (typeaheadOpen) { typeaheadOpen = false; }
+                // Symmetric with the symbol input — only consume Esc
+                // for an actually-rendered typeahead, otherwise close
+                // the popup directly so single Esc dismisses.
+                if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
                 else { closeSearch(); }
               }
             }}
