@@ -147,6 +147,11 @@
   // existence of the top-10 cap until the operator clicked away.
   let _winTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
   let _losTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
+  // Capital + Equity merged into one tabbed card so they share half
+  // the page width on desktop (with the intraday equity curve filling
+  // the right half). Default: Capital — that's the trader's first
+  // "can I take risk?" glance.
+  let _capEqTab = $state(/** @type {'capital'|'equity'} */ ('capital'));
 
   // Per-card fullscreen toggles. Each card binds its own slot —
   // multiple cards can theoretically open at once but only one is
@@ -622,7 +627,15 @@
   // ── Equity chart derived state ─────────────────────────────────────
   const _equityDomain = $derived.by(() => {
     if (!_equityPoints.length) return null;
-    const vals = _equityPoints.map(p => p.cum_pnl);
+    // Use `day_pnl` (today's P&L) — NOT `cum_pnl` (lifetime P&L). The
+    // lifetime number is ₹4-5M and dwarfs the ₹40k of intraday
+    // movement; forcing zero into a 4.5M-scale chart visually flattens
+    // the entire intraday curve into a horizontal line.
+    //
+    // day_pnl is centred near zero with small absolute swings — the
+    // chart actually animates per-tick. Hover tooltip still shows
+    // both day and cum so the operator can read the bigger context.
+    const vals = _equityPoints.map(p => p.day_pnl);
     let yMin = Math.min(...vals);
     let yMax = Math.max(...vals);
     // ensure zero is always visible; add 10% padding
@@ -648,7 +661,7 @@
 
   const _eqPolyline = $derived.by(() => {
     if (!_equityPoints.length || !_equityDomain) return '';
-    return _equityPoints.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.cum_pnl).toFixed(1)}`).join(' ');
+    return _equityPoints.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.day_pnl).toFixed(1)}`).join(' ');
   });
 
   const _eqAreaPath = $derived.by(() => {
@@ -657,14 +670,14 @@
     const zero = _eqY(0);
     const first = `${_eqX(pts[0].ts).toFixed(1)},${zero}`;
     const last  = `${_eqX(pts[pts.length - 1].ts).toFixed(1)},${zero}`;
-    const line  = pts.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.cum_pnl).toFixed(1)}`).join(' L ');
+    const line  = pts.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.day_pnl).toFixed(1)}`).join(' L ');
     return `M ${first} L ${line} L ${last} Z`;
   });
 
   const _eqZeroY = $derived(_equityDomain ? _eqY(0) : null);
 
   const _eqPositive = $derived(
-    _equityPoints.length ? _equityPoints[_equityPoints.length - 1].cum_pnl >= 0 : true
+    _equityPoints.length ? _equityPoints[_equityPoints.length - 1].day_pnl >= 0 : true
   );
 
   const _eqLineColor  = $derived(_eqPositive ? '#4ade80' : '#f87171');
@@ -726,7 +739,7 @@
     }
     _hoverIdx = best;
     _hoverX   = parseFloat(_eqX(_equityPoints[best].ts).toFixed(1));
-    _hoverY   = parseFloat(_eqY(_equityPoints[best].cum_pnl).toFixed(1));
+    _hoverY   = parseFloat(_eqY(_equityPoints[best].day_pnl).toFixed(1));
   }
 
   function _eqMouseLeave() { _hoverIdx = null; }
@@ -1397,12 +1410,110 @@
   </div>
 {/if}
 
-<!-- Row 1: Intraday equity curve (full width hero) -->
-<div class="dash-row1">
-  <!-- Intraday equity curve — full-width hero. Margin gauges
-       moved into the Capital card below, so the chart gets the
-       full page width. Reads like Bloomberg's portfolio chart
-       on a desktop PRTU page. -->
+<!-- Row 1 (split): Capital+Equity tabbed card LEFT half, Intraday
+     Equity Curve RIGHT half. Earlier the chart filled a full-width
+     hero row and Capital+Equity sat below at 1:1. The split layout
+     keeps the operator's three first-glance signals (cash, equity
+     P&L, curve trajectory) on one screen — same as Bloomberg PRTU
+     where the portfolio sidebar lives alongside the chart. Stacks
+     on mobile. -->
+<div class="dash-row1-split">
+
+  <!-- LEFT: Capital | Equity tabbed card -->
+  <section class="bucket-card cap-eq-tabbed"
+    class:fs-card-on={_fsCapital || _fsEquity}
+    class:is-collapsed={_colCapital && _colEquity}>
+    <div class="bucket-header">
+      <!-- Tab bar replaces the section label. Active tab carries
+           the same amber underline + bg the W/L tabs use. -->
+      <div class="cap-eq-tabs" role="tablist">
+        <button type="button" role="tab"
+          class="cap-eq-tab" class:cap-eq-tab-on={_capEqTab === 'capital'}
+          aria-selected={_capEqTab === 'capital'}
+          onclick={() => _capEqTab = 'capital'}>Capital</button>
+        <button type="button" role="tab"
+          class="cap-eq-tab" class:cap-eq-tab-on={_capEqTab === 'equity'}
+          aria-selected={_capEqTab === 'equity'}
+          onclick={() => _capEqTab = 'equity'}>Equity</button>
+      </div>
+      {#if _capEqTab === 'equity'}
+        <AccountMultiSelect
+          bind:value={_eqAccounts}
+          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      {/if}
+      {#if _heroLoadedAt}
+        <span class="bucket-refresh-chip" title="Last refreshed">{_heroLoadedAt}</span>
+      {/if}
+      <!-- Bind targets the active-tab's own state pair. Svelte 5
+           doesn't permit ternary expressions inside `bind:`, so we
+           split into two component instances guarded by {#if}. Each
+           CollapseButton hydrates from its own localStorage key, so
+           the operator's collapse intent persists per-tab. -->
+      {#if _capEqTab === 'capital'}
+        <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
+        <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
+      {:else}
+        <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
+        <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
+      {/if}
+    </div>
+
+    <!-- BOTH panels stay mounted (hidden, not {#if}) so ag-Grid
+         instances don't orphan when the operator flips tabs. -->
+    <!-- Capital panel -->
+    <div class="card-body" hidden={_capEqTab !== 'capital' || _colCapital}>
+      {#if _marginRows.length > 0}
+        <div class="bucket-subheader">Margin Utilisation</div>
+      {/if}
+      <div
+        bind:this={_marginEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_marginRows.length === 0}></div>
+
+      {#if _fundsBody.length > 0}
+        <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
+      {/if}
+      <div
+        bind:this={_fundsEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_fundsBody.length === 0}></div>
+
+      {#if _marginRows.length === 0 && _fundsBody.length === 0}
+        <EmptyState message="No accounts connected" />
+      {/if}
+    </div>
+
+    <!-- Equity panel -->
+    <div class="card-body" hidden={_capEqTab !== 'equity' || _colEquity}>
+      {#if _positionsSummary.length > 0}
+        <div class="bucket-subheader">
+          Positions
+          <span class="eq-count">{_positionsCount}</span>
+        </div>
+      {/if}
+      <div
+        bind:this={_eqPosEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_positionsSummary.length === 0}></div>
+
+      {#if _holdingsSummary.length > 0}
+        <div class="bucket-subheader bucket-subheader-spaced">
+          Holdings
+          <span class="eq-count">{_holdingsCount}</span>
+        </div>
+      {/if}
+      <div
+        bind:this={_eqHoldEl}
+        class="ag-theme-algo dash-mini-grid"
+        class:is-empty={_holdingsSummary.length === 0}></div>
+
+      {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
+        <EmptyState message="No equity exposure" />
+      {/if}
+    </div>
+  </section>
+
+  <!-- RIGHT: Intraday Equity Curve -->
   <section class="row1-col row1-col-chart"
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
@@ -1533,116 +1644,8 @@
   </section>
 </div>
 
-<!-- Row 1.5: Capital + Equity buckets — the page's main two-column row.
-     Capital (margin gauges + Funds table) sits left, Equity (tabbed
-     Positions / Holdings summary) sits right. Both natural-height,
-     equal-width on desktop; stacks on mobile.
+<!-- Capital + Equity moved into the split row above as tabs. -->
 
-     Industry reference: IB Mosaic and Bloomberg PRTU tab the
-     positions/orders/holdings panes inside a single rectangle —
-     same idiom. Count chips on each tab keep the hidden one in
-     peripheral awareness. -->
-<div class="dash-buckets">
-  <!-- Capital card — funds + margin utilisation. The two natural
-       siblings: "what cash do I have" + "how much of my margin is
-       in use" answer the same question (can I take on more risk?). -->
-  <section class="bucket-card bucket-cap"
-    class:fs-card-on={_fsCapital}
-    class:is-collapsed={_colCapital}>
-    <div class="bucket-header">
-      <span class="mp-section-label">Capital</span>
-      {#if _heroLoadedAt}
-        <!-- Freshness chip — same `_heroLoadedAt` that drives the
-             page-header timestamp. Funds + margin grids derive from
-             the loadHero batch so they share the same refresh moment;
-             surfacing it on the card directly avoids the "is this
-             still polling?" question the operator was hitting. -->
-        <span class="bucket-refresh-chip" title="Capital data last refreshed at this time">{_heroLoadedAt}</span>
-      {/if}
-      <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
-      <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
-    </div>
-
-    <!-- Body wrapped in a single [hidden] toggle (not {#if}) so the
-         ag-Grid elements stay mounted across collapse/expand cycles.
-         Without this, bind:this assigns null on collapse, the grid
-         instance gets orphaned, and re-expand mounts an empty new
-         element. -->
-    <div class="card-body" hidden={_colCapital}>
-      <!-- Margin Utilisation — ag-Grid replaces the SVG donuts. -->
-      {#if _marginRows.length > 0}
-        <div class="bucket-subheader">Margin Utilisation</div>
-      {/if}
-      <div
-        bind:this={_marginEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_marginRows.length === 0}></div>
-
-      <!-- Funds — per-account cash + collateral + avail/used margin. -->
-      {#if _fundsBody.length > 0}
-        <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
-      {/if}
-      <div
-        bind:this={_fundsEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_fundsBody.length === 0}></div>
-
-      {#if _marginRows.length === 0 && _fundsBody.length === 0}
-        <EmptyState message="No accounts connected" />
-      {/if}
-    </div>
-  </section>
-
-  <!-- Equity card — Positions Summary + Holdings Summary stacked.
-       Earlier this was tabbed [Positions] / [Holdings], but tab-view
-       left the right half of the card empty when one side rendered.
-       Stacked uses the card's full vertical space: positions on top
-       (intraday-relevant, glanced first), holdings below. Both are
-       compact HTML tables sharing the same .cap-table treatment as
-       Capital. Counts are inline next to each sub-heading. -->
-  <section class="bucket-card bucket-eq"
-    class:fs-card-on={_fsEquity}
-    class:is-collapsed={_colEquity}>
-    <div class="bucket-header">
-      <span class="mp-section-label">Equity</span>
-      <AccountMultiSelect
-        bind:value={_eqAccounts}
-        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
-      <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
-    </div>
-
-    <div class="card-body" hidden={_colEquity}>
-      <!-- Positions Summary — intraday, glanced first. -->
-      {#if _positionsSummary.length > 0}
-        <div class="bucket-subheader">
-          Positions
-          <span class="eq-count">{_positionsCount}</span>
-        </div>
-      {/if}
-      <div
-        bind:this={_eqPosEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_positionsSummary.length === 0}></div>
-
-      <!-- Holdings Summary — EOD picture, sits below positions. -->
-      {#if _holdingsSummary.length > 0}
-        <div class="bucket-subheader bucket-subheader-spaced">
-          Holdings
-          <span class="eq-count">{_holdingsCount}</span>
-        </div>
-      {/if}
-      <div
-        bind:this={_eqHoldEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_holdingsSummary.length === 0}></div>
-
-      {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
-        <EmptyState message="No equity exposure" />
-      {/if}
-    </div>
-  </section>
-</div>
 
 <!-- Row 2: Top Winners (left) + Top Losers (right). Each card carries
      five tabbed buckets — Underlying · Midcap · Smallcap · Holdings ·
@@ -1962,14 +1965,21 @@
   }
   .bucket-refresh-chip + :global(button) { margin-left: 0.4rem; }
 
-  /* ── Row 1: equity curve (full-width hero) ───────────────────────── */
-  /* Earlier the equity curve shared this row with the margin gauges
-     at a 1.6:1 ratio (≥1024px). Gauges moved into the Capital bucket
-     so the chart now claims the full width — same idiom as Bloomberg
-     PRTU's portfolio chart at the top of a desktop view. */
-  .dash-row1 {
-    display: block;
+  /* ── Row 1 (split): Capital/Equity tabbed card + Equity curve ───── */
+  /* Earlier the equity curve filled a full-width hero row and Capital
+     / Equity sat below at 1:1. The split layout keeps Capital + Equity
+     + curve all in one glance — Bloomberg PRTU's portfolio sidebar
+     beside the chart. Stacks below 1024 px. */
+  .dash-row1-split {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.6rem;
     margin-bottom: 0.75rem;
+  }
+  @media (min-width: 1024px) {
+    .dash-row1-split {
+      grid-template-columns: 1fr 1fr;
+    }
   }
   .row1-col {
     min-width: 0;
@@ -1979,6 +1989,35 @@
     border-radius: 6px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  /* Tabbed Capital/Equity card — uses the bucket-card chrome but
+     replaces the section label with a tab strip. Tabs share the
+     same amber-underline palette as the W/L tabs for consistency. */
+  .cap-eq-tabbed { display: flex; flex-direction: column; }
+  .cap-eq-tabs {
+    display: inline-flex;
+    gap: 0.15rem;
+    margin-right: 0.5rem;
+  }
+  .cap-eq-tab {
+    background: transparent;
+    border: none;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.55rem 0.18rem;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 120ms, border-color 120ms;
+  }
+  .cap-eq-tab:hover { color: #c8d8f0; }
+  .cap-eq-tab-on {
+    color: #fbbf24;
+    border-bottom-color: #fbbf24;
   }
 
   /* Equity curve */
