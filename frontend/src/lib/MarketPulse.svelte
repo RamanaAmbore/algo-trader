@@ -294,7 +294,17 @@
   // selected ⇒ watchlist rows shown. Removing this duplication
   // collapses what used to be a tabs row + a separate Sources picker
   // into one control.
-  let selectedShow = $state(/** @type {string[]} */ ([]));
+  //
+  // Seed with EVERY default source on at mount — otherwise the
+  // propagation $effect below derives selectedSources = [] which flips
+  // every showXxx boolean off and the grid renders nothing while we
+  // wait for loadLists() to maybe-fire-a-seed. The prune $effect strips
+  // out any source the embedder doesn't actually enable (so disabling
+  // movers, pinned, etc. via props still works). Watchlist tokens get
+  // appended later by loadLists() once /watchlists comes back.
+  let selectedShow = $state(/** @type {string[]} */ ([
+    'src:pinned', 'src:positions', 'src:holdings', 'src:movers',
+  ]));
 
   // Options list rebuilds whenever the available sources or the user's
   // watchlist set changes. Sources come first (Pinned, Positions, …),
@@ -988,16 +998,15 @@
     try {
       lists = await fetchWatchlists();
       if (!lists.length) return;
-      // First-load seed of the unified Show multiselect — when no tokens
-      // are persisted (selectedShow empty), default to "everything on":
-      // every available source + every watchlist. The propagation
-      // $effect derives selectedSources + activeIds from this.
-      if (selectedShow.length === 0) {
-        const srcTokens = [..._availableSourceValues]
-          .filter(s => s !== 'watchlist')   // implicit via wl: tokens
-          .map(s => `src:${s}`);
-        const wlTokens  = lists.map(l => `wl:${l.id}`);
-        selectedShow = [...srcTokens, ...wlTokens];
+      // selectedShow is seeded eagerly with source tokens at declaration
+      // (so the grid renders even when there are no watchlists). Append
+      // every loaded watchlist's wl: token IF no wl: tokens are present
+      // yet — first-time activation only, so the operator's later
+      // deselections aren't clobbered by a subsequent loadLists() poll.
+      const hasAnyWl = selectedShow.some(v => v.startsWith('wl:'));
+      if (!hasAnyWl) {
+        const wlTokens = lists.map(l => `wl:${l.id}`);
+        selectedShow = [...selectedShow, ...wlTokens];
       } else {
         // Lists may have changed underneath us — drop any wl: token
         // whose id no longer exists. The pruning $effect at the top
