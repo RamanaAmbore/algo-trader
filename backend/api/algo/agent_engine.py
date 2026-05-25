@@ -120,6 +120,32 @@ def is_grammar_tree(cond) -> bool:
     return 'metric' in cond and 'scope' in cond
 
 
+def _fire_at_window_active(fire_at: str, now, window_sec: int = 360) -> bool:
+    """Return True when wall-clock IST is within `window_sec` of `fire_at`.
+
+    `fire_at` is "HH:MM" IST. `now` is an aware datetime in any zone.
+    Window opens at fire_at and lasts window_sec seconds — covers the
+    full background poll cadence (default 5 min + 60 s slack so a
+    single missed tick still catches the slot).
+
+    Returns False on parse errors so a malformed value never fires
+    an agent. The route layer already rejects bad input on save;
+    this is defense-in-depth.
+    """
+    if not fire_at or not now:
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        hh_str, mm_str = fire_at.split(":", 1)
+        hh, mm = int(hh_str), int(mm_str)
+        now_ist = now.astimezone(ZoneInfo("Asia/Kolkata"))
+        target = now_ist.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        delta = (now_ist - target).total_seconds()
+        return 0 <= delta < window_sec
+    except Exception:
+        return False
+
+
 def _v2_has_rate_metric(cond) -> bool:
     """
     Walk the tree looking for any leaf whose metric is a rate_* metric. When
@@ -1020,6 +1046,17 @@ async def run_cycle(context: dict, broadcast_fn=None,
                 elapsed = (datetime.now(timezone.utc) - agent.last_triggered_at).total_seconds() / 60
                 if elapsed < agent.cooldown_minutes:
                     continue
+
+        # fire_at_time gate — when set ("HH:MM" IST), the agent only
+        # evaluates if the current IST wall-clock falls inside a small
+        # window around that time. The window is the run_cycle poll
+        # interval + 60 s slack so a 5-minute poll cadence still
+        # reliably catches the slot. Bypass on sim runs so the
+        # "Run in Simulator" button never has to wait for wall-clock.
+        if not bypass_schedule and getattr(agent, "fire_at_time", None):
+            if not _fire_at_window_active(agent.fire_at_time, now,
+                                          window_sec=int(get_int('alerts.fire_at_window_sec', 360))):
+                continue
 
         # v2 grammar dispatch: metric/scope leaves or all/any/not composites
         # go through backend.api.algo.agent_evaluator. Baseline gate and

@@ -340,6 +340,15 @@ class Agent(Base):
     schedule: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="market_hours")
     cooldown_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
 
+    # Time-of-day gate. When set ("HH:MM" 24-hour IST), the agent only
+    # evaluates / fires during a small window around this wall-clock
+    # time once per IST date — useful for "fire at 14:30 IST every
+    # expiry day" close-position agents, EOD summaries, etc.
+    # NULL = no time gate (legacy behaviour — evaluated every tick).
+    # Stored as a string so DB doesn't need timezone-aware TIME WITH
+    # ZONE handling; engine parses "HH:MM" at evaluation time.
+    fire_at_time: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+
     # Per-agent trade routing — paper / live. Per-agent override
     # consulted by actions._resolve_mode AFTER the dev / shadow gates;
     # default seeded from execution.default_agent_trade_mode at create

@@ -69,6 +69,7 @@ class AgentInfo(msgspec.Struct):
     scope: str
     schedule: str | None
     cooldown_minutes: int
+    fire_at_time: str | None
     status: str
     last_triggered_at: str | None
     trigger_count: int
@@ -95,6 +96,9 @@ class AgentCreateRequest(msgspec.Struct):
     scope: str = "total"
     schedule: str = "market_hours"
     cooldown_minutes: int = 30
+    # HH:MM IST. Optional — when set, agent only fires once per IST
+    # date inside a small window around this wall-clock time.
+    fire_at_time: str | None = None
     # Lifespan accepted on create so algos spawning agents can declare
     # one-shot or bounded behaviour up front. Defaults preserve the
     # existing persistent shape.
@@ -114,6 +118,8 @@ class AgentUpdateRequest(msgspec.Struct):
     scope: str | None = None
     schedule: str | None = None
     cooldown_minutes: int | None = None
+    # HH:MM IST or empty string to clear. UNSET = leave column unchanged.
+    fire_at_time: str | None = None
     lifespan_type:        str | None = None
     lifespan_max_fires:   int | None = None
     lifespan_expires_at:  str | None = None
@@ -186,12 +192,43 @@ def _compose_ai_description(prompt: str, why: str, llm_desc: str | None) -> str:
     return "\n".join(parts) if parts else (llm_desc or "")
 
 
+def _normalize_fire_at(val: str | None) -> str | None:
+    """Validate & canonicalise an HH:MM time string.
+
+    Returns None for null / empty-string (clear gate) so the column
+    drops back to NULL. Rejects malformed values with 400 so the UI
+    catches typos before they corrupt the engine's gate check.
+    """
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    # Accept HH:MM (single or double-digit hours/minutes). Reject
+    # everything else so the engine's wall-clock gate never has to
+    # defend against garbage.
+    parts = s.split(":")
+    if len(parts) != 2:
+        raise HTTPException(status_code=400,
+            detail=f"fire_at_time must be 'HH:MM' — got {s!r}")
+    try:
+        hh, mm = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise HTTPException(status_code=400,
+            detail=f"fire_at_time must be 'HH:MM' — got {s!r}")
+    if not (0 <= hh < 24 and 0 <= mm < 60):
+        raise HTTPException(status_code=400,
+            detail=f"fire_at_time hours 0-23, minutes 0-59 — got {s!r}")
+    return f"{hh:02d}:{mm:02d}"
+
+
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
         id=a.id, slug=a.slug, name=a.name, description=a.description,
         conditions=a.conditions or {}, events=a.events or [],
         actions=a.actions or [], scope=a.scope,
         schedule=a.schedule, cooldown_minutes=a.cooldown_minutes,
+        fire_at_time=getattr(a, "fire_at_time", None),
         status=a.status,
         last_triggered_at=a.last_triggered_at.isoformat() if a.last_triggered_at else None,
         trigger_count=a.trigger_count, last_error=a.last_error,
@@ -308,6 +345,7 @@ class AgentController(Controller):
                 conditions=data.conditions, events=data.events, actions=data.actions,
                 scope=data.scope, schedule=data.schedule,
                 cooldown_minutes=data.cooldown_minutes, status="inactive",
+                fire_at_time=_normalize_fire_at(data.fire_at_time),
                 lifespan_type=lifespan_type,
                 lifespan_max_fires=data.lifespan_max_fires,
                 lifespan_expires_at=_parse_iso_dt(data.lifespan_expires_at),
@@ -330,6 +368,10 @@ class AgentController(Controller):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
+            # fire_at_time — empty string clears the gate, valid
+            # "HH:MM" sets it, None means "field omitted, leave alone".
+            if data.fire_at_time is not None:
+                agent.fire_at_time = _normalize_fire_at(data.fire_at_time)
             if data.trade_mode is not None:
                 tm = data.trade_mode.lower()
                 if tm not in _VALID_TRADE_MODES:

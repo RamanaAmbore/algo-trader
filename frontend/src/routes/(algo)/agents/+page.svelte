@@ -82,12 +82,14 @@
   let editForm    = $state(/** @type {{
     name: string, description: string, conditions: string, events: string, actions: string,
     cooldown_minutes: number, scope: string, schedule: string,
+    fire_at_time: string,
     lifespan_type: string, lifespan_max_fires: number|string,
     lifespan_expires_at: string,
     tier: string, topic: string, digest_window_sec: number,
   }} */ ({
     name: '', description: '', conditions: '{}', events: '[]', actions: '[]',
     cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
+    fire_at_time: '',
     lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
     tier: 'medium', topic: 'general', digest_window_sec: 30,
   }));
@@ -217,6 +219,7 @@
       cooldown_minutes: agent.cooldown_minutes,
       scope: agent.scope,
       schedule: agent.schedule || 'market_hours',
+      fire_at_time: agent.fire_at_time || '',
       lifespan_type:        agent.lifespan_type || 'persistent',
       lifespan_max_fires:   agent.lifespan_max_fires == null ? '' : agent.lifespan_max_fires,
       // ISO datetime → "YYYY-MM-DDTHH:MM" (datetime-local input format).
@@ -348,6 +351,7 @@
         cooldown_minutes: editForm.cooldown_minutes,
         scope: editForm.scope,
         schedule: editForm.schedule,
+        fire_at_time: editForm.fire_at_time || '',
         lifespan_type: editForm.lifespan_type || 'persistent',
         lifespan_max_fires: (editForm.lifespan_type === 'n_fires'
           && editForm.lifespan_max_fires !== '' && editForm.lifespan_max_fires != null)
@@ -675,6 +679,16 @@
                   <label class="field-label">Cooldown (minutes)</label>
                   <input type="number" bind:value={editForm.cooldown_minutes} class="field-input" />
                 </div>
+                <div>
+                  <label class="field-label">
+                    Fire at (IST)
+                    <InfoHint popup text="Optional <b>HH:MM IST</b> time-of-day gate. When set, agent only evaluates inside a small window around this wall-clock time (covers one background poll cycle ~ 6 min). Empty = no gate, evaluates every tick. Use for daily summaries, EOD scans, expiry-day close orders." />
+                  </label>
+                  <input type="time"
+                    bind:value={editForm.fire_at_time}
+                    placeholder="HH:MM"
+                    class="field-input" />
+                </div>
                 <!-- Lifespan — controls whether the agent persists or
                      auto-completes after firing. one_shot / n_fires let
                      algos spawn temporary agents (expiry-day auto-close,
@@ -856,6 +870,10 @@
                         Schedule: <b>{editForm.schedule}</b>
                         <span class="preview-sep">|</span>
                         Cooldown: <b>{editForm.cooldown_minutes}m</b>
+                        {#if editForm.fire_at_time}
+                          <span class="preview-sep">|</span>
+                          Fire at: <b>{editForm.fire_at_time} IST</b>
+                        {/if}
                       </div>
                     </div>
                     <div class="preview-section-label">Condition tree</div>
