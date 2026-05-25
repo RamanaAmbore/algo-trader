@@ -703,7 +703,12 @@ class BrokerAccount(Base):
     # (they pair with api_secret to authenticate, but the key alone leaks
     # nothing). Keeping it in the clear means it shows up unmasked in
     # admin UI lists, which is what operators expect.
-    api_key: Mapped[str]         = mapped_column(String(64), nullable=False)
+    # Type TEXT (not VARCHAR(64)) because some vendors use long JWTs
+    # as the api_key value — Groww in particular: their api_key is a
+    # ~900-char JWT used as the Bearer header for the access-token mint
+    # endpoint, not a short ID like Kite's. Kept TEXT to accommodate
+    # any future vendor that does the same.
+    api_key: Mapped[str]         = mapped_column(Text, nullable=False)
     # Fernet-encrypted; key derived from cookie_secret via HKDF.
     api_secret_enc: Mapped[str]  = mapped_column(Text, nullable=False)
     password_enc: Mapped[str]    = mapped_column(Text, nullable=False)
