@@ -2743,80 +2743,11 @@
     </div>
   {/if}
 
-  {#if enableWatchlists}
-
-    {#if optionPickerUnderlying}
-      <!-- Option picker — inline row for CE/PE/Strike selection after
-           the operator picks an underlying from the typeahead. -->
-      <div class="opt-picker flex flex-wrap items-center gap-1.5 mb-1.5 px-2 py-1
-                  bg-[#0c1830] border border-[#fbbf24]/25 rounded">
-        <!-- Underlying chip (read-only) -->
-        <span class="font-mono text-[0.65rem] font-bold text-[#fbbf24]
-                     bg-[#fbbf24]/10 border border-[#fbbf24]/30 px-2 py-0.5 rounded">
-          {optionPickerUnderlying.name}
-        </span>
-
-        <!-- Expiry dropdown -->
-        <div class="w-28">
-          <Select ariaLabel="Expiry" bind:value={optionPickerExpiry}
-            options={optionPickerExpiries.map(exp => ({ value: exp, label: exp }))} />
-        </div>
-
-        <!-- CE / PE toggle -->
-        <span class="flex rounded overflow-hidden border border-[#fbbf24]/25">
-          <button
-            onclick={() => optionPickerSide = 'CE'}
-            class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
-                   {optionPickerSide === 'CE'
-                     ? 'bg-[#fbbf24] text-[#0a1628]'
-                     : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">CE</button>
-          <button
-            onclick={() => optionPickerSide = 'PE'}
-            class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
-                   {optionPickerSide === 'PE'
-                     ? 'bg-[#fbbf24] text-[#0a1628]'
-                     : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">PE</button>
-        </span>
-
-        <!-- Strike dropdown -->
-        <div class="w-24">
-          <Select ariaLabel="Strike" bind:value={optionPickerStrike}
-            disabled={!optionPickerStrikes.length}
-            options={optionPickerStrikes.map(k => ({ value: k, label: String(k) }))} />
-        </div>
-
-        <!-- Add button -->
-        <button
-          onclick={addOptionFromPicker}
-          disabled={optionPickerStrike == null || !optionPickerExpiry}
-          class="text-[0.65rem] font-bold px-2.5 py-0.5 rounded
-                 bg-[#fbbf24]/90 text-[#0a1628] hover:bg-[#fbbf24]
-                 disabled:opacity-40 disabled:cursor-not-allowed">Add</button>
-
-        <!-- Equity / Spot quick-add — label flips to "EQ" with amber
-             emphasis when the underlying also trades as an NSE stock
-             (RELIANCE, TCS, INDIGO …). Plain "Spot" + cyan for
-             index-only underlyings (NIFTY 50 / SENSEX). Makes the
-             EQ affordance discoverable rather than buried under
-             the option-only chips. -->
-        <button
-          onclick={addSpotFromPicker}
-          title={_underlyingHasEquity ? 'Add the underlying equity to the watchlist' : 'Add the spot index'}
-          class="text-[0.65rem] font-bold px-2 py-0.5 rounded border
-                 {_underlyingHasEquity
-                   ? 'border-[#fbbf24]/55 text-[#fbbf24] bg-[#fbbf24]/10 hover:bg-[#fbbf24]/20'
-                   : 'border-[#7dd3fc]/40 text-[#7dd3fc] hover:bg-[#7dd3fc]/10'}">
-          {_underlyingHasEquity ? 'EQ' : 'Spot'}
-        </button>
-
-        <!-- Cancel -->
-        <button
-          onclick={closeOptionPicker}
-          class="text-[0.65rem] px-2 py-0.5 rounded border border-[#7e97b8]/30
-                 text-[#7e97b8] hover:bg-white/5">Cancel</button>
-      </div>
-    {/if}
-  {/if}
+  <!-- Option picker is rendered as a modal at the BOTTOM of this
+       component (search-overlay style) so it sits above all other
+       page chrome. The inline-row version was disorienting because
+       it appeared below the chrome row AFTER the Add popup closed,
+       leaving the operator with no clear visual continuity. -->
 
   {#if showFunds}
     <!-- Funds strip — per-account Cash / Avail Margin / Used Margin /
@@ -3029,6 +2960,75 @@
         {/if}
         <div class="search-hint">
           Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Option-chain picker modal — opens when the operator picks an F&O
+     underlying from the Add popup's typeahead. Previously this rendered
+     as an inline row below the page chrome which felt jarring; modal
+     form keeps the Add flow visually contiguous. Click-overlay / Esc
+     to dismiss; targets the watchlist chosen in the Add popup via
+     _resolveTargetListId. -->
+{#if optionPickerUnderlying}
+  <div class="search-overlay" role="dialog" aria-modal="true"
+       aria-label="Pick option strike" onclick={closeOptionPicker}>
+    <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
+      <div class="search-header">
+        <span class="search-title">{optionPickerUnderlying.name} — pick contract</span>
+        <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeOptionPicker}>×</button>
+      </div>
+      <div class="search-body">
+        <div class="mp-add-section-label">Option chain</div>
+        <div class="search-row" style="flex-wrap: wrap;">
+          <!-- Expiry dropdown -->
+          <div class="w-28">
+            <Select ariaLabel="Expiry" bind:value={optionPickerExpiry}
+              options={optionPickerExpiries.map(exp => ({ value: exp, label: exp }))} />
+          </div>
+          <!-- CE / PE toggle -->
+          <span class="flex rounded overflow-hidden border border-[#fbbf24]/25">
+            <button type="button"
+              onclick={() => optionPickerSide = 'CE'}
+              class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
+                     {optionPickerSide === 'CE'
+                       ? 'bg-[#fbbf24] text-[#0a1628]'
+                       : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">CE</button>
+            <button type="button"
+              onclick={() => optionPickerSide = 'PE'}
+              class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
+                     {optionPickerSide === 'PE'
+                       ? 'bg-[#fbbf24] text-[#0a1628]'
+                       : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">PE</button>
+          </span>
+          <!-- Strike dropdown -->
+          <div class="w-28">
+            <Select ariaLabel="Strike" bind:value={optionPickerStrike}
+              disabled={!optionPickerStrikes.length}
+              options={optionPickerStrikes.map(k => ({ value: k, label: String(k) }))} />
+          </div>
+          <button type="button"
+            onclick={addOptionFromPicker}
+            disabled={optionPickerStrike == null || !optionPickerExpiry}
+            class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
+            title="Add this contract to the target watchlist">Add</button>
+        </div>
+
+        <div class="mp-add-divider"></div>
+
+        <div class="mp-add-section-label">{_underlyingHasEquity ? 'Equity (spot)' : 'Spot index'}</div>
+        <div class="search-row">
+          <button type="button"
+            onclick={addSpotFromPicker}
+            title={_underlyingHasEquity ? 'Add the underlying NSE equity' : 'Add the spot index'}
+            class="btn-primary text-[0.7rem] py-1 px-3">
+            {_underlyingHasEquity ? `Add ${optionPickerUnderlying.name} (NSE)` : 'Add Spot'}
+          </button>
+        </div>
+        <div class="search-hint">
+          The contract is added to the watchlist chosen in the previous step.
         </div>
       </div>
     </div>
