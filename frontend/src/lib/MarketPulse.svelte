@@ -106,6 +106,10 @@
   // the literal 'NEW' (reveals the inline new-list name input). Seeded
   // from the user's default watchlist when the Add popup opens.
   let targetListId = $state(/** @type {number | 'NEW' | null} */ (null));
+  // Two-click delete confirmation for the watchlist delete button in
+  // the Add popup. First click arms it (4s window); second click
+  // actually deletes. Cleared on timeout or success.
+  let _pendingDeleteId = $state(/** @type {number | null} */ (null));
   // Search popup — opened by the magnifier button at the top of the
   // header row (and by the `/` keyboard shortcut). Houses the symbol
   // input + exchange picker + typeahead + Add button. Hiding the
@@ -204,7 +208,13 @@
 
   async function addOptionFromPicker() {
     if (!optionPickerUnderlying || !optionPickerExpiry || optionPickerStrike == null) return;
-    const targetId = focusedListId ?? [...activeIds][0];
+    // Use the same target-resolution path as addRow + pickFromTypeahead.
+    // The previous direct focusedListId fallback silently landed picks
+    // in the default list whenever the operator had chosen "+ New
+    // watchlist" (or any non-default list) from the Add popup's
+    // Watchlist dropdown — and the "NEW" branch was never created at
+    // all, so options chosen via the chain picker just vanished.
+    const targetId = await _resolveTargetListId();
     if (targetId == null) return;
     try {
       const { findOption } = await import('$lib/data/instruments');
@@ -224,7 +234,7 @@
 
   async function addSpotFromPicker() {
     if (!optionPickerUnderlying) return;
-    const targetId = focusedListId ?? [...activeIds][0];
+    const targetId = await _resolveTargetListId();
     if (targetId == null) return;
     // Resolve the actual NSE/BSE tradingsymbol for the index/stock.
     const KEY = {
@@ -283,9 +293,9 @@
     'holdings',
     ...(enableMovers     ? ['movers']    : []),
   ]));
-  const SOURCE_OPTIONS = $derived(
-    _ALL_SOURCE_OPTIONS.filter(o => _availableSourceValues.has(o.value))
-  );
+  // SOURCE_OPTIONS derived removed — the unified Show MultiSelect now
+  // builds its options inline via _showOptions, so the legacy
+  // standalone source picker constant has no remaining consumers.
   // selectedSources is now a true $derived of selectedShow (declared
   // below). Earlier we ran a $effect that wrote selectedSources from
   // selectedShow — but the indirect write didn't always propagate
@@ -452,6 +462,16 @@
     try {
       sessionStorage.setItem('mp.selectedAccounts', JSON.stringify(selectedAccounts));
     } catch (_) { /* quota / blocked — silent. */ }
+  });
+  // Persist the unified Show filter alongside. Without this, the
+  // operator's deselected sources / watchlists reset on every refresh
+  // (defaults re-seed everything ON). Same sessionStorage scope as
+  // selectedAccounts so the two pickers feel symmetric.
+  $effect(() => {
+    if (typeof sessionStorage === 'undefined') return;
+    try {
+      sessionStorage.setItem('mp.selectedShow', JSON.stringify(selectedShow));
+    } catch (_) {}
   });
   // Per-source summary rows from the backend (positions / holdings
   // endpoints return precomputed per-account totals in .summary).
@@ -661,6 +681,17 @@
         if (cached) selectedAccounts = JSON.parse(cached) || [];
       } catch (_) { selectedAccounts = []; }
     }
+    // Restore the Show filter (sources + watchlists). The eager seed
+    // at $state declaration acts as fallback when no persisted value
+    // exists. wl: tokens whose ids no longer exist get pruned by the
+    // selectedShow $effect once `lists` loads.
+    try {
+      const cachedShow = sessionStorage.getItem('mp.selectedShow');
+      if (cachedShow) {
+        const parsed = JSON.parse(cachedShow);
+        if (Array.isArray(parsed) && parsed.length > 0) selectedShow = parsed;
+      }
+    } catch (_) { /* fall through to default seed */ }
     await tick();
     mountGrid();
 
@@ -2880,7 +2911,9 @@
       </div>
       <div class="search-body">
         <!-- Watchlist target — Default ★ pre-selected; "+ New watchlist"
-             reveals an inline name input which is created on Add. -->
+             reveals an inline name input which is created on Add. The
+             trailing × button deletes the currently-selected list
+             (disabled for the Default list and the "+ New" sentinel). -->
         <div class="mp-add-section-label">Watchlist</div>
         <div class="search-row">
           <div class="flex-1">
@@ -2893,6 +2926,32 @@
                 { value: 'NEW', label: '+ New watchlist' },
               ]} />
           </div>
+          {#if typeof targetListId === 'number'}
+            {@const _tgtList = lists.find(l => l.id === targetListId)}
+            {#if _tgtList && !_tgtList.is_default}
+              <button type="button"
+                onclick={async (e) => {
+                  e.preventDefault();
+                  // The enclosing {#if typeof targetListId === 'number'}
+                  // guard narrows to number at the JS level, but JSDoc
+                  // type-check sees the original number|'NEW' union, so
+                  // we cast explicitly here.
+                  const id = /** @type {number} */ (targetListId);
+                  if (_pendingDeleteId === id) {
+                    _pendingDeleteId = null;
+                    await dropList(id);
+                  } else {
+                    _pendingDeleteId = id;
+                    setTimeout(() => { _pendingDeleteId = null; }, 4000);
+                  }
+                }}
+                class="btn-primary text-[0.65rem] py-1 px-2 disabled:opacity-50"
+                style="background: rgba(248,113,113,0.15); color: #fda4af; border-color: rgba(248,113,113,0.4);"
+                title={_pendingDeleteId === targetListId ? 'Click again to confirm delete' : `Delete "${_tgtList.name}" watchlist`}>
+                {_pendingDeleteId === targetListId ? '× Confirm?' : '× Delete'}
+              </button>
+            {/if}
+          {/if}
         </div>
         {#if targetListId === 'NEW'}
           <div class="search-row" style="margin-top: 0.4rem;">
