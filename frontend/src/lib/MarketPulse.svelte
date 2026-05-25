@@ -1131,21 +1131,29 @@
       // options exist in BOTH positions and holdings, the anchor
       // gets the positions tag (priority: positions > holdings).
       const addUnderlying = (inst, triggerMajor) => {
-        if (!inst?.u) return;
+        if (!inst) return;
         const t = String(inst.t || '').toUpperCase();
         if (t === 'EQ') return;
         const isOpt = (t === 'CE' || t === 'PE');
         const isFut = (t === 'FUT');
         if (!isOpt && !isFut) return;
+        // Prefer the underlying ticker derived from the tradingsymbol
+        // prefix over Kite's `name` field (which carries the LONG
+        // company name — "INTERGLOBE AVIATION" for INDIGO options,
+        // "GOLD MINI" for GOLDM). The ticker prefix is what matches
+        // the option-position rows' `underlying` field in
+        // buildUnified, so the anchor groups correctly with its
+        // children. Falls back to inst.u for the rare row whose
+        // tradingsymbol doesn't start with an alpha prefix.
+        const symMatch = String(inst.s || '').match(/^([A-Z]+)/);
+        const u = symMatch ? symMatch[1] : inst.u;
+        if (!u) return;
         // FUT positions (e.g. CRUDEOIL/GOLD on MCX) also synthesize
         // an underlying anchor so the futures row sits under a
-        // parent group like options do. Without this, commodity
-        // futures showed up orphaned in the grid even though their
-        // underlying name (CRUDEOIL / GOLD) had no separate options
-        // anchor present.
+        // parent group like options do.
         const info = isOpt
-          ? resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts)
-          : resolveUnderlying(inst.u, nearestFut);
+          ? resolveUnderlyingForOption(u, inst.x, nearestFut, listFuts)
+          : resolveUnderlying(u, nearestFut);
         if (info && !underlyingInfos.has(info.underlying_group)) {
           underlyingInfos.set(info.underlying_group, { ...info, _major: triggerMajor });
         }
