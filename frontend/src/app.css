@@ -952,6 +952,35 @@
   }
 }
 
+/* ── Canonical card header layout ────────────────────────────────
+   Single global rule that enforces the same header treatment on
+   every algo terminal card: TITLE left → optional META/PICKER
+   middle → ICON CLUSTER right.
+
+   Headers opt in via one of the recognised class names below.
+   Once `display: flex; align-items: center` is applied, the title
+   span sits flush-left naturally; .ams (AccountMultiSelect),
+   .collapse-btn, and .fs-btn each carry their own `margin-left:
+   auto` which pushes the icon cluster to the right edge.
+
+   Adding a new header class? Either add it here or compose with one
+   of these names. Keeps every algo page visually aligned without
+   per-page CSS duplication. */
+.card-header-row,
+.bucket-header,
+.row3-header,
+.opt-section-h:not(.opt-section-h-grid),
+.legs-header-row,
+.dash-pnl-summary,
+.dash-agent-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+/* `.page-header` keeps its own baseline-aligned H1 + timestamp
+   treatment (defined in (algo)/+layout.svelte) — that's a different
+   role from card headers (text-on-text vs text-with-icons). */
+
 /* Card header icon cluster — once one element gains a left auto
    margin (AccountMultiSelect via .ams, or CollapseButton, or
    FullscreenButton when standalone), adjacent siblings drop their

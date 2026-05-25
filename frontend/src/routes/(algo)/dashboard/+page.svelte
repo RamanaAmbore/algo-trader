@@ -2543,8 +2543,12 @@
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
   .row3-header {
+    /* align-items: center (not baseline) to match the canonical
+       card-header convention — keeps the title + collapse + fullscreen
+       cluster vertically aligned with the icon midline like every
+       other algo card. */
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.4rem;
     margin-bottom: 0.3rem;
   }
