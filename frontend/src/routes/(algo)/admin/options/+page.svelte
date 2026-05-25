@@ -21,6 +21,8 @@
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
+  import CollapseButton  from '$lib/CollapseButton.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -105,6 +107,14 @@
   // away once they've vetted the basket so the chart + cards have
   // more vertical room.
   let legsOpen = $state(true);
+
+  // Per-card collapse + fullscreen toggles — match the dashboard
+  // pattern. CollapseButton hydrates each from localStorage per-user
+  // on mount (keyed by username + cardId).
+  let _colPayoff = $state(false);
+  let _colLegs   = $state(false);
+  let _fsPayoff  = $state(false);
+  let _fsLegs    = $state(false);
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
    *  the latest strategy response. Lets the Candidates panel show
@@ -1664,14 +1674,13 @@
 
 <div class="opt-payoff-legs-row">
 {#if strategy}
-  <div class="opt-payoff opt-payoff-full">
+  <div class="opt-payoff opt-payoff-full"
+    class:fs-card-on={_fsPayoff}
+    class:is-collapsed={_colPayoff}>
     <!-- Single-row header — title + Net debit/credit + Max profit /
-         Max loss chips. SPOT / TDAY / EXP / DTE / σ / LEGS live in
-         the on-chart stat overlay. Both the chips and the overlay
-         read from the same `strategy` $state so Svelte 5 batches
-         their DOM updates into a single render flush when
-         loadStrategy reassigns — no microtask gap between the two
-         surfaces. -->
+         Max loss + Greeks chips, plus the global collapse +
+         fullscreen toggles. SPOT / TDAY / EXP / DTE / σ / LEGS live
+         in the on-chart stat overlay. -->
     <div class="opt-section-h opt-section-h-grid">
       <div class="opt-section-row">
         <span class="opt-section-title">Payoff</span>
@@ -1703,24 +1712,31 @@
           title="Vega — P&L per 1% IV move (positive = long volatility)">
           𝒱 {pctFmt(strategy.aggregate_greeks.vega)}
         </span>
+        <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
+        <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
       </div>
     </div>
-    <OptionsPayoff
-      payoff={strategy.payoff}
-      spot={strategy.spot}
-      prevClose={strategy.spot_prev_close}
-      breakevens={strategy.risk.breakevens}
-      intermediateCurves={strategy.intermediate_curves || []}
-      spanSigmas={strategy.span_sigmas}
-      spanPct={strategy.span_pct}
-      dte={strategy.days_to_expiry}
-      ivProxy={strategy.iv_proxy}
-      legCount={strategy.legs.length}
-      multiExpiry={strategy.multi_expiry ?? false}
-      realizedPnl={chartPnlOffset}
-      loading={loading}
-      onRefresh={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-      height={320} />
+    <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
+         mounted across collapse cycles — same pattern as dashboard
+         cards (avoids re-mounting + state loss). -->
+    <div class="card-body" hidden={_colPayoff}>
+      <OptionsPayoff
+        payoff={strategy.payoff}
+        spot={strategy.spot}
+        prevClose={strategy.spot_prev_close}
+        breakevens={strategy.risk.breakevens}
+        intermediateCurves={strategy.intermediate_curves || []}
+        spanSigmas={strategy.span_sigmas}
+        spanPct={strategy.span_pct}
+        dte={strategy.days_to_expiry}
+        ivProxy={strategy.iv_proxy}
+        legCount={strategy.legs.length}
+        multiExpiry={strategy.multi_expiry ?? false}
+        realizedPnl={chartPnlOffset}
+        loading={loading}
+        onRefresh={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+        height={320} />
+    </div>
   </div>
 {/if}
 
@@ -1731,7 +1747,15 @@
      analytics (IV / Δ / Θ / 𝒱) joined from the latest strategy
      response by symbol. Horizontal + vertical overflow scrolling. -->
 {#if selectedUnderlying || drafts.length}
-  <div class="algo-status-card cmd-surface p-3 opt-legs-card" data-status="inactive">
+  <div class="algo-status-card cmd-surface p-3 opt-legs-card"
+    data-status="inactive"
+    class:fs-card-on={_fsLegs}
+    class:is-collapsed={_colLegs}>
+    <!-- Legs header — title row carries the chevron toggle (kept
+         for backwards-compat) plus the global Collapse + Fullscreen
+         buttons. _colLegs mirrors legsOpen so either control toggles
+         the same body. -->
+    <div class="legs-header-row">
     <button type="button"
             class="legs-header"
             aria-expanded={legsOpen}
@@ -1744,7 +1768,10 @@
       {/if}
       <span class="opt-section-meta">{candidatePositions.length}</span>
     </button>
-    {#if legsOpen && candidatePositions.length}
+      <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
+      <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
+    </div>
+    {#if legsOpen && !_colLegs && candidatePositions.length}
       {@const hideAcct = selectedAccounts.length === 1}
       <div class="cand-scroll">
         <div class="cand-grid" class:cand-grid-noacct={hideAcct}>
@@ -1876,7 +1903,7 @@
           {/each}
         </div>
       </div>
-    {:else if legsOpen}
+    {:else if legsOpen && !_colLegs}
       <div class="text-[0.6rem] text-[#7e97b8] italic">
         No options or futures on <b>{selectedUnderlying}</b> in
         {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
@@ -2040,12 +2067,29 @@
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
-    flex: 1 1 0;
     min-width: 0;          /* allow shrink past content size */
   }
-  /* All three Select fields share the same flex weight so each gets
-     a third of the leftover space after the + button. */
+  /* On desktop the picker row pinned its three Selects to flex:1 1 0
+     so they stretched equally across the page. That left a big
+     "Account ↔ Underlying" visual gap on wide viewports because
+     each field claimed a third of the row width regardless of how
+     short its content actually was.
+     Now: Account flex-grows so the chosen-accounts pills have room
+     to wrap; Underlying + Expiry sit at content width on desktop
+     (≥900 px). Mobile retains the old all-grow behaviour because
+     content-width pickers wrap awkwardly in a narrow column. */
   .opt-field-grow { flex: 1 1 0; min-width: 0; }
+  @media (max-width: 899px) {
+    .opt-field { flex: 1 1 0; }
+  }
+  @media (min-width: 900px) {
+    /* Underlying + Expiry — desktop natural widths. */
+    .opt-picker .opt-field:nth-of-type(2),
+    .opt-picker .opt-field:nth-of-type(3) {
+      flex: 0 0 auto;
+      min-width: 8rem;
+    }
+  }
 
   /* Chain-launcher slot — single OChain pill aligned with the
      Select-trigger row. (Earlier this hosted a paired BUY (+) /
@@ -2415,6 +2459,18 @@
   .cand-scroll::-webkit-scrollbar-thumb:hover {
     background: rgba(251,191,36,0.55);
   }
+  /* Legs header row — flex container that hosts the legs-header
+     button (chevron + title + tag + count) on the left and the
+     global Collapse + Fullscreen toggles clustered on the right.
+     Same idiom as dashboard .card-header-row. */
+  .legs-header-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+  }
+  .legs-header-row > .legs-header { flex: 1 1 auto; width: auto; }
+
   /* Legs panel header — collapsable. Reset button defaults so it
      still picks up the .opt-section-h typography but with a click
      affordance + a rotating chevron on the left. */
