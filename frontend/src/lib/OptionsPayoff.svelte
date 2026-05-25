@@ -656,7 +656,9 @@
            the chart uses the recovered horizontal space. -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}
-              stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
+              stroke={Math.abs(t.v) < 0.5 ? 'rgba(200,216,240,0.45)' : 'rgba(200,216,240,0.18)'}
+              stroke-width="1"
+              stroke-dasharray={Math.abs(t.v) < 0.5 ? '' : '2 3'}/>
       {/each}
 
       <!-- X-axis grid + labels — sigma marks at every 0.5σ across
@@ -675,7 +677,7 @@
                reference markers rather than structural lines.
                whole-σ: "2 3" dot pattern, half-σ: "1 4" sparser. -->
           <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
-                stroke="rgba(200,216,240,{wholeSigma ? 0.18 : 0.07})"
+                stroke={wholeSigma ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.10)'}
                 stroke-width="1"
                 stroke-dasharray={wholeSigma ? '2 3' : '1 4'}/>
         {/if}
@@ -689,7 +691,7 @@
                 stroke="#152033"
                 stroke-width="3"
                 paint-order="stroke fill"
-                font-size={wholeSigma ? 11 : 10}
+                font-size={wholeSigma ? 12 : 11}
                 font-weight={wholeSigma ? 700 : 500}
                 font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
             {xt.label}

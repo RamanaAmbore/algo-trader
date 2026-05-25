@@ -402,9 +402,9 @@
       <!-- Y-axis grid + labels -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}
-              stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
+              stroke="rgba(200,216,240,0.18)" stroke-width="1"/>
         <text x={PAD_L - 4} y={t.y + 3} text-anchor="end"
-              fill="#7e97b8" font-size="9" font-family="monospace">
+              fill="#c8d8f0" font-size="11" font-weight="600" font-family="monospace">
           {priceFmt(t.v)}
         </text>
       {/each}
@@ -415,11 +415,11 @@
       {#each xTicks as xt, i}
         {#if i > 0}
           <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={xAxisY}
-                stroke="rgba(200,216,240,0.07)" stroke-width="1"/>
+                stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3"/>
         {/if}
         <text x={xt.x} y={height - 6}
               text-anchor={i === 0 ? 'start' : (i === xTicks.length - 1 ? 'end' : 'middle')}
-              fill="#7e97b8" font-size="9" font-family="monospace">
+              fill="#c8d8f0" font-size="11" font-weight="600" font-family="monospace">
           {xt.label}
         </text>
       {/each}

@@ -243,19 +243,19 @@
       <!-- y-axis grid lines + labels (pct) -->
       {#each yTicks as v}
         <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}
-              stroke={v === 0 ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.08)'}
-              stroke-width={v === 0 ? 1 : 0.7}
+              stroke={v === 0 ? 'rgba(200,216,240,0.45)' : 'rgba(200,216,240,0.18)'}
+              stroke-width="1"
               stroke-dasharray={v === 0 ? '' : '2 3'} />
         <text x={PAD_L - 6} y={yOf(v) + 3} text-anchor="end"
-              fill="#c8d8f0" font-size="10" font-weight="500">{pctFmt(v)}</text>
+              fill="#c8d8f0" font-size="11" font-weight="600">{pctFmt(v)}</text>
       {/each}
 
       <!-- x-axis labels -->
       {#each xLabels as l}
         <line x1={l.x} x2={l.x} y1={PAD_T} y2={height - PAD_B}
-              stroke="rgba(200,216,240,0.07)" stroke-width="0.7" stroke-dasharray="2 3" />
+              stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
         <text x={l.x} y={height - PAD_B + 14} text-anchor="middle"
-              fill="#7e97b8" font-size="10">{l.label}</text>
+              fill="#c8d8f0" font-size="11" font-weight="600">{l.label}</text>
       {/each}
 
       <!-- One path per series -->

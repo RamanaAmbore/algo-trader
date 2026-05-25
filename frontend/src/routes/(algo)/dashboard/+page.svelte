@@ -894,12 +894,17 @@
     _restore('dash.winAccounts', v => _winAccounts = v);
     _restore('dash.losAccounts', v => _losAccounts = v);
     loadHero();
-    _heroTeardown = visibleInterval(loadHero, 30000);
+    // Match the equity-curve cadence (15 s). The earlier 30 s rate
+    // left the Capital card visibly stale next to the chart that
+    // ticked twice between hero refreshes. Backend cycle is 60 s
+    // anyway so 15 s polling is comfortably within the freshness
+    // window without hammering the broker.
+    _heroTeardown = visibleInterval(loadHero, 15000);
     // Equity-curve polling — independent of loadHero so an upstream
     // sub-fetch failure (positions / holdings / events) can't stall
-    // the chart's refresh cycle. Tighter cadence (15 s) because the
-    // backend buffer appends a new point every ~1 min and the chart
-    // should reflect it within one frame of arrival.
+    // the chart's refresh cycle. Same 15 s cadence — backend buffer
+    // appends a new point every ~1 min and the chart should reflect
+    // it within one frame of arrival.
     _fetchEquity();
     _equityPollStop = visibleInterval(_fetchEquity, 15000);
     // Market-wide quotes for Underlying / Midcap / Smallcap winners
@@ -1403,6 +1408,9 @@
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
       <div class="mp-section-label">Intraday Equity Curve</div>
+      {#if _equityLoadedAt}
+        <span class="bucket-refresh-chip" title="Equity curve last refreshed at this time">{_equityLoadedAt}</span>
+      {/if}
       <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Intraday Equity Curve" />
       <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Intraday Equity Curve" />
     </div>
@@ -1432,7 +1440,16 @@
           {@const gy = PAD_T + frac * INNER_H}
           <line
             x1={PAD_L} y1={gy} x2={PAD_L + INNER_W} y2={gy}
-            stroke="rgba(200,216,240,0.10)" stroke-width="1" />
+            stroke="rgba(200,216,240,0.18)" stroke-width="1"
+            stroke-dasharray={frac === 0.0 || frac === 1.0 ? '' : '2 3'} />
+        {/each}
+
+        <!-- Grid lines (vertical) — at x-axis label positions, behind data -->
+        {#each _eqXLabels as lbl}
+          <line
+            x1={parseFloat(lbl.x)} y1={PAD_T}
+            x2={parseFloat(lbl.x)} y2={PAD_T + INNER_H}
+            stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
         {/each}
 
         <!-- Zero baseline (dotted) -->
@@ -1463,7 +1480,7 @@
         {#each _eqYLabels as lbl}
           <text
             x={PAD_L + INNER_W + 4} y={parseFloat(lbl.y) + 3.5}
-            font-size="9" fill="#7e97b8" font-family="ui-monospace,monospace"
+            font-size="11" font-weight="600" fill="#c8d8f0" font-family="ui-monospace,monospace"
             text-anchor="start">{lbl.label}</text>
         {/each}
 
@@ -1471,7 +1488,7 @@
         {#each _eqXLabels as lbl}
           <text
             x={parseFloat(lbl.x)} y={CHART_H - 6}
-            font-size="9" fill="#7e97b8" font-family="ui-monospace,monospace"
+            font-size="11" font-weight="600" fill="#c8d8f0" font-family="ui-monospace,monospace"
             text-anchor="middle">{lbl.label}</text>
         {/each}
 
@@ -1534,6 +1551,14 @@
     class:is-collapsed={_colCapital}>
     <div class="bucket-header">
       <span class="mp-section-label">Capital</span>
+      {#if _heroLoadedAt}
+        <!-- Freshness chip — same `_heroLoadedAt` that drives the
+             page-header timestamp. Funds + margin grids derive from
+             the loadHero batch so they share the same refresh moment;
+             surfacing it on the card directly avoids the "is this
+             still polling?" question the operator was hitting. -->
+        <span class="bucket-refresh-chip" title="Capital data last refreshed at this time">{_heroLoadedAt}</span>
+      {/if}
       <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
       <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
     </div>
@@ -1921,6 +1946,21 @@
     font-size: 0.55rem;
     letter-spacing: 0.04em;
   }
+
+  /* Refresh chip per-card header. Same palette as .hero-refresh but
+     sized to sit alongside the section label without pushing the
+     Collapse / Fullscreen buttons off the right edge. Margin-left
+     auto pins it after the label; the buttons that follow get a
+     small left gap so they don't sit flush against the timestamp. */
+  .bucket-refresh-chip {
+    margin-left: auto;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.5rem;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .bucket-refresh-chip + :global(button) { margin-left: 0.4rem; }
 
   /* ── Row 1: equity curve (full-width hero) ───────────────────────── */
   /* Earlier the equity curve shared this row with the margin gauges

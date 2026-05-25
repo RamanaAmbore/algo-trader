@@ -776,15 +776,15 @@
                  onpointerleave={() => { _chartHover = null; }}>
               {#each _chartYTicks as v}
                 <line x1={CPAD_L} x2={CW - CPAD_R} y1={_chartYOf(v)} y2={_chartYOf(v)}
-                      stroke="rgba(200,216,240,0.08)" stroke-width="0.7" stroke-dasharray="2 3" />
+                      stroke="rgba(200,216,240,0.18)" stroke-width="1" stroke-dasharray="2 3" />
                 <text x={CPAD_L - 6} y={_chartYOf(v) + 3} text-anchor="end"
-                      fill="#7e97b8" font-size="10">₹{priceFmt(v)}</text>
+                      fill="#c8d8f0" font-size="11" font-weight="600">₹{priceFmt(v)}</text>
               {/each}
               {#each _chartXLabels as l}
                 <line x1={l.x} x2={l.x} y1={CPAD_T} y2={CH - CPAD_B}
-                      stroke="rgba(200,216,240,0.07)" stroke-width="0.7" stroke-dasharray="2 3" />
+                      stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
                 <text x={l.x} y={CH - CPAD_B + 14} text-anchor="middle"
-                      fill="#7e97b8" font-size="10">{l.label}</text>
+                      fill="#c8d8f0" font-size="11" font-weight="600">{l.label}</text>
               {/each}
               <!-- Volume bars (lower band, when enabled) — drawn
                    BEFORE the price layer so the line/candle sits on
