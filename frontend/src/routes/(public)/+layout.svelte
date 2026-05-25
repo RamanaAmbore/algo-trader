@@ -354,7 +354,9 @@
      own intrinsic height. */
   :global(.pub-nav-btn) {
     padding: 0.18rem 0.45rem 0.04rem;
-    font-size: 0.95rem;
+    /* Slightly tighter than the previous 0.95 rem so the navbar
+       reads a touch lighter alongside the brand wordmark. */
+    font-size: 0.88rem;
     font-weight: 500;
     border-radius: 0.25rem;
     background: transparent;
@@ -482,7 +484,9 @@
     width: 100%;
     text-align: left;
     padding: 0.8rem 1.4rem;
-    font-size: 0.92rem;
+    /* Matches the desktop nav font-size reduction for visual
+       parity between hamburger items and the inline nav links. */
+    font-size: 0.85rem;
     font-weight: 500;
     color: rgba(220,232,255,0.8);
     background: transparent;
