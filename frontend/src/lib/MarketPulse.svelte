@@ -1020,7 +1020,19 @@
           kind: 'fut',
         };
       }
-      return null;
+      // MCX commodity with no resolvable nearest future — fall through
+      // to a stub anchor (commodity name as tradingsymbol, no live
+      // quote). Better than dropping the anchor entirely: GOLDM /
+      // GOLDPETAL / similar mini contracts may have option positions
+      // even when MCX hasn't published a matching nearest-future
+      // tradingsymbol the instruments cache can find.
+      return {
+        tradingsymbol: n,
+        exchange: 'MCX',
+        quoteKey: `MCX:${n}`,   // synthetic; quote will silently miss
+        underlying_group: n,
+        kind: 'mcx',
+      };
     }
     if (CDS_CURRENCIES.has(n)) {
       const fut = findNearestFut?.(n);
