@@ -764,6 +764,13 @@
     if (!gridReady || !grid) return;
     grid.setGridOption('rowData', mainRows);
     grid.setGridOption('pinnedTopRowData', pinnedTopRows);
+    // TEMP DEBUG anchor sort
+    try {
+      /** @type {any} */ (window).__mainRows = mainRows.map((r, i) => ({
+        i, ts: r.tradingsymbol, u: r.underlying, mg: r._majorGroup, mo: r._majorOrder,
+        kind: r.kind, src: Object.keys(r.src || {}).filter(k => r.src[k]).join(''),
+      }));
+    } catch (_) {}
     // Auto-hide the Curve column when no data is available so the
     // column header doesn't sit empty taking 64 px. Re-shows
     // automatically when the sparkline poll fills in.
