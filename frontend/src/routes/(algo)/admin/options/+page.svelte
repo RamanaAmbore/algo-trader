@@ -1675,7 +1675,7 @@
 
 <div class="opt-payoff-legs-row">
 {#if strategy}
-  <div class="opt-payoff opt-payoff-full"
+  <div class="opt-payoff opt-payoff-full algo-status-card cmd-surface p-3"
     class:fs-card-on={_fsPayoff}
     class:is-collapsed={_colPayoff}>
     <!-- Single-row header — title + Net debit/credit + Max profit /
