@@ -431,7 +431,7 @@
   // /quote/batch response shape: {refreshed_at, items: [BatchQuoteRow]}.
   // We index by "${exchange}:${tradingsymbol}" so universe queries can
   // pluck back out by key. Polled every 60 s during active viewing.
-  /** @type {Record<string, {ltp:number, close:number, change_pct:number}>} */
+  /** @type {Record<string, {ltp:number, close:number, change_pct:number, ohlc?:{close?:number}, previous_close?:number}>} */
   let _marketQuotes = $state({});
   let _stopMarketPoll;
 
@@ -451,7 +451,7 @@
       // calc only when zero / missing (defensive against partial fills).
       let pct = Number(q.change_pct);
       if (!isFinite(pct) || pct === 0) {
-        const close = Number(q.close) || 0;
+        const close = Number(q.ohlc?.close ?? q.close ?? q.previous_close) || 0;
         if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
       }
       if (pct == null || !isFinite(pct) || pct === 0) continue;
@@ -1731,7 +1731,6 @@
 {#if _hasWinners || _hasLosers}
   <div class="dash-row2">
     {#if _hasWinners}
-      {@const winRows = (_winnerBuckets.find(b => b.label === _winTabLabel(_winTab)))?.rows ?? []}
       <section class="wl-tile wl-tile-win"
         class:fs-card-on={_fsWinners}
         class:is-collapsed={_colWinners}>
@@ -1757,6 +1756,7 @@
                 aria-selected={_winTab === key}
                 onclick={() => _winTab = key}>
                 {_tabShort(bucket.label)}
+                {#if bucket.count > 0}<span class="wl-tab-count">{bucket.count}</span>{/if}
               </button>
             {/each}
           </div>
@@ -1794,6 +1794,7 @@
                 aria-selected={_losTab === key}
                 onclick={() => _losTab = key}>
                 {_tabShort(bucket.label)}
+                {#if bucket.count > 0}<span class="wl-tab-count">{bucket.count}</span>{/if}
               </button>
             {/each}
           </div>
@@ -2541,6 +2542,20 @@
   .wl-tab-on {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
+  }
+  .wl-tab-count {
+    display: inline-block;
+    padding: 0 0.32rem;
+    border-radius: 0.5rem;
+    background: rgba(126, 151, 184, 0.18);
+    color: inherit;
+    font-size: 0.55rem;
+    font-weight: 700;
+    line-height: 1.15rem;
+    letter-spacing: 0.02em;
+  }
+  .wl-tab-on .wl-tab-count {
+    background: rgba(251, 191, 36, 0.18);
   }
   .wl-bucket-empty {
     padding: 0.5rem 0.3rem;

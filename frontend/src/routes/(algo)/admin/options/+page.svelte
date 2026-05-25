@@ -136,6 +136,11 @@
     for (const p of positions) {
       if (p.account) accts.add(p.account);
     }
+    // Union broker registry so chain picker / leg drops aren't blocked
+    // pre-market when positions[] is empty (or holiday / weekend).
+    for (const a of realAccounts) {
+      if (a) accts.add(a);
+    }
     return Array.from(accts).sort();
   });
   const underlyingChoicesFromBook = $derived.by(() => {
