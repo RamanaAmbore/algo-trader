@@ -226,6 +226,24 @@
     } catch (e) { error = e.message; }
   }
 
+  // Detect whether the underlying in the option picker also has an
+  // NSE equity listing (RELIANCE, TCS, INDIGO …). When true, the
+  // "Spot" quick-add button gets relabelled "EQ" + bumped to amber
+  // so the operator notices the equity affordance instead of
+  // assuming the picker is options-only. Indices (NIFTY 50 / SENSEX)
+  // keep the "Spot" label because they're traded as derivatives only.
+  let _underlyingHasEquity = $state(false);
+  $effect(() => {
+    if (!optionPickerUnderlying?.name) { _underlyingHasEquity = false; return; }
+    const name = optionPickerUnderlying.name.toUpperCase();
+    (async () => {
+      try {
+        const { findEquity } = await import('$lib/data/instruments');
+        _underlyingHasEquity = !!findEquity(name);
+      } catch { _underlyingHasEquity = false; }
+    })();
+  });
+
   // New-list form state.
   let newListName = $state('');
 
@@ -1115,10 +1133,19 @@
       const addUnderlying = (inst, triggerMajor) => {
         if (!inst?.u) return;
         const t = String(inst.t || '').toUpperCase();
-        if (t === 'EQ' || t === 'FUT') return;
+        if (t === 'EQ') return;
         const isOpt = (t === 'CE' || t === 'PE');
-        if (!isOpt) return;
-        const info = resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts);
+        const isFut = (t === 'FUT');
+        if (!isOpt && !isFut) return;
+        // FUT positions (e.g. CRUDEOIL/GOLD on MCX) also synthesize
+        // an underlying anchor so the futures row sits under a
+        // parent group like options do. Without this, commodity
+        // futures showed up orphaned in the grid even though their
+        // underlying name (CRUDEOIL / GOLD) had no separate options
+        // anchor present.
+        const info = isOpt
+          ? resolveUnderlyingForOption(inst.u, inst.x, nearestFut, listFuts)
+          : resolveUnderlying(inst.u, nearestFut);
         if (info && !underlyingInfos.has(info.underlying_group)) {
           underlyingInfos.set(info.underlying_group, { ...info, _major: triggerMajor });
         }
@@ -2563,11 +2590,21 @@
                  bg-[#fbbf24]/90 text-[#0a1628] hover:bg-[#fbbf24]
                  disabled:opacity-40 disabled:cursor-not-allowed">Add</button>
 
-        <!-- Spot quick-add -->
+        <!-- Equity / Spot quick-add — label flips to "EQ" with amber
+             emphasis when the underlying also trades as an NSE stock
+             (RELIANCE, TCS, INDIGO …). Plain "Spot" + cyan for
+             index-only underlyings (NIFTY 50 / SENSEX). Makes the
+             EQ affordance discoverable rather than buried under
+             the option-only chips. -->
         <button
           onclick={addSpotFromPicker}
-          class="text-[0.65rem] px-2 py-0.5 rounded border border-[#7dd3fc]/40
-                 text-[#7dd3fc] hover:bg-[#7dd3fc]/10">Spot</button>
+          title={_underlyingHasEquity ? 'Add the underlying equity to the watchlist' : 'Add the spot index'}
+          class="text-[0.65rem] font-bold px-2 py-0.5 rounded border
+                 {_underlyingHasEquity
+                   ? 'border-[#fbbf24]/55 text-[#fbbf24] bg-[#fbbf24]/10 hover:bg-[#fbbf24]/20'
+                   : 'border-[#7dd3fc]/40 text-[#7dd3fc] hover:bg-[#7dd3fc]/10'}">
+          {_underlyingHasEquity ? 'EQ' : 'Spot'}
+        </button>
 
         <!-- Cancel -->
         <button
