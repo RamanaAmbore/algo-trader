@@ -65,13 +65,13 @@
 
   let lists       = $state(/** @type {any[]} */ ([]));
   // Multi-select model — operator can include any combination of
-  // their saved watchlists in the unified view. `activeIds` is the
-  // SOURCE OF TRUTH: clicking a tab toggles its id in/out. Fetched
-  // list contents land in `activeLists` so buildUnified can iterate
-  // every selected list. `watchQuotes` stays a flat itemId→quote map
-  // (item ids are globally unique) populated by unioning the per-list
-  // /quotes responses.
-  let activeIds   = $state(/** @type {Set<number>} */ (new Set()));
+  // their saved watchlists in the unified view. activeIds is now
+  // $derived from selectedShow further down — toggling a wl: token
+  // in the Show MultiSelect flips this. Fetched list contents land
+  // in `activeLists` so buildUnified can iterate every selected list;
+  // `watchQuotes` stays a flat itemId→quote map (item ids are
+  // globally unique) populated by unioning the per-list /quotes
+  // responses.
   let activeLists = $state(/** @type {any[]} */ ([]));
   let watchQuotes = $state(/** @type {Record<number, any>} */ ({}));
   // "Target" list for add / rename / delete operations. Defaults to
@@ -286,13 +286,15 @@
   const SOURCE_OPTIONS = $derived(
     _ALL_SOURCE_OPTIONS.filter(o => _availableSourceValues.has(o.value))
   );
-  // selectedSources is now DERIVED — the unified Show multiselect
-  // (selectedShow, declared below) is the single source of truth.
-  // The earlier $state + filter-effect pair was replaced because the
-  // tabs row + standalone Sources picker were consolidated into one
-  // MultiSelect; selectedSources is recomputed from selectedShow by
-  // the propagation $effect below.
-  let selectedSources = $state(['pinned', 'watchlist', 'positions', 'holdings', 'movers']);
+  // selectedSources is now a true $derived of selectedShow (declared
+  // below). Earlier we ran a $effect that wrote selectedSources from
+  // selectedShow — but the indirect write didn't always propagate
+  // through Svelte 5's reactivity to downstream consumers like the
+  // unifiedRows derivation. Toggling Positions in the Show dropdown
+  // updated the trigger label but left buildUnified's includePos flag
+  // stale, so row visibility didn't change. $derived makes this a
+  // single inline-computed value, so every consumer that reads
+  // selectedSources subscribes directly to selectedShow.
 
   // ── Unified "Show" multiselect (single source of truth) ──────────────
   // Combines the source toggles AND every watchlist into one flat
@@ -339,29 +341,25 @@
     return opts;
   });
 
-  // Propagate selectedShow → selectedSources + activeIds. The latter
-  // two remain the read-API every downstream derivation already uses
-  // (buildUnified, summary derivations, subtotal strip), so this
-  // refactor doesn't ripple beyond the picker UI.
-  $effect(() => {
-    const newSources = selectedShow
+  const selectedSources = $derived.by(() => {
+    const arr = selectedShow
       .filter(v => v.startsWith('src:'))
       .map(v => v.slice(4));
-    // The 'watchlist' source must be ON whenever any wl: token is
-    // selected — the rest of the engine still reads selectedSources
-    // for that flag, so we synthesize it here.
-    const anyWl = selectedShow.some(v => v.startsWith('wl:'));
-    if (anyWl && !newSources.includes('watchlist')) newSources.push('watchlist');
-    selectedSources = newSources;
-
-    const newIds = new Set(
-      selectedShow
-        .filter(v => v.startsWith('wl:'))
-        .map(v => Number(v.slice(3)))
-        .filter(n => Number.isFinite(n))
-    );
-    activeIds = newIds;
+    // 'watchlist' source is implicit — any wl: token selected ⇒ show
+    // watchlist rows. The rest of the engine reads selectedSources for
+    // that flag, so we synthesize it here.
+    if (selectedShow.some(v => v.startsWith('wl:')) && !arr.includes('watchlist')) {
+      arr.push('watchlist');
+    }
+    return arr;
   });
+
+  const activeIds = $derived(new Set(
+    selectedShow
+      .filter(v => v.startsWith('wl:'))
+      .map(v => Number(v.slice(3)))
+      .filter(n => Number.isFinite(n))
+  ));
 
   // Prune selectedShow when an embedder disables a source group or
   // when a watchlist is deleted out from under us — same defensive
@@ -375,6 +373,22 @@
       : false
     );
     if (filtered.length !== selectedShow.length) selectedShow = filtered;
+  });
+
+  // Refetch watchlist contents whenever activeIds changes from any
+  // source — the MultiSelect toggle was a silent gap before this:
+  // the OLD pickList helper called loadActive() inline, but the new
+  // Show-multiselect path leaves activeIds derived, so we need an
+  // explicit effect to mirror that behaviour. Signature-compare
+  // avoids redundant re-fetches when the same id set is re-assigned
+  // (e.g., makeList add → loadLists rebuild).
+  let _lastActiveIdsSig = '';
+  $effect(() => {
+    const sig = [...activeIds].sort((a, b) => a - b).join(',');
+    if (sig === _lastActiveIdsSig) return;
+    _lastActiveIdsSig = sig;
+    if (sig === '') { activeLists = []; return; }
+    loadActive();
   });
 
   // Keep individual booleans so buildUnified + other callsites are unchanged.
