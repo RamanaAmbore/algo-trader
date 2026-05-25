@@ -742,8 +742,13 @@ class WatchlistController(Controller):
                 return {}
 
         from backend.api.cache import get_or_fetch as _gof
-        from backend.shared.helpers.utils import get_nearest_time
-        cache_key = f"movers_quotes_{get_nearest_time(_MOVERS_QUOTE_TTL)}"
+        import time as _time
+        # Bucket by the 30-second TTL window using wall-clock floor.
+        # The previous attempt used `get_nearest_time(_MOVERS_QUOTE_TTL)`
+        # which passed 30 as `from_hour` — ValueError: hour must be in
+        # 0..23. Cooperative caching only needs a key that flips every
+        # TTL seconds; a wall-clock floor is sufficient.
+        cache_key = f"movers_quotes_{int(_time.time() // _MOVERS_QUOTE_TTL)}"
         quote_data: dict = await _gof(cache_key, _fetch_movers_quotes,
                                       ttl_seconds=_MOVERS_QUOTE_TTL)
 

@@ -995,9 +995,14 @@ class AdminController(Controller):
 
             _, token = BENCHMARK_TOKENS[symbol]
             try:
+                # Route through the PriceBroker abstraction (auto-failover
+                # across configured brokers). The earlier code reached for
+                # `broker.kite.historical_data(...)` from when the only
+                # broker was Kite Connect directly — PriceBroker doesn't
+                # expose `.kite` and the call silently 500'd, leaving the
+                # dashboard NIFTY / SENSEX overlay blank.
                 broker = get_price_broker()
-                kite   = broker.kite  # type: ignore[attr-defined]
-                raw    = kite.historical_data(
+                raw    = broker.historical_data(
                     token,
                     d_from,
                     d_to,
