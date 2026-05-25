@@ -965,8 +965,10 @@
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
         // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 58 px fits comfortably + matches the compact dashboard density.
-        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
+        // 46 px is the tightest fit that still shows the 6-char code
+        // + 4 px cell padding without truncation. Shrunk 20 % from
+        // the earlier 58 px so numeric columns get more flex room.
+        { field: 'account', headerName: 'Account', minWidth: 46, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -999,8 +1001,10 @@
       ..._baseGridOpts,
       columnDefs: [
         // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 58 px fits comfortably + matches the compact dashboard density.
-        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
+        // 46 px is the tightest fit that still shows the 6-char code
+        // + 4 px cell padding without truncation. Shrunk 20 % from
+        // the earlier 58 px so numeric columns get more flex room.
+        { field: 'account', headerName: 'Account', minWidth: 46, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'used', headerName: 'Used', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1040,10 +1044,11 @@
     return createGrid(el, {
       ..._baseGridOpts,
       columnDefs: [
-        // Symbol column shrunk 35 % vs the original 110 px — the W/L
-        // grids live in a narrow side-by-side card; freeing those
-        // pixels gives LTP + Δ % more room.
-        { field: 'symbol', headerName: 'Symbol', minWidth: 72, flex: 2,
+        // Symbol column iteratively shrunk: 110 → 72 (−35 %) → 65
+        // (further −10 %). 65 px still fits the longest visible
+        // F&O underlying like 'BANKNIFTY' (9 chars) at the current
+        // font-size; flex:2 lets the column expand when there's room.
+        { field: 'symbol', headerName: 'Symbol', minWidth: 65, flex: 2,
           pinned: 'left', cellClass: 'ag-col-fill ag-col-sym',
           sortable: true },
         { field: 'ltp', headerName: 'LTP', minWidth: 70, flex: 1,
@@ -1092,8 +1097,10 @@
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
         // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 58 px fits comfortably + matches the compact dashboard density.
-        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
+        // 46 px is the tightest fit that still shows the 6-char code
+        // + 4 px cell padding without truncation. Shrunk 20 % from
+        // the earlier 58 px so numeric columns get more flex room.
+        { field: 'account', headerName: 'Account', minWidth: 46, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1117,8 +1124,10 @@
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
         // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 58 px fits comfortably + matches the compact dashboard density.
-        { field: 'account', headerName: 'Account', minWidth: 58, pinned: 'left',
+        // 46 px is the tightest fit that still shows the 6-char code
+        // + 4 px cell padding without truncation. Shrunk 20 % from
+        // the earlier 58 px so numeric columns get more flex room.
+        { field: 'account', headerName: 'Account', minWidth: 46, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
