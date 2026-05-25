@@ -2490,9 +2490,13 @@
   {/if}
 
   {#if enableWatchlists || enableSourceToggles || accountPicker}
-    <!-- Row 1 — Watchlist tabs (+ "new list" affordance on the right). -->
+    <!-- Single header row — Watchlist tabs (scroll horizontally when
+         narrow) on the left, chrome buttons (🔍 / + List / filters)
+         pinned right. Earlier this was two separate rows; the new
+         single-row layout keeps mobile portrait at one line of
+         chrome instead of three. -->
     {#if enableWatchlists}
-      <div class="flex flex-wrap items-center gap-1 mb-1">
+      <div class="mp-chrome-row mb-1">
         {#each lists as l}
           {@const selected = activeIds.has(l.id)}
           {@const focused  = focusedListId === l.id}
@@ -2519,68 +2523,39 @@
             {/if}
           </button>
         {/each}
-        <!-- Search trigger — opens the symbol-search popup. Pushed to
-             the right so the watchlist tabs flow left-to-right while
-             the chrome buttons (Search / + List) sit together on the
-             right edge. The button is square + icon-only so it claims
-             the minimum horizontal space; the `/` shortcut is in the
-             tooltip for power users. -->
+        <!-- Chrome buttons — Search + List + filters all sit on the
+             right edge of the single header row. Search and List both
+             open popups so the inline input boxes (which previously
+             expanded into Row 2 + the tabs strip) no longer fight for
+             horizontal space. On mobile the tabs are scrollable and
+             these buttons stay pinned right; the operator gets
+             everything in ONE row instead of three. -->
+        <span class="mp-chrome-spacer"></span>
         <button onclick={openSearch} title="Search & add symbol  (/ )"
           aria-label="Search and add symbol"
-          class="ml-auto px-1.5 py-0.5 text-[0.7rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
+          class="px-1.5 py-0.5 text-[0.7rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
           🔍
         </button>
-        <!-- New-list: collapsed + button, expanded: input + Save -->
-        {#if listInputOpen}
-          <input bind:value={newListName}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') makeListAndCollapse();
-              else if (e.key === 'Escape') closeListInput();
-            }}
-            class="field-input text-[0.65rem] py-0.5 px-2 w-32" placeholder="List name" />
-          <button onclick={makeListAndCollapse} disabled={!newListName.trim()}
-            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 disabled:opacity-40"
-            title="Save new watchlist">Save</button>
-          <button onclick={closeListInput}
-            class="px-1.5 py-0.5 text-[0.65rem] text-[#7e97b8] border border-[#7e97b8]/30 rounded hover:bg-white/5"
-            title="Cancel">✕</button>
-        {:else}
-          <button onclick={openListInput} title="New watchlist"
-            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
-            + List
-          </button>
+        <button onclick={openListInput} title="New watchlist  (n)"
+          aria-label="New watchlist"
+          class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
+          + List
+        </button>
+        {#if accountPicker && availableAccounts.length > 0}
+          {@const _acctOff = !selectedSources.includes('positions')
+                          && !selectedSources.includes('holdings')}
+          <div class="w-28 shrink-0">
+            <AccountMultiSelect bind:value={selectedAccounts}
+              options={availableAccounts.map(a => ({ value: a, label: a }))}
+              disabled={_acctOff}
+              disabledReason="Account filter applies only when Positions or Holdings is selected" />
+          </div>
         {/if}
-      </div>
-    {/if}
-
-    <!-- Row 2 — source / account filters. The symbol-search form
-         lives in a popup now (triggered by the magnifier button in
-         Row 1); the inline input was eating ~30 px of vertical chrome
-         on every page load when the operator only adds symbols
-         occasionally. Row 2 hides entirely when no filters apply. -->
-    {#if accountPicker || enableSourceToggles}
-      <div class="flex flex-wrap items-center gap-1 mb-1.5 relative">
-        <div class="ml-auto flex items-center gap-1">
-          {#if accountPicker && availableAccounts.length > 0}
-            <!-- Global rule: disable the picker when neither Positions
-                 nor Holdings is in the active source set — the unified
-                 grid then shows only watchlist + pinned + movers and
-                 the account filter has nothing per-account to scope. -->
-            {@const _acctOff = !selectedSources.includes('positions')
-                            && !selectedSources.includes('holdings')}
-            <div class="w-32">
-              <AccountMultiSelect bind:value={selectedAccounts}
-                options={availableAccounts.map(a => ({ value: a, label: a }))}
-                disabled={_acctOff}
-                disabledReason="Account filter applies only when Positions or Holdings is selected" />
-            </div>
-          {/if}
-          {#if enableSourceToggles}
-            <div class="w-32">
-              <MultiSelect bind:value={selectedSources} options={SOURCE_OPTIONS} placeholder="Sources" />
-            </div>
-          {/if}
-        </div>
+        {#if enableSourceToggles}
+          <div class="w-28 shrink-0">
+            <MultiSelect bind:value={selectedSources} options={SOURCE_OPTIONS} placeholder="Sources" />
+          </div>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -2831,6 +2806,38 @@
         {/if}
         <div class="search-hint">
           Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- New-watchlist popup. Same overlay + modal palette as the symbol
+     search popup so both feel like the same affordance — operator
+     can rename "+ List" to a popup-open chip without UX overhead. -->
+{#if listInputOpen}
+  <div class="search-overlay" role="dialog" aria-modal="true"
+       aria-label="New watchlist" onclick={closeListInput}>
+    <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
+      <div class="search-header">
+        <span class="search-title">New watchlist</span>
+        <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeListInput}>×</button>
+      </div>
+      <div class="search-body">
+        <div class="search-row">
+          <input bind:value={newListName}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); makeListAndCollapse(); }
+              else if (e.key === 'Escape') { e.preventDefault(); closeListInput(); }
+            }}
+            class="field-input text-[0.7rem] py-1 px-2 flex-1"
+            placeholder="Watchlist name" autocomplete="off" />
+          <button onclick={makeListAndCollapse} disabled={!newListName.trim()}
+            class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
+            title="Save new watchlist">Save</button>
+        </div>
+        <div class="search-hint">
+          Names are case-insensitive and must be unique within your account.
         </div>
       </div>
     </div>
@@ -3144,6 +3151,36 @@
      the OrderTicket modal palette so the algo dark UI feels
      consistent across popups. Click-outside closes via the overlay's
      onclick handler; the modal itself stops propagation. */
+
+  /* Single-row chrome — watchlist tabs flow horizontally with
+     overflow-x scroll when there are too many to fit; the chrome
+     buttons (🔍 / + List / filters) sit pinned right after a
+     flex-grow spacer. This collapses what used to be three stacked
+     rows of chrome on mobile portrait into one. */
+  .mp-chrome-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 0.25rem;
+    overflow-x: auto;
+    overflow-y: visible;
+    /* Hide the scrollbar on platforms that show one — chrome looks
+       cleaner; the operator can still trackpad-scroll horizontally
+       or use shift+wheel. */
+    scrollbar-width: none;
+  }
+  .mp-chrome-row::-webkit-scrollbar { display: none; }
+  /* Spacer pushes the right-edge chrome past whatever tabs claim
+     space. Without flex-grow the tabs flow continuously and the
+     chrome buttons sit immediately after the last tab. */
+  .mp-chrome-spacer {
+    flex: 1 1 auto;
+    min-width: 0.5rem;
+  }
+  /* Tab buttons inside the row never shrink (would clip the label)
+     and never wrap (would defeat the single-row promise). */
+  .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
+
   :global(.search-overlay) {
     position: fixed;
     inset: 0;
