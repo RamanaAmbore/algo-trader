@@ -2792,7 +2792,15 @@
                 e.preventDefault();
                 if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
                 else addRow();
-              } else if (e.key === 'Escape') { typeaheadOpen = false; }
+              } else if (e.key === 'Escape') {
+                // First Esc closes the typeahead suggestions (if open),
+                // second Esc closes the popup. handleKeydown can't see
+                // this event because the global guard bails on
+                // input/textarea targets.
+                e.preventDefault();
+                if (typeaheadOpen) { typeaheadOpen = false; }
+                else { closeSearch(); }
+              }
             }}
             class="field-input text-[0.7rem] py-1 px-2 flex-1"
             placeholder="Symbol (≥ 3 chars)" autocomplete="off" />
