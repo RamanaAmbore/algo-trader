@@ -854,18 +854,6 @@
         });
       }
       movers = rows;
-      // TEMP DEBUG — expose for Playwright inspection.
-      if (typeof window !== 'undefined') {
-        /** @type {Record<string, number>} */
-        const counts = { underlying: 0, midcap: 0, smallcap: 0 };
-        for (const x of rows) counts[x._moverGroup] = (counts[x._moverGroup] || 0) + 1;
-        /** @type {any} */ (window).__moverDebug = {
-          totalKeys: allKeys.length,
-          itemsReturned: r?.items?.length || 0,
-          rowsAfterFilter: rows.length,
-          byGroup: counts,
-        };
-      }
     } catch (e) {
       console.warn('[MarketPulse] movers fetch failed:', e?.message || e);
     }
@@ -1642,6 +1630,7 @@
     return buildUnified(
       activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
       showPositions, showHoldings, movers, showMovers,
+      showWatchlist,
     );
   });
 
@@ -1695,7 +1684,7 @@
   // contiguous blocks.
   const MAJOR_ORDER = { pinned: 0, watchlist: 1, positions: 2, holdings: 3, movers: 4 };
 
-  function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers) {
+  function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers, includeWatch = true) {
     const uq = pq?.underlyings || {};
     const cq = pq?.contracts   || {};
     const byKey = /** @type {Record<string, any>} */ ({});
@@ -1873,9 +1862,20 @@
     //    movers" complaint — NIFTY moving 6% intraday is captured by
     //    badging the existing positions / pinned NIFTY rows; it
     //    doesn't surface as a fresh Movers entry.
+    // Build existingSymbols from ONLY currently-visible majors so the
+    // mover badging logic doesn't suppress rows whose source toggle is
+    // off. Without this gate, a stock in a toggled-off watchlist would
+    // be badged into a watchlist row → the filter at the end deletes
+    // the watchlist row → the symbol disappears completely. Pinned is
+    // always visible so it remains a badge-eligible source.
     const existingSymbols = new Set();
     for (const row of Object.values(byKey)) {
-      if (row.tradingsymbol) existingSymbols.add(row.tradingsymbol);
+      if (!row.tradingsymbol) continue;
+      const mg = row._majorGroup;
+      if (mg === 'positions' && !includePos)  continue;
+      if (mg === 'holdings'  && !includeHold) continue;
+      if (mg === 'watchlist' && !includeWatch) continue;
+      existingSymbols.add(row.tradingsymbol);
     }
     for (const m of (moverRows || [])) {
       const sym = String(m.tradingsymbol || '').toUpperCase();
