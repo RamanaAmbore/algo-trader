@@ -102,7 +102,10 @@
        (card-header-row / bucket-header / row3-header / details
        summary), guaranteeing top-right placement without needing
        every card header to opt into justify-content: space-between
-       or a sibling spacer. */
+       or a sibling spacer.
+       Amber icon + soft amber border as the resting state — matches
+       the algo terminal accent across every card. Hover bumps the
+       fill so the affordance reads as clickable. */
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -110,18 +113,18 @@
     height: 1.4rem;
     padding: 0;
     margin: 0 0 0 auto;
-    background: rgba(126, 151, 184, 0.10);
-    border: 1px solid rgba(126, 151, 184, 0.28);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.32);
     border-radius: 3px;
-    color: #c8d8f0;
+    color: #fbbf24;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
   }
   .fs-btn:hover {
-    background: rgba(251, 191, 36, 0.12);
-    border-color: rgba(251, 191, 36, 0.45);
-    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.20);
+    border-color: rgba(251, 191, 36, 0.65);
+    color: #fde047;
   }
   .fs-btn:focus-visible {
     outline: 2px solid rgba(251, 191, 36, 0.55);

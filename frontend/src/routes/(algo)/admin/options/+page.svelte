@@ -106,7 +106,8 @@
   // Legs panel collapsed/expanded — operator may want to fold it
   // away once they've vetted the basket so the chart + cards have
   // more vertical room.
-  let legsOpen = $state(true);
+  // legsOpen retired — _colLegs (driven by the global CollapseButton)
+  // is now the sole gate on the legs card body.
 
   // Per-card collapse + fullscreen toggles — match the dashboard
   // pattern. CollapseButton hydrates each from localStorage per-user
@@ -1751,27 +1752,24 @@
     data-status="inactive"
     class:fs-card-on={_fsLegs}
     class:is-collapsed={_colLegs}>
-    <!-- Legs header — title row carries the chevron toggle (kept
-         for backwards-compat) plus the global Collapse + Fullscreen
-         buttons. _colLegs mirrors legsOpen so either control toggles
-         the same body. -->
+    <!-- Legs header — non-clickable title block on the left; the
+         global CollapseButton on the right is the sole collapse
+         control. (Earlier the row carried a redundant left-side
+         chevron button — duplicate toggle with the same effect as
+         CollapseButton, removed for visual + behavioural parity
+         with every other card on the page.) -->
     <div class="legs-header-row">
-    <button type="button"
-            class="legs-header"
-            aria-expanded={legsOpen}
-            title={legsOpen ? 'Collapse leg list' : 'Expand leg list'}
-            onclick={() => legsOpen = !legsOpen}>
-      <span class="legs-chevron">{legsOpen ? '▾' : '▸'}</span>
-      <span>Legs</span>
-      {#if selectedUnderlying}
-        <span class="opt-section-tag tag-deriv">{selectedUnderlying}</span>
-      {/if}
-      <span class="opt-section-meta">{candidatePositions.length}</span>
-    </button>
+      <div class="legs-header legs-header-static">
+        <span>Legs</span>
+        {#if selectedUnderlying}
+          <span class="opt-section-tag tag-deriv">{selectedUnderlying}</span>
+        {/if}
+        <span class="opt-section-meta">{candidatePositions.length}</span>
+      </div>
       <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
       <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
     </div>
-    {#if legsOpen && !_colLegs && candidatePositions.length}
+    {#if !_colLegs && candidatePositions.length}
       {@const hideAcct = selectedAccounts.length === 1}
       <div class="cand-scroll">
         <div class="cand-grid" class:cand-grid-noacct={hideAcct}>
@@ -1903,7 +1901,7 @@
           {/each}
         </div>
       </div>
-    {:else if legsOpen && !_colLegs}
+    {:else if !_colLegs}
       <div class="text-[0.6rem] text-[#7e97b8] italic">
         No options or futures on <b>{selectedUnderlying}</b> in
         {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
