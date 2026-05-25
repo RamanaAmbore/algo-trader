@@ -854,6 +854,18 @@
         });
       }
       movers = rows;
+      // TEMP DEBUG — expose for Playwright inspection.
+      if (typeof window !== 'undefined') {
+        /** @type {Record<string, number>} */
+        const counts = { underlying: 0, midcap: 0, smallcap: 0 };
+        for (const x of rows) counts[x._moverGroup] = (counts[x._moverGroup] || 0) + 1;
+        /** @type {any} */ (window).__moverDebug = {
+          totalKeys: allKeys.length,
+          itemsReturned: r?.items?.length || 0,
+          rowsAfterFilter: rows.length,
+          byGroup: counts,
+        };
+      }
     } catch (e) {
       console.warn('[MarketPulse] movers fetch failed:', e?.message || e);
     }
