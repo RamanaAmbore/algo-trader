@@ -1913,6 +1913,31 @@
       }
     }
 
+    // TEMP DEBUG — surface mover sub-group distribution for diagnostics.
+    if (typeof window !== 'undefined') {
+      /** @type {Record<string, number>} */
+      const cnt = { underlying: 0, midcap: 0, smallcap: 0, none: 0 };
+      let totalMovers = 0;
+      for (const row of Object.values(byKey)) {
+        if (row._majorGroup === 'movers') {
+          totalMovers++;
+          const g = row._moverGroup || 'none';
+          cnt[g] = (cnt[g] || 0) + 1;
+        }
+      }
+      /** @type {any} */ (window).__unifiedDebug = {
+        moverRowsInput: (moverRows || []).length,
+        moverInputGroups: (moverRows || []).reduce((acc, m) => {
+          const g = m._moverGroup || 'none';
+          acc[g] = (acc[g] || 0) + 1;
+          return acc;
+        }, {}),
+        moverRowsInBuild: totalMovers,
+        moverRowsByGroup: cnt,
+        includeMovers, includePos, includeHold, includeWatch,
+      };
+    }
+
     // 6. Watched indices: re-tag tradingsymbol → underlying so the
     //    sort groups them with their derivatives.
     const INDEX_TO_UNDERLYING = {
