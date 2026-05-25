@@ -963,11 +963,22 @@
   margin-left: 0.3rem !important;
 }
 
-/* Collapsed card — strips trailing padding so the card body
-   doesn't reserve a vertical gap below the header when the body
-   isn't rendered. Cards opt in via class:is-collapsed={state}. */
+/* Collapsed card — three rules to shrink the box around just its
+   header:
+   1. padding-bottom: 0 so the card body's absence doesn't reserve a
+      vertical gap below the header.
+   2. header's margin-bottom: 0 so the heading is flush with the
+      bottom edge.
+   3. align-self: start so the card escapes a grid/flex parent's
+      default stretch — without this, a collapsed card pinned next
+      to an expanded sibling in `grid-template-columns: 1fr 1fr`
+      still stretches to the sibling's height, leaving a blank
+      strip below the heading. Result: collapsed cards genuinely
+      shrink to ~2.5 rem in dash-buckets + dash-row2.
+*/
 .is-collapsed {
   padding-bottom: 0 !important;
+  align-self: start !important;
 }
 .is-collapsed > :is(.bucket-header, .card-header-row, .row3-header) {
   margin-bottom: 0 !important;
