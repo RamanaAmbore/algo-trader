@@ -820,14 +820,18 @@
       }
       // Project into the shape buildUnified consumes (tradingsymbol /
       // exchange / last_price / change_pct / previous_close) + a
-      // sub-group tag. Sub-group precedence: F&O underlying beats
-      // midcap beats smallcap when a symbol overlaps universes.
+      // sub-group tag. Sub-group precedence: smallcap > midcap > F&O
+      // underlying. Many midcap / smallcap stocks ARE F&O-eligible, so
+      // larger-cap-wins ordering would absorb them all into "underlying"
+      // and leave the midcap / smallcap sections empty. Reversing means
+      // smallcap stocks land in smallcap, midcap-not-in-smallcap lands
+      // in midcap, and pure indices / large-cap-F&O land in underlying.
       /** @type {any[]} */
       const rows = [];
       const _groupFor = (key) =>
-        fo.has(key)  ? 'underlying'
+        sml.has(key) ? 'smallcap'
       : mid.has(key) ? 'midcap'
-      : sml.has(key) ? 'smallcap'
+      : fo.has(key)  ? 'underlying'
       : null;
       for (const [key, it] of Object.entries(byKey)) {
         const group = _groupFor(key);
