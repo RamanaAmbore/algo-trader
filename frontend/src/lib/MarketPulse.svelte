@@ -23,8 +23,11 @@
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
-    fetchMovers, fetchSparklines, fetchBrokerAccounts,
+    fetchSparklines, fetchBrokerAccounts,
   } from '$lib/api';
+  import {
+    FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS, symbolFromQuoteKey,
+  } from '$lib/data/indexConstituents';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
@@ -792,10 +795,60 @@
     } catch (_) { /* nothing fatal */ }
   }
 
+  // Build the movers list from the three universe arrays (FO_QUOTE_KEYS /
+  // MIDCAP_QUOTE_KEYS / SMLCAP_QUOTE_KEYS) so /pulse and /dashboard share
+  // the SAME data source. Each row carries `_moverGroup` ('underlying' |
+  // 'midcap' | 'smallcap') so the grid can sort + label sub-sections
+  // identifiably. Backend caps batchQuote at 300 keys per request; we
+  // split into halves the same way dashboard does.
   async function loadMovers() {
     try {
-      const r = await fetchMovers();
-      movers = (r?.movers || []).slice();
+      const fo  = new Set(FO_QUOTE_KEYS);
+      const mid = new Set(MIDCAP_QUOTE_KEYS);
+      const sml = new Set(SMLCAP_QUOTE_KEYS);
+      const allKeys = [...new Set([...fo, ...mid, ...sml])];
+      const HALF = Math.ceil(allKeys.length / 2);
+      const batches = [allKeys.slice(0, HALF), allKeys.slice(HALF)];
+      const responses = await Promise.all(batches.map((b) => batchQuote(b)));
+      /** @type {Record<string, any>} */
+      const byKey = {};
+      for (const r of responses) {
+        for (const it of (r?.items ?? [])) {
+          if (!it?.exchange || !it?.tradingsymbol) continue;
+          byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
+        }
+      }
+      // Project into the shape buildUnified consumes (tradingsymbol /
+      // exchange / last_price / change_pct / previous_close) + a
+      // sub-group tag. Sub-group precedence: F&O underlying beats
+      // midcap beats smallcap when a symbol overlaps universes.
+      /** @type {any[]} */
+      const rows = [];
+      const _groupFor = (key) =>
+        fo.has(key)  ? 'underlying'
+      : mid.has(key) ? 'midcap'
+      : sml.has(key) ? 'smallcap'
+      : null;
+      for (const [key, it] of Object.entries(byKey)) {
+        const group = _groupFor(key);
+        if (!group) continue;
+        const ltp = Number(it.ltp ?? it.last_price ?? 0);
+        let pct = Number(it.change_pct);
+        if (!isFinite(pct) || pct === 0) {
+          const close = Number(it.close ?? it.previous_close ?? 0);
+          if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
+        }
+        if (!isFinite(pct) || pct === 0) continue;
+        rows.push({
+          tradingsymbol: symbolFromQuoteKey(key),
+          exchange:      it.exchange,
+          last_price:    ltp,
+          change_pct:    pct,
+          previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
+          _moverGroup:   group,
+        });
+      }
+      movers = rows;
     } catch (e) {
       console.warn('[MarketPulse] movers fetch failed:', e?.message || e);
     }
@@ -918,19 +971,47 @@
     // anchor rows (tier 0/1) precede option rows (tier 2).
     const _ugKey = (r) => String(r.underlying || r.tradingsymbol || '').toUpperCase();
     const _tier  = (r) => (r.kind === 'spot' ? 0 : r.kind === 'fut' ? 1 : r.kind === 'mcx' ? 1 : r.kind === 'opt' ? 2 : 3);
+    // Sub-group order WITHIN the Movers major — underlying first
+    // (most-actively-traded, F&O-eligible names), then midcap, then
+    // smallcap. Unknown / null sub-groups go last (defensive — every
+    // row from loadMovers carries one of the three tags).
+    const MOVER_GROUP_ORDER = { underlying: 0, midcap: 1, smallcap: 2 };
+    const _mgOrder = (r) =>
+      r._majorGroup === 'movers' ? (MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
     rows.sort((a, b) => {
       const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
       if (moA !== moB) return moA - moB;
+      // Sub-group ordering applies ONLY to the Movers major — other
+      // majors keep their existing underlying-then-tier sort. _mgOrder
+      // returns -1 for non-mover rows so this branch is a no-op there.
+      const mgA = _mgOrder(a), mgB = _mgOrder(b);
+      if (mgA !== mgB) return mgA - mgB;
+      // Inside a Movers sub-group, biggest mover first (by % change abs).
+      if (a._majorGroup === 'movers' && b._majorGroup === 'movers') {
+        const pA = Math.abs(Number(a._mover_change_pct) || Number(a.change_pct) || 0);
+        const pB = Math.abs(Number(b._mover_change_pct) || Number(b.change_pct) || 0);
+        if (pA !== pB) return pB - pA;
+      }
       const ua = _ugKey(a), ub = _ugKey(b);
       if (ua !== ub) return ua.localeCompare(ub);
       const ta = _tier(a),  tb = _tier(b);
       if (ta !== tb) return ta - tb;
       return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
     });
+    // First-row flags: major divider as before, plus a sub-group divider
+    // for the first row of each (underlying / midcap / smallcap) section
+    // inside the Movers major.
     let lastMajor = null;
+    let lastMoverGroup = null;
     for (const r of rows) {
       r._majorFirst = (r._majorGroup !== lastMajor);
       lastMajor = r._majorGroup;
+      if (r._majorGroup === 'movers') {
+        r._moverGroupFirst = (r._moverGroup !== lastMoverGroup);
+        lastMoverGroup = r._moverGroup;
+      } else {
+        r._moverGroupFirst = false;
+      }
     }
     return rows;
   });
@@ -1804,6 +1885,9 @@
         row.change = row.ltp - m.previous_close;
       row._mover_sticky    = m.sticky ?? false;
       row._mover_change_pct = m.change_pct ?? null;
+      // Sub-group tag carried over from loadMovers() — drives the
+      // identifiable underlying / midcap / smallcap sections in the grid.
+      if (m._moverGroup) row._moverGroup = m._moverGroup;
     }
     // When showMovers is off, strip the Movers-major rows entirely.
     if (!includeMovers) {
@@ -2180,6 +2264,18 @@
     // distinct blocks below the Pinned strip.
     if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned') {
       classes.push(`major-divider major-${r._majorGroup}`);
+    }
+    // Within Movers, first row of each sub-group (underlying / midcap
+    // / smallcap) gets its own divider so operators can scan the
+    // three universes individually. Skip when the row is ALSO the
+    // major-first (that already paints the Movers divider — adding a
+    // second one would double-line). Carries a mover-grp-<x> class
+    // for per-group tint in CSS.
+    if (r._majorGroup === 'movers' && r._moverGroupFirst && !r._majorFirst) {
+      classes.push(`mover-group-divider mover-grp-${r._moverGroup || 'unknown'}`);
+    }
+    if (r._majorGroup === 'movers' && r._moverGroup) {
+      classes.push(`mover-${r._moverGroup}`);
     }
     if (s.p) {
       const q = Number(r.qty_pos) || 0;
@@ -3286,6 +3382,39 @@
   :global(.ag-theme-algo .ag-row.major-movers) {
     border-top-color: rgba(196, 181, 253, 0.55);
     box-shadow: inset 0 1px 0 rgba(196, 181, 253, 0.18);
+  }
+
+  /* Movers sub-group dividers — first row of each (underlying /
+     midcap / smallcap) section inside the Movers major. Lighter
+     accent than the major divider so the visual hierarchy reads
+     as "block of movers → sub-section → row" rather than "four
+     equal blocks". Per-group hue distinguishes the three universes
+     at a glance: violet for F&O underlying (matches the major hue),
+     teal for midcap (cool mid-tone), cyan for smallcap (cool,
+     slightly more saturated). */
+  :global(.ag-theme-algo .ag-row.mover-group-divider) {
+    border-top: 1px dashed rgba(196, 181, 253, 0.45);
+  }
+  :global(.ag-theme-algo .ag-row.mover-grp-underlying) {
+    border-top-color: rgba(196, 181, 253, 0.50);
+  }
+  :global(.ag-theme-algo .ag-row.mover-grp-midcap) {
+    border-top-color: rgba(56, 189, 248, 0.50);
+  }
+  :global(.ag-theme-algo .ag-row.mover-grp-smallcap) {
+    border-top-color: rgba(94, 234, 212, 0.50);
+  }
+  /* Per-row left-edge accent — kept faint so it reads as a
+     section-membership cue without competing with the direction
+     tint on pos-long / pos-short rows. */
+  :global(.ag-theme-algo .ag-row.mover-underlying .ag-cell:first-child) {
+    box-shadow: inset 3px 0 0 rgba(196, 181, 253, 0.35);
+  }
+  :global(.ag-theme-algo .ag-row.mover-midcap .ag-cell:first-child) {
+    box-shadow: inset 3px 0 0 rgba(56, 189, 248, 0.35);
+  }
+  :global(.ag-theme-algo .ag-row.mover-smallcap .ag-cell:first-child) {
+    box-shadow: inset 3px 0 0 rgba(94, 234, 212, 0.35);
   }
 
   /* Grid containers */
