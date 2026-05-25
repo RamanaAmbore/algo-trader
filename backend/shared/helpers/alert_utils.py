@@ -68,7 +68,26 @@ _alert_recipients_lock = Lock()
 def get_alert_recipients() -> list[str]:
     """Sync — returns the current merged recipient list (designated +
     opted-in admins + secrets fallback), deduped. Used by every alert
-    dispatch path (loss / agent / summary)."""
+    dispatch path (loss / agent / summary).
+
+    Branch-aware override — on non-main branches the recipient list
+    is REPLACED (not merged) with `dev_alert_emails` from secrets so
+    test alerts don't reach the operator's prod inbox. Falls back to
+    the regular list when the dev override is empty / missing."""
+    from backend.shared.helpers.utils import is_prod_branch
+    if not is_prod_branch():
+        dev_emails = secrets.get('dev_alert_emails', []) or []
+        if dev_emails:
+            seen: set[str] = set()
+            out: list[str] = []
+            for e in dev_emails:
+                if e and e not in seen:
+                    seen.add(e)
+                    out.append(e)
+            return out
+        # No dev override configured — fall through to prod list so
+        # alerts still go somewhere visible during dev testing.
+
     with _alert_recipients_lock:
         db_part = list(_alert_recipients_cache)
     static_part = secrets.get('alert_emails', []) or []

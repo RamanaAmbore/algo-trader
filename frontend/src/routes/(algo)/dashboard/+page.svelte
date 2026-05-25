@@ -752,9 +752,20 @@
   async function _fetchEquity() {
     try {
       const res = await fetchIntradayEquity(200);
-      _equityPoints = (res?.points ?? []);
+      // Accept both wrapped {points: [...]} (current backend) and bare
+      // array (defensive against a future shape change).
+      const pts = Array.isArray(res) ? res : (res?.points ?? []);
+      _equityPoints = pts;
+      _equityLoadedAt = clientTimestamp();
     } catch (_) { /* leave stale */ }
   }
+
+  // Standalone freshness stamp for the equity curve. _heroLoadedAt
+  // reflects the WHOLE loadHero batch; this one tracks _fetchEquity
+  // specifically so the operator can verify the chart is still
+  // polling even if a different hero sub-fetch is failing.
+  let _equityLoadedAt = $state(/** @type {string|null} */ (null));
+  let _equityPollStop;
 
   async function _fetchMargins() {
     try {
@@ -836,9 +847,11 @@
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
 
-      // Parallel: equity curve + margins + conn health + NIFTY quote
+      // Parallel: margins + conn health + NIFTY quote.
+      // _fetchEquity intentionally NOT in this batch — it has its
+      // own independent 15 s poll wired in onMount so a hero-batch
+      // failure can't stall the equity-curve refresh cycle.
       await Promise.all([
-        _fetchEquity(),
         _fetchMargins(),
         _fetchConn(),
         _fetchNifty(),
@@ -882,6 +895,13 @@
     _restore('dash.losAccounts', v => _losAccounts = v);
     loadHero();
     _heroTeardown = visibleInterval(loadHero, 30000);
+    // Equity-curve polling — independent of loadHero so an upstream
+    // sub-fetch failure (positions / holdings / events) can't stall
+    // the chart's refresh cycle. Tighter cadence (15 s) because the
+    // backend buffer appends a new point every ~1 min and the chart
+    // should reflect it within one frame of arrival.
+    _fetchEquity();
+    _equityPollStop = visibleInterval(_fetchEquity, 15000);
     // Market-wide quotes for Underlying / Midcap / Smallcap winners
     // and losers. One batched request covers all three universes;
     // 60 s poll keeps the buckets fresh during market hours without
@@ -1247,7 +1267,7 @@
   const _losAcctDisabled = $derived(!_USER_TABS.has(_losTab));
 
   onDestroy(() => {
-    _heroTeardown?.(); _stopMarketPoll?.();
+    _heroTeardown?.(); _stopMarketPoll?.(); _equityPollStop?.();
     _fundsGrid?.destroy();  _marginGrid?.destroy();
     _winGrid?.destroy();    _losGrid?.destroy();
     _eqPosGrid?.destroy();  _eqHoldGrid?.destroy();
