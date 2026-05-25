@@ -764,32 +764,16 @@
     return rows;
   });
 
-  // True when ANY symbol on the current grid has a sparkline series
-  // loaded. Used to hide the Curve column when no rows have data —
-  // saves ~64 px of horizontal space on a stripped-down view (e.g.
-  // when sparkline endpoint is rate-limited or returns empty).
-  const _anySparkline = $derived.by(() => {
-    for (const r of mainRows) {
-      const s = sparklines[r?.tradingsymbol];
-      if (Array.isArray(s) && s.length > 1) return true;
-    }
-    for (const r of pinnedTopRows) {
-      const s = sparklines[r?.tradingsymbol];
-      if (Array.isArray(s) && s.length > 1) return true;
-    }
-    return false;
-  });
-
   $effect(() => {
     if (!gridReady || !grid) return;
     grid.setGridOption('rowData', mainRows);
     grid.setGridOption('pinnedTopRowData', pinnedTopRows);
-    // Auto-hide the Curve column when no data is available so the
-    // column header doesn't sit empty taking 64 px. Re-shows
-    // automatically when the sparkline poll fills in.
-    try {
-      grid.setColumnsVisible?.(['sparkline'], _anySparkline);
-    } catch (_) { /* older ag-Grid API — best-effort */ }
+    // Curve column is ALWAYS visible — cells render `—` when sparkline
+    // data is missing (sparkRenderer handles that). The earlier
+    // auto-hide-when-empty logic interacted badly with column-state
+    // persistence: any sort/resize after the column went hidden saved
+    // the hidden state to localStorage, leaving the column permanently
+    // gone across reloads even after data came back.
   });
 
   // Per-source summary derivations for the two separate summary grids.
@@ -1753,6 +1737,10 @@
   function closeSearch() {
     searchOpen = false;
     typeaheadOpen = false;
+    // Reset both inputs so the popup feels fresh when re-opened. The
+    // unified Add popup carries the new-watchlist input too — clearing
+    // it here keeps the symbol + watchlist sections in sync.
+    newListName = '';
   }
 
   function pickList(/** @type {number} */ id) {
@@ -2289,14 +2277,13 @@
     } catch (e) { error = e.message; }
   }
 
-  let listInputOpen = $state(false);
-
-  function openListInput() { listInputOpen = true; }
-  function closeListInput() { listInputOpen = false; newListName = ''; }
-  async function makeListAndCollapse() {
+  // New-watchlist input lives inside the unified Add popup (`searchOpen`);
+  // there's no longer a separate listInputOpen modal. Submitting the
+  // form creates the list, joins it to the pulse, and closes the popup.
+  async function makeListAndClose() {
     if (!newListName.trim()) return;
     await makeList();
-    closeListInput();
+    closeSearch();
   }
 
   // ── Context menu ─────────────────────────────────────────────────
@@ -2391,18 +2378,12 @@
       if (optionPickerUnderlying) { closeOptionPicker(); return; }
       if (typeaheadOpen) { typeaheadOpen = false; return; }
       if (searchOpen) { closeSearch(); return; }
-      if (listInputOpen) { closeListInput(); return; }
       ticketProps = null;
       return;
     }
     if (ev.key === '/') {
       ev.preventDefault();
       openSearch();
-      return;
-    }
-    if (ev.key === 'n') {
-      ev.preventDefault();
-      openListInput();
       return;
     }
     if (ev.key === 'j' || ev.key === 'k') {
@@ -2439,7 +2420,16 @@
       const raw = localStorage.getItem(COL_STATE_KEY);
       if (!raw) return;
       const state = JSON.parse(raw);
-      grid.applyColumnState({ state, applyOrder: true });
+      // Force the sparkline (Curve) column visible — earlier builds
+      // had an auto-hide effect that, paired with onSortChanged /
+      // onColumnResized persistence, could pin `hide: true` into
+      // localStorage. We removed the auto-hide; this evicts any
+      // legacy persisted-hide so operators on stale state get the
+      // Curve column back without clearing storage.
+      const cleaned = Array.isArray(state)
+        ? state.map(c => c?.colId === 'sparkline' ? { ...c, hide: false } : c)
+        : state;
+      grid.applyColumnState({ state: cleaned, applyOrder: true });
     } catch (_) {}
   }
 
@@ -2523,24 +2513,11 @@
             {/if}
           </button>
         {/each}
-        <!-- Chrome buttons — Search + List + filters all sit on the
-             right edge of the single header row. Search and List both
-             open popups so the inline input boxes (which previously
-             expanded into Row 2 + the tabs strip) no longer fight for
-             horizontal space. On mobile the tabs are scrollable and
-             these buttons stay pinned right; the operator gets
-             everything in ONE row instead of three. -->
-        <span class="mp-chrome-spacer"></span>
-        <button onclick={openSearch} title="Search & add symbol  (/ )"
-          aria-label="Search and add symbol"
-          class="px-1.5 py-0.5 text-[0.7rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
-          🔍
-        </button>
-        <button onclick={openListInput} title="New watchlist  (n)"
-          aria-label="New watchlist"
-          class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
-          + List
-        </button>
+        <!-- Pickers come first (left-aligned with the tabs), then the
+             unified `+` button at the end of the row. The single `+`
+             opens one modal that handles both adding a symbol AND
+             creating a new watchlist — was two separate buttons
+             (🔍 / + List) before. -->
         {#if accountPicker && availableAccounts.length > 0}
           {@const _acctOff = !selectedSources.includes('positions')
                           && !selectedSources.includes('holdings')}
@@ -2556,6 +2533,11 @@
             <MultiSelect bind:value={selectedSources} options={SOURCE_OPTIONS} placeholder="Sources" />
           </div>
         {/if}
+        <button onclick={openSearch} title="Add symbol or watchlist  (/)"
+          aria-label="Add symbol or watchlist"
+          class="mp-add-btn">
+          +
+        </button>
       </div>
     {/if}
   {/if}
@@ -2746,18 +2728,21 @@
   </div>
 {/if}
 
-<!-- Search popup — opened by the magnifier in Row 1 (or the `/`
-     keyboard shortcut). Carries the symbol input + exchange picker +
-     typeahead + Add button. Click-outside / Esc to dismiss. -->
+<!-- Unified Add popup — opened by the `+` button in the chrome row (or
+     the `/` keyboard shortcut). Single modal with two sections stacked:
+     Add symbol (typeahead across stocks, futures, indices, options) and
+     New watchlist (creates a new list which immediately joins the pulse
+     as a selectable tab). Click-outside / Esc to dismiss. -->
 {#if searchOpen}
   <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Search and add symbol" onclick={closeSearch}>
+       aria-label="Add to Market Pulse" onclick={closeSearch}>
     <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
-        <span class="search-title">Add symbol</span>
+        <span class="search-title">Add to Market Pulse</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
       </div>
       <div class="search-body">
+        <div class="mp-add-section-label">Add symbol</div>
         <div class="search-row">
           <input bind:this={symInputEl} bind:value={symInput}
             oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
@@ -2778,7 +2763,7 @@
               }
             }}
             class="field-input text-[0.7rem] py-1 px-2 flex-1"
-            placeholder="Symbol (≥ 3 chars)" autocomplete="off" />
+            placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
           <div class="w-20">
             <Select ariaLabel="Exchange" bind:value={exchInput}
               options={[
@@ -2807,37 +2792,28 @@
         <div class="search-hint">
           Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
         </div>
-      </div>
-    </div>
-  </div>
-{/if}
 
-<!-- New-watchlist popup. Same overlay + modal palette as the symbol
-     search popup so both feel like the same affordance — operator
-     can rename "+ List" to a popup-open chip without UX overhead. -->
-{#if listInputOpen}
-  <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="New watchlist" onclick={closeListInput}>
-    <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
-      <div class="search-header">
-        <span class="search-title">New watchlist</span>
-        <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeListInput}>×</button>
-      </div>
-      <div class="search-body">
+        <div class="mp-add-divider"></div>
+
+        <div class="mp-add-section-label">New watchlist</div>
         <div class="search-row">
           <input bind:value={newListName}
             onkeydown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); makeListAndCollapse(); }
-              else if (e.key === 'Escape') { e.preventDefault(); closeListInput(); }
+              if (e.key === 'Enter') { e.preventDefault(); makeListAndClose(); }
+              else if (e.key === 'Escape') {
+                e.preventDefault();
+                if (typeaheadOpen) { typeaheadOpen = false; }
+                else { closeSearch(); }
+              }
             }}
             class="field-input text-[0.7rem] py-1 px-2 flex-1"
             placeholder="Watchlist name" autocomplete="off" />
-          <button onclick={makeListAndCollapse} disabled={!newListName.trim()}
+          <button onclick={makeListAndClose} disabled={!newListName.trim()}
             class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
-            title="Save new watchlist">Save</button>
+            title="Save new watchlist">Create</button>
         </div>
         <div class="search-hint">
-          Names are case-insensitive and must be unique within your account.
+          Names are case-insensitive and must be unique within your account. The new list becomes active immediately.
         </div>
       </div>
     </div>
@@ -3152,11 +3128,11 @@
      consistent across popups. Click-outside closes via the overlay's
      onclick handler; the modal itself stops propagation. */
 
-  /* Single-row chrome — watchlist tabs flow horizontally with
-     overflow-x scroll when there are too many to fit; the chrome
-     buttons (🔍 / + List / filters) sit pinned right after a
-     flex-grow spacer. This collapses what used to be three stacked
-     rows of chrome on mobile portrait into one. */
+  /* Single-row chrome — every control left-aligned in one row.
+     Watchlist tabs, account picker, sources picker, and the unified
+     `+` add button all flow left-to-right. On mobile the row scrolls
+     horizontally (overflow-x: auto) rather than wrapping, so the
+     operator gets one continuous strip instead of three stacked rows. */
   .mp-chrome-row {
     display: flex;
     flex-wrap: nowrap;
@@ -3170,16 +3146,52 @@
     scrollbar-width: none;
   }
   .mp-chrome-row::-webkit-scrollbar { display: none; }
-  /* Spacer pushes the right-edge chrome past whatever tabs claim
-     space. Without flex-grow the tabs flow continuously and the
-     chrome buttons sit immediately after the last tab. */
-  .mp-chrome-spacer {
-    flex: 1 1 auto;
-    min-width: 0.5rem;
-  }
   /* Tab buttons inside the row never shrink (would clip the label)
      and never wrap (would defeat the single-row promise). */
   .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
+
+  /* Unified `+` add button — single chip at the end of the chrome row.
+     Bigger glyph than the surrounding watchlist tabs so it reads as
+     an action affordance rather than another tab. Same amber palette
+     as the tab borders / Save buttons so it sits in the page palette. */
+  .mp-add-btn {
+    flex: 0 0 auto;
+    padding: 0 0.55rem;
+    height: 1.5rem;
+    font-size: 0.95rem;
+    line-height: 1;
+    font-weight: 700;
+    color: #fbbf24;
+    background: transparent;
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .mp-add-btn:hover {
+    background: rgba(251, 191, 36, 0.10);
+    border-color: rgba(251, 191, 36, 0.7);
+  }
+
+  /* Section label inside the unified Add popup — separates the
+     "Add symbol" and "New watchlist" sections so the two actions
+     read as distinct without needing tabs. Subtle uppercase amber
+     header (same palette as the page-section headers). */
+  :global(.mp-add-section-label) {
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #fbbf24;
+    margin-bottom: 0.35rem;
+  }
+  /* Divider between the two Add-popup sections — faint horizontal
+     rule that mirrors the algo theme's hairline accents. */
+  :global(.mp-add-divider) {
+    height: 1px;
+    background: rgba(200, 216, 240, 0.10);
+    margin: 0.85rem 0 0.6rem;
+  }
 
   :global(.search-overlay) {
     position: fixed;
