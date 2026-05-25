@@ -29,8 +29,16 @@
 
   const displayLabel = $derived.by(() => {
     if (!value || !value.length) return placeholder || '';
-    if (value.length <= 2) return value.join(', ');
-    return `${value.length} selected`;
+    // Show option LABELS (not raw values) in the trigger summary —
+    // values may be tokens like "src:positions" / "wl:42" which would
+    // read as opaque garbage. Falls back to the value itself if the
+    // option list doesn't carry it (defensive against stale state).
+    const labels = value.map(v => {
+      const opt = options.find(o => o.value === v);
+      return opt?.label ?? v;
+    });
+    if (labels.length <= 2) return labels.join(', ');
+    return `${labels.length} selected`;
   });
 
   function toggle() {

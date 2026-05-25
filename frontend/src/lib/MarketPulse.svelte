@@ -277,16 +277,85 @@
   const SOURCE_OPTIONS = $derived(
     _ALL_SOURCE_OPTIONS.filter(o => _availableSourceValues.has(o.value))
   );
+  // selectedSources is now DERIVED — the unified Show multiselect
+  // (selectedShow, declared below) is the single source of truth.
+  // The earlier $state + filter-effect pair was replaced because the
+  // tabs row + standalone Sources picker were consolidated into one
+  // MultiSelect; selectedSources is recomputed from selectedShow by
+  // the propagation $effect below.
   let selectedSources = $state(['pinned', 'watchlist', 'positions', 'holdings', 'movers']);
-  // Drop selected entries that aren't available to this embedder (e.g.
-  // 'watchlist' / 'movers' on the dashboard). Without this the disabled
-  // sources stay "selected" silently and re-appear if the caller flips
-  // the prop on at runtime, but more importantly the subtotal counts
-  // would include disabled buckets.
+
+  // ── Unified "Show" multiselect (single source of truth) ──────────────
+  // Combines the source toggles AND every watchlist into one flat
+  // MultiSelect. Token format:
+  //   "src:<source>"  — pinned / positions / holdings / movers
+  //   "wl:<id>"       — a specific user-created watchlist
+  // The standalone `watchlist` source is implicit: any `wl:` token
+  // selected ⇒ watchlist rows shown. Removing this duplication
+  // collapses what used to be a tabs row + a separate Sources picker
+  // into one control.
+  let selectedShow = $state(/** @type {string[]} */ ([]));
+
+  // Options list rebuilds whenever the available sources or the user's
+  // watchlist set changes. Sources come first (Pinned, Positions, …),
+  // then watchlists in their `lists` order. Default ★ marker stays as
+  // a visual hint on the label so the operator still sees which list
+  // is the default add-target.
+  const _showOptions = $derived.by(() => {
+    const opts = [];
+    for (const s of _ALL_SOURCE_OPTIONS) {
+      // Drop the standalone 'watchlist' source — selecting any list
+      // by name (wl:N) implicitly turns watchlist rows on.
+      if (s.value === 'watchlist') continue;
+      if (_availableSourceValues.has(s.value)) {
+        opts.push({ value: `src:${s.value}`, label: s.label });
+      }
+    }
+    for (const l of lists) {
+      opts.push({
+        value: `wl:${l.id}`,
+        label: l.is_default ? `${l.name} ★` : l.name,
+      });
+    }
+    return opts;
+  });
+
+  // Propagate selectedShow → selectedSources + activeIds. The latter
+  // two remain the read-API every downstream derivation already uses
+  // (buildUnified, summary derivations, subtotal strip), so this
+  // refactor doesn't ripple beyond the picker UI.
   $effect(() => {
-    const allowed = _availableSourceValues;
-    const filtered = selectedSources.filter(v => allowed.has(v));
-    if (filtered.length !== selectedSources.length) selectedSources = filtered;
+    const newSources = selectedShow
+      .filter(v => v.startsWith('src:'))
+      .map(v => v.slice(4));
+    // The 'watchlist' source must be ON whenever any wl: token is
+    // selected — the rest of the engine still reads selectedSources
+    // for that flag, so we synthesize it here.
+    const anyWl = selectedShow.some(v => v.startsWith('wl:'));
+    if (anyWl && !newSources.includes('watchlist')) newSources.push('watchlist');
+    selectedSources = newSources;
+
+    const newIds = new Set(
+      selectedShow
+        .filter(v => v.startsWith('wl:'))
+        .map(v => Number(v.slice(3)))
+        .filter(n => Number.isFinite(n))
+    );
+    activeIds = newIds;
+  });
+
+  // Prune selectedShow when an embedder disables a source group or
+  // when a watchlist is deleted out from under us — same defensive
+  // pattern as the original selectedSources prune.
+  $effect(() => {
+    const allowedSrc = _availableSourceValues;
+    const allowedWl  = new Set(lists.map(l => `wl:${l.id}`));
+    const filtered = selectedShow.filter(v =>
+      v.startsWith('src:') ? allowedSrc.has(v.slice(4))
+      : v.startsWith('wl:') ? allowedWl.has(v)
+      : false
+    );
+    if (filtered.length !== selectedShow.length) selectedShow = filtered;
   });
 
   // Keep individual booleans so buildUnified + other callsites are unchanged.
@@ -787,6 +856,11 @@
     for (const r of positionsSummary) {
       const a = r.account;
       if (!a) continue;
+      // Honour the account multiselect — without this, summary rows
+      // showed every account regardless of the picker. Main grid rows
+      // already respect _includesAccount via scopedPositions; summary
+      // was the missing surface.
+      if (!_includesAccount(a)) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, _inv_val: 0 };
       byAcct[a].day_pnl  += Number(r.day_change_val) || 0;
       byAcct[a].pnl      += Number(r.pnl)            || 0;
@@ -808,6 +882,10 @@
     for (const r of holdingsSummary) {
       const a = r.account;
       if (!a) continue;
+      // Same account-multiselect filter as positionsSummaryData above —
+      // backend summary rows arrive per-account; we need to scope by
+      // the operator's picker before aggregating.
+      if (!_includesAccount(a)) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0, inv_val: 0 };
       byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl)            || 0;
@@ -910,15 +988,35 @@
     try {
       lists = await fetchWatchlists();
       if (!lists.length) return;
-      if (activeIds.size === 0) {
-        activeIds = new Set(lists.map(l => l.id));
+      // First-load seed of the unified Show multiselect — when no tokens
+      // are persisted (selectedShow empty), default to "everything on":
+      // every available source + every watchlist. The propagation
+      // $effect derives selectedSources + activeIds from this.
+      if (selectedShow.length === 0) {
+        const srcTokens = [..._availableSourceValues]
+          .filter(s => s !== 'watchlist')   // implicit via wl: tokens
+          .map(s => `src:${s}`);
+        const wlTokens  = lists.map(l => `wl:${l.id}`);
+        selectedShow = [...srcTokens, ...wlTokens];
       } else {
-        const valid = new Set(lists.map(l => l.id));
-        const trimmed = new Set([...activeIds].filter(id => valid.has(id)));
-        if (trimmed.size !== activeIds.size) activeIds = trimmed;
+        // Lists may have changed underneath us — drop any wl: token
+        // whose id no longer exists. The pruning $effect at the top
+        // does the same thing, but doing it here too means activeIds
+        // is correct on the very next tick (no flicker).
+        const validIds = new Set(lists.map(l => `wl:${l.id}`));
+        const trimmed = selectedShow.filter(v =>
+          v.startsWith('wl:') ? validIds.has(v) : true
+        );
+        if (trimmed.length !== selectedShow.length) selectedShow = trimmed;
       }
+      // focusedListId: where new symbols added via the search popup land.
+      // No tabs anymore, so the operator can't switch this from the UI —
+      // default to the user's default watchlist (or the first selected).
       if (focusedListId == null || !activeIds.has(focusedListId)) {
-        const def = lists.find(l => l.is_default) ?? lists[0];
+        const def = lists.find(l => l.is_default && activeIds.has(l.id))
+                 ?? lists.find(l => activeIds.has(l.id))
+                 ?? lists.find(l => l.is_default)
+                 ?? lists[0];
         focusedListId = def?.id ?? null;
       }
     } catch (e) { error = e.message; }
@@ -1743,65 +1841,41 @@
     newListName = '';
   }
 
-  function pickList(/** @type {number} */ id) {
-    const next = new Set(activeIds);
-    if (next.has(id)) {
-      if (next.size > 1) next.delete(id);
-    } else {
-      next.add(id);
-    }
-    activeIds = next;
-    focusedListId = id;
-    loadActive();
-  }
-
   async function makeList() {
     if (!newListName.trim()) return;
     try {
       const w = await createWatchlist(newListName.trim());
       newListName = '';
-      activeIds = new Set([...activeIds, w.id]);
+      // Add the new list's token to the unified Show multiselect — this
+      // is what causes its rows to appear in the grid (selectedShow is
+      // now the source of truth; activeIds is derived from it).
+      const newToken = `wl:${w.id}`;
+      if (!selectedShow.includes(newToken)) {
+        selectedShow = [...selectedShow, newToken];
+      }
       focusedListId = w.id;
       await loadLists();
       await loadActive();
     } catch (e) { error = e.message; }
   }
 
-  // Two-click delete confirmation — first click flips the × into
-  // "× Confirm" for 4 seconds; second click within that window actually
-  // deletes. Replaces the native confirm() dialog, which silently no-ops
-  // in iOS PWA standalone mode and looks jarring inside the dark UI.
-  let _pendingDeleteList = $state(/** @type {number|null} */ (null));
-  let _pendingDeleteTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
-
-  function armDeleteList(id) {
-    if (_pendingDeleteList === id) {
-      // Second click → actually delete.
-      _pendingDeleteList = null;
-      if (_pendingDeleteTimer) { clearTimeout(_pendingDeleteTimer); _pendingDeleteTimer = null; }
-      return dropList(id);
-    }
-    // First click → arm the confirm window.
-    _pendingDeleteList = id;
-    if (_pendingDeleteTimer) clearTimeout(_pendingDeleteTimer);
-    _pendingDeleteTimer = setTimeout(() => {
-      _pendingDeleteList = null;
-      _pendingDeleteTimer = null;
-    }, 4000);
-  }
-
   async function dropList(/** @type {number} */ id) {
     try {
       await deleteWatchlist(id);
-      const next = new Set(activeIds);
-      next.delete(id);
-      activeIds = next;
+      // Remove the token from the unified Show multiselect — activeIds
+      // gets re-derived via the propagation $effect. The pruning effect
+      // would also strip it once `lists` reloads, but doing it here too
+      // avoids a brief frame where the deleted list still shows.
+      const droppedToken = `wl:${id}`;
+      selectedShow = selectedShow.filter(v => v !== droppedToken);
       if (focusedListId === id) {
-        focusedListId = [...next][0] ?? null;
+        focusedListId = [...activeIds].find(x => x !== id) ?? null;
       }
       await loadLists();
       if (activeIds.size === 0 && lists.length) {
-        activeIds = new Set([lists[0].id]);
+        // Re-seed onto the first remaining list so the grid never
+        // sits empty when an operator just nuked their only active list.
+        selectedShow = [...selectedShow, `wl:${lists[0].id}`];
         focusedListId = lists[0].id;
       }
       await loadActive();
@@ -2483,66 +2557,32 @@
   {/if}
 
   {#if enableWatchlists || enableSourceToggles || accountPicker}
-    <!-- Single header row — Watchlist tabs (scroll horizontally when
-         narrow) on the left, chrome buttons (🔍 / + List / filters)
-         pinned right. Earlier this was two separate rows; the new
-         single-row layout keeps mobile portrait at one line of
-         chrome instead of three. -->
-    {#if enableWatchlists}
-      <div class="mp-chrome-row mb-1">
-        {#each lists as l}
-          {@const selected = activeIds.has(l.id)}
-          {@const focused  = focusedListId === l.id}
-          <button onclick={() => pickList(l.id)}
-            title={selected ? 'Selected — click to deselect' : 'Click to include'}
-            class="px-2.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wider rounded transition
-                   border {focused ? 'border-[#fbbf24]' : 'border-[rgba(251,191,36,0.3)]'}
-                   {selected ? 'bg-[#fbbf24]/20 text-[#fbbf24]' : 'bg-transparent text-[#c8d8f0]/40 hover:bg-[#fbbf24]/10 hover:text-[#fbbf24]/70'}">
-            <span class="mr-1 text-[0.55rem]">{selected ? '✓' : '○'}</span>{l.name}
-            <span class="ml-1 text-[0.55rem] text-[#7e97b8]">({l.item_count})</span>
-            {#if l.is_default}<span class="ml-1 text-[0.5rem] text-[#4ade80]">★</span>{/if}
-            {#if focused && !l.is_default && lists.length > 1}
-              <span
-                role="button"
-                tabindex="0"
-                title={_pendingDeleteList === l.id ? 'Click again to confirm' : 'Delete watchlist'}
-                onclick={(e) => { e.stopPropagation(); armDeleteList(l.id); }}
-                onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), armDeleteList(l.id))}
-                class="ml-1 text-[0.6rem] cursor-pointer
-                       {_pendingDeleteList === l.id
-                         ? 'text-red-400 font-bold animate-pulse'
-                         : 'text-red-300 hover:text-red-400'}"
-              >{_pendingDeleteList === l.id ? '× Confirm?' : '×'}</span>
-            {/if}
-          </button>
-        {/each}
-        <!-- Pickers come first (left-aligned with the tabs), then the
-             unified `+` button at the end of the row. The single `+`
-             opens one modal that handles both adding a symbol AND
-             creating a new watchlist — was two separate buttons
-             (🔍 / + List) before. -->
-        {#if accountPicker && availableAccounts.length > 0}
-          {@const _acctOff = !selectedSources.includes('positions')
-                          && !selectedSources.includes('holdings')}
-          <div class="w-28 shrink-0">
-            <AccountMultiSelect bind:value={selectedAccounts}
-              options={availableAccounts.map(a => ({ value: a, label: a }))}
-              disabled={_acctOff}
-              disabledReason="Account filter applies only when Positions or Holdings is selected" />
-          </div>
-        {/if}
-        {#if enableSourceToggles}
-          <div class="w-28 shrink-0">
-            <MultiSelect bind:value={selectedSources} options={SOURCE_OPTIONS} placeholder="Sources" />
-          </div>
-        {/if}
-        <button onclick={openSearch} title="Add symbol or watchlist  (/)"
-          aria-label="Add symbol or watchlist"
-          class="mp-add-btn">
-          +
-        </button>
+    <!-- Single chrome row — every control left-aligned. The previous
+         tabs strip + Sources picker have been consolidated into ONE
+         "Show" MultiSelect that lists source toggles AND every
+         watchlist as peer options (flat list per operator preference).
+         Watchlists added via the `+` popup automatically appear in the
+         dropdown via the reactive _showOptions derivation. -->
+    <div class="mp-chrome-row mb-1">
+      <div class="w-44 shrink-0">
+        <MultiSelect bind:value={selectedShow} options={_showOptions} placeholder="Show…" />
       </div>
-    {/if}
+      {#if accountPicker && availableAccounts.length > 0}
+        {@const _acctOff = !selectedSources.includes('positions')
+                        && !selectedSources.includes('holdings')}
+        <div class="w-28 shrink-0">
+          <AccountMultiSelect bind:value={selectedAccounts}
+            options={availableAccounts.map(a => ({ value: a, label: a }))}
+            disabled={_acctOff}
+            disabledReason="Account filter applies only when Positions or Holdings is selected" />
+        </div>
+      {/if}
+      <button onclick={openSearch} title="Add symbol or watchlist  (/)"
+        aria-label="Add symbol or watchlist"
+        class="mp-add-btn">
+        +
+      </button>
+    </div>
   {/if}
 
   <!-- Per-source subtotals strip (item 1) — shown when ≥1 source has rows. -->
