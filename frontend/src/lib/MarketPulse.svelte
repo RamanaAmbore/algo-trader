@@ -807,16 +807,17 @@
       const mid = new Set(MIDCAP_QUOTE_KEYS);
       const sml = new Set(SMLCAP_QUOTE_KEYS);
       const allKeys = [...new Set([...fo, ...mid, ...sml])];
-      const HALF = Math.ceil(allKeys.length / 2);
-      const batches = [allKeys.slice(0, HALF), allKeys.slice(HALF)];
-      const responses = await Promise.all(batches.map((b) => batchQuote(b)));
+      // Backend caps batchQuote at 300 keys; our 3 universes total
+      // ~277 dedup so we fit in one call. Earlier two-half split lost
+      // the second batch silently when one of the parallel requests
+      // returned empty — the surviving FO_QUOTE_KEYS half is what
+      // produced the "everything tagged underlying" symptom.
+      const r = await batchQuote(allKeys);
       /** @type {Record<string, any>} */
       const byKey = {};
-      for (const r of responses) {
-        for (const it of (r?.items ?? [])) {
-          if (!it?.exchange || !it?.tradingsymbol) continue;
-          byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
-        }
+      for (const it of (r?.items ?? [])) {
+        if (!it?.exchange || !it?.tradingsymbol) continue;
+        byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
       }
       // Project into the shape buildUnified consumes (tradingsymbol /
       // exchange / last_price / change_pct / previous_close) + a
