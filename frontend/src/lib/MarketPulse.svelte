@@ -1316,7 +1316,26 @@
         const accts = new Set();
         for (const r of positions) if (r.account) accts.add(String(r.account));
         for (const r of holdings)  if (r.account) accts.add(String(r.account));
-        availableAccounts = [...accts].sort();
+        const sorted = [...accts].sort();
+        availableAccounts = sorted;
+        // First-load seed of the Account picker — explicitly select
+        // every discovered account so the trigger shows the codes
+        // instead of a vague "All accounts" placeholder. The empty-
+        // array sentinel still means "no filter" downstream (via
+        // _includesAccount), but operators reading the trigger want
+        // visible confirmation of which accounts are in scope.
+        // Skip if persisted state was already restored on mount.
+        if (selectedAccounts.length === 0 && sorted.length > 0) {
+          let restored = false;
+          try {
+            const cached = sessionStorage.getItem('mp.selectedAccounts');
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              if (Array.isArray(parsed) && parsed.length > 0) restored = true;
+            }
+          } catch (_) {}
+          if (!restored) selectedAccounts = sorted;
+        }
       }
       const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
       const contractKeys = new Set();
@@ -2880,10 +2899,10 @@
                     setTimeout(() => { _pendingDeleteId = null; }, 4000);
                   }
                 }}
-                class="btn-primary text-[0.65rem] py-1 px-2 disabled:opacity-50"
-                style="background: rgba(248,113,113,0.15); color: #fda4af; border-color: rgba(248,113,113,0.4);"
+                class="text-[0.7rem] py-1 px-3 rounded font-bold border"
+                style="background: rgba(248,113,113,0.2); color: #fda4af; border-color: rgba(248,113,113,0.55);"
                 title={_pendingDeleteId === targetListId ? 'Click again to confirm delete' : `Delete "${_tgtList.name}" watchlist`}>
-                {_pendingDeleteId === targetListId ? '× Confirm?' : '× Delete'}
+                {_pendingDeleteId === targetListId ? '× Confirm?' : '🗑 Delete'}
               </button>
             {/if}
           {/if}
@@ -2904,6 +2923,13 @@
           <div class="search-hint">
             Names are case-insensitive and must be unique. The list is created when you press Add.
           </div>
+        {:else if typeof targetListId === 'number'}
+          {@const _tgtCheck = lists.find(l => l.id === targetListId)}
+          {#if _tgtCheck && !_tgtCheck.is_default}
+            <div class="search-hint">
+              Pick a different list to switch target. Click 🗑 Delete to remove "{_tgtCheck.name}".
+            </div>
+          {/if}
         {/if}
 
         <div class="mp-add-divider"></div>
