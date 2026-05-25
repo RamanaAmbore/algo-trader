@@ -2076,7 +2076,9 @@
     if (!closes || closes.length < 2) {
       return '<span style="color:#7e97b8;font-size:0.6rem;padding:0 4px">—</span>';
     }
-    const W = 58, H = 16, PAD = 2;
+    // Compact width (32px SVG inside a 36px column) — frees up
+    // horizontal space so the LTP column stays visible on mobile.
+    const W = 32, H = 14, PAD = 2;
     const min = Math.min(...closes);
     const max = Math.max(...closes);
     const range = max - min || 1;
@@ -2138,7 +2140,9 @@
       { field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
-      { field: 'tradingsymbol', headerName: 'Curve', width: 64, colId: 'sparkline',
+      // Curve column shrunk from 64 px → 36 px to free LTP/Δ% room on
+      // mobile viewports. SVG dropped from 58×16 to 32×14 to match.
+      { field: 'tradingsymbol', headerName: 'Curve', width: 36, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: true,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
@@ -2981,6 +2985,32 @@
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeOptionPicker}>×</button>
       </div>
       <div class="search-body">
+        <!-- Watchlist target — same dropdown as the Add popup. Lets the
+             operator change target without backing out to the prior
+             modal. "+ New watchlist" reveals an inline name input. -->
+        <div class="mp-add-section-label">Watchlist</div>
+        <div class="search-row">
+          <div class="flex-1">
+            <Select ariaLabel="Watchlist target" bind:value={targetListId}
+              options={[
+                ...lists.map(l => ({
+                  value: l.id,
+                  label: l.is_default ? `${l.name} ★` : l.name,
+                })),
+                { value: 'NEW', label: '+ New watchlist' },
+              ]} />
+          </div>
+        </div>
+        {#if targetListId === 'NEW'}
+          <div class="search-row" style="margin-top: 0.4rem;">
+            <input bind:value={newListName}
+              class="field-input text-[0.7rem] py-1 px-2 flex-1"
+              placeholder="New watchlist name" autocomplete="off" />
+          </div>
+        {/if}
+
+        <div class="mp-add-divider"></div>
+
         <div class="mp-add-section-label">Option chain</div>
         <div class="search-row" style="flex-wrap: wrap;">
           <!-- Expiry dropdown -->
@@ -3343,26 +3373,24 @@
      consistent across popups. Click-outside closes via the overlay's
      onclick handler; the modal itself stops propagation. */
 
-  /* Single-row chrome — every control left-aligned in one row.
-     Watchlist tabs, account picker, sources picker, and the unified
-     `+` add button all flow left-to-right. On mobile the row scrolls
-     horizontally (overflow-x: auto) rather than wrapping, so the
-     operator gets one continuous strip instead of three stacked rows. */
+  /* Chrome row — every control left-aligned. Wraps to a new line on
+     narrow viewports rather than scrolling horizontally because CSS
+     overflow-x:auto + overflow-y:visible CLIPS the Y axis too (CSS
+     spec quirk). Clipping the Y axis killed the Show / Account
+     MultiSelect dropdowns — they're position:absolute and got cut off
+     above the chrome row's lower edge, so they were rendered but
+     invisible to the operator (panel had measurable bounding box but
+     was painted under the next row). flex-wrap:wrap dodges the
+     overflow trap entirely while still allowing horizontal layout
+     when the viewport is wide enough. */
   .mp-chrome-row {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.25rem;
-    overflow-x: auto;
-    overflow-y: visible;
-    /* Hide the scrollbar on platforms that show one — chrome looks
-       cleaner; the operator can still trackpad-scroll horizontally
-       or use shift+wheel. */
-    scrollbar-width: none;
+    overflow: visible;
   }
-  .mp-chrome-row::-webkit-scrollbar { display: none; }
-  /* Tab buttons inside the row never shrink (would clip the label)
-     and never wrap (would defeat the single-row promise). */
+  /* Tab buttons inside the row never shrink (would clip the label). */
   .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
 
   /* Unified `+` add button — single chip at the end of the chrome row.
