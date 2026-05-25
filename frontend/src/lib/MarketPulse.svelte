@@ -436,6 +436,20 @@
   // so moveGroup can constrain its swap to the same bucket.
   // Order: watchlist → positions → holdings → everything else.
   function bucketOf(row) {
+    // Prefer the row's declared major group when buildUnified set it
+    // (every row in mainRows carries `_majorGroup`). This keeps the
+    // postSortRows regrouping consistent with the major-divider
+    // assignment — without it, anchor rows (src.u-only) fell into
+    // bucket 4 here, while their `_majorGroup` was 'positions', so the
+    // CRUDEOIL / GOLDM / INDIGO anchors landed AFTER the entire
+    // holdings block instead of right above their option contracts.
+    const mg = row?._majorGroup;
+    if (mg === 'pinned' || mg === 'watchlist') return 1;
+    if (mg === 'positions') return 2;
+    if (mg === 'holdings')  return 3;
+    if (mg === 'movers')    return 4;
+    // Legacy fallback for callers that don't run through mainRows
+    // (the watchlist add/remove helpers up at line ~384 hit this).
     if (row?.src?.w) return 1;
     if (row?.src?.p) return 2;
     if (row?.src?.h) return 3;
@@ -764,13 +778,6 @@
     if (!gridReady || !grid) return;
     grid.setGridOption('rowData', mainRows);
     grid.setGridOption('pinnedTopRowData', pinnedTopRows);
-    // TEMP DEBUG anchor sort
-    try {
-      /** @type {any} */ (window).__mainRows = mainRows.map((r, i) => ({
-        i, ts: r.tradingsymbol, u: r.underlying, mg: r._majorGroup, mo: r._majorOrder,
-        kind: r.kind, src: Object.keys(r.src || {}).filter(k => r.src[k]).join(''),
-      }));
-    } catch (_) {}
     // Auto-hide the Curve column when no data is available so the
     // column header doesn't sit empty taking 64 px. Re-shows
     // automatically when the sparkline poll fills in.
