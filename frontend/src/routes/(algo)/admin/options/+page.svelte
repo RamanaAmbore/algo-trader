@@ -1685,6 +1685,24 @@
         <span class="opt-section-tag tag-short" title="Max loss">
           MAX L {fmtMoney(strategy.risk.max_loss, false)}
         </span>
+        <!-- Greeks chips — Δ Θ 𝒱 surfaced inline in the payoff header
+             so the operator sees position-level direction / decay /
+             volatility exposure without scrolling to the Greeks card
+             below. Same `.opt-section-tag` chip chrome; greek-tagged
+             variant uses a sky-cyan tint to read as distinct from
+             the amber Net / Max chips. -->
+        <span class="opt-section-tag tag-greek"
+          title="Delta — net directional exposure (₹ per ₹1 spot move)">
+          Δ {pctFmt(strategy.aggregate_greeks.delta)}
+        </span>
+        <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.theta < 0 ? 'tag-greek-neg' : ''}"
+          title="Theta — daily decay (₹/day, positive when net short premium)">
+          Θ {pctFmt(strategy.aggregate_greeks.theta)}
+        </span>
+        <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.vega < 0 ? 'tag-greek-neg' : ''}"
+          title="Vega — P&L per 1% IV move (positive = long volatility)">
+          𝒱 {pctFmt(strategy.aggregate_greeks.vega)}
+        </span>
       </div>
     </div>
     <OptionsPayoff
@@ -2159,6 +2177,12 @@
   .tag-deriv  { color: #7dd3fc; background: rgba(125,211,252,0.10); }
   .tag-long   { color: #4ade80; background: rgba(74,222,128,0.10); }
   .tag-short  { color: #f87171; background: rgba(248,113,113,0.10); }
+  /* Greek chips in the payoff header — distinct cyan tint so they
+     read as a different category from the amber net-cost / max-PnL
+     chips. Theta + Vega flip to a red variant when negative (short
+     premium / long volatility carry the inverse sign convention). */
+  .tag-greek      { color: #c4b5fd; background: rgba(196,181,253,0.10); }
+  .tag-greek-neg  { color: #fda4af; background: rgba(253,164,175,0.10); }
   .opt-section-meta {
     color: #a3b9d0;
     font-weight: 400;
@@ -2292,7 +2316,20 @@
     .opt-payoff-legs-row:has(.opt-legs-card) {
       display: grid;
       grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-      align-items: start;
+      /* Stretch the two cards to the tallest sibling's height so the
+         row reads as one visual unit. The legs card's .cand-scroll
+         absorbs the extra vertical space via flex (rule below). */
+      align-items: stretch;
+    }
+    /* Legs card becomes a flex column so .cand-scroll can flex:1
+       and fill the height delta between header + scroll viewport. */
+    .opt-payoff-legs-row:has(.opt-legs-card) .opt-legs-card {
+      display: flex;
+      flex-direction: column;
+    }
+    .opt-payoff-legs-row:has(.opt-legs-card) .opt-legs-card .cand-scroll {
+      flex: 1;
+      max-height: none;
     }
   }
   /* Leg builder — compact monospace grid mirroring the simulator's
