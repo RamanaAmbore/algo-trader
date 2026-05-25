@@ -2357,7 +2357,11 @@
   @media (min-width: 1180px) {
     .opt-payoff-legs-row:has(.opt-legs-card) {
       display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      /* Equal-width columns — each card claims half the row width.
+         Earlier this was 1.4fr / 1fr (payoff ≈ 58 %), favouring the
+         chart; operator preference is 50 / 50 so the candidate list
+         gets the same horizontal real estate as the chart. */
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       /* Stretch the two cards to the tallest sibling's height so the
          row reads as one visual unit. The legs card's .cand-scroll
          absorbs the extra vertical space via flex (rule below). */
