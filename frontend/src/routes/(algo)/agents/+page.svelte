@@ -596,16 +596,21 @@
   {/if}
 {/snippet}
 
-<!-- Grouped agent list — compact rows, click to expand -->
+<!-- Grouped agent list — compact rows, click to expand.
+     Two-column magazine-flow on ≥1024 px (lg:columns-2): items
+     fill column 1 top-to-bottom, then column 2 starts; expanding a
+     card just grows its own column without pulling its row-neighbour
+     down (true CSS-columns behaviour, unlike a 2-col Grid where
+     row siblings would equalise heights). Single column on mobile. -->
 {#each groupedAgents() as group}
   <h2 class="text-[0.6rem] font-bold uppercase tracking-wider text-[#fbbf24] mt-3 mb-1.5 border-b border-[#fbbf24]/25 pb-0.5">
     {group.name}
     <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
   </h2>
-  <div class="space-y-1 mb-3">
+  <div class="space-y-1 mb-3 lg:columns-2 lg:gap-2 lg:space-y-0">
     {#each group.agents as agent}
       {@const isOpen = expandedSlug === agent.slug}
-      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
+      <div class="algo-status-card break-inside-avoid lg:mb-1 {agent.status === 'triggered' ? 'animate-pulse' : ''}"
            data-status={agent.status}
            style="padding: 0">
         <!-- Compact row (always visible). Div + role="button" so the inner
