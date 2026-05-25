@@ -97,6 +97,12 @@
   let exchInput  = $state('NSE');
   let typeahead  = $state(/** @type {any[]} */ ([]));
   let typeaheadOpen = $state(false);
+  // Search popup — opened by the magnifier button at the top of the
+  // header row (and by the `/` keyboard shortcut). Houses the symbol
+  // input + exchange picker + typeahead + Add button. Hiding the
+  // always-on form clears ~30 px of vertical chrome from the page
+  // header so the grid claims more screen real estate.
+  let searchOpen = $state(false);
 
   // Option picker — shown inline when the operator picks an underlying
   // from the typeahead (i.e. a symbol that has CE/PE chains).
@@ -1712,6 +1718,7 @@
     try {
       await addToWatchlistDeduped(targetId, symInput.trim().toUpperCase(), exchInput);
       symInput = ''; typeahead = []; typeaheadOpen = false;
+      searchOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
   }
@@ -1720,7 +1727,10 @@
     typeaheadOpen = false;
     exchInput = inst.e;   // auto-fill exchange from typeahead selection
     // If the picked symbol is an underlying (has CE/PE chains), open the
-    // inline option picker instead of adding directly.
+    // inline option picker instead of adding directly. Close the
+    // search modal first so the option picker isn't visually stacked
+    // behind it.
+    searchOpen = false;
     const opened = await openOptionPicker(inst.s, inst.e);
     if (opened) return;
     // Direct-add path: equities, futures, CDS, and anything without a chain.
@@ -1731,6 +1741,18 @@
       symInput = ''; typeahead = []; typeaheadOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
+  }
+
+  function openSearch() {
+    searchOpen = true;
+    typeaheadOpen = false;
+    // Defer focus until the popup mounts. requestAnimationFrame is
+    // enough — the input is rendered in the same Svelte tick.
+    requestAnimationFrame(() => { symInputEl?.focus(); symInputEl?.select(); });
+  }
+  function closeSearch() {
+    searchOpen = false;
+    typeaheadOpen = false;
   }
 
   function pickList(/** @type {number} */ id) {
@@ -2368,13 +2390,14 @@
       if (ctxMenu) { closeContextMenu(); return; }
       if (optionPickerUnderlying) { closeOptionPicker(); return; }
       if (typeaheadOpen) { typeaheadOpen = false; return; }
+      if (searchOpen) { closeSearch(); return; }
       if (listInputOpen) { closeListInput(); return; }
       ticketProps = null;
       return;
     }
     if (ev.key === '/') {
       ev.preventDefault();
-      symInputEl?.focus();
+      openSearch();
       return;
     }
     if (ev.key === 'n') {
@@ -2496,6 +2519,17 @@
             {/if}
           </button>
         {/each}
+        <!-- Search trigger — opens the symbol-search popup. Pushed to
+             the right so the watchlist tabs flow left-to-right while
+             the chrome buttons (Search / + List) sit together on the
+             right edge. The button is square + icon-only so it claims
+             the minimum horizontal space; the `/` shortcut is in the
+             tooltip for power users. -->
+        <button onclick={openSearch} title="Search & add symbol  (/ )"
+          aria-label="Search and add symbol"
+          class="ml-auto px-1.5 py-0.5 text-[0.7rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
+          🔍
+        </button>
         <!-- New-list: collapsed + button, expanded: input + Save -->
         {#if listInputOpen}
           <input bind:value={newListName}
@@ -2512,57 +2546,20 @@
             title="Cancel">✕</button>
         {:else}
           <button onclick={openListInput} title="New watchlist"
-            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10 ml-auto">
+            class="px-2 py-0.5 text-[0.65rem] font-bold text-[#fbbf24] border border-[#fbbf24]/40 rounded hover:bg-[#fbbf24]/10">
             + List
           </button>
         {/if}
       </div>
     {/if}
 
-    <!-- Row 2 — Add-symbol input on the left, source/account filters on the right. -->
-    <div class="flex flex-wrap items-center gap-1 mb-1.5 relative">
-      {#if enableWatchlists}
-        <!-- Symbol input — placeholder is the field's purpose, not a hint about
-             keystroke counts. Width is constrained but flex-grows on wide screens. -->
-        <input bind:this={symInputEl} bind:value={symInput}
-          oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
-          onfocus={() => typeaheadOpen = true}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
-              else addRow();
-            } else if (e.key === 'Escape') { typeaheadOpen = false; }
-          }}
-          class="field-input text-[0.65rem] py-0.5 px-2 flex-1 min-w-32 max-w-56"
-          placeholder="Symbol" />
-        <div class="w-16">
-          <Select ariaLabel="Exchange" bind:value={exchInput}
-            options={[
-              { value: 'NSE', label: 'NSE' },
-              { value: 'BSE', label: 'BSE' },
-              { value: 'NFO', label: 'NFO' },
-              { value: 'MCX', label: 'MCX' },
-              { value: 'CDS', label: 'CDS' },
-            ]} />
-        </div>
-        <button onclick={addRow} disabled={!symInput.trim()}
-          class="btn-primary text-[0.65rem] py-0.5 px-2.5 disabled:opacity-50"
-          title="Add to focused watchlist">Add</button>
-        {#if typeaheadOpen && typeahead.length}
-          <div class="absolute top-7 left-0 w-80 max-w-full max-h-60 overflow-y-auto bg-[#0c1830] border border-[#fbbf24]/30 rounded shadow-lg z-10">
-            {#each typeahead as inst}
-              <button onclick={() => pickFromTypeahead(inst)}
-                class="block w-full text-left px-3 py-1.5 text-xs hover:bg-[#fbbf24]/10">
-                <span class="font-mono text-[#fbbf24]">{inst.s}</span>
-                <span class="text-[0.6rem] text-[#7e97b8] ml-2">{inst.e}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-      {/if}
-      <!-- Right-aligned cluster: account picker + source toggles. -->
-      {#if accountPicker || enableSourceToggles}
+    <!-- Row 2 — source / account filters. The symbol-search form
+         lives in a popup now (triggered by the magnifier button in
+         Row 1); the inline input was eating ~30 px of vertical chrome
+         on every page load when the operator only adds symbols
+         occasionally. Row 2 hides entirely when no filters apply. -->
+    {#if accountPicker || enableSourceToggles}
+      <div class="flex flex-wrap items-center gap-1 mb-1.5 relative">
         <div class="ml-auto flex items-center gap-1">
           {#if accountPicker && availableAccounts.length > 0}
             <!-- Global rule: disable the picker when neither Positions
@@ -2584,8 +2581,8 @@
             </div>
           {/if}
         </div>
-      {/if}
-    </div>
+      </div>
+    {/if}
   {/if}
 
   <!-- Per-source subtotals strip (item 1) — shown when ≥1 source has rows. -->
@@ -2771,6 +2768,64 @@
       <div class="ctx-sep"></div>
       <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu.row)}>Remove from watchlist</button>
     {/if}
+  </div>
+{/if}
+
+<!-- Search popup — opened by the magnifier in Row 1 (or the `/`
+     keyboard shortcut). Carries the symbol input + exchange picker +
+     typeahead + Add button. Click-outside / Esc to dismiss. -->
+{#if searchOpen}
+  <div class="search-overlay" role="dialog" aria-modal="true"
+       aria-label="Search and add symbol" onclick={closeSearch}>
+    <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
+      <div class="search-header">
+        <span class="search-title">Add symbol</span>
+        <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
+      </div>
+      <div class="search-body">
+        <div class="search-row">
+          <input bind:this={symInputEl} bind:value={symInput}
+            oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
+            onfocus={() => typeaheadOpen = true}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
+                else addRow();
+              } else if (e.key === 'Escape') { typeaheadOpen = false; }
+            }}
+            class="field-input text-[0.7rem] py-1 px-2 flex-1"
+            placeholder="Symbol (≥ 3 chars)" autocomplete="off" />
+          <div class="w-20">
+            <Select ariaLabel="Exchange" bind:value={exchInput}
+              options={[
+                { value: 'NSE', label: 'NSE' },
+                { value: 'BSE', label: 'BSE' },
+                { value: 'NFO', label: 'NFO' },
+                { value: 'MCX', label: 'MCX' },
+                { value: 'CDS', label: 'CDS' },
+              ]} />
+          </div>
+          <button onclick={addRow} disabled={!symInput.trim()}
+            class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
+            title="Add to focused watchlist">Add</button>
+        </div>
+        {#if typeahead.length}
+          <div class="search-typeahead">
+            {#each typeahead as inst}
+              <button onclick={() => pickFromTypeahead(inst)}
+                class="search-typeahead-item">
+                <span class="font-mono text-[#fbbf24]">{inst.s}</span>
+                <span class="text-[0.6rem] text-[#7e97b8] ml-2">{inst.e}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="search-hint">
+          Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
+        </div>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -3074,5 +3129,88 @@
     height: 1px;
     background: rgba(200,216,240,0.1);
     margin: 0.2rem 0;
+  }
+
+  /* ── Search popup ─────────────────────────────────────────────────
+     Lightweight overlay + modal for the symbol-add input. Mirrors
+     the OrderTicket modal palette so the algo dark UI feels
+     consistent across popups. Click-outside closes via the overlay's
+     onclick handler; the modal itself stops propagation. */
+  :global(.search-overlay) {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 15, 30, 0.7);
+    z-index: 60;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 12vh;
+  }
+  :global(.search-modal) {
+    width: min(28rem, 92vw);
+    background: linear-gradient(180deg, #0c1830 0%, #0a1628 100%);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 6px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+  }
+  :global(.search-header) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
+    background: rgba(251, 191, 36, 0.04);
+  }
+  :global(.search-title) {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #fbbf24;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  :global(.search-close) {
+    font-size: 1.05rem;
+    line-height: 1;
+    color: #7e97b8;
+    background: transparent;
+    border: none;
+    padding: 0 0.25rem;
+    cursor: pointer;
+  }
+  :global(.search-close:hover) { color: #fbbf24; }
+  :global(.search-body) {
+    padding: 0.7rem 0.8rem 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  :global(.search-row) {
+    display: flex;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+  :global(.search-typeahead) {
+    max-height: 16rem;
+    overflow-y: auto;
+    background: #0c1830;
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 4px;
+  }
+  :global(.search-typeahead-item) {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.7rem;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
+  :global(.search-typeahead-item:hover) { background: rgba(251, 191, 36, 0.1); }
+  :global(.search-hint) {
+    font-size: 0.6rem;
+    color: #7e97b8;
+    line-height: 1.4;
   }
 </style>
