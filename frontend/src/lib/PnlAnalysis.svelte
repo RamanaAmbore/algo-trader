@@ -5,6 +5,12 @@
   import PnlPanel from '$lib/PnlPanel.svelte';
   import Select   from '$lib/Select.svelte';
 
+  // Bindable prop — flips to `false` only after a successful fetch
+  // confirms zero rows for the current filters. Defaults to `true` so
+  // parents (dashboard chart card) don't auto-collapse during the
+  // initial loading window before /pnl-benchmarks resolves.
+  let { hasData = $bindable(true) } = $props();
+
   // ── State ──────────────────────────────────────────────────────────────────
   /** @type {'today'|'5d'|'1m'|'3m'|'1y'|'ytd'|'custom'} */
   let preset = $state('today');
@@ -296,6 +302,14 @@
   // True when the snapshot table is empty for this range — used to
   // render the "no data" banner instead of empty cards.
   const hasNoData = $derived(data != null && data.summary?.n_dates === 0);
+
+  // Mirror the empty/has-data state up to the optional `hasData` prop
+  // so parents (dashboard chart card) can auto-collapse when both the
+  // Intraday curve and PnlAnalysis are empty. Stays `true` while
+  // loading (data == null) to avoid premature collapse.
+  $effect(() => {
+    hasData = data == null ? true : (data.summary?.n_dates ?? 0) > 0;
+  });
 
   // ── Benchmark SVG chart ────────────────────────────────────────────────────
   const W = 560, H = 160, PAD_L = 42, PAD_R = 12, PAD_T = 12, PAD_B = 24;

@@ -158,6 +158,31 @@
   // is the book doing right now" view; Performance is the deeper
   // historical drill-down sitting one click away.
   let _chartTab = $state(/** @type {'intraday'|'performance'} */ ('intraday'));
+  // Bindable mirror of PnlAnalysis.hasData — flips to false once
+  // /pnl-benchmarks confirms zero dates. Default true so the
+  // auto-collapse effect below doesn't fire during the initial
+  // loading window before the fetch resolves.
+  let _pnlHasData = $state(true);
+
+  // Auto-collapse the Intraday/Performance card when BOTH tabs are
+  // confirmed empty (no intraday equity points AND PnlAnalysis returned
+  // zero dates). One-shot per emptiness event: once latched, the
+  // operator can manually expand without us re-collapsing them. The
+  // latch resets when data appears, so a later empty-state recurrence
+  // (broker reconnect → data cleared) re-triggers cleanly.
+  let _autoCollapseLatched = $state(false);
+  $effect(() => {
+    const intradayEmpty = _equityPoints.length === 0;
+    const pnlEmpty      = !_pnlHasData;
+    if (!intradayEmpty || _pnlHasData) {
+      _autoCollapseLatched = false;
+      return;
+    }
+    if (pnlEmpty && intradayEmpty && !_autoCollapseLatched) {
+      _colEquityCurve = true;
+      _autoCollapseLatched = true;
+    }
+  });
 
   // Per-card fullscreen toggles. Each card binds its own slot —
   // multiple cards can theoretically open at once but only one is
@@ -1649,9 +1674,11 @@
     </div>
 
     <!-- Performance panel — historical P&L drill-down. Renders
-         PnlAnalysis which owns its own filters, summary, and chart. -->
+         PnlAnalysis which owns its own filters, summary, and chart.
+         hasData flows back so the parent can auto-collapse this card
+         when both Intraday + Performance are empty. -->
     <div class="card-body" hidden={_chartTab !== 'performance' || _colEquityCurve}>
-      <PnlAnalysis />
+      <PnlAnalysis bind:hasData={_pnlHasData} />
     </div>
   </section>
 </div>
