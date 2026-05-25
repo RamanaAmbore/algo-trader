@@ -425,11 +425,24 @@
   let selectedAccounts = $state(/** @type {string[]} */ ([]));
   // Derived membership predicate — `true` when EITHER no filter is
   // applied (length === 0) OR the given account is in the chosen set.
-  // Acts as a hot-path helper used by every per-account derivation
-  // below.
-  const _includesAccount = $derived((acct) =>
-    selectedAccounts.length === 0 || selectedAccounts.includes(String(acct || ''))
-  );
+  // Hot-path helper used by every per-account derivation below.
+  //
+  // IMPORTANT: we read selectedAccounts at derivation time (via the
+  // length+map below) so Svelte 5's reactivity subscribes this
+  // derivation to selectedAccounts. The earlier version
+  //   $derived((acct) => selectedAccounts.length === 0 || ...)
+  // returned a fresh arrow function each call but the derivation body
+  // itself NEVER touched selectedAccounts — Svelte 5 had no
+  // subscription, so the function captured the initial empty array and
+  // never re-derived. Result: Account picker label updated but
+  // scopedPositions / scopedHoldings stayed unfiltered.
+  const _includesAccount = $derived.by(() => {
+    const allow = selectedAccounts.length === 0
+      ? null
+      : new Set(selectedAccounts.map(String));
+    return (/** @type {any} */ acct) =>
+      allow === null || allow.has(String(acct || ''));
+  });
   let availableAccounts = $state(/** @type {string[]} */ ([]));
 
   // Persist account-multiselect to sessionStorage on change so the
