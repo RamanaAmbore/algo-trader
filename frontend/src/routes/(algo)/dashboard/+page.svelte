@@ -110,17 +110,18 @@
   // empty whenever one side rendered; stacked uses the card's
   // full vertical real estate without operator interaction.
 
-  // Equity-card account filter — MultiSelect in the header lets the
-  // operator scope both Positions Summary AND Holdings Summary to
-  // any subset of broker accounts. Default = all accounts.
-  // selectedAccounts is the SOURCE OF TRUTH; empty list means "all"
-  // (no filter applied), so removing every checkbox doesn't blank
-  // the tables. Persisted to sessionStorage so the filter survives
-  // tab refresh but resets across sessions.
-  let _selectedAccounts = $state(/** @type {string[]} */ ([]));
+  // Per-card account filters — each AccountMultiSelect on the
+  // dashboard binds to its OWN state, so adjusting one card's
+  // scope doesn't cascade into the others. Empty array = all
+  // accounts (no filter). Persisted to sessionStorage under
+  // separate keys so the operator's per-card intent survives a
+  // tab refresh.
+  let _eqAccounts  = $state(/** @type {string[]} */ ([]));   // Equity card
+  let _winAccounts = $state(/** @type {string[]} */ ([]));   // Top Winners
+  let _losAccounts = $state(/** @type {string[]} */ ([]));   // Top Losers
 
   // Derived list of distinct accounts seen in current positions +
-  // holdings — feeds the MultiSelect options list. Sorted ascending.
+  // holdings — feeds every MultiSelect's options list. Sorted ascending.
   const _availableAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _positions) if (r.account) set.add(String(r.account));
@@ -128,10 +129,12 @@
     return [...set].sort();
   });
 
-  // Apply the account filter to a row list. Empty filter = pass-through.
-  function _filterByAccount(rows) {
-    if (!_selectedAccounts.length) return rows;
-    const allow = new Set(_selectedAccounts);
+  // Apply a per-card account filter to a row list. Empty filter
+  // (default) = pass-through. Generic helper so each card can pass
+  // its own state and share the filtering logic.
+  function _accountFilter(rows, accountsFilter) {
+    if (!accountsFilter.length) return rows;
+    const allow = new Set(accountsFilter);
     return rows.filter(r => allow.has(String(r.account || '')));
   }
 
@@ -221,7 +224,9 @@
   const _positionsSummary = $derived.by(() => {
     /** @type {Record<string, SumRow>} */
     const byAcct = {};
-    for (const r of _filterByAccount(_positions)) {
+    // Equity card uses its own _eqAccounts state — independent of
+    // the W/L cards' filters.
+    for (const r of _accountFilter(_positions, _eqAccounts)) {
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
@@ -234,7 +239,7 @@
   const _holdingsSummary = $derived.by(() => {
     /** @type {Record<string, SumRow>} */
     const byAcct = {};
-    for (const r of _filterByAccount(_holdings)) {
+    for (const r of _accountFilter(_holdings, _eqAccounts)) {
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
@@ -396,17 +401,14 @@
     return out;
   }
 
-  // Aggregate positions by parsed underlying. {underlying → sum(pnl)}
-  // Filtered by the shared account multiselect (_filterByAccount —
-  // bound to the same _selectedAccounts state the Equity card uses).
-  // Used by the (now retired) user-scoped underlying bucket — keeping
-  // the derivation alive for any future "your underlying exposure"
-  // surface even though Top Winners/Losers Underlying now reads from
-  // _marketRows() instead.
-  const _positionsByUnderlying = $derived.by(() => {
+  // Aggregate positions by parsed underlying. Kept for any future
+  // "your underlying exposure" surface (e.g. an extra W/L bucket)
+  // — Top Winners/Losers Underlying now reads from _marketRows().
+  // Takes an account filter as input so the caller picks the scope.
+  function _positionsByUnderlying(accounts) {
     /** @type {Map<string, {symbol: string, pnl: number, inv_val: number}>} */
     const byU = new Map();
-    for (const p of _filterByAccount(_positions)) {
+    for (const p of _accountFilter(_positions, accounts)) {
       const sym = String(p.tradingsymbol || p.symbol || '');
       const pnl = Number(p.pnl) || 0;
       if (!sym || pnl === 0) continue;
@@ -417,7 +419,7 @@
       byU.set(u, cur);
     }
     return Array.from(byU.values());
-  });
+  }
 
   // Market-wide rows for the three universe-based buckets.
   // Re-derives whenever _marketQuotes flips. Each is one bag of
@@ -448,14 +450,13 @@
     return Array.from(bySym.values());
   }
 
-  // Holdings, with optional class filter (midcap / smallcap / null=all).
-  // Aggregated by symbol so a stock held in N accounts appears as one
-  // row with summed day P&L + cost basis. Filtered by the shared
-  // _selectedAccounts state.
-  function _holdingsFor(cls) {
+  // Holdings, with optional class filter (midcap / smallcap / null=all)
+  // + per-card account filter. Aggregated by symbol so a stock held
+  // in N accounts appears as one row with summed day P&L + cost basis.
+  function _holdingsFor(cls, accounts) {
     /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number}[]} */
     const raw = [];
-    for (const h of _filterByAccount(_holdings)) {
+    for (const h of _accountFilter(_holdings, accounts)) {
       const sym = String(h.tradingsymbol || h.symbol || '');
       const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
       if (!sym) continue;
@@ -480,12 +481,12 @@
   }
 
   // Positions as individual contracts, aggregated by tradingsymbol
-  // across accounts (same reason as holdings). Filtered by the
-  // shared _selectedAccounts state.
-  const _positionsRows = $derived.by(() => {
+  // across accounts (same reason as holdings). Takes a per-card
+  // account filter so Winners + Losers cards can scope independently.
+  function _positionsRowsFor(accounts) {
     /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number}[]} */
     const raw = [];
-    for (const p of _filterByAccount(_positions)) {
+    for (const p of _accountFilter(_positions, accounts)) {
       const sym = String(p.tradingsymbol || p.symbol || '');
       const pnl = Number(p.pnl) || 0;
       if (!sym) continue;
@@ -499,7 +500,7 @@
     return _aggregateBySymbol(raw)
       .filter(r => r.pnl !== 0)
       .map(r => ({ ...r, kind: 'user' }));
-  });
+  }
 
   // Eligible-rows picker — sorted by P&L, NOT sliced. Splits the
   // bucket source into the winner / loser subset.
@@ -528,22 +529,23 @@
   // Bucket sources:
   //   - OPTION UNDERLYING / MIDCAP / SMALLCAP — MARKET-wide (universe
   //     constants in $lib/data/indexConstituents), independent of
-  //     positions/holdings + the account multiselect.
-  //   - HOLDINGS / POSITIONS — user-scoped, honour the account filter.
+  //     positions/holdings + ANY account filter.
+  //   - HOLDINGS / POSITIONS — user-scoped, honour the CARD'S OWN
+  //     _winAccounts / _losAccounts state (independent per card).
   const _winnerBuckets = $derived([
-    _bucket('OPTION UNDERLYING', _foUnderlyingRows,       'win'),
-    _bucket('MIDCAP',            _midcapRows,             'win'),
-    _bucket('SMALLCAP',          _smlcapRows,             'win'),
-    _bucket('HOLDINGS',          _holdingsFor(null),      'win'),
-    _bucket('POSITIONS',         _positionsRows,          'win'),
+    _bucket('OPTION UNDERLYING', _foUnderlyingRows,                 'win'),
+    _bucket('MIDCAP',            _midcapRows,                       'win'),
+    _bucket('SMALLCAP',          _smlcapRows,                       'win'),
+    _bucket('HOLDINGS',          _holdingsFor(null, _winAccounts),  'win'),
+    _bucket('POSITIONS',         _positionsRowsFor(_winAccounts),   'win'),
   ]);
 
   const _loserBuckets = $derived([
-    _bucket('OPTION UNDERLYING', _foUnderlyingRows,       'lose'),
-    _bucket('MIDCAP',            _midcapRows,             'lose'),
-    _bucket('SMALLCAP',          _smlcapRows,             'lose'),
-    _bucket('HOLDINGS',          _holdingsFor(null),      'lose'),
-    _bucket('POSITIONS',         _positionsRows,          'lose'),
+    _bucket('OPTION UNDERLYING', _foUnderlyingRows,                 'lose'),
+    _bucket('MIDCAP',            _midcapRows,                       'lose'),
+    _bucket('SMALLCAP',          _smlcapRows,                       'lose'),
+    _bucket('HOLDINGS',          _holdingsFor(null, _losAccounts),  'lose'),
+    _bucket('POSITIONS',         _positionsRowsFor(_losAccounts),   'lose'),
   ]);
 
   // Show the categorised section only when SOMETHING is movable. Hides
@@ -858,15 +860,21 @@
   onMount(() => {
     bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
     _pnlOpen = localStorage.getItem('dash.pnlOpen') === '1';
-    // Restore the Equity-card account filter from sessionStorage.
-    // Stored as a JSON-encoded string array. Wrapped in try/catch
-    // because the cached value's account names may no longer exist
-    // on this server (operator switched broker accounts) — silently
-    // ignore + fall back to all-accounts.
-    try {
-      const cached = sessionStorage.getItem('dash.equityAccounts');
-      if (cached) _selectedAccounts = JSON.parse(cached);
-    } catch (_) { _selectedAccounts = []; }
+    // Restore per-card account filters from sessionStorage. Each
+    // card persists under its own key so the operator's per-card
+    // intent survives a tab refresh. Wrapped in try/catch since
+    // the stored account codes may no longer exist on this server
+    // (operator switched broker accounts) — silently fall back to
+    // all-accounts on parse error.
+    function _restore(key, /** @type {(v:string[])=>void} */ setter) {
+      try {
+        const cached = sessionStorage.getItem(key);
+        if (cached) setter(JSON.parse(cached));
+      } catch (_) { setter([]); }
+    }
+    _restore('dash.eqAccounts',  v => _eqAccounts  = v);
+    _restore('dash.winAccounts', v => _winAccounts = v);
+    _restore('dash.losAccounts', v => _losAccounts = v);
     loadHero();
     _heroTeardown = visibleInterval(loadHero, 30000);
     // Market-wide quotes for Underlying / Midcap / Smallcap winners
@@ -907,13 +915,18 @@
     } catch (_) { /* transient — leave previous map up */ }
   }
 
-  // Persist filter changes — keep in sessionStorage so it survives a
-  // page refresh but resets per session (operator's filter intent
-  // doesn't usually carry across days).
+  // Persist per-card filter changes — sessionStorage so the intent
+  // survives a tab refresh but resets per session (operators don't
+  // usually carry the same filter across days). One effect per
+  // card so a change in one doesn't trigger writes for the others.
   $effect(() => {
-    try {
-      sessionStorage.setItem('dash.equityAccounts', JSON.stringify(_selectedAccounts));
-    } catch (_) { /* sessionStorage quota / blocked — silent. */ }
+    try { sessionStorage.setItem('dash.eqAccounts',  JSON.stringify(_eqAccounts));  } catch (_) {}
+  });
+  $effect(() => {
+    try { sessionStorage.setItem('dash.winAccounts', JSON.stringify(_winAccounts)); } catch (_) {}
+  });
+  $effect(() => {
+    try { sessionStorage.setItem('dash.losAccounts', JSON.stringify(_losAccounts)); } catch (_) {}
   });
   // ── ag-Grid mounts ────────────────────────────────────────────────
   // Each $effect runs once when the bound element appears in the DOM
@@ -1506,7 +1519,7 @@
     <div class="bucket-header">
       <span class="mp-section-label">Equity</span>
       <AccountMultiSelect
-        bind:value={_selectedAccounts}
+        bind:value={_eqAccounts}
         options={_availableAccounts.map(a => ({ value: a, label: a }))} />
       <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
       <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
@@ -1564,7 +1577,7 @@
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP WINNERS</span>
           <AccountMultiSelect
-            bind:value={_selectedAccounts}
+            bind:value={_winAccounts}
             options={_availableAccounts.map(a => ({ value: a, label: a }))}
             disabled={_winAcctDisabled}
             disabledReason="Account filter applies only to Holdings + Positions tabs" />
@@ -1601,7 +1614,7 @@
         <div class="card-header-row">
           <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
           <AccountMultiSelect
-            bind:value={_selectedAccounts}
+            bind:value={_losAccounts}
             options={_availableAccounts.map(a => ({ value: a, label: a }))}
             disabled={_losAcctDisabled}
             disabledReason="Account filter applies only to Holdings + Positions tabs" />
