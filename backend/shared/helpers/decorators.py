@@ -181,10 +181,26 @@ def for_all_accounts(func):
 
         from backend.shared.brokers import get_broker
 
+        # Resolve the per-account `kite` kwarg lazily. For Kite accounts
+        # this returns the live KiteConnect SDK handle (with test_conn
+        # triggering a re-login if the token is stale). For Dhan / Groww
+        # accounts the connection object lacks `get_kite_conn` — in that
+        # case we pass None so callers that USE `kite` skip cleanly
+        # while callers that USE `broker` keep working via the registry.
+        def _kite_or_none(acc):
+            conn_obj = connections.conn[acc]
+            getter = getattr(conn_obj, "get_kite_conn", None)
+            if getter is None:
+                return None
+            try:
+                return getter(test_conn=True)
+            except Exception:
+                return None
+
         # Case 1: Single account
         if account:
             if not conn:
-                kwargs["kite"] = connections.conn[account].get_kite_conn(test_conn=True)
+                kwargs["kite"] = _kite_or_none(account)
                 if accepts_broker:
                     kwargs["broker"] = get_broker(account)
                 result = func(*args, **kwargs)
@@ -205,7 +221,7 @@ def for_all_accounts(func):
             for acc in accs:
                 new_kwargs = kwargs.copy()
                 new_kwargs["account"] = acc
-                new_kwargs["kite"] = connections.conn[acc].get_kite_conn(test_conn=True)
+                new_kwargs["kite"] = _kite_or_none(acc)
                 if accepts_broker:
                     new_kwargs["broker"] = get_broker(acc)
                 results.append(func(*args, **new_kwargs))
@@ -214,7 +230,7 @@ def for_all_accounts(func):
         def _per_account(acc):
             new_kwargs = kwargs.copy()
             new_kwargs["account"] = acc
-            new_kwargs["kite"] = connections.conn[acc].get_kite_conn(test_conn=True)
+            new_kwargs["kite"] = _kite_or_none(acc)
             if accepts_broker:
                 new_kwargs["broker"] = get_broker(acc)
             return func(*args, **new_kwargs)

@@ -8,11 +8,24 @@ logger = get_logger(__name__)
 
 
 @for_all_accounts
-def fetch_holdings(connections=Connections, account=None, kite=None):
-    # ✅ Holdings
+def fetch_holdings(connections=Connections, account=None, kite=None, broker=None):
+    """Multi-broker holdings fetch. Uses the Broker ABC abstraction
+    (broker.holdings()) when available so Dhan / Groww accounts route
+    through their own adapters; falls back to the legacy `kite=`
+    handle for backwards compatibility with the original Kite-only
+    path. Every adapter normalises its response to the Kite-shape
+    column set used by downstream UI (tradingsymbol, average_price,
+    opening_quantity, pnl, day_change, close_price, etc.)."""
     df_holdings = pd.DataFrame()
     try:
-        df_holdings = pd.DataFrame(kite.holdings())
+        rows = None
+        if broker is not None:
+            rows = broker.holdings()
+        elif kite is not None:
+            rows = kite.holdings()
+        if rows is None:
+            return df_holdings
+        df_holdings = pd.DataFrame(rows)
 
         if not df_holdings.empty:
             df_holdings["account"] = account
@@ -21,32 +34,55 @@ def fetch_holdings(connections=Connections, account=None, kite=None):
         logger.error(f"[{account}] Failed to fetch holdings: {e}")
 
     # Calculated columns — guard against an empty / fetch-failed frame
-    # (Kite 502 / 503 outages leave df_holdings empty and skipping the
+    # (broker 502 / 503 outages leave df_holdings empty and skipping the
     # math here is the difference between an empty response and a 500
-    # KeyError on 'average_price').
+    # KeyError on 'average_price'). Also guard each column reference
+    # individually: a normaliser that omits one of the Kite-shape
+    # columns (e.g. Groww doesn't always carry close_price) won't break
+    # the others.
     if df_holdings.empty:
         return df_holdings
 
-    df_holdings["inv_val"] = df_holdings["average_price"] * df_holdings["opening_quantity"]
-    df_holdings["cur_val"] = df_holdings["inv_val"] + df_holdings["pnl"]
-    df_holdings["price_change"] = df_holdings["close_price"] - df_holdings["average_price"]
-    df_holdings["pnl_percentage"] = df_holdings["pnl"] / df_holdings["inv_val"] * 100
-
-    # Δ calculation (delta value)
-    df_holdings["day_change_val"] = df_holdings["day_change"] * df_holdings["opening_quantity"]
-    # Format Date column
-    df_holdings["authorised_date"] = pd.to_datetime(df_holdings["authorised_date"]).dt.strftime("%d%b%y")
+    if {"average_price", "opening_quantity"}.issubset(df_holdings.columns):
+        df_holdings["inv_val"] = df_holdings["average_price"] * df_holdings["opening_quantity"]
+    if "pnl" in df_holdings.columns and "inv_val" in df_holdings.columns:
+        df_holdings["cur_val"] = df_holdings["inv_val"] + df_holdings["pnl"]
+        df_holdings["pnl_percentage"] = df_holdings["pnl"] / df_holdings["inv_val"] * 100
+    if {"close_price", "average_price"}.issubset(df_holdings.columns):
+        df_holdings["price_change"] = df_holdings["close_price"] - df_holdings["average_price"]
+    if {"day_change", "opening_quantity"}.issubset(df_holdings.columns):
+        df_holdings["day_change_val"] = df_holdings["day_change"] * df_holdings["opening_quantity"]
+    if "authorised_date" in df_holdings.columns:
+        df_holdings["authorised_date"] = pd.to_datetime(
+            df_holdings["authorised_date"], errors="coerce"
+        ).dt.strftime("%d%b%y")
 
     return df_holdings
 
 
 @for_all_accounts
-def fetch_positions(connections=Connections, account=None, kite=None):
-    # ✅ Positions
+def fetch_positions(connections=Connections, account=None, kite=None, broker=None):
+    """Multi-broker positions fetch. Same broker-vs-kite resolution
+    pattern as fetch_holdings; non-Kite adapters return Kite-shape
+    rows via their respective normalisers."""
     df_positions = pd.DataFrame()
     try:
-        df_positions = pd.DataFrame(kite.positions()["net"])  # "day" also available
-        df_positions['quantity'] = df_positions['quantity'] * df_positions['multiplier']
+        net_rows = None
+        if broker is not None:
+            resp = broker.positions()
+            # broker.positions() returns a Kite-shape dict {net: [...], day: [...]}
+            # for every adapter (Kite + Dhan + Groww normalise to this).
+            if isinstance(resp, dict):
+                net_rows = resp.get("net", [])
+            elif isinstance(resp, list):
+                net_rows = resp
+        elif kite is not None:
+            net_rows = kite.positions()["net"]
+        if net_rows is None:
+            return df_positions
+        df_positions = pd.DataFrame(net_rows)
+        if not df_positions.empty and "multiplier" in df_positions.columns:
+            df_positions['quantity'] = df_positions['quantity'] * df_positions['multiplier']
 
         if not df_positions.empty:
             df_positions["account"] = account
@@ -80,11 +116,18 @@ def fetch_positions(connections=Connections, account=None, kite=None):
 
 
 @for_all_accounts
-def fetch_margins(connections=Connections, account=None, kite=None):
-    # ✅ Margins (Cash)
+def fetch_margins(connections=Connections, account=None, kite=None, broker=None):
+    """Multi-broker margins fetch. broker.margins(segment) returns the
+    same Kite-shape dict every adapter normalises to."""
     df_margins = pd.DataFrame()
     try:
-        df_margins = pd.DataFrame([kite.margins(segment="equity")])
+        if broker is not None:
+            margins_data = broker.margins(segment="equity")
+        elif kite is not None:
+            margins_data = kite.margins(segment="equity")
+        else:
+            return df_margins
+        df_margins = pd.DataFrame([margins_data])
 
         # Flatten 'utilised' if it exists
         if "utilised" in df_margins.columns:
