@@ -76,21 +76,18 @@
   let _heroLoadedAt = $state(/** @type {string|null} */ (null));
   let _heroTeardown;
 
-  // Agent log collapsed by default.
-  let _agentLogOpen = $state(false);
   // Operator-facing log declutter: default to agent_fire ONLY so the
   // expanded log is a thin chronological list of "what fired".
   // Operator can flip the chip to ALSO include action successes /
   // errors when they want the deeper "what did the fire DO" trace.
+  // (Collapse state itself is owned by the CollapseButton via
+  // _colAgent / _colPnl + localStorage.)
   let _agentLogShowActions = $state(false);
   const _agentLogKinds = $derived(
     _agentLogShowActions
       ? ['agent_fire', 'agent_action_success', 'agent_action_error']
       : ['agent_fire'],
   );
-
-  // PnlAnalysis collapse — persisted to localStorage.
-  let _pnlOpen = $state(false);
 
 
   // ── Raw positions + holdings (reused for winners/losers and
@@ -173,6 +170,12 @@
   let _colWinners     = $state(false);
   let _colLosers      = $state(false);
   let _colNews        = $state(false);
+  // P&L Analysis + Agent activity are heavyweight cards — start
+  // collapsed by default so the dashboard's first paint stays light.
+  // CollapseButton overrides from localStorage on mount if the user
+  // previously expanded them.
+  let _colPnl         = $state(true);
+  let _colAgent       = $state(true);
 
   // ── ag-Grid bindings for the dashboard cards ────────────────────
   // Each card mounts its own grid imperatively via bind:this + a
@@ -859,7 +862,9 @@
 
   onMount(() => {
     bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
-    _pnlOpen = localStorage.getItem('dash.pnlOpen') === '1';
+    // (P&L + Agent collapse state now owned by CollapseButton via
+    // its own per-user localStorage key — the old dash.pnlOpen
+    // restore is retired.)
     // Restore per-card account filters from sessionStorage. Each
     // card persists under its own key so the operator's per-card
     // intent survives a tab refresh. Wrapped in try/catch since
@@ -1354,14 +1359,19 @@
       <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Intraday Equity Curve" />
       <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Intraday Equity Curve" />
     </div>
-    {#if _colEquityCurve}
-      <!-- Collapsed — only the header is visible. -->
-    {:else if !_equityPoints.length}
-      <div class="eq-empty">
+    <!-- Body uses [hidden] (not {#if}) so the SVG stays mounted
+         when collapsed — re-expand is instant + state is intact. -->
+    <!-- Body uses `style:display` (not {#if}) so the SVG stays
+         mounted when collapsed — re-expand is instant + state is
+         intact. Svelte's hidden attr doesn't bind cleanly on <svg>,
+         hence the inline style. -->
+    {#if !_equityPoints.length}
+      <div class="eq-empty" style:display={_colEquityCurve ? 'none' : ''}>
         No data yet — markets open at 09:15 IST
       </div>
     {:else}
       <svg
+        style:display={_colEquityCurve ? 'none' : ''}
         class="eq-svg"
         viewBox="0 0 {CHART_W} {CHART_H}"
         preserveAspectRatio="none"
@@ -1481,7 +1491,12 @@
       <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
     </div>
 
-    {#if !_colCapital}
+    <!-- Body wrapped in a single [hidden] toggle (not {#if}) so the
+         ag-Grid elements stay mounted across collapse/expand cycles.
+         Without this, bind:this assigns null on collapse, the grid
+         instance gets orphaned, and re-expand mounts an empty new
+         element. -->
+    <div class="card-body" hidden={_colCapital}>
       <!-- Margin Utilisation — ag-Grid replaces the SVG donuts. -->
       {#if _marginRows.length > 0}
         <div class="bucket-subheader">Margin Utilisation</div>
@@ -1503,7 +1518,7 @@
       {#if _marginRows.length === 0 && _fundsBody.length === 0}
         <EmptyState message="No accounts connected" />
       {/if}
-    {/if}
+    </div>
   </section>
 
   <!-- Equity card — Positions Summary + Holdings Summary stacked.
@@ -1525,7 +1540,7 @@
       <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
     </div>
 
-    {#if !_colEquity}
+    <div class="card-body" hidden={_colEquity}>
       <!-- Positions Summary — intraday, glanced first. -->
       {#if _positionsSummary.length > 0}
         <div class="bucket-subheader">
@@ -1553,7 +1568,7 @@
       {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
         <EmptyState message="No equity exposure" />
       {/if}
-    {/if}
+    </div>
   </section>
 </div>
 
@@ -1584,7 +1599,7 @@
           <CollapseButton bind:isCollapsed={_colWinners} cardId="winners" label="Top Winners" />
           <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
         </div>
-        {#if !_colWinners}
+        <div class="card-body" hidden={_colWinners}>
           <div class="wl-tabs" role="tablist">
             {#each _winnerBuckets as bucket}
               {@const key = _bucketKey(bucket.label)}
@@ -1603,7 +1618,7 @@
             bind:this={_winEl}
             class="ag-theme-algo dash-wl-grid"
             class:is-empty={_winRowsAg.length === 0}></div>
-        {/if}
+        </div>
       </section>
     {/if}
 
@@ -1621,7 +1636,7 @@
           <CollapseButton bind:isCollapsed={_colLosers} cardId="losers" label="Top Losers" />
           <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
         </div>
-        {#if !_colLosers}
+        <div class="card-body" hidden={_colLosers}>
           <div class="wl-tabs" role="tablist">
             {#each _loserBuckets as bucket}
               {@const key = _bucketKey(bucket.label)}
@@ -1640,7 +1655,7 @@
             bind:this={_losEl}
             class="ag-theme-algo dash-wl-grid"
             class:is-empty={_losRowsAg.length === 0}></div>
-        {/if}
+        </div>
       </section>
     {/if}
   </div>
@@ -1655,35 +1670,33 @@
     <CollapseButton bind:isCollapsed={_colNews} cardId="news" label="Market News" />
     <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
   </div>
-  {#if !_colNews}
+  <div class="card-body" hidden={_colNews}>
     <!-- Two-column magazine flow on wide viewports (≥900 px) so the
          news card uses the full dashboard width without leaving a
          blank right half. Limit bumped to 10 to actually fill both
          columns; NewsList collapses to 1 column below 900 px. -->
     <NewsList limit={10} columns={2} showRefreshTime={true} />
-  {/if}
+  </div>
 </div>
 
-<!-- P&L Analysis — full-width collapsible. Capital + Equity buckets
-     above already cover the per-account summary view (which is what
-     the old MarketPulse instance gave us), so the dashboard now
-     drops MarketPulse entirely. P&L Analysis stays as the deeper
-     "drill into a date / segment / agent" surface below the fold. -->
-<details
+<!-- P&L Analysis — full-width collapsible. Uses the same CollapseButton
+     pattern as every other card on the page (was a <details>/<summary>
+     element with its own toggle text). Body wrapped in [hidden] so the
+     PnlAnalysis subtree stays mounted across collapse cycles. -->
+<section
   class="dash-pnl-details dash-pnl-full"
   class:fs-card-on={_fsPnl}
-  bind:open={_pnlOpen}
-  ontoggle={() => localStorage.setItem('dash.pnlOpen', _pnlOpen ? '1' : '0')}
->
-  <summary class="dash-pnl-summary">
+  class:is-collapsed={_colPnl}>
+  <div class="card-header-row dash-pnl-summary">
     <span class="mp-section-label">P&amp;L ANALYSIS</span>
-    <span class="dash-pnl-toggle">{_pnlOpen ? '▾ collapse' : '▸ expand'}</span>
+    <CollapseButton bind:isCollapsed={_colPnl} cardId="pnl"
+      initialCollapsed={true} label="P&L Analysis" />
     <FullscreenButton bind:isFullscreen={_fsPnl} label="P&L Analysis" />
-  </summary>
-  <div class="dash-pnl-body">
+  </div>
+  <div class="dash-pnl-body card-body" hidden={_colPnl}>
     <PnlAnalysis />
   </div>
-</details>
+</section>
 
 <!-- SymbolPanel — opened by winners/losers tile clicks -->
 {#if _ticketProps}
@@ -1693,43 +1706,44 @@
     onSubmit={() => { _ticketProps = null; }} />
 {/if}
 
-<!-- Agent activity — collapsed by default. Expands to a clean
-     fires-only log; chip flips to also show action successes/errors
-     for the deeper "what did the fire actually do" trace. -->
-<details class="dash-agent" class:fs-card-on={_fsAgent} bind:open={_agentLogOpen}>
-  <summary class="dash-agent-summary">
+<!-- Agent activity — same CollapseButton pattern as every other card.
+     Default collapsed; CollapseButton restores from localStorage if
+     the operator's last state was expanded. -->
+<section class="dash-agent"
+  class:fs-card-on={_fsAgent}
+  class:is-collapsed={_colAgent}>
+  <div class="card-header-row dash-agent-summary">
     <span class="mp-section-label">Agent activity</span>
     <span class="dash-agent-chip">
       <span class="dash-agent-count">{_firesToday}</span>
       <span class="dash-agent-label">fires today</span>
     </span>
-    <span class="dash-agent-toggle">{_agentLogOpen ? '▾ hide log' : '▸ show log'}</span>
+    <CollapseButton bind:isCollapsed={_colAgent} cardId="agent"
+      initialCollapsed={true} label="Agent activity" />
     <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
-  </summary>
-  <!-- Inline filter chip — flips fires-only vs fires+actions. Click
-       handler stops the click from bubbling up to the <summary>
-       (which would toggle the details element instead). -->
-  <div class="dash-agent-filter">
-    <button
-      type="button"
-      class="dash-agent-filter-btn"
-      class:dash-agent-filter-btn-on={_agentLogShowActions}
-      onclick={(e) => { e.preventDefault(); e.stopPropagation();
-                        _agentLogShowActions = !_agentLogShowActions; }}>
-      {_agentLogShowActions ? '✓' : ''} include action events
-    </button>
-    <span class="dash-agent-filter-hint">
-      {_agentLogShowActions
-        ? 'showing fires + action successes/errors'
-        : 'showing fires only — toggle to include actions'}
-    </span>
   </div>
-  <UnifiedLog
-    filter={{ kinds: _agentLogKinds }}
-    excludeSim={true}
-    maxRows={30}
-    emptyMessage="No agent fires yet today." />
-</details>
+  <div class="card-body" hidden={_colAgent}>
+    <div class="dash-agent-filter">
+      <button
+        type="button"
+        class="dash-agent-filter-btn"
+        class:dash-agent-filter-btn-on={_agentLogShowActions}
+        onclick={() => _agentLogShowActions = !_agentLogShowActions}>
+        {_agentLogShowActions ? '✓' : ''} include action events
+      </button>
+      <span class="dash-agent-filter-hint">
+        {_agentLogShowActions
+          ? 'showing fires + action successes/errors'
+          : 'showing fires only — toggle to include actions'}
+      </span>
+    </div>
+    <UnifiedLog
+      filter={{ kinds: _agentLogKinds }}
+      excludeSim={true}
+      maxRows={30}
+      emptyMessage="No agent fires yet today." />
+  </div>
+</section>
 
 <style>
   .algo-page-title {
