@@ -313,25 +313,45 @@ def _unwrap(resp: Any) -> list[dict]:
 def _normalise_holdings(resp: Any) -> list[dict]:
     """Dhan holdings field map → Kite. Carries through any field we don't
     explicitly translate, so downstream summarise helpers still find
-    expected keys + adapter authors see the full Dhan payload."""
+    expected keys + adapter authors see the full Dhan payload.
+
+    Type-match Kite carefully — pandas+polars conversion downstream is
+    strict about column dtypes when rows from multiple brokers are
+    concatenated. instrument_token MUST be int (Kite shape), not the
+    str Dhan returns; opening_quantity MUST be present (holdings model
+    field) — we use totalQty as the proxy since Dhan doesn't expose a
+    separate start-of-day count.
+    """
     out: list[dict] = []
     for h in _unwrap(resp):
+        qty = int(h.get("totalQty",  0) or 0)
+        # Dhan returns securityId as a numeric string ("21131"); coerce
+        # to int so concat with Kite holdings doesn't trip polars.
+        try:
+            inst_tok = int(h.get("securityId") or 0)
+        except (TypeError, ValueError):
+            inst_tok = 0
         out.append({
             "tradingsymbol":   h.get("tradingSymbol")  or h.get("symbol")   or "",
             "exchange":        h.get("exchange")       or "NSE",
-            "instrument_token": h.get("securityId"),
-            "isin":            h.get("isin"),
-            "quantity":        int(h.get("totalQty",  0) or 0),
-            "t1_quantity":     int(h.get("t1Qty",     0) or 0),
-            "average_price":   float(h.get("avgCostPrice", 0) or 0),
-            "last_price":      float(h.get("lastTradedPrice", 0) or 0),
-            "close_price":     float(h.get("previousClosePrice",
-                                          h.get("closePrice", 0)) or 0),
-            "pnl":             float(h.get("unrealisedProfit", 0) or 0),
-            "day_change":      float(h.get("dayChange", 0) or 0),
+            "instrument_token": inst_tok,
+            "isin":             h.get("isin"),
+            "quantity":         qty,
+            # opening_quantity is required by the holdings model + drives
+            # inv_val / cur_val / pnl_percentage derivations downstream.
+            # Dhan doesn't expose a separate "opening" count, so default
+            # to totalQty (same shape as Kite holdings T0 → T+x).
+            "opening_quantity": qty,
+            "t1_quantity":      int(h.get("t1Qty",     0) or 0),
+            "average_price":    float(h.get("avgCostPrice", 0) or 0),
+            "last_price":       float(h.get("lastTradedPrice", 0) or 0),
+            "close_price":      float(h.get("previousClosePrice",
+                                            h.get("closePrice", 0)) or 0),
+            "pnl":              float(h.get("unrealisedProfit", 0) or 0),
+            "day_change":       float(h.get("dayChange", 0) or 0),
             "day_change_percentage": float(h.get("dayChangePerc", 0) or 0),
-            "product":         "CNC",  # Holdings are always delivery on Dhan
-            "_raw":            h,
+            "product":          "CNC",  # Holdings are always delivery on Dhan
+            "_raw":             h,
         })
     return out
 
@@ -342,10 +362,14 @@ def _normalise_positions(resp: Any) -> dict:
     is empty until Dhan exposes intraday-only positions separately."""
     net: list[dict] = []
     for p in _unwrap(resp):
+        try:
+            inst_tok = int(p.get("securityId") or 0)
+        except (TypeError, ValueError):
+            inst_tok = 0
         net.append({
             "tradingsymbol":   p.get("tradingSymbol") or "",
             "exchange":        p.get("exchange")     or "NFO",
-            "instrument_token": p.get("securityId"),
+            "instrument_token": inst_tok,
             "product":         {"INTRADAY": "MIS",
                                 "MARGIN":   "NRML",
                                 "CNC":      "CNC"}.get(p.get("productType", ""),
