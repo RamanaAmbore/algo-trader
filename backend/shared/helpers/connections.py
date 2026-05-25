@@ -515,11 +515,19 @@ class DhanConnection:
     # ── Login flow ───────────────────────────────────────────────────
 
     def _do_login(self) -> str:
-        """Run the Partner-API login dance and return a fresh access_token.
+        """Mint a fresh Dhan access_token end-to-end programmatically.
 
-        Raises with a clear message on any failure — the caller (
-        `get_dhan_conn`) re-raises after logging, exactly like Kite's
-        retry-then-give-up loop."""
+        Uses `DhanLogin.generate_token(pin, totp)` — single POST to
+        `https://auth.dhan.co/app/generateAccessToken?dhanClientId=…&
+        pin=…&totp=…`. No browser, no SMS/email OTP, no consent flow.
+        Validity is whatever the Dhan dashboard's "Token validity"
+        dropdown is set to (24 h default; can be extended to 30 d / 1 yr).
+
+        The OLD path (Partner-API consent flow — generate_login_session →
+        consume_token_id) was retired because Dhan v2 moved that flow
+        behind browser-based SMS/email-OTP + PIN consent. The direct
+        endpoint here is what the SDK actually exposes for headless use.
+        """
         try:
             from dhanhq import DhanLogin  # type: ignore[import-not-found]
         except ImportError as e:
@@ -528,45 +536,54 @@ class DhanConnection:
                 f"{self.account!r}: {e}"
             ) from e
 
-        if not all([self._api_key, self._api_secret, self._pin,
-                    self._totp_token, self.client_id]):
+        if not all([self.client_id, self._pin, self._totp_token]):
             raise RuntimeError(
-                f"Dhan account {self.account!r} missing one or more "
-                f"required credentials (client_id / api_key / api_secret "
-                f"/ pin / totp_token). Fill them in /admin/brokers."
+                f"Dhan account {self.account!r} needs client_id + PIN + "
+                f"TOTP seed for headless auth. Fill them in /admin/brokers."
             )
 
-        # Step 1 — start the login session (api_key + api_secret).
         login = DhanLogin(self.client_id)
-        session = login.generate_login_session(self._api_key, self._api_secret)
-        # Expected shape: {"status": ..., "data": {"tokenId": "..."}}
-        if isinstance(session, dict):
-            session_data = session.get("data") or session
-            token_id = (session_data.get("tokenId")
-                        or session_data.get("token_id"))
+        totp_code = generate_totp(self._totp_token)
+        resp = login.generate_token(self._pin, totp_code)
+        # Response shape: {"accessToken": "..."} (sometimes wrapped under
+        # "data"). Tolerate both for resilience against minor SDK
+        # changes.
+        if isinstance(resp, dict):
+            data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+            access_token = (data.get("accessToken")
+                            or data.get("access_token"))
         else:
-            token_id = None
-        if not token_id:
-            raise RuntimeError(
-                f"Dhan generate_login_session returned no tokenId: {session!r}"
-            )
-
-        # Step 2 — PIN + TOTP 2FA.
-        totp = generate_totp(self._totp_token)
-        login.generate_token(self._pin, totp)  # raises on bad PIN/TOTP
-
-        # Step 3 — consume the token_id for an access_token.
-        consumed = login.consume_token_id(token_id, self._api_key,
-                                          self._api_secret)
-        consumed_data = (consumed.get("data") if isinstance(consumed, dict)
-                         else None) or consumed or {}
-        access_token = (consumed_data.get("accessToken")
-                        or consumed_data.get("access_token"))
+            access_token = None
         if not access_token:
             raise RuntimeError(
-                f"Dhan consume_token_id returned no accessToken: {consumed!r}"
+                f"Dhan generate_token returned no accessToken: {resp!r}"
             )
         return str(access_token)
+
+    def _try_renew(self) -> str | None:
+        """Best-effort token refresh using `DhanLogin.renew_token`. Lets
+        a still-valid-but-close-to-expiring token roll forward without
+        the operator re-entering anything. Returns the new token or
+        None if renewal isn't available (older SDK, missing token, …)."""
+        if not self._access_token:
+            return None
+        try:
+            from dhanhq import DhanLogin  # type: ignore[import-not-found]
+        except ImportError:
+            return None
+        try:
+            login = DhanLogin(self.client_id)
+            resp = login.renew_token(self._access_token)
+        except Exception as e:
+            logger.warning(f"Dhan renew_token failed for {self.account!r}: {e}")
+            return None
+        if isinstance(resp, dict):
+            data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+            new_token = (data.get("accessToken")
+                         or data.get("access_token"))
+            if new_token:
+                return str(new_token)
+        return None
 
     def get_dhan_conn(self, test_conn: bool = False):
         """Return a ready dhanhq client.
