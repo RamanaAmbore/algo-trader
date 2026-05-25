@@ -12,12 +12,18 @@
    *   showRefreshTime?: boolean,
    *   pollMs?: number,
    *   emptyMessage?: string,
+   *   columns?: number,
    * }} */
   let {
     limit           = 5,
     showRefreshTime = true,
     pollMs          = 5 * 60 * 1000,
     emptyMessage    = '',
+    // Magazine-style multi-column flow on wide viewports. Default 1.
+    // Set to 2 (or more) and the list will reflow into N columns
+    // when the viewport allows; collapses back to 1 below 900 px.
+    // Rows are kept intact via break-inside: avoid.
+    columns         = 1,
   } = $props();
 
   /** @type {Array<{title:string, link:string, source:string, timestamp:string}>} */
@@ -58,7 +64,7 @@
       Refreshed at {_newsRefresh}
     </div>
   {/if}
-  <ul class="newslist">
+  <ul class="newslist" style:--newslist-cols={columns}>
     {#each _news.slice(0, limit) as item}
       <li class="newslist-row">
         <span class="newslist-time" title={item.timestamp || ''}>
@@ -85,6 +91,22 @@
     list-style: none;
     padding: 0;
     margin: 0;
+    /* Magazine-style column flow when caller sets columns > 1.
+       Rows are kept atomic via break-inside: avoid below. Defaults
+       to 1 (single column) so existing callers are unaffected. */
+    column-count: var(--newslist-cols, 1);
+    column-gap: 1.4rem;
+    column-rule: 1px solid rgba(126, 151, 184, 0.10);
+  }
+  /* Narrow viewports collapse back to single column regardless of
+     the operator-requested column-count — magazine flow only makes
+     sense when there's enough horizontal room for 2+ readable
+     columns of headlines (~28+ ch each). */
+  @media (max-width: 900px) {
+    .newslist {
+      column-count: 1;
+      column-rule: none;
+    }
   }
 
   .newslist-row {
@@ -97,6 +119,12 @@
     font-size: 0.72rem;
     color: #c8d8f0;
     line-height: 1.45;
+    /* Keep each headline row intact inside a column — without this
+       the column algorithm can split a row's time chip into one
+       column and its title into the next. */
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+    page-break-inside: avoid;
   }
   .newslist-row:last-child { border-bottom: none; }
 

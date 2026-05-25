@@ -1643,7 +1643,11 @@
     <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
   </div>
   {#if !_colNews}
-    <NewsList limit={5} showRefreshTime={true} />
+    <!-- Two-column magazine flow on wide viewports (≥900 px) so the
+         news card uses the full dashboard width without leaving a
+         blank right half. Limit bumped to 10 to actually fill both
+         columns; NewsList collapses to 1 column below 900 px. -->
+    <NewsList limit={10} columns={2} showRefreshTime={true} />
   {/if}
 </div>
 
