@@ -461,6 +461,10 @@
   // confirm the row exists and is loaded). Empty fallback when the
   // endpoint is admin-gated for the current session.
   let _knownBrokerAccounts = $state(/** @type {string[]} */ ([]));
+  // Latches when the Account seed has firmed up after the broker
+  // fetch resolved — prevents re-seeding from clobbering operator
+  // toggles on later loadPulse polls.
+  let _seededFromBrokers = false;
 
   // Persist account-multiselect to sessionStorage on change so the
   // filter survives a tab refresh; cleared per session.
@@ -1346,14 +1350,17 @@
         for (const a of _knownBrokerAccounts) accts.add(String(a));
         const sorted = [...accts].sort();
         availableAccounts = sorted;
-        // First-load seed of the Account picker — explicitly select
-        // every discovered account so the trigger shows the codes
-        // instead of a vague "All accounts" placeholder. The empty-
-        // array sentinel still means "no filter" downstream (via
-        // _includesAccount), but operators reading the trigger want
-        // visible confirmation of which accounts are in scope.
-        // Skip if persisted state was already restored on mount.
-        if (selectedAccounts.length === 0 && sorted.length > 0) {
+        // First-load seed of the Account picker. selectedAccounts
+        // = union of (whatever we've seeded so far) + (newly-
+        // discovered accounts) — this auto-extends to include broker
+        // accounts that fetchBrokerAccounts() returned AFTER the
+        // first loadPulse fired (e.g., empty-holdings Dhan / Groww
+        // accounts that wouldn't surface from positions+holdings
+        // rows). Operator toggles never get clobbered because we
+        // only ADD, never REMOVE, and we stop adding once
+        // _seededAccountsAt has run (persistence layer takes over).
+        // Skipped entirely if persisted state was already restored.
+        if (sorted.length > 0 && !_seededFromBrokers) {
           let restored = false;
           try {
             const cached = sessionStorage.getItem('mp.selectedAccounts');
@@ -1362,7 +1369,20 @@
               if (Array.isArray(parsed) && parsed.length > 0) restored = true;
             }
           } catch (_) {}
-          if (!restored) selectedAccounts = sorted;
+          if (!restored) {
+            const cur = new Set(selectedAccounts);
+            let changed = false;
+            for (const a of sorted) {
+              if (!cur.has(a)) { cur.add(a); changed = true; }
+            }
+            if (changed) selectedAccounts = [...cur].sort();
+            // Mark as seeded once the broker fetch has confirmed
+            // (at least one wl_ token in there from the broker
+            // registry, OR the operator has had time to interact).
+            if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
+          } else {
+            _seededFromBrokers = true;
+          }
         }
       }
       const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
