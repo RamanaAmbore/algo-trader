@@ -6,7 +6,7 @@ import socket
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 
 import contextvars
@@ -625,22 +625,96 @@ class DhanConnection:
 
 class GrowwConnection:
     """Groww client wrapper. Holds a `growwapi.GrowwAPI(access_token)`
-    handle. Same v0 contract as DhanConnection — operator pastes a
-    fresh access token via /admin/brokers when the current one expires.
+    handle. Three auth modes, tried in order:
 
-    Groww supports two token-mint flows: dashboard-generated (typically
-    24 h) and programmatic (api_key + api_secret + TOTP, like Kite).
-    The schema already exposes api_key / api_secret / totp_token
-    columns; auto-refresh wiring lands when a sandbox token is
-    available for verification.
+      1. api_key + secret (approval-based, programmatic refresh)
+      2. api_key + totp_seed (TOTP-based, programmatic refresh)
+      3. access_token alone (legacy 24 h manual-refresh path —
+         operator pastes a fresh token from Groww's developer
+         dashboard when the current one expires)
+
+    Modes 1 + 2 mint a token via `GrowwAPI.get_access_token(api_key,
+    secret=…)` (or `totp=…`) on first use, then cache it to disk
+    (`.log/groww_tokens.json`) keyed by account. Cached tokens
+    survive a service restart within the validity window. The cache
+    file is shared between prod + dev via the same `/opt/ramboq/.log`
+    path used for `kite_tokens.json`.
     """
 
-    def __init__(self, account: str, *, access_token: str) -> None:
+    def __init__(
+        self,
+        account: str,
+        *,
+        api_key: Optional[str] = None,
+        secret: Optional[str] = None,
+        totp_seed: Optional[str] = None,
+        access_token: Optional[str] = None,
+    ) -> None:
         self.account       = account
-        self._access_token = access_token
+        self._api_key      = api_key or ""
+        self._secret       = secret or ""
+        self._totp_seed    = totp_seed or ""
+        self._access_token = access_token or ""
         self._groww        = None
         self._import_error = None
         self._build()
+
+    # ── Token mint + cache ────────────────────────────────────────────
+
+    def _mint_access_token(self) -> str:
+        """Mint a fresh access token from api_key + (secret OR totp).
+        Raises if neither mint mode is configured. Returns the token
+        string."""
+        from growwapi import GrowwAPI  # type: ignore[import-not-found]
+        if not self._api_key:
+            raise RuntimeError(
+                f"GrowwConnection {self.account!r} needs api_key + (secret "
+                f"OR totp_seed) to mint a token, or a manually-pasted "
+                f"access_token. Fill credentials in /admin/brokers."
+            )
+        if self._secret:
+            return GrowwAPI.get_access_token(self._api_key, secret=self._secret)
+        if self._totp_seed:
+            import pyotp  # type: ignore[import-not-found]
+            totp_code = pyotp.TOTP(self._totp_seed).now()
+            return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
+        raise RuntimeError(
+            f"GrowwConnection {self.account!r} has api_key but no secret "
+            f"or totp_seed — cannot mint. Paste a 24 h access_token "
+            f"instead via /admin/brokers."
+        )
+
+    def _resolve_token(self) -> str:
+        """Pick a working access token, preferring (in order):
+        cached fresh token → mint fresh → manually-pasted legacy
+        token. Caches every successful mint so a restart within the
+        validity window skips the round-trip."""
+        # 1) Cached fresh token? (groww_tokens.json shares the same
+        #    cache path as kite_tokens.json via the same env var).
+        cache_key = f"groww:{self.account}"
+        token, _created = _load_cached_token(cache_key)
+        if token:
+            return token
+        # 2) Mint via api_key + secret/totp.
+        if self._api_key and (self._secret or self._totp_seed):
+            try:
+                token = self._mint_access_token()
+                if token:
+                    _save_cached_token(cache_key, token)
+                    return token
+            except Exception as e:
+                logger.warning(
+                    f"GrowwConnection {self.account!r} mint failed: {e}. "
+                    f"Falling back to manually-pasted access_token if any."
+                )
+        # 3) Legacy 24 h manual-paste token.
+        if self._access_token:
+            return self._access_token
+        raise RuntimeError(
+            f"GrowwConnection {self.account!r}: no working token. Need "
+            f"either api_key+secret, api_key+totp_seed, or a fresh "
+            f"24 h access_token. Edit credentials in /admin/brokers."
+        )
 
     def _build(self) -> None:
         try:
@@ -654,7 +728,26 @@ class GrowwConnection:
             self._groww = None
             self._import_error = e
             return
-        self._groww = GrowwAPI(self._access_token)
+        try:
+            token = self._resolve_token()
+        except Exception as e:
+            logger.error(f"GrowwConnection {self.account!r} token resolve "
+                         f"failed: {e}")
+            self._groww = None
+            self._import_error = e
+            return
+        self._access_token = token
+        self._groww = GrowwAPI(token)
+
+    def refresh(self) -> None:
+        """Force-evict the cached token + re-mint. Call when an SDK
+        call fails with auth error. Caller retries the SDK call once
+        with the new handle."""
+        try:
+            _save_cached_token(f"groww:{self.account}", "")
+        except Exception:
+            pass
+        self._build()
 
     def get_groww_conn(self):
         if self._groww is None:
@@ -817,21 +910,41 @@ class Connections(SingletonBase):
                     continue
 
                 if broker_id == "groww":
-                    # Groww path — single access_token (encrypted). Same
-                    # 24 h manual-refresh model as Dhan; auto-refresh via
-                    # api_key + api_secret + TOTP lands when sandbox
-                    # access is available.
+                    # Groww path — three auth modes, tried in order:
+                    #   (1) api_key + api_secret  → programmatic refresh
+                    #   (2) api_key + totp_token  → programmatic refresh
+                    #   (3) access_token alone    → manual 24 h paste
+                    # The connection class picks whichever it can, mints
+                    # a token from disk cache if fresh, and falls back to
+                    # mint-on-build otherwise. Operators with an
+                    # approval secret should leave the access_token
+                    # field blank; the schema reuses the same
+                    # api_secret_enc / totp_token_enc columns Kite uses,
+                    # so /admin/brokers paints them as plain text fields.
+                    api_secret  = (decrypt(r.api_secret_enc)
+                                   if r.api_secret_enc else "")
+                    totp_token  = (decrypt(r.totp_token_enc)
+                                   if r.totp_token_enc else "")
                     access_token = (decrypt(r.access_token_enc)
                                     if r.access_token_enc else "")
-                    if not access_token:
-                        logger.warning(f"Groww account {r.account!r} has no "
-                                       f"access_token; paste one from "
-                                       f"Groww's developer dashboard in "
-                                       f"/admin/brokers and the connection "
-                                       f"will load on next save.")
+                    if not (
+                        (r.api_key and (api_secret or totp_token))
+                        or access_token
+                    ):
+                        logger.warning(
+                            f"Groww account {r.account!r} has no usable "
+                            f"credentials. Provide api_key + (secret OR "
+                            f"totp_token), OR paste a 24 h access_token "
+                            f"from Groww's developer dashboard. Edit in "
+                            f"/admin/brokers."
+                        )
                         continue
                     new_conn[r.account] = GrowwConnection(
-                        r.account, access_token=access_token,
+                        r.account,
+                        api_key=(r.api_key or None),
+                        secret=(api_secret or None),
+                        totp_seed=(totp_token or None),
+                        access_token=(access_token or None),
                     )
                     continue
 

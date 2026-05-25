@@ -66,7 +66,16 @@
       { key: 'totp_token', label: 'TOTP seed',   secret: true,  required: true },
     ],
     groww: [
-      { key: 'access_token', label: 'Access token', secret: true, required: true },
+      // Groww supports two programmatic auth modes (api_key + api_secret
+      // OR api_key + TOTP seed) PLUS a legacy 24 h dashboard token. The
+      // form shows all three; supply api_key + api_secret for set-and-
+      // forget auto-refresh, OR paste a fresh access_token every day if
+      // you prefer the manual flow. Leaving a field blank on Edit means
+      // "no change" (the connection wrapper picks whichever's set).
+      { key: 'api_key',      label: 'API key',     secret: false, required: false },
+      { key: 'api_secret',   label: 'API secret',  secret: true,  required: false },
+      { key: 'totp_token',   label: 'TOTP seed (alt to secret)', secret: true, required: false },
+      { key: 'access_token', label: 'Access token (24 h manual fallback)', secret: true, required: false },
     ],
     dhan: [
       { key: 'client_id',  label: 'Client ID',  secret: false, required: true },
