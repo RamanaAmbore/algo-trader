@@ -326,31 +326,31 @@ _NAV_TTL_SEC = 30.0
 async def _compute_firm_nav() -> tuple[float, float, float, str]:
     """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso).
 
-    Canonical formula:
-        firm_nav = holdings.cur_val + cash + positions.unrealised_pnl
+    Canonical formula (operator-verified — produces the same number
+    they were used to seeing on the NavCard, ~₹2.28 Cr at time of
+    writing):
+
+        firm_nav = holdings.cur_val + cash + collateral
 
     Where:
-        holdings.cur_val   — mark-to-market value of ALL stocks
-                             (pledged + free; collateral is a subset
-                              of pledged so we don't add it separately).
-        cash               — free liquid cash (avail_margin already
-                             nets out used_margin, so we don't add
-                             avail_margin separately either).
-        positions.pnl      — floating unrealised P&L on open
-                             derivatives; captures the M2M delta on
-                             top of the margin already deducted from
-                             cash by Kite.
+        holdings.cur_val — MTM of all stocks held in demat
+                           (Zerodha returns the raw stock value
+                            regardless of pledge state)
+        cash             — free liquid cash in the trading account
+        collateral       — haircut-adjusted margin value of PLEDGED
+                           stocks. NOT a 1:1 subset of cur_val —
+                           Zerodha computes this as
+                           pledged_stock_value × haircut_factor and
+                           treats it as an asset of the firm. Adding
+                           it on top of cur_val matches the
+                           operator's NAV semantics (the firm's
+                           total claim on broker assets).
 
-    Earlier deque-path formula (`max(cash + collateral, 0)`) was wrong
-    in two ways: it omitted holdings.cur_val entirely, and tried to
-    add collateral (pledged stocks) which is already counted within
-    holdings.cur_val. Earlier one-shot fallback was closer (cur_val +
-    cash + collateral) but still double-counted pledged stock + lost
-    open positions P&L. This unified path fixes both.
+    Earlier "fix" (cur_val + cash + positions.pnl) was wrong —
+    omitted collateral and produced ~₹0.6 Cr too low.
 
-    day_pnl + cum_pnl come from the live intraday-equity deque when
-    populated (already aggregates holdings.day_change + positions.pnl);
-    fall back to the holdings summary day_change / pnl off-hours.
+    day_pnl / cum_pnl come from the live intraday-equity deque when
+    populated; off-hours falls back to holdings.day_change + positions.pnl.
     """
     import time
     now_ts = time.time()
@@ -391,16 +391,19 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
             cur_val = float(total_h['cur_val'].iloc[0] or 0)
 
         cash = 0.0
+        collateral = 0.0
         if not total_m.empty:
             cash_col = next((c for c in ['cash', 'live_cash'] if c in total_m.columns), None)
             if cash_col:
                 cash = float(total_m[cash_col].iloc[0] or 0)
+            if 'collateral' in total_m.columns:
+                collateral = float(total_m['collateral'].iloc[0] or 0)
+
+        firm_nav = cur_val + max(cash, 0.0) + max(collateral, 0.0)
 
         pos_pnl = 0.0
         if not total_p.empty and 'pnl' in total_p.columns:
             pos_pnl = float(total_p['pnl'].iloc[0] or 0)
-
-        firm_nav = cur_val + max(cash, 0.0) + pos_pnl
 
         # Prefer the deque for P&L (already running totals) when alive.
         if _intraday_equity:
