@@ -12,7 +12,7 @@
    *   anonymous / 401      → card hidden (silent swallow)
    */
   import { onMount, onDestroy } from 'svelte';
-  import { fetchMyNav } from '$lib/api';
+  import { fetchMyNav, fetchFirmNavPublic } from '$lib/api';
   import { authStore, visibleInterval } from '$lib/stores';
   import { priceFmt, pctFmt } from '$lib/format';
 
@@ -50,23 +50,34 @@
 
   // Show YOUR SHARE panel only when the user has a stake
   const showMyShare = $derived(isLoggedIn && sharePct > 0);
-  // Show FIRM NAV panel only for designated/admin
-  const showFirm    = $derived(isLoggedIn && canSeeFirm);
+  // Show FIRM NAV panel — designated/admin via /me/nav OR ANYONE
+  // (including anonymous visitors) via the public /firm-nav route.
+  // The public endpoint returns firm-aggregate numbers only; no
+  // share/role data leaks.
+  const showFirm    = $derived(firmNav > 0);
   // Card is visible when at least one panel should render
   const cardVisible = $derived(showMyShare || showFirm);
 
   async function load() {
-    if (!isLoggedIn) {
-      status = 'hidden';
-      return;
+    // Authenticated path — pulls share slice + firm aggregate (when
+    // the operator's role permits) in one request.
+    if (isLoggedIn) {
+      try {
+        const data = await fetchMyNav();
+        nav    = data;
+        status = 'ready';
+        return;
+      } catch (_) {
+        // 401 / network — fall through to the public path so the
+        // operator at least sees the firm-aggregate panel.
+      }
     }
+    // Anonymous / fallback — public firm-aggregate only.
     try {
-      const data = await fetchMyNav();
+      const data = await fetchFirmNavPublic();
       nav    = data;
       status = 'ready';
     } catch (_) {
-      // Silently collapse — 401 means demo/anon, other errors shouldn't
-      // paint a red strip on the public page.
       status = 'hidden';
     }
   }

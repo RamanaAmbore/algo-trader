@@ -313,6 +313,117 @@ class ChangePasswordRequest(msgspec.Struct):
 
 
 # ---------------------------------------------------------------------------
+# Firm NAV — shared computation
+# ---------------------------------------------------------------------------
+
+# Short module-level cache so the public unauthenticated endpoint can't
+# be used to hammer broker.holdings() / broker.margins() at unbounded
+# rate. NAV moves slow enough that a 30 s memo is operationally fine.
+_NAV_CACHE: dict = {"ts": 0.0, "value": None}
+_NAV_TTL_SEC = 30.0
+
+
+async def _compute_firm_nav() -> tuple[float, float, float, str]:
+    """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso).
+
+    Canonical formula:
+        firm_nav = holdings.cur_val + cash + positions.unrealised_pnl
+
+    Where:
+        holdings.cur_val   — mark-to-market value of ALL stocks
+                             (pledged + free; collateral is a subset
+                              of pledged so we don't add it separately).
+        cash               — free liquid cash (avail_margin already
+                             nets out used_margin, so we don't add
+                             avail_margin separately either).
+        positions.pnl      — floating unrealised P&L on open
+                             derivatives; captures the M2M delta on
+                             top of the margin already deducted from
+                             cash by Kite.
+
+    Earlier deque-path formula (`max(cash + collateral, 0)`) was wrong
+    in two ways: it omitted holdings.cur_val entirely, and tried to
+    add collateral (pledged stocks) which is already counted within
+    holdings.cur_val. Earlier one-shot fallback was closer (cur_val +
+    cash + collateral) but still double-counted pledged stock + lost
+    open positions P&L. This unified path fixes both.
+
+    day_pnl + cum_pnl come from the live intraday-equity deque when
+    populated (already aggregates holdings.day_change + positions.pnl);
+    fall back to the holdings summary day_change / pnl off-hours.
+    """
+    import time
+    now_ts = time.time()
+    cached = _NAV_CACHE.get("value")
+    if cached is not None and (now_ts - _NAV_CACHE["ts"]) < _NAV_TTL_SEC:
+        return cached
+
+    from backend.api.background import (
+        _intraday_equity,
+        _fetch_holdings_direct,
+        _fetch_margins_direct,
+        _fetch_positions_direct,
+    )
+    import asyncio as _asyncio
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    firm_nav     = 0.0
+    firm_day_pnl = 0.0
+    firm_cum_pnl = 0.0
+    as_of_iso    = datetime.now(timezone.utc).isoformat()
+
+    try:
+        loop = _asyncio.get_running_loop()
+        with _TPE(max_workers=3) as ex:
+            df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
+            df_m_fut = loop.run_in_executor(ex, _fetch_margins_direct)
+            df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
+            _, sum_h     = await df_h_fut
+            df_m         = await df_m_fut
+            _, sum_p     = await df_p_fut
+
+        total_h = sum_h[sum_h['account'] == 'TOTAL'] if not sum_h.empty else sum_h
+        total_m = df_m[df_m['account'] == 'TOTAL']
+        total_p = sum_p[sum_p['account'] == 'TOTAL'] if not sum_p.empty else sum_p
+
+        cur_val = 0.0
+        if not total_h.empty and 'cur_val' in total_h.columns:
+            cur_val = float(total_h['cur_val'].iloc[0] or 0)
+
+        cash = 0.0
+        if not total_m.empty:
+            cash_col = next((c for c in ['cash', 'live_cash'] if c in total_m.columns), None)
+            if cash_col:
+                cash = float(total_m[cash_col].iloc[0] or 0)
+
+        pos_pnl = 0.0
+        if not total_p.empty and 'pnl' in total_p.columns:
+            pos_pnl = float(total_p['pnl'].iloc[0] or 0)
+
+        firm_nav = cur_val + max(cash, 0.0) + pos_pnl
+
+        # Prefer the deque for P&L (already running totals) when alive.
+        if _intraday_equity:
+            ts, day_pnl, cum_pnl = _intraday_equity[-1]
+            as_of_iso    = ts
+            firm_day_pnl = float(day_pnl)
+            firm_cum_pnl = float(cum_pnl)
+        else:
+            # Off-hours fallback — synthesize from holdings + positions
+            if not total_h.empty and 'day_change_val' in total_h.columns:
+                firm_day_pnl = float(total_h['day_change_val'].iloc[0] or 0)
+            firm_cum_pnl = pos_pnl
+            if not total_h.empty and 'pnl' in total_h.columns:
+                firm_cum_pnl += float(total_h['pnl'].iloc[0] or 0)
+    except Exception as e:
+        logger.warning(f"_compute_firm_nav: broker fetch failed: {e}")
+
+    result = (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso)
+    _NAV_CACHE.update(ts=now_ts, value=result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
 
@@ -706,6 +817,24 @@ class AuthController(Controller):
     # NAV slice — operator's share of the firm's current portfolio
     # ------------------------------------------------------------------
 
+    @get("/firm-nav")
+    async def get_firm_nav_public(self) -> dict:
+        """Public, unauthenticated firm-aggregate NAV.
+
+        Returns only firm-level figures (no slices, no partner count,
+        no role info). Cached behind _compute_firm_nav's 30 s memo so
+        repeated polls don't hammer the broker. Used by NavCard on the
+        public /performance page so investors can see the live firm
+        NAV without signing in. Designated/admin operators get the
+        same numbers plus their share via the authenticated /me/nav."""
+        firm_nav, firm_day_pnl, firm_cum_pnl, as_of = await _compute_firm_nav()
+        return {
+            "firm_nav":     round(firm_nav,     2),
+            "firm_day_pnl": round(firm_day_pnl, 2),
+            "firm_cum_pnl": round(firm_cum_pnl, 2),
+            "as_of":        as_of,
+        }
+
     @get("/me/nav", guards=[jwt_guard])
     async def get_my_nav(self, request: Request) -> dict:
         """Return the operator's share of the firm's current NAV + P&L.
@@ -739,87 +868,7 @@ class AuthController(Controller):
         share_pct: float  = float(row.share_pct or 0.0)
         contribution: float = float(row.contribution or 0.0)
 
-        # ── Resolve firm-level figures ──────────────────────────────────
-        from backend.api.background import (
-            _intraday_equity,
-            _fetch_holdings_direct,
-            _fetch_margins_direct,
-        )
-        import asyncio as _asyncio
-        from concurrent.futures import ThreadPoolExecutor as _TPE
-
-        firm_nav     = 0.0
-        firm_day_pnl = 0.0
-        firm_cum_pnl = 0.0
-        as_of        = datetime.now(timezone.utc).isoformat()
-
-        if _intraday_equity:
-            # Most recent deque entry: (iso_timestamp, day_pnl, cum_pnl)
-            ts, day_pnl, cum_pnl = _intraday_equity[-1]
-            as_of        = ts
-            firm_day_pnl = float(day_pnl)
-            firm_cum_pnl = float(cum_pnl)
-            # NAV = holdings current value + cash + available margin + collateral.
-            # The deque doesn't store NAV directly, so we derive it from
-            # a one-shot margins fetch (fast, single HTTP call).
-            try:
-                loop = _asyncio.get_running_loop()
-                with _TPE(max_workers=1) as ex:
-                    df_m = await loop.run_in_executor(ex, _fetch_margins_direct)
-                total_m = df_m[df_m['account'] == 'TOTAL']
-                cash_col   = next((c for c in ['cash', 'net'] if c in total_m.columns), None)
-                margin_col = next((c for c in ['available_margin', 'avail margin', 'net'] if c in total_m.columns), None)
-                collat_col = 'collateral' if 'collateral' in total_m.columns else None
-                funds_total = 0.0
-                if not total_m.empty:
-                    if cash_col:
-                        funds_total += float(total_m[cash_col].iloc[0] or 0)
-                    if margin_col and margin_col != cash_col:
-                        funds_total += float(total_m[margin_col].iloc[0] or 0)
-                    if collat_col:
-                        funds_total += float(total_m[collat_col].iloc[0] or 0)
-                # NAV = holdings cur_val (invested value at market price) + liquid funds
-                # We don't have holdings cur_val in the deque, so we approximate:
-                # firm NAV ≈ contribution-based total (cum_pnl + total invested).
-                # This is conservative but correct for the slice computation.
-                firm_nav = max(funds_total, 0.0)
-            except Exception as _nav_err:
-                logger.warning(f"Auth /me/nav: margin fetch for NAV failed: {_nav_err}")
-        else:
-            # Off-hours or fresh start — one-shot full fetch
-            try:
-                loop = _asyncio.get_running_loop()
-                with _TPE(max_workers=2) as ex:
-                    df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
-                    df_m_fut = loop.run_in_executor(ex, _fetch_margins_direct)
-                    _, sum_h   = await df_h_fut
-                    df_m_tuple = await df_m_fut
-                total_h = sum_h[sum_h['account'] == 'TOTAL']
-                total_m = df_m_tuple[df_m_tuple['account'] == 'TOTAL']
-
-                cur_val = 0.0
-                if not total_h.empty and 'cur_val' in total_h.columns:
-                    cur_val = float(total_h['cur_val'].iloc[0] or 0)
-
-                cash_col   = next((c for c in ['cash', 'net'] if c in total_m.columns), None)
-                collat_col = 'collateral' if 'collateral' in total_m.columns else None
-                funds_total = 0.0
-                if not total_m.empty:
-                    if cash_col:
-                        funds_total += float(total_m[cash_col].iloc[0] or 0)
-                    if collat_col:
-                        funds_total += float(total_m[collat_col].iloc[0] or 0)
-
-                firm_nav = cur_val + max(funds_total, 0.0)
-
-                # Derive day/cum P&L from holdings summary
-                if not total_h.empty:
-                    if 'day_change_val' in total_h.columns:
-                        firm_day_pnl = float(total_h['day_change_val'].iloc[0] or 0)
-                    if 'pnl' in total_h.columns:
-                        firm_cum_pnl = float(total_h['pnl'].iloc[0] or 0)
-            except Exception as _fb_err:
-                logger.warning(f"Auth /me/nav: one-shot fetch failed: {_fb_err}")
+        firm_nav, firm_day_pnl, firm_cum_pnl, as_of = await _compute_firm_nav()
 
         share_nav     = firm_nav      * share_pct / 100
         share_day_pnl = firm_day_pnl  * share_pct / 100

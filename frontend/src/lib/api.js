@@ -227,6 +227,11 @@ export const changePassword = (password) =>
 /** GET /api/auth/me/nav — operator's NAV slice (share_pct × firm NAV). */
 export const fetchMyNav = () => _get('/auth/me/nav', { auth: true });
 
+/** GET /api/auth/firm-nav — public unauthenticated firm-aggregate NAV.
+ *  Used by NavCard on /performance for anonymous visitors so they see
+ *  the live firm NAV without signing in. Backend caches at 30 s. */
+export const fetchFirmNavPublic = () => _get('/auth/firm-nav', { auth: false });
+
 /** POST /api/auth/impersonate/{username} — start a support session as
  *  the target user. Returns a LoginResponse-shaped object with a fresh
  *  30-min JWT carrying imp_by=actor. Caller should hand the response
