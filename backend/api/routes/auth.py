@@ -390,16 +390,23 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
         if not total_h.empty and 'cur_val' in total_h.columns:
             cur_val = float(total_h['cur_val'].iloc[0] or 0)
 
-        cash = 0.0
-        collateral = 0.0
+        # Margin total — _fetch_margins_direct returns the RAW broker
+        # dataframe (NOT the canonicalised one funds.py emits via
+        # _COL_MAP). Raw columns are 'net' / 'avail cash' /
+        # 'avail collateral' / etc. The consolidated 'net' field is
+        # Kite's total margin claim (cash + collateral - used_margin)
+        # — adding cur_val + net matches the operator's verified NAV
+        # (~₹2.28 Cr at time of writing).
+        margin_total = 0.0
         if not total_m.empty:
-            cash_col = next((c for c in ['cash', 'live_cash'] if c in total_m.columns), None)
-            if cash_col:
-                cash = float(total_m[cash_col].iloc[0] or 0)
-            if 'collateral' in total_m.columns:
-                collateral = float(total_m['collateral'].iloc[0] or 0)
+            margin_col = next((c for c in [
+                'net',           # raw broker dataframe field
+                'avail_margin',  # canonicalised name (funds.py rewrite)
+            ] if c in total_m.columns), None)
+            if margin_col:
+                margin_total = float(total_m[margin_col].iloc[0] or 0)
 
-        firm_nav = cur_val + max(cash, 0.0) + max(collateral, 0.0)
+        firm_nav = cur_val + max(margin_total, 0.0)
 
         pos_pnl = 0.0
         if not total_p.empty and 'pnl' in total_p.columns:
