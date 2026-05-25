@@ -1201,7 +1201,15 @@
         const uMap = {};
         for (const [name, info] of underlyingInfos.entries()) {
           const q = cMap[info.quoteKey];
-          if (q) uMap[name] = { ...q, _resolved: info };
+          // Always create the anchor — even when the broker quote
+          // endpoint didn't return a row for info.quoteKey. Without
+          // this, INDIGO (whose NSE quote can silently fail) and
+          // GOLDM (whose MCX future may not be in the instruments
+          // cache) lost their anchor rows entirely, leaving the
+          // option positions orphaned in the grid. Quote-less
+          // anchors render with an em-dash LTP — still better than
+          // a missing parent row.
+          uMap[name] = q ? { ...q, _resolved: info } : { _resolved: info };
         }
         pulseQuotes = { underlyings: uMap, contracts: cMap };
       } else {
