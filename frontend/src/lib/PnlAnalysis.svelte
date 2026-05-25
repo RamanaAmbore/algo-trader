@@ -563,11 +563,11 @@
           <line x1={PAD_L} y1={yOf(0).toFixed(1)} x2={W - PAD_R} y2={yOf(0).toFixed(1)}
                 stroke="rgba(200,216,240,0.45)" stroke-width="1" />
         {/if}
-        {#each xLabels as { label, x }}
+        {#each xLabels as { x }}
           <line x1={x.toFixed(1)} y1={PAD_T} x2={x.toFixed(1)} y2={(H - PAD_B).toFixed(1)}
                 stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
-          <text x={x.toFixed(1)} y={H - 4} font-size="11" fill="#c8d8f0" font-weight="600"
-                text-anchor="middle" font-family="ui-monospace,monospace">{label}</text>
+          <!-- X-axis date text removed per dashboard preference; hover
+               tooltip still surfaces exact date on demand. -->
         {/each}
         {#each chartData.visible as s}
           {@const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0'}

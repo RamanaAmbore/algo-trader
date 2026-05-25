@@ -153,6 +153,12 @@
   // "can I take risk?" glance.
   let _capEqTab = $state(/** @type {'capital'|'equity'} */ ('capital'));
 
+  // Row 1 right slot — tabbed card: Intraday (SVG curve) vs Performance
+  // (PnlAnalysis component). Default Intraday — that's the live "what
+  // is the book doing right now" view; Performance is the deeper
+  // historical drill-down sitting one click away.
+  let _chartTab = $state(/** @type {'intraday'|'performance'} */ ('intraday'));
+
   // Per-card fullscreen toggles. Each card binds its own slot —
   // multiple cards can theoretically open at once but only one is
   // visually on top (last-clicked wins via DOM order).
@@ -162,7 +168,9 @@
   let _fsWinners     = $state(false);
   let _fsLosers      = $state(false);
   let _fsNews        = $state(false);
-  let _fsPnl         = $state(false);
+  // _fsPnl / _colPnl retired with the standalone P&L Analysis card —
+  // PnlAnalysis now lives inside the Intraday/Performance tabbed card
+  // (shares _fsEquityCurve + _colEquityCurve).
   let _fsAgent       = $state(false);
 
   // Per-card collapse toggles. CollapseButton hydrates each from
@@ -175,11 +183,9 @@
   let _colWinners     = $state(false);
   let _colLosers      = $state(false);
   let _colNews        = $state(false);
-  // P&L Analysis + Agent activity are heavyweight cards — start
-  // collapsed by default so the dashboard's first paint stays light.
-  // CollapseButton overrides from localStorage on mount if the user
-  // previously expanded them.
-  let _colPnl         = $state(true);
+  // Agent activity is a heavyweight card — start collapsed by default
+  // so the dashboard's first paint stays light. CollapseButton overrides
+  // from localStorage on mount if the user previously expanded it.
   let _colAgent       = $state(true);
 
   // ── ag-Grid bindings for the dashboard cards ────────────────────
@@ -769,15 +775,13 @@
       // array (defensive against a future shape change).
       const pts = Array.isArray(res) ? res : (res?.points ?? []);
       _equityPoints = pts;
-      _equityLoadedAt = clientTimestamp();
     } catch (_) { /* leave stale */ }
   }
 
-  // Standalone freshness stamp for the equity curve. _heroLoadedAt
-  // reflects the WHOLE loadHero batch; this one tracks _fetchEquity
-  // specifically so the operator can verify the chart is still
-  // polling even if a different hero sub-fetch is failing.
-  let _equityLoadedAt = $state(/** @type {string|null} */ (null));
+  // Standalone freshness stamp for the equity curve was retired when
+  // the Capital/Equity card lost its refresh chip — there's no UI
+  // surface for it anymore. The chart-refresh cadence is still 15 s
+  // via visibleInterval below.
   let _equityPollStop;
 
   async function _fetchMargins() {
@@ -1441,9 +1445,6 @@
           bind:value={_eqAccounts}
           options={_availableAccounts.map(a => ({ value: a, label: a }))} />
       {/if}
-      {#if _heroLoadedAt}
-        <span class="bucket-refresh-chip" title="Last refreshed">{_heroLoadedAt}</span>
-      {/if}
       <!-- Bind targets the active-tab's own state pair. Svelte 5
            doesn't permit ternary expressions inside `bind:`, so we
            split into two component instances guarded by {#if}. Each
@@ -1513,31 +1514,38 @@
     </div>
   </section>
 
-  <!-- RIGHT: Intraday Equity Curve -->
+  <!-- RIGHT: Intraday / Performance tabbed card. Intraday surfaces
+       today's cumulative P&L curve; Performance hosts the historical
+       drill-down (PnlAnalysis component) one click away. Both panels
+       stay mounted (hidden, not {#if}) so internal state — including
+       PnlAnalysis filters + benchmark series — persists across tab
+       flips. -->
   <section class="row1-col row1-col-chart"
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
-      <div class="mp-section-label">Intraday Equity Curve</div>
-      {#if _equityLoadedAt}
-        <span class="bucket-refresh-chip" title="Equity curve last refreshed at this time">{_equityLoadedAt}</span>
-      {/if}
-      <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Intraday Equity Curve" />
-      <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Intraday Equity Curve" />
+      <div class="cap-eq-tabs" role="tablist">
+        <button type="button" role="tab"
+          class="cap-eq-tab" class:cap-eq-tab-on={_chartTab === 'intraday'}
+          aria-selected={_chartTab === 'intraday'}
+          onclick={() => _chartTab = 'intraday'}>Intraday</button>
+        <button type="button" role="tab"
+          class="cap-eq-tab" class:cap-eq-tab-on={_chartTab === 'performance'}
+          aria-selected={_chartTab === 'performance'}
+          onclick={() => _chartTab = 'performance'}>Performance</button>
+      </div>
+      <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Chart" />
+      <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Chart" />
     </div>
-    <!-- Body uses [hidden] (not {#if}) so the SVG stays mounted
-         when collapsed — re-expand is instant + state is intact. -->
-    <!-- Body uses `style:display` (not {#if}) so the SVG stays
-         mounted when collapsed — re-expand is instant + state is
-         intact. Svelte's hidden attr doesn't bind cleanly on <svg>,
-         hence the inline style. -->
+
+    <!-- Intraday panel — SVG curve of today's cum P&L. -->
+    <div class="card-body" hidden={_chartTab !== 'intraday' || _colEquityCurve}>
     {#if !_equityPoints.length}
-      <div class="eq-empty" style:display={_colEquityCurve ? 'none' : ''}>
+      <div class="eq-empty">
         No data yet — markets open at 09:15 IST
       </div>
     {:else}
       <svg
-        style:display={_colEquityCurve ? 'none' : ''}
         class="eq-svg"
         viewBox="0 0 {CHART_W} {CHART_H}"
         preserveAspectRatio="none"
@@ -1595,13 +1603,10 @@
             text-anchor="start">{lbl.label}</text>
         {/each}
 
-        <!-- X-axis labels -->
-        {#each _eqXLabels as lbl}
-          <text
-            x={parseFloat(lbl.x)} y={CHART_H - 6}
-            font-size="11" font-weight="600" fill="#c8d8f0" font-family="ui-monospace,monospace"
-            text-anchor="middle">{lbl.label}</text>
-        {/each}
+        <!-- X-axis text labels intentionally removed — dashboard chart
+             reads as a clean trajectory; hover tooltip still surfaces
+             the exact timestamp on demand. Grid lines stay for visual
+             rhythm. -->
 
         <!-- Hover crosshair -->
         {#if _hoverPt != null}
@@ -1641,6 +1646,13 @@
         {/if}
       </svg>
     {/if}
+    </div>
+
+    <!-- Performance panel — historical P&L drill-down. Renders
+         PnlAnalysis which owns its own filters, summary, and chart. -->
+    <div class="card-body" hidden={_chartTab !== 'performance' || _colEquityCurve}>
+      <PnlAnalysis />
+    </div>
   </section>
 </div>
 
@@ -1754,24 +1766,10 @@
   </div>
 </div>
 
-<!-- P&L Analysis — full-width collapsible. Uses the same CollapseButton
-     pattern as every other card on the page (was a <details>/<summary>
-     element with its own toggle text). Body wrapped in [hidden] so the
-     PnlAnalysis subtree stays mounted across collapse cycles. -->
-<section
-  class="dash-pnl-details dash-pnl-full"
-  class:fs-card-on={_fsPnl}
-  class:is-collapsed={_colPnl}>
-  <div class="card-header-row dash-pnl-summary">
-    <span class="mp-section-label">P&amp;L ANALYSIS</span>
-    <CollapseButton bind:isCollapsed={_colPnl} cardId="pnl"
-      initialCollapsed={true} label="P&L Analysis" />
-    <FullscreenButton bind:isFullscreen={_fsPnl} label="P&L Analysis" />
-  </div>
-  <div class="dash-pnl-body card-body" hidden={_colPnl}>
-    <PnlAnalysis />
-  </div>
-</section>
+<!-- P&L Analysis section retired — PnlAnalysis now lives inside the
+     row-1 Intraday/Performance tabbed card. Dropping the standalone
+     full-width section keeps the page compact and removes the duplicate
+     mount. -->
 
 <!-- SymbolPanel — opened by winners/losers tile clicks -->
 {#if _ticketProps}
