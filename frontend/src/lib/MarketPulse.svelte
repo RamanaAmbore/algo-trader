@@ -23,7 +23,7 @@
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
-    fetchMovers, fetchSparklines,
+    fetchMovers, fetchSparklines, fetchBrokerAccounts,
   } from '$lib/api';
   import { visibleInterval, clientTimestamp } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
@@ -454,6 +454,13 @@
       allow === null || allow.has(String(acct || ''));
   });
   let availableAccounts = $state(/** @type {string[]} */ ([]));
+  // Broker-registry-loaded accounts — surfaced via /api/admin/brokers
+  // on mount. Unioned into availableAccounts so the Account picker
+  // lists EVERY broker account the operator added via /admin/brokers,
+  // even ones with 0 positions / 0 holdings (so the operator can
+  // confirm the row exists and is loaded). Empty fallback when the
+  // endpoint is admin-gated for the current session.
+  let _knownBrokerAccounts = $state(/** @type {string[]} */ ([]));
 
   // Persist account-multiselect to sessionStorage on change so the
   // filter survives a tab refresh; cleared per session.
@@ -725,11 +732,25 @@
     const pulseP  = loadPulse();
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
     const moversP = enableMovers ? loadMovers() : Promise.resolve();
+    // Broker-accounts fan-out — admin-only endpoint. Fire-and-forget;
+    // if it 403s for non-admin users the picker simply falls back to
+    // rows-based account discovery. When it succeeds, every loaded
+    // broker account lands in _knownBrokerAccounts and the next
+    // loadPulse() unions them into availableAccounts.
+    const brokersP = accountPicker
+      ? fetchBrokerAccounts().then((arr) => {
+          if (Array.isArray(arr)) {
+            _knownBrokerAccounts = arr
+              .filter((a) => a?.account)
+              .map((a) => String(a.account));
+          }
+        }).catch(() => { _knownBrokerAccounts = []; })
+      : Promise.resolve();
 
     // Block onMount only on the data the first paint actually needs.
     // Sparklines run fire-and-forget (cosmetic; missing them shows the
     // grid without the inline trend column for ≤1 s).
-    await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
+    await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP, brokersP]);
     loadSparklines();
 
     stopPoll      = visibleInterval(async () => { await loadQuotes(); }, 5000);
@@ -1311,11 +1332,18 @@
         holdingsSummary  = (h?.summary || []).slice();
       }
       // Surface every account id we see across positions + holdings
-      // for the account-picker dropdown. Deduplicated, sorted.
+      // for the account-picker dropdown. Also UNION with the broker
+      // registry (loaded accounts that may have 0 positions / 0
+      // holdings — operator still wants to see them in the filter so
+      // they can confirm the row was added correctly). Deduplicated,
+      // sorted. _knownBrokerAccounts is populated by the parallel
+      // fetchBrokerAccounts() call in onMount + the visible-interval
+      // poll below.
       if (accountPicker) {
         const accts = new Set();
         for (const r of positions) if (r.account) accts.add(String(r.account));
         for (const r of holdings)  if (r.account) accts.add(String(r.account));
+        for (const a of _knownBrokerAccounts) accts.add(String(a));
         const sorted = [...accts].sort();
         availableAccounts = sorted;
         // First-load seed of the Account picker — explicitly select
