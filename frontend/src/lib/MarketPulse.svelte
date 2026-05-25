@@ -94,9 +94,18 @@
 
   // Add-symbol form state.
   let symInput   = $state('');
-  let exchInput  = $state('NSE');
+  // Instrument-TYPE picker shown next to the symbol input. EQ → cash
+  // equity, FU → future, CE / PE → option call / put. Maps to an
+  // exchange in addRow() (EQ → NSE, others → NFO) when the operator
+  // direct-adds without picking from the typeahead. Typeahead picks
+  // override with the instrument's actual exchange.
+  let typeInput  = $state(/** @type {'EQ'|'FU'|'CE'|'PE'} */ ('EQ'));
   let typeahead  = $state(/** @type {any[]} */ ([]));
   let typeaheadOpen = $state(false);
+  // Target watchlist for the next add. Either an existing list id or
+  // the literal 'NEW' (reveals the inline new-list name input). Seeded
+  // from the user's default watchlist when the Add popup opens.
+  let targetListId = $state(/** @type {number | 'NEW' | null} */ (null));
   // Search popup — opened by the magnifier button at the top of the
   // header row (and by the `/` keyboard shortcut). Houses the symbol
   // input + exchange picker + typeahead + Add button. Hiding the
@@ -1803,11 +1812,53 @@
     } catch { typeahead = []; }
   }
 
+  // Map the EQ/FU/CE/PE picker to the broker exchange used by
+  // addToWatchlistDeduped. Cash equities live on NSE (BSE quotes
+  // are reachable by typing the symbol explicitly via typeahead, which
+  // overrides this); every derivative variant lands on NFO. MCX /
+  // CDS instruments come in via the typeahead path which carries
+  // the real exchange in inst.e.
+  function _exchangeForType(t) {
+    return t === 'EQ' ? 'NSE' : 'NFO';
+  }
+
+  // Resolve the target watchlist id for the next add. When the
+  // operator picked 'NEW' from the watchlist dropdown, lazily create
+  // the new list (using newListName), splice it into selectedShow
+  // so its rows show immediately, and return its fresh id. Falls back
+  // to the previously-focused list when the dropdown picker hasn't
+  // been touched (e.g., direct-add via Enter on typeahead before any
+  // dropdown interaction).
+  async function _resolveTargetListId() {
+    if (targetListId === 'NEW') {
+      const name = newListName.trim();
+      if (!name) return null;
+      try {
+        const w = await createWatchlist(name);
+        newListName = '';
+        targetListId = w.id;
+        const newToken = `wl:${w.id}`;
+        if (!selectedShow.includes(newToken)) {
+          selectedShow = [...selectedShow, newToken];
+        }
+        focusedListId = w.id;
+        await loadLists();
+        return w.id;
+      } catch (e) { error = e.message; return null; }
+    }
+    return targetListId ?? focusedListId ?? [...activeIds][0] ?? null;
+  }
+
   async function addRow() {
-    const targetId = focusedListId ?? [...activeIds][0];
-    if (!symInput.trim() || targetId == null) return;
+    if (!symInput.trim()) return;
+    const targetId = await _resolveTargetListId();
+    if (targetId == null) return;
     try {
-      await addToWatchlistDeduped(targetId, symInput.trim().toUpperCase(), exchInput);
+      await addToWatchlistDeduped(
+        targetId,
+        symInput.trim().toUpperCase(),
+        _exchangeForType(typeInput),
+      );
       symInput = ''; typeahead = []; typeaheadOpen = false;
       searchOpen = false;
       await loadActive();
@@ -1816,7 +1867,14 @@
 
   async function pickFromTypeahead(inst) {
     typeaheadOpen = false;
-    exchInput = inst.e;   // auto-fill exchange from typeahead selection
+    // Sync the EQ/FU/CE/PE picker to whatever the operator just chose
+    // — purely a UI hint; the actual exchange used below comes from
+    // inst.e (the broker's authoritative value).
+    const sym = String(inst.s || '').toUpperCase();
+    if (sym.endsWith('CE'))       typeInput = 'CE';
+    else if (sym.endsWith('PE'))  typeInput = 'PE';
+    else if (sym.endsWith('FUT')) typeInput = 'FU';
+    else                          typeInput = 'EQ';
     // If the picked symbol is an underlying (has CE/PE chains), open the
     // inline option picker instead of adding directly. Close the
     // search modal first so the option picker isn't visually stacked
@@ -1825,7 +1883,7 @@
     const opened = await openOptionPicker(inst.s, inst.e);
     if (opened) return;
     // Direct-add path: equities, futures, CDS, and anything without a chain.
-    const targetId = focusedListId ?? [...activeIds][0];
+    const targetId = await _resolveTargetListId();
     if (targetId == null) return;
     try {
       await addToWatchlistDeduped(targetId, inst.s, inst.e);
@@ -1837,6 +1895,12 @@
   function openSearch() {
     searchOpen = true;
     typeaheadOpen = false;
+    // Seed the watchlist dropdown to the default list (or the
+    // currently-focused list) so a fresh popup always has a sensible
+    // target pre-selected. Operator can flip to "+ New watchlist" or
+    // any other list from the dropdown.
+    const def = lists.find(l => l.is_default);
+    targetListId = focusedListId ?? def?.id ?? lists[0]?.id ?? null;
     // Defer focus until the popup mounts. requestAnimationFrame is
     // enough — the input is rendered in the same Svelte tick.
     requestAnimationFrame(() => { symInputEl?.focus(); symInputEl?.select(); });
@@ -1844,9 +1908,8 @@
   function closeSearch() {
     searchOpen = false;
     typeaheadOpen = false;
-    // Reset both inputs so the popup feels fresh when re-opened. The
-    // unified Add popup carries the new-watchlist input too — clearing
-    // it here keeps the symbol + watchlist sections in sync.
+    // Reset the inline new-list name so a stale name doesn't linger
+    // when the popup reopens; targetListId is re-seeded by openSearch.
     newListName = '';
   }
 
@@ -2360,14 +2423,10 @@
     } catch (e) { error = e.message; }
   }
 
-  // New-watchlist input lives inside the unified Add popup (`searchOpen`);
-  // there's no longer a separate listInputOpen modal. Submitting the
-  // form creates the list, joins it to the pulse, and closes the popup.
-  async function makeListAndClose() {
-    if (!newListName.trim()) return;
-    await makeList();
-    closeSearch();
-  }
+  // makeListAndClose was retired when the standalone "New watchlist"
+  // section folded into the Watchlist target dropdown — list creation
+  // now happens lazily inside _resolveTargetListId() the moment the
+  // operator clicks Add with target = 'NEW'.
 
   // ── Context menu ─────────────────────────────────────────────────
   /** @type {{ x: number, y: number, row: any } | null} */
@@ -2781,10 +2840,9 @@
 {/if}
 
 <!-- Unified Add popup — opened by the `+` button in the chrome row (or
-     the `/` keyboard shortcut). Single modal with two sections stacked:
-     Add symbol (typeahead across stocks, futures, indices, options) and
-     New watchlist (creates a new list which immediately joins the pulse
-     as a selectable tab). Click-outside / Esc to dismiss. -->
+     the `/` keyboard shortcut). Single modal: pick a target watchlist
+     (default / existing / new), then type a symbol + pick its type
+     (EQ / FU / CE / PE), then Add. Click-outside / Esc to dismiss. -->
 {#if searchOpen}
   <div class="search-overlay" role="dialog" aria-modal="true"
        aria-label="Add to Market Pulse" onclick={closeSearch}>
@@ -2794,6 +2852,46 @@
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
       </div>
       <div class="search-body">
+        <!-- Watchlist target — Default ★ pre-selected; "+ New watchlist"
+             reveals an inline name input which is created on Add. -->
+        <div class="mp-add-section-label">Watchlist</div>
+        <div class="search-row">
+          <div class="flex-1">
+            <Select ariaLabel="Watchlist" bind:value={targetListId}
+              options={[
+                ...lists.map(l => ({
+                  value: l.id,
+                  label: l.is_default ? `${l.name} ★` : l.name,
+                })),
+                { value: 'NEW', label: '+ New watchlist' },
+              ]} />
+          </div>
+        </div>
+        {#if targetListId === 'NEW'}
+          <div class="search-row" style="margin-top: 0.4rem;">
+            <input bind:value={newListName}
+              onkeydown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
+                  else { closeSearch(); }
+                }
+              }}
+              class="field-input text-[0.7rem] py-1 px-2 flex-1"
+              placeholder="New watchlist name" autocomplete="off" />
+          </div>
+          <div class="search-hint">
+            Names are case-insensitive and must be unique. The list is created when you press Add.
+          </div>
+        {/if}
+
+        <div class="mp-add-divider"></div>
+
+        <!-- Symbol + Type. The two-letter type picker after the symbol
+             input lets the operator disambiguate equity vs derivative
+             without picking a raw exchange code (EQ/FU/CE/PE → NSE/NFO
+             internally). Typeahead picks override the type from the
+             matched instrument's tradingsymbol suffix. -->
         <div class="mp-add-section-label">Add symbol</div>
         <div class="search-row">
           <input bind:this={symInputEl} bind:value={symInput}
@@ -2818,19 +2916,19 @@
             }}
             class="field-input text-[0.7rem] py-1 px-2 flex-1"
             placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
-          <div class="w-20">
-            <Select ariaLabel="Exchange" bind:value={exchInput}
+          <div class="w-16">
+            <Select ariaLabel="Type" bind:value={typeInput}
               options={[
-                { value: 'NSE', label: 'NSE' },
-                { value: 'BSE', label: 'BSE' },
-                { value: 'NFO', label: 'NFO' },
-                { value: 'MCX', label: 'MCX' },
-                { value: 'CDS', label: 'CDS' },
+                { value: 'EQ', label: 'EQ' },
+                { value: 'FU', label: 'FU' },
+                { value: 'CE', label: 'CE' },
+                { value: 'PE', label: 'PE' },
               ]} />
           </div>
-          <button onclick={addRow} disabled={!symInput.trim()}
+          <button onclick={addRow}
+            disabled={!symInput.trim() || (targetListId === 'NEW' && !newListName.trim())}
             class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
-            title="Add to focused watchlist">Add</button>
+            title="Add to target watchlist">Add</button>
         </div>
         {#if typeahead.length}
           <div class="search-typeahead">
@@ -2845,32 +2943,6 @@
         {/if}
         <div class="search-hint">
           Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
-        </div>
-
-        <div class="mp-add-divider"></div>
-
-        <div class="mp-add-section-label">New watchlist</div>
-        <div class="search-row">
-          <input bind:value={newListName}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); makeListAndClose(); }
-              else if (e.key === 'Escape') {
-                e.preventDefault();
-                // Symmetric with the symbol input — only consume Esc
-                // for an actually-rendered typeahead, otherwise close
-                // the popup directly so single Esc dismisses.
-                if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
-                else { closeSearch(); }
-              }
-            }}
-            class="field-input text-[0.7rem] py-1 px-2 flex-1"
-            placeholder="Watchlist name" autocomplete="off" />
-          <button onclick={makeListAndClose} disabled={!newListName.trim()}
-            class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
-            title="Save new watchlist">Create</button>
-        </div>
-        <div class="search-hint">
-          Names are case-insensitive and must be unique within your account. The new list becomes active immediately.
         </div>
       </div>
     </div>
