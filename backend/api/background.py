@@ -543,7 +543,21 @@ async def _task_close(state: dict) -> None:
 # ---------------------------------------------------------------------------
 
 async def _task_expiry_check() -> None:
-    """Check once daily at 09:20 IST if today is an expiry day and auto-start the engine."""
+    """Check once daily at 09:20 IST if today is an expiry day and auto-start the engine.
+
+    SAFETY GATE — prod only. expiry.py → chase.py::_place_order calls
+    broker.place_order() directly with NO paper_trading_mode / branch
+    check, so without this gate dev would race prod to close the same
+    Kite-account positions tomorrow (both environments share
+    secrets.yaml::kite_accounts). The bg-expiry task itself runs on
+    both, but exits immediately on non-main branches.
+    """
+    from backend.shared.helpers.utils import is_prod_branch
+    if not is_prod_branch():
+        logger.info("Background: bg-expiry inert on non-main branch "
+                    "(expiry close orders are prod-only — see CLAUDE.md)")
+        return
+
     from backend.api.algo.expiry import ExpiryEngine
     from backend.api.routes.algo import _broadcast_event
 
