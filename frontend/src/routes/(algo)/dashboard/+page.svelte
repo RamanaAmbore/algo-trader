@@ -117,12 +117,22 @@
   let _winAccounts = $state(/** @type {string[]} */ ([]));   // Top Winners
   let _losAccounts = $state(/** @type {string[]} */ ([]));   // Top Losers
 
+  // Broker-registry-loaded accounts — populated by _fetchConn() (the
+  // same /admin/brokers fan-out the connection-health chip uses).
+  // Unioned into _availableAccounts so the per-card Account
+  // MultiSelects list every loaded account including ones with no
+  // positions / holdings yet (e.g. freshly-added Dhan / Groww rows).
+  let _knownBrokerAccounts = $state(/** @type {string[]} */ ([]));
+
   // Derived list of distinct accounts seen in current positions +
-  // holdings — feeds every MultiSelect's options list. Sorted ascending.
+  // holdings + broker registry. Sorted ascending. Empty fallback when
+  // fetchBrokerAccounts 403s (non-admin session) — picker still works
+  // off the rows-derived set.
   const _availableAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _positions) if (r.account) set.add(String(r.account));
     for (const r of _holdings)  if (r.account) set.add(String(r.account));
+    for (const a of _knownBrokerAccounts) set.add(String(a));
     return [...set].sort();
   });
 
@@ -260,9 +270,25 @@
   // existing MarketPulse summary grids show.
   /** @typedef {{account: string, day_pnl: number, pnl: number, inv_val: number, cur_val: number}} SumRow */
 
-  const _positionsSummary = $derived.by(() => {
+  // Pre-seed byAcct with every broker-registry account so the summary
+  // grid lists ALL loaded accounts including ones with 0 positions /
+  // 0 holdings (e.g. freshly-added Dhan / Groww rows). Without this,
+  // empty accounts silently vanish from the summary and the operator
+  // can't tell at a glance that the row is loaded.
+  function _seedSummaryByAcct(filter) {
     /** @type {Record<string, SumRow>} */
     const byAcct = {};
+    const allowSet = filter && filter.length > 0 ? new Set(filter) : null;
+    for (const a of _knownBrokerAccounts) {
+      if (!a) continue;
+      if (allowSet && !allowSet.has(a)) continue;
+      byAcct[String(a)] = { account: String(a), day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
+    }
+    return byAcct;
+  }
+
+  const _positionsSummary = $derived.by(() => {
+    const byAcct = _seedSummaryByAcct(_eqAccounts);
     // Equity card uses its own _eqAccounts state — independent of
     // the W/L cards' filters.
     for (const r of _accountFilter(_positions, _eqAccounts)) {
@@ -276,8 +302,7 @@
   });
 
   const _holdingsSummary = $derived.by(() => {
-    /** @type {Record<string, SumRow>} */
-    const byAcct = {};
+    const byAcct = _seedSummaryByAcct(_eqAccounts);
     for (const r of _accountFilter(_holdings, _eqAccounts)) {
       const a = String(r.account || '');
       if (!a) continue;
@@ -845,6 +870,13 @@
         total:  accounts.length,
         loaded: accounts.filter(a => a.loaded).length,
       };
+      // Capture the broker-registry account codes so the per-card
+      // Account MultiSelects can list accounts that have no positions
+      // / holdings yet (e.g., a freshly-added Dhan or Groww row before
+      // any trades land). Same union logic /pulse uses.
+      _knownBrokerAccounts = accounts
+        .filter((a) => a?.account)
+        .map((a) => String(a.account));
     } catch (_) { /* leave stale */ }
   }
 
@@ -2287,9 +2319,14 @@
   }
   .dash-agent-chip {
     display: inline-flex;
-    align-items: baseline;
+    /* Center-align the count + label vertically — baseline-align made
+       the chip's visual center sit lower than the "AGENT ACTIVITY"
+       label in the same flex row (the large count's baseline pulled
+       the chip's content down). center-align matches the rest of the
+       row chrome (.mp-section-label, CollapseButton, FullscreenButton). */
+    align-items: center;
     gap: 0.3rem;
-    padding: 0.1rem 0.5rem;
+    padding: 0.15rem 0.5rem;
     border-left: 2px solid #fbbf24;
     background: rgba(255, 255, 255, 0.02);
     border-radius: 2px;

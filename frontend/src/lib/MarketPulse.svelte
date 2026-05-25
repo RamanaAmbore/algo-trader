@@ -457,6 +457,21 @@
       allow === null || allow.has(String(acct || ''));
   });
   let availableAccounts = $state(/** @type {string[]} */ ([]));
+  // Prune stale account selections that aren't in availableAccounts.
+  // Without this, a persisted selection from a PRIOR session can
+  // survive a role / mask-mode change — e.g., an admin session
+  // persisted [ZG0790, ZJ6294]; later session is demo where accounts
+  // surface as [ZG####, ZJ####]. selectedAccounts retains the unmasked
+  // codes while availableAccounts has the masked ones, so the trigger
+  // label renders BOTH sets (real codes from selectedAccounts, masked
+  // from options) → looks like 2× the accounts. Pruning keeps
+  // selectedAccounts a strict subset of availableAccounts.
+  $effect(() => {
+    if (availableAccounts.length === 0) return;
+    const allow = new Set(availableAccounts);
+    const pruned = selectedAccounts.filter((a) => allow.has(a));
+    if (pruned.length !== selectedAccounts.length) selectedAccounts = pruned;
+  });
   // Broker-registry-loaded accounts — surfaced via /api/admin/brokers
   // on mount. Unioned into availableAccounts so the Account picker
   // lists EVERY broker account the operator added via /admin/brokers,
