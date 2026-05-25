@@ -713,8 +713,27 @@
       // additional gate needed here. (Symbols already absent.)
       return true;
     });
+    // Sort: major first → underlying-group within major → anchor before
+    // options within the same underlying → alphabetical tradingsymbol as
+    // the final tiebreaker.
+    //
+    // Why group by `underlying` and not by tradingsymbol alphabetic?
+    // Anchors (src.u-only rows) carry a tradingsymbol that may differ
+    // from their underlying name — MCX same-month-future stubs land as
+    // `CRUDEOIL26JUNFUT`, alphabetically AFTER `CRUDEOIL26JUN10000CE`,
+    // which orphans the anchor at the BOTTOM of the positions block.
+    // Sorting by `underlying` first pins every row carrying
+    // underlying='CRUDEOIL' to one contiguous block; within that block,
+    // anchor rows (tier 0/1) precede option rows (tier 2).
+    const _ugKey = (r) => String(r.underlying || r.tradingsymbol || '').toUpperCase();
+    const _tier  = (r) => (r.kind === 'spot' ? 0 : r.kind === 'fut' ? 1 : r.kind === 'mcx' ? 1 : r.kind === 'opt' ? 2 : 3);
     rows.sort((a, b) => {
-      if (a._majorOrder !== b._majorOrder) return a._majorOrder - b._majorOrder;
+      const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
+      if (moA !== moB) return moA - moB;
+      const ua = _ugKey(a), ub = _ugKey(b);
+      if (ua !== ub) return ua.localeCompare(ub);
+      const ta = _tier(a),  tb = _tier(b);
+      if (ta !== tb) return ta - tb;
       return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
     });
     let lastMajor = null;
