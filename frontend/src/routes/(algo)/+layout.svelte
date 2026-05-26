@@ -95,7 +95,10 @@
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
-    { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'monitor' },
+    // /admin/alerts is reachable from the 🔔 History link in the
+    // /agents page header. Dropped from the top nav to slim the
+    // monitor cluster — alert history naturally lives under Agents
+    // (Agents = rules, Alerts = fires).
     // ── Analyze ──
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
     { href: '/admin/options',    label: 'Derivatives', group: 'analyze' },
@@ -1224,12 +1227,14 @@
     margin-bottom: 0.45rem;
   }
 
-  /* Page-level timestamp (cyan, matches log timestamps). Works inline
+  /* Page-level timestamp — sky-300 so it sits cleanly next to the
+     amber page-title-chip without colour-blending. Matches the algo
+     palette's "info" tone (PAPER nav badge, INFO chips). Works inline
      inside .page-header OR stand-alone when a page renders it on its
-     own row (left over on public pages). */
+     own row. */
   :global(.algo-ts) {
     font-size: 0.62rem;
-    color: #fde047;
+    color: #7dd3fc;
     font-family: ui-monospace, monospace;
     white-space: nowrap;
   }

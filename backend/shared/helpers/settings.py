@@ -88,6 +88,11 @@ SEEDS: list[tuple] = [
     ("performance", "performance.refresh_interval",        "int", 5,
      "Minutes between live broker refreshes during market hours.",
      "min", {"min": 1, "max": 60, "step": 1}),
+    ("performance", "pulse.tick_interval_ms",              "int", 5000,
+     "Market Pulse page tick (ms) — drives quote, sparkline, chart, "
+     "timestamp and derived-calc refresh. Lower = more responsive, more "
+     "API calls.",
+     "ms", {"min": 500, "max": 60000, "step": 500}),
     ("performance", "performance.open_summary_offset_min", "int", 15,
      "Minutes after segment open to send the Open Summary Telegram/email.",
      "min", {"min": 0, "max": 60, "step": 1}),

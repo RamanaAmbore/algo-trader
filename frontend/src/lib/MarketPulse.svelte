@@ -28,7 +28,9 @@
   import {
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS, symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
-  import { visibleInterval, clientTimestamp } from '$lib/stores';
+  import { visibleInterval } from '$lib/stores';
+  import { fetchSettings } from '$lib/api';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -422,8 +424,6 @@
     showHoldings  = selectedSources.includes('holdings');
     showMovers    = selectedSources.includes('movers');
   });
-  let stopMoversPoll;
-
   // Account-picker state. Now a MultiSelect — operator can scope
   // positions / holdings INPUTS to buildUnified to any subset of
   // broker accounts. EMPTY array = all accounts (no filter); the
@@ -511,7 +511,6 @@
   let funds = $state(/** @type {any[]} */ ([]));
 
   let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
-  let stopSparkPoll;
   let stopWS;
 
   // ── Manual group order + symbol detachment (per-browser overrides) ──
@@ -625,7 +624,53 @@
     if (row?.src?.h) return 3;
     return 4;
   }
-  let stopPoll, stopPulsePoll;
+  // Single unified ticker — replaces stopPoll / stopPulsePoll /
+  // stopMoversPoll / stopSparkPoll. Tick cadence comes from the
+  // pulse.tick_interval_ms setting (default 5000 ms). Heavier ops
+  // piggy-back every Nth tick.
+  let stopPulseTick;
+  let _tickMs = 5000;
+  let _tickCount = 0;
+  // Multipliers (relative to the base tick):
+  //   quotes    — every tick   (fast, lightweight quote/batch call)
+  //   pulse+funds — every 2 ticks (positions + holdings + funds)
+  //   movers    — every 6 ticks
+  //   sparklines — every 12 ticks (daily-closes don't change intraday;
+  //                rare refresh is fine, cosmetic only)
+  const _TICK_PULSE = 2;
+  const _TICK_MOVERS = 6;
+  const _TICK_SPARK = 12;
+  let _refreshing = $state(false);
+  async function _runTick() {
+    _tickCount++;
+    // Always: refresh live quotes for visible symbols.
+    await loadQuotes();
+    if (_tickCount % _TICK_PULSE === 0) {
+      await loadPulse();
+      if (showFunds) await loadFunds();
+    }
+    if (enableMovers && _tickCount % _TICK_MOVERS === 0) await loadMovers();
+    if (_tickCount % _TICK_SPARK === 0) loadSparklines();
+  }
+  /** Operator-initiated "refresh everything now" — bound to the
+   *  RefreshButton in the toolbar. Drains the spinner state after the
+   *  heaviest op (loadPulse) settles so the button reads as busy until
+   *  the grid has new rows, not just until the quote call returns. */
+  async function refreshAllNow() {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      await Promise.all([
+        loadQuotes(),
+        loadPulse(),
+        showFunds ? loadFunds() : Promise.resolve(),
+        enableMovers ? loadMovers() : Promise.resolve(),
+        loadSparklines(),
+      ]);
+    } finally {
+      _refreshing = false;
+    }
+  }
   // Wall-clock timestamp (ms) of the last loadPulse() completion.
   // The 5 s loadQuotes poll consults this to skip ticks that land
   // within a 700 ms window of a loadPulse — the two pollers used to
@@ -782,13 +827,21 @@
     await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP, brokersP]);
     loadSparklines();
 
-    stopPoll      = visibleInterval(async () => { await loadQuotes(); }, 5000);
-    stopPulsePoll = visibleInterval(async () => {
-      await loadPulse();
-      if (showFunds) await loadFunds();
-    }, 10000);
-    if (enableMovers) stopMoversPoll = visibleInterval(loadMovers, 30000);
-    stopSparkPoll   = visibleInterval(loadSparklines, 60000);
+    // Unified pulse tick — one visibleInterval drives every refresh.
+    // pulse.tick_interval_ms (default 5000) is the base cadence; heavier
+    // operations piggy-back every Nth tick so the overall load stays
+    // bounded. Earlier this page ran 4 independent intervals
+    // (quotes 5s / pulse 10s / movers 30s / sparklines 60s) which made
+    // the cadence non-obvious and impossible to tune from one knob.
+    try {
+      const rows = await fetchSettings();
+      const all = Array.isArray(rows) ? rows : (rows?.settings || []);
+      const row = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
+      const v = Number(row?.value ?? row?.default_value);
+      if (Number.isFinite(v) && v >= 500 && v <= 60000) _tickMs = v;
+    } catch (_) { /* anon/demo — keep default 5000 */ }
+
+    stopPulseTick = visibleInterval(_runTick, _tickMs);
 
     // Real-time order-fill push — Kite postback fires a WS event
     // `position_filled` the moment an order fills. Subscribe so
@@ -1195,7 +1248,7 @@
   });
 
   onDestroy(() => {
-    stopPoll?.(); stopPulsePoll?.(); stopMoversPoll?.(); stopSparkPoll?.(); stopWS?.();
+    stopPulseTick?.(); stopWS?.();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     grid?.destroy?.();
@@ -2354,7 +2407,7 @@
         cellClass: 'ag-col-sym ag-col-fill' },
       // Curve column shrunk from 64 px → 36 px to free LTP/Δ% room on
       // mobile viewports. SVG dropped from 58×16 to 32×14 to match.
-      { field: 'tradingsymbol', headerName: 'Curve', width: 36, colId: 'sparkline',
+      { field: 'tradingsymbol', headerName: '5d', width: 36, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: true,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
@@ -2924,6 +2977,9 @@
         class="mp-add-btn">
         +
       </button>
+      <span class="ml-auto">
+        <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="market pulse" />
+      </span>
     </div>
   {/if}
 

@@ -511,6 +511,9 @@
   </h1>
   <InfoHint popup text="Agents fire on every 5-min tick during market hours. Each agent has a <b>condition tree</b>, <b>notify</b> channels, and <b>actions</b>. Slug is the stable identifier; schedule controls when it runs (<b>market_hours</b> skips outside session); cooldown_minutes throttles re-fires." />
   <span class="ml-auto flex items-center gap-2">
+    <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
+      🔔 History
+    </a>
     <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
       {aiOpen ? '× Close AI' : '✦ Ask AI'}
     </button>
@@ -1048,6 +1051,21 @@
     transition: background 0.1s;
   }
   .ai-pill:hover { background: rgba(167,139,250,0.20); }
+  .history-pill {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.18rem 0.55rem;
+    border-radius: 4px;
+    border: 1px solid rgba(125,211,252,0.45);
+    background: rgba(125,211,252,0.08);
+    color: #7dd3fc;
+    text-decoration: none;
+    transition: background 0.1s;
+  }
+  .history-pill:hover { background: rgba(125,211,252,0.18); }
   .ai-card {
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
     border: 1px solid rgba(167,139,250,0.30);

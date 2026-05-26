@@ -12,6 +12,7 @@
   import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import NavCard from '$lib/NavCard.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -744,9 +745,7 @@
         <span>{lastRefresh}</span>
       {/if}
     </div>
-    <button onclick={() => loadAll({ fresh: true })} disabled={loading} class="btn-secondary text-[0.65rem] py-0.5 px-2 disabled:opacity-50">
-      {loading ? 'Refreshing…' : 'Refresh'}
-    </button>
+    <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="performance" />
   </div>
 {/if}
 
@@ -796,10 +795,9 @@
 <div class="funds-heading-row">
   <h2 class="section-heading funds-heading-title">Fund Balances</h2>
   {#if compactHeader}
-    <button onclick={() => loadAll({ fresh: true })} disabled={loading}
-      class="btn-secondary text-[0.65rem] py-0.5 px-2 disabled:opacity-50 funds-heading-refresh">
-      {loading ? 'Refreshing…' : 'Refresh'}
-    </button>
+    <span class="funds-heading-refresh">
+      <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="funds" />
+    </span>
   {/if}
 </div>
 <div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>

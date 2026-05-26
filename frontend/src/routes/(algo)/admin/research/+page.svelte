@@ -25,6 +25,7 @@
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -102,7 +103,9 @@
     return undefined;     // 'all time'
   }
 
+  let auditLoading = $state(false);
   async function loadAudit() {
+    auditLoading = true;
     try {
       const rows = await fetchResearchAudit({
         tool:       auditFilterTool       || undefined,
@@ -114,6 +117,8 @@
       audit = Array.isArray(rows) ? rows : [];
     } catch (_) {
       audit = [];
+    } finally {
+      auditLoading = false;
     }
   }
   // Re-fetch when filters change; only fires when the Audit tab is in view
@@ -615,7 +620,7 @@
           <span>Status</span>
           <Select bind:value={auditFilterStatus} options={AUDIT_STATUS_OPTIONS} ariaLabel="Audit status filter" />
         </label>
-        <button type="button" class="copy-btn audit-refresh" onclick={loadAudit}>Refresh</button>
+        <RefreshButton onClick={loadAudit} loading={auditLoading} label="audit" />
       </div>
     </header>
     {#if audit.length === 0}
