@@ -60,4 +60,13 @@ test('UI bundle: ts colour + agents History pill + pulse refresh + 5d header', a
   const sparkBox = await sparkCol.boundingBox();
   console.log(`[/pulse mobile] sparkline col width = ${sparkBox?.width}`);
   expect(sparkBox?.width).toBe(44);
+
+  // LTP column also pinned at 44 px so the row reads tight on mobile.
+  // Earlier ag-Grid silently clamped width:44 back to its 50 px
+  // numericColumn-type default and persisted-state localStorage
+  // overrode the new default.
+  const ltpCol = page.locator('[col-id="ltp"]').first();
+  const ltpBox = await ltpCol.boundingBox();
+  console.log(`[/pulse mobile] LTP col width = ${ltpBox?.width}`);
+  expect(ltpBox?.width).toBe(44);
 });
