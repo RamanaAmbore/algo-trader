@@ -61,12 +61,10 @@ test('UI bundle: ts colour + agents History pill + pulse refresh + 5d header', a
   console.log(`[/pulse mobile] sparkline col width = ${sparkBox?.width}`);
   expect(sparkBox?.width).toBe(44);
 
-  // LTP column also pinned at 44 px so the row reads tight on mobile.
-  // Earlier ag-Grid silently clamped width:44 back to its 50 px
-  // numericColumn-type default and persisted-state localStorage
-  // overrode the new default.
+  // LTP column pinned at 64 px — same as the Day P&L column for
+  // visual alignment on the row.
   const ltpCol = page.locator('[col-id="ltp"]').first();
   const ltpBox = await ltpCol.boundingBox();
   console.log(`[/pulse mobile] LTP col width = ${ltpBox?.width}`);
-  expect(ltpBox?.width).toBe(44);
+  expect(ltpBox?.width).toBe(64);
 });
