@@ -2331,7 +2331,7 @@
     }
     // Compact width (32px SVG inside a 36px column) — frees up
     // horizontal space so the LTP column stays visible on mobile.
-    const W = 32, H = 14, PAD = 2;
+    const W = 14, H = 14, PAD = 1;
     const min = Math.min(...closes);
     const max = Math.max(...closes);
     const range = max - min || 1;
@@ -2405,9 +2405,9 @@
       { field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
-      // Curve column shrunk from 64 px → 36 px to free LTP/Δ% room on
-      // mobile viewports. SVG dropped from 58×16 to 32×14 to match.
-      { field: 'tradingsymbol', headerName: '5d', width: 36, colId: 'sparkline',
+      // 5d column shrunk to 18 px (from 36) so LTP / Δ% stay fully
+      // visible on narrow mobile viewports. SVG fits inside as 14×14.
+      { field: 'tradingsymbol', headerName: '5d', width: 18, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: true,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
@@ -2892,14 +2892,15 @@
       const raw = localStorage.getItem(COL_STATE_KEY);
       if (!raw) return;
       const state = JSON.parse(raw);
-      // Force the sparkline (Curve) column visible — earlier builds
-      // had an auto-hide effect that, paired with onSortChanged /
-      // onColumnResized persistence, could pin `hide: true` into
-      // localStorage. We removed the auto-hide; this evicts any
-      // legacy persisted-hide so operators on stale state get the
-      // Curve column back without clearing storage.
+      // Force the sparkline (5d) column visible AND override any
+      // legacy persisted width. Earlier builds shipped 36 px, then
+      // 64 px, both of which sit in operator localStorage and would
+      // otherwise win over the new 18 px default. The pinned width +
+      // hide=false eviction below covers both regressions in one shot.
       const cleaned = Array.isArray(state)
-        ? state.map(c => c?.colId === 'sparkline' ? { ...c, hide: false } : c)
+        ? state.map(c => c?.colId === 'sparkline'
+            ? { ...c, hide: false, width: 18, actualWidth: 18, flex: null }
+            : c)
         : state;
       grid.applyColumnState({ state: cleaned, applyOrder: true });
     } catch (_) {}
