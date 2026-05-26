@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy this file to .mcp.json at the repo root to register the RamboQuant research MCP server with Claude Code. Set RAMBOQ_TOKEN env var to a JWT minted by POST /api/auth/login (any admin user) before launching Claude Code.",
+  "mcpServers": {
+    "ramboq-research": {
+      "command": "venv/bin/python",
+      "args": ["-m", "backend.mcp.kite_server"],
+      "env": {
+        "RAMBOQ_BASE": "https://dev.ramboq.com",
+        "RAMBOQ_TOKEN": "${RAMBOQ_TOKEN}"
+      }
+    }
+  }
+}

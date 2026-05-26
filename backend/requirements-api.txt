@@ -23,3 +23,9 @@ PyJWT~=2.10
 # Database ORM
 SQLAlchemy[asyncio]~=2.0
 asyncpg~=0.30
+
+# MCP server for the Lab page — talks to Claude Code via stdio.
+# Only used by backend/mcp/kite_server.py (operator's local venv runs
+# this as a subprocess from Claude Code); the deployed API never imports
+# it. Pinned floor only — the protocol is still evolving.
+mcp>=1.27

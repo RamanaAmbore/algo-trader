@@ -794,3 +794,24 @@ export async function fetchAgentPnL(params = {}) {
   if (params.mode)   p.set('mode',   String(params.mode));
   return _get(`/admin/pnl/by-agent?${p}`, { auth: true });
 }
+
+// ── Research threads (Lab page) ──────────────────────────────────────
+/** GET /api/research/threads — list summaries. */
+export const fetchResearchThreads = (symbol = null, limit = 100) => {
+  const p = new URLSearchParams();
+  if (symbol) p.set('symbol', String(symbol).toUpperCase());
+  if (limit)  p.set('limit', String(limit));
+  return _get(`/research/threads?${p}`, { auth: true });
+};
+/** GET /api/research/threads/{id} — full transcript + thesis. */
+export const fetchResearchThread = (id) =>
+  _get(`/research/threads/${id}`, { auth: true });
+/** POST /api/research/threads — create a new thread. */
+export const createResearchThread = (payload) =>
+  _post('/research/threads', payload, { auth: true });
+/** PATCH /api/research/threads/{id} — update title/thesis/transcript/draft_agent. */
+export const updateResearchThread = (id, payload) =>
+  _patch(`/research/threads/${id}`, payload, { auth: true });
+/** DELETE /api/research/threads/{id} — remove. */
+export const deleteResearchThread = (id) =>
+  _del(`/research/threads/${id}`, { auth: true });

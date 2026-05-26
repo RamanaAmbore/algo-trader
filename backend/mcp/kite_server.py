@@ -1,0 +1,280 @@
+"""
+RamboQuant MCP server — read-only research tools over stdio.
+
+Launched by Claude Code from `.mcp.json`. Talks to a running RamboQuant
+API (default: https://dev.ramboq.com) via HTTPS using the operator's
+JWT supplied through `RAMBOQ_TOKEN`. No genai is invoked from this
+process — Claude Code is the LLM, this is the data pipe.
+
+Environment:
+    RAMBOQ_BASE   — API base URL (default: https://dev.ramboq.com)
+    RAMBOQ_TOKEN  — JWT from POST /api/auth/login (required for any tool)
+
+Tools (Phase 1, read-only):
+    get_positions, get_holdings, get_quote, get_ohlcv,
+    get_recent_news, get_option_analytics, list_agents,
+    save_research_thread, get_research_thread
+
+Run:
+    python -m backend.mcp.kite_server
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+from mcp.server.fastmcp import FastMCP
+
+
+_BASE  = (os.environ.get("RAMBOQ_BASE") or "https://dev.ramboq.com").rstrip("/")
+_TOKEN = os.environ.get("RAMBOQ_TOKEN") or ""
+_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+
+
+def _headers() -> dict[str, str]:
+    h = {"Accept": "application/json"}
+    if _TOKEN:
+        h["Authorization"] = f"Bearer {_TOKEN}"
+    return h
+
+
+async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+        r = await c.get(f"{_BASE}{path}", headers=_headers(), params=params or {})
+        r.raise_for_status()
+        return r.json()
+
+
+async def _post(path: str, body: dict[str, Any]) -> Any:
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+        r = await c.post(f"{_BASE}{path}", headers=_headers(), json=body)
+        r.raise_for_status()
+        return r.json()
+
+
+app = FastMCP("ramboq-research")
+
+
+# ── Market-data tools ─────────────────────────────────────────────────
+
+@app.tool()
+async def get_positions(account: str | None = None) -> dict:
+    """Current intraday positions across all loaded broker accounts.
+
+    Args:
+        account: Optional account filter (e.g. ZG0790). When omitted,
+            returns positions from every loaded account.
+
+    Returns:
+        dict with `positions` list — each row carries tradingsymbol,
+        exchange, quantity, average_price, last_price, pnl, account.
+    """
+    rows = await _get("/api/positions/")
+    if account:
+        rows = [r for r in (rows or []) if (r.get("account") or "").upper() == account.upper()]
+    return {"positions": rows, "count": len(rows or [])}
+
+
+@app.tool()
+async def get_holdings(account: str | None = None) -> dict:
+    """Current long-term holdings across all loaded broker accounts.
+
+    Args:
+        account: Optional account filter (e.g. ZG0790).
+
+    Returns:
+        dict with `holdings` list — each row carries tradingsymbol,
+        exchange, quantity, average_price, last_price, pnl, account.
+    """
+    rows = await _get("/api/holdings/")
+    if account:
+        rows = [r for r in (rows or []) if (r.get("account") or "").upper() == account.upper()]
+    return {"holdings": rows, "count": len(rows or [])}
+
+
+@app.tool()
+async def get_quote(symbols: list[str]) -> dict:
+    """Live quote (LTP + day OHLC + change%) for one or more symbols.
+
+    Args:
+        symbols: List of `EXCHANGE:TRADINGSYMBOL` keys, e.g.
+            ["NSE:RELIANCE", "NSE:NIFTY 50", "NFO:NIFTY25APRFUT"].
+            Max 300 per call.
+
+    Returns:
+        dict with `items` list. Each row: {exchange, tradingsymbol,
+        ltp, close, change_pct, ohlc{open,high,low,close}}.
+    """
+    if not symbols:
+        return {"items": [], "count": 0}
+    body = {"keys": list(symbols)[:300]}
+    res = await _post("/api/quote/batch", body)
+    return {"items": res.get("items", []), "refreshed_at": res.get("refreshed_at"), "count": len(res.get("items", []))}
+
+
+@app.tool()
+async def get_ohlcv(symbol: str, days: int = 30, exchange: str = "NSE") -> dict:
+    """Historical daily OHLCV candles for a symbol via Kite's
+    historical-data endpoint.
+
+    Args:
+        symbol: Tradingsymbol (e.g. RELIANCE, NIFTY25APRFUT, RELIANCE2542428000CE).
+        days: Lookback window in trading days (default 30, max 365).
+        exchange: NSE / BSE / NFO / BFO / MCX / CDS (default NSE).
+
+    Returns:
+        dict with `bars` list of {date, open, high, low, close, volume}.
+    """
+    days = max(1, min(int(days or 30), 365))
+    res = await _get("/api/options/historical", {
+        "symbol":   symbol,
+        "days":     days,
+        "interval": "day",
+        "exchange": exchange,
+    })
+    return {"symbol": symbol, "bars": res.get("bars", []), "count": len(res.get("bars", []))}
+
+
+@app.tool()
+async def get_recent_news(symbol: str | None = None, hours: int = 24) -> dict:
+    """Recent Indian-market headlines from the news feed.
+
+    Args:
+        symbol: Optional case-insensitive substring filter on title
+            (e.g. "RELIANCE" returns headlines that mention it).
+        hours: Lookback window (default 24, max 168).
+
+    Returns:
+        dict with `items` list of {title, source, link, published_at,
+        timestamp_display}.
+    """
+    res = await _get("/api/news/")
+    items = res.get("items", []) if isinstance(res, dict) else []
+    if symbol:
+        s = symbol.upper()
+        items = [it for it in items if s in (it.get("title") or "").upper()]
+    return {"items": items, "count": len(items), "refreshed_at": (res or {}).get("refreshed_at")}
+
+
+@app.tool()
+async def get_option_analytics(symbol: str, qty: int = 0, account: str | None = None) -> dict:
+    """Greeks + payoff curve + risk metrics for a single-leg option.
+
+    Args:
+        symbol: Option tradingsymbol (e.g. NIFTY25APR22000CE).
+        qty: Signed position size (positive = long, negative = short, 0 = analytical only).
+        account: Optional account scoping for sourcing avg_cost from your book.
+
+    Returns:
+        Full analytics bundle — greeks{delta,gamma,theta,vega,rho},
+        pricing{spot,ltp,iv,T_years}, risk{max_profit,max_loss,
+        breakeven,pop,ev,rr_ratio}, payoff[{spot,today_value,expiry_value}].
+    """
+    params: dict[str, Any] = {"mode": "live" if not account else "live", "symbol": symbol}
+    if qty:
+        params["qty"] = qty
+    if account:
+        params["account"] = account
+    return await _get("/api/options/analytics", params)
+
+
+@app.tool()
+async def list_agents(status: str | None = None, limit: int = 200) -> dict:
+    """List agent rows from the agents table. Useful for "show me my
+    NIFTY-related agents" or finding the agent that just fired.
+
+    Args:
+        status: Optional filter — "active", "inactive", "paused".
+        limit: Max rows to return (default 200).
+
+    Returns:
+        dict with `agents` list of {id, slug, name, description, status,
+        scope, cooldown_minutes, last_triggered_at, trigger_count}.
+    """
+    res = await _get("/api/agents/")
+    rows = res if isinstance(res, list) else (res.get("agents") or res.get("items") or [])
+    if status:
+        rows = [r for r in rows if (r.get("status") or "").lower() == status.lower()]
+    return {"agents": rows[:limit], "count": len(rows)}
+
+
+# ── Research-thread persistence ───────────────────────────────────────
+
+@app.tool()
+async def save_research_thread(
+    symbol: str,
+    title: str = "",
+    thesis_text: str | None = None,
+    confidence: str = "unsure",
+    transcript: list | None = None,
+) -> dict:
+    """Persist the current research session to the RamboQuant DB so the
+    Lab page (/admin/research) can show it later. Call this once you've
+    synthesized a thesis the operator wants to keep.
+
+    Args:
+        symbol: The stock being researched (e.g. RELIANCE).
+        title: Short label (auto-generated from symbol if blank).
+        thesis_text: The synthesized thesis (markdown OK).
+        confidence: bull / bear / neutral / unsure.
+        transcript: Optional list of {role, content, ...} messages from
+            this session. Stored opaque as JSONB.
+
+    Returns:
+        Created thread {id, symbol, title, confidence, created_at}.
+    """
+    body = {
+        "symbol":      symbol,
+        "title":       title,
+        "thesis_text": thesis_text,
+        "confidence":  confidence,
+        "transcript":  transcript or [],
+    }
+    return await _post("/api/research/threads", body)
+
+
+@app.tool()
+async def get_research_thread(thread_id: int) -> dict:
+    """Fetch a previously saved research thread by id — useful for
+    "remind me what I thought about RELIANCE last week".
+
+    Args:
+        thread_id: The thread row id (visible in the Lab page sidebar).
+    """
+    return await _get(f"/api/research/threads/{int(thread_id)}")
+
+
+@app.tool()
+async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
+    """List recent research threads. Filter by symbol when revisiting
+    a specific stock's history.
+
+    Args:
+        symbol: Optional symbol filter (case-insensitive).
+        limit: Max rows (default 50, max 500).
+    """
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 500))}
+    if symbol:
+        params["symbol"] = symbol.upper()
+    rows = await _get("/api/research/threads", params)
+    return {"threads": rows or [], "count": len(rows or [])}
+
+
+# ── Server config introspection ───────────────────────────────────────
+
+@app.tool()
+async def get_server_info() -> dict:
+    """Diagnostic — returns the RamboQuant base URL this MCP server is
+    talking to + whether a JWT is configured. Use this if other tools
+    are failing with 401 / connection errors to confirm setup."""
+    return {
+        "base_url":     _BASE,
+        "has_token":    bool(_TOKEN),
+        "token_prefix": (_TOKEN[:12] + "…") if _TOKEN else "",
+    }
+
+
+if __name__ == "__main__":
+    app.run(transport="stdio")
