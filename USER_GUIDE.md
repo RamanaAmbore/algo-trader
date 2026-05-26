@@ -331,8 +331,42 @@ Both PAPER and SIM can show at the same time on dev if you've started a sim AND 
 
 ---
 
+## Chat-driven research + agent building
+
+The `/admin/research` page lets you ask **Claude Code** (your
+terminal) to research a stock end-to-end, build draft agents from
+the thesis, and — with explicit per-call operator approval — place
+real broker orders. The chat is in your terminal; the page is the
+persistence + audit + token-mint surface.
+
+The full operator runbook is **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)**.
+Highlights:
+
+- **₹0 incremental cost** — your Claude Code subscription is the
+  only LLM. Server-side helpers (auto-title, news sentiment) use
+  the free tier of Gemini 2.5 Flash.
+- **24 MCP tools** — 16 read, 2 persist, 6 gated write
+  (place_order, cancel_order, modify_order, activate_agent,
+  deactivate_agent, update_agent).
+- **Per-call confirm-token gate** — every write requires a
+  60-second, single-use, purpose-bound token you mint on the Lab
+  page. The LLM cannot mint, replay, or redirect a token.
+- **Telegram deep-links** — every successful gated write fires a
+  Telegram message with a `request_id` link that opens the Audit
+  tab pre-filtered to that exact row.
+
+If you've never used the Lab, work through
+[LAB_MCP_GUIDE.md section 3](LAB_MCP_GUIDE.md#3-one-time-setup-3-minutes)
+once (~3 minutes of one-time setup) then come back to the
+**Daily Workflow** section.
+
+---
+
 ## Where to learn more
 
+- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research,
+  agent drafting, and the per-call confirm-token gate. Covers
+  GenAI usage, Claude Code setup, and the 24 MCP tools.
 - **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** — exact button labels, JSON conditions, API endpoints. The operations reference.
 - **[CLAUDE.md](CLAUDE.md)** — architectural notes for engineers + AI assistants. Covers the code structure, data flow, and design decisions.
 - **`/admin/tokens`** — explore the agent grammar (every metric / scope / operator the platform knows about).

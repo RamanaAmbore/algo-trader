@@ -1324,7 +1324,7 @@ The full operator runbook is in [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md). This secti
 
 ### MCP server — `backend/mcp/kite_server.py`
 
-stdio FastMCP subprocess launched by Claude Code via `.mcp.json` at the repo root. Talks to the running RamboQuant API over HTTPS using `$RAMBOQ_TOKEN` (the operator's JWT). 23 tools today:
+stdio FastMCP subprocess launched by Claude Code via `.mcp.json` at the repo root. Talks to the running RamboQuant API over HTTPS using `$RAMBOQ_TOKEN` (the operator's JWT). 24 tools today:
 
 **Read (16):**
 - Market data: `get_positions`, `get_holdings`, `get_quote`, `get_ohlcv`, `get_recent_news` (with optional Gemini-Flash bull/bear/neutral sentiment), `get_option_analytics`, `get_options_chain_snapshot` (one-call ATM ± N strikes with full Greeks)
@@ -1338,12 +1338,13 @@ stdio FastMCP subprocess launched by Claude Code via `.mcp.json` at the repo roo
 - `save_research_thread(symbol, thesis_text, confidence, transcript, title?)` — auto-titles via Gemini Flash free tier when title is blank
 - `save_agent_draft(thread_id, name, conditions, ...)` — promotes a thread to an INACTIVE Agent linked back to the thread (status + trade_mode are hardcoded server-side; the MCP cannot create an active or live agent)
 
-**Gated write (5):**
+**Gated write (6):**
 - `place_order(confirm_token, account, symbol, side, qty, mode, ...)`
 - `cancel_order(confirm_token, account, order_id, mode)` — both live (broker) and paper (engine) paths
 - `modify_order(confirm_token, account, order_id, mode, ...)` — same dual-mode dispatch
 - `activate_agent(confirm_token, agent_slug)` — inactive → active. Highest-stakes write.
 - `deactivate_agent(confirm_token, agent_slug)` — active → inactive
+- `update_agent(confirm_token, agent_slug, proposed_changes)` — edit conditions / cooldown / events / scope / schedule / actions / fire_at_time / description on an existing agent. Whitelist-only — status / trade_mode / lifespan_* are silently dropped. Purpose hash binds canonical-JSON of the full payload so the LLM cannot tweak any field after operator approval. (Phase 14)
 
 ### Per-call confirm-token gate
 
@@ -1364,6 +1365,7 @@ Every gated write requires an operator-minted token. Tokens are:
 | `modify` | account + order_id + mode + new qty + new order_type + new price + new trigger |
 | `activate` | action verb + agent_slug |
 | `deactivate` | action verb + agent_slug |
+| `update` | agent_slug + sha256 of canonical-JSON of whitelisted proposed_changes |
 
 The action verb is part of the hash for activate/deactivate so a deactivate token cannot be redeemed to activate the same agent (and vice versa).
 
@@ -1401,7 +1403,7 @@ Every gated-write call writes one row, success or failure. Token material is NEV
 
 ### Telegram ping on every write
 
-Successful `place_order` / `cancel_order` / `modify_order` / `activate_agent` / `deactivate_agent` calls fire a single `_send_telegram(...)` after the audit row lands. Gated by `is_enabled('telegram')` — silent no-op when off. Ping carries the mode tag (`[PAPER]` / `[LIVE]`), order_id / agent_slug, account, and the `request_id` that matches the audit row.
+Successful gated-write calls fire a single `_send_telegram(...)` after the audit row lands. Gated by `is_enabled('telegram')` — silent no-op when off. Ping carries the mode tag (`[PAPER]` / `[LIVE]`), order_id / agent_slug, account, and a clickable `request_id` (Phase 18) — `<a href>` to `/admin/research?audit_request=<id>` so the operator on their phone gets one-tap drill-down to the exact audit row. The link host comes from `_public_base_url()` which derives from `deploy_branch` (main → ramboq.com, else → dev.ramboq.com) with optional `backend_config.yaml::public_base_url` override.
 
 ### File map (where to look)
 
@@ -1433,6 +1435,8 @@ Successful `place_order` / `cancel_order` / `modify_order` / `activate_agent` / 
 | 15 | `40b93b0f` | Audit since-window filter |
 | Docs | `3fc6e988` | LAB_MCP_GUIDE operator runbook |
 | 16 | `c1f547bf` | JWT bootstrap shortcut |
+| 13 + 14 | `ae84c484` | Stale-token cleanup + update_agent (#24 MCP tool) |
+| 17 + 18 | `7552c54f` | Empty-state CTAs + Telegram→Audit deep-link |
 
 ---
 

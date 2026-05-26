@@ -1,43 +1,140 @@
 # Lab — chat-driven research with Claude Code + MCP
 
-This is the operator's runbook for the `/admin/research` workspace.
-The Lab lets you ask Claude Code questions like *"Research RELIANCE
-and propose a 1-week trade"* or *"Build me an agent that closes my
-NIFTY puts if delta crosses -0.5"*, and the platform turns those
-conversations into draft agents and (with explicit per-call
-approval) real broker orders.
+The Lab is RamboQuant's chat-driven research and agent-building
+workspace. You ask Claude Code in plain English ("research RELIANCE
+and propose a 1-week trade", "build an agent that closes my NIFTY
+puts if delta crosses -0.5"), and the platform turns those
+conversations into draft agents and — with explicit per-call
+approval — real broker orders.
 
-The chat itself happens inside **Claude Code** (your terminal). The
-Lab page is the persistence + audit + token-mint surface. No paid
-GenAI is in the loop — your Claude Code subscription covers the
-LLM, and any helper calls (auto-title, news sentiment) use the free
-tier of Gemini 2.5 Flash.
+The chat itself runs inside **Claude Code** (your terminal). The
+`/admin/research` page in your browser is the persistence, audit,
+and token-mint surface.
 
 **Total incremental cost vs the platform you already pay for: ₹0.**
+Your Claude Code subscription covers the LLM. Server-side helpers
+(thread auto-title, news sentiment) use the free tier of Gemini 2.5
+Flash. Nothing else gets billed.
 
 ---
 
-## 1. One-time setup (~3 minutes)
+## Table of contents
 
-The Lab page's **Settings** tab has all four steps printed out with
-copy buttons. Open `/admin/research` → **Settings** for the
-authoritative source. The notes below explain *what* each step
-does.
+1. [What you're getting — the 30-second mental model](#1-what-youre-getting--the-30-second-mental-model)
+2. [GenAI in this platform](#2-genai-in-this-platform)
+3. [One-time setup (~3 minutes)](#3-one-time-setup-3-minutes)
+4. [The daily workflow — 7 steps](#4-the-daily-workflow--7-steps)
+5. [The 24 MCP tools](#5-the-24-mcp-tools)
+6. [The confirm-token gate](#6-the-confirm-token-gate)
+7. [Agents — built-in and custom](#7-agents--built-in-and-custom)
+8. [Configuration knobs](#8-configuration-knobs)
+9. [Troubleshooting](#9-troubleshooting)
+10. [Codebase pointers](#10-codebase-pointers)
+11. [Phase history](#11-phase-history)
 
-### 1a. Mint a JWT
+---
 
-The MCP server (running as a subprocess under Claude Code) talks
-back to the RamboQuant API the same way every browser session
-does — over JWT auth.
+## 1. What you're getting — the 30-second mental model
 
-**Fastest path** (Phase 16 shortcut): you're already signed in
-on the Lab page, so the Settings tab now displays your live
-session token as an `export RAMBOQ_TOKEN=...` line with a Copy
-button. Click Copy, paste into your shell, done. Re-copy after
-24 hours when the JWT rolls over.
+Three actors:
 
-**For automation** (cron, CI, fresh shell with no browser open),
-the curl form still works:
+| Actor | What it does | Where it lives |
+|---|---|---|
+| **Claude Code** (you, on Mac/Linux) | The LLM. Reasons over the platform's data, plans, drafts agents, drafts orders. | Your terminal. Your subscription. |
+| **RamboQuant API** | The book of record. Live broker access, agent engine, simulator, audit trail, paper engine. | `dev.ramboq.com` / `ramboq.com`. |
+| **MCP server** | A thin bridge — stdio subprocess Claude Code spawns. Forwards tool calls from the LLM to the API. | `backend/mcp/kite_server.py`, lives in your repo, runs locally during your Claude session. |
+
+The MCP server has **24 tools** (16 read, 2 persist, 6 gated write).
+Every write needs an operator-minted, single-use, 60-second,
+purpose-bound confirm token. No LLM-initiated trade or activation
+moves a rupee without that token.
+
+---
+
+## 2. GenAI in this platform
+
+Two LLM tiers are in play. Knowing which one fires where is the
+secret to keeping the cost at ₹0.
+
+### Claude Code (your subscription)
+
+The reasoning layer. Everything that runs **in your terminal** when
+you chat with Claude — searching its own tool list, picking the
+right MCP tools, synthesizing answers, drafting agents. Billed
+against your existing Claude Code subscription. No extra setup.
+
+Sonnet 4.6 is the default; Opus 4.7 is available on Max.
+
+### Gemini 2.5 Flash (free tier)
+
+The server-side helper layer. Runs on `dev.ramboq.com` / `ramboq.com`
+when:
+
+| Helper | When it fires | What happens if it fails |
+|---|---|---|
+| **Thread auto-title** | `POST /api/research/threads` with `title=""` | Falls back to first-sentence-of-thesis stub. |
+| **News sentiment** | `GET /api/news/?sentiment=true` (the MCP `get_recent_news` tool always passes this) | Falls back to a keyword-regex stub (bull/bear/neutral). |
+| **Market summary** | The existing `/api/market` endpoint (predates the Lab) | Falls back to the static YAML report. |
+
+All three helpers go through the same `is_enabled('genai')` gate:
+
+- On the **`main`** branch (`ramboq.com`), genai is **always on** —
+  the flag returns True unconditionally.
+- On any **non-main** branch (`dev.ramboq.com`), the
+  `cap_in_dev.genai` flag in `backend/config/backend_config.yaml`
+  decides. **Default is False on dev** — the helpers fall back to
+  their deterministic stubs.
+
+Free-tier limits (as of 2026-05) are 10 RPM / 250 RPD / 250k TPM —
+far above what these three sparse helpers consume.
+
+### When NEITHER fires
+
+Nothing in this platform calls a paid LLM. There is no OpenAI,
+Anthropic API-token, or premium-Gemini integration. Disable
+`is_enabled('genai')` everywhere → the platform still works; the
+auto-title becomes a first-sentence stub and news sentiment uses
+keywords.
+
+### What the LLM in Claude Code can and cannot do
+
+CAN (with no operator approval mid-session):
+- Call any of the 16 **read** MCP tools
+- Call the 2 **persist** tools (`save_research_thread`,
+  `save_agent_draft` — drafts always land inactive + paper-mode)
+
+CANNOT (without a per-call operator-minted confirm token):
+- Place an order
+- Cancel or modify an order
+- Activate or deactivate an agent
+- Edit an existing agent's condition tree
+
+The token is the safety property the whole architecture is built
+around. See [section 6](#6-the-confirm-token-gate).
+
+---
+
+## 3. One-time setup (~3 minutes)
+
+The Lab page's **Settings** tab walks you through this with
+copy-buttons. Open `/admin/research` → **Settings** while reading
+the notes below.
+
+### 3.1 Mint a JWT
+
+The MCP server (a subprocess of Claude Code) talks back to the
+RamboQuant API the same way every browser session does — over JWT
+auth.
+
+**Fastest path** (Phase 16 shortcut):
+- You're already signed in on the Lab page. The Settings tab's
+  "1. Bootstrap your JWT" card shows your live session token as an
+  `export RAMBOQ_TOKEN='<the-jwt>'` line.
+- Click **Copy export line**. Paste into the shell where you'll
+  launch Claude Code. Done.
+- Re-copy after 24 hours when the JWT rolls over.
+
+**For automation** (cron jobs, no browser open):
 
 ```bash
 export RAMBOQ_TOKEN=$(curl -s -X POST https://dev.ramboq.com/api/auth/login \
@@ -46,15 +143,13 @@ export RAMBOQ_TOKEN=$(curl -s -X POST https://dev.ramboq.com/api/auth/login \
   | jq -r .access_token)
 ```
 
-The token's TTL is 24 hours either way. Restart this shell once
-a day; the MCP server picks up the new token on its next
-subprocess launch.
+24 h TTL either way.
 
-### 1b. Register the MCP server
+### 3.2 Register the MCP server
 
-Copy the **`.mcp.json` snippet** from the Settings tab into a file
-named `.mcp.json` at the repo root (already in `.gitignore`).
-Should look roughly like:
+Copy the `.mcp.json` snippet from the Settings tab into a file named
+`.mcp.json` at the repo root (already in `.gitignore`). It looks
+like:
 
 ```json
 {
@@ -71,134 +166,127 @@ Should look roughly like:
 }
 ```
 
-Point `RAMBOQ_BASE` at whichever host you want the LLM to read
-from — dev for experiments, prod (`https://ramboq.com`) for real
-trades. The MCP server doesn't care which.
+Point `RAMBOQ_BASE` wherever you want the LLM to read from — dev
+for experiments, prod (`https://ramboq.com`) for real trades. The
+MCP server doesn't care which.
 
-### 1c. Restart Claude Code
+### 3.3 Restart Claude Code
 
-Claude Code reads `.mcp.json` only on startup. After step 1b:
+Claude Code reads `.mcp.json` only on startup:
 
 ```bash
 # In the repo root:
-claude --resume   # or just `claude` to start a fresh session
+claude
 ```
 
-You'll see `MCP server "ramboq-research" connected` in the
-startup banner. If you see `failed to connect`, the most common
-causes are:
-- `venv/bin/python` doesn't exist — run `python -m venv venv && venv/bin/pip install -r backend/requirements-api.txt`.
-- The `mcp` Python package isn't installed — `venv/bin/pip install mcp>=1.27`.
-- `RAMBOQ_TOKEN` isn't exported — re-run step 1a.
+The startup banner should show `MCP server "ramboq-research"
+connected`.
 
-### 1d. Smoke test
+If it doesn't, the usual fixes:
+- `venv/bin/python` missing → `python -m venv venv && venv/bin/pip install -r backend/requirements-api.txt`
+- `mcp` package missing → `venv/bin/pip install 'mcp>=1.27'`
+- `RAMBOQ_TOKEN` not exported in the shell that launched Claude
+  Code → re-run section 3.1, restart Claude Code
+
+### 3.4 Smoke test
 
 In Claude Code, ask:
 
-> *"Call get_server_info and show me the response."*
+> *"Call get_server_info."*
 
 You should get back something like:
+
 ```json
-{"base_url": "https://dev.ramboq.com", "has_token": true, "token_prefix": "eyJhbGciOi…"}
+{
+  "base_url": "https://dev.ramboq.com",
+  "has_token": true,
+  "token_prefix": "eyJhbGciOi…"
+}
 ```
 
-You're connected.
+You're wired up.
 
 ---
 
-## 2. The daily workflow
+## 4. The daily workflow — 7 steps
 
-The full LLM-driven trading loop has seven steps. The first four
-happen entirely inside Claude Code; the last three involve the Lab
-page in your browser.
+The full LLM-driven trading loop. The first four steps are entirely
+in Claude Code; the last three involve the Lab page in your
+browser.
 
-### 2.1 Research
+### 4.1 Research
 
 ```
-You:    Research RELIANCE. Pull positions, recent news with
-        sentiment, option-chain skew for the nearest expiry, the
-        macro snapshot, and give me a 1-week thesis.
+You:    Research RELIANCE. Pull positions, holdings, recent news
+        with sentiment, option-chain skew for the nearest expiry,
+        the macro snapshot, and 30 days of OHLCV. Give me a
+        1-week thesis.
 
-Claude: [calls get_positions, get_recent_news(symbol="RELIANCE",
-         sentiment=true), get_options_chain_snapshot(
-         underlying="RELIANCE", expiry="2026-05-29"),
-         get_economic_snapshot, get_ohlcv(symbol="RELIANCE",
-         days=30)]
-        
+Claude: [calls get_positions, get_holdings, get_recent_news,
+         get_options_chain_snapshot, get_economic_snapshot,
+         get_ohlcv — 6 read tool calls]
+
         Based on the data:
-        - Position: long 200 shares @ ₹2,840 avg, ₹568k exposure
-        - News: 6 of 12 headlines bullish (Q2 EBITDA beat, JIO
-          spinoff rumours); 2 bearish (broker downgrade).
-        - Chain at 2900 strike: CE IV 24%, PE IV 21% — slight call
-          skew. ATM straddle priced at ~₹95.
-        - Macros: repo at 6.50% (170d stale), CPI 5.2% — neutral
-          rate trajectory.
-        - OHLCV: tight 30d range, broke above 200DMA last week.
-        
+        - Long 200 RELIANCE shares @ ₹2,840 avg, ₹568k exposure
+        - 6 of 12 headlines bullish, 2 bearish (broker downgrade)
+        - Chain at 2900 strike: CE IV 24%, PE IV 21% (call skew)
+        - Macros: repo 6.50% (170d stale), CPI 5.2% — neutral rate
+        - OHLCV: broke above 200DMA last week, tight range
+
         Thesis: bullish, 3-5% upside over 1 week. Entry on a
-        pullback to 2820, stop at 2790. Risk:reward ~1:2.
+        pullback to 2820, stop at 2790. R:R ~1:2.
 ```
 
-That's one prompt → one response. The LLM made 5 tool calls
-behind the scenes; you didn't have to write any code.
+One prompt → one synthesis. The LLM made 6 tool calls behind the
+scenes.
 
-### 2.2 Save the thread
+### 4.2 Save the thread
 
 ```
 You:    Save that thesis as a research thread.
 
 Claude: [calls save_research_thread(symbol="RELIANCE",
          thesis_text=..., confidence="bull", transcript=[...])]
-        
-        Saved thread #47 to the Lab page.
+
+        Saved thread #47.
 ```
 
-If you don't pass a `title`, the server auto-generates one via
-Gemini Flash free tier (`"RELIANCE oversold bounce setup"`). With
-Gemini off (dev environment, `cap_in_dev.genai: false`), the
-deterministic stub takes the first sentence of the thesis.
+If you don't pass a `title`, the server auto-fills via Gemini Flash
+(or the first-sentence stub when genai is off). The thread shows
+up immediately on `/admin/research` → **Research** tab.
 
-The thread shows up immediately on `/admin/research` → **Research**
-tab → left rail. Click any row to read the full transcript later.
-
-### 2.3 Draft an agent (optional)
+### 4.3 Draft an agent (optional)
 
 ```
 You:    Build me an agent: if my RELIANCE position drops 2% in
-        any 10-minute window, alert via Telegram + Telegram-only.
-        Save the draft.
+        any 10-minute window, alert via Telegram. Save the draft.
 
-Claude: [calls list_agents to see existing grammar,
-         save_agent_draft(thread_id=47, name="RELIANCE 2%/10m
-         loss", conditions={"all": [...]}, events=["telegram"],
+Claude: [calls list_agents to see existing grammar tokens,
+         save_agent_draft(thread_id=47, name="RELIANCE 2%/10m loss",
+         conditions={"all": [...]}, events=["telegram"],
          scope="total")]
-        
+
         Created agent reliance-2pct-10m-loss · status=inactive
-        (linked to thread #47). Open /agents to inspect, then
-        click "Run in Simulator" to validate.
+        (linked to thread #47).
 ```
 
-The draft ships inactive + `trade_mode=paper` — both hardcoded
-server-side. The LLM cannot create an active or live agent. See
-section 4 for why.
+The draft ships `status=inactive` + `trade_mode=paper` — both
+hardcoded server-side. The MCP cannot create an active or live
+agent.
 
-### 2.4 Review in the simulator
+### 4.4 Review in the simulator
 
-This is the only step that genuinely requires you, not the LLM.
-Go to `/agents`, find the draft you just created, click "Run in
-Simulator". The existing simulator drives synthetic price moves
-through the condition tree and shows you whether the agent fires
-where you expect.
+This is the only step that genuinely requires human attention. Go
+to `/agents`, find the draft, click **Run in Simulator**. The
+existing simulator drives synthetic price moves through the
+condition tree so you can see whether the agent fires where you
+expect.
 
-If the fires look wrong, edit the condition tree on `/agents`
-(YAML / JSON editor) or ask Claude Code to delete + redraft:
+Need to tweak? Either:
+- Ask Claude Code to delete + redraft (fine for inactive drafts), or
+- Use Phase 14's `update_agent` MCP tool (see section 7).
 
-```
-You:    Delete that draft, the threshold is too sensitive. Make a
-        new one at 3% over 15 minutes.
-```
-
-### 2.5 Mint an activate token
+### 4.5 Mint an activate token
 
 On `/admin/research` → **Settings** → **0. Mint a confirm token**:
 
@@ -207,252 +295,369 @@ On `/admin/research` → **Settings** → **0. Mint a confirm token**:
 | Kind | `ACTIVATE agent` |
 | Agent slug | `reliance-2pct-10m-loss` (copy from /agents) |
 
-Click **Mint token**. You'll see:
+Click **Mint token** → you see a 32-char hex string with a 60-second
+countdown.
 
-```
-ACTIVATE · agent=reliance-2pct-10m-loss
-
-[copy] 4f8e7d6c5b4a3928…    expires in 47s
-```
-
-Single-use, 60-second TTL, bound to *this exact agent slug* + the
-activate action. Cannot be re-used to deactivate the same agent,
-or to activate a different one.
-
-### 2.6 Activate
+### 4.6 Activate
 
 ```
 You:    Activate it. Token: 4f8e7d6c5b4a3928…
 
 Claude: [calls activate_agent(confirm_token="4f8e7d6c5b4a3928…",
          agent_slug="reliance-2pct-10m-loss")]
-        
-        Agent activated. status=active. Audit row #112 written.
-        Telegram ping sent.
+
+        Agent activated. status=active. Audit row #112. Telegram
+        ping sent.
 ```
 
 The agent now fires automatically on every matching tick during
-its scheduled hours. You don't need to do anything else.
+its `schedule` window.
 
-### 2.7 Wind down (later)
+### 4.7 Wind down (later)
 
-Same gate in reverse — mint a `DEACTIVATE agent` token, paste
-into Claude Code, call `deactivate_agent`. Same audit + Telegram
-ping. Same 60s window.
-
----
-
-## 3. Token-gate cheat sheet
-
-Every write tool requires a confirm token. The token is bound to
-the action so the LLM can't bait-and-switch between mint and use:
-
-| Tool | Token kind | Purpose hash binds |
-|---|---|---|
-| `place_order` | `place` | account · symbol · side · qty · mode · order_type · price · trigger |
-| `cancel_order` | `cancel` | account · order_id · mode |
-| `modify_order` | `modify` | account · order_id · mode · qty · order_type · price · trigger |
-| `activate_agent` | `activate` | agent_slug |
-| `deactivate_agent` | `deactivate` | agent_slug |
-
-If you change ANY field between mint and use, the call returns
-**403 — "Order details do not match the minted token's purpose"**.
-That's the gate working as designed; re-mint with the corrected
-fields.
-
-The token also expires after 60 seconds and is single-use — a
-second redemption gets **403 — "Token already used"**.
+Mint a `DEACTIVATE agent` token, paste it, call `deactivate_agent`.
+Same gate, same audit, same Telegram ping.
 
 ---
 
-## 4. The safety property nobody compromises on
+## 5. The 24 MCP tools
 
-Industry standard for production LLM-trading products is **no
-LLM-initiated order moves money without explicit per-call
-operator approval**. Composer.trade requires a Deploy click. IBKR
-TraderGPT requires a confirmation dialog. RamboQuant's per-call
-mint serves the same role but with stricter binding:
+### Read (16) — no token required
 
-1. **You can't pre-stage tokens for a session.** The mint UI is
-   one token at a time.
-2. **You can't re-use a token.** Single-use atomic consume.
-3. **You can't redirect a token.** Purpose hash binds every field.
-4. **The LLM can't mint its own tokens.** The mint endpoint is
-   admin-guarded; no MCP tool wraps it.
-
-Combined with the existing branch/mode gates:
-
-- **dev branch** forces every order to paper, regardless of
-  `mode` in the request.
-- **prod + `execution.paper_trading_mode=True`** forces paper.
-- **prod + `execution.paper_trading_mode=False` + token with
-  `mode='live'`** = real Kite order.
-
-Default `paper_trading_mode` on a fresh install is **`False`**
-(LIVE) per the seeder. Most operators flip it to `True` (PAPER)
-once via the navbar; from then on, even a successfully-minted
-`mode='live'` token gets downgraded to paper at the resolver.
-
----
-
-## 5. Tool reference (23 tools)
-
-### Read (16)
 | Tool | What it returns |
 |---|---|
-| `get_positions(account?)` | Intraday positions across loaded accounts |
+| `get_positions(account?)` | Intraday positions across loaded broker accounts |
 | `get_holdings(account?)` | Long-term holdings |
-| `get_quote(symbols)` | Live LTP + OHLC + change% for up to 300 keys |
+| `get_quote(symbols)` | Live LTP + OHLC + change% (up to 300 symbols) |
 | `get_ohlcv(symbol, days, exchange)` | Historical daily candles |
 | `get_recent_news(symbol?, sentiment?)` | Indian-market headlines with bull/bear/neutral tags |
 | `get_option_analytics(symbol, qty?)` | Greeks + payoff + risk for ONE leg |
-| `get_options_chain_snapshot(underlying, expiry, atm_window)` | LTP + Greeks for ALL strikes ATM ± N |
-| `get_economic_snapshot()` | Repo / CPI / IIP / GDP / USD-INR + freshness flags |
-| `get_funds_summary(account?)` | Cash + available/used margin |
+| `get_options_chain_snapshot(underlying, expiry, atm_window)` | LTP + Greeks for every strike ATM ± N (Phase 8) |
+| `get_economic_snapshot()` | Repo / CPI / IIP / GDP / USD-INR with freshness flags |
+| `get_funds_summary(account?)` | Cash + available/used margin per account |
 | `get_watchlist(name)` | Symbols in a curated watchlist |
 | `get_pnl_attribution(period, mode)` | P&L grouped by agent |
 | `list_agents(status?)` | Existing agents with their status |
-| `list_research_threads(symbol?)` | Past saved threads |
-| `get_research_thread(thread_id)` | Full transcript + thesis |
-| `get_audit_recent(tool?, status?)` | Reverse-chrono MCP-action trail (self-check) |
+| `list_research_threads(symbol?)` | Past saved threads (summaries) |
+| `get_research_thread(thread_id)` | Full transcript + thesis for one thread |
+| `get_audit_recent(tool?, status?)` | Reverse-chrono MCP-action trail (Phase 7 — LLM self-check) |
 | `get_server_info()` | Base URL + token presence (diagnostic) |
 
-### Persist (2)
+### Persist (2) — no token required (drafts always land inactive)
+
 | Tool | What it does |
 |---|---|
 | `save_research_thread(symbol, thesis_text, confidence, transcript, title?)` | Persist a chat session to the Lab page |
-| `save_agent_draft(thread_id, name, conditions, ...)` | Promote thread → inactive draft Agent |
+| `save_agent_draft(thread_id, name, conditions, ...)` | Promote thread → inactive draft Agent in paper mode |
 
-### Gated write (5) — require operator-minted confirm token
-| Tool | Requires kind |
+### Gated write (6) — operator-minted confirm token required
+
+| Tool | Token kind | What it does |
+|---|---|---|
+| `place_order(...)` | `place` | Submit a new order (paper or live) |
+| `cancel_order(...)` | `cancel` | Cancel a working order (live broker OR paper engine) |
+| `modify_order(...)` | `modify` | Modify a working order (live OR paper) |
+| `activate_agent(...)` | `activate` | Flip an agent inactive → active |
+| `deactivate_agent(...)` | `deactivate` | Flip an agent active → inactive |
+| `update_agent(...)` | `update` | Edit conditions / cooldown / events / etc. on an existing agent (Phase 14) |
+
+---
+
+## 6. The confirm-token gate
+
+Every gated write requires a token that is:
+
+- **16-byte hex** (32 characters)
+- **Single-use** — atomic consume on first valid redemption
+- **60-second TTL**
+- **Bound to the operator's `user_id`** at mint time — only the same
+  user can redeem it
+- **Bound to a purpose hash** of the exact action fields, so the
+  LLM cannot bait-and-switch between mint and redemption
+- **In-memory only** — restart invalidates everything (conservative
+  by design; operator just re-mints)
+
+Purpose-hash binding per kind:
+
+| Kind | Hash includes |
 |---|---|
-| `place_order(confirm_token, account, symbol, side, qty, ...)` | `place` |
-| `cancel_order(confirm_token, account, order_id, mode)` | `cancel` |
-| `modify_order(confirm_token, account, order_id, ...)` | `modify` |
-| `activate_agent(confirm_token, agent_slug)` | `activate` |
-| `deactivate_agent(confirm_token, agent_slug)` | `deactivate` |
+| `place` | account · symbol · side · qty · order_type · mode · price · trigger |
+| `cancel` | account · order_id · mode |
+| `modify` | account · order_id · mode · new qty · new order_type · new price · new trigger |
+| `activate` | action verb · agent_slug |
+| `deactivate` | action verb · agent_slug |
+| `update` | agent_slug · canonical-JSON of whitelisted proposed_changes |
+
+Any mismatch returns `403 — "Order details do not match the minted
+token's purpose"`. Replay returns `403 — "Token already used"`.
+Expiration returns `403 — "Token expired (60s window)"`.
+
+### Why the action verb is part of the activate/deactivate hash
+
+So a `deactivate` token cannot be redeemed to activate the same
+agent — and vice versa. Symmetric protection against
+direction-swap.
+
+### Why `update_agent` hashes the canonical JSON of proposed changes
+
+Because update touches many fields. The whole payload is part of
+the hash so the LLM cannot tweak any single field after operator
+approval. The server also filters to a whitelist of allowed fields
+(`conditions`, `events`, `actions`, `scope`, `schedule`,
+`cooldown_minutes`, `fire_at_time`, `description`) — `status`,
+`trade_mode`, and `lifespan_*` are silently dropped. The LLM
+cannot flip an agent active or live via `update_agent`. That's
+what `activate_agent` is for, and even there `trade_mode='live'`
+needs the prod-side `execution.paper_trading_mode=False` master.
+
+### Mode resolution (unchanged)
+
+The MCP layer adds the token gate on top; it never bypasses the
+existing dev/prod/paper rules:
+
+- **dev branch** forces paper regardless of the token's `mode`
+- **prod + `execution.paper_trading_mode=True`** forces paper
+- **prod + `paper_trading_mode=False` + `mode='live'`** → real Kite
+  order
+
+Default `paper_trading_mode` on a fresh install is **False** (LIVE).
+Most operators flip it to `True` (PAPER) once via the navbar; from
+then on, even a `mode='live'` token gets downgraded at the
+resolver.
+
+### Telegram pings carry deep-links
+
+Every successful gated write fires a Telegram message. The
+`request_id` in the message is now a clickable HTML link (Phase 18)
+that opens `/admin/research?audit_request=<id>` — your phone gets a
+one-tap drill-down to the exact audit row.
 
 ---
 
-## 6. Common patterns
+## 7. Agents — built-in and custom
 
-### "Did my last action land?"
+Agents are the platform's rules-layer. Every alert, every
+auto-close, every loss-cut is an agent row in the `agents` table.
 
-Ask Claude Code to call `get_audit_recent` filtered to the right
-tool:
+### Built-in agents (ship with the codebase)
+
+Seeded from `BUILTIN_AGENTS` in `backend/api/algo/agent_engine.py`
+on every boot. 17 agents today:
+
+| Group | Examples | Default status |
+|---|---|---|
+| Loss-cut alerting (12) | `loss-pos-acct-2pct`, `loss-pos-total-3pct`, `loss-holdings-acct-3pct`, `loss-pos-rate-2k-acct`, … | **active** |
+| Funds-negative (2) | `loss-funds-cash-negative`, `loss-funds-margin-negative` | **active** |
+| Auto-close (1) | `loss-pos-total-auto-close` (destructive — closes positions when total P&L crosses threshold) | **inactive** |
+| Summaries (4) | `nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mcx_close_summary` | **inactive** (background tasks send these directly to avoid duplicates) |
+
+Edit any built-in's condition tree from the `/agents` page — the
+seeder preserves your edits across deploys. Reset to defaults by
+deleting the row + restarting.
+
+### Custom agents (you / the LLM drafts)
+
+Two paths into the `agents` table:
+
+1. **`/agents` page** — the existing UI. Compose conditions in the
+   JSON editor, save as inactive, run in simulator, activate.
+2. **`save_agent_draft` MCP tool** — Claude Code builds the
+   condition tree from your chat, lands as inactive + paper-mode,
+   appears on `/admin/research` → Drafts tab + on `/agents`.
+
+Either way, the agent goes through the simulator review step
+before live activation. There is no path to ship an agent active
+without explicit human approval (button click on `/agents` OR
+operator-minted activate token via the Lab).
+
+### The condition tree (v2 grammar)
 
 ```
-You:    Did the activate_agent call go through?
+condition  ::=  leaf
+             |  { "all": [condition, …] }       # AND
+             |  { "any": [condition, …] }       # OR
+             |  { "not": condition }            # NOT
 
-Claude: [calls get_audit_recent(tool="activate_agent", limit=3)]
-        
-        Yes — request_id=4f8e7d, status=ok, at 14:32:18 IST.
-        Agent reliance-2pct-10m-loss is now status=active.
+leaf       ::=  { "metric": <metric-token>,
+                  "scope":  <scope-token>,
+                  "op":     <op-token>,
+                  "value":  <literal> }
 ```
 
-### "What changed in my book today?"
+Tokens are registered in the `grammar_tokens` table. View / edit on
+`/admin/tokens`. The LLM can call `list_agents` to inspect existing
+condition shapes and reuse the same tokens.
 
-```
-You:    Pull my P&L attribution for today and tell me which agents
-        are pulling weight.
+Example — *"alert if total positions P&L drops 3% over 10 min"*:
 
-Claude: [calls get_pnl_attribution(period="today", mode="all")]
-        
-        3 agents fired today:
-        - reliance-2pct-10m-loss · 2 orders, ₹+820 gross
-        - loss-pos-total-3pct  · 0 orders (no fires yet)
-        - nifty-iv-spike       · 4 orders, ₹-1,240 gross — losing
-        
-        The nifty-iv-spike rule lost ₹1,240 on 4 fills today.
-        Consider widening the threshold or deactivating until
-        you've reviewed the simulator.
-```
-
-### "Show me only the cancelled orders this week"
-
-```
-You:    What did I cancel this week?
-
-Claude: [calls get_audit_recent(tool="cancel_order",
-         status="ok", limit=50)]
+```json
+{
+  "all": [
+    { "metric": "pnl_rate_pct",
+      "scope":  "positions.total",
+      "op":     "<=",
+      "value":  -0.3 }
+  ]
+}
 ```
 
-Or use the Lab page's **Audit** tab directly — Since="Last 7
-days" + Tool="cancel_order" + Status="ok" gives the same view.
+### Run-in-Simulator (the safety check before activate)
+
+Every agent row on `/agents` has a **Run in Simulator** button.
+Behind the scenes, the synthesizer (`backend/api/algo/sim/synthesize.py`)
+walks the condition tree, picks the leaf nearest to firing, and
+builds an inline scenario that drives the metric across that
+threshold. Drops you on
+`/admin/execution?mode=sim&agent_id=<id>` with the synthesized
+scenario armed.
+
+Watch the fire — does it land where you expect? Tighten or widen
+the condition tree on `/agents`, repeat. When happy, mint an
+activate token + flip it on.
+
+### Agent → order pipeline
+
+Activated agents fire on every matching tick. When they fire:
+- Notify channels (telegram / email / log / websocket) get pinged
+- If the agent has `actions`, they execute: `place_order`,
+  `chase_close_positions`, etc.
+- Orders route through `_resolve_mode()` which honours
+  `paper_trading_mode`
+- All fires land in `agent_events`; all resulting orders land in
+  `algo_orders` with the originating `agent_id`
+
+`get_pnl_attribution` slices `algo_orders` by `agent_id` so you can
+ask Claude: *"which agents made money this week?"*
 
 ---
 
-## 7. Troubleshooting
+## 8. Configuration knobs
+
+Three places where settings live, in order of how often you touch
+them:
+
+### 8.1 `/admin/settings` — DB-backed, live-tunable
+
+Tune from the UI without a deploy:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `mcp.audit_retention_days` | 90 | Days of `mcp_audit` rows kept. 0 = forever. |
+| `alerts.cooldown_minutes` | 30 | Re-fire gap on any rate / threshold agent |
+| `alerts.rate_window_min` | 10 | Window for ΔP&L / Δmin agents |
+| `alerts.baseline_offset_min` | 15 | Quiet period after market open before rate agents fire |
+| `notifications.telegram_enabled` | True | Master switch for Telegram pings |
+| `notifications.email_enabled` | True | Master switch for SMTP |
+| `execution.paper_trading_mode` | False (= LIVE on fresh install) | Master kill-switch — when True, every order forced to paper |
+| `execution.shadow_mode` | False | When True on prod, log Kite payload + validate via basket_margin without executing |
+| `simulator.default_rate_ms` | 2000 | Default tick rate for new sim runs |
+| `simulator.chase_max_attempts` | 5 | Max chase re-quotes before UNFILLED |
+
+### 8.2 `backend/config/backend_config.yaml` — server-side, edit-then-restart
+
+Hand-edited on the server. The deploy script preserves operator
+edits across deploys for the keys below:
+
+| Section | Used for |
+|---|---|
+| `cap_in_dev` | Per-capability toggles on dev branches: `genai`, `telegram`, `mail`, `notify_on_deploy`, `market_feed`, `simulator`, `replay` |
+| `cap_in_prod` | Same shape, for the prod branch |
+| `macros:` | Repo rate / CPI / IIP / GDP / USD-INR + as_of dates that feed `get_economic_snapshot`. Update monthly after RBI / MoSPI releases. |
+| `public_base_url` | Optional override for the Telegram deep-link host (defaults to ramboq.com on main, dev.ramboq.com otherwise) |
+
+### 8.3 `backend/config/secrets.yaml` — gitignored, server-only
+
+Never in git. Server-side credentials only:
+
+| Key | Purpose |
+|---|---|
+| `cookie_secret` | JWT signing secret. Rotating invalidates all live JWTs + the broker_accounts encryption key. Rare. |
+| `gemini_api_key` | Google AI Studio key for Gemini Flash. Free tier works. |
+| `smtp_user` / `smtp_pass` | SMTP via Hostinger for email alerts |
+| `telegram_bot_token` | @RamboQuantBot |
+| `telegram_chat_id` | Group: RamboQuant Alerts |
+| `alert_emails` / `market_emails` | Recipient lists |
+| `kite_accounts` (legacy) | Seeds the `broker_accounts` table on first boot only. After that, edit broker creds on `/admin/brokers`. |
+
+Per the project rule: **never commit `secrets.yaml`**. Edits go
+through SSH `sed` on both server paths (`/opt/ramboq`,
+`/opt/ramboq_dev`) individually.
+
+### 8.4 The branch is the hard outer gate
+
+Two branches, two destinations:
+
+| Branch | Server path | Domain | DB |
+|---|---|---|---|
+| `main` | `/opt/ramboq` | ramboq.com | `ramboq` |
+| any other | `/opt/ramboq_dev` | dev.ramboq.com | `ramboq_dev` |
+
+On `main` (= prod): every capability is always on regardless of the
+`cap_in_dev`/`cap_in_prod` flags. The DB-backed
+`execution.paper_trading_mode` decides paper vs live.
+
+On any non-`main` branch: every broker-hitting action is forced to
+paper regardless of any flag. Dev is the safe playground.
+
+---
+
+## 9. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `MCP server failed to connect` on Claude Code startup | venv missing, mcp package not installed, or `RAMBOQ_TOKEN` not exported | Re-run section 1a + 1b. Check `venv/bin/python -c "from mcp.server.fastmcp import FastMCP"` returns no error. |
-| Tool calls return 401 | JWT expired (24h TTL) | Re-mint via section 1a, restart Claude Code. |
-| Tool calls return 502 | Broker offline or rate-limited | Check `/admin/health` — if a Kite handle shows DISCONNECTED, the credentials need refreshing on `/admin/brokers`. |
-| `place_order` returns 403 with "Order details do not match" | Token field doesn't match mint exactly | Re-mint with the corrected field. Use the same units (price = exact Kite tick, qty = integer). |
+| `MCP server failed to connect` on Claude Code startup | venv missing, `mcp` package not installed, `RAMBOQ_TOKEN` not exported | Re-run setup 3.1 + 3.2. Check `venv/bin/python -c "from mcp.server.fastmcp import FastMCP"` returns no error. |
+| Tool calls return 401 | JWT expired (24h TTL) | Refresh `/admin/research` → Settings, re-copy the export line, restart shell + Claude Code. |
+| Tool calls return 502 | Broker offline or rate-limited | Check `/admin/health` — DISCONNECTED account means credentials need refreshing on `/admin/brokers`. |
+| `place_order` returns 403 with "Order details do not match" | Token field doesn't match mint exactly | Re-mint with the corrected field. Same units (price = exact tick, qty = integer). |
 | `place_order` returns 403 with "Token already used" | LLM tried to reuse a token | Mint a fresh one. |
-| Order placed but Audit shows `result_status=error` | Underlying ticket pipeline rejected (basket margin, bad symbol, etc.) | Check the `result_summary` column — it carries the broker's exact error. |
-| Telegram pings stop landing | `notifications.telegram_enabled=false` in `/admin/settings`, or telegram bot token rotated | Re-check via `/admin/settings`. The system uses `secrets.telegram_bot_token` from server-side `secrets.yaml`. |
-| Lab page shows "No threads yet" but you DID save one | Backend running an older build, or thread saved against a different `RAMBOQ_BASE` | Check the `base_url` in `get_server_info()` matches what the Lab page is loading from. |
+| `update_agent` returns 403 with the same error | Proposed-changes JSON differs from mint payload by even one byte | Copy the JSON from the LLM into the mint widget verbatim; pass it back in the tool call byte-for-byte. |
+| Order placed but Audit shows `result_status=error` | Underlying ticket pipeline rejected (basket margin, bad symbol, etc.) | Check the `result_summary` column — broker's exact error is there. |
+| Telegram pings stopped | `notifications.telegram_enabled=false` in `/admin/settings`, bot token rotated, or `is_enabled('telegram')` is False on this branch | Check `/admin/settings`. Telegram bot token + chat_id live in server-side `secrets.yaml`. |
+| Lab page shows "No threads yet" but you DID save one | Backend running an older build, or `RAMBOQ_BASE` mismatch | `get_server_info()` returns the base URL the MCP server is talking to. Confirm it matches the Lab page URL. |
+| `get_economic_snapshot` shows everything as stale | Hand-maintained `macros:` block needs an update | SSH the server, edit `backend/config/backend_config.yaml::macros:`, restart. Deploy preserves the edit. |
+| Tool auto-titled my thread to something generic like "PWAUTO research" | Genai is disabled (`cap_in_dev.genai: false` on dev) | The deterministic stub is firing. Either flip the cap on, or pass an explicit `title=` when saving. |
 
 ---
 
-## 8. What this platform is NOT
+## 10. Codebase pointers
 
-- **Not a backtesting engine.** Historical replay lives in
-  `/admin/execution?mode=replay`. The MCP tool surface is
-  read-only for past data (`get_ohlcv`) and write-only for live
-  / paper.
-- **Not a strategy library.** The grammar in `/admin/tokens` is
-  the building block; agents you build are unique to your book.
-- **Not autonomous trading.** Every order requires a per-call
-  operator-minted token. There is no "auto-approve any LLM
-  trade under ₹X" mode. By design.
-- **Not a replacement for the existing `/agents` UI.** The
-  agents page remains the canonical surface for editing
-  condition trees, viewing recent fires, and toggling status
-  outside the Lab pipeline. The Lab is the **LLM-friendly**
-  surface — not the exclusive one.
-
----
-
-## 9. Where to look in the codebase
-
-| Need to read… | Path |
+| Need to read | Path |
 |---|---|
-| MCP server entry point | `backend/mcp/kite_server.py` |
-| Per-tool implementation | same file — each `@app.tool()` function |
-| Confirm-token logic | `backend/api/routes/research.py` (`_purpose_hash_*`, `_mint_token`, `_consume_token`) |
-| Audit table model | `backend/api/models.py` (`McpAudit`) |
-| Lab page UI | `frontend/src/routes/(algo)/admin/research/+page.svelte` |
-| Settings entry for retention | `backend/shared/helpers/settings.py` (`mcp.audit_retention_days`) |
-| Background cleanup | `backend/api/background.py` (`_task_mcp_audit_cleanup`) |
-| Test specs | `frontend/e2e/research_*.spec.js` (41 tests across 9 specs) |
+| MCP server entry point | [backend/mcp/kite_server.py](backend/mcp/kite_server.py) |
+| Per-tool implementation | same file — one `@app.tool()` function per tool |
+| Confirm-token logic | [backend/api/routes/research.py](backend/api/routes/research.py) — `_purpose_hash_*` / `_mint_token` / `_consume_token` / `_audit_link_html` |
+| Audit model | [backend/api/models.py](backend/api/models.py) — `McpAudit` |
+| Audit retention task | [backend/api/background.py](backend/api/background.py) — `_task_mcp_audit_cleanup` (03:15 IST daily) |
+| Lab page UI | [frontend/src/routes/(algo)/admin/research/+page.svelte](frontend/src/routes/(algo)/admin/research/+page.svelte) |
+| Gemini Flash helpers | [backend/shared/helpers/genai_helpers.py](backend/shared/helpers/genai_helpers.py) — `auto_title`, `sentiment_scores`; deterministic stubs when `is_enabled('genai')` is False |
+| Agent engine | [backend/api/algo/agent_engine.py](backend/api/algo/agent_engine.py) — `BUILTIN_AGENTS`, `run_cycle()`, `seed_agents()` |
+| Agent evaluator | [backend/api/algo/agent_evaluator.py](backend/api/algo/agent_evaluator.py) — `evaluate()`, `validate()` |
+| Grammar registry | [backend/api/algo/grammar.py](backend/api/algo/grammar.py), [grammar_registry.py](backend/api/algo/grammar_registry.py) |
+| Settings seeder | [backend/shared/helpers/settings.py](backend/shared/helpers/settings.py) — `SEEDS` |
+| Test specs | `frontend/e2e/research_*.spec.js` — 10 specs, 46 tests |
 
 ---
 
-## 10. Phase-by-phase history
+## 11. Phase history
 
-The Lab + MCP infrastructure shipped across 12 phases between
-2026-05-25 and 2026-05-26:
+| Phase | Commit | Scope |
+|---|---|---|
+| 1 | `726e69a` | MCP foundation + Lab page + ResearchThread model |
+| 2a / 2b / 2c | `71196a2` / `bc51933` / `5d84f71` | Draft pipeline · Gemini Flash helpers · Macros |
+| 3 | `99c2057` | place_order with confirm token + mcp_audit table |
+| 3b+3c+4 | `9a5686c` | Audit tab + Telegram pings + cancel/modify |
+| 5 | `1ec801c` | Paper-aware cancel + modify |
+| 6+7 | `baf8aeb` | Audit retention + get_audit_recent |
+| 8 | `f6690ad` | Bulk option-chain snapshot |
+| 9+10+11 | `51770d4` | Watchlist + P&L + funds tools |
+| 12 + hotfix | `70dd25d3` / `ddff6ae9` / `d8efe7b1` | Activate/deactivate + `.fn(ctrl,…)` wrapper fix |
+| Select swap | `5ee35b5f` / `eab410d9` | Native dropdowns → custom Select |
+| 15 | `40b93b0f` | Audit since-window filter |
+| Docs | `3fc6e988` | Initial operator runbook |
+| 16 | `c1f547bf` | JWT bootstrap shortcut |
+| CLAUDE.md | `8202840c` | Architecture section for future Claude sessions |
+| 13 + 14 | `ae84c484` | Stale-token cleanup + update_agent |
+| 17 + 18 | `7552c54f` | Empty-state polish + Telegram→Audit deep-link |
 
-| Phase | What landed |
-|---|---|
-| 1 | Foundation — MCP server, Lab page, ResearchThread model |
-| 2a | save_agent_draft → promote pipeline |
-| 2b | Gemini Flash free-tier auto-title + news sentiment |
-| 2c | get_economic_snapshot (macro reference data) |
-| 3 | place_order with confirm token + mcp_audit table |
-| 3b | Audit tab (forensic view) |
-| 3c | Telegram pings on every write |
-| 4 | cancel_order + modify_order tools |
-| 5 | Paper-aware cancel + modify (closes the paper-mode gap) |
-| 6 | Audit retention background task (90-day default) |
-| 7 | get_audit_recent self-check tool |
-| 8 | get_options_chain_snapshot bulk tool |
-| 9–11 | get_watchlist + get_pnl_attribution + get_funds_summary |
-| 12 | activate_agent + deactivate_agent tools |
-| 15 | Audit since-window filter |
-
-41 Playwright tests cover the path end-to-end against
-`dev.ramboq.com`. Total incremental cost: ₹0.
+**Total cost across 18 phases: ₹0.** 24 MCP tools, 46 Playwright
+tests, 6 gated writes, end-to-end documented.
