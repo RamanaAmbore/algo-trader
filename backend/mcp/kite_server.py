@@ -194,6 +194,28 @@ async def get_option_analytics(symbol: str, qty: int = 0, account: str | None = 
 
 
 @app.tool()
+async def get_economic_snapshot() -> dict:
+    """India macro context — RBI repo rate, CPI inflation, IIP, GDP
+    growth, USD/INR spot. Each metric carries its as_of date + an
+    age_days + a `stale` flag (true when older than the metric's
+    natural release cadence — e.g. CPI > 45 days, IIP > 60 days,
+    repo > 120 days). Use the stale flag to apply a freshness
+    discount in your reasoning; don't take a stale CPI as a fresh
+    inflation read.
+
+    Data source: hand-maintained in backend/config/backend_config.yaml
+    under `macros:` — operator updates it monthly after MoSPI / RBI
+    releases. No external API call, ₹0 incremental cost, zero
+    failure modes. Missing entries return as null.
+
+    Returns:
+        dict {repo_rate, cpi, iip, gdp_growth, inr_usd, refreshed_at}.
+        Each metric (when present): {value, as_of, age_days, stale, label}.
+    """
+    return await _get("/api/economic/snapshot")
+
+
+@app.tool()
 async def list_agents(status: str | None = None, limit: int = 200) -> dict:
     """List agent rows from the agents table. Useful for "show me my
     NIFTY-related agents" or finding the agent that just fired.

@@ -86,3 +86,21 @@ market_segments:
 #   algo.expiry_start_offset_hours, algo.expiry_ntm_buffer_pct,
 #   algo.expiry_rescan_minutes
 # Tune all of these from /admin/settings without a redeploy.
+
+# Macro snapshot — fed to the MCP get_economic_snapshot tool so the
+# LLM has India-specific context (rates, inflation, growth) without
+# any external API key. Updated by hand when RBI / MoSPI announce —
+# typically once a month for CPI / IIP, once a quarter for repo +
+# growth. The `as_of` date drives a "stale > 90 days" warning the
+# tool surfaces back to the LLM so it knows not to over-weight it.
+macros:
+  repo_rate_pct:        6.50    # RBI repo rate
+  repo_rate_as_of:      "2025-12-06"
+  cpi_yoy_pct:          5.20    # CPI inflation, y-o-y
+  cpi_as_of:            "2025-11-30"
+  iip_yoy_pct:          3.80    # Industrial production, y-o-y
+  iip_as_of:            "2025-11-30"
+  gdp_growth_pct:       6.40    # Latest quarterly GDP growth
+  gdp_as_of:            "2025-09-30"
+  inr_usd:              83.50   # Approximate spot reference
+  inr_usd_as_of:        "2025-12-15"

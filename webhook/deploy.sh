@@ -141,6 +141,15 @@ for sect in ("cap_in_dev", "cap_in_prod"):
                 merged["simulator"] = merged["sim_mode"]
             merged.pop("sim_mode", None)
         new[sect] = merged
+# macros block: same pattern as cap_in_dev — operator's hand-edited values
+# (latest RBI / CPI / IIP figures) survive a deploy. Repo defaults fill in
+# any missing keys so adding a new macro never requires a server edit.
+bak_macros = bak.get("macros") or {}
+new_macros = new.get("macros") or {}
+if isinstance(bak_macros, dict) and isinstance(new_macros, dict):
+    merged = dict(new_macros)
+    merged.update(bak_macros)
+    new["macros"] = merged
 with open(new_path, "w") as f:
     yaml.safe_dump(new, f, default_flow_style=False, sort_keys=False)
 PYEOF

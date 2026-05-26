@@ -149,6 +149,7 @@
     { name: 'get_ohlcv',             summary: 'Historical daily candles (up to 365 days)' },
     { name: 'get_recent_news',       summary: 'Recent Indian-market headlines (optional title filter)' },
     { name: 'get_option_analytics',  summary: 'Greeks + payoff + risk for one option leg' },
+    { name: 'get_economic_snapshot', summary: 'India macros — repo rate, CPI, IIP, GDP, USD/INR' },
     { name: 'list_agents',           summary: 'List existing agents (optionally by status)' },
     { name: 'save_research_thread',  summary: 'Persist a thesis + transcript to the Lab page' },
     { name: 'save_agent_draft',      summary: 'Promote a thread to an inactive draft Agent (paper-mode)' },

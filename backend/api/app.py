@@ -46,6 +46,7 @@ from backend.api.routes.positions import PositionsController
 from backend.api.routes.settings import SettingsController
 from backend.api.routes.brokers import BrokersController
 from backend.api.routes.research import ResearchController
+from backend.api.routes.economic import EconomicController
 from backend.api.routes.charts import ChartsController
 from backend.api.routes.options import OptionsController
 from backend.api.routes.alerts import AlertsController
@@ -199,6 +200,7 @@ _route_handlers = [
     OptionsController,
     BrokersController,
     ResearchController,
+    EconomicController,
     WatchlistController,
     performance_ws_handler,
     algo_ws_handler,
