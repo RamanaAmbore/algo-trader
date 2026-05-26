@@ -80,6 +80,8 @@ class AgentInfo(msgspec.Struct):
     lifespan_type:        str        = "persistent"
     lifespan_max_fires:   int | None = None
     lifespan_expires_at:  str | None = None
+    # Phase 21 — debounce "for N minutes" gate. 0 = fire immediately.
+    debounce_minutes:     int        = 0
     # Per-agent trade routing — 'paper' or 'live'. Resolved by
     # actions._resolve_mode AFTER dev/shadow gates and the master
     # execution.paper_trading_mode kill-switch.
@@ -107,6 +109,8 @@ class AgentCreateRequest(msgspec.Struct):
     lifespan_expires_at:  str | None = None  # ISO datetime
     # null = inherit from execution.default_agent_trade_mode setting.
     trade_mode:           str | None = None
+    # Phase 21 — debounce ("for N minutes"). 0 = fire immediately.
+    debounce_minutes:     int        = 0
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -118,6 +122,8 @@ class AgentUpdateRequest(msgspec.Struct):
     scope: str | None = None
     schedule: str | None = None
     cooldown_minutes: int | None = None
+    # Phase 21 — debounce update. None = unchanged; 0 = disable; >0 = set.
+    debounce_minutes: int | None = None
     # HH:MM IST or empty string to clear. UNSET = leave column unchanged.
     fire_at_time: str | None = None
     lifespan_type:        str | None = None
@@ -240,6 +246,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
             if getattr(a, "lifespan_expires_at", None) else None
         ),
         trade_mode=getattr(a, "trade_mode", "paper") or "paper",
+        debounce_minutes=int(getattr(a, "debounce_minutes", 0) or 0),
     )
 
 
@@ -350,6 +357,7 @@ class AgentController(Controller):
                 lifespan_max_fires=data.lifespan_max_fires,
                 lifespan_expires_at=_parse_iso_dt(data.lifespan_expires_at),
                 trade_mode=tm,
+                debounce_minutes=max(0, int(data.debounce_minutes or 0)),
             )
             session.add(agent)
             await session.commit()
@@ -364,7 +372,7 @@ class AgentController(Controller):
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
             for field in ('name', 'description', 'conditions', 'events', 'actions',
-                          'scope', 'schedule', 'cooldown_minutes'):
+                          'scope', 'schedule', 'cooldown_minutes', 'debounce_minutes'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
