@@ -8,7 +8,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { authStore, logTime, dualTsHtml } from '$lib/stores';
+  import { authStore, logTime, dualTsHtml, nowStamp } from '$lib/stores';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -84,8 +84,9 @@
   <h1 class="algo-page-title">Iteration</h1>
   <span class="slug-chip">{slug || '—'}</span>
   <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
-  <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
+  <a href="/admin/simulator/iterations" class="back-link ml-auto">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
+  <span class="algo-ts">{$nowStamp}</span>
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}
