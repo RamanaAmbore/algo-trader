@@ -138,24 +138,37 @@ async def get_ohlcv(symbol: str, days: int = 30, exchange: str = "NSE") -> dict:
 
 
 @app.tool()
-async def get_recent_news(symbol: str | None = None, hours: int = 24) -> dict:
+async def get_recent_news(symbol: str | None = None, hours: int = 24, sentiment: bool = True) -> dict:
     """Recent Indian-market headlines from the news feed.
 
     Args:
         symbol: Optional case-insensitive substring filter on title
             (e.g. "RELIANCE" returns headlines that mention it).
         hours: Lookback window (default 24, max 168).
+        sentiment: When True (default), each headline gets a bull /
+            bear / neutral tag via Gemini Flash. Tags are server-side
+            cached for 10 min so back-to-back research calls share the
+            LLM round-trip — stays comfortably under the free-tier
+            limit. Pass False to skip scoring entirely (raw feed only).
 
     Returns:
-        dict with `items` list of {title, source, link, published_at,
-        timestamp_display}.
+        dict with `items` list of {title, source, link, timestamp,
+        sentiment}. sentiment is null when scoring was disabled.
     """
-    res = await _get("/api/news/")
+    params: dict[str, Any] = {}
+    if sentiment:
+        params["sentiment"] = "true"
+    res = await _get("/api/news/", params)
     items = res.get("items", []) if isinstance(res, dict) else []
     if symbol:
         s = symbol.upper()
         items = [it for it in items if s in (it.get("title") or "").upper()]
-    return {"items": items, "count": len(items), "refreshed_at": (res or {}).get("refreshed_at")}
+    return {
+        "items":        items,
+        "count":        len(items),
+        "refreshed_at": (res or {}).get("refreshed_at"),
+        "scored":       sentiment,
+    }
 
 
 @app.tool()

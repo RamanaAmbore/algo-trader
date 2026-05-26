@@ -349,12 +349,46 @@ async def _fetch_and_accumulate() -> NewsResponse:
     return NewsResponse(items=items, refreshed_at=refreshed)
 
 
+async def _fetch_and_score() -> NewsResponse:
+    """Same as _fetch_and_accumulate, then tag each item with a
+    bull / bear / neutral sentiment. Separate cache key + TTL so the
+    Gemini Flash free-tier RPM budget isn't hammered — sentiment-tagged
+    payload caches for 10 min like the base feed.
+    """
+    base = await _fetch_and_accumulate()
+    if not base.items:
+        return base
+    try:
+        from backend.shared.helpers.genai_helpers import sentiment_scores
+        scored = sentiment_scores([it.title for it in base.items])
+    except Exception as e:
+        logger.warning(f"sentiment scoring failed (no tags): {e}")
+        scored = []
+    if not scored or len(scored) != len(base.items):
+        return base
+    tagged = [
+        NewsItem(
+            title=it.title, link=it.link, source=it.source,
+            timestamp=it.timestamp, sentiment=scored[i],
+        )
+        for i, it in enumerate(base.items)
+    ]
+    return NewsResponse(items=tagged, refreshed_at=base.refreshed_at)
+
+
 class NewsController(Controller):
     path = "/api/news"
 
     @get("/")
-    async def get_news(self) -> NewsResponse:
+    async def get_news(self, sentiment: bool = False) -> NewsResponse:
+        """Default response carries no sentiment field (free-tier
+        friendly). Pass ?sentiment=true to add bull / bear / neutral
+        tags — used by the MCP get_recent_news tool. Score result is
+        cached for 10 min separately so back-to-back operator calls
+        share the LLM round-trip."""
         try:
+            if sentiment:
+                return await get_or_fetch("news_scored", _fetch_and_score, ttl_seconds=_CACHE_TTL)
             return await get_or_fetch("news", _fetch_and_accumulate, ttl_seconds=_CACHE_TTL)
         except Exception as e:
             logger.error(f"News API error: {e}")

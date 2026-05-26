@@ -218,7 +218,18 @@ class ResearchController(Controller):
         if data.confidence not in _VALID_CONF:
             raise HTTPException(status_code=400,
                                 detail=f"confidence must be one of {sorted(_VALID_CONF)}")
-        title = (data.title or "").strip() or f"{sym} research"
+        # Auto-title via Gemini Flash free tier when title is blank.
+        # Defensive: the helper falls back to a deterministic stub if
+        # genai is disabled / SDK missing / quota exhausted / parse
+        # fails, so this never blocks thread creation.
+        title = (data.title or "").strip()
+        if not title:
+            try:
+                from backend.shared.helpers.genai_helpers import auto_title
+                title = auto_title(sym, data.thesis_text)
+            except Exception as e:
+                logger.warning(f"auto_title raised (using stub): {e}")
+                title = f"{sym} research"
         async with async_session() as s:
             row = ResearchThread(
                 symbol=sym,

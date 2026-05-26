@@ -132,6 +132,10 @@ class NewsItem(msgspec.Struct):
     link: str
     source: str
     timestamp: str  # "Mon, April 20, 2026, 09:30 AM IST | Mon, April 20, 2026, 12:00 AM EDT"
+    # Optional bull / bear / neutral tag, populated when the route is
+    # called with ?sentiment=true. NULL means "not scored on this call"
+    # — clients distinguish "no sentiment data" from "neutral" cleanly.
+    sentiment: str | None = None
 
 
 class NewsResponse(msgspec.Struct):
