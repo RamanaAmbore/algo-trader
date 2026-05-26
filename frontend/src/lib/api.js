@@ -815,3 +815,9 @@ export const updateResearchThread = (id, payload) =>
 /** DELETE /api/research/threads/{id} — remove. */
 export const deleteResearchThread = (id) =>
   _del(`/research/threads/${id}`, { auth: true });
+/** GET /api/research/drafts — threads with linked inactive agents (joined view). */
+export const fetchResearchDrafts = (limit = 200) =>
+  _get(`/research/drafts?limit=${limit}`, { auth: true });
+/** POST /api/research/threads/{id}/promote — create an inactive draft agent. */
+export const promoteResearchThread = (id, payload) =>
+  _post(`/research/threads/${id}/promote`, payload, { auth: true });

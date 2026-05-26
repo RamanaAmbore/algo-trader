@@ -23,7 +23,7 @@ from sqlalchemy import select, delete as sa_delete
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session
-from backend.api.models import ResearchThread
+from backend.api.models import Agent, ResearchThread
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +72,48 @@ class ThreadUpdate(msgspec.Struct):
     draft_agent_id:    int | None = None
 
 
+class PromoteRequest(msgspec.Struct):
+    """Promote a research thread into a draft Agent (status=inactive).
+
+    The agent ships disabled — the operator's next step is "Run in
+    Simulator" from /agents to validate the condition tree before
+    activating. Per industry pattern (Composer.trade, IBKR TraderGPT),
+    no LLM-initiated draft is ever activated automatically.
+    """
+    name:             str
+    conditions:       dict             # v2 grammar condition tree
+    actions:          list = msgspec.field(default_factory=list)
+    events:           list = msgspec.field(default_factory=list)
+    description:      str = ""
+    scope:            str = "total"     # total / per_account
+    schedule:         str = "market_hours"
+    cooldown_minutes: int = 30
+
+
+class DraftInfo(msgspec.Struct):
+    """Joined view: thread → its linked draft agent (status=inactive).
+
+    Drives the Drafts tab on /admin/research. Excludes threads whose
+    draft_agent_id is NULL, and threads whose linked agent has been
+    activated (status=active) — those graduate out of the Drafts list
+    so it always reflects "still pending review"."""
+    thread_id:         int
+    symbol:            str
+    title:             str
+    confidence:        str
+    thesis_text:       str | None
+    agent_id:          int
+    agent_slug:        str
+    agent_name:        str
+    agent_status:      str
+    agent_scope:       str
+    agent_schedule:    str | None
+    agent_cooldown:    int
+    agent_trade_mode:  str | None
+    created_at:        str
+    updated_at:        str
+
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def _to_info(row: ResearchThread) -> ThreadInfo:
@@ -102,7 +144,35 @@ def _to_summary(row: ResearchThread) -> ThreadSummary:
     )
 
 
-_VALID_CONF = {"bull", "bear", "neutral", "unsure"}
+_VALID_CONF  = {"bull", "bear", "neutral", "unsure"}
+_VALID_SCOPE = {"total", "per_account"}
+
+
+def _slugify(s: str) -> str:
+    """Lower-kebab-case, ascii-safe. Used for auto-generating an Agent
+    slug from a thread + name pair when the LLM doesn't supply one."""
+    out = []
+    prev_dash = True
+    for ch in (s or "").lower():
+        if ch.isalnum():
+            out.append(ch)
+            prev_dash = False
+        elif not prev_dash:
+            out.append("-")
+            prev_dash = True
+    return "".join(out).strip("-") or "draft"
+
+
+async def _unique_slug(session, base: str) -> str:
+    """Append -2, -3, … until the slug is unique in the agents table."""
+    candidate = base
+    n = 2
+    while True:
+        existing = await session.execute(select(Agent).where(Agent.slug == candidate))
+        if existing.scalar_one_or_none() is None:
+            return candidate
+        candidate = f"{base}-{n}"
+        n += 1
 
 
 def _user_id(connection) -> int | None:
@@ -199,3 +269,127 @@ class ResearchController(Controller):
             await s.commit()
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+
+    @post("/threads/{thread_id:int}/promote")
+    async def promote_thread(self, thread_id: int, data: PromoteRequest) -> DraftInfo:
+        """Promote a research thread into an inactive draft Agent.
+
+        Creates a new agent row with status=inactive, sets
+        thread.draft_agent_id = agent.id, returns the joined view. If
+        the thread already has a draft_agent_id, returns 409 — operator
+        must un-link first to avoid silently overwriting.
+
+        Industry-standard safety: the agent ships INACTIVE and PAPER
+        (trade_mode=paper) regardless of what the caller asks. Operator
+        must explicitly flip status + trade_mode on /agents — this
+        endpoint cannot create an active or live agent.
+        """
+        # Validate inputs first.
+        if not data.name or not data.name.strip():
+            raise HTTPException(status_code=400, detail="name is required")
+        if data.scope not in _VALID_SCOPE:
+            raise HTTPException(status_code=400,
+                                detail=f"scope must be one of {sorted(_VALID_SCOPE)}")
+        if not isinstance(data.conditions, dict) or not data.conditions:
+            raise HTTPException(status_code=400, detail="conditions must be a non-empty dict")
+        # Optional grammar dry-check — surface a precise error if the
+        # condition tree references unknown tokens. Keeps the operator
+        # from landing a broken draft in the Drafts tab.
+        try:
+            from backend.api.algo.agent_evaluator import validate as validate_condition
+            errors = validate_condition(data.conditions)
+            if errors:
+                raise HTTPException(status_code=400,
+                                    detail=f"condition validation: {'; '.join(errors)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Grammar registry not loaded yet — log + continue (the
+            # /agents page's own validator will catch it before activate).
+            logger.warning(f"promote: skipped grammar validation: {e}")
+
+        async with async_session() as s:
+            thread = (await s.execute(
+                select(ResearchThread).where(ResearchThread.id == thread_id)
+            )).scalar_one_or_none()
+            if not thread:
+                raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+            if thread.draft_agent_id:
+                raise HTTPException(status_code=409,
+                    detail=f"Thread already promoted to agent #{thread.draft_agent_id}")
+
+            base = _slugify(f"{thread.symbol}-{data.name}")[:48]
+            slug = await _unique_slug(s, base)
+            agent = Agent(
+                slug=slug,
+                name=data.name.strip()[:128],
+                description=data.description.strip()[:1024] if data.description else
+                            f"Promoted from research thread #{thread.id} ({thread.symbol})",
+                conditions=data.conditions,
+                events=data.events,
+                actions=data.actions,
+                scope=data.scope,
+                schedule=data.schedule,
+                cooldown_minutes=max(1, int(data.cooldown_minutes or 30)),
+                status="inactive",
+                trade_mode="paper",
+            )
+            s.add(agent)
+            await s.flush()           # populate agent.id
+            thread.draft_agent_id = agent.id
+            await s.commit()
+            await s.refresh(thread)
+            await s.refresh(agent)
+
+        logger.info(
+            f"research thread #{thread.id} promoted → agent #{agent.id} "
+            f"slug={slug!r} (status=inactive, trade_mode=paper)"
+        )
+        return DraftInfo(
+            thread_id=thread.id,
+            symbol=thread.symbol,
+            title=thread.title or "",
+            confidence=thread.confidence or "unsure",
+            thesis_text=thread.thesis_text,
+            agent_id=agent.id,
+            agent_slug=agent.slug,
+            agent_name=agent.name,
+            agent_status=agent.status,
+            agent_scope=agent.scope,
+            agent_schedule=agent.schedule,
+            agent_cooldown=int(agent.cooldown_minutes or 0),
+            agent_trade_mode=agent.trade_mode,
+            created_at=thread.created_at.isoformat() if thread.created_at else "",
+            updated_at=thread.updated_at.isoformat() if thread.updated_at else "",
+        )
+
+    @get("/drafts")
+    async def list_drafts(self, limit: int = 200) -> list[DraftInfo]:
+        """Threads with a linked draft Agent that's still inactive.
+
+        Activating an agent on /agents naturally graduates it out of
+        this list — no manual cleanup needed."""
+        async with async_session() as s:
+            rows = (await s.execute(
+                select(ResearchThread, Agent)
+                .join(Agent, Agent.id == ResearchThread.draft_agent_id)
+                .where(ResearchThread.draft_agent_id.is_not(None))
+                .where(Agent.status == "inactive")
+                .order_by(ResearchThread.updated_at.desc())
+                .limit(max(1, min(500, limit)))
+            )).all()
+        return [
+            DraftInfo(
+                thread_id=t.id, symbol=t.symbol, title=t.title or "",
+                confidence=t.confidence or "unsure",
+                thesis_text=t.thesis_text,
+                agent_id=a.id, agent_slug=a.slug, agent_name=a.name,
+                agent_status=a.status, agent_scope=a.scope,
+                agent_schedule=a.schedule,
+                agent_cooldown=int(a.cooldown_minutes or 0),
+                agent_trade_mode=a.trade_mode,
+                created_at=t.created_at.isoformat() if t.created_at else "",
+                updated_at=t.updated_at.isoformat() if t.updated_at else "",
+            )
+            for (t, a) in rows
+        ]

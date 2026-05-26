@@ -20,7 +20,7 @@
   import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
   import {
     fetchResearchThreads, fetchResearchThread,
-    deleteResearchThread, fetchAgents,
+    deleteResearchThread, fetchResearchDrafts,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -34,8 +34,11 @@
   let teardown;
   let activeTab   = $state(/** @type {'research'|'drafts'|'settings'} */ ('research'));
 
+  /** Joined-view rows from GET /api/research/drafts — one per
+   *  research thread with a linked inactive Agent. Activating the
+   *  agent on /agents naturally graduates it out of this list. */
   /** @type {any[]} */
-  let draftAgents = $state([]);
+  let drafts = $state([]);
 
   async function loadThreads() {
     try {
@@ -51,14 +54,10 @@
 
   async function loadDrafts() {
     try {
-      const all = await fetchAgents();
-      const rows = Array.isArray(all) ? all : (all?.agents || []);
-      // Phase-1 placeholder: surface inactive agents. Phase 2 adds the
-      // research_thread_id FK + a strict filter on agents linked from a
-      // research thread (the proper draft set).
-      draftAgents = rows.filter(a => (a.status || '').toLowerCase() === 'inactive');
+      const rows = await fetchResearchDrafts();
+      drafts = Array.isArray(rows) ? rows : [];
     } catch (_) {
-      draftAgents = [];
+      drafts = [];
     }
   }
 
@@ -152,6 +151,7 @@
     { name: 'get_option_analytics',  summary: 'Greeks + payoff + risk for one option leg' },
     { name: 'list_agents',           summary: 'List existing agents (optionally by status)' },
     { name: 'save_research_thread',  summary: 'Persist a thesis + transcript to the Lab page' },
+    { name: 'save_agent_draft',      summary: 'Promote a thread to an inactive draft Agent (paper-mode)' },
     { name: 'get_research_thread',   summary: 'Fetch a saved thread by id' },
     { name: 'list_research_threads', summary: 'List recent threads (optional symbol filter)' },
     { name: 'get_server_info',       summary: 'Diagnostic — base URL + token presence' },
@@ -186,7 +186,7 @@
   </button>
   <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'drafts'}
           aria-selected={activeTab === 'drafts'} onclick={() => activeTab = 'drafts'}>
-    Drafts <span class="lab-tab-count">{draftAgents.length}</span>
+    Drafts <span class="lab-tab-count">{drafts.length}</span>
   </button>
   <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'settings'}
           aria-selected={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
@@ -279,24 +279,54 @@
 {:else if activeTab === 'drafts'}
   <div class="lab-drafts">
     <p class="lab-drafts-hint">
-      Inactive agents — the eventual home for draft agents created by the
-      <code>save_agent_draft</code> MCP tool (Phase 2). Promote any row to
-      the simulator with the "Run in Simulator" button on /agents.
+      Draft agents promoted from a research thread via the
+      <code>save_agent_draft</code> MCP tool. Every draft ships
+      <b>status=inactive</b> + <b>trade_mode=paper</b> — operator's
+      next step is "Run in Simulator" on /agents. Activating a draft
+      graduates it out of this list.
     </p>
-    {#if draftAgents.length === 0}
-      <div class="lab-empty">No inactive agents.</div>
+    {#if drafts.length === 0}
+      <div class="lab-empty">
+        <div class="lab-empty-title">No draft agents yet</div>
+        <p class="lab-empty-hint">
+          When Claude Code calls <code>save_agent_draft</code> after a
+          research session, the new draft appears here. Until then, this
+          list stays empty — the Drafts tab won't leak unrelated
+          inactive agents from /agents.
+        </p>
+      </div>
     {:else}
       <table class="drafts-table">
         <thead>
-          <tr><th>Name</th><th>Scope</th><th>Schedule</th><th>Cooldown</th><th></th></tr>
+          <tr>
+            <th>Source</th>
+            <th>Agent</th>
+            <th>Scope</th>
+            <th>Schedule</th>
+            <th>Cooldown</th>
+            <th>Mode</th>
+            <th></th>
+          </tr>
         </thead>
         <tbody>
-          {#each draftAgents as a (a.id)}
+          {#each drafts as d (d.agent_id)}
             <tr>
-              <td><span class="drafts-name">{a.name}</span><span class="drafts-slug">{a.slug}</span></td>
-              <td>{a.scope || '—'}</td>
-              <td>{a.schedule || '—'}</td>
-              <td>{a.cooldown_minutes ?? '—'} min</td>
+              <td>
+                <button type="button" class="drafts-thr"
+                        onclick={() => { activeTab = 'research'; selectThread(d.thread_id); }}>
+                  <span class="drafts-sym">{d.symbol}</span>
+                  <span class="pill {_confColor(d.confidence)}">{d.confidence}</span>
+                  <span class="drafts-thr-title">{d.title || '—'}</span>
+                </button>
+              </td>
+              <td>
+                <span class="drafts-name">{d.agent_name}</span>
+                <span class="drafts-slug">{d.agent_slug}</span>
+              </td>
+              <td>{d.agent_scope || '—'}</td>
+              <td>{d.agent_schedule || '—'}</td>
+              <td>{d.agent_cooldown ?? '—'} min</td>
+              <td><span class="mode-pill">{(d.agent_trade_mode || 'paper').toUpperCase()}</span></td>
               <td><a class="drafts-edit" href={`/agents`}>Open ›</a></td>
             </tr>
           {/each}
@@ -328,7 +358,7 @@
 
     <article class="lab-card">
       <h2>3. Available tools (Phase 1)</h2>
-      <p>The MCP server exposes these read-only research tools. Phase 2 adds <code>save_agent_draft</code>; Phase 3 adds gated write tools (place_order with per-call confirm token).</p>
+      <p>The MCP server exposes these research tools. <code>save_agent_draft</code> is the only write — it creates an INACTIVE Agent in paper-mode (cannot activate or place orders). Phase 3 adds gated trade tools (place_order with per-call confirm token).</p>
       <table class="tools-table">
         <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
         <tbody>
@@ -342,8 +372,9 @@
     <article class="lab-card lab-card-safety">
       <h2>4. Safety</h2>
       <ul class="safety-list">
-        <li>Phase 1 is <b>read-only</b> — no order placement, no agent activation. The MCP server cannot move money.</li>
-        <li>Drafts created via <code>save_research_thread</code> save text only, not executable rules.</li>
+        <li>No order placement from MCP yet. The server cannot move money.</li>
+        <li><code>save_agent_draft</code> creates agents that ship <b>status=inactive</b> + <b>trade_mode=paper</b>. The endpoint cannot create an active or live agent.</li>
+        <li>Operator's next step on every draft: <b>Run in Simulator</b> on /agents to validate the condition tree before activating.</li>
         <li>The JWT inherits your admin role. Don't paste it into untrusted MCP servers.</li>
         <li>Industry convention (Composer / IBKR TraderGPT): every LLM-initiated order requires explicit human confirm. Phase 3 will match.</li>
       </ul>
@@ -630,6 +661,45 @@
     font-size: 0.7rem;
   }
   .drafts-edit:hover { text-decoration: underline; }
+  .drafts-thr {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .drafts-thr:hover .drafts-thr-title { color: #fbbf24; }
+  .drafts-sym {
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 0.7rem;
+    color: #fbbf24;
+  }
+  .drafts-thr-title {
+    font-size: 0.68rem;
+    color: #c8d8f0;
+    transition: color 0.12s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 16rem;
+  }
+  .mode-pill {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    border-radius: 0.5rem;
+    background: rgba(56, 189, 248, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    color: #38bdf8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
 
   /* ── Settings tab ─────────────────────────────────────────────── */
   .lab-settings {

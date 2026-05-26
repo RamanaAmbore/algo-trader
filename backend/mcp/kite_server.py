@@ -247,6 +247,67 @@ async def get_research_thread(thread_id: int) -> dict:
 
 
 @app.tool()
+async def save_agent_draft(
+    thread_id: int,
+    name: str,
+    conditions: dict,
+    actions: list | None = None,
+    events: list | None = None,
+    scope: str = "total",
+    schedule: str = "market_hours",
+    cooldown_minutes: int = 30,
+    description: str = "",
+) -> dict:
+    """Promote the current research thread to an INACTIVE draft Agent.
+
+    The agent always ships disabled (status='inactive') and paper-mode
+    (trade_mode='paper') — operator's next step is "Run in Simulator"
+    from /agents to validate before flipping it on. The MCP server
+    cannot create an active or live agent; that's a deliberate safety
+    rail matching how Composer.trade and IBKR TraderGPT gate LLM-driven
+    strategy creation.
+
+    Conditions must be a v2 grammar tree, e.g.:
+        {"all": [
+            {"metric": "pnl", "scope": "positions.any_acct",
+             "op": "<=", "value": -30000}
+        ]}
+
+    Use list_agents() + the /api/admin/grammar/tokens endpoint (via the
+    page) to discover available tokens before drafting.
+
+    Args:
+        thread_id:        ID of the research thread to promote (you got
+                          this from save_research_thread's return).
+        name:             Human-readable agent name (shown in /agents).
+        conditions:       v2 condition tree (dict).
+        actions:          Optional list of action descriptors. Default
+                          empty list = alert-only.
+        events:           Optional list of notify channels (telegram /
+                          email / websocket / log).
+        scope:            'total' or 'per_account'.
+        schedule:         'market_hours' (default) or 'always'.
+        cooldown_minutes: Re-fire gap (default 30).
+        description:      Optional free-form.
+
+    Returns:
+        Joined view {thread_id, symbol, agent_id, agent_slug,
+        agent_name, agent_status='inactive', ...}.
+    """
+    body = {
+        "name":             name,
+        "conditions":       conditions,
+        "actions":          actions or [],
+        "events":           events or [],
+        "scope":            scope,
+        "schedule":         schedule,
+        "cooldown_minutes": int(cooldown_minutes or 30),
+        "description":      description or "",
+    }
+    return await _post(f"/api/research/threads/{int(thread_id)}/promote", body)
+
+
+@app.tool()
 async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
     """List recent research threads. Filter by symbol when revisiting
     a specific stock's history.
