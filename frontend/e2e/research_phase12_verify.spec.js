@@ -167,13 +167,16 @@ test(`Settings tab — 23 tools + new kinds in selector [${BASE}]`, async ({ pag
   // also match 'deactivate_agent'.
   await expect(page.locator('.tools-table tbody tr td code', { hasText: /^activate_agent$/ })).toBeVisible();
   await expect(page.locator('.tools-table tbody tr td code', { hasText: /^deactivate_agent$/ })).toBeVisible();
-  // Kind selector — 5 options now
-  const kindOptions = await page.locator('.mint-grid select').first().locator('option').allTextContents();
+  // Kind selector is the custom Select component — open + count options
+  const kindTrigger = page.locator('.mint-grid .rbq-select-trigger').first();
+  await kindTrigger.click();
+  await page.waitForTimeout(150);
+  const kindOptions = await page.locator('.rbq-select-option').allTextContents();
   expect(kindOptions.length).toBe(5);
   expect(kindOptions.join(' ')).toMatch(/ACTIVATE/);
   expect(kindOptions.join(' ')).toMatch(/DEACTIVATE/);
-  // Switch to activate → form shows Agent slug, not Account
-  await page.locator('.mint-grid select').first().selectOption('activate');
+  // Pick ACTIVATE agent → form should swap Account for Agent slug
+  await page.locator('.rbq-select-option', { hasText: /^ACTIVATE agent$/ }).first().click();
   await page.waitForTimeout(150);
   const labels = await page.locator('.mint-grid label span').allTextContents();
   expect(labels).toContain('Agent slug');

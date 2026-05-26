@@ -24,6 +24,7 @@
     mintConfirmToken, fetchResearchAudit,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select from '$lib/Select.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -216,6 +217,49 @@
     }
   }
   onDestroy(() => clearInterval(mintTicker));
+
+  // Option arrays for the custom Select dropdowns (replaces native
+  // <select> so the dropdowns inherit the algo terminal's navy + amber
+  // palette instead of the OS-native styling).
+  const KIND_OPTIONS = [
+    { value: 'place',      label: 'PLACE' },
+    { value: 'cancel',     label: 'CANCEL' },
+    { value: 'modify',     label: 'MODIFY' },
+    { value: 'activate',   label: 'ACTIVATE agent' },
+    { value: 'deactivate', label: 'DEACTIVATE agent' },
+  ];
+  const SIDE_OPTIONS = [
+    { value: 'BUY',  label: 'BUY' },
+    { value: 'SELL', label: 'SELL' },
+  ];
+  const MODE_OPTIONS = [
+    { value: 'paper', label: 'PAPER' },
+    { value: 'live',  label: 'LIVE' },
+  ];
+  const MODE_OPTIONS_LIVE_DEFAULT = [
+    { value: 'live',  label: 'LIVE (broker)' },
+    { value: 'paper', label: 'PAPER (engine)' },
+  ];
+  const ORDER_TYPE_OPTIONS = [
+    { value: 'LIMIT',  label: 'LIMIT' },
+    { value: 'MARKET', label: 'MARKET' },
+    { value: 'SL',     label: 'SL' },
+    { value: 'SL-M',   label: 'SL-M' },
+  ];
+  const AUDIT_TOOL_OPTIONS = [
+    { value: '',                 label: 'All tools' },
+    { value: 'place_order',      label: 'place_order' },
+    { value: 'cancel_order',     label: 'cancel_order' },
+    { value: 'modify_order',     label: 'modify_order' },
+    { value: 'activate_agent',   label: 'activate_agent' },
+    { value: 'deactivate_agent', label: 'deactivate_agent' },
+  ];
+  const AUDIT_STATUS_OPTIONS = [
+    { value: '',       label: 'All' },
+    { value: 'ok',     label: 'ok' },
+    { value: 'denied', label: 'denied' },
+    { value: 'error',  label: 'error' },
+  ];
 
   // Phase-1 tool inventory — mirrors backend/mcp/kite_server.py
   const TOOLS = [
@@ -438,23 +482,11 @@
       <div class="audit-filters">
         <label>
           <span>Tool</span>
-          <select bind:value={auditFilterTool}>
-            <option value="">All</option>
-            <option value="place_order">place_order</option>
-            <option value="cancel_order">cancel_order</option>
-            <option value="modify_order">modify_order</option>
-            <option value="activate_agent">activate_agent</option>
-            <option value="deactivate_agent">deactivate_agent</option>
-          </select>
+          <Select bind:value={auditFilterTool} options={AUDIT_TOOL_OPTIONS} ariaLabel="Audit tool filter" />
         </label>
         <label>
           <span>Status</span>
-          <select bind:value={auditFilterStatus}>
-            <option value="">All</option>
-            <option value="ok">ok</option>
-            <option value="denied">denied</option>
-            <option value="error">error</option>
-          </select>
+          <Select bind:value={auditFilterStatus} options={AUDIT_STATUS_OPTIONS} ariaLabel="Audit status filter" />
         </label>
         <button type="button" class="copy-btn audit-refresh" onclick={loadAudit}>Refresh</button>
       </div>
@@ -515,13 +547,7 @@
       </p>
       <div class="mint-grid">
         <label><span>Kind</span>
-          <select bind:value={mintForm.kind}>
-            <option value="place">PLACE</option>
-            <option value="cancel">CANCEL</option>
-            <option value="modify">MODIFY</option>
-            <option value="activate">ACTIVATE agent</option>
-            <option value="deactivate">DEACTIVATE agent</option>
-          </select>
+          <Select bind:value={mintForm.kind} options={KIND_OPTIONS} ariaLabel="Mint kind" />
         </label>
         {#if mintForm.kind === 'activate' || mintForm.kind === 'deactivate'}
           <label><span>Agent slug</span><input bind:value={mintForm.agent_slug} placeholder="reliance-bull-21d" /></label>
@@ -531,34 +557,20 @@
         {#if mintForm.kind === 'place'}
           <label><span>Symbol</span><input bind:value={mintForm.tradingsymbol} placeholder="NIFTY25APRFUT" /></label>
           <label><span>Side</span>
-            <select bind:value={mintForm.side}>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </select>
+            <Select bind:value={mintForm.side} options={SIDE_OPTIONS} ariaLabel="Order side" />
           </label>
           <label><span>Quantity</span><input type="number" bind:value={mintForm.quantity} min="1" /></label>
           <label><span>Mode</span>
-            <select bind:value={mintForm.mode}>
-              <option value="paper">PAPER</option>
-              <option value="live">LIVE</option>
-            </select>
+            <Select bind:value={mintForm.mode} options={MODE_OPTIONS} ariaLabel="Execution mode" />
           </label>
           <label><span>Order type</span>
-            <select bind:value={mintForm.order_type}>
-              <option value="LIMIT">LIMIT</option>
-              <option value="MARKET">MARKET</option>
-              <option value="SL">SL</option>
-              <option value="SL-M">SL-M</option>
-            </select>
+            <Select bind:value={mintForm.order_type} options={ORDER_TYPE_OPTIONS} ariaLabel="Order type" />
           </label>
           <label><span>Price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
           <label><span>Trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
         {:else if mintForm.kind === 'cancel'}
           <label><span>Mode</span>
-            <select bind:value={mintForm.mode}>
-              <option value="live">LIVE (broker)</option>
-              <option value="paper">PAPER (engine)</option>
-            </select>
+            <Select bind:value={mintForm.mode} options={MODE_OPTIONS_LIVE_DEFAULT} ariaLabel="Cancel mode" />
           </label>
           <label><span>Order ID</span>
             <input bind:value={mintForm.order_id}
@@ -567,10 +579,7 @@
         {:else}
           <!-- modify: account + order_id + the new values -->
           <label><span>Mode</span>
-            <select bind:value={mintForm.mode}>
-              <option value="live">LIVE (broker)</option>
-              <option value="paper">PAPER (engine)</option>
-            </select>
+            <Select bind:value={mintForm.mode} options={MODE_OPTIONS_LIVE_DEFAULT} ariaLabel="Modify mode" />
           </label>
           <label><span>Order ID</span>
             <input bind:value={mintForm.order_id}
@@ -578,12 +587,7 @@
           </label>
           <label><span>New qty</span><input type="number" bind:value={mintForm.quantity} min="0" placeholder="(unchanged)" /></label>
           <label><span>Order type</span>
-            <select bind:value={mintForm.order_type}>
-              <option value="LIMIT">LIMIT</option>
-              <option value="MARKET">MARKET</option>
-              <option value="SL">SL</option>
-              <option value="SL-M">SL-M</option>
-            </select>
+            <Select bind:value={mintForm.order_type} options={ORDER_TYPE_OPTIONS} ariaLabel="New order type" />
           </label>
           <label><span>New price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
           <label><span>New trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
@@ -1018,15 +1022,6 @@
     letter-spacing: 0.06em;
     color: #7e97b8;
   }
-  .audit-filters select {
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(126, 151, 184, 0.25);
-    border-radius: 0.25rem;
-    padding: 0.28rem 0.45rem;
-    color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-  }
   .audit-refresh { align-self: flex-end; }
   .audit-table {
     width: 100%;
@@ -1181,8 +1176,7 @@
     letter-spacing: 0.06em;
     color: #7e97b8;
   }
-  .mint-grid input,
-  .mint-grid select {
+  .mint-grid input {
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid rgba(126, 151, 184, 0.25);
     border-radius: 0.25rem;
@@ -1191,8 +1185,7 @@
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
   }
-  .mint-grid input:focus,
-  .mint-grid select:focus {
+  .mint-grid input:focus {
     outline: none;
     border-color: rgba(251, 191, 36, 0.6);
   }
