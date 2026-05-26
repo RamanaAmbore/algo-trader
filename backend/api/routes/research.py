@@ -96,17 +96,27 @@ class PromoteRequest(msgspec.Struct):
 
 
 class MintTokenRequest(msgspec.Struct):
-    """Operator's input to the confirm-token mint endpoint. Field set
-    EXACTLY matches what the LLM has to pass into place_order via MCP —
-    any drift would defeat the purpose hash check."""
+    """Operator's input to the confirm-token mint endpoint.
+
+    `kind` decides which MCP action this token authorises:
+      - 'place'  (default) — full order fields apply.
+      - 'cancel' — account + order_id only; the rest are ignored.
+      - 'modify' — account + order_id + the new fields the LLM will
+                   pass (quantity / price / order_type / trigger).
+
+    The purpose hash includes `kind` + the relevant fields per kind,
+    so a token minted to CANCEL #1234 cannot be redeemed to PLACE a
+    new order, MODIFY #1234, or CANCEL #5678."""
     account:        str
-    tradingsymbol:  str
-    side:           str               # BUY / SELL
-    quantity:       int
-    mode:           str = "paper"     # paper / live
+    kind:           str = "place"     # place / cancel / modify
+    tradingsymbol:  str = ""
+    side:           str = ""           # BUY / SELL (place only)
+    quantity:       int = 0
+    mode:           str = "paper"     # paper / live (place only)
     order_type:     str = "LIMIT"
     price:          float | None = None
     trigger_price:  float | None = None
+    order_id:       str = ""           # cancel / modify only
 
 
 class MintTokenResponse(msgspec.Struct):
@@ -143,6 +153,47 @@ class PlaceOrderResponse(msgspec.Struct):
     mode:        str
     status:      str
     detail:      str
+
+
+class CancelOrderRequest(msgspec.Struct):
+    """LLM-initiated cancel. Same token-gate pattern as place."""
+    confirm_token: str
+    account:       str
+    order_id:      str
+    variety:       str = "regular"
+
+
+class ModifyOrderRequest(msgspec.Struct):
+    """LLM-initiated modify. Token binds (account, order_id, new
+    quantity, new order_type, new price, new trigger)."""
+    confirm_token: str
+    account:       str
+    order_id:      str
+    quantity:      int = 0
+    order_type:    str = "LIMIT"
+    price:         float | None = None
+    trigger_price: float | None = None
+    variety:       str = "regular"
+    validity:      str | None = None
+
+
+class SimpleOrderResponse(msgspec.Struct):
+    order_id: str
+    detail:   str
+
+
+class AuditRow(msgspec.Struct):
+    """One audit-log entry for the Audit tab on /admin/research. Args
+    are pre-redacted — token material is never written, so this struct
+    can be shown to any admin without leaking authorisation state."""
+    id:             int
+    tool:           str
+    user_id:        int | None
+    args_redacted:  dict
+    result_status:  str         # ok / denied / error
+    result_summary: str
+    request_id:     str | None
+    created_at:     str
 
 
 class DraftInfo(msgspec.Struct):
@@ -214,18 +265,46 @@ _token_lock: Lock = Lock()
 _confirm_tokens: dict[str, dict[str, Any]] = {}
 
 
-def _purpose_hash(account: str, symbol: str, side: str, qty: int,
+def _purpose_hash_place(account: str, symbol: str, side: str, qty: int,
                   order_type: str, mode: str, price: Any, trigger_price: Any) -> str:
-    """Stable fingerprint of an order's identity-defining fields.
-    Token + purpose pair so a token minted for "SELL 25 NIFTY @22150"
-    can't be replayed as "BUY 25 NIFTY @22150"."""
+    """Identity fingerprint for a PLACE order. Includes every field the
+    LLM passes so it can't swap the symbol / side / qty / price."""
     parts = [
+        "place",
         (account or "").upper().strip(),
         (symbol  or "").upper().strip(),
         (side    or "").upper().strip(),
         str(int(qty or 0)),
         (order_type or "").upper().strip(),
         (mode or "").lower().strip(),
+        f"{float(price or 0):.4f}",
+        f"{float(trigger_price or 0):.4f}",
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _purpose_hash_cancel(account: str, order_id: str) -> str:
+    """CANCEL needs only (account, order_id). Token cannot be redeemed
+    for a different order_id even within the same account."""
+    parts = [
+        "cancel",
+        (account  or "").upper().strip(),
+        (order_id or "").strip(),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _purpose_hash_modify(account: str, order_id: str, qty: int,
+                         order_type: str, price: Any, trigger_price: Any) -> str:
+    """MODIFY pins (account, order_id) plus the new values the LLM
+    plans to push so it can't bait-and-switch the new price / qty
+    after the operator approves a different combination."""
+    parts = [
+        "modify",
+        (account  or "").upper().strip(),
+        (order_id or "").strip(),
+        str(int(qty or 0)),
+        (order_type or "").upper().strip(),
         f"{float(price or 0):.4f}",
         f"{float(trigger_price or 0):.4f}",
     ]
@@ -538,6 +617,43 @@ class ResearchController(Controller):
             for (t, a) in rows
         ]
 
+    @get("/audit")
+    async def list_audit(
+        self,
+        tool:   str | None = None,
+        status: str | None = None,
+        limit:  int = 200,
+    ) -> list[AuditRow]:
+        """Forensic trail for the Lab page's Audit tab. Returns
+        mcp_audit rows in reverse-chronological order. Args are
+        already redacted (token material is never persisted), so
+        every admin can see this without leaking authorisation state.
+
+        Args:
+            tool:   Optional filter — e.g. 'place_order'.
+            status: Optional filter — 'ok' / 'denied' / 'error'.
+            limit:  Max rows (default 200, max 1000).
+        """
+        async with async_session() as s:
+            q = select(McpAudit).order_by(McpAudit.created_at.desc())
+            if tool:
+                q = q.where(McpAudit.tool == tool.strip())
+            if status:
+                q = q.where(McpAudit.result_status == status.strip().lower())
+            q = q.limit(max(1, min(1000, int(limit or 200))))
+            rows = (await s.execute(q)).scalars().all()
+        return [
+            AuditRow(
+                id=r.id, tool=r.tool, user_id=r.user_id,
+                args_redacted=r.args_redacted or {},
+                result_status=r.result_status,
+                result_summary=r.result_summary or "",
+                request_id=r.request_id,
+                created_at=r.created_at.isoformat() if r.created_at else "",
+            )
+            for r in rows
+        ]
+
     # ── Phase 3 — confirm-token mint + gated place_order ──────────────
 
     @post("/confirm-token")
@@ -556,33 +672,57 @@ class ResearchController(Controller):
         cleanly to multi-step LLM chains (LLM calls place_order
         without needing a UI round-trip mid-conversation, as long as
         the operator pre-minted the token)."""
-        side = (data.side or "").upper().strip()
-        mode = (data.mode or "paper").lower().strip()
-        sym = (data.tradingsymbol or "").upper().strip()
+        kind = (data.kind or "place").lower().strip()
         acct = (data.account or "").strip()
+        if not acct:
+            raise HTTPException(status_code=400, detail="account is required")
+        if kind not in ("place", "cancel", "modify"):
+            raise HTTPException(status_code=400,
+                detail="kind must be place, cancel, or modify")
+
         order_type = (data.order_type or "LIMIT").upper().strip()
         qty = int(data.quantity or 0)
-        if side not in ("BUY", "SELL"):
-            raise HTTPException(status_code=400, detail="side must be BUY or SELL")
-        if mode not in ("paper", "live"):
-            raise HTTPException(status_code=400, detail="mode must be paper or live")
-        if not sym or qty <= 0 or not acct:
-            raise HTTPException(status_code=400,
-                detail="account, tradingsymbol, and quantity > 0 are all required")
+        oid = (data.order_id or "").strip()
 
-        ph = _purpose_hash(acct, sym, side, qty, order_type, mode,
-                           data.price, data.trigger_price)
+        if kind == "place":
+            side = (data.side or "").upper().strip()
+            mode = (data.mode or "paper").lower().strip()
+            sym = (data.tradingsymbol or "").upper().strip()
+            if side not in ("BUY", "SELL"):
+                raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+            if mode not in ("paper", "live"):
+                raise HTTPException(status_code=400, detail="mode must be paper or live")
+            if not sym or qty <= 0:
+                raise HTTPException(status_code=400,
+                    detail="tradingsymbol and quantity > 0 are required for place")
+            ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
+                                     data.price, data.trigger_price)
+            price_chunk = (
+                f" @₹{data.price:g}" if data.price else
+                (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
+            )
+            purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk} · acct={acct}"
+        elif kind == "cancel":
+            if not oid:
+                raise HTTPException(status_code=400, detail="order_id is required for cancel")
+            ph = _purpose_hash_cancel(acct, oid)
+            purpose = f"CANCEL · order_id={oid} · acct={acct}"
+        else:  # modify
+            if not oid:
+                raise HTTPException(status_code=400, detail="order_id is required for modify")
+            ph = _purpose_hash_modify(acct, oid, qty, order_type, data.price, data.trigger_price)
+            mod_chunk = " ".join(filter(None, [
+                f"qty={qty}" if qty else None,
+                f"type={order_type}" if order_type else None,
+                f"@₹{data.price:g}" if data.price else None,
+                f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
+            ])) or "no changes"
+            purpose = f"MODIFY · order_id={oid} · {mod_chunk} · acct={acct}"
+
         token, expires = _mint_token(_user_id(request), ph)
         now = int(time.time())
-        price_chunk = (
-            f" @₹{data.price:g}" if data.price else
-            (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
-        )
-        purpose = (
-            f"{mode.upper()} · {side} {qty} {sym}{price_chunk} · acct={acct}"
-        )
         logger.info(
-            f"confirm-token minted: user={_user_id(request)} "
+            f"confirm-token minted: user={_user_id(request)} kind={kind} "
             f"purpose={purpose!r} ttl={_TOKEN_TTL_SECONDS}s"
         )
         return MintTokenResponse(
@@ -610,8 +750,8 @@ class ResearchController(Controller):
         acct = (data.account or "").strip()
         order_type = (data.order_type or "LIMIT").upper().strip()
         qty = int(data.quantity or 0)
-        ph = _purpose_hash(acct, sym, side, qty, order_type, mode,
-                           data.price, data.trigger_price)
+        ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
+                                 data.price, data.trigger_price)
 
         # Redact + persist the call before doing anything risky.
         request_id = _secrets.token_hex(6)
@@ -683,7 +823,196 @@ class ResearchController(Controller):
             f"MCP place_order OK: user={user_id} order_id={res.order_id} "
             f"mode={res.mode} {side} {qty} {sym} acct={acct}"
         )
+
+        # Phase 3c — Telegram ping. Defense in depth: even when the
+        # operator is in a meeting / away from the Lab page, every
+        # LLM-initiated order pings the alerts channel. Routes through
+        # the same `is_enabled('telegram')` + secrets gate the existing
+        # alert pipeline uses; silent no-op when telegram is off.
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            price_chunk = (
+                f" @₹{data.price:g}" if data.price else
+                (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
+            )
+            mode_pill = f"[{res.mode.upper()}]" if res.mode else "[?]"
+            tg_msg = (
+                f"<b>MCP {mode_pill}</b> {side} {qty} {sym}{price_chunk}\n"
+                f"acct={acct} · order_id=<code>{res.order_id}</code> · "
+                f"status={res.status}\n"
+                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+            )
+            _send_telegram(tg_msg)
+        except Exception as e:
+            logger.warning(f"MCP place_order Telegram ping failed: {e}")
         return PlaceOrderResponse(
             order_id=res.order_id, mode=res.mode,
             status=res.status, detail=res.detail,
         )
+
+    # ── Phase 4 — gated cancel + modify (same token-gate pattern) ─────
+
+    @post("/cancel-order")
+    async def cancel_order(self, data: CancelOrderRequest, request: Request) -> SimpleOrderResponse:
+        """LLM-initiated cancel. Requires a confirm token minted with
+        kind='cancel' for THIS (account, order_id). Token cannot be
+        redeemed against a different order_id — even within the same
+        account."""
+        acct = (data.account or "").strip()
+        oid = (data.order_id or "").strip()
+        if not acct or not oid:
+            raise HTTPException(status_code=400, detail="account and order_id are required")
+        ph = _purpose_hash_cancel(acct, oid)
+
+        request_id = _secrets.token_hex(6)
+        user_id = _user_id(request)
+
+        async def _audit(status_: str, summary: str) -> None:
+            try:
+                async with async_session() as s:
+                    s.add(McpAudit(
+                        tool="cancel_order",
+                        user_id=user_id,
+                        args_redacted={
+                            "account":  acct,
+                            "order_id": oid,
+                            "variety":  data.variety,
+                            "had_token": bool(data.confirm_token),
+                        },
+                        result_status=status_,
+                        result_summary=summary[:1024],
+                        request_id=request_id,
+                    ))
+                    await s.commit()
+            except Exception as e:
+                logger.warning(f"mcp_audit insert failed: {e}")
+
+        err = _consume_token(data.confirm_token or "", user_id, ph)
+        if err:
+            await _audit("denied", err)
+            raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
+
+        # Forward to existing cancel handler. Note: the existing /api/orders
+        # cancel endpoint is broker-routed (not paper-aware) so this only
+        # makes sense for live orders. Paper orders are tracked by the
+        # paper engine, not the broker — those need a future paper-cancel
+        # path. For now, surface the broker's response verbatim.
+        from backend.api.routes.orders import OrdersController
+        try:
+            ctrl = OrdersController(owner=None)
+            res = await ctrl.cancel_order(
+                order_id=oid, request=request,
+                account=acct, variety=data.variety,
+            )
+        except HTTPException as e:
+            await _audit("error", f"{e.status_code}: {e.detail}")
+            raise
+        except Exception as e:
+            await _audit("error", f"unexpected: {e}")
+            logger.exception("MCP cancel_order: underlying handler raised")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        await _audit("ok", f"order_id={res.order_id}")
+        logger.info(f"MCP cancel_order OK: user={user_id} order_id={res.order_id} acct={acct}")
+
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            _send_telegram(
+                f"<b>MCP CANCEL</b> order_id=<code>{res.order_id}</code>\n"
+                f"acct={acct}\n"
+                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+            )
+        except Exception as e:
+            logger.warning(f"MCP cancel_order Telegram ping failed: {e}")
+
+        return SimpleOrderResponse(order_id=res.order_id, detail="cancelled")
+
+    @post("/modify-order")
+    async def modify_order(self, data: ModifyOrderRequest, request: Request) -> SimpleOrderResponse:
+        """LLM-initiated modify. Token binds (account, order_id) PLUS the
+        new values the LLM plans to push — bait-and-switch on the new
+        price / qty after the operator approves is blocked."""
+        acct = (data.account or "").strip()
+        oid = (data.order_id or "").strip()
+        qty = int(data.quantity or 0)
+        otype = (data.order_type or "LIMIT").upper().strip()
+        if not acct or not oid:
+            raise HTTPException(status_code=400, detail="account and order_id are required")
+        ph = _purpose_hash_modify(acct, oid, qty, otype, data.price, data.trigger_price)
+
+        request_id = _secrets.token_hex(6)
+        user_id = _user_id(request)
+
+        async def _audit(status_: str, summary: str) -> None:
+            try:
+                async with async_session() as s:
+                    s.add(McpAudit(
+                        tool="modify_order",
+                        user_id=user_id,
+                        args_redacted={
+                            "account":       acct,
+                            "order_id":      oid,
+                            "quantity":      qty or None,
+                            "order_type":    otype,
+                            "price":         data.price,
+                            "trigger_price": data.trigger_price,
+                            "variety":       data.variety,
+                            "validity":      data.validity,
+                            "had_token":     bool(data.confirm_token),
+                        },
+                        result_status=status_,
+                        result_summary=summary[:1024],
+                        request_id=request_id,
+                    ))
+                    await s.commit()
+            except Exception as e:
+                logger.warning(f"mcp_audit insert failed: {e}")
+
+        err = _consume_token(data.confirm_token or "", user_id, ph)
+        if err:
+            await _audit("denied", err)
+            raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
+
+        from backend.api.routes.orders import OrdersController
+        from backend.api.schemas import ModifyOrderRequest as TicketModifyRequest
+
+        modify_req = TicketModifyRequest(
+            account=acct,
+            quantity=qty if qty else None,
+            price=data.price,
+            order_type=otype,
+            trigger_price=data.trigger_price,
+            validity=data.validity,
+            variety=data.variety,
+        )
+        try:
+            ctrl = OrdersController(owner=None)
+            res = await ctrl.modify_order(order_id=oid, data=modify_req, request=request)
+        except HTTPException as e:
+            await _audit("error", f"{e.status_code}: {e.detail}")
+            raise
+        except Exception as e:
+            await _audit("error", f"unexpected: {e}")
+            logger.exception("MCP modify_order: underlying handler raised")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        await _audit("ok", f"order_id={res.order_id}")
+        logger.info(f"MCP modify_order OK: user={user_id} order_id={res.order_id} acct={acct}")
+
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            chunks = " ".join(filter(None, [
+                f"qty={qty}" if qty else None,
+                f"type={otype}" if otype else None,
+                f"@₹{data.price:g}" if data.price else None,
+                f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
+            ])) or "(no-op)"
+            _send_telegram(
+                f"<b>MCP MODIFY</b> order_id=<code>{res.order_id}</code>\n"
+                f"acct={acct} · {chunks}\n"
+                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+            )
+        except Exception as e:
+            logger.warning(f"MCP modify_order Telegram ping failed: {e}")
+
+        return SimpleOrderResponse(order_id=res.order_id, detail="modified")

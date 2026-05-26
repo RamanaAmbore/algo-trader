@@ -21,7 +21,7 @@
   import {
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
-    mintConfirmToken,
+    mintConfirmToken, fetchResearchAudit,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -33,13 +33,22 @@
   let loading     = $state(true);
   let refreshedAt = $state('');
   let teardown;
-  let activeTab   = $state(/** @type {'research'|'drafts'|'settings'} */ ('research'));
+  let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'settings'} */ ('research'));
 
   /** Joined-view rows from GET /api/research/drafts — one per
    *  research thread with a linked inactive Agent. Activating the
    *  agent on /agents naturally graduates it out of this list. */
   /** @type {any[]} */
   let drafts = $state([]);
+
+  /** Phase 3b — forensic trail of every MCP-initiated mutation
+   *  (currently just place_order). Tool + status filters drive the
+   *  query string; the rail above the table lets the operator slice
+   *  the view ("show every denied call", "every place_order today"). */
+  /** @type {any[]} */
+  let audit = $state([]);
+  let auditFilterTool   = $state('');
+  let auditFilterStatus = $state('');
 
   async function loadThreads() {
     try {
@@ -61,6 +70,27 @@
       drafts = [];
     }
   }
+
+  async function loadAudit() {
+    try {
+      const rows = await fetchResearchAudit({
+        tool:   auditFilterTool   || undefined,
+        status: auditFilterStatus || undefined,
+        limit:  200,
+      });
+      audit = Array.isArray(rows) ? rows : [];
+    } catch (_) {
+      audit = [];
+    }
+  }
+  // Re-fetch when filters change; only fires when the Audit tab is in view
+  // (the panel mounts conditionally so the $effect dependency is naturally gated).
+  $effect(() => {
+    if (activeTab === 'audit') {
+      void auditFilterTool; void auditFilterStatus;
+      loadAudit();
+    }
+  });
 
   async function selectThread(/** @type {number} */ id) {
     try {
@@ -147,8 +177,10 @@
   // Token is then pasted into Claude Code so the LLM's place_order
   // call carries the matching authorisation.
   let mintForm = $state({
+    kind: /** @type {'place'|'cancel'|'modify'} */ ('place'),
     account: '', tradingsymbol: '', side: 'SELL', quantity: 1,
     mode: 'paper', order_type: 'LIMIT', price: null, trigger_price: null,
+    order_id: '',
   });
   /** @type {any} */
   let mintedToken = $state(null);    // {token, expires_in, purpose, ...}
@@ -159,12 +191,15 @@
   async function mint() {
     mintError = '';
     try {
-      const res = await mintConfirmToken({
+      // The server takes the same shape for all kinds; irrelevant
+      // fields are simply ignored for the chosen kind.
+      const payload = {
         ...mintForm,
         quantity: Number(mintForm.quantity) || 0,
         price:         mintForm.price         === null || mintForm.price         === '' ? null : Number(mintForm.price),
         trigger_price: mintForm.trigger_price === null || mintForm.trigger_price === '' ? null : Number(mintForm.trigger_price),
-      });
+      };
+      const res = await mintConfirmToken(payload);
       mintedToken = res;
       mintSecondsLeft = res.expires_in;
       clearInterval(mintTicker);
@@ -194,6 +229,8 @@
     { name: 'save_research_thread',  summary: 'Persist a thesis + transcript to the Lab page' },
     { name: 'save_agent_draft',      summary: 'Promote a thread to an inactive draft Agent (paper-mode)' },
     { name: 'place_order',           summary: 'Gated order placement — requires operator-minted confirm token' },
+    { name: 'cancel_order',          summary: 'Gated cancel — requires confirm token bound to (account, order_id)' },
+    { name: 'modify_order',          summary: 'Gated modify — token binds to new qty/price/trigger as well' },
     { name: 'get_research_thread',   summary: 'Fetch a saved thread by id' },
     { name: 'list_research_threads', summary: 'List recent threads (optional symbol filter)' },
     { name: 'get_server_info',       summary: 'Diagnostic — base URL + token presence' },
@@ -229,6 +266,10 @@
   <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'drafts'}
           aria-selected={activeTab === 'drafts'} onclick={() => activeTab = 'drafts'}>
     Drafts <span class="lab-tab-count">{drafts.length}</span>
+  </button>
+  <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'audit'}
+          aria-selected={activeTab === 'audit'} onclick={() => activeTab = 'audit'}>
+    Audit
   </button>
   <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'settings'}
           aria-selected={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
@@ -376,6 +417,77 @@
       </table>
     {/if}
   </div>
+{:else if activeTab === 'audit'}
+  <!-- ── Audit tab — Phase 3b ────────────────────────────────────── -->
+  <div class="lab-audit">
+    <header class="audit-head">
+      <p class="audit-hint">
+        Forensic trail of every MCP-initiated mutation. Token material is
+        never persisted — args show what the LLM asked to do, not what
+        authorised it. Use this to confirm post-hoc that every LLM
+        action was either consciously authorised or correctly denied.
+      </p>
+      <div class="audit-filters">
+        <label>
+          <span>Tool</span>
+          <select bind:value={auditFilterTool}>
+            <option value="">All</option>
+            <option value="place_order">place_order</option>
+            <option value="cancel_order">cancel_order</option>
+            <option value="modify_order">modify_order</option>
+          </select>
+        </label>
+        <label>
+          <span>Status</span>
+          <select bind:value={auditFilterStatus}>
+            <option value="">All</option>
+            <option value="ok">ok</option>
+            <option value="denied">denied</option>
+            <option value="error">error</option>
+          </select>
+        </label>
+        <button type="button" class="copy-btn audit-refresh" onclick={loadAudit}>Refresh</button>
+      </div>
+    </header>
+    {#if audit.length === 0}
+      <div class="lab-empty">
+        <div class="lab-empty-title">No audit rows yet</div>
+        <p class="lab-empty-hint">
+          The first MCP-initiated <code>place_order</code> call (success or
+          failure) will land here. Until then, the trail is empty.
+        </p>
+      </div>
+    {:else}
+      <table class="audit-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Tool</th>
+            <th>Status</th>
+            <th>User</th>
+            <th>Args</th>
+            <th>Result</th>
+            <th>Req</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each audit as a (a.id)}
+            <tr>
+              <td><span class="audit-when">{_fmtDate(a.created_at)}</span></td>
+              <td><code class="audit-tool">{a.tool}</code></td>
+              <td>
+                <span class="audit-status audit-status-{a.result_status}">{a.result_status}</span>
+              </td>
+              <td>{a.user_id ?? '—'}</td>
+              <td><code class="audit-args">{JSON.stringify(a.args_redacted)}</code></td>
+              <td><span class="audit-summary">{a.result_summary}</span></td>
+              <td><code class="audit-rid">{a.request_id ?? ''}</code></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </div>
 {:else}
   <!-- Settings tab — MCP bootstrap + confirm-token mint -->
   <div class="lab-settings">
@@ -384,38 +496,64 @@
     <article class="lab-card lab-card-mint">
       <h2>0. Mint a confirm token (place_order gate)</h2>
       <p>
-        The MCP <code>place_order</code> tool refuses every request without a
-        valid <b>operator-minted token</b>. Fill the form, click Mint, copy
-        the token, paste into Claude Code. Token is single-use, expires in
-        60 seconds, and is bound to <i>this exact order</i> — the LLM can't
-        swap the symbol or quantity post-mint.
+        The MCP write tools (<code>place_order</code> · <code>cancel_order</code>
+        · <code>modify_order</code>) refuse every request without a valid
+        <b>operator-minted token</b>. Pick the action, fill the form, click
+        Mint, copy the token, paste into Claude Code. Token is single-use,
+        expires in 60 seconds, and is bound to <i>this exact action</i> —
+        the LLM can't swap the symbol / quantity / order id post-mint.
       </p>
       <div class="mint-grid">
+        <label><span>Kind</span>
+          <select bind:value={mintForm.kind}>
+            <option value="place">PLACE</option>
+            <option value="cancel">CANCEL</option>
+            <option value="modify">MODIFY</option>
+          </select>
+        </label>
         <label><span>Account</span><input bind:value={mintForm.account} placeholder="ZG0790" /></label>
-        <label><span>Symbol</span><input bind:value={mintForm.tradingsymbol} placeholder="NIFTY25APRFUT" /></label>
-        <label><span>Side</span>
-          <select bind:value={mintForm.side}>
-            <option value="BUY">BUY</option>
-            <option value="SELL">SELL</option>
-          </select>
-        </label>
-        <label><span>Quantity</span><input type="number" bind:value={mintForm.quantity} min="1" /></label>
-        <label><span>Mode</span>
-          <select bind:value={mintForm.mode}>
-            <option value="paper">PAPER</option>
-            <option value="live">LIVE</option>
-          </select>
-        </label>
-        <label><span>Order type</span>
-          <select bind:value={mintForm.order_type}>
-            <option value="LIMIT">LIMIT</option>
-            <option value="MARKET">MARKET</option>
-            <option value="SL">SL</option>
-            <option value="SL-M">SL-M</option>
-          </select>
-        </label>
-        <label><span>Price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
-        <label><span>Trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
+        {#if mintForm.kind === 'place'}
+          <label><span>Symbol</span><input bind:value={mintForm.tradingsymbol} placeholder="NIFTY25APRFUT" /></label>
+          <label><span>Side</span>
+            <select bind:value={mintForm.side}>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </select>
+          </label>
+          <label><span>Quantity</span><input type="number" bind:value={mintForm.quantity} min="1" /></label>
+          <label><span>Mode</span>
+            <select bind:value={mintForm.mode}>
+              <option value="paper">PAPER</option>
+              <option value="live">LIVE</option>
+            </select>
+          </label>
+          <label><span>Order type</span>
+            <select bind:value={mintForm.order_type}>
+              <option value="LIMIT">LIMIT</option>
+              <option value="MARKET">MARKET</option>
+              <option value="SL">SL</option>
+              <option value="SL-M">SL-M</option>
+            </select>
+          </label>
+          <label><span>Price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
+          <label><span>Trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
+        {:else if mintForm.kind === 'cancel'}
+          <label><span>Order ID</span><input bind:value={mintForm.order_id} placeholder="251115000123456" /></label>
+        {:else}
+          <!-- modify: account + order_id + the new values -->
+          <label><span>Order ID</span><input bind:value={mintForm.order_id} placeholder="251115000123456" /></label>
+          <label><span>New qty</span><input type="number" bind:value={mintForm.quantity} min="0" placeholder="(unchanged)" /></label>
+          <label><span>Order type</span>
+            <select bind:value={mintForm.order_type}>
+              <option value="LIMIT">LIMIT</option>
+              <option value="MARKET">MARKET</option>
+              <option value="SL">SL</option>
+              <option value="SL-M">SL-M</option>
+            </select>
+          </label>
+          <label><span>New price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
+          <label><span>New trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
+        {/if}
       </div>
       <button class="copy-btn mint-btn" type="button" onclick={mint}>Mint token</button>
       {#if mintError}
@@ -804,6 +942,109 @@
     font-size: 0.55rem;
     font-weight: 700;
     letter-spacing: 0.05em;
+  }
+
+  /* ── Audit tab ───────────────────────────────────────────────── */
+  .lab-audit {
+    background: rgba(15, 25, 45, 0.4);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 0.5rem;
+    padding: 0.8rem;
+    margin-top: 0.6rem;
+  }
+  .audit-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.7rem;
+  }
+  .audit-hint {
+    flex: 1 1 320px;
+    color: #7e97b8;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .audit-filters {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.6rem;
+  }
+  .audit-filters label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .audit-filters span {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #7e97b8;
+  }
+  .audit-filters select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    border-radius: 0.25rem;
+    padding: 0.28rem 0.45rem;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+  }
+  .audit-refresh { align-self: flex-end; }
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.66rem;
+  }
+  .audit-table th {
+    text-align: left;
+    padding: 0.34rem 0.5rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.54rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #7e97b8;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
+  }
+  .audit-table td {
+    padding: 0.34rem 0.5rem;
+    color: #c8d8f0;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.08);
+    vertical-align: top;
+  }
+  .audit-when { font-family: ui-monospace, monospace; font-size: 0.6rem; color: #7e97b8; }
+  .audit-tool { color: #fbbf24; font-size: 0.66rem; font-weight: 700; }
+  .audit-status {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    border-radius: 0.5rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .audit-status-ok     { background: rgba(34, 197, 94, 0.15);  border-color: rgba(34, 197, 94, 0.4);  color: #4ade80; }
+  .audit-status-denied { background: rgba(248, 113, 113, 0.15); border-color: rgba(248, 113, 113, 0.4); color: #f87171; }
+  .audit-status-error  { background: rgba(251, 191, 36, 0.15); border-color: rgba(251, 191, 36, 0.4); color: #fbbf24; }
+  .audit-args, .audit-rid {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: rgba(200, 216, 240, 0.8);
+    word-break: break-all;
+    max-width: 24rem;
+    display: inline-block;
+  }
+  .audit-summary {
+    font-size: 0.66rem;
+    color: #c8d8f0;
+    word-break: break-word;
+    max-width: 24rem;
+    display: inline-block;
   }
 
   /* ── Settings tab ─────────────────────────────────────────────── */

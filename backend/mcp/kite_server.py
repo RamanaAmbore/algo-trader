@@ -425,6 +425,82 @@ async def place_order(
 
 
 @app.tool()
+async def cancel_order(
+    confirm_token: str,
+    account: str,
+    order_id: str,
+    variety: str = "regular",
+) -> dict:
+    """Cancel a working order via the broker. REQUIRES a confirm token
+    minted with kind='cancel' for THIS (account, order_id). Token
+    cannot be redeemed against a different order — even within the
+    same account, even for a place_order minted moments before.
+
+    Args:
+        confirm_token: 32-char hex token from Lab page (kind='cancel').
+        account:       Broker account code (e.g. ZG0790).
+        order_id:      Broker-side order id.
+        variety:       regular / amo / iceberg (default regular).
+
+    Returns:
+        {order_id, detail}. mcp_audit + Telegram ping land per call.
+    """
+    body = {
+        "confirm_token": confirm_token,
+        "account":       account,
+        "order_id":      order_id,
+        "variety":       variety,
+    }
+    return await _post("/api/research/cancel-order", body)
+
+
+@app.tool()
+async def modify_order(
+    confirm_token: str,
+    account: str,
+    order_id: str,
+    quantity: int = 0,
+    order_type: str = "LIMIT",
+    price: float | None = None,
+    trigger_price: float | None = None,
+    variety: str = "regular",
+    validity: str | None = None,
+) -> dict:
+    """Modify a working order. REQUIRES a confirm token minted with
+    kind='modify' for THIS (account, order_id, quantity, order_type,
+    price, trigger_price). The new values are part of the purpose
+    hash — bait-and-switch on the new price / qty after the operator
+    approves is blocked at the gate.
+
+    Args:
+        confirm_token: 32-char hex token from Lab page (kind='modify').
+        account:       Broker account code.
+        order_id:      Broker-side order id.
+        quantity:      New quantity (0 = unchanged).
+        order_type:    LIMIT / MARKET / SL / SL-M.
+        price:         New limit price (LIMIT / SL).
+        trigger_price: New trigger (SL / SL-M).
+        variety:       regular / amo / iceberg.
+        validity:      Optional broker validity tag.
+
+    Returns:
+        {order_id, detail}.
+    """
+    body = {
+        "confirm_token": confirm_token,
+        "account":       account,
+        "order_id":      order_id,
+        "quantity":      int(quantity),
+        "order_type":    order_type,
+        "price":         price,
+        "trigger_price": trigger_price,
+        "variety":       variety,
+        "validity":      validity,
+    }
+    return await _post("/api/research/modify-order", body)
+
+
+@app.tool()
 async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
     """List recent research threads. Filter by symbol when revisiting
     a specific stock's history.
