@@ -2331,7 +2331,7 @@
     }
     // Compact width (32px SVG inside a 36px column) — frees up
     // horizontal space so the LTP column stays visible on mobile.
-    const W = 14, H = 14, PAD = 1;
+    const W = 32, H = 14, PAD = 2;
     const min = Math.min(...closes);
     const max = Math.max(...closes);
     const range = max - min || 1;
@@ -2405,13 +2405,11 @@
       { field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
-      // 5d column shrunk to 18 px (from 36) so LTP / Δ% stay fully
-      // visible on narrow mobile viewports. SVG fits inside as 14×14.
-      // ag-Grid's default minWidth is 50 px, hence the explicit
-      // minWidth: 18 — without it the column clamps back to 24-50 px
-      // regardless of the `width:` value.
-      { field: 'tradingsymbol', headerName: '5d', width: 18, minWidth: 18,
-        maxWidth: 22, colId: 'sparkline',
+      // 5d column at 36 px with SVG 32×14. ag-Grid's default minWidth
+      // is 50 px, hence the explicit minWidth: 36 / maxWidth: 40 —
+      // without them the column would silently clamp wider.
+      { field: 'tradingsymbol', headerName: '5d', width: 36, minWidth: 36,
+        maxWidth: 40, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: false,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
@@ -2898,12 +2896,13 @@
       const state = JSON.parse(raw);
       // Force the sparkline (5d) column visible AND override any
       // legacy persisted width. Earlier builds shipped 36 px, then
-      // 64 px, both of which sit in operator localStorage and would
-      // otherwise win over the new 18 px default. The pinned width +
-      // hide=false eviction below covers both regressions in one shot.
+      // 64 px, then briefly 18 px — all of which sit in operator
+      // localStorage and would otherwise win over the current
+      // 36 px default. The width pin + hide=false eviction below
+      // covers every regression in one shot.
       const cleaned = Array.isArray(state)
         ? state.map(c => c?.colId === 'sparkline'
-            ? { ...c, hide: false, width: 18, actualWidth: 18, flex: null }
+            ? { ...c, hide: false, width: 36, actualWidth: 36, flex: null }
             : c)
         : state;
       grid.applyColumnState({ state: cleaned, applyOrder: true });
