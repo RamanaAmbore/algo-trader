@@ -226,11 +226,15 @@
   // Token is then pasted into Claude Code so the LLM's place_order
   // call carries the matching authorisation.
   let mintForm = $state({
-    kind: /** @type {'place'|'cancel'|'modify'|'activate'|'deactivate'} */ ('place'),
+    kind: /** @type {'place'|'cancel'|'modify'|'activate'|'deactivate'|'update'} */ ('place'),
     account: '', tradingsymbol: '', side: 'SELL', quantity: 1,
     mode: 'paper', order_type: 'LIMIT', price: null, trigger_price: null,
     order_id: '',
     agent_slug: '',
+    // Phase 14 — JSON blob the operator pastes for kind='update'.
+    // Server hashes the canonical JSON into the purpose hash so the
+    // LLM must replay byte-identical proposed_changes.
+    proposed_changes_json: '',
   });
   /** @type {any} */
   let mintedToken = $state(null);    // {token, expires_in, purpose, ...}
@@ -243,12 +247,36 @@
     try {
       // The server takes the same shape for all kinds; irrelevant
       // fields are simply ignored for the chosen kind.
+      // Typed `any` because update kind adds a `proposed_changes`
+      // field that isn't on the source mintForm shape (the source has
+      // proposed_changes_json which we strip just before send).
+      /** @type {any} */
       const payload = {
         ...mintForm,
         quantity: Number(mintForm.quantity) || 0,
         price:         mintForm.price         === null || mintForm.price         === '' ? null : Number(mintForm.price),
         trigger_price: mintForm.trigger_price === null || mintForm.trigger_price === '' ? null : Number(mintForm.trigger_price),
       };
+      // Phase 14 — parse the proposed-changes JSON when kind=update.
+      // Empty JSON is intentional (operator may want to mint with no
+      // changes for a probe); server returns 400 in that case.
+      if (mintForm.kind === 'update') {
+        const raw = (mintForm.proposed_changes_json || '').trim();
+        if (raw) {
+          try {
+            payload.proposed_changes = JSON.parse(raw);
+          } catch (e) {
+            mintError = `Proposed changes is not valid JSON: ${e.message}`;
+            mintedToken = null;
+            return;
+          }
+        } else {
+          payload.proposed_changes = {};
+        }
+      }
+      // Strip the textarea string before sending so it doesn't end up
+      // in the audit-redacted args.
+      delete payload.proposed_changes_json;
       const res = await mintConfirmToken(payload);
       mintedToken = res;
       mintSecondsLeft = res.expires_in;
@@ -275,6 +303,7 @@
     { value: 'modify',     label: 'MODIFY' },
     { value: 'activate',   label: 'ACTIVATE agent' },
     { value: 'deactivate', label: 'DEACTIVATE agent' },
+    { value: 'update',     label: 'UPDATE agent' },
   ];
   const SIDE_OPTIONS = [
     { value: 'BUY',  label: 'BUY' },
@@ -301,6 +330,7 @@
     { value: 'modify_order',     label: 'modify_order' },
     { value: 'activate_agent',   label: 'activate_agent' },
     { value: 'deactivate_agent', label: 'deactivate_agent' },
+    { value: 'update_agent',     label: 'update_agent' },
   ];
   const AUDIT_STATUS_OPTIONS = [
     { value: '',       label: 'All' },
@@ -336,6 +366,7 @@
     { name: 'modify_order',          summary: 'Gated modify — token binds to new qty/price/trigger as well' },
     { name: 'activate_agent',        summary: 'Gated activate — flips agent to status=active (highest-stakes write)' },
     { name: 'deactivate_agent',      summary: 'Gated deactivate — flips agent back to inactive' },
+    { name: 'update_agent',          summary: 'Gated edit — change conditions/cooldown/events/etc. on an existing agent' },
     { name: 'get_audit_recent',      summary: 'Reverse-chrono trail of your MCP actions — self-check after writes' },
     { name: 'get_research_thread',   summary: 'Fetch a saved thread by id' },
     { name: 'list_research_threads', summary: 'List recent threads (optional symbol filter)' },
@@ -607,7 +638,7 @@
         <label><span>Kind</span>
           <Select bind:value={mintForm.kind} options={KIND_OPTIONS} ariaLabel="Mint kind" />
         </label>
-        {#if mintForm.kind === 'activate' || mintForm.kind === 'deactivate'}
+        {#if mintForm.kind === 'activate' || mintForm.kind === 'deactivate' || mintForm.kind === 'update'}
           <label><span>Agent slug</span><input bind:value={mintForm.agent_slug} placeholder="reliance-bull-21d" /></label>
         {:else}
           <label><span>Account</span><input bind:value={mintForm.account} placeholder="ZG0790" /></label>
@@ -634,8 +665,7 @@
             <input bind:value={mintForm.order_id}
                    placeholder={mintForm.mode === 'paper' ? 'AlgoOrder.id (e.g. 42)' : '251115000123456'} />
           </label>
-        {:else}
-          <!-- modify: account + order_id + the new values -->
+        {:else if mintForm.kind === 'modify'}
           <label><span>Mode</span>
             <Select bind:value={mintForm.mode} options={MODE_OPTIONS_LIVE_DEFAULT} ariaLabel="Modify mode" />
           </label>
@@ -649,7 +679,21 @@
           </label>
           <label><span>New price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
           <label><span>New trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
+        {:else if mintForm.kind === 'update'}
+          <!-- update: agent_slug already taken in the kind-row above.
+               Operator pastes the proposed-changes JSON the LLM gave
+               them; the textarea spans the full grid width so it's
+               actually readable. -->
+          <label class="mint-update-full">
+            <span>Proposed changes (JSON)</span>
+            <textarea class="mint-update-textarea"
+                      bind:value={mintForm.proposed_changes_json}
+                      placeholder={`Paste the LLM's proposed-changes dict, e.g.\n{\n  "cooldown_minutes": 15,\n  "events": ["telegram"]\n}`}
+                      rows="6"></textarea>
+          </label>
         {/if}
+        <!-- activate / deactivate: no extra fields beyond Kind +
+             Agent slug, which already render above. -->
       </div>
       <button class="copy-btn mint-btn" type="button" onclick={mint}>Mint token</button>
       {#if mintError}
@@ -1300,6 +1344,29 @@
     font-size: 0.7rem;
   }
   .mint-grid input:focus {
+    outline: none;
+    border-color: rgba(251, 191, 36, 0.6);
+  }
+  .mint-update-full {
+    /* JSON textarea needs the full grid width — without this it lands
+       in one of the 140px auto-fit cells and the operator can't read
+       what they pasted. */
+    grid-column: 1 / -1;
+  }
+  .mint-update-textarea {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    border-radius: 0.25rem;
+    padding: 0.4rem 0.5rem;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.66rem;
+    line-height: 1.45;
+    width: 100%;
+    resize: vertical;
+    min-height: 4.5rem;
+  }
+  .mint-update-textarea:focus {
     outline: none;
     border-color: rgba(251, 191, 36, 0.6);
   }

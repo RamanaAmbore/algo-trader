@@ -112,17 +112,20 @@ class MintTokenRequest(msgspec.Struct):
     so a token minted to CANCEL #1234 cannot be redeemed to PLACE a
     new order, MODIFY #1234, CANCEL #5678, ACTIVATE a different
     agent, or DEACTIVATE the same agent (different kind)."""
-    account:        str = ""
-    kind:           str = "place"     # place / cancel / modify / activate / deactivate
-    tradingsymbol:  str = ""
-    side:           str = ""           # BUY / SELL (place only)
-    quantity:       int = 0
-    mode:           str = "paper"     # paper / live (place + cancel/modify)
-    order_type:     str = "LIMIT"
-    price:          float | None = None
-    trigger_price:  float | None = None
-    order_id:       str = ""           # cancel / modify only
-    agent_slug:     str = ""           # activate / deactivate only
+    account:           str = ""
+    kind:              str = "place"     # place / cancel / modify / activate / deactivate / update
+    tradingsymbol:     str = ""
+    side:              str = ""           # BUY / SELL (place only)
+    quantity:          int = 0
+    mode:              str = "paper"     # paper / live (place + cancel/modify)
+    order_type:        str = "LIMIT"
+    price:             float | None = None
+    trigger_price:     float | None = None
+    order_id:          str = ""           # cancel / modify only
+    agent_slug:        str = ""           # activate / deactivate / update only
+    # update kind only — JSON blob of the fields the LLM plans to push.
+    # Hashed (canonical JSON) so the operator approves the EXACT change.
+    proposed_changes:  dict = msgspec.field(default_factory=dict)
 
 
 class MintTokenResponse(msgspec.Struct):
@@ -215,6 +218,20 @@ class AgentStatusResponse(msgspec.Struct):
     agent_slug:    str
     status:        str
     detail:        str
+
+
+class AgentUpdateRequest(msgspec.Struct):
+    """LLM-initiated edit of an existing Agent's condition tree /
+    events / actions / scope / schedule / cooldown / fire_at_time /
+    description. The full proposed-changes dict is hashed into the
+    confirm token so the LLM cannot tweak any field after mint.
+
+    Only fields in _AGENT_UPDATE_FIELDS are honoured server-side;
+    others (status, trade_mode, lifespan_*) are silently dropped —
+    the LLM cannot flip an agent active or live via update_agent."""
+    confirm_token:    str
+    agent_slug:       str
+    proposed_changes: dict = msgspec.field(default_factory=dict)
 
 
 class AuditRow(msgspec.Struct):
@@ -350,6 +367,48 @@ def _purpose_hash_modify(account: str, order_id: str, qty: int,
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+# Whitelist of agent fields an LLM-driven update is allowed to touch.
+# Anything else (status, trade_mode, lifespan_*) stays operator-only —
+# the LLM cannot flip an agent active or live through update_agent.
+_AGENT_UPDATE_FIELDS = (
+    "conditions", "events", "actions",
+    "scope", "schedule", "cooldown_minutes",
+    "fire_at_time", "description",
+)
+
+
+def _canonical_changes(payload: dict) -> dict:
+    """Filter + normalise the operator's proposed-changes dict before
+    hashing. Keeping only whitelisted fields prevents the LLM from
+    sneaking a status='active' through update_agent."""
+    if not isinstance(payload, dict):
+        return {}
+    out = {}
+    for k in _AGENT_UPDATE_FIELDS:
+        if k in payload and payload[k] is not None:
+            out[k] = payload[k]
+    return out
+
+
+def _purpose_hash_update_agent(agent_slug: str, changes: dict) -> str:
+    """UPDATE pins (agent_slug + canonical-JSON of the changes). The
+    LLM cannot tweak any field after mint — every key in the
+    proposed-changes dict is part of the hash. Empty changes → 400
+    at the mint endpoint, so the hash is always over a meaningful
+    payload."""
+    import json
+    canonical = json.dumps(
+        _canonical_changes(changes),
+        sort_keys=True, separators=(",", ":"),
+    )
+    parts = [
+        "update_agent",
+        (agent_slug or "").strip(),
+        hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 def _purpose_hash_agent_status(action: str, agent_slug: str) -> str:
     """ACTIVATE / DEACTIVATE pins (action, agent_slug). The action is
     part of the kind+hash so a deactivate token cannot be redeemed to
@@ -389,6 +448,14 @@ def _consume_token(token: str, user_id: int | None, purpose_hash: str) -> str | 
     a precise reason to the operator)."""
     now = int(time.time())
     with _token_lock:
+        # Phase 13 — prune expired entries on every consume so the
+        # dict doesn't accumulate stale tokens during long idle
+        # periods between mints. Cheap (≤ a few hundred entries) and
+        # symmetric with the prune-on-mint path.
+        stale = [t for t, v in _confirm_tokens.items() if v.get("expires_at", 0) < now]
+        for t in stale:
+            _confirm_tokens.pop(t, None)
+
         entry = _confirm_tokens.get(token)
         if not entry:
             return "Unknown or already-used token"
@@ -736,10 +803,10 @@ class ResearchController(Controller):
         the operator pre-minted the token)."""
         kind = (data.kind or "place").lower().strip()
         acct = (data.account or "").strip()
-        if kind not in ("place", "cancel", "modify", "activate", "deactivate"):
+        if kind not in ("place", "cancel", "modify", "activate", "deactivate", "update"):
             raise HTTPException(status_code=400,
-                detail="kind must be place, cancel, modify, activate, or deactivate")
-        # Agent-status kinds don't need an account.
+                detail="kind must be place, cancel, modify, activate, deactivate, or update")
+        # Agent kinds don't need an account.
         if kind in ("place", "cancel", "modify") and not acct:
             raise HTTPException(status_code=400, detail="account is required")
 
@@ -788,13 +855,28 @@ class ResearchController(Controller):
                 f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
             ])) or "no changes"
             purpose = f"MODIFY [{mode_cm.upper()}] · order_id={oid} · {mod_chunk} · acct={acct}"
-        else:
-            # activate / deactivate — single field agent_slug.
+        elif kind in ("activate", "deactivate"):
             if not agent_slug:
                 raise HTTPException(status_code=400,
                     detail=f"agent_slug is required for {kind}")
             ph = _purpose_hash_agent_status(kind, agent_slug)
             purpose = f"{kind.upper()} · agent={agent_slug}"
+        else:
+            # update — agent_slug + non-empty whitelisted-changes dict
+            if not agent_slug:
+                raise HTTPException(status_code=400, detail="agent_slug is required for update")
+            filtered = _canonical_changes(data.proposed_changes or {})
+            if not filtered:
+                raise HTTPException(status_code=400,
+                    detail=(
+                        "proposed_changes must include at least one of: "
+                        + ", ".join(_AGENT_UPDATE_FIELDS)
+                    ))
+            ph = _purpose_hash_update_agent(agent_slug, filtered)
+            # Short, human-readable purpose label — JSON canonical form
+            # is too long for a Telegram subject, so just enumerate which
+            # fields are changing.
+            purpose = f"UPDATE · agent={agent_slug} · fields={','.join(sorted(filtered.keys()))}"
 
         token, expires = _mint_token(_user_id(request), ph)
         now = int(time.time())
@@ -1304,3 +1386,106 @@ class ResearchController(Controller):
         a separate token kind so a deactivate token can't be reused
         to activate, and vice versa."""
         return await self._agent_status_change(data, request, action="deactivate")
+
+    @post("/update-agent")
+    async def update_agent(self, data: AgentUpdateRequest, request: Request) -> AgentStatusResponse:
+        """LLM-initiated agent edit. Requires a confirm token minted
+        with kind='update' for THIS agent_slug + THIS exact
+        proposed-changes JSON. The whole canonical-JSON of changes is
+        part of the purpose hash — so the LLM cannot tweak any field
+        between mint and update.
+
+        Only whitelisted fields (conditions, events, actions, scope,
+        schedule, cooldown_minutes, fire_at_time, description) are
+        honoured. status / trade_mode / lifespan_* are silently
+        dropped — the LLM cannot flip an agent active or live via
+        update_agent (that's what activate_agent's separate gate is
+        for, and it never opens for trade_mode).
+
+        For inactive drafts, delete + re-promote is still fine — this
+        endpoint exists mainly for ACTIVE agents where deactivating
+        first would miss alerts during the window.
+        """
+        slug = (data.agent_slug or "").strip()
+        if not slug:
+            raise HTTPException(status_code=400, detail="agent_slug is required")
+        filtered = _canonical_changes(data.proposed_changes or {})
+        if not filtered:
+            raise HTTPException(status_code=400,
+                detail=(
+                    "proposed_changes must include at least one of: "
+                    + ", ".join(_AGENT_UPDATE_FIELDS)
+                ))
+        ph = _purpose_hash_update_agent(slug, filtered)
+
+        request_id = _secrets.token_hex(6)
+        user_id = _user_id(request)
+
+        async def _audit(status_: str, summary: str) -> None:
+            try:
+                async with async_session() as s:
+                    s.add(McpAudit(
+                        tool="update_agent",
+                        user_id=user_id,
+                        args_redacted={
+                            "agent_slug":     slug,
+                            "changed_fields": sorted(filtered.keys()),
+                            "had_token":      bool(data.confirm_token),
+                        },
+                        result_status=status_,
+                        result_summary=summary[:1024],
+                        request_id=request_id,
+                    ))
+                    await s.commit()
+            except Exception as e:
+                logger.warning(f"mcp_audit insert failed: {e}")
+
+        err = _consume_token(data.confirm_token or "", user_id, ph)
+        if err:
+            await _audit("denied", err)
+            raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
+
+        # Apply the whitelisted fields inline (same pattern as
+        # activate/deactivate — avoid the @put decorator wrapper).
+        try:
+            async with async_session() as s:
+                agent = (await s.execute(
+                    select(Agent).where(Agent.slug == slug)
+                )).scalar_one_or_none()
+                if not agent:
+                    raise HTTPException(status_code=404,
+                                        detail=f"Agent '{slug}' not found")
+                for key, val in filtered.items():
+                    setattr(agent, key, val)
+                await s.commit()
+                await s.refresh(agent)
+                current_status = agent.status
+        except HTTPException as e:
+            await _audit("error", f"{e.status_code}: {e.detail}")
+            raise
+        except Exception as e:
+            await _audit("error", f"unexpected: {e}")
+            logger.exception("MCP update_agent: write failed")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        changed_list = ", ".join(sorted(filtered.keys()))
+        await _audit("ok", f"agent={slug} fields={changed_list}")
+        logger.info(
+            f"MCP update_agent OK: user={user_id} agent={slug} "
+            f"fields=[{changed_list}]"
+        )
+
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            _send_telegram(
+                f"<b>MCP UPDATE</b> agent=<code>{slug}</code>\n"
+                f"changed: {changed_list}\n"
+                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+            )
+        except Exception as e:
+            logger.warning(f"MCP update_agent Telegram ping failed: {e}")
+
+        return AgentStatusResponse(
+            agent_slug=slug, status=current_status,
+            detail=f"agent {slug!r} updated: {changed_list}",
+        )

@@ -746,6 +746,58 @@ async def deactivate_agent(confirm_token: str, agent_slug: str) -> dict:
 
 
 @app.tool()
+async def update_agent(
+    confirm_token: str,
+    agent_slug: str,
+    proposed_changes: dict,
+) -> dict:
+    """Edit an existing Agent's condition tree / events / actions /
+    scope / schedule / cooldown / fire_at_time / description.
+    REQUIRES a confirm token minted with kind='update' for THIS
+    agent_slug + THIS exact proposed_changes dict — the whole
+    canonical-JSON of changes is part of the purpose hash.
+
+    Only whitelisted fields are honoured server-side:
+        conditions, events, actions, scope, schedule,
+        cooldown_minutes, fire_at_time, description
+    status / trade_mode / lifespan_* are silently dropped. The LLM
+    cannot flip an agent active or live through update_agent — that's
+    what activate_agent is for, and even there mode='live' requires
+    the master execution.paper_trading_mode flag.
+
+    Recommended pattern:
+      1. Propose the full diff as a JSON dict to the operator.
+      2. Operator pastes the same JSON into the Mint widget (kind='update'),
+         clicks Mint, copies the token.
+      3. Pass IDENTICAL proposed_changes + the confirm_token here.
+      4. Verify with get_audit_recent(tool='update_agent').
+
+    Use case: tighten a cooldown on a live loss-cut agent without
+    deactivating it; widen a threshold during a known-volatile
+    window; add a Telegram channel to an existing alert.
+
+    For inactive drafts, delete + re-promote is usually cleaner.
+
+    Args:
+        confirm_token:    32-char hex token (kind='update').
+        agent_slug:       The agent's slug.
+        proposed_changes: dict of {field: new_value} — only
+                          whitelisted keys count. Same JSON the
+                          operator pasted at mint time, byte-for-byte.
+
+    Returns:
+        {agent_slug, status, detail}. status reflects the agent's
+        CURRENT status (unchanged by update — only activate /
+        deactivate change it).
+    """
+    return await _post("/api/research/update-agent", {
+        "confirm_token":    confirm_token,
+        "agent_slug":       agent_slug,
+        "proposed_changes": proposed_changes or {},
+    })
+
+
+@app.tool()
 async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
     """List recent research threads. Filter by symbol when revisiting
     a specific stock's history.
