@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp } from '$lib/stores';
+  import { authStore, nowStamp } from '$lib/stores';
 
   // Demo gate — on dev, anonymous visitors get redirected to /signin by
   // the algo layout before this page loads, so an unsigned viewer here
@@ -34,13 +34,11 @@
   let reloading  = $state(false);
   let activeTab  = $state(/** @type {'condition'|'notify'|'action'} */('condition'));
   let expandedId = $state(/** @type {number|null} */(null));
-  let refreshedAt = $state(clientTimestamp());
 
   async function load() {
     loading = true; error = '';
     try {
       tokens = await fetchGrammarTokens();
-      refreshedAt = clientTimestamp();
     } catch (e) { error = e.message || 'Failed to load'; tokens = []; }
     loading = false;
   }
@@ -188,6 +186,7 @@
       Agent Tokens
     </h1>
     <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
+    <span class="algo-ts ml-auto">{$nowStamp}</span>
     <div class="flex gap-2">
       {#if !isDemo}
         <button onclick={openCreate}

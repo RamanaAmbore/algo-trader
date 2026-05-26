@@ -4,6 +4,7 @@
   import { nowStamp, logTimeIst } from '$lib/stores';
   import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -182,6 +183,7 @@
 <div class="flex flex-col h-[calc(100vh-8rem)]">
 <div class="page-header">
   <h1 class="page-title-chip">Orders</h1>
+  <InfoHint popup text="Live order book across every loaded broker account. Click a row for the full status / fill timeline; Cancel and Modify hit the broker directly. Status pills: OPEN (in book), TRIGGER_PENDING (SL waiting), COMPLETE (filled), REJECTED (broker / margin failure)." />
   <span class="algo-ts">{$nowStamp}</span>
 </div>
 
