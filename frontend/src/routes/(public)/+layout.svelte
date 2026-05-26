@@ -68,7 +68,7 @@
         </nav>
 
         <!-- Rambo Terminal cross-link visible to everyone. Lands on
-             /pulse (Market Pulse) — the most useful entry surface
+             /pulse (Pulse) — the most useful entry surface
              regardless of role: live positions / holdings / pinned
              market data. The previous target /dashboard is more
              admin-flavoured (P&L analysis + agent fires); operators

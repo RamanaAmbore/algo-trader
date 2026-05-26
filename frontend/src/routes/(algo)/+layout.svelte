@@ -68,7 +68,7 @@
 
   // Grouped by operator activity, ordered by daily-touch frequency:
   //
-  //   Monitor  — Market Pulse, Dashboard, Agents, Orders, Alerts.
+  //   Monitor  — Pulse, Dashboard, Agents, Orders, Alerts.
   //              Top-of-funnel "what's happening" surfaces. Hit every
   //              session.
   //   Analyze  — Options. Drill-down workspace.

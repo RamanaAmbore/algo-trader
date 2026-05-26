@@ -54,7 +54,7 @@
       //   designated → /admin/options (Derivatives — the surface they
       //                spend most of their day on; payoff analytics +
       //                option chain + multi-leg strategy)
-      //   admin      → /pulse (Market Pulse — operational glance:
+      //   admin      → /pulse (Pulse — operational glance:
       //                positions / holdings / pinned market data)
       //   partner    → /pulse (same operational view; they see their
       //                NAV slice via the NavCard once they navigate to

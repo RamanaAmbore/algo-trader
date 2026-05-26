@@ -39,7 +39,7 @@
   import Select      from '$lib/Select.svelte';
 
   let {
-    title              = 'Market Pulse',
+    title              = 'Pulse',
     enableWatchlists   = true,
     enableMovers       = true, // gate the Movers source pill + 30s mover poll
     enablePinned       = true, // gate the Pinned source pill (indices + commodities + USDINR)
@@ -845,7 +845,7 @@
 
     // Real-time order-fill push — Kite postback fires a WS event
     // `position_filled` the moment an order fills. Subscribe so
-    // Market Pulse refreshes positions + holdings IMMEDIATELY
+    // Pulse refreshes positions + holdings IMMEDIATELY
     // instead of waiting up to 10 s for the next loadPulse tick.
     // Other (non-fill) events on the same socket also trigger a
     // refresh — cheap to over-fetch, expensive to lag a fill.
@@ -2429,7 +2429,11 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      { field: 'ltp', headerName: 'LTP', width: 44,
+      // LTP at 44 px — explicit minWidth/maxWidth pair pins the column
+      // against ag-Grid's default 50 px minWidth on numericColumn type.
+      // Without these, width:44 is silently clamped. Operator can still
+      // resize via drag (resizable defaults to true).
+      { field: 'ltp', headerName: 'LTP', width: 44, minWidth: 44, maxWidth: 60,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
@@ -2905,10 +2909,16 @@
       // localStorage and would otherwise win over the current
       // 36 px default. The width pin + hide=false eviction below
       // covers every regression in one shot.
+      // Force-evict persisted widths for columns whose default we
+      // shrank recently — without this every operator with stale
+      // localStorage keeps the old widths regardless of new column
+      // defaults. Sparkline: 36→44 (post-spacing change). LTP: 80→44.
       const cleaned = Array.isArray(state)
-        ? state.map(c => c?.colId === 'sparkline'
-            ? { ...c, hide: false, width: 44, actualWidth: 44, flex: null }
-            : c)
+        ? state.map(c => {
+            if (c?.colId === 'sparkline') return { ...c, hide: false, width: 44, actualWidth: 44, flex: null };
+            if (c?.colId === 'ltp')       return { ...c,              width: 44, actualWidth: 44, flex: null };
+            return c;
+          })
         : state;
       grid.applyColumnState({ state: cleaned, applyOrder: true });
     } catch (_) {}
@@ -3115,10 +3125,10 @@
      (EQ / FU / CE / PE), then Add. Click-outside / Esc to dismiss. -->
 {#if searchOpen}
   <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Add to Market Pulse" onclick={closeSearch}>
+       aria-label="Add to Pulse" onclick={closeSearch}>
     <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
-        <span class="search-title">Add to Market Pulse</span>
+        <span class="search-title">Add to Pulse</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
       </div>
       <div class="search-body">
