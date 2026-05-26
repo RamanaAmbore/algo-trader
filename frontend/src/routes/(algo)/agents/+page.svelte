@@ -510,15 +510,17 @@
     {/if}
   </h1>
   <InfoHint popup text="Agents fire on every 5-min tick during market hours. Each agent has a <b>condition tree</b>, <b>notify</b> channels, and <b>actions</b>. Slug is the stable identifier; schedule controls when it runs (<b>market_hours</b> skips outside session); cooldown_minutes throttles re-fires." />
-  <span class="ml-auto flex items-center gap-2">
-    <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
-      🔔 History
-    </a>
-    <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
-      {aiOpen ? '× Close AI' : '✦ Ask AI'}
-    </button>
-    <span class="algo-ts">{$nowStamp}</span>
-  </span>
+  <!-- Timestamp first so on narrow viewports it stays beside the title;
+       the action pills wrap to a second line via flex-wrap when there's
+       no horizontal room. Earlier the ts was inside the same ml-auto
+       cluster as the pills and wrapped as a unit. -->
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
+  <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
+    🔔 History
+  </a>
+  <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
+    {aiOpen ? '× Close AI' : '✦ Ask AI'}
+  </button>
 </div>
 
 {#if error}
