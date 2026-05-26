@@ -28,8 +28,16 @@ does.
 
 The MCP server (running as a subprocess under Claude Code) talks
 back to the RamboQuant API the same way every browser session
-does — over JWT auth. Mint one with the existing login endpoint
-and export it to your shell:
+does — over JWT auth.
+
+**Fastest path** (Phase 16 shortcut): you're already signed in
+on the Lab page, so the Settings tab now displays your live
+session token as an `export RAMBOQ_TOKEN=...` line with a Copy
+button. Click Copy, paste into your shell, done. Re-copy after
+24 hours when the JWT rolls over.
+
+**For automation** (cron, CI, fresh shell with no browser open),
+the curl form still works:
 
 ```bash
 export RAMBOQ_TOKEN=$(curl -s -X POST https://dev.ramboq.com/api/auth/login \
@@ -38,8 +46,9 @@ export RAMBOQ_TOKEN=$(curl -s -X POST https://dev.ramboq.com/api/auth/login \
   | jq -r .access_token)
 ```
 
-The token's TTL is 24 hours. Restart this shell once a day; the
-MCP server picks up the new token on its next subprocess launch.
+The token's TTL is 24 hours either way. Restart this shell once
+a day; the MCP server picks up the new token on its next
+subprocess launch.
 
 ### 1b. Register the MCP server
 

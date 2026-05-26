@@ -174,6 +174,27 @@
   const baseUrl = $derived(
     (typeof window !== 'undefined' && window.location?.origin) || 'https://dev.ramboq.com'
   );
+
+  /** Live session JWT — the operator is already authenticated on this
+   *  page (admin_guard), so their token is in sessionStorage. Surface
+   *  it so the JWT bootstrap is a one-click copy instead of the
+   *  curl + jq + password-re-entry dance.
+   *  Read on mount (sessionStorage is browser-only). */
+  let _sessionToken = $state(/** @type {string} */ (''));
+  onMount(() => {
+    try {
+      _sessionToken = sessionStorage.getItem('ramboq_token') || '';
+    } catch (_) { /* SSR or storage blocked */ }
+  });
+
+  /** Shell-quoted export line ready to paste into a terminal. Wrapped
+   *  in single quotes so any base64 padding (=) survives Zsh's history
+   *  expansion. Empty when sessionStorage has nothing yet. */
+  const exportLine = $derived(
+    _sessionToken
+      ? `export RAMBOQ_TOKEN='${_sessionToken}'`
+      : ''
+  );
   const mcpJson = $derived(JSON.stringify({
     mcpServers: {
       'ramboq-research': {
@@ -657,13 +678,30 @@
 
     <article class="lab-card">
       <h2>1. Bootstrap your JWT</h2>
-      <p>The MCP server authenticates against the RamboQuant API using your JWT. Mint one with the existing login endpoint and export it before launching Claude Code:</p>
+      <p>The MCP server authenticates against the RamboQuant API using your JWT. The fastest path is to reuse the one you're <i>already signed in with on this page</i>:</p>
+      {#if exportLine}
+        <pre class="code-block jwt-current">{exportLine}</pre>
+        <div class="jwt-actions">
+          <button class="copy-btn" type="button" onclick={() => copy(exportLine, 'export line')}>
+            Copy export line
+          </button>
+          <span class="jwt-note">
+            Paste into a shell, then launch Claude Code. JWT expires
+            after 24 h — refresh this page + re-copy to extend.
+          </span>
+        </div>
+      {:else}
+        <div class="jwt-empty">
+          No session token detected. Sign in again, refresh, then come back.
+        </div>
+      {/if}
+      <p class="jwt-or">Or mint a fresh JWT non-interactively (handy for cron / CI):</p>
       <pre class="code-block">export RAMBOQ_TOKEN=$(curl -s -X POST {baseUrl}/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{`{`}"username":"ambore","password":"<your-password>"{`}`}' \
+  -d '{`{`}"username":"<your-username>","password":"<your-password>"{`}`}' \
   | jq -r .access_token)</pre>
       <button class="copy-btn" type="button" onclick={() => copy(
-        `export RAMBOQ_TOKEN=$(curl -s -X POST ${baseUrl}/api/auth/login -H 'Content-Type: application/json' -d '{"username":"ambore","password":"<your-password>"}' | jq -r .access_token)`,
+        `export RAMBOQ_TOKEN=$(curl -s -X POST ${baseUrl}/api/auth/login -H 'Content-Type: application/json' -d '{"username":"<your-username>","password":"<your-password>"}' | jq -r .access_token)`,
         'Login command')}>Copy command</button>
     </article>
 
@@ -1173,6 +1211,45 @@
     cursor: pointer;
   }
   .copy-btn:hover { background: rgba(251, 191, 36, 0.22); }
+
+  /* JWT shortcut — show the session token + a "Copy export line"
+     button so the operator skips the curl + jq dance. */
+  .jwt-current {
+    /* Treat the token as a single shell-pasteable blob — wrap rather
+       than scroll horizontally so the operator can see it's quoted
+       properly. */
+    white-space: pre-wrap;
+    word-break: break-all;
+    border-left: 2px solid rgba(34, 197, 94, 0.55);
+  }
+  .jwt-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+  }
+  .jwt-note {
+    color: #7e97b8;
+    font-size: 0.6rem;
+    line-height: 1.4;
+  }
+  .jwt-empty {
+    padding: 0.5rem 0.7rem;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: 0.35rem;
+    color: #f87171;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+  }
+  .jwt-or {
+    margin-top: 0.9rem !important;
+    padding-top: 0.6rem;
+    border-top: 1px dashed rgba(126, 151, 184, 0.18);
+    color: #7e97b8 !important;
+    font-size: 0.66rem !important;
+  }
   .tools-table {
     width: 100%;
     border-collapse: collapse;
