@@ -177,10 +177,11 @@
   // Token is then pasted into Claude Code so the LLM's place_order
   // call carries the matching authorisation.
   let mintForm = $state({
-    kind: /** @type {'place'|'cancel'|'modify'} */ ('place'),
+    kind: /** @type {'place'|'cancel'|'modify'|'activate'|'deactivate'} */ ('place'),
     account: '', tradingsymbol: '', side: 'SELL', quantity: 1,
     mode: 'paper', order_type: 'LIMIT', price: null, trigger_price: null,
     order_id: '',
+    agent_slug: '',
   });
   /** @type {any} */
   let mintedToken = $state(null);    // {token, expires_in, purpose, ...}
@@ -235,6 +236,8 @@
     { name: 'place_order',           summary: 'Gated order placement — requires operator-minted confirm token' },
     { name: 'cancel_order',          summary: 'Gated cancel — requires confirm token bound to (account, order_id)' },
     { name: 'modify_order',          summary: 'Gated modify — token binds to new qty/price/trigger as well' },
+    { name: 'activate_agent',        summary: 'Gated activate — flips agent to status=active (highest-stakes write)' },
+    { name: 'deactivate_agent',      summary: 'Gated deactivate — flips agent back to inactive' },
     { name: 'get_audit_recent',      summary: 'Reverse-chrono trail of your MCP actions — self-check after writes' },
     { name: 'get_research_thread',   summary: 'Fetch a saved thread by id' },
     { name: 'list_research_threads', summary: 'List recent threads (optional symbol filter)' },
@@ -440,6 +443,8 @@
             <option value="place_order">place_order</option>
             <option value="cancel_order">cancel_order</option>
             <option value="modify_order">modify_order</option>
+            <option value="activate_agent">activate_agent</option>
+            <option value="deactivate_agent">deactivate_agent</option>
           </select>
         </label>
         <label>
@@ -514,9 +519,15 @@
             <option value="place">PLACE</option>
             <option value="cancel">CANCEL</option>
             <option value="modify">MODIFY</option>
+            <option value="activate">ACTIVATE agent</option>
+            <option value="deactivate">DEACTIVATE agent</option>
           </select>
         </label>
-        <label><span>Account</span><input bind:value={mintForm.account} placeholder="ZG0790" /></label>
+        {#if mintForm.kind === 'activate' || mintForm.kind === 'deactivate'}
+          <label><span>Agent slug</span><input bind:value={mintForm.agent_slug} placeholder="reliance-bull-21d" /></label>
+        {:else}
+          <label><span>Account</span><input bind:value={mintForm.account} placeholder="ZG0790" /></label>
+        {/if}
         {#if mintForm.kind === 'place'}
           <label><span>Symbol</span><input bind:value={mintForm.tradingsymbol} placeholder="NIFTY25APRFUT" /></label>
           <label><span>Side</span>

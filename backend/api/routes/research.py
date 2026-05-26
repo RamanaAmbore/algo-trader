@@ -99,24 +99,30 @@ class MintTokenRequest(msgspec.Struct):
     """Operator's input to the confirm-token mint endpoint.
 
     `kind` decides which MCP action this token authorises:
-      - 'place'  (default) — full order fields apply.
-      - 'cancel' — account + order_id only; the rest are ignored.
-      - 'modify' — account + order_id + the new fields the LLM will
-                   pass (quantity / price / order_type / trigger).
+      - 'place'      (default) — full order fields apply.
+      - 'cancel'     — account + order_id only; the rest are ignored.
+      - 'modify'     — account + order_id + the new fields the LLM will
+                       pass (quantity / price / order_type / trigger).
+      - 'activate'   — agent_slug only. Token authorises flipping ONE
+                       specific agent from inactive → active.
+      - 'deactivate' — agent_slug only. Same shape; flips active →
+                       inactive.
 
     The purpose hash includes `kind` + the relevant fields per kind,
     so a token minted to CANCEL #1234 cannot be redeemed to PLACE a
-    new order, MODIFY #1234, or CANCEL #5678."""
-    account:        str
-    kind:           str = "place"     # place / cancel / modify
+    new order, MODIFY #1234, CANCEL #5678, ACTIVATE a different
+    agent, or DEACTIVATE the same agent (different kind)."""
+    account:        str = ""
+    kind:           str = "place"     # place / cancel / modify / activate / deactivate
     tradingsymbol:  str = ""
     side:           str = ""           # BUY / SELL (place only)
     quantity:       int = 0
-    mode:           str = "paper"     # paper / live (place only)
+    mode:           str = "paper"     # paper / live (place + cancel/modify)
     order_type:     str = "LIMIT"
     price:          float | None = None
     trigger_price:  float | None = None
     order_id:       str = ""           # cancel / modify only
+    agent_slug:     str = ""           # activate / deactivate only
 
 
 class MintTokenResponse(msgspec.Struct):
@@ -195,6 +201,20 @@ class ModifyOrderRequest(msgspec.Struct):
 class SimpleOrderResponse(msgspec.Struct):
     order_id: str
     detail:   str
+
+
+class AgentStatusRequest(msgspec.Struct):
+    """LLM-initiated agent activate / deactivate. The endpoint name
+    decides direction (activate vs deactivate); the request body just
+    carries the slug + confirm token."""
+    confirm_token: str
+    agent_slug:    str
+
+
+class AgentStatusResponse(msgspec.Struct):
+    agent_slug:    str
+    status:        str
+    detail:        str
 
 
 class AuditRow(msgspec.Struct):
@@ -326,6 +346,18 @@ def _purpose_hash_modify(account: str, order_id: str, qty: int,
         f"{float(price or 0):.4f}",
         f"{float(trigger_price or 0):.4f}",
         (mode or "live").lower().strip(),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _purpose_hash_agent_status(action: str, agent_slug: str) -> str:
+    """ACTIVATE / DEACTIVATE pins (action, agent_slug). The action is
+    part of the kind+hash so a deactivate token cannot be redeemed to
+    activate (and vice versa), even for the same agent — symmetric
+    protection against the LLM bait-and-switching the direction."""
+    parts = [
+        action.lower().strip(),     # 'activate' or 'deactivate'
+        (agent_slug or "").strip(),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -693,15 +725,17 @@ class ResearchController(Controller):
         the operator pre-minted the token)."""
         kind = (data.kind or "place").lower().strip()
         acct = (data.account or "").strip()
-        if not acct:
-            raise HTTPException(status_code=400, detail="account is required")
-        if kind not in ("place", "cancel", "modify"):
+        if kind not in ("place", "cancel", "modify", "activate", "deactivate"):
             raise HTTPException(status_code=400,
-                detail="kind must be place, cancel, or modify")
+                detail="kind must be place, cancel, modify, activate, or deactivate")
+        # Agent-status kinds don't need an account.
+        if kind in ("place", "cancel", "modify") and not acct:
+            raise HTTPException(status_code=400, detail="account is required")
 
         order_type = (data.order_type or "LIMIT").upper().strip()
         qty = int(data.quantity or 0)
         oid = (data.order_id or "").strip()
+        agent_slug = (data.agent_slug or "").strip()
 
         if kind == "place":
             side = (data.side or "").upper().strip()
@@ -729,7 +763,7 @@ class ResearchController(Controller):
                 raise HTTPException(status_code=400, detail="mode must be paper or live")
             ph = _purpose_hash_cancel(acct, oid, mode_cm)
             purpose = f"CANCEL [{mode_cm.upper()}] · order_id={oid} · acct={acct}"
-        else:  # modify
+        elif kind == "modify":
             if not oid:
                 raise HTTPException(status_code=400, detail="order_id is required for modify")
             mode_cm = (data.mode or "live").lower().strip()
@@ -743,6 +777,13 @@ class ResearchController(Controller):
                 f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
             ])) or "no changes"
             purpose = f"MODIFY [{mode_cm.upper()}] · order_id={oid} · {mod_chunk} · acct={acct}"
+        else:
+            # activate / deactivate — single field agent_slug.
+            if not agent_slug:
+                raise HTTPException(status_code=400,
+                    detail=f"agent_slug is required for {kind}")
+            ph = _purpose_hash_agent_status(kind, agent_slug)
+            purpose = f"{kind.upper()} · agent={agent_slug}"
 
         token, expires = _mint_token(_user_id(request), ph)
         now = int(time.time())
@@ -1131,3 +1172,105 @@ class ResearchController(Controller):
             logger.warning(f"MCP modify_order Telegram ping failed: {e}")
 
         return SimpleOrderResponse(order_id=res.order_id, detail="modified (live)")
+
+    # ── Phase 12 — gated activate / deactivate ────────────────────────
+
+    async def _agent_status_change(
+        self, data: AgentStatusRequest, request: Request,
+        *, action: str,
+    ) -> AgentStatusResponse:
+        """Shared body for both activate + deactivate routes — only the
+        action verb differs. Token gate, audit row, Telegram ping all
+        share the same shape."""
+        assert action in ("activate", "deactivate")
+        slug = (data.agent_slug or "").strip()
+        if not slug:
+            raise HTTPException(status_code=400, detail="agent_slug is required")
+        ph = _purpose_hash_agent_status(action, slug)
+
+        request_id = _secrets.token_hex(6)
+        user_id = _user_id(request)
+
+        async def _audit(status_: str, summary: str) -> None:
+            try:
+                async with async_session() as s:
+                    s.add(McpAudit(
+                        tool=f"{action}_agent",
+                        user_id=user_id,
+                        args_redacted={
+                            "agent_slug": slug,
+                            "had_token":  bool(data.confirm_token),
+                        },
+                        result_status=status_,
+                        result_summary=summary[:1024],
+                        request_id=request_id,
+                    ))
+                    await s.commit()
+            except Exception as e:
+                logger.warning(f"mcp_audit insert failed: {e}")
+
+        err = _consume_token(data.confirm_token or "", user_id, ph)
+        if err:
+            await _audit("denied", err)
+            raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
+
+        # Forward to existing AgentController activate/deactivate.
+        from backend.api.routes.agents import AgentController
+        try:
+            ctrl = AgentController(owner=None)
+            if action == "activate":
+                await ctrl.activate_agent(slug)
+                new_status = "active"
+            else:
+                await ctrl.deactivate_agent(slug)
+                new_status = "inactive"
+        except HTTPException as e:
+            await _audit("error", f"{e.status_code}: {e.detail}")
+            raise
+        except Exception as e:
+            await _audit("error", f"unexpected: {e}")
+            logger.exception(f"MCP {action}_agent: underlying handler raised")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        await _audit("ok", f"agent={slug} → {new_status}")
+        logger.info(
+            f"MCP {action}_agent OK: user={user_id} agent={slug} "
+            f"new_status={new_status}"
+        )
+
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            verb = "ACTIVATE" if action == "activate" else "DEACTIVATE"
+            _send_telegram(
+                f"<b>MCP {verb}</b> agent=<code>{slug}</code> → status={new_status}\n"
+                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+            )
+        except Exception as e:
+            logger.warning(f"MCP {action}_agent Telegram ping failed: {e}")
+
+        return AgentStatusResponse(
+            agent_slug=slug, status=new_status,
+            detail=f"agent {slug!r} {action}d",
+        )
+
+    @post("/activate-agent")
+    async def activate_agent(self, data: AgentStatusRequest, request: Request) -> AgentStatusResponse:
+        """LLM-initiated agent activation. Requires a confirm token
+        minted with kind='activate' for THIS specific agent_slug. The
+        token cannot be redeemed against:
+          - a different agent_slug (purpose hash binds it)
+          - a deactivate request (the action verb is part of the hash)
+          - twice (single-use)
+        Activation is the highest-stakes write the LLM can request
+        because it lets the agent fire automatically on subsequent
+        ticks; the token gate makes it impossible for an LLM to flip
+        an agent on without explicit per-call operator approval."""
+        return await self._agent_status_change(data, request, action="activate")
+
+    @post("/deactivate-agent")
+    async def deactivate_agent(self, data: AgentStatusRequest, request: Request) -> AgentStatusResponse:
+        """LLM-initiated agent deactivation. Same gate as activate.
+        Lower-stakes (turns off automatic firing) but still requires
+        a separate token kind so a deactivate token can't be reused
+        to activate, and vice versa."""
+        return await self._agent_status_change(data, request, action="deactivate")

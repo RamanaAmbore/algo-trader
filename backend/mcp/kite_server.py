@@ -691,6 +691,61 @@ async def get_audit_recent(
 
 
 @app.tool()
+async def activate_agent(confirm_token: str, agent_slug: str) -> dict:
+    """Flip an agent from inactive → active. REQUIRES a confirm token
+    minted with kind='activate' for THIS exact agent_slug.
+
+    Activation is the HIGHEST-STAKES write the LLM can request — once
+    active, the agent fires automatically on every matching tick. The
+    token gate makes this impossible without explicit per-call operator
+    approval; you cannot mint the token yourself.
+
+    Recommended pattern after promote → simulator review:
+      1. save_agent_draft(...) → returns inactive Agent + thread link
+      2. (operator: Run in Simulator on /agents, reviews fires)
+      3. Ask operator to mint kind='activate' token for the slug
+      4. activate_agent(confirm_token=..., agent_slug=...)
+      5. Verify with get_audit_recent(tool='activate_agent', limit=3)
+
+    Args:
+        confirm_token: 32-char hex token (kind='activate').
+        agent_slug:    The agent's slug (visible in /agents or the
+                       save_agent_draft response).
+
+    Returns:
+        {agent_slug, status='active', detail}.
+    """
+    return await _post("/api/research/activate-agent", {
+        "confirm_token": confirm_token,
+        "agent_slug":    agent_slug,
+    })
+
+
+@app.tool()
+async def deactivate_agent(confirm_token: str, agent_slug: str) -> dict:
+    """Flip an agent from active → inactive. REQUIRES a confirm token
+    minted with kind='deactivate' for THIS exact agent_slug. A
+    deactivate token CANNOT be redeemed to activate (the action verb
+    is part of the purpose hash).
+
+    Lower-stakes than activate, but still gated — accidentally
+    deactivating a critical risk agent (e.g. a loss-cut rule) at the
+    wrong moment is its own kind of trouble.
+
+    Args:
+        confirm_token: 32-char hex token (kind='deactivate').
+        agent_slug:    The agent's slug.
+
+    Returns:
+        {agent_slug, status='inactive', detail}.
+    """
+    return await _post("/api/research/deactivate-agent", {
+        "confirm_token": confirm_token,
+        "agent_slug":    agent_slug,
+    })
+
+
+@app.tool()
 async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
     """List recent research threads. Filter by symbol when revisiting
     a specific stock's history.
