@@ -160,6 +160,14 @@ SEEDS: list[tuple] = [
      "band cleanup. 0 disables auto-purge.",
      "days", {"min": 0, "max": 365, "step": 1}),
 
+    # ── MCP / Lab — Phase 6 ──────────────────────────────────────────
+    ("mcp", "mcp.audit_retention_days", "int", 90,
+     "mcp_audit rows (every MCP-initiated mutation) older than this are "
+     "eligible for daily purge. 0 disables — keeps everything indefinitely. "
+     "Composer.trade keeps 1 year, IBKR 7; 90 days is the lightweight Indian-"
+     "retail default and covers a full quarter of LLM-initiated activity.",
+     "days", {"min": 0, "max": 730, "step": 1}),
+
     # ── Notifications (per-branch capability toggles) ───────────────────
     # `is_enabled()` in utils.py reads notifications.<cap>_enabled from
     # the DB first, falling back to the cap_in_<branch>.<feature> YAML

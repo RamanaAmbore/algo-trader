@@ -736,6 +736,60 @@ async def _task_sim_cleanup() -> None:
         await _purge_once()
 
 
+async def _task_mcp_audit_cleanup() -> None:
+    """
+    Purge mcp_audit rows older than `mcp.audit_retention_days`
+    (default 90). Runs once daily at 03:15 IST — markets closed,
+    sim cleanup has finished, low-contention window.
+
+    Setting `mcp.audit_retention_days = 0` disables the purge so
+    the table can grow indefinitely (useful while debugging a
+    long-running incident — flip back to 90 once done).
+
+    Forensic note: keeping 90 days covers a full quarter's worth
+    of LLM-initiated actions which is enough for most compliance
+    asks (Composer.trade keeps 1 year, IBKR 7 — a 90-day default
+    is the lightweight equivalent for an Indian retail setup).
+    """
+    from backend.api.database import async_session
+    from backend.api.models import McpAudit
+    from backend.shared.helpers.settings import get_int
+    from sqlalchemy import delete as sql_delete
+
+    async def _purge_once():
+        days = get_int("mcp.audit_retention_days", 90)
+        if days <= 0:
+            logger.info("Background: mcp_audit cleanup disabled (retention_days=0)")
+            return
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        try:
+            async with async_session() as s:
+                res = await s.execute(
+                    sql_delete(McpAudit).where(McpAudit.created_at < cutoff)
+                )
+                await s.commit()
+                logger.info(
+                    f"Background: mcp_audit cleanup purged "
+                    f"{res.rowcount or 0} rows older than {days} days"
+                )
+        except Exception as e:
+            logger.error(f"Background: mcp_audit cleanup failed: {e}")
+
+    await asyncio.sleep(45)  # let other startup tasks settle
+    await _purge_once()
+
+    while True:
+        # Daily at 03:15 IST — 15 min after sim cleanup runs.
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=15, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: mcp_audit cleanup sleeping {sleep_s/3600:.1f}h until 03:15 IST")
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -751,6 +805,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_instruments(),        name="bg-instruments"),
         asyncio.create_task(_task_daily_snapshot(),     name="bg-daily-snapshot"),
         asyncio.create_task(_task_sim_cleanup(),        name="bg-sim-cleanup"),
+        asyncio.create_task(_task_mcp_audit_cleanup(),  name="bg-mcp-audit-cleanup"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

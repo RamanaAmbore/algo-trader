@@ -231,6 +231,7 @@
     { name: 'place_order',           summary: 'Gated order placement — requires operator-minted confirm token' },
     { name: 'cancel_order',          summary: 'Gated cancel — requires confirm token bound to (account, order_id)' },
     { name: 'modify_order',          summary: 'Gated modify — token binds to new qty/price/trigger as well' },
+    { name: 'get_audit_recent',      summary: 'Reverse-chrono trail of your MCP actions — self-check after writes' },
     { name: 'get_research_thread',   summary: 'Fetch a saved thread by id' },
     { name: 'list_research_threads', summary: 'List recent threads (optional symbol filter)' },
     { name: 'get_server_info',       summary: 'Diagnostic — base URL + token presence' },

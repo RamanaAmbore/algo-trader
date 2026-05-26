@@ -520,6 +520,45 @@ async def modify_order(
 
 
 @app.tool()
+async def get_audit_recent(
+    tool: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """Recent MCP-initiated actions (Phase 3+) — lets you verify your
+    own work landed correctly without round-tripping to the operator.
+
+    Each row carries the redacted args, the result_status
+    (ok / denied / error), the result_summary, and the request_id —
+    same data the Lab page's Audit tab shows. Token material is
+    NEVER returned, even via this tool.
+
+    Useful pattern after a place_order call:
+
+        result = place_order(confirm_token=..., ...)
+        # Verify with a sanity peek:
+        recent = get_audit_recent(tool="place_order", limit=3)
+        # → should show your call as the most recent 'ok' row
+
+    Args:
+        tool:   Optional filter — 'place_order', 'cancel_order',
+                'modify_order'.
+        status: Optional filter — 'ok' / 'denied' / 'error'.
+        limit:  Max rows (default 50, max 1000).
+
+    Returns:
+        dict with `rows` list (reverse-chrono) of {id, tool, user_id,
+        args_redacted, result_status, result_summary, request_id,
+        created_at}.
+    """
+    params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 1000))}
+    if tool:   params["tool"]   = tool
+    if status: params["status"] = status
+    rows = await _get("/api/research/audit", params)
+    return {"rows": rows or [], "count": len(rows or [])}
+
+
+@app.tool()
 async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
     """List recent research threads. Filter by symbol when revisiting
     a specific stock's history.
