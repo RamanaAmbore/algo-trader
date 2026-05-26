@@ -188,7 +188,6 @@
       Agent Tokens
     </h1>
     <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
-    <span class="algo-ts">{refreshedAt}</span>
     <div class="flex gap-2">
       {#if !isDemo}
         <button onclick={openCreate}

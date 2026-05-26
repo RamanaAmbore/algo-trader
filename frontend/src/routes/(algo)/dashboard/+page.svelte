@@ -264,10 +264,12 @@
   // _positions / _holdings. No extra fetches; the HTML tables
   // below render directly from these derivations.
   //
-  // Day-change for positions comes from row.pnl (intraday is the
-  // whole position life). For holdings it's row.day_change (the
-  // delta from yesterday's close). Both sum to the same TOTAL the
-  // existing MarketPulse summary grids show.
+  // Day-change for positions comes from row.day_change_val (today's
+  // P&L; previously used row.pnl which is life-to-date and was
+  // incorrectly labelled "Day P&L"). For holdings it's also
+  // row.day_change_val per the HoldingRow schema; legacy fallbacks
+  // for `day_change` / `day_change_pct_amount` are dead field names
+  // that never exist on the row.
   /** @typedef {{account: string, day_pnl: number, pnl: number, inv_val: number, cur_val: number}} SumRow */
 
   // Pre-seed byAcct with every broker-registry account so the summary
@@ -295,7 +297,7 @@
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
-      byAcct[a].day_pnl += Number(r.pnl) || 0;
+      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl) || 0;
     }
     return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
@@ -307,7 +309,7 @@
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
-      byAcct[a].day_pnl += Number(r.day_change ?? r.day_change_pct_amount ?? 0);
+      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl) || 0;
       byAcct[a].inv_val += Number(r.inv_val) || 0;
       byAcct[a].cur_val += Number(r.cur_val) || 0;
@@ -522,7 +524,7 @@
     const raw = [];
     for (const h of _accountFilter(_holdings, accounts)) {
       const sym = String(h.tradingsymbol || h.symbol || '');
-      const pnl = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
+      const pnl = Number(h.day_change_val ?? 0);
       if (!sym) continue;
       if (cls) {
         const c = classifyByIndex(sym);
@@ -897,13 +899,24 @@
       _positions = Array.isArray(positions) ? positions : (positions?.rows ?? []);
       _holdings  = Array.isArray(holdings)  ? holdings  : (holdings?.rows  ?? []);
 
-      // Sum day's P&L from positions (day-pnl) + holdings (day_change).
+      // Sum today's P&L + total capital base across BOTH books.
+      //   - positions: day P&L = day_change_val (NOT pnl — that's
+      //     life-to-date and inflates the hero number when used as
+      //     "today's" change). Capital deployed ≈ Σ |avg_price × qty|
+      //     (notional cost basis — premium paid for longs, premium
+      //     received for shorts, both as positive value).
+      //   - holdings: day P&L = day_change_val. Capital = inv_val.
+      // Earlier `_startingNav = holdings.inv_val` only, which ignored
+      // positions capital — `_todayPct = dayPnl / inv_val` inflated
+      // the displayed % whenever F&O positions were open.
       let dayPnl = 0;
       let invVal  = 0;
-      for (const p of _positions) dayPnl += Number(p.pnl) || 0;
+      for (const p of _positions) {
+        dayPnl += Number(p.day_change_val) || 0;
+        invVal += Math.abs(Number(p.average_price) * Number(p.quantity)) || 0;
+      }
       for (const h of _holdings) {
-        const dc = Number(h.day_change ?? h.day_change_pct_amount ?? 0);
-        dayPnl += dc;
+        dayPnl += Number(h.day_change_val) || 0;
         invVal += Number(h.inv_val ?? 0);
       }
       _todayPnl    = dayPnl;

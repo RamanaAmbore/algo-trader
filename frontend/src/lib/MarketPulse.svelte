@@ -1123,55 +1123,56 @@
   function isTotalRow(r) { return r && r.account === 'TOTAL'; }
 
   // Positions Summary — Day P&L + Day % + P&L per account.
+  //
+  // Pass-through: backend `/api/positions` already returns one row per
+  // account + a TOTAL row, with `day_change_percentage` correctly
+  // computed as Σ day_change_val / Σ |close × qty| × 100. The frontend
+  // used to re-derive `day_change_percentage` from a phantom `inv_val`
+  // field that doesn't exist on `PositionsSummaryRow` — silent null.
+  // TOTAL is dropped when an account filter is active because it
+  // reflects every account, not the filtered subset.
   const positionsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('positions')) return [];
-    const byAcct = /** @type {Record<string, any>} */ ({});
-    for (const r of positionsSummary) {
-      const a = r.account;
-      if (!a) continue;
-      // Honour the account multiselect — without this, summary rows
-      // showed every account regardless of the picker. Main grid rows
-      // already respect _includesAccount via scopedPositions; summary
-      // was the missing surface.
-      if (!_includesAccount(a)) continue;
-      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, _inv_val: 0 };
-      byAcct[a].day_pnl  += Number(r.day_change_val) || 0;
-      byAcct[a].pnl      += Number(r.pnl)            || 0;
-      byAcct[a]._inv_val += Number(r.inv_val)         || 0;
-    }
-    // Derive weighted-average percentages after accumulating the sums.
-    for (const row of Object.values(byAcct)) {
-      const iv = row._inv_val;
-      row.day_change_percentage = iv ? (row.day_pnl / iv) * 100 : null;
-      delete row._inv_val;
-    }
-    return Object.values(byAcct);
+    const filterActive = selectedAccounts && selectedAccounts.length > 0;
+    return positionsSummary
+      .filter(r => {
+        if (!r?.account) return false;
+        if (r.account === 'TOTAL') return !filterActive;
+        return _includesAccount(r.account);
+      })
+      .map(r => ({
+        account: r.account,
+        day_pnl: Number(r.day_change_val) || 0,
+        pnl:     Number(r.pnl)            || 0,
+        day_change_percentage: r.day_change_percentage ?? null,
+      }));
   });
 
   // Holdings Summary — Day P&L + Day % + P&L + P&L % + Cur Val + Inv Val per account.
+  //
+  // Pass-through for the same reason as positions above: backend's
+  // `day_change_percentage` uses the (cur_val − day_change_val) denominator
+  // (yesterday's value), matching `PerformancePage.makeHoldingsTotals`.
+  // The frontend used to divide by `inv_val` instead, which gave a
+  // different number for the same column on the same screen.
   const holdingsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('holdings')) return [];
-    const byAcct = /** @type {Record<string, any>} */ ({});
-    for (const r of holdingsSummary) {
-      const a = r.account;
-      if (!a) continue;
-      // Same account-multiselect filter as positionsSummaryData above —
-      // backend summary rows arrive per-account; we need to scope by
-      // the operator's picker before aggregating.
-      if (!_includesAccount(a)) continue;
-      if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, cur_val: 0, inv_val: 0 };
-      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
-      byAcct[a].pnl     += Number(r.pnl)            || 0;
-      byAcct[a].cur_val += Number(r.cur_val)         || 0;
-      byAcct[a].inv_val += Number(r.inv_val)         || 0;
-    }
-    // Derive weighted-average percentages after accumulating the sums.
-    for (const row of Object.values(byAcct)) {
-      const iv = row.inv_val;
-      row.day_change_percentage = iv ? (row.day_pnl / iv) * 100 : null;
-      row.pnl_percentage        = iv ? (row.pnl     / iv) * 100 : null;
-    }
-    return Object.values(byAcct);
+    const filterActive = selectedAccounts && selectedAccounts.length > 0;
+    return holdingsSummary
+      .filter(r => {
+        if (!r?.account) return false;
+        if (r.account === 'TOTAL') return !filterActive;
+        return _includesAccount(r.account);
+      })
+      .map(r => ({
+        account: r.account,
+        day_pnl: Number(r.day_change_val) || 0,
+        pnl:     Number(r.pnl)            || 0,
+        cur_val: Number(r.cur_val)        || 0,
+        inv_val: Number(r.inv_val)        || 0,
+        day_change_percentage: r.day_change_percentage ?? null,
+        pnl_percentage:        r.pnl_percentage        ?? null,
+      }));
   });
 
   const positionsSummaryBody  = $derived(
@@ -2981,7 +2982,10 @@
         class="mp-add-btn">
         +
       </button>
-      <span class="ml-auto">
+      <span class="ml-auto flex items-center gap-2">
+        {#if refreshedAt}
+          <span class="algo-ts" title="Last broker refresh">{refreshedAt}</span>
+        {/if}
         <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="market pulse" />
       </span>
     </div>

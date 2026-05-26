@@ -334,7 +334,6 @@
   <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
     <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">User Management</h1>
     <InfoHint popup text="User management: approve / suspend / terminate partners. Admins and <b>designated</b> users can act; only admins can promote roles." />
-    <span class="algo-ts">{refreshedAt}</span>
     <button onclick={() => showCreate = !showCreate}
       class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold">
       {showCreate ? 'Cancel' : 'Create User'}
