@@ -260,6 +260,15 @@ export function clientTimestamp() {
   return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} ${estTz}`;
 }
 
+// Reactive ticking version of clientTimestamp(). Pages binding `{$nowStamp}`
+// get the dual-tz clock string and it updates every 60 s automatically.
+// Earlier callsites used `{clientTimestamp()}` which captured the string at
+// first render and stayed frozen until the page was navigated away from.
+export const nowStamp = writable(browser ? clientTimestamp() : '');
+if (browser) {
+  setInterval(() => nowStamp.set(clientTimestamp()), 60_000);
+}
+
 /** Short DD-MMM HH:MM:SS IST | DD-MMM HH:MM:SS EST/EDT for log entries.
  *  Input: ISO string or Date. EST vs EDT label tracks DST automatically. */
 export function logTime(iso) {

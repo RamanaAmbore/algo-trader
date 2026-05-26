@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
   import { goto } from '$app/navigation';
-  import { clientTimestamp, logTimeIst } from '$lib/stores';
+  import { nowStamp, logTimeIst } from '$lib/stores';
   import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandBar from '$lib/CommandBar.svelte';
@@ -182,7 +182,7 @@
 <div class="flex flex-col h-[calc(100vh-8rem)]">
 <div class="page-header">
   <h1 class="page-title-chip">Orders</h1>
-  <span class="algo-ts">{clientTimestamp()}</span>
+  <span class="algo-ts">{$nowStamp}</span>
 </div>
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}

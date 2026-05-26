@@ -7,7 +7,7 @@
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, marketAwareInterval } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchPositions, fetchSimStatus, fetchStrategyAnalytics,
@@ -1521,7 +1521,7 @@
 <div class="page-header">
   <h1 class="page-title-chip">Derivatives Analytics</h1>
   <InfoHint text={'Pick an underlying to load every option / future on it from your ' + (simActive ? '<b>simulator</b> book' : '<b>live</b> book') + '. The payoff diagram below charts the aggregated position; uncheck a row in the Candidates panel to drop it from the payoff. Click <b>+ Add</b> to open the option chain and pick draft strikes (modelled as hypothetical positions). Stats below the chart explain themselves — click any <span class="font-mono">(i)</span> chip for a definition.'} />
-  <span class="algo-ts">{clientTimestamp()}</span>
+  <span class="algo-ts">{$nowStamp}</span>
   {#if simActive}
     <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
   {/if}

@@ -9,7 +9,7 @@
   import CollapseButton from '$lib/CollapseButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
-  import { clientTimestamp, visibleInterval } from '$lib/stores';
+  import { clientTimestamp, nowStamp, visibleInterval } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
@@ -1378,7 +1378,7 @@
 <div class="page-header">
   <h1 class="algo-page-title">Dashboard</h1>
   <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
-  <span class="algo-ts">{clientTimestamp()}</span>
+  <span class="algo-ts">{$nowStamp}</span>
 </div>
 
 <!-- Hero row — 6 chips answering "what changed since I last looked?" -->

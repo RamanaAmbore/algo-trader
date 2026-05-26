@@ -4,7 +4,7 @@
   // ticket, or basket from a dedicated workspace. LogPanel below shows
   // command history + agent / order / system streams.
 
-  import { authStore, clientTimestamp } from '$lib/stores';
+  import { authStore, nowStamp } from '$lib/stores';
   import InfoHint        from '$lib/InfoHint.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -23,7 +23,7 @@
   <div class="page-header">
     <h1 class="page-title-chip">Console</h1>
     <InfoHint popup text="Order workspace: type commands (<code>buy ZG#### NIFTY25APRFUT 50 limit 22000</code>), use the Ticket form, or build a basket. Tokenized autocomplete drives the Command tab." />
-    <span class="algo-ts">{clientTimestamp()}</span>
+    <span class="algo-ts">{$nowStamp}</span>
   </div>
 
   {#if isDemo}

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { clientTimestamp } from '$lib/stores';
+  import { nowStamp } from '$lib/stores';
 
   const faqs = [
     {
@@ -159,7 +159,7 @@
   })}</script>`}
 </svelte:head>
 
-<div class="text-[0.65rem] text-muted mb-2">{clientTimestamp()}</div>
+<div class="text-[0.65rem] text-muted mb-2">{$nowStamp}</div>
 
 <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
 <h1 class="page-heading">Frequently Asked Questions</h1>

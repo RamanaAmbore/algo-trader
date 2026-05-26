@@ -18,7 +18,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, clientTimestamp } from '$lib/stores';
+  import { authStore, nowStamp } from '$lib/stores';
   import InfoHint from '$lib/InfoHint.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
@@ -74,7 +74,7 @@
     <h1 class="algo-page-title">Lab</h1>
     <InfoHint popup text="Research workspace for the two non-execution surfaces: <b>Scenario</b> (fabricated price moves on real positions — formerly Simulator) and <b>Backtest</b> (historical Kite OHLCV candles fed through the agent engine — formerly Replay). Your persistent master mode (LIVE/PAPER) lives in the navbar dropdown, separate from this page." />
   </div>
-  <span class="algo-ts">{clientTimestamp()}</span>
+  <span class="algo-ts">{$nowStamp}</span>
 </div>
 
 <div class="exec-tabs" role="tablist" aria-label="Lab workspace">

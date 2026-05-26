@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { clientTimestamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
+  import { nowStamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import InfoHint from '$lib/InfoHint.svelte';
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent,
@@ -514,7 +514,7 @@
     <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
       {aiOpen ? '× Close AI' : '✦ Ask AI'}
     </button>
-    <span class="algo-ts">{clientTimestamp()}</span>
+    <span class="algo-ts">{$nowStamp}</span>
   </span>
 </div>
 
