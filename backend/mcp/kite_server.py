@@ -254,6 +254,100 @@ async def get_economic_snapshot() -> dict:
 
 
 @app.tool()
+async def get_funds_summary(account: str | None = None) -> dict:
+    """Cash + margin snapshot per broker account. Use BEFORE proposing
+    a trade to confirm the operator can actually fund it — Kite rejects
+    place_order with cryptic 'insufficient funds' messages, much better
+    to size legs against this snapshot up front.
+
+    Args:
+        account: Optional account filter (e.g. ZG0790). Omit for all.
+
+    Returns:
+        dict with `rows` list. Each row: {account, segment, cash,
+        available_margin, used_margin, opening_balance, …}.
+    """
+    res = await _get("/api/funds/")
+    rows = (res or {}).get("rows") or []
+    if account:
+        a = account.upper().strip()
+        rows = [r for r in rows if (r.get("account") or "").upper() == a]
+    return {
+        "rows":         rows,
+        "count":        len(rows),
+        "refreshed_at": (res or {}).get("refreshed_at"),
+    }
+
+
+@app.tool()
+async def get_watchlist(name: str) -> dict:
+    """Look up one of the operator's curated watchlists by name and
+    return its symbol list. Useful for scoping research to a known set —
+    "do a relative-value scan across my IT watchlist" beats hand-listing
+    every TCS / INFY / WIPRO / HCL by name in the prompt.
+
+    Matches case-insensitive on watchlist name. Returns 404-style empty
+    payload (with a clear note) if no watchlist with that name exists.
+
+    Args:
+        name: Watchlist name (e.g. 'Default', 'IT', 'Banking').
+
+    Returns:
+        dict with {id, name, items: [{exchange, tradingsymbol, ...}],
+        item_count}. When no match: {error, available_names: [...]}.
+    """
+    target = (name or "").strip().lower()
+    if not target:
+        return {"error": "name is required", "items": []}
+    # 1. List all → find by name (case-insensitive).
+    wls = await _get("/api/watchlist/")
+    match = next((w for w in (wls or []) if (w.get("name") or "").strip().lower() == target), None)
+    if not match:
+        return {
+            "error":           f"No watchlist named {name!r}",
+            "available_names": [w.get("name") for w in (wls or []) if w.get("name")],
+            "items":           [],
+        }
+    # 2. Fetch full detail.
+    full = await _get(f"/api/watchlist/{int(match['id'])}")
+    items = (full or {}).get("items") or []
+    return {
+        "id":         full.get("id"),
+        "name":       full.get("name"),
+        "items":      items,
+        "item_count": len(items),
+    }
+
+
+@app.tool()
+async def get_pnl_attribution(period: str = "today", mode: str = "all") -> dict:
+    """P&L attribution grouped by the agent that generated each order.
+    Use this to answer "which of my agents made money this week?" or
+    "is my new loss-cut agent actually saving capital?".
+
+    The PnL figure is a chase-slippage proxy — see the platform doc for
+    the exact formula. Manual ticket orders (no agent_id) cluster under
+    a synthetic '(Operator ticket)' row.
+
+    Args:
+        period: today / week / month / all (default today).
+        mode:   live / paper / all (default all). Filter by AlgoOrder.mode.
+
+    Returns:
+        dict with `agents` list of {agent_slug, agent_name, orders,
+        filled, gross_pnl, win_pct, avg_slippage}.
+    """
+    valid_periods = {"today", "week", "month", "all"}
+    valid_modes = {"live", "paper", "all"}
+    if period not in valid_periods:
+        return {"error": f"period must be one of {sorted(valid_periods)}", "agents": []}
+    if mode not in valid_modes:
+        return {"error": f"mode must be one of {sorted(valid_modes)}", "agents": []}
+    rows = await _get("/api/admin/pnl/by-agent", {"period": period, "mode": mode})
+    return {"agents": rows or [], "count": len(rows or []), "period": period, "mode": mode}
+
+
+@app.tool()
 async def list_agents(status: str | None = None, limit: int = 200) -> dict:
     """List agent rows from the agents table. Useful for "show me my
     NIFTY-related agents" or finding the agent that just fired.
