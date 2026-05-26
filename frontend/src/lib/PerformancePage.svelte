@@ -411,7 +411,11 @@
     const total_pnl        = sum('pnl');
     const total_cur_val    = sum('cur_val');
     const total_day_change = sum('day_change_val');
-    const total_inv_val    = total_cur_val - total_pnl;
+    // Earlier this derived total_inv_val from cur_val - pnl. That's an
+    // approximation that drifts when holdings have partial intraday
+    // sells (opening_quantity ≠ quantity). The HoldingRow schema carries
+    // inv_val directly — just sum it.
+    const total_inv_val    = sum('inv_val');
     const total_prev_val   = total_cur_val - total_day_change;
     return {
       account: '',

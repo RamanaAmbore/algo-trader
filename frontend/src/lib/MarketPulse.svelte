@@ -2328,10 +2328,11 @@
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
     const closes = sparklines[sym];
     if (!closes || closes.length < 2) {
-      return '<span style="color:#7e97b8;font-size:0.6rem;padding:0 4px">—</span>';
+      return '<span style="color:#7e97b8;font-size:0.6rem;padding:0 6px">—</span>';
     }
-    // Compact width (32px SVG inside a 36px column) — frees up
-    // horizontal space so the LTP column stays visible on mobile.
+    // SVG sized at 32×14 with 6 px breathing room on each side (wrapped
+    // in an inline-block span so the column header letterforms don't
+    // crowd the curve). Column width = 32 + 12 = 44.
     const W = 32, H = 14, PAD = 2;
     const min = Math.min(...closes);
     const max = Math.max(...closes);
@@ -2341,7 +2342,7 @@
     const pts   = closes.map((v, i) => `${(PAD + i * xStep).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
     const up    = closes[closes.length - 1] >= closes[0];
     const color = up ? 'rgba(91,142,149,0.85)' : 'rgba(196,122,61,0.85)';
-    return `<svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+    return `<span style="display:inline-block;padding:0 6px"><svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>`;
   }
 
   function dirCls(v) {
@@ -2406,11 +2407,12 @@
       { field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
         cellRenderer: symRenderer, sortable: true,
         cellClass: 'ag-col-sym ag-col-fill' },
-      // 5d column at 36 px with SVG 32×14. ag-Grid's default minWidth
-      // is 50 px, hence the explicit minWidth: 36 / maxWidth: 40 —
-      // without them the column would silently clamp wider.
-      { field: 'tradingsymbol', headerName: '5d', width: 36, minWidth: 36,
-        maxWidth: 40, colId: 'sparkline',
+      // 5d column at 44 px = SVG 32×14 + 6 px padding on each side so
+      // the curve never crowds the column edges. ag-Grid's default
+      // minWidth is 50 px, hence the explicit minWidth/maxWidth pair
+      // (44/48) — without them the column would silently clamp wider.
+      { field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
+        maxWidth: 48, colId: 'sparkline',
         cellRenderer: sparkRenderer, sortable: false, resizable: false,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
@@ -2903,7 +2905,7 @@
       // covers every regression in one shot.
       const cleaned = Array.isArray(state)
         ? state.map(c => c?.colId === 'sparkline'
-            ? { ...c, hide: false, width: 36, actualWidth: 36, flex: null }
+            ? { ...c, hide: false, width: 44, actualWidth: 44, flex: null }
             : c)
         : state;
       grid.applyColumnState({ state: cleaned, applyOrder: true });
