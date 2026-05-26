@@ -175,8 +175,9 @@ test(`Settings tab — 23 tools + new kinds in selector [${BASE}]`, async ({ pag
   expect(kindOptions.length).toBe(5);
   expect(kindOptions.join(' ')).toMatch(/ACTIVATE/);
   expect(kindOptions.join(' ')).toMatch(/DEACTIVATE/);
-  // Pick ACTIVATE agent → form should swap Account for Agent slug
-  await page.locator('.rbq-select-option', { hasText: /^ACTIVATE agent$/ }).first().click();
+  // Pick ACTIVATE agent → form should swap Account for Agent slug.
+  // Match the inner label span to avoid trailing whitespace.
+  await page.locator('.rbq-select-option-label').filter({ hasText: 'ACTIVATE agent' }).first().click();
   await page.waitForTimeout(150);
   const labels = await page.locator('.mint-grid label span').allTextContents();
   expect(labels).toContain('Agent slug');

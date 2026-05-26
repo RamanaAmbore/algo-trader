@@ -128,19 +128,28 @@ test(`Lab mint widget — Mode dropdown for cancel/modify [${BASE}]`, async ({ p
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();
   await page.waitForTimeout(400);
 
-  // Switch the Kind dropdown to CANCEL via the custom Select component
-  // (open trigger → click matching option). page-internal-Select renders
-  // .rbq-select-trigger + .rbq-select-option items.
+  // Switch the Kind dropdown to CANCEL via the custom Select component.
+  // The Select component renders .rbq-select-trigger + a popup with
+  // .rbq-select-option-label items. Only the SELECTED option's label
+  // shows in the trigger until the user opens it, so test the option
+  // list directly by opening the Mode dropdown.
   const kindTrigger = page.locator('.mint-grid .rbq-select-trigger').first();
   await kindTrigger.click();
   await page.waitForTimeout(150);
-  await page.locator('.rbq-select-option', { hasText: /^CANCEL$/ }).first().click();
-  await page.waitForTimeout(150);
+  await page.locator('.rbq-select-option-label').filter({ hasText: 'CANCEL' }).first().click();
+  await page.waitForTimeout(200);
 
-  // Find a Mode dropdown — should have PAPER + LIVE labels
-  const modeText = await page.locator('.mint-grid').innerText();
-  expect(modeText).toContain('PAPER');
-  expect(modeText).toContain('LIVE');
+  // Open the second-in-the-mint-grid Select (Mode for cancel) and read
+  // its option labels.
+  const modeTriggerCancel = page.locator('.mint-grid .rbq-select-trigger').nth(1);
+  await modeTriggerCancel.click();
+  await page.waitForTimeout(150);
+  const cancelModeOptions = await page.locator('.rbq-select-option-label').allTextContents();
+  console.log('cancel mode options:', cancelModeOptions);
+  expect(cancelModeOptions.some(t => /LIVE/.test(t))).toBe(true);
+  expect(cancelModeOptions.some(t => /PAPER/.test(t))).toBe(true);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(100);
 
   // Order ID placeholder should hint live format by default
   const allInputPlaceholders = await page.locator('.mint-grid input').evaluateAll(els => els.map(e => e.placeholder || ''));
@@ -150,13 +159,20 @@ test(`Lab mint widget — Mode dropdown for cancel/modify [${BASE}]`, async ({ p
   // Switch to MODIFY — Mode dropdown should still be there
   await kindTrigger.click();
   await page.waitForTimeout(150);
-  await page.locator('.rbq-select-option', { hasText: /^MODIFY$/ }).first().click();
-  await page.waitForTimeout(150);
+  await page.locator('.rbq-select-option-label').filter({ hasText: 'MODIFY' }).first().click();
+  await page.waitForTimeout(200);
+  // For modify kind, verify the New qty / New price input labels are present.
   const modifyText = await page.locator('.mint-grid').innerText();
-  expect(modifyText).toContain('PAPER');
-  expect(modifyText).toContain('LIVE');
   expect(modifyText).toContain('New qty');
   expect(modifyText).toContain('New price');
+  // And the Mode select's options still include PAPER + LIVE.
+  const modeTriggerModify = page.locator('.mint-grid .rbq-select-trigger').nth(1);
+  await modeTriggerModify.click();
+  await page.waitForTimeout(150);
+  const modifyModeOptions = await page.locator('.rbq-select-option-label').allTextContents();
+  expect(modifyModeOptions.some(t => /LIVE/.test(t))).toBe(true);
+  expect(modifyModeOptions.some(t => /PAPER/.test(t))).toBe(true);
+  await page.keyboard.press('Escape');
 
   await page.screenshot({ path: `test-results/research-mint-modify-${BASE.includes('dev') ? 'dev' : 'prod'}.png` });
 });
