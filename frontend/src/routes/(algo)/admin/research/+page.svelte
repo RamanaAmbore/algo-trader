@@ -55,6 +55,10 @@
    *  them into ISO timestamps the backend understands. Empty = no
    *  since filter (all-time view, default). */
   let auditFilterSince  = $state('');
+  /** Phase 18 — request_id exact-match filter. Set by the
+   *  Telegram-deep-link handler (?audit_request=<id>) so the operator
+   *  lands on the Audit tab showing only the row they tapped. */
+  let auditFilterRequestId = $state('');
 
   async function loadThreads() {
     try {
@@ -101,10 +105,11 @@
   async function loadAudit() {
     try {
       const rows = await fetchResearchAudit({
-        tool:   auditFilterTool   || undefined,
-        status: auditFilterStatus || undefined,
-        since:  _sinceIso(),
-        limit:  200,
+        tool:       auditFilterTool       || undefined,
+        status:     auditFilterStatus     || undefined,
+        request_id: auditFilterRequestId  || undefined,
+        since:      _sinceIso(),
+        limit:      200,
       });
       audit = Array.isArray(rows) ? rows : [];
     } catch (_) {
@@ -115,7 +120,8 @@
   // (the panel mounts conditionally so the $effect dependency is naturally gated).
   $effect(() => {
     if (activeTab === 'audit') {
-      void auditFilterTool; void auditFilterStatus; void auditFilterSince;
+      void auditFilterTool; void auditFilterStatus;
+      void auditFilterSince; void auditFilterRequestId;
       loadAudit();
     }
   });
@@ -144,6 +150,20 @@
     loadThreads();
     loadDrafts();
     teardown = visibleInterval(() => { loadThreads(); loadDrafts(); }, 30000);
+
+    // Phase 18 — Telegram deep-link handler. When the page is loaded
+    // via /admin/research?audit_request=<id> (the link in every
+    // request_id Telegram ping), jump straight to the Audit tab
+    // pre-filtered to that exact row. The operator on their phone
+    // gets a one-tap forensic drill-down.
+    try {
+      const url = new URL(window.location.href);
+      const rid = url.searchParams.get('audit_request');
+      if (rid) {
+        auditFilterRequestId = rid.trim();
+        activeTab = 'audit';
+      }
+    } catch (_) { /* SSR / window unavailable */ }
   });
   onDestroy(() => teardown?.());
 
@@ -426,9 +446,14 @@
         <div class="rail-empty">Loading…</div>
       {:else if threads.length === 0}
         <div class="rail-empty">
-          No saved threads yet.<br>
-          Open Claude Code in this repo, ask it to research a stock, then say
-          <i>"save it"</i> — the MCP tool will create a row here.
+          <div class="empty-line-1">No saved threads yet.</div>
+          <div class="empty-line-2">
+            In Claude Code, ask: <i>"Research RELIANCE and save the thesis."</i>
+          </div>
+          <button type="button" class="empty-cta"
+                  onclick={() => activeTab = 'settings'}>
+            Open Settings to bootstrap →
+          </button>
         </div>
       {:else}
         <ul class="rail-list">
@@ -509,11 +534,13 @@
       <div class="lab-empty">
         <div class="lab-empty-title">No draft agents yet</div>
         <p class="lab-empty-hint">
-          When Claude Code calls <code>save_agent_draft</code> after a
-          research session, the new draft appears here. Until then, this
-          list stays empty — the Drafts tab won't leak unrelated
-          inactive agents from /agents.
+          In Claude Code, after a research session: <i>"Build me an agent
+          that fires if X, save it as a draft from thread N."</i>
         </p>
+        <button type="button" class="empty-cta"
+                onclick={() => activeTab = 'research'}>
+          Pick a thread to promote →
+        </button>
       </div>
     {:else}
       <table class="drafts-table">
@@ -557,6 +584,17 @@
 {:else if activeTab === 'audit'}
   <!-- ── Audit tab — Phase 3b ────────────────────────────────────── -->
   <div class="lab-audit">
+    {#if auditFilterRequestId}
+      <div class="audit-deeplink-banner">
+        <span>
+          Showing audit row for request_id <code>{auditFilterRequestId}</code>
+          (deep-link from Telegram).
+        </span>
+        <button type="button" class="audit-clear-link" onclick={() => auditFilterRequestId = ''}>
+          Clear filter
+        </button>
+      </div>
+    {/if}
     <header class="audit-head">
       <p class="audit-hint">
         Forensic trail of every MCP-initiated mutation. Token material is
@@ -861,8 +899,30 @@
     padding: 0.8rem 0.6rem;
     color: #7e97b8;
     font-size: 0.7rem;
-    line-height: 1.4;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
   }
+  .empty-line-1 {
+    color: #c8d8f0;
+    font-weight: 700;
+  }
+  .empty-line-2 { color: #7e97b8; }
+  .empty-cta {
+    align-self: flex-start;
+    margin-top: 0.3rem;
+    background: rgba(56, 189, 248, 0.10);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    color: #38bdf8;
+    padding: 0.28rem 0.55rem;
+    border-radius: 0.3rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .empty-cta:hover { background: rgba(56, 189, 248, 0.18); }
   .rail-list { list-style: none; padding: 0; margin: 0; }
   .rail-row {
     display: grid;
@@ -1142,6 +1202,40 @@
     color: #7e97b8;
   }
   .audit-refresh { align-self: flex-end; }
+  .audit-deeplink-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.5rem 0.7rem;
+    background: rgba(56, 189, 248, 0.10);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 0.35rem;
+    color: #c8d8f0;
+    font-size: 0.7rem;
+    line-height: 1.45;
+    margin-bottom: 0.7rem;
+  }
+  .audit-deeplink-banner code {
+    font-family: ui-monospace, monospace;
+    background: rgba(0, 0, 0, 0.25);
+    padding: 0.05rem 0.35rem;
+    border-radius: 0.25rem;
+    color: #38bdf8;
+    font-size: 0.66rem;
+  }
+  .audit-clear-link {
+    background: none;
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    color: #38bdf8;
+    padding: 0.2rem 0.6rem;
+    border-radius: 0.3rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .audit-clear-link:hover { background: rgba(56, 189, 248, 0.12); }
   .audit-table {
     width: 100%;
     border-collapse: collapse;

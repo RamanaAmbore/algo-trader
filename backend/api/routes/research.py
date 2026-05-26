@@ -305,6 +305,40 @@ def _to_summary(row: ResearchThread) -> ThreadSummary:
 _VALID_CONF  = {"bull", "bear", "neutral", "unsure"}
 _VALID_SCOPE = {"total", "per_account"}
 
+
+def _public_base_url() -> str:
+    """Best-effort public URL for THIS instance. Used to build the
+    audit deep-link in Telegram pings — the link goes from the
+    operator's phone straight to /admin/research?audit_request=<id>
+    on the right host.
+
+    Derives from deploy_branch since the API doesn't otherwise know
+    its own public hostname. Operators on a different domain can
+    override via backend_config.yaml::public_base_url."""
+    try:
+        from backend.shared.helpers.utils import config as _cfg
+        override = (_cfg or {}).get("public_base_url")
+        if override:
+            return str(override).rstrip("/")
+        branch = (_cfg or {}).get("deploy_branch") or ""
+        if branch == "main":
+            return "https://ramboq.com"
+    except Exception:
+        pass
+    return "https://dev.ramboq.com"
+
+
+def _audit_link_html(request_id: str) -> str:
+    """HTML fragment for Telegram (parse_mode=HTML) — clickable
+    request_id that opens the Lab page Audit tab pre-filtered to
+    THIS exact row. Operator on their phone gets a one-tap forensic
+    drill-down."""
+    rid = (request_id or "").strip()
+    if not rid:
+        return ""
+    href = f"{_public_base_url()}/admin/research?audit_request={rid}"
+    return f'<a href="{href}">{rid}</a>'
+
 # ── Phase-3 per-call confirm-token store ──────────────────────────────
 # In-process dict — keyed by token, valued by {user_id, purpose_hash,
 # expires_at_epoch, used}. Single-use + 60s TTL means the universe of
@@ -738,10 +772,11 @@ class ResearchController(Controller):
     @get("/audit")
     async def list_audit(
         self,
-        tool:   str | None = None,
-        status: str | None = None,
-        since:  str | None = None,
-        limit:  int = 200,
+        tool:       str | None = None,
+        status:     str | None = None,
+        since:      str | None = None,
+        request_id: str | None = None,
+        limit:      int = 200,
     ) -> list[AuditRow]:
         """Forensic trail for the Lab page's Audit tab. Returns
         mcp_audit rows in reverse-chronological order. Args are
@@ -749,13 +784,13 @@ class ResearchController(Controller):
         every admin can see this without leaking authorisation state.
 
         Args:
-            tool:   Optional filter — e.g. 'place_order'.
-            status: Optional filter — 'ok' / 'denied' / 'error'.
-            since:  Optional ISO datetime — only return rows with
-                    created_at >= since. Bad input is silently
-                    ignored so a malformed value doesn't break the
-                    Audit tab.
-            limit:  Max rows (default 200, max 1000).
+            tool:       Optional filter — e.g. 'place_order'.
+            status:     Optional filter — 'ok' / 'denied' / 'error'.
+            since:      Optional ISO datetime — only return rows with
+                        created_at >= since. Bad input silently ignored.
+            request_id: Optional exact-match — used by the Telegram
+                        deep-link to surface ONE specific row.
+            limit:      Max rows (default 200, max 1000).
         """
         async with async_session() as s:
             q = select(McpAudit).order_by(McpAudit.created_at.desc())
@@ -763,6 +798,8 @@ class ResearchController(Controller):
                 q = q.where(McpAudit.tool == tool.strip())
             if status:
                 q = q.where(McpAudit.result_status == status.strip().lower())
+            if request_id:
+                q = q.where(McpAudit.request_id == request_id.strip())
             if since:
                 try:
                     since_dt = datetime.fromisoformat(since)
@@ -1004,7 +1041,7 @@ class ResearchController(Controller):
                 f"<b>MCP {mode_pill}</b> {side} {qty} {sym}{price_chunk}\n"
                 f"acct={acct} · order_id=<code>{res.order_id}</code> · "
                 f"status={res.status}\n"
-                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
             )
             _send_telegram(tg_msg)
         except Exception as e:
@@ -1092,7 +1129,7 @@ class ResearchController(Controller):
                 _send_telegram(
                     f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
                     f"acct={acct}\n"
-                    f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                    f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
                 )
             except Exception as e:
                 logger.warning(f"MCP cancel_order (paper) Telegram ping failed: {e}")
@@ -1127,7 +1164,7 @@ class ResearchController(Controller):
             _send_telegram(
                 f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
                 f"acct={acct}\n"
-                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
             )
         except Exception as e:
             logger.warning(f"MCP cancel_order Telegram ping failed: {e}")
@@ -1231,7 +1268,7 @@ class ResearchController(Controller):
                 _send_telegram(
                     f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
                     f"acct={acct} · {chunks}\n"
-                    f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                    f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
                 )
             except Exception as e:
                 logger.warning(f"MCP modify_order (paper) Telegram ping failed: {e}")
@@ -1272,7 +1309,7 @@ class ResearchController(Controller):
             _send_telegram(
                 f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
                 f"acct={acct} · {chunks}\n"
-                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
             )
         except Exception as e:
             logger.warning(f"MCP modify_order Telegram ping failed: {e}")
@@ -1355,7 +1392,7 @@ class ResearchController(Controller):
             verb = "ACTIVATE" if action == "activate" else "DEACTIVATE"
             _send_telegram(
                 f"<b>MCP {verb}</b> agent=<code>{slug}</code> → status={new_status}\n"
-                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
             )
         except Exception as e:
             logger.warning(f"MCP {action}_agent Telegram ping failed: {e}")
@@ -1480,7 +1517,7 @@ class ResearchController(Controller):
             _send_telegram(
                 f"<b>MCP UPDATE</b> agent=<code>{slug}</code>\n"
                 f"changed: {changed_list}\n"
-                f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
             )
         except Exception as e:
             logger.warning(f"MCP update_agent Telegram ping failed: {e}")
