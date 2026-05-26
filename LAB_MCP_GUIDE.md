@@ -442,18 +442,64 @@ auto-close, every loss-cut is an agent row in the `agents` table.
 ### Built-in agents (ship with the codebase)
 
 Seeded from `BUILTIN_AGENTS` in `backend/api/algo/agent_engine.py`
-on every boot. 17 agents today:
+on every boot. **7 agents today** (consolidated from 15 in the
+2026-05-26 cleanup):
 
-| Group | Examples | Default status |
-|---|---|---|
-| Loss-cut alerting (12) | `loss-pos-acct-2pct`, `loss-pos-total-3pct`, `loss-holdings-acct-3pct`, `loss-pos-rate-2k-acct`, … | **active** |
-| Funds-negative (2) | `loss-funds-cash-negative`, `loss-funds-margin-negative` | **active** |
-| Auto-close (1) | `loss-pos-total-auto-close` (destructive — closes positions when total P&L crosses threshold) | **inactive** |
-| Summaries (4) | `nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mcx_close_summary` | **inactive** (background tasks send these directly to avoid duplicates) |
+| Slug | Tier | Topic | Status | Fires when |
+|---|---|---|---|---|
+| `loss-positions-acct` | high | positions_loss | **active** | ANY account's positions trip per-account thresholds: −2% margin OR −₹30k OR −₹3k/min OR −0.25 %/min |
+| `loss-positions-total` | critical | positions_loss | **active** | Book-wide positions trip total thresholds: −2% margin OR −₹50k OR −₹6k/min OR −0.25 %/min |
+| `loss-holdings-acct` | high | holdings_loss | **active** | ANY account's holdings trip per-account: −3% day OR −₹2k/min OR −0.15 %/min |
+| `loss-holdings-total` | critical | holdings_loss | **active** | Book-wide holdings trip total: −5% day OR −₹4k/min OR −0.15 %/min |
+| `loss-funds-negative` | critical | funds_warning | **active** | ANY account's cash OR available margin dips below 0 |
+| `loss-pos-total-auto-close` | critical | positions_loss | **inactive** | Destructive — chase-closes every position when total pnl ≤ −₹50k. Run in simulator first, then flip on. |
+| `manual` | — | — | **active** | Captures every operator-initiated order (ticket / chain / console) into the agent_events stream |
+
+Each loss-* agent uses `any:` blocks to OR multiple threshold types
+together — one agent per (topic, scope) pair instead of 4 separate
+agents per threshold variant. The alert renderer produces ONE
+Telegram message per fire, with one detail row per matched leaf, so
+no information is lost.
+
+Why per-account + total stay as SEPARATE agents per topic (not
+collapsed):
+
+- **Tier diverges** — acct is `high`, total is `critical`
+- **Notify channels often diverge** in practice — acct = telegram-only,
+  total = telegram + email
+- **Actions diverge** — total may eventually carry a kill-switch
+  action that doesn't make sense at the account level
+- Keeping the seam means future config can diverge without
+  re-splitting agents
 
 Edit any built-in's condition tree from the `/agents` page — the
 seeder preserves your edits across deploys. Reset to defaults by
 deleting the row + restarting.
+
+#### Retired slugs (consolidated 2026-05-26)
+
+The following slugs no longer exist as built-in agents. The seeder
+auto-prunes any DB rows matching them on startup and logs a
+WARNING-level migration notice (visible on `/admin/logs`). If you
+had operator-tuned thresholds on any of these, the customisations
+are NOT preserved — set them on the new consolidated slugs above.
+
+```
+loss-hold-acct-static-pct       → loss-holdings-acct
+loss-hold-total-static-pct      → loss-holdings-total
+loss-pos-acct-static-pct        → loss-positions-acct
+loss-pos-total-static-pct       → loss-positions-total
+loss-pos-acct-static-abs        → loss-positions-acct
+loss-pos-total-static-abs       → loss-positions-total
+loss-hold-acct-rate-abs         → loss-holdings-acct
+loss-hold-total-rate-abs        → loss-holdings-total
+loss-hold-any-rate-pct          → split into loss-holdings-acct + loss-holdings-total
+loss-pos-acct-rate-abs          → loss-positions-acct
+loss-pos-total-rate-abs         → loss-positions-total
+loss-pos-any-rate-pct           → split into loss-positions-acct + loss-positions-total
+loss-funds-cash-negative        → loss-funds-negative
+loss-funds-margin-negative      → loss-funds-negative
+```
 
 ### Custom agents (you / the LLM drafts)
 

@@ -570,142 +570,124 @@ BUILTIN_AGENTS = []
 # alert_baseline_offset_min, alert_rate_window_min, alert_cooldown_minutes).
 
 _LOSS_AGENTS = [
-    # ── Holdings: static % floors ────────────────────────────────────────
-    dict(slug="loss-hold-acct-static-pct",
-         tier="high",
-         topic="holdings_loss",
-         name="Holdings per-account day loss ≥ 3%",
-         description="Fires when any individual account's holdings day loss crosses the per-account % floor.",
-         conditions={"metric": "day_pct", "scope": "holdings.any_acct", "op": "<=", "value": -3.0},
-         scope="total",  # scope token inside the condition already handles per-account
-         ),
-    dict(slug="loss-hold-total-static-pct",
-         tier="critical",
-         topic="holdings_loss",
-         name="Holdings total day loss ≥ 5%",
-         description="Fires when the portfolio total holdings day loss crosses the total % floor.",
-         conditions={"metric": "day_pct", "scope": "holdings.total", "op": "<=", "value": -5.0},
-         scope="total",
-         ),
+    # ── Consolidated loss-guardrails — one agent per (topic, scope) pair ──
+    #
+    # Each agent's condition tree uses `any:` to OR multiple threshold
+    # types (static %, static ₹, rate ₹/min, rate %/min) together. The
+    # alert dispatcher already renders one row per matched leaf, so a
+    # single fire of e.g. loss-positions-total with three sub-conditions
+    # crossed produces three detail rows in the Telegram message —
+    # operator loses zero information vs 4 separate agents.
+    #
+    # Why per-account + total stay as SEPARATE agents per topic:
+    #   - tier differs (acct = high, total = critical)
+    #   - notify channels may differ (acct = telegram-only,
+    #     total = telegram + email + pager)
+    #   - actions may differ (acct = ping; total = future kill-switch)
+    # Keep the seam so future config can diverge without re-splitting.
+    #
+    # See LAB_MCP_GUIDE.md section 7 for the consolidation rationale +
+    # the retired slug list.
 
-    # ── Positions: static % floors ───────────────────────────────────────
-    dict(slug="loss-pos-acct-static-pct",
+    # ── Positions: per-account guardrail (high tier) ────────────────────
+    dict(slug="loss-positions-acct",
          tier="high",
          topic="positions_loss",
-         name="Positions per-account loss ≥ 2% of margin",
-         description="Fires when any account's positions pnl is ≤ −2% of that account's used margin.",
-         conditions={"metric": "pnl_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
-         scope="total",
+         name="Positions per-account loss guardrail",
+         description=(
+             "Fires when ANY account's positions trip the per-account "
+             "loss thresholds: -2% of margin OR -₹30k OR -₹3k/min OR "
+             "-0.25 %/min. One agent per topic; alert detail names the "
+             "matched threshold."
          ),
-    dict(slug="loss-pos-total-static-pct",
-         tier="critical",
-         topic="positions_loss",
-         name="Positions total loss ≥ 2% of margin",
-         description="Fires when the portfolio total positions pnl is ≤ −2% of total used margin.",
-         conditions={"metric": "pnl_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
-         scope="total",
-         ),
-
-    # ── Positions: static ₹ floors ───────────────────────────────────────
-    dict(slug="loss-pos-acct-static-abs",
-         tier="high",
-         topic="positions_loss",
-         name="Positions per-account loss ≥ ₹30,000",
-         description="Fires when any account's positions pnl is ≤ −₹30,000.",
-         conditions={"metric": "pnl", "scope": "positions.any_acct", "op": "<=", "value": -30000},
-         scope="total",
-         ),
-    dict(slug="loss-pos-total-static-abs",
-         tier="critical",
-         topic="positions_loss",
-         name="Positions total loss ≥ ₹50,000",
-         description="Fires when the portfolio total positions pnl is ≤ −₹50,000.",
-         conditions={"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -50000},
-         scope="total",
-         ),
-
-    # ── Rate-of-change: holdings ────────────────────────────────────────
-    dict(slug="loss-hold-acct-rate-abs",
-         tier="medium",
-         topic="holdings_loss",
-         name="Holdings per-account bleeding ≥ ₹2k/min",
-         description="Fires when any account's holdings day-change rate of loss is steeper than ₹2,000/min.",
-         conditions={"metric": "day_rate_abs", "scope": "holdings.any_acct", "op": "<=", "value": -2000},
-         scope="total",
-         ),
-    dict(slug="loss-hold-total-rate-abs",
-         tier="high",
-         topic="holdings_loss",
-         name="Holdings total bleeding ≥ ₹4k/min",
-         description="Fires when the portfolio total holdings day-change rate of loss is steeper than ₹4,000/min.",
-         conditions={"metric": "day_rate_abs", "scope": "holdings.total", "op": "<=", "value": -4000},
-         scope="total",
-         ),
-    dict(slug="loss-hold-any-rate-pct",
-         tier="medium",
-         topic="holdings_loss",
-         name="Holdings bleeding ≥ 0.15 %/min",
-         description="Fires on any scope whose holdings %-of-value day rate is worse than 0.15 %/min.",
          conditions={"any": [
-             {"metric": "day_rate_pct", "scope": "holdings.any_acct", "op": "<=", "value": -0.15},
-             {"metric": "day_rate_pct", "scope": "holdings.total",    "op": "<=", "value": -0.15},
-         ]},
-         scope="total",
-         ),
-
-    # ── Rate-of-change: positions ────────────────────────────────────────
-    dict(slug="loss-pos-acct-rate-abs",
-         tier="medium",
-         topic="positions_loss",
-         name="Positions per-account bleeding ≥ ₹3k/min",
-         description="Fires when any account's positions pnl rate of loss is steeper than ₹3,000/min.",
-         conditions={"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000},
-         scope="total",
-         ),
-    dict(slug="loss-pos-total-rate-abs",
-         tier="high",
-         topic="positions_loss",
-         name="Positions total bleeding ≥ ₹6k/min",
-         description="Fires when the portfolio total positions pnl rate of loss is steeper than ₹6,000/min.",
-         conditions={"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
-         scope="total",
-         ),
-    dict(slug="loss-pos-any-rate-pct",
-         tier="medium",
-         topic="positions_loss",
-         name="Positions bleeding ≥ 0.25 %/min",
-         description="Fires on any scope whose positions %-of-margin rate is worse than 0.25 %/min.",
-         conditions={"any": [
+             {"metric": "pnl_pct",      "scope": "positions.any_acct", "op": "<=", "value": -2.0},
+             {"metric": "pnl",          "scope": "positions.any_acct", "op": "<=", "value": -30000},
+             {"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000},
              {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25},
-             {"metric": "pnl_rate_pct", "scope": "positions.total",    "op": "<=", "value": -0.25},
          ]},
          scope="total",
          ),
 
-    # ── Funds: operational negatives ────────────────────────────────────
-    dict(slug="loss-funds-cash-negative",
+    # ── Positions: total guardrail (critical tier) ──────────────────────
+    dict(slug="loss-positions-total",
          tier="critical",
-         topic="funds_warning",
-         name="Account cash has gone negative",
-         description="Fires when any account's cash balance dips below zero.",
-         conditions={"metric": "cash", "scope": "funds.any_acct", "op": "<", "value": 0},
+         topic="positions_loss",
+         name="Positions total loss guardrail",
+         description=(
+             "Fires when the book-wide positions trip total loss "
+             "thresholds: -2% of total margin OR -₹50k OR -₹6k/min OR "
+             "-0.25 %/min. Critical-tier — implicit 'the whole book "
+             "is bleeding' signal."
+         ),
+         conditions={"any": [
+             {"metric": "pnl_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
+             {"metric": "pnl",          "scope": "positions.total", "op": "<=", "value": -50000},
+             {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
+             {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+         ]},
          scope="total",
          ),
-    dict(slug="loss-funds-margin-negative",
+
+    # ── Holdings: per-account guardrail (high tier) ─────────────────────
+    dict(slug="loss-holdings-acct",
+         tier="high",
+         topic="holdings_loss",
+         name="Holdings per-account loss guardrail",
+         description=(
+             "Fires when ANY account's holdings trip per-account loss "
+             "thresholds: -3% day OR -₹2k/min OR -0.15 %/min."
+         ),
+         conditions={"any": [
+             {"metric": "day_pct",      "scope": "holdings.any_acct", "op": "<=", "value": -3.0},
+             {"metric": "day_rate_abs", "scope": "holdings.any_acct", "op": "<=", "value": -2000},
+             {"metric": "day_rate_pct", "scope": "holdings.any_acct", "op": "<=", "value": -0.15},
+         ]},
+         scope="total",
+         ),
+
+    # ── Holdings: total guardrail (critical tier) ───────────────────────
+    dict(slug="loss-holdings-total",
+         tier="critical",
+         topic="holdings_loss",
+         name="Holdings total loss guardrail",
+         description=(
+             "Fires when book-wide holdings trip total loss thresholds: "
+             "-5% day OR -₹4k/min OR -0.15 %/min."
+         ),
+         conditions={"any": [
+             {"metric": "day_pct",      "scope": "holdings.total", "op": "<=", "value": -5.0},
+             {"metric": "day_rate_abs", "scope": "holdings.total", "op": "<=", "value": -4000},
+             {"metric": "day_rate_pct", "scope": "holdings.total", "op": "<=", "value": -0.15},
+         ]},
+         scope="total",
+         ),
+
+    # ── Funds: operational negatives (one agent — both are critical) ────
+    dict(slug="loss-funds-negative",
          tier="critical",
          topic="funds_warning",
-         name="Account available margin has gone negative",
-         description="Fires when any account's available margin dips below zero.",
-         conditions={"metric": "avail_margin", "scope": "funds.any_acct", "op": "<", "value": 0},
+         name="Account funds gone negative (cash or margin)",
+         description=(
+             "Fires when ANY account's cash OR available margin dips "
+             "below zero. Both critical, both about operational health — "
+             "consolidated into one agent."
+         ),
+         conditions={"any": [
+             {"metric": "cash",         "scope": "funds.any_acct", "op": "<", "value": 0},
+             {"metric": "avail_margin", "scope": "funds.any_acct", "op": "<", "value": 0},
+         ]},
          scope="total",
          ),
 
     # ── Auto-close on severe loss (destructive — ships INACTIVE) ────────
-    # This agent is the concrete example of a close-positions action that
-    # operators can study, copy, or activate directly. It ships inactive
-    # because auto-closing is a broker-touching action and should be an
-    # explicit opt-in, not a default. Run it in the simulator first, then
-    # flip it ON from the /agents page when you're confident.
+    # Kept as its own agent (not consolidated) because:
+    #   - it carries a destructive ACTION (chase_close_positions), not
+    #     just notify — needs independent on/off control
+    #   - operators frequently want this off while keeping the
+    #     loss-positions-total alert on
+    #   - auto-close has its own audit story (broker-touching) — easier
+    #     to read in /admin/research → Audit when isolated
     dict(slug="loss-pos-total-auto-close",
          tier="critical",
          topic="positions_loss",
@@ -725,6 +707,29 @@ _LOSS_AGENTS = [
          status="inactive",
          ),
 ]
+
+
+# Slugs retired in the 15→6 consolidation (2026-05-26). The seeder's
+# orphan-cleanup loop deletes any row matching a retired slug from a
+# previous deploy. Operator-tuned conditions on these slugs are LOST —
+# we log a clear migration notice when each retired slug is pruned so
+# the operator sees it in /admin/logs.
+_RETIRED_LOSS_SLUGS = {
+    "loss-hold-acct-static-pct",
+    "loss-hold-total-static-pct",
+    "loss-pos-acct-static-pct",
+    "loss-pos-total-static-pct",
+    "loss-pos-acct-static-abs",
+    "loss-pos-total-static-abs",
+    "loss-hold-acct-rate-abs",
+    "loss-hold-total-rate-abs",
+    "loss-hold-any-rate-pct",
+    "loss-pos-acct-rate-abs",
+    "loss-pos-total-rate-abs",
+    "loss-pos-any-rate-pct",
+    "loss-funds-cash-negative",
+    "loss-funds-margin-negative",
+}
 
 
 # Enrich each row with the common notify + cooldown shape so BUILTIN_AGENTS
@@ -847,7 +852,23 @@ async def seed_agents():
         )
         for row in retired.scalars().all():
             if row.slug not in builtin_slugs:
-                logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
+                # Loss-agents 15→6 consolidation (2026-05-26): emit a
+                # WARNING-level notice for slugs in the retired set so
+                # operators see the migration on /admin/logs. Operator-
+                # tuned conditions are NOT preserved — the new
+                # consolidated agents carry the canonical thresholds.
+                if row.slug in _RETIRED_LOSS_SLUGS:
+                    logger.warning(
+                        f"Agent engine: consolidation 15→6 — pruning "
+                        f"retired loss agent '{row.slug}'. Operator-tuned "
+                        f"conditions on this slug are LOST. See LAB_MCP_GUIDE.md "
+                        f"section 7 for the new consolidated slugs "
+                        f"(loss-positions-acct / loss-positions-total / "
+                        f"loss-holdings-acct / loss-holdings-total / "
+                        f"loss-funds-negative)."
+                    )
+                else:
+                    logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
                 # agent_events has a FK into agents.id without ON DELETE
                 # CASCADE — clear the child rows first so the parent delete
                 # does not raise ForeignKeyViolationError on startup.
