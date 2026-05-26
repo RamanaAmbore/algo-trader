@@ -61,10 +61,10 @@ test('UI bundle: ts colour + agents History pill + pulse refresh + 5d header', a
   console.log(`[/pulse mobile] sparkline col width = ${sparkBox?.width}`);
   expect(sparkBox?.width).toBe(44);
 
-  // LTP column pinned at 64 px — same as the Day P&L column for
-  // visual alignment on the row.
+  // LTP column pinned at 77 px so five-digit instrument prices have
+  // breathing room.
   const ltpCol = page.locator('[col-id="ltp"]').first();
   const ltpBox = await ltpCol.boundingBox();
   console.log(`[/pulse mobile] LTP col width = ${ltpBox?.width}`);
-  expect(ltpBox?.width).toBe(64);
+  expect(ltpBox?.width).toBe(77);
 });

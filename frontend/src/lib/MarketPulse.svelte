@@ -2429,11 +2429,12 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      // LTP at 64 px — matched to the Day P&L column below so the two
-      // numeric columns sit on the same grid. Explicit minWidth/maxWidth
-      // pair pins it against ag-Grid's default 50 px numericColumn
-      // minWidth + against persisted-state overrides.
-      { field: 'ltp', headerName: 'LTP', width: 64, minWidth: 64, maxWidth: 80,
+      // LTP at 77 px (64 × 1.2) — wider than the neighbouring Day P&L
+      // column so 5-digit instrument prices like 22000.00 read with
+      // breathing room. Explicit minWidth/maxWidth pair pins it
+      // against ag-Grid's default 50 px numericColumn minWidth and
+      // against persisted-state overrides.
+      { field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
@@ -2916,7 +2917,7 @@
       const cleaned = Array.isArray(state)
         ? state.map(c => {
             if (c?.colId === 'sparkline') return { ...c, hide: false, width: 44, actualWidth: 44, flex: null };
-            if (c?.colId === 'ltp')       return { ...c,              width: 64, actualWidth: 64, flex: null };
+            if (c?.colId === 'ltp')       return { ...c,              width: 77, actualWidth: 77, flex: null };
             return c;
           })
         : state;
