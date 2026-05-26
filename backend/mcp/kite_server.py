@@ -427,6 +427,7 @@ async def save_agent_draft(
     lifespan_type: str = "persistent",
     lifespan_max_fires: int | None = None,
     lifespan_expires_at: str | None = None,
+    debounce_minutes: int = 0,
 ) -> dict:
     """Promote the current research thread to an INACTIVE draft Agent.
 
@@ -477,6 +478,14 @@ async def save_agent_draft(
         lifespan_type:       persistent / one_shot / n_fires / until_date.
         lifespan_max_fires:  required when lifespan_type='n_fires'.
         lifespan_expires_at: ISO datetime, required when lifespan_type='until_date'.
+        debounce_minutes:    Phase 21 — "for N minutes" gate. 0 (default)
+                             = fire immediately. N > 0 = condition must
+                             hold N consecutive minutes before firing.
+                             Use this to suppress spike-driven false
+                             positives on noisy metrics. Industry pattern
+                             (Datadog `For:`, Grafana `For:`, CloudWatch
+                             `EvaluationPeriods`). Typical values: 2-5
+                             for live alerts on twitchy series.
 
     Returns:
         Joined view {thread_id, symbol, agent_id, agent_slug,
@@ -494,6 +503,7 @@ async def save_agent_draft(
         "lifespan_type":       lifespan_type,
         "lifespan_max_fires":  lifespan_max_fires,
         "lifespan_expires_at": lifespan_expires_at,
+        "debounce_minutes":    max(0, int(debounce_minutes or 0)),
     }
     return await _post(f"/api/research/threads/{int(thread_id)}/promote", body)
 

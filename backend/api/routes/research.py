@@ -109,6 +109,10 @@ class PromoteRequest(msgspec.Struct):
     lifespan_type:       str = "persistent"   # persistent / one_shot / n_fires / until_date
     lifespan_max_fires:  int | None = None    # only used when lifespan_type='n_fires'
     lifespan_expires_at: str | None = None    # ISO datetime, only when lifespan_type='until_date'
+    # Phase 21 — debounce ("for N minutes"). 0 = fire immediately (default,
+    # backwards-compatible). N > 0 = condition must hold N consecutive
+    # minutes before firing. Spike-driven false positives suppressed.
+    debounce_minutes:    int = 0
 
 
 class MintTokenRequest(msgspec.Struct):
@@ -422,7 +426,7 @@ def _purpose_hash_modify(account: str, order_id: str, qty: int,
 # the LLM cannot flip an agent active or live through update_agent.
 _AGENT_UPDATE_FIELDS = (
     "conditions", "events", "actions",
-    "scope", "schedule", "cooldown_minutes",
+    "scope", "schedule", "cooldown_minutes", "debounce_minutes",
     "fire_at_time", "description",
 )
 
@@ -749,6 +753,7 @@ class ResearchController(Controller):
                 scope=data.scope,
                 schedule=data.schedule,
                 cooldown_minutes=max(1, int(data.cooldown_minutes or 30)),
+                debounce_minutes=max(0, int(data.debounce_minutes or 0)),
                 status="inactive",
                 trade_mode="paper",
                 lifespan_type=lifespan_type,

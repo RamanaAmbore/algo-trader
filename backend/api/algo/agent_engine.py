@@ -1126,6 +1126,47 @@ async def run_cycle(context: dict, broadcast_fn=None,
         if not matches:
             _v2_unlatch(agent)
 
+        # ── Phase 21 — debounce gate ("for N minutes" clauses) ─────────────
+        # If debounce_minutes > 0, the condition must hold for that many
+        # consecutive minutes before the agent fires. Eliminates spike-
+        # driven false positives (a single quote glitch no longer trips
+        # a 30-min cooldown). Industry pattern: Datadog `For:`, Grafana
+        # `For:`, CloudWatch `EvaluationPeriods`.
+        #
+        # State machine on agent.condition_first_true_at:
+        #   match=False              → reset to NULL (re-arm)
+        #   match=True + ts=NULL     → set to `now`, suppress this fire
+        #   match=True + ts<window   → still inside the window, suppress
+        #   match=True + ts≥window   → window crossed, fire normally
+        debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+        debounce_first_true_changed = False
+        debounce_new_first_true_at = agent.condition_first_true_at
+        if debounce_min > 0 and not sim_mode:
+            # Sim runs bypass debounce — operators iterating in the
+            # simulator shouldn't wait N minutes of fake time per fire.
+            if not matches:
+                if agent.condition_first_true_at is not None:
+                    debounce_new_first_true_at = None
+                    debounce_first_true_changed = True
+            else:
+                if agent.condition_first_true_at is None:
+                    # First true tick — start the clock, don't fire yet.
+                    debounce_new_first_true_at = now
+                    debounce_first_true_changed = True
+                    logger.info(
+                        f"Agent [{agent.slug}] debounce armed "
+                        f"({debounce_min}m); waiting for sustained condition"
+                    )
+                    matches = []
+                else:
+                    elapsed_min = (now - agent.condition_first_true_at).total_seconds() / 60.0
+                    if elapsed_min < debounce_min:
+                        # Still inside the window — suppress.
+                        matches = []
+                    # else: window crossed; condition_first_true_at stays
+                    # set (the cooldown latch / suppression will clear it
+                    # naturally after the fire commit).
+
         # Shadow-lifespan gate (sim mode only): every iteration the
         # simulator seeds a per-agent shadow `trigger_count` from the
         # agent's REAL DB row. Each sim fire decrements the shadow;
@@ -1225,16 +1266,30 @@ async def run_cycle(context: dict, broadcast_fn=None,
 
             async with async_session() as session:
                 if triggered:
+                    values = dict(
+                        status=new_status,
+                        last_triggered_at=datetime.now(timezone.utc),
+                        trigger_count=Agent.trigger_count + 1,
+                    )
+                    # Phase 21 — clear the debounce latch after a fire so
+                    # the next true tick starts a fresh window.
+                    if debounce_min > 0:
+                        values["condition_first_true_at"] = None
                     await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(
-                            status=new_status,
-                            last_triggered_at=datetime.now(timezone.utc),
-                            trigger_count=Agent.trigger_count + 1,
-                        )
+                        update(Agent).where(Agent.id == agent.id).values(**values)
                     )
                 elif agent.status == "cooldown":
                     await session.execute(
                         update(Agent).where(Agent.id == agent.id).values(status=new_status)
+                    )
+                elif debounce_first_true_changed:
+                    # Phase 21 — persist the debounce latch transitions
+                    # even when we don't fire (else the latch lives only
+                    # in process memory and a restart resets it).
+                    await session.execute(
+                        update(Agent).where(Agent.id == agent.id).values(
+                            condition_first_true_at=debounce_new_first_true_at
+                        )
                     )
                 await session.commit()
 

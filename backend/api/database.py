@@ -156,6 +156,12 @@ async def init_db() -> None:
             "NOT NULL DEFAULT 'general'",
             "ALTER TABLE agents ADD COLUMN IF NOT EXISTS digest_window_sec "
             "INTEGER NOT NULL DEFAULT 30",
+            # Phase 21 — debounce ("for N minutes" gate). 0 = fire
+            # immediately (backwards-compatible default).
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS debounce_minutes "
+            "INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS condition_first_true_at "
+            "TIMESTAMP WITH TIME ZONE",
         ):
             await conn.execute(text(stmt))
 

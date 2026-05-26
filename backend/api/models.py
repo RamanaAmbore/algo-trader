@@ -412,6 +412,30 @@ class Agent(Base):
         Integer, nullable=False, default=30,
     )
 
+    # ── Debounce (Phase 21) — "fire only when condition holds for N
+    #    consecutive minutes." Eliminates spike-driven false positives:
+    #    a single tick where pnl_pct dips to -2.1% from a Kite quote
+    #    glitch no longer trips a 30-min cooldown.
+    #
+    #    Semantics:
+    #      debounce_minutes = 0 (default) — fire immediately on first
+    #                          true evaluation. Backwards-compatible.
+    #      debounce_minutes = N — record the timestamp of the FIRST
+    #                          true evaluation (in condition_first_true_at);
+    #                          on subsequent ticks, fire only when
+    #                          (now - first_true_at) ≥ N minutes AND
+    #                          condition is still true. ANY false
+    #                          evaluation resets first_true_at to NULL.
+    #
+    #    Industry analogue: Datadog `For:`, Grafana `For:`, CloudWatch
+    #    `EvaluationPeriods` — universal in production rule engines.
+    debounce_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0,
+    )
+    condition_first_true_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
     # Meta
     is_system: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
