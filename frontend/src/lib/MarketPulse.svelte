@@ -2429,7 +2429,7 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      { field: 'ltp', headerName: 'LTP', width: 56,
+      { field: 'ltp', headerName: 'LTP', width: 44,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },

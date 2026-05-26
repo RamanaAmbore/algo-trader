@@ -334,6 +334,20 @@
   text-align: right !important;
 }
 
+/* Sparkline (5d) column header centred — by default ag-Grid pins the
+   label flex-start, which leaves "5d" hugging the left edge of a
+   column where the SVG below is centred. Override on the header
+   only; the cell body uses its own flex centering in sparkRenderer. */
+.ag-theme-ramboq .ag-header-cell-spark .ag-header-cell-label,
+.ag-theme-algo .ag-header-cell-spark .ag-header-cell-label {
+  justify-content: center !important;
+  text-align: center !important;
+}
+.ag-theme-ramboq .ag-header-cell-spark .ag-header-cell-text,
+.ag-theme-algo .ag-header-cell-spark .ag-header-cell-text {
+  text-align: center !important;
+}
+
 /* AG Grid: show blank row when no data */
 .ag-theme-ramboq .ag-overlay-no-rows-wrapper {
   padding: 8px;
