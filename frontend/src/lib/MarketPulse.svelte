@@ -1048,6 +1048,16 @@
     // gone across reloads even after data came back.
   });
 
+  // ag-Grid doesn't observe $state reads inside cell renderers, so
+  // sparkline updates after the row data has stabilised won't trigger
+  // a re-render on their own. Explicitly refresh the Curve column
+  // whenever the sparklines map changes.
+  $effect(() => {
+    sparklines;
+    if (!gridReady || !grid) return;
+    grid.refreshCells({ columns: ['sparkline'], force: true });
+  });
+
   // Per-source summary derivations for the two separate summary grids.
   // Account picker scopes the body rows; TOTAL pinned at the bottom.
   function isTotalRow(r) { return r && r.account === 'TOTAL'; }
