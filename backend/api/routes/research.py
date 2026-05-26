@@ -673,6 +673,7 @@ class ResearchController(Controller):
         self,
         tool:   str | None = None,
         status: str | None = None,
+        since:  str | None = None,
         limit:  int = 200,
     ) -> list[AuditRow]:
         """Forensic trail for the Lab page's Audit tab. Returns
@@ -683,6 +684,10 @@ class ResearchController(Controller):
         Args:
             tool:   Optional filter — e.g. 'place_order'.
             status: Optional filter — 'ok' / 'denied' / 'error'.
+            since:  Optional ISO datetime — only return rows with
+                    created_at >= since. Bad input is silently
+                    ignored so a malformed value doesn't break the
+                    Audit tab.
             limit:  Max rows (default 200, max 1000).
         """
         async with async_session() as s:
@@ -691,6 +696,12 @@ class ResearchController(Controller):
                 q = q.where(McpAudit.tool == tool.strip())
             if status:
                 q = q.where(McpAudit.result_status == status.strip().lower())
+            if since:
+                try:
+                    since_dt = datetime.fromisoformat(since)
+                    q = q.where(McpAudit.created_at >= since_dt)
+                except (TypeError, ValueError):
+                    logger.debug(f"audit: ignoring bad `since` value: {since!r}")
             q = q.limit(max(1, min(1000, int(limit or 200))))
             rows = (await s.execute(q)).scalars().all()
         return [

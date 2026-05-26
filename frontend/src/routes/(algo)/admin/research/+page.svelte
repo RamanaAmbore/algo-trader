@@ -50,6 +50,11 @@
   let audit = $state([]);
   let auditFilterTool   = $state('');
   let auditFilterStatus = $state('');
+  /** Time-window filter for the Audit tab. Values are option keys
+   *  ('1h' / 'today' / '7d' / ''); the `_sinceIso` derivation turns
+   *  them into ISO timestamps the backend understands. Empty = no
+   *  since filter (all-time view, default). */
+  let auditFilterSince  = $state('');
 
   async function loadThreads() {
     try {
@@ -72,11 +77,33 @@
     }
   }
 
+  /** Resolve the operator's "Since" pick to an ISO timestamp.
+   *  Computed on each loadAudit() call so the window walks forward
+   *  with wall-clock time (a "Last hour" filter at 10:00 covers
+   *  09:00→10:00; the same filter triggered at 10:30 covers
+   *  09:30→10:30). */
+  function _sinceIso() {
+    const now = new Date();
+    if (auditFilterSince === '1h') {
+      return new Date(now.getTime() - 3600 * 1000).toISOString();
+    }
+    if (auditFilterSince === 'today') {
+      const d = new Date(now);
+      d.setHours(0, 0, 0, 0);
+      return d.toISOString();
+    }
+    if (auditFilterSince === '7d') {
+      return new Date(now.getTime() - 7 * 86400 * 1000).toISOString();
+    }
+    return undefined;     // 'all time'
+  }
+
   async function loadAudit() {
     try {
       const rows = await fetchResearchAudit({
         tool:   auditFilterTool   || undefined,
         status: auditFilterStatus || undefined,
+        since:  _sinceIso(),
         limit:  200,
       });
       audit = Array.isArray(rows) ? rows : [];
@@ -88,7 +115,7 @@
   // (the panel mounts conditionally so the $effect dependency is naturally gated).
   $effect(() => {
     if (activeTab === 'audit') {
-      void auditFilterTool; void auditFilterStatus;
+      void auditFilterTool; void auditFilterStatus; void auditFilterSince;
       loadAudit();
     }
   });
@@ -259,6 +286,12 @@
     { value: 'ok',     label: 'ok' },
     { value: 'denied', label: 'denied' },
     { value: 'error',  label: 'error' },
+  ];
+  const AUDIT_SINCE_OPTIONS = [
+    { value: '',      label: 'All time' },
+    { value: '1h',    label: 'Last hour' },
+    { value: 'today', label: 'Today' },
+    { value: '7d',    label: 'Last 7 days' },
   ];
 
   // Phase-1 tool inventory — mirrors backend/mcp/kite_server.py
@@ -480,6 +513,10 @@
         action was either consciously authorised or correctly denied.
       </p>
       <div class="audit-filters">
+        <label>
+          <span>Since</span>
+          <Select bind:value={auditFilterSince} options={AUDIT_SINCE_OPTIONS} ariaLabel="Audit time window" />
+        </label>
         <label>
           <span>Tool</span>
           <Select bind:value={auditFilterTool} options={AUDIT_TOOL_OPTIONS} ariaLabel="Audit tool filter" />

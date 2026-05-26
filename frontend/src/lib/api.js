@@ -829,6 +829,7 @@ export const fetchResearchAudit = (filters = {}) => {
   const p = new URLSearchParams();
   if (filters.tool)   p.set('tool',   String(filters.tool));
   if (filters.status) p.set('status', String(filters.status));
+  if (filters.since)  p.set('since',  String(filters.since));
   if (filters.limit)  p.set('limit',  String(filters.limit));
   return _get(`/research/audit?${p}`, { auth: true });
 };
