@@ -2407,8 +2407,12 @@
         cellClass: 'ag-col-sym ag-col-fill' },
       // 5d column shrunk to 18 px (from 36) so LTP / Δ% stay fully
       // visible on narrow mobile viewports. SVG fits inside as 14×14.
-      { field: 'tradingsymbol', headerName: '5d', width: 18, colId: 'sparkline',
-        cellRenderer: sparkRenderer, sortable: false, resizable: true,
+      // ag-Grid's default minWidth is 50 px, hence the explicit
+      // minWidth: 18 — without it the column clamps back to 24-50 px
+      // regardless of the `width:` value.
+      { field: 'tradingsymbol', headerName: '5d', width: 18, minWidth: 18,
+        maxWidth: 22, colId: 'sparkline',
+        cellRenderer: sparkRenderer, sortable: false, resizable: false,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
       // Net qty held — positions + holdings summed (signed). When both
