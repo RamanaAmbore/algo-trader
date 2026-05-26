@@ -156,16 +156,30 @@ class PlaceOrderResponse(msgspec.Struct):
 
 
 class CancelOrderRequest(msgspec.Struct):
-    """LLM-initiated cancel. Same token-gate pattern as place."""
+    """LLM-initiated cancel. Same token-gate pattern as place.
+
+    `mode` selects the destination:
+      - 'live' (default) → broker cancel via Kite (existing path).
+      - 'paper'          → PaperTradeEngine.cancel_paper_order
+                            (order_id must be an AlgoOrder.id integer
+                            string for paper orders).
+    The mode is part of the token's purpose hash so a paper-cancel
+    token can't be redeemed against the broker, or vice versa.
+    """
     confirm_token: str
     account:       str
     order_id:      str
     variety:       str = "regular"
+    mode:          str = "live"   # live / paper
 
 
 class ModifyOrderRequest(msgspec.Struct):
-    """LLM-initiated modify. Token binds (account, order_id, new
-    quantity, new order_type, new price, new trigger)."""
+    """LLM-initiated modify. Token binds (account, order_id, mode,
+    new quantity, new order_type, new price, new trigger).
+
+    Live modify routes through Kite's modify_order; paper modify
+    updates the paper engine's open-order dict in place (next chase
+    tick picks up the new values)."""
     confirm_token: str
     account:       str
     order_id:      str
@@ -175,6 +189,7 @@ class ModifyOrderRequest(msgspec.Struct):
     trigger_price: float | None = None
     variety:       str = "regular"
     validity:      str | None = None
+    mode:          str = "live"   # live / paper
 
 
 class SimpleOrderResponse(msgspec.Struct):
@@ -283,21 +298,24 @@ def _purpose_hash_place(account: str, symbol: str, side: str, qty: int,
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-def _purpose_hash_cancel(account: str, order_id: str) -> str:
-    """CANCEL needs only (account, order_id). Token cannot be redeemed
-    for a different order_id even within the same account."""
+def _purpose_hash_cancel(account: str, order_id: str, mode: str = "live") -> str:
+    """CANCEL pins (account, order_id, mode). The mode binding stops
+    a paper-cancel token from being redeemed against the broker, or
+    vice versa — different destinations, different risks."""
     parts = [
         "cancel",
         (account  or "").upper().strip(),
         (order_id or "").strip(),
+        (mode or "live").lower().strip(),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def _purpose_hash_modify(account: str, order_id: str, qty: int,
-                         order_type: str, price: Any, trigger_price: Any) -> str:
-    """MODIFY pins (account, order_id) plus the new values the LLM
-    plans to push so it can't bait-and-switch the new price / qty
+                         order_type: str, price: Any, trigger_price: Any,
+                         mode: str = "live") -> str:
+    """MODIFY pins (account, order_id, mode) plus the new values the
+    LLM plans to push so it can't bait-and-switch the new price / qty
     after the operator approves a different combination."""
     parts = [
         "modify",
@@ -307,6 +325,7 @@ def _purpose_hash_modify(account: str, order_id: str, qty: int,
         (order_type or "").upper().strip(),
         f"{float(price or 0):.4f}",
         f"{float(trigger_price or 0):.4f}",
+        (mode or "live").lower().strip(),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -705,19 +724,25 @@ class ResearchController(Controller):
         elif kind == "cancel":
             if not oid:
                 raise HTTPException(status_code=400, detail="order_id is required for cancel")
-            ph = _purpose_hash_cancel(acct, oid)
-            purpose = f"CANCEL · order_id={oid} · acct={acct}"
+            mode_cm = (data.mode or "live").lower().strip()
+            if mode_cm not in ("paper", "live"):
+                raise HTTPException(status_code=400, detail="mode must be paper or live")
+            ph = _purpose_hash_cancel(acct, oid, mode_cm)
+            purpose = f"CANCEL [{mode_cm.upper()}] · order_id={oid} · acct={acct}"
         else:  # modify
             if not oid:
                 raise HTTPException(status_code=400, detail="order_id is required for modify")
-            ph = _purpose_hash_modify(acct, oid, qty, order_type, data.price, data.trigger_price)
+            mode_cm = (data.mode or "live").lower().strip()
+            if mode_cm not in ("paper", "live"):
+                raise HTTPException(status_code=400, detail="mode must be paper or live")
+            ph = _purpose_hash_modify(acct, oid, qty, order_type, data.price, data.trigger_price, mode_cm)
             mod_chunk = " ".join(filter(None, [
                 f"qty={qty}" if qty else None,
                 f"type={order_type}" if order_type else None,
                 f"@₹{data.price:g}" if data.price else None,
                 f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
             ])) or "no changes"
-            purpose = f"MODIFY · order_id={oid} · {mod_chunk} · acct={acct}"
+            purpose = f"MODIFY [{mode_cm.upper()}] · order_id={oid} · {mod_chunk} · acct={acct}"
 
         token, expires = _mint_token(_user_id(request), ph)
         now = int(time.time())
@@ -855,14 +880,22 @@ class ResearchController(Controller):
     @post("/cancel-order")
     async def cancel_order(self, data: CancelOrderRequest, request: Request) -> SimpleOrderResponse:
         """LLM-initiated cancel. Requires a confirm token minted with
-        kind='cancel' for THIS (account, order_id). Token cannot be
-        redeemed against a different order_id — even within the same
-        account."""
+        kind='cancel' for THIS (account, order_id, mode). Token cannot
+        be redeemed against a different order_id, mode, or account.
+
+        Dispatch:
+          - mode='live' (default) → broker cancel via Kite
+          - mode='paper'          → PaperTradeEngine.cancel_paper_order
+                                     (order_id is the AlgoOrder.id int)
+        """
         acct = (data.account or "").strip()
         oid = (data.order_id or "").strip()
+        mode = (data.mode or "live").lower().strip()
         if not acct or not oid:
             raise HTTPException(status_code=400, detail="account and order_id are required")
-        ph = _purpose_hash_cancel(acct, oid)
+        if mode not in ("paper", "live"):
+            raise HTTPException(status_code=400, detail="mode must be paper or live")
+        ph = _purpose_hash_cancel(acct, oid, mode)
 
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
@@ -876,6 +909,7 @@ class ResearchController(Controller):
                         args_redacted={
                             "account":  acct,
                             "order_id": oid,
+                            "mode":     mode,
                             "variety":  data.variety,
                             "had_token": bool(data.confirm_token),
                         },
@@ -892,11 +926,40 @@ class ResearchController(Controller):
             await _audit("denied", err)
             raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
 
-        # Forward to existing cancel handler. Note: the existing /api/orders
-        # cancel endpoint is broker-routed (not paper-aware) so this only
-        # makes sense for live orders. Paper orders are tracked by the
-        # paper engine, not the broker — those need a future paper-cancel
-        # path. For now, surface the broker's response verbatim.
+        # Dispatch by mode.
+        if mode == "paper":
+            try:
+                algo_order_id = int(oid)
+            except (TypeError, ValueError):
+                await _audit("error", "paper cancel: order_id must be an integer AlgoOrder.id")
+                raise HTTPException(status_code=400,
+                    detail="For paper cancel, order_id must be the integer AlgoOrder.id")
+            try:
+                from backend.api.algo.paper import get_prod_paper_engine
+                engine = get_prod_paper_engine()
+                ok = engine.cancel_paper_order(algo_order_id)
+            except Exception as e:
+                await _audit("error", f"paper engine raised: {e}")
+                logger.exception("MCP paper cancel raised")
+                raise HTTPException(status_code=500, detail=str(e))
+            if not ok:
+                await _audit("error", f"no OPEN paper order with id={algo_order_id}")
+                raise HTTPException(status_code=404,
+                    detail=f"No OPEN paper order with AlgoOrder.id={algo_order_id}")
+            await _audit("ok", f"paper order_id={algo_order_id} CANCELLED")
+            logger.info(f"MCP cancel_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
+            try:
+                from backend.shared.helpers.alert_utils import _send_telegram
+                _send_telegram(
+                    f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
+                    f"acct={acct}\n"
+                    f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                )
+            except Exception as e:
+                logger.warning(f"MCP cancel_order (paper) Telegram ping failed: {e}")
+            return SimpleOrderResponse(order_id=oid, detail="cancelled (paper)")
+
+        # Live mode — forward to existing broker cancel handler.
         from backend.api.routes.orders import OrdersController
         try:
             ctrl = OrdersController(owner=None)
@@ -913,32 +976,42 @@ class ResearchController(Controller):
             raise HTTPException(status_code=500, detail=str(e))
 
         await _audit("ok", f"order_id={res.order_id}")
-        logger.info(f"MCP cancel_order OK: user={user_id} order_id={res.order_id} acct={acct}")
+        logger.info(f"MCP cancel_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
 
         try:
             from backend.shared.helpers.alert_utils import _send_telegram
             _send_telegram(
-                f"<b>MCP CANCEL</b> order_id=<code>{res.order_id}</code>\n"
+                f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
                 f"acct={acct}\n"
                 f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
             )
         except Exception as e:
             logger.warning(f"MCP cancel_order Telegram ping failed: {e}")
 
-        return SimpleOrderResponse(order_id=res.order_id, detail="cancelled")
+        return SimpleOrderResponse(order_id=res.order_id, detail="cancelled (live)")
 
     @post("/modify-order")
     async def modify_order(self, data: ModifyOrderRequest, request: Request) -> SimpleOrderResponse:
-        """LLM-initiated modify. Token binds (account, order_id) PLUS the
-        new values the LLM plans to push — bait-and-switch on the new
-        price / qty after the operator approves is blocked."""
+        """LLM-initiated modify. Token binds (account, order_id, mode)
+        PLUS the new values the LLM plans to push — bait-and-switch on
+        the new price / qty after the operator approves is blocked.
+
+        Dispatch:
+          - mode='live' (default) → Kite modify_order
+          - mode='paper'          → PaperTradeEngine.modify_paper_order
+                                     (order_id is the AlgoOrder.id int;
+                                     next chase tick uses the new values)
+        """
         acct = (data.account or "").strip()
         oid = (data.order_id or "").strip()
         qty = int(data.quantity or 0)
         otype = (data.order_type or "LIMIT").upper().strip()
+        mode = (data.mode or "live").lower().strip()
         if not acct or not oid:
             raise HTTPException(status_code=400, detail="account and order_id are required")
-        ph = _purpose_hash_modify(acct, oid, qty, otype, data.price, data.trigger_price)
+        if mode not in ("paper", "live"):
+            raise HTTPException(status_code=400, detail="mode must be paper or live")
+        ph = _purpose_hash_modify(acct, oid, qty, otype, data.price, data.trigger_price, mode)
 
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
@@ -952,6 +1025,7 @@ class ResearchController(Controller):
                         args_redacted={
                             "account":       acct,
                             "order_id":      oid,
+                            "mode":          mode,
                             "quantity":      qty or None,
                             "order_type":    otype,
                             "price":         data.price,
@@ -973,6 +1047,53 @@ class ResearchController(Controller):
             await _audit("denied", err)
             raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
 
+        chunks = " ".join(filter(None, [
+            f"qty={qty}" if qty else None,
+            f"type={otype}" if otype else None,
+            f"@₹{data.price:g}" if data.price else None,
+            f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
+        ])) or "(no-op)"
+
+        # Dispatch by mode.
+        if mode == "paper":
+            try:
+                algo_order_id = int(oid)
+            except (TypeError, ValueError):
+                await _audit("error", "paper modify: order_id must be an integer AlgoOrder.id")
+                raise HTTPException(status_code=400,
+                    detail="For paper modify, order_id must be the integer AlgoOrder.id")
+            try:
+                from backend.api.algo.paper import get_prod_paper_engine
+                engine = get_prod_paper_engine()
+                ok = engine.modify_paper_order(
+                    algo_order_id,
+                    new_qty=qty if qty else None,
+                    new_price=data.price,
+                    new_trigger=data.trigger_price,
+                    new_order_type=otype if otype != "LIMIT" else None,
+                )
+            except Exception as e:
+                await _audit("error", f"paper engine raised: {e}")
+                logger.exception("MCP paper modify raised")
+                raise HTTPException(status_code=500, detail=str(e))
+            if not ok:
+                await _audit("error", f"no OPEN paper order matching id={algo_order_id} or no fields changed")
+                raise HTTPException(status_code=404,
+                    detail=f"No OPEN paper order with AlgoOrder.id={algo_order_id} (or no fields changed)")
+            await _audit("ok", f"paper order_id={algo_order_id} modified")
+            logger.info(f"MCP modify_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
+            try:
+                from backend.shared.helpers.alert_utils import _send_telegram
+                _send_telegram(
+                    f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
+                    f"acct={acct} · {chunks}\n"
+                    f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
+                )
+            except Exception as e:
+                logger.warning(f"MCP modify_order (paper) Telegram ping failed: {e}")
+            return SimpleOrderResponse(order_id=oid, detail="modified (paper)")
+
+        # Live mode — forward to existing broker modify handler.
         from backend.api.routes.orders import OrdersController
         from backend.api.schemas import ModifyOrderRequest as TicketModifyRequest
 
@@ -997,22 +1118,16 @@ class ResearchController(Controller):
             raise HTTPException(status_code=500, detail=str(e))
 
         await _audit("ok", f"order_id={res.order_id}")
-        logger.info(f"MCP modify_order OK: user={user_id} order_id={res.order_id} acct={acct}")
+        logger.info(f"MCP modify_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
 
         try:
             from backend.shared.helpers.alert_utils import _send_telegram
-            chunks = " ".join(filter(None, [
-                f"qty={qty}" if qty else None,
-                f"type={otype}" if otype else None,
-                f"@₹{data.price:g}" if data.price else None,
-                f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
-            ])) or "(no-op)"
             _send_telegram(
-                f"<b>MCP MODIFY</b> order_id=<code>{res.order_id}</code>\n"
+                f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
                 f"acct={acct} · {chunks}\n"
                 f"<i>request_id=<code>{request_id}</code> · user_id={user_id or '-'}</i>"
             )
         except Exception as e:
             logger.warning(f"MCP modify_order Telegram ping failed: {e}")
 
-        return SimpleOrderResponse(order_id=res.order_id, detail="modified")
+        return SimpleOrderResponse(order_id=res.order_id, detail="modified (live)")

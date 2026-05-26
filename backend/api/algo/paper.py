@@ -284,6 +284,123 @@ class PaperTradeEngine:
         self._price_history = {}
         self._underlying_history = {}
 
+    # ── Operator-initiated lifecycle (Phase 5: MCP cancel/modify) ────
+
+    def cancel_paper_order(self, algo_order_id: int) -> bool:
+        """Cancel a paper order by its AlgoOrder.id. Marks the row
+        CANCELLED in the engine + schedules the DB update via the
+        existing _record_event pipeline (kind='unfilled' so the same
+        terminal-status path runs). Returns True if a matching OPEN
+        order was found, False otherwise.
+
+        Idempotent — calling twice on the same id returns False on
+        the second call (order is already gone). Safe to invoke from
+        the MCP cancel-order route under any threading model since
+        all _open_orders mutation goes through self._lock."""
+        with self._lock:
+            target = None
+            for o in self._open_orders:
+                if int(o.get("algo_order_id") or 0) == int(algo_order_id) \
+                   and o.get("status") == "OPEN":
+                    target = o
+                    break
+            if not target:
+                return False
+            target["status"] = "CANCELLED"
+        # Outside the lock — _record_event writes to event sinks + DB.
+        # Reuse 'unfilled' kind so _update_algo_order flips the row to
+        # CANCELLED — but actually we want CANCELLED, not UNFILLED. We
+        # write a dedicated event payload below + bypass the kind-based
+        # status flip by calling _update_algo_order_cancel directly.
+        self._record_event(target, kind="cancel",
+                           note="operator-initiated cancel via MCP")
+        try:
+            import asyncio
+            task = asyncio.create_task(self._safe_update_algo_order_cancel(target))
+            self._pending_updates.add(task)
+            task.add_done_callback(self._pending_updates.discard)
+        except RuntimeError:
+            pass
+        return True
+
+    def modify_paper_order(
+        self,
+        algo_order_id: int,
+        *,
+        new_qty: int | None = None,
+        new_price: float | None = None,
+        new_trigger: float | None = None,
+        new_order_type: str | None = None,
+    ) -> bool:
+        """Modify a paper order's qty / limit_price / trigger_price /
+        order_type in place. Engine's next step() picks up the new
+        values automatically (it reads the dict each tick). Returns
+        True if the order was found + at least one field changed."""
+        with self._lock:
+            target = None
+            for o in self._open_orders:
+                if int(o.get("algo_order_id") or 0) == int(algo_order_id) \
+                   and o.get("status") == "OPEN":
+                    target = o
+                    break
+            if not target:
+                return False
+            changed_parts = []
+            if new_qty is not None and int(new_qty) > 0:
+                target["qty"] = int(new_qty)
+                changed_parts.append(f"qty={new_qty}")
+            if new_price is not None:
+                target["limit_price"] = float(new_price)
+                changed_parts.append(f"limit=₹{float(new_price):,.2f}")
+            if new_trigger is not None:
+                target["trigger_price"] = float(new_trigger)
+                changed_parts.append(f"trig=₹{float(new_trigger):,.2f}")
+            if new_order_type:
+                target["order_type"] = new_order_type
+                changed_parts.append(f"type={new_order_type}")
+            if not changed_parts:
+                return False
+        # Re-quote on the next tick will keep going; the modify event
+        # captures the operator's manual override so the audit trail
+        # shows it alongside chase-driven re-quotes.
+        self._record_event(target, kind="modify",
+                           note=f"operator override: {' '.join(changed_parts)}")
+        return True
+
+    async def _safe_update_algo_order_cancel(self, order: dict) -> None:
+        """DB update for an operator-cancelled paper order. Sets
+        status=CANCELLED + writes a 'cancel' AlgoOrderEvent. Mirrors
+        _safe_update_algo_order but for the CANCELLED terminal state."""
+        try:
+            from backend.api.database import async_session
+            from backend.api.models  import AlgoOrder
+            from sqlalchemy          import select as _select
+            from backend.api.algo.order_events import write_event
+            async with async_session() as s:
+                row = (await s.execute(
+                    _select(AlgoOrder).where(AlgoOrder.id == order["algo_order_id"])
+                )).scalar_one_or_none()
+                if not row:
+                    return
+                row.status = "CANCELLED"
+                row.attempts = int(order.get("attempts", 0))
+                tag    = self._label.upper()
+                side   = order.get("side") or "?"
+                qty    = order.get("qty") or 0
+                symbol = order.get("symbol") or "?"
+                row.detail = f"[{tag}] CANCELLED by operator via MCP · {side} {qty} {symbol}"
+                await s.commit()
+            await write_event(
+                order["algo_order_id"], "cancel",
+                f"[{self._label.upper()}] operator-initiated cancel via MCP",
+                payload={"source": "mcp"},
+            )
+        except Exception as e:
+            logger.warning(
+                f"[{self._label.upper()}] _safe_update_algo_order_cancel "
+                f"failed (id={order.get('algo_order_id')}): {e}"
+            )
+
     # ── Price history ────────────────────────────────────────────────
 
     def _capture_price_history(self, open_orders: list[dict]) -> None:

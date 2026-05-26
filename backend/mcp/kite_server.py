@@ -429,17 +429,27 @@ async def cancel_order(
     confirm_token: str,
     account: str,
     order_id: str,
+    mode: str = "live",
     variety: str = "regular",
 ) -> dict:
-    """Cancel a working order via the broker. REQUIRES a confirm token
-    minted with kind='cancel' for THIS (account, order_id). Token
-    cannot be redeemed against a different order — even within the
-    same account, even for a place_order minted moments before.
+    """Cancel a working order. REQUIRES a confirm token minted with
+    kind='cancel' for THIS (account, order_id, mode). Token cannot be
+    redeemed against a different order, mode, or account.
+
+    Dispatch:
+      - mode='live' (default) → Kite broker cancel
+      - mode='paper'          → paper engine cancel; order_id must be
+                                 the integer AlgoOrder.id of an OPEN
+                                 paper order (look it up via the
+                                 /api/orders/algo/recent?mode=paper
+                                 endpoint or the LogPanel Order tab).
 
     Args:
-        confirm_token: 32-char hex token from Lab page (kind='cancel').
+        confirm_token: 32-char hex token from Lab page.
         account:       Broker account code (e.g. ZG0790).
-        order_id:      Broker-side order id.
+        order_id:      Broker order_id (live) OR AlgoOrder.id (paper).
+        mode:          live (default) or paper. Must match the token's
+                       minted mode — cross-mode cancel returns 403.
         variety:       regular / amo / iceberg (default regular).
 
     Returns:
@@ -449,6 +459,7 @@ async def cancel_order(
         "confirm_token": confirm_token,
         "account":       account,
         "order_id":      order_id,
+        "mode":          mode,
         "variety":       variety,
     }
     return await _post("/api/research/cancel-order", body)
@@ -463,25 +474,32 @@ async def modify_order(
     order_type: str = "LIMIT",
     price: float | None = None,
     trigger_price: float | None = None,
+    mode: str = "live",
     variety: str = "regular",
     validity: str | None = None,
 ) -> dict:
     """Modify a working order. REQUIRES a confirm token minted with
-    kind='modify' for THIS (account, order_id, quantity, order_type,
-    price, trigger_price). The new values are part of the purpose
-    hash — bait-and-switch on the new price / qty after the operator
-    approves is blocked at the gate.
+    kind='modify' for THIS (account, order_id, mode, quantity,
+    order_type, price, trigger_price). The new values are part of
+    the purpose hash — bait-and-switch on the new price / qty after
+    the operator approves is blocked at the gate.
+
+    Dispatch:
+      - mode='live' (default) → Kite modify_order
+      - mode='paper'          → paper engine modify_paper_order; next
+                                 chase tick uses the new values
 
     Args:
         confirm_token: 32-char hex token from Lab page (kind='modify').
         account:       Broker account code.
-        order_id:      Broker-side order id.
+        order_id:      Broker order_id (live) OR AlgoOrder.id (paper).
         quantity:      New quantity (0 = unchanged).
         order_type:    LIMIT / MARKET / SL / SL-M.
         price:         New limit price (LIMIT / SL).
         trigger_price: New trigger (SL / SL-M).
+        mode:          live (default) or paper.
         variety:       regular / amo / iceberg.
-        validity:      Optional broker validity tag.
+        validity:      Optional broker validity tag (live only).
 
     Returns:
         {order_id, detail}.
@@ -494,6 +512,7 @@ async def modify_order(
         "order_type":    order_type,
         "price":         price,
         "trigger_price": trigger_price,
+        "mode":          mode,
         "variety":       variety,
         "validity":      validity,
     }

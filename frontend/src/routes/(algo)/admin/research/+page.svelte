@@ -538,10 +538,28 @@
           <label><span>Price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
           <label><span>Trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
         {:else if mintForm.kind === 'cancel'}
-          <label><span>Order ID</span><input bind:value={mintForm.order_id} placeholder="251115000123456" /></label>
+          <label><span>Mode</span>
+            <select bind:value={mintForm.mode}>
+              <option value="live">LIVE (broker)</option>
+              <option value="paper">PAPER (engine)</option>
+            </select>
+          </label>
+          <label><span>Order ID</span>
+            <input bind:value={mintForm.order_id}
+                   placeholder={mintForm.mode === 'paper' ? 'AlgoOrder.id (e.g. 42)' : '251115000123456'} />
+          </label>
         {:else}
           <!-- modify: account + order_id + the new values -->
-          <label><span>Order ID</span><input bind:value={mintForm.order_id} placeholder="251115000123456" /></label>
+          <label><span>Mode</span>
+            <select bind:value={mintForm.mode}>
+              <option value="live">LIVE (broker)</option>
+              <option value="paper">PAPER (engine)</option>
+            </select>
+          </label>
+          <label><span>Order ID</span>
+            <input bind:value={mintForm.order_id}
+                   placeholder={mintForm.mode === 'paper' ? 'AlgoOrder.id (e.g. 42)' : '251115000123456'} />
+          </label>
           <label><span>New qty</span><input type="number" bind:value={mintForm.quantity} min="0" placeholder="(unchanged)" /></label>
           <label><span>Order type</span>
             <select bind:value={mintForm.order_type}>
