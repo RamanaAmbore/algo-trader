@@ -872,7 +872,12 @@ class ResearchController(Controller):
         )
         try:
             ctrl = OrdersController(owner=None)
-            res = await ctrl.ticket_order(data=ticket, request=request)
+            # `.fn(ctrl, ...)` — bypass the @post route-handler wrapper.
+            # The Phase-3 place_order path landed before this bug was
+            # spotted; switching to `.fn` keeps the live mode functional.
+            res = await OrdersController.ticket_order.fn(
+                ctrl, data=ticket, request=request,
+            )
         except HTTPException as e:
             await _audit("error", f"{e.status_code}: {e.detail}")
             raise
@@ -1000,11 +1005,16 @@ class ResearchController(Controller):
                 logger.warning(f"MCP cancel_order (paper) Telegram ping failed: {e}")
             return SimpleOrderResponse(order_id=oid, detail="cancelled (paper)")
 
-        # Live mode — forward to existing broker cancel handler.
+        # Live mode — forward to existing broker cancel handler. Use
+        # `.fn(ctrl, ...)` to bypass the @delete decorator wrapper
+        # (calling the decorated method directly returns a route-handler
+        # object, not a coroutine — "object delete can't be used in
+        # 'await' expression"). Same workaround as activate/deactivate.
         from backend.api.routes.orders import OrdersController
         try:
             ctrl = OrdersController(owner=None)
-            res = await ctrl.cancel_order(
+            res = await OrdersController.cancel_order.fn(
+                ctrl,
                 order_id=oid, request=request,
                 account=acct, variety=data.variety,
             )
@@ -1149,7 +1159,10 @@ class ResearchController(Controller):
         )
         try:
             ctrl = OrdersController(owner=None)
-            res = await ctrl.modify_order(order_id=oid, data=modify_req, request=request)
+            # `.fn(ctrl, ...)` — bypass the @put route-handler wrapper.
+            res = await OrdersController.modify_order.fn(
+                ctrl, order_id=oid, data=modify_req, request=request,
+            )
         except HTTPException as e:
             await _audit("error", f"{e.status_code}: {e.detail}")
             raise
@@ -1214,22 +1227,28 @@ class ResearchController(Controller):
             await _audit("denied", err)
             raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
 
-        # Forward to existing AgentController activate/deactivate.
-        from backend.api.routes.agents import AgentController
+        # Inline the agent status flip — calling AgentController's
+        # @put-decorated methods directly fails ("object put can't be
+        # used in 'await' expression") because Litestar wraps decorated
+        # methods in route-handler objects. The flip is 3 lines, so
+        # just do it here.
+        new_status = "active" if action == "activate" else "inactive"
         try:
-            ctrl = AgentController(owner=None)
-            if action == "activate":
-                await ctrl.activate_agent(slug)
-                new_status = "active"
-            else:
-                await ctrl.deactivate_agent(slug)
-                new_status = "inactive"
+            async with async_session() as s:
+                agent = (await s.execute(
+                    select(Agent).where(Agent.slug == slug)
+                )).scalar_one_or_none()
+                if not agent:
+                    raise HTTPException(status_code=404,
+                                        detail=f"Agent '{slug}' not found")
+                agent.status = new_status
+                await s.commit()
         except HTTPException as e:
             await _audit("error", f"{e.status_code}: {e.detail}")
             raise
         except Exception as e:
             await _audit("error", f"unexpected: {e}")
-            logger.exception(f"MCP {action}_agent: underlying handler raised")
+            logger.exception(f"MCP {action}_agent: status flip failed")
             raise HTTPException(status_code=500, detail=str(e))
 
         await _audit("ok", f"agent={slug} → {new_status}")
