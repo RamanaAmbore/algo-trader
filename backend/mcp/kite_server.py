@@ -194,6 +194,44 @@ async def get_option_analytics(symbol: str, qty: int = 0, account: str | None = 
 
 
 @app.tool()
+async def get_options_chain_snapshot(
+    underlying: str,
+    expiry: str,
+    atm_window: int = 10,
+) -> dict:
+    """One-round-trip option chain with Greeks + LTP + bid/ask + IV
+    for every strike within ±`atm_window` of ATM. Use this BEFORE
+    calling get_option_analytics — a 5-strike iron-condor analysis
+    that previously needed 5 separate get_option_analytics round-trips
+    is now one call.
+
+    Returns:
+        dict with `underlying`, `expiry`, `spot`, `atm_strike`,
+        `days_to_expiry`, `risk_free_rate`, `rows` list. Each row is
+        {k: strike, atm_distance: signed-distance-from-spot,
+         ce: {ltp, bid, ask, iv, delta, gamma, theta, vega, rho},
+         pe: {same shape}}.
+        Theta is per-day; vega/rho per 1% change.
+
+    Args:
+        underlying: NIFTY, BANKNIFTY, RELIANCE, etc. (case-insensitive).
+        expiry:     ISO date YYYY-MM-DD (e.g. "2025-04-24").
+        atm_window: ±N strikes around the ATM strike. Default 10 (so
+                    21 strikes total when chain is dense). Cap 30.
+
+    Hint: when iv is null for a leg, the LTP wasn't available, so the
+    Greeks fall back to DEFAULT_IV (15%). Weight those legs lower in
+    your reasoning vs strikes where iv is populated.
+    """
+    params: dict[str, Any] = {
+        "underlying": underlying,
+        "expiry":     expiry,
+        "atm_window": int(atm_window),
+    }
+    return await _get("/api/options/chain-snapshot", params)
+
+
+@app.tool()
 async def get_economic_snapshot() -> dict:
     """India macro context — RBI repo rate, CPI inflation, IIP, GDP
     growth, USD/INR spot. Each metric carries its as_of date + an

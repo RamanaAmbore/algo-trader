@@ -140,6 +140,46 @@ class ChainQuotesResponse(msgspec.Struct):
     rows:        list[ChainQuoteRow]
 
 
+class ChainSnapshotLeg(msgspec.Struct):
+    """One side (CE or PE) of one strike — LTP + IV + per-share Greeks.
+    All fields nullable so the LLM can see exactly what data was
+    available and what was missing (rather than getting silent zeros)."""
+    ltp:    float | None
+    bid:    float | None
+    ask:    float | None
+    iv:     float | None          # calibrated implied vol (decimal, e.g. 0.18 = 18%)
+    delta:  float | None
+    gamma:  float | None
+    theta:  float | None          # per-day
+    vega:   float | None          # per 1% IV change
+    rho:    float | None          # per 1% rate change
+
+
+class ChainSnapshotRow(msgspec.Struct):
+    """One strike with both sides + an `atm_distance` (signed:
+    negative for strikes below spot, positive for above)."""
+    k:            float
+    atm_distance: float
+    ce:           ChainSnapshotLeg
+    pe:           ChainSnapshotLeg
+
+
+class ChainSnapshotResponse(msgspec.Struct):
+    """One-round-trip option chain with Greeks. Designed for the MCP
+    get_options_chain_snapshot tool — saves the LLM from making
+    `atm_window * 2 + 1` per-strike get_option_analytics calls when
+    planning a multi-leg structure."""
+    underlying:       str
+    expiry:           str
+    spot:             float
+    spot_source:      str
+    spot_prev_close:  float | None
+    days_to_expiry:   float
+    risk_free_rate:   float            # used to compute IV / Greeks
+    atm_strike:       float | None     # nearest strike to spot
+    rows:             list[ChainSnapshotRow]
+
+
 class OptionAnalyticsResponse(msgspec.Struct):
     # Identification
     mode:          str
@@ -1051,6 +1091,181 @@ class OptionsController(Controller):
             for strike, sides in sorted(book_by_strike.items())
         ]
         return ChainQuotesResponse(underlying=und, expiry=exp, rows=rows)
+
+    @get("/chain-snapshot")
+    async def chain_snapshot(
+        self,
+        underlying: str = "",
+        expiry: str = "",
+        atm_window: int = 10,
+    ) -> ChainSnapshotResponse:
+        """Full option-chain snapshot — LTP + IV + per-share Greeks for
+        every strike within ±`atm_window` of the at-the-money strike.
+        One broker.quote() round-trip; Greeks computed in-process.
+
+        Designed for the MCP `get_options_chain_snapshot` tool so the
+        LLM can plan a multi-leg structure (iron condor, butterfly,
+        diagonal) in one tool call instead of `atm_window * 2 + 1`
+        per-leg `get_option_analytics` round-trips. A 5-strike call
+        butterfly previously needed 5 calls + 5 round-trips; now it's
+        one.
+
+        IV calibration: `implied_vol(market_price, S, K, T, r, opt_type)`
+        bisection-solves between 0.0001 and 5.0. Falls back to
+        DEFAULT_IV (15%) when the LTP can't bracket a valid σ — that
+        path still returns Greeks but they reflect the fallback IV
+        rather than market-implied. LLMs should weight Greeks lighter
+        when `iv` field is null (LTP unavailable).
+        """
+        und = (underlying or "").upper().strip()
+        exp = (expiry or "").strip()
+        atm_window = max(1, min(int(atm_window or 10), 30))
+        if not und:
+            raise HTTPException(status_code=400, detail="underlying is required")
+        if not exp:
+            raise HTTPException(status_code=400, detail="expiry is required")
+
+        # 1. Resolve spot (no fallback — we need it for Greeks).
+        expiry_d: Optional[date] = None
+        try:
+            expiry_d = date.fromisoformat(exp)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail=f"expiry must be ISO format YYYY-MM-DD, got {exp!r}")
+        try:
+            spot, src, prev = await _resolve_spot(und, None, expiry_hint=expiry_d)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"chain-snapshot spot resolution failed: {e}")
+            raise HTTPException(status_code=502,
+                detail=f"could not resolve spot for {und}")
+        if not spot or spot <= 0:
+            raise HTTPException(status_code=502,
+                detail=f"resolved spot is non-positive: {spot}")
+
+        # 2. Resolve all CE/PE contracts for the (underlying, expiry).
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments
+        try:
+            inst_resp = await get_or_fetch(
+                "instruments", _fetch_instruments, ttl_seconds=86400)
+        except Exception as e:
+            logger.warning(f"chain-snapshot instruments fetch failed: {e}")
+            raise HTTPException(status_code=502, detail="instruments cache unavailable")
+
+        sym_by_strike: dict[float, dict[str, str]] = {}
+        for inst in inst_resp.items:
+            if (inst.u or "").upper() != und:
+                continue
+            if inst.x != exp:
+                continue
+            if inst.t not in ("CE", "PE"):
+                continue
+            if inst.k is None:
+                continue
+            sym_by_strike.setdefault(
+                float(inst.k), {"CE": "", "PE": ""}
+            )[inst.t] = inst.s
+
+        if not sym_by_strike:
+            return ChainSnapshotResponse(
+                underlying=und, expiry=exp, spot=spot, spot_source=src,
+                spot_prev_close=prev,
+                days_to_expiry=days_to_expiry(expiry_d) if expiry_d else 0.0,
+                risk_free_rate=DEFAULT_RISK_FREE,
+                atm_strike=None, rows=[],
+            )
+
+        # 3. Window to ATM ± atm_window strikes (sorted by distance).
+        all_strikes = sorted(sym_by_strike.keys())
+        atm_idx = min(range(len(all_strikes)),
+                      key=lambda i: abs(all_strikes[i] - spot))
+        atm_strike = all_strikes[atm_idx]
+        lo = max(0, atm_idx - atm_window)
+        hi = min(len(all_strikes), atm_idx + atm_window + 1)
+        window_strikes = all_strikes[lo:hi]
+
+        # 4. Single batch quote() for all selected CE+PE keys.
+        keys: list[str] = []
+        key_meta: dict[str, tuple[float, str]] = {}
+        for strike in window_strikes:
+            for side, sym in sym_by_strike[strike].items():
+                if not sym:
+                    continue
+                qk = option_quote_key(sym)
+                keys.append(qk)
+                key_meta[qk] = (strike, side)
+
+        from backend.shared.brokers.registry import get_price_broker
+        quote_resp: dict = {}
+        if keys:
+            try:
+                quote_resp = await asyncio.to_thread(get_price_broker().quote, keys) or {}
+            except Exception as e:
+                logger.warning(f"chain-snapshot quote() failed for {und}/{exp}: {e}")
+
+        # 5. Time-to-expiry — same convention as everywhere else.
+        T_yrs = days_to_expiry(expiry_d) / 365.0 if expiry_d else 0.0
+
+        def _best(book: list) -> float | None:
+            for level in (book or []):
+                p = level.get("price")
+                if p not in (None, 0, 0.0):
+                    return float(p)
+            return None
+
+        # 6. Per-strike: compute Greeks for both sides.
+        rows: list[ChainSnapshotRow] = []
+        for strike in window_strikes:
+            sides: dict[str, ChainSnapshotLeg] = {}
+            for side in ("CE", "PE"):
+                sym = sym_by_strike[strike].get(side) or ""
+                qk = option_quote_key(sym) if sym else None
+                q = (quote_resp.get(qk) if qk else None) or {}
+                depth = q.get("depth") or {}
+                ltp = q.get("last_price") or None
+                bid = _best(depth.get("buy"))
+                ask = _best(depth.get("sell"))
+
+                iv: float | None = None
+                g: dict | None = None
+                if ltp and ltp > 0 and T_yrs > 0:
+                    # Calibrate IV from LTP; greeks then use it.
+                    try:
+                        iv = implied_vol(
+                            ltp, spot, float(strike), T_yrs,
+                            DEFAULT_RISK_FREE, side,
+                        )
+                    except Exception:
+                        iv = None
+                    sigma_eff = iv if iv else DEFAULT_IV
+                    try:
+                        g = greeks(spot, float(strike), T_yrs,
+                                   DEFAULT_RISK_FREE, sigma_eff, side)
+                    except Exception:
+                        g = None
+                sides[side] = ChainSnapshotLeg(
+                    ltp=ltp, bid=bid, ask=ask, iv=iv,
+                    delta=(g or {}).get("delta") if g else None,
+                    gamma=(g or {}).get("gamma") if g else None,
+                    theta=(g or {}).get("theta") if g else None,
+                    vega =(g or {}).get("vega")  if g else None,
+                    rho  =(g or {}).get("rho")   if g else None,
+                )
+            rows.append(ChainSnapshotRow(
+                k=float(strike),
+                atm_distance=float(strike) - spot,
+                ce=sides["CE"], pe=sides["PE"],
+            ))
+
+        return ChainSnapshotResponse(
+            underlying=und, expiry=exp, spot=spot, spot_source=src,
+            spot_prev_close=prev,
+            days_to_expiry=days_to_expiry(expiry_d) if expiry_d else 0.0,
+            risk_free_rate=DEFAULT_RISK_FREE,
+            atm_strike=atm_strike, rows=rows,
+        )
 
     @get("/historical")
     async def historical(self, symbol: str = "", days: int = 30,
