@@ -84,15 +84,31 @@ class PromoteRequest(msgspec.Struct):
     Simulator" from /agents to validate the condition tree before
     activating. Per industry pattern (Composer.trade, IBKR TraderGPT),
     no LLM-initiated draft is ever activated automatically.
+
+    Lifespan (Phase 19): the LLM can declare an agent as one-shot or
+    time-bound at promote time. The engine already enforces these in
+    `run_cycle()` — when the limit is reached the row flips to
+    status='completed'. Re-arming requires editing lifespan_* then
+    activating again.
+
+      lifespan_type:
+        persistent — never expires (default)
+        one_shot   — completes after first fire (max_fires implicit 1)
+        n_fires    — completes after lifespan_max_fires fires
+        until_date — completes when now >= lifespan_expires_at
     """
-    name:             str
-    conditions:       dict             # v2 grammar condition tree
-    actions:          list = msgspec.field(default_factory=list)
-    events:           list = msgspec.field(default_factory=list)
-    description:      str = ""
-    scope:            str = "total"     # total / per_account
-    schedule:         str = "market_hours"
-    cooldown_minutes: int = 30
+    name:                str
+    conditions:          dict             # v2 grammar condition tree
+    actions:             list = msgspec.field(default_factory=list)
+    events:              list = msgspec.field(default_factory=list)
+    description:         str = ""
+    scope:               str = "total"     # total / per_account
+    schedule:            str = "market_hours"
+    cooldown_minutes:    int = 30
+    # Phase 19 — lifespan params for LLM-created agents
+    lifespan_type:       str = "persistent"   # persistent / one_shot / n_fires / until_date
+    lifespan_max_fires:  int | None = None    # only used when lifespan_type='n_fires'
+    lifespan_expires_at: str | None = None    # ISO datetime, only when lifespan_type='until_date'
 
 
 class MintTokenRequest(msgspec.Struct):
@@ -695,6 +711,33 @@ class ResearchController(Controller):
 
             base = _slugify(f"{thread.symbol}-{data.name}")[:48]
             slug = await _unique_slug(s, base)
+
+            # Phase 19 — validate lifespan params before constructing
+            # the Agent row. The engine enforces the terminal state in
+            # run_cycle; the route enforces well-formed inputs.
+            lifespan_type = (data.lifespan_type or "persistent").lower().strip()
+            if lifespan_type not in ("persistent", "one_shot", "n_fires", "until_date"):
+                raise HTTPException(status_code=400,
+                    detail="lifespan_type must be one of persistent, one_shot, n_fires, until_date")
+            lifespan_max_fires = data.lifespan_max_fires
+            if lifespan_type == "n_fires":
+                if not lifespan_max_fires or int(lifespan_max_fires) < 1:
+                    raise HTTPException(status_code=400,
+                        detail="lifespan_max_fires (≥ 1) is required when lifespan_type='n_fires'")
+            elif lifespan_type != "n_fires":
+                # Clear max_fires on non-n_fires types so the column never carries stale data.
+                lifespan_max_fires = None
+            lifespan_expires_at = None
+            if lifespan_type == "until_date":
+                if not data.lifespan_expires_at:
+                    raise HTTPException(status_code=400,
+                        detail="lifespan_expires_at (ISO datetime) is required when lifespan_type='until_date'")
+                try:
+                    lifespan_expires_at = datetime.fromisoformat(data.lifespan_expires_at)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400,
+                        detail=f"lifespan_expires_at must be ISO format, got {data.lifespan_expires_at!r}")
+
             agent = Agent(
                 slug=slug,
                 name=data.name.strip()[:128],
@@ -708,6 +751,9 @@ class ResearchController(Controller):
                 cooldown_minutes=max(1, int(data.cooldown_minutes or 30)),
                 status="inactive",
                 trade_mode="paper",
+                lifespan_type=lifespan_type,
+                lifespan_max_fires=lifespan_max_fires,
+                lifespan_expires_at=lifespan_expires_at,
             )
             s.add(agent)
             await s.flush()           # populate agent.id

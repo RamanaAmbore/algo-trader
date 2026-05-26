@@ -424,6 +424,9 @@ async def save_agent_draft(
     schedule: str = "market_hours",
     cooldown_minutes: int = 30,
     description: str = "",
+    lifespan_type: str = "persistent",
+    lifespan_max_fires: int | None = None,
+    lifespan_expires_at: str | None = None,
 ) -> dict:
     """Promote the current research thread to an INACTIVE draft Agent.
 
@@ -440,36 +443,57 @@ async def save_agent_draft(
              "op": "<=", "value": -30000}
         ]}
 
+    Lifespan (Phase 19): use this for one-shot or time-bound agents,
+    which is the natural fit for LLM-created trade-idea agents:
+
+      lifespan_type='one_shot'       — completes after first fire.
+                                       Best for "alert me once if my
+                                       RELIANCE breakout happens"
+                                       style ideas.
+      lifespan_type='n_fires' + lifespan_max_fires=N
+                                     — completes after N fires.
+      lifespan_type='until_date' + lifespan_expires_at=ISO
+                                     — completes when wall-clock crosses
+                                       the date. Good for "watch this
+                                       for the next 7 days then forget".
+      lifespan_type='persistent'     — default. Never completes.
+
+    The engine's run_cycle() flips status to 'completed' automatically
+    once the limit is reached; the operator does not need to deactivate.
+
     Use list_agents() + the /api/admin/grammar/tokens endpoint (via the
     page) to discover available tokens before drafting.
 
     Args:
-        thread_id:        ID of the research thread to promote (you got
-                          this from save_research_thread's return).
-        name:             Human-readable agent name (shown in /agents).
-        conditions:       v2 condition tree (dict).
-        actions:          Optional list of action descriptors. Default
-                          empty list = alert-only.
-        events:           Optional list of notify channels (telegram /
-                          email / websocket / log).
-        scope:            'total' or 'per_account'.
-        schedule:         'market_hours' (default) or 'always'.
-        cooldown_minutes: Re-fire gap (default 30).
-        description:      Optional free-form.
+        thread_id:           Research thread ID (from save_research_thread).
+        name:                Human-readable agent name (shown in /agents).
+        conditions:          v2 condition tree (dict).
+        actions:             Optional list of action descriptors.
+        events:              Optional list of notify channels.
+        scope:               'total' or 'per_account'.
+        schedule:            'market_hours' (default) or 'always'.
+        cooldown_minutes:    Re-fire gap (default 30).
+        description:         Optional free-form.
+        lifespan_type:       persistent / one_shot / n_fires / until_date.
+        lifespan_max_fires:  required when lifespan_type='n_fires'.
+        lifespan_expires_at: ISO datetime, required when lifespan_type='until_date'.
 
     Returns:
         Joined view {thread_id, symbol, agent_id, agent_slug,
         agent_name, agent_status='inactive', ...}.
     """
     body = {
-        "name":             name,
-        "conditions":       conditions,
-        "actions":          actions or [],
-        "events":           events or [],
-        "scope":            scope,
-        "schedule":         schedule,
-        "cooldown_minutes": int(cooldown_minutes or 30),
-        "description":      description or "",
+        "name":                name,
+        "conditions":          conditions,
+        "actions":             actions or [],
+        "events":              events or [],
+        "scope":               scope,
+        "schedule":            schedule,
+        "cooldown_minutes":    int(cooldown_minutes or 30),
+        "description":         description or "",
+        "lifespan_type":       lifespan_type,
+        "lifespan_max_fires":  lifespan_max_fires,
+        "lifespan_expires_at": lifespan_expires_at,
     }
     return await _post(f"/api/research/threads/{int(thread_id)}/promote", body)
 
