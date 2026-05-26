@@ -14,7 +14,12 @@ free of any LLM-provider dependency.
 
 from __future__ import annotations
 
+import hashlib
+import secrets as _secrets
+import time
 from datetime import datetime
+from threading import Lock
+from typing import Any
 
 import msgspec
 from litestar import Controller, Request, delete, get, patch, post
@@ -23,7 +28,7 @@ from sqlalchemy import select, delete as sa_delete
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session
-from backend.api.models import Agent, ResearchThread
+from backend.api.models import Agent, McpAudit, ResearchThread
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -90,6 +95,56 @@ class PromoteRequest(msgspec.Struct):
     cooldown_minutes: int = 30
 
 
+class MintTokenRequest(msgspec.Struct):
+    """Operator's input to the confirm-token mint endpoint. Field set
+    EXACTLY matches what the LLM has to pass into place_order via MCP —
+    any drift would defeat the purpose hash check."""
+    account:        str
+    tradingsymbol:  str
+    side:           str               # BUY / SELL
+    quantity:       int
+    mode:           str = "paper"     # paper / live
+    order_type:     str = "LIMIT"
+    price:          float | None = None
+    trigger_price:  float | None = None
+
+
+class MintTokenResponse(msgspec.Struct):
+    token:          str
+    expires_at:     int               # unix epoch seconds
+    expires_in:     int               # seconds from now (UI convenience)
+    purpose:        str               # human-readable echo of what was minted
+    purpose_hash:   str               # for client-side display + debugging
+
+
+class PlaceOrderRequest(msgspec.Struct):
+    """LLM-initiated order. Same shape as MintTokenRequest plus the
+    confirm_token the operator pasted in. Optional Lab-page fields
+    (chase, aggressiveness) default to safe values; the LLM doesn't
+    need to know about them."""
+    confirm_token:        str
+    account:              str
+    tradingsymbol:        str
+    side:                 str
+    quantity:             int
+    mode:                 str = "paper"
+    order_type:           str = "LIMIT"
+    price:                float | None = None
+    trigger_price:        float | None = None
+    exchange:             str = "NFO"
+    product:              str = "NRML"
+    variety:              str = "regular"
+    chase:                bool = True
+    chase_aggressiveness: str = "low"
+
+
+class PlaceOrderResponse(msgspec.Struct):
+    order_id:    str
+    mode:        str
+    status:      str
+    detail:      str
+
+
 class DraftInfo(msgspec.Struct):
     """Joined view: thread → its linked draft agent (status=inactive).
 
@@ -146,6 +201,84 @@ def _to_summary(row: ResearchThread) -> ThreadSummary:
 
 _VALID_CONF  = {"bull", "bear", "neutral", "unsure"}
 _VALID_SCOPE = {"total", "per_account"}
+
+# ── Phase-3 per-call confirm-token store ──────────────────────────────
+# In-process dict — keyed by token, valued by {user_id, purpose_hash,
+# expires_at_epoch, used}. Single-use + 60s TTL means the universe of
+# live tokens is tiny (< 100 even on the busiest research day), so
+# in-memory is fine. Restarting the API invalidates all live tokens;
+# the operator just re-mints — exactly the conservative behavior we
+# want for a safety surface.
+_TOKEN_TTL_SECONDS = 60
+_token_lock: Lock = Lock()
+_confirm_tokens: dict[str, dict[str, Any]] = {}
+
+
+def _purpose_hash(account: str, symbol: str, side: str, qty: int,
+                  order_type: str, mode: str, price: Any, trigger_price: Any) -> str:
+    """Stable fingerprint of an order's identity-defining fields.
+    Token + purpose pair so a token minted for "SELL 25 NIFTY @22150"
+    can't be replayed as "BUY 25 NIFTY @22150"."""
+    parts = [
+        (account or "").upper().strip(),
+        (symbol  or "").upper().strip(),
+        (side    or "").upper().strip(),
+        str(int(qty or 0)),
+        (order_type or "").upper().strip(),
+        (mode or "").lower().strip(),
+        f"{float(price or 0):.4f}",
+        f"{float(trigger_price or 0):.4f}",
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _mint_token(user_id: int | None, purpose_hash: str) -> tuple[str, int]:
+    """Generate a fresh 32-char token, return (token, expires_epoch).
+    Cleans up expired entries opportunistically on each mint so the
+    dict can't grow without bound."""
+    tok = _secrets.token_hex(16)
+    now = int(time.time())
+    expires = now + _TOKEN_TTL_SECONDS
+    with _token_lock:
+        # Prune expired entries first.
+        stale = [t for t, v in _confirm_tokens.items() if v.get("expires_at", 0) < now]
+        for t in stale:
+            _confirm_tokens.pop(t, None)
+        _confirm_tokens[tok] = {
+            "user_id":      user_id,
+            "purpose_hash": purpose_hash,
+            "expires_at":   expires,
+            "used":         False,
+        }
+    return tok, expires
+
+
+def _consume_token(token: str, user_id: int | None, purpose_hash: str) -> str | None:
+    """Validate + consume a token in one atomic step. Returns None on
+    success; a short error string otherwise (so the route can surface
+    a precise reason to the operator)."""
+    now = int(time.time())
+    with _token_lock:
+        entry = _confirm_tokens.get(token)
+        if not entry:
+            return "Unknown or already-used token"
+        if entry.get("used"):
+            return "Token already used"
+        if entry.get("expires_at", 0) < now:
+            _confirm_tokens.pop(token, None)
+            return "Token expired (60s window)"
+        # User binding — token issued to one user_id must be redeemed
+        # by the same. Anonymous mints (user_id=None) bind to anyone
+        # with the same purpose, which is fine since the auth gate
+        # ahead of us already enforces admin role.
+        token_user = entry.get("user_id")
+        if token_user is not None and user_id is not None and token_user != user_id:
+            return "Token issued to a different user"
+        if entry.get("purpose_hash") != purpose_hash:
+            return "Order details do not match the minted token's purpose"
+        # Consume — mark used + drop the entry (single-use).
+        _confirm_tokens.pop(token, None)
+    return None
 
 
 def _slugify(s: str) -> str:
@@ -404,3 +537,153 @@ class ResearchController(Controller):
             )
             for (t, a) in rows
         ]
+
+    # ── Phase 3 — confirm-token mint + gated place_order ──────────────
+
+    @post("/confirm-token")
+    async def mint_confirm_token(self, data: MintTokenRequest, request: Request) -> MintTokenResponse:
+        """Operator-only — mint a single-use 60s token that authorises
+        ONE specific MCP place_order call. The LLM cannot call this
+        endpoint via MCP (no MCP tool wraps it); only the Lab page UI
+        does. The operator copies the returned token + pastes into
+        Claude Code, which then passes it to place_order along with
+        the IDENTICAL order details. The purpose hash binds the token
+        to the exact order so it can't be swapped for a different
+        symbol / side / qty.
+
+        Industry analog: Composer.trade's "Deploy" click + IBKR
+        TraderGPT's per-trade confirm. The token-based variant scales
+        cleanly to multi-step LLM chains (LLM calls place_order
+        without needing a UI round-trip mid-conversation, as long as
+        the operator pre-minted the token)."""
+        side = (data.side or "").upper().strip()
+        mode = (data.mode or "paper").lower().strip()
+        sym = (data.tradingsymbol or "").upper().strip()
+        acct = (data.account or "").strip()
+        order_type = (data.order_type or "LIMIT").upper().strip()
+        qty = int(data.quantity or 0)
+        if side not in ("BUY", "SELL"):
+            raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+        if mode not in ("paper", "live"):
+            raise HTTPException(status_code=400, detail="mode must be paper or live")
+        if not sym or qty <= 0 or not acct:
+            raise HTTPException(status_code=400,
+                detail="account, tradingsymbol, and quantity > 0 are all required")
+
+        ph = _purpose_hash(acct, sym, side, qty, order_type, mode,
+                           data.price, data.trigger_price)
+        token, expires = _mint_token(_user_id(request), ph)
+        now = int(time.time())
+        price_chunk = (
+            f" @₹{data.price:g}" if data.price else
+            (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
+        )
+        purpose = (
+            f"{mode.upper()} · {side} {qty} {sym}{price_chunk} · acct={acct}"
+        )
+        logger.info(
+            f"confirm-token minted: user={_user_id(request)} "
+            f"purpose={purpose!r} ttl={_TOKEN_TTL_SECONDS}s"
+        )
+        return MintTokenResponse(
+            token=token,
+            expires_at=expires,
+            expires_in=max(0, expires - now),
+            purpose=purpose,
+            purpose_hash=ph,
+        )
+
+    @post("/place-order")
+    async def place_order(self, data: PlaceOrderRequest, request: Request) -> PlaceOrderResponse:
+        """Gated order placement — requires a valid confirm token minted
+        from /confirm-token. The MCP place_order tool calls this. Every
+        call (success or failure) is recorded in the mcp_audit table.
+
+        Mode resolution: dev branch forces paper regardless of `mode`;
+        on prod, mode='live' goes live only when execution.paper_trading_mode
+        is False (matches the existing /api/orders/ticket gate)."""
+        # Compute purpose hash from the LLM's payload first — the
+        # validator checks this against the token's stored hash.
+        side = (data.side or "").upper().strip()
+        mode = (data.mode or "paper").lower().strip()
+        sym = (data.tradingsymbol or "").upper().strip()
+        acct = (data.account or "").strip()
+        order_type = (data.order_type or "LIMIT").upper().strip()
+        qty = int(data.quantity or 0)
+        ph = _purpose_hash(acct, sym, side, qty, order_type, mode,
+                           data.price, data.trigger_price)
+
+        # Redact + persist the call before doing anything risky.
+        request_id = _secrets.token_hex(6)
+        user_id = _user_id(request)
+
+        async def _audit(status_: str, summary: str) -> None:
+            try:
+                async with async_session() as s:
+                    s.add(McpAudit(
+                        tool="place_order",
+                        user_id=user_id,
+                        args_redacted={
+                            "account":       acct,
+                            "tradingsymbol": sym,
+                            "side":          side,
+                            "quantity":      qty,
+                            "mode":          mode,
+                            "order_type":    order_type,
+                            "price":         data.price,
+                            "trigger_price": data.trigger_price,
+                            # token is NEVER persisted — only its presence is logged
+                            "had_token":     bool(data.confirm_token),
+                        },
+                        result_status=status_,
+                        result_summary=summary[:1024],
+                        request_id=request_id,
+                    ))
+                    await s.commit()
+            except Exception as e:
+                logger.warning(f"mcp_audit insert failed: {e}")
+
+        # Token gate.
+        err = _consume_token(data.confirm_token or "", user_id, ph)
+        if err:
+            await _audit("denied", err)
+            raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
+
+        # Forward to the existing ticket pipeline. Reusing the route
+        # function keeps the validation / mode resolution / paper-engine
+        # registration / Kite call all in one place.
+        from backend.api.routes.orders import OrdersController
+        from backend.api.schemas import TicketOrderRequest
+
+        ticket = TicketOrderRequest(
+            mode=mode, side=side, tradingsymbol=sym, quantity=qty,
+            exchange=data.exchange, product=data.product,
+            order_type=order_type, variety=data.variety,
+            price=data.price, trigger_price=data.trigger_price,
+            account=acct, chase=data.chase,
+            chase_aggressiveness=data.chase_aggressiveness,
+            source="mcp",
+        )
+        try:
+            ctrl = OrdersController(owner=None)
+            res = await ctrl.ticket_order(data=ticket, request=request)
+        except HTTPException as e:
+            await _audit("error", f"{e.status_code}: {e.detail}")
+            raise
+        except Exception as e:
+            await _audit("error", f"unexpected: {e}")
+            logger.exception("MCP place_order: ticket pipeline raised")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        await _audit(
+            "ok",
+            f"order_id={res.order_id} mode={res.mode} status={res.status}",
+        )
+        logger.info(
+            f"MCP place_order OK: user={user_id} order_id={res.order_id} "
+            f"mode={res.mode} {side} {qty} {sym} acct={acct}"
+        )
+        return PlaceOrderResponse(
+            order_id=res.order_id, mode=res.mode,
+            status=res.status, detail=res.detail,
+        )

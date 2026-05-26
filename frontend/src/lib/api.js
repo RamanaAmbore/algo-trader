@@ -821,3 +821,6 @@ export const fetchResearchDrafts = (limit = 200) =>
 /** POST /api/research/threads/{id}/promote — create an inactive draft agent. */
 export const promoteResearchThread = (id, payload) =>
   _post(`/research/threads/${id}/promote`, payload, { auth: true });
+/** POST /api/research/confirm-token — mint a 60s single-use token for one specific order. */
+export const mintConfirmToken = (payload) =>
+  _post('/research/confirm-token', payload, { auth: true });

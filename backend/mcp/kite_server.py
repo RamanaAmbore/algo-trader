@@ -343,6 +343,88 @@ async def save_agent_draft(
 
 
 @app.tool()
+async def place_order(
+    confirm_token: str,
+    account: str,
+    tradingsymbol: str,
+    side: str,
+    quantity: int,
+    mode: str = "paper",
+    order_type: str = "LIMIT",
+    price: float | None = None,
+    trigger_price: float | None = None,
+    exchange: str = "NFO",
+    product: str = "NRML",
+    variety: str = "regular",
+    chase: bool = True,
+    chase_aggressiveness: str = "low",
+) -> dict:
+    """Place an order via the operator's broker pipeline. REQUIRES a
+    valid confirm_token minted by the operator from the Lab page
+    (`POST /api/research/confirm-token`); you cannot generate one
+    yourself.
+
+    The token is single-use, expires in 60 seconds, and is bound to
+    the EXACT order it was minted for. If account / tradingsymbol /
+    side / quantity / mode / order_type / price / trigger_price
+    don't match what the operator typed when minting, the call
+    returns 403 — change nothing, ask the operator to re-mint.
+
+    Mode resolution (server-side, cannot be overridden):
+      - dev branch: forces paper regardless of `mode`.
+      - prod + execution.paper_trading_mode=True: forces paper.
+      - prod + execution.paper_trading_mode=False + mode='live':
+        real Kite order via the existing chase engine.
+    Default `mode='paper'` is intentional — the LLM should never
+    ASK for live; the operator picks live by minting a token with
+    mode='live'.
+
+    Safety pattern matches Composer.trade's "Deploy" gate and IBKR
+    TraderGPT's per-trade confirm. No LLM-initiated order has ever
+    moved a rupee without an explicit operator confirm in this
+    architecture.
+
+    Args:
+        confirm_token:        16-byte hex token from the Lab page.
+        account:              Broker account code (e.g. ZG0790).
+        tradingsymbol:        Kite tradingsymbol (e.g. NIFTY25APRFUT).
+        side:                 BUY or SELL.
+        quantity:             Positive integer.
+        mode:                 paper (default) or live.
+        order_type:           LIMIT (default) / MARKET / SL / SL-M.
+        price:                Required for LIMIT / SL.
+        trigger_price:        Required for SL / SL-M.
+        exchange:             NFO (default) / NSE / BSE / MCX / CDS / BFO.
+        product:              NRML (default) / MIS / CNC.
+        variety:              regular (default) / amo / iceberg.
+        chase:                True (default) → engine re-quotes the limit
+                              each tick until filled or unfilled.
+        chase_aggressiveness: low (default) / med / high.
+
+    Returns:
+        {order_id, mode, status, detail} from the underlying ticket
+        pipeline. The mcp_audit table records every call.
+    """
+    body = {
+        "confirm_token":        confirm_token,
+        "account":              account,
+        "tradingsymbol":        tradingsymbol,
+        "side":                 side,
+        "quantity":             int(quantity),
+        "mode":                 mode,
+        "order_type":           order_type,
+        "price":                price,
+        "trigger_price":        trigger_price,
+        "exchange":             exchange,
+        "product":              product,
+        "variety":              variety,
+        "chase":                chase,
+        "chase_aggressiveness": chase_aggressiveness,
+    }
+    return await _post("/api/research/place-order", body)
+
+
+@app.tool()
 async def list_research_threads(symbol: str | None = None, limit: int = 50) -> dict:
     """List recent research threads. Filter by symbol when revisiting
     a specific stock's history.

@@ -21,6 +21,7 @@
   import {
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
+    mintConfirmToken,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -141,6 +142,45 @@
     }
   }
 
+  // ── Phase-3 confirm-token mint widget (Settings tab) ───────────────
+  // Operator types order details + mints a single-use 60s token.
+  // Token is then pasted into Claude Code so the LLM's place_order
+  // call carries the matching authorisation.
+  let mintForm = $state({
+    account: '', tradingsymbol: '', side: 'SELL', quantity: 1,
+    mode: 'paper', order_type: 'LIMIT', price: null, trigger_price: null,
+  });
+  /** @type {any} */
+  let mintedToken = $state(null);    // {token, expires_in, purpose, ...}
+  let mintError   = $state('');
+  let mintSecondsLeft = $state(0);
+  /** @type {ReturnType<typeof setInterval> | undefined} */
+  let mintTicker;
+  async function mint() {
+    mintError = '';
+    try {
+      const res = await mintConfirmToken({
+        ...mintForm,
+        quantity: Number(mintForm.quantity) || 0,
+        price:         mintForm.price         === null || mintForm.price         === '' ? null : Number(mintForm.price),
+        trigger_price: mintForm.trigger_price === null || mintForm.trigger_price === '' ? null : Number(mintForm.trigger_price),
+      });
+      mintedToken = res;
+      mintSecondsLeft = res.expires_in;
+      clearInterval(mintTicker);
+      mintTicker = setInterval(() => {
+        mintSecondsLeft = Math.max(0, mintSecondsLeft - 1);
+        if (mintSecondsLeft === 0) {
+          clearInterval(mintTicker);
+        }
+      }, 1000);
+    } catch (e) {
+      mintError = e.message;
+      mintedToken = null;
+    }
+  }
+  onDestroy(() => clearInterval(mintTicker));
+
   // Phase-1 tool inventory — mirrors backend/mcp/kite_server.py
   const TOOLS = [
     { name: 'get_positions',         summary: 'Current intraday positions (optionally filtered by account)' },
@@ -153,6 +193,7 @@
     { name: 'list_agents',           summary: 'List existing agents (optionally by status)' },
     { name: 'save_research_thread',  summary: 'Persist a thesis + transcript to the Lab page' },
     { name: 'save_agent_draft',      summary: 'Promote a thread to an inactive draft Agent (paper-mode)' },
+    { name: 'place_order',           summary: 'Gated order placement — requires operator-minted confirm token' },
     { name: 'get_research_thread',   summary: 'Fetch a saved thread by id' },
     { name: 'list_research_threads', summary: 'List recent threads (optional symbol filter)' },
     { name: 'get_server_info',       summary: 'Diagnostic — base URL + token presence' },
@@ -336,8 +377,71 @@
     {/if}
   </div>
 {:else}
-  <!-- Settings tab — MCP bootstrap -->
+  <!-- Settings tab — MCP bootstrap + confirm-token mint -->
   <div class="lab-settings">
+
+    <!-- ── 0. Confirm-token mint — Phase 3 ────────────────────────── -->
+    <article class="lab-card lab-card-mint">
+      <h2>0. Mint a confirm token (place_order gate)</h2>
+      <p>
+        The MCP <code>place_order</code> tool refuses every request without a
+        valid <b>operator-minted token</b>. Fill the form, click Mint, copy
+        the token, paste into Claude Code. Token is single-use, expires in
+        60 seconds, and is bound to <i>this exact order</i> — the LLM can't
+        swap the symbol or quantity post-mint.
+      </p>
+      <div class="mint-grid">
+        <label><span>Account</span><input bind:value={mintForm.account} placeholder="ZG0790" /></label>
+        <label><span>Symbol</span><input bind:value={mintForm.tradingsymbol} placeholder="NIFTY25APRFUT" /></label>
+        <label><span>Side</span>
+          <select bind:value={mintForm.side}>
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+        </label>
+        <label><span>Quantity</span><input type="number" bind:value={mintForm.quantity} min="1" /></label>
+        <label><span>Mode</span>
+          <select bind:value={mintForm.mode}>
+            <option value="paper">PAPER</option>
+            <option value="live">LIVE</option>
+          </select>
+        </label>
+        <label><span>Order type</span>
+          <select bind:value={mintForm.order_type}>
+            <option value="LIMIT">LIMIT</option>
+            <option value="MARKET">MARKET</option>
+            <option value="SL">SL</option>
+            <option value="SL-M">SL-M</option>
+          </select>
+        </label>
+        <label><span>Price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
+        <label><span>Trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
+      </div>
+      <button class="copy-btn mint-btn" type="button" onclick={mint}>Mint token</button>
+      {#if mintError}
+        <div class="mint-error">{mintError}</div>
+      {/if}
+      {#if mintedToken}
+        <div class="mint-result" class:mint-expired={mintSecondsLeft === 0}>
+          <div class="mint-purpose">{mintedToken.purpose}</div>
+          <div class="mint-token-row">
+            <code class="mint-token">{mintedToken.token}</code>
+            <button class="copy-btn" type="button" onclick={() => copy(mintedToken.token, 'token')}>Copy</button>
+            <span class="mint-countdown">
+              {#if mintSecondsLeft > 0}
+                expires in {mintSecondsLeft}s
+              {:else}
+                EXPIRED — mint again
+              {/if}
+            </span>
+          </div>
+          <p class="mint-hint">
+            Paste into Claude Code: <code>place_order with confirm_token=<i>&lt;paste&gt;</i> + the same order details</code>.
+          </p>
+        </div>
+      {/if}
+    </article>
+
     <article class="lab-card">
       <h2>1. Bootstrap your JWT</h2>
       <p>The MCP server authenticates against the RamboQuant API using your JWT. Mint one with the existing login endpoint and export it before launching Claude Code:</p>
@@ -783,6 +887,99 @@
     border-bottom: 1px solid rgba(126, 151, 184, 0.08);
   }
   .lab-card-safety { border-left: 2px solid rgba(248, 113, 113, 0.5); }
+  .lab-card-mint   { border-left: 2px solid rgba(251, 191, 36, 0.65); }
+  .mint-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.5rem 0.7rem;
+    margin: 0.6rem 0 0.5rem;
+  }
+  .mint-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .mint-grid span {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #7e97b8;
+  }
+  .mint-grid input,
+  .mint-grid select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    border-radius: 0.25rem;
+    padding: 0.32rem 0.45rem;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+  }
+  .mint-grid input:focus,
+  .mint-grid select:focus {
+    outline: none;
+    border-color: rgba(251, 191, 36, 0.6);
+  }
+  .mint-btn { margin-top: 0.2rem; }
+  .mint-error {
+    margin-top: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid rgba(248, 113, 113, 0.32);
+    border-radius: 0.35rem;
+    color: #f87171;
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+  }
+  .mint-result {
+    margin-top: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    background: rgba(251, 191, 36, 0.06);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 0.4rem;
+  }
+  .mint-result.mint-expired {
+    background: rgba(126, 151, 184, 0.06);
+    border-color: rgba(126, 151, 184, 0.25);
+    opacity: 0.65;
+  }
+  .mint-purpose {
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: #c8d8f0;
+    margin-bottom: 0.4rem;
+  }
+  .mint-token-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .mint-token {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    padding: 0.25rem 0.55rem;
+    border-radius: 0.3rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: #fbbf24;
+    letter-spacing: 0.04em;
+    user-select: all;
+  }
+  .mint-countdown {
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    color: #fbbf24;
+    font-weight: 700;
+  }
+  .mint-expired .mint-countdown { color: #f87171; }
+  .mint-hint {
+    margin: 0.4rem 0 0;
+    color: #7e97b8;
+    font-size: 0.62rem;
+    line-height: 1.4;
+  }
   .safety-list {
     margin: 0; padding: 0 0 0 1.2rem;
     color: #c8d8f0;
