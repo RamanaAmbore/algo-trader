@@ -2438,7 +2438,9 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
-      { field: 'day_pnl', headerName: 'Day P&L', width: 64,
+      // Day P&L at 54 px (64 × 0.85). minWidth pinned against ag-Grid's
+      // 50 px numericColumn-type default so the new size holds.
+      { field: 'day_pnl', headerName: 'Day P&L', width: 54, minWidth: 54, maxWidth: 70,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
@@ -2918,6 +2920,7 @@
         ? state.map(c => {
             if (c?.colId === 'sparkline') return { ...c, hide: false, width: 44, actualWidth: 44, flex: null };
             if (c?.colId === 'ltp')       return { ...c,              width: 77, actualWidth: 77, flex: null };
+            if (c?.colId === 'day_pnl')   return { ...c,              width: 54, actualWidth: 54, flex: null };
             return c;
           })
         : state;
