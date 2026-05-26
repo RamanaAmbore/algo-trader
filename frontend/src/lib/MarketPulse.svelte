@@ -687,10 +687,17 @@
       }
     }
     if (!pairs.length) return;
+    // Backend caps the batch at 100 symbols. /pulse routinely exceeds
+    // that (positions + holdings + watchlist + movers + pinned), so
+    // chunk into ≤100-symbol requests.
+    const CHUNK = 100;
     try {
-      const res = await fetchSparklines(pairs, 5);
-      if (res?.data && typeof res.data === 'object') {
-        sparklines = { ...sparklines, ...res.data };
+      for (let i = 0; i < pairs.length; i += CHUNK) {
+        const slice = pairs.slice(i, i + CHUNK);
+        const res = await fetchSparklines(slice, 5);
+        if (res?.data && typeof res.data === 'object') {
+          sparklines = { ...sparklines, ...res.data };
+        }
       }
     } catch (_) { /* non-fatal — sparklines are cosmetic */ }
   }
