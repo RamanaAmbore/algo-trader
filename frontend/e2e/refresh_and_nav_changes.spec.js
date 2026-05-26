@@ -52,4 +52,13 @@ test('UI bundle: ts colour + agents History pill + pulse refresh + 5d header', a
 
   const fiveDHeader = page.locator('.ag-header-cell-text', { hasText: '5d' }).first();
   await expect(fiveDHeader).toBeVisible({ timeout: 10000 });
+
+  // 5d column width on a mobile-portrait viewport: ≤22 px so LTP isn't
+  // squashed. Read the header cell (col-id = sparkline) width directly.
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.waitForTimeout(800);
+  const sparkCol = page.locator('[col-id="sparkline"]').first();
+  const sparkBox = await sparkCol.boundingBox();
+  console.log(`[/pulse mobile] sparkline col width = ${sparkBox?.width}`);
+  expect(sparkBox?.width).toBeLessThanOrEqual(22);
 });
