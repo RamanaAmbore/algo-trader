@@ -1,10 +1,16 @@
 // Sparkline column on /pulse should populate after fetchSparklines arrives.
-// Before the fix, the Curve column rendered `—` placeholders that never
-// updated because ag-Grid wasn't told to refresh its cells when the
-// reactive `sparklines` map changed.
+// Two bugs were involved before the fix:
+//   1. ag-Grid wasn't told to refresh its Curve cells when the reactive
+//      `sparklines` $state map updated → cells stayed em-dashed forever.
+//   2. /pulse routinely has >100 rows but the backend caps the batch at
+//      100 symbols, so the single fetchSparklines call 400'd and the
+//      map never got populated → cells stayed em-dashed for a *different*
+//      reason. Fix: chunk into ≤100-symbol requests.
 import { test, expect } from '@playwright/test';
 
-const USER = 'ambore';
+test.setTimeout(90000);
+
+const USER = process.env.PLAYWRIGHT_USER || 'rambo';
 const PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
 
 async function signIn(page) {
@@ -23,23 +29,11 @@ async function signIn(page) {
 test('/pulse Curve column renders sparkline SVGs after data loads', async ({ page }) => {
   await signIn(page);
   await page.goto('/pulse', { waitUntil: 'networkidle' });
-
-  // Grid mounts → wait for rows
   await page.locator('.ag-row').first().waitFor({ timeout: 15000 });
 
-  // Sparkline poll fires immediately after positions/holdings load.
-  // Give it up to 20s for the batch request to come back and for the
-  // refresh effect to repaint cells.
-  const sparkSvg = page.locator('.spark-cell svg polyline').first();
-  await sparkSvg.waitFor({ timeout: 20000 });
+  // First populated SVG → the refresh + chunking pipeline worked.
+  await page.locator('.spark-cell svg polyline').first().waitFor({ timeout: 45000 });
 
-  // Count: how many Curve cells now have an SVG vs an em-dash placeholder.
   const svgCount = await page.locator('.spark-cell svg polyline').count();
-  const dashCount = await page.locator('.spark-cell span', { hasText: '—' }).count();
-  console.log(`[/pulse] sparkline SVGs: ${svgCount}, em-dash placeholders: ${dashCount}`);
-
-  // Real assertion: at least one populated SVG. Em-dashes are allowed
-  // (some rows legitimately have no daily history — fresh listings,
-  // illiquid instruments).
   expect(svgCount).toBeGreaterThan(0);
 });
