@@ -2328,11 +2328,13 @@
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
     const closes = sparklines[sym];
     if (!closes || closes.length < 2) {
-      return '<span style="color:#7e97b8;font-size:0.6rem;padding:0 6px">—</span>';
+      return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:#7e97b8;font-size:0.6rem">—</span>';
     }
-    // SVG sized at 32×14 with 6 px breathing room on each side (wrapped
-    // in an inline-block span so the column header letterforms don't
-    // crowd the curve). Column width = 32 + 12 = 44.
+    // SVG centered inside a flex wrapper that fills the cell, so left
+    // and right whitespace are equal regardless of column width. An
+    // inline-block + symmetric padding earlier sat against the cell's
+    // left edge (cells default to text-align:left in ag-Grid), making
+    // the curve look pushed against the left border.
     const W = 32, H = 14, PAD = 2;
     const min = Math.min(...closes);
     const max = Math.max(...closes);
@@ -2342,7 +2344,7 @@
     const pts   = closes.map((v, i) => `${(PAD + i * xStep).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
     const up    = closes[closes.length - 1] >= closes[0];
     const color = up ? 'rgba(91,142,149,0.85)' : 'rgba(196,122,61,0.85)';
-    return `<span style="display:inline-block;padding:0 6px"><svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>`;
+    return `<span style="display:flex;align-items:center;justify-content:center;height:100%"><svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>`;
   }
 
   function dirCls(v) {
@@ -2427,7 +2429,7 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      { field: 'ltp', headerName: 'LTP', width: 80,
+      { field: 'ltp', headerName: 'LTP', width: 56,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
@@ -2984,10 +2986,7 @@
         class="mp-add-btn">
         +
       </button>
-      <span class="ml-auto flex items-center gap-2">
-        {#if refreshedAt}
-          <span class="algo-ts" title="Last broker refresh">{refreshedAt}</span>
-        {/if}
+      <span class="ml-auto">
         <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="market pulse" />
       </span>
     </div>
