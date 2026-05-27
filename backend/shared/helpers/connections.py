@@ -712,7 +712,13 @@ class GrowwConnection:
         token, _created = _load_cached_token(cache_key)
         if token:
             return token
-        # 2) Mint via api_key + secret/totp.
+        # 2) Mint via api_key + secret/totp. Capture the mint failure
+        #    so we can surface it in the final RuntimeError when the
+        #    legacy access_token fallback ALSO has nothing — otherwise
+        #    operators see a generic "no working token" with no hint
+        #    of WHY mint failed (HTTP 400 from Groww's secret check
+        #    vs 401 stale api_key vs network outage).
+        mint_error: Exception | None = None
         if self._api_key and (self._secret or self._totp_seed):
             try:
                 token = self._mint_access_token()
@@ -720,6 +726,7 @@ class GrowwConnection:
                     _save_cached_token(cache_key, token)
                     return token
             except Exception as e:
+                mint_error = e
                 logger.warning(
                     f"GrowwConnection {self.account!r} mint failed: {e}. "
                     f"Falling back to manually-pasted access_token if any."
@@ -727,10 +734,29 @@ class GrowwConnection:
         # 3) Legacy 24 h manual-paste token.
         if self._access_token:
             return self._access_token
+        # Final error — list which inputs we DO have so the operator can
+        # spot the missing piece. has_secret / has_totp / has_token tell
+        # them exactly which credential slot is empty without exposing
+        # any value. If mint was attempted + failed, include Groww's
+        # actual response (HTTP code + message) so the operator sees
+        # "Groww 400: Invalid secret" instead of guessing.
+        present = {
+            "api_key":      bool(self._api_key),
+            "secret":       bool(self._secret),
+            "totp_seed":    bool(self._totp_seed),
+            "access_token": bool(self._access_token),
+        }
+        present_summary = ", ".join(f"{k}={'✓' if v else '✗'}" for k, v in present.items())
+        if mint_error is not None:
+            raise RuntimeError(
+                f"GrowwConnection {self.account!r}: mint failed — {mint_error!r}. "
+                f"Provided: {present_summary}. Fix in /admin/brokers."
+            )
         raise RuntimeError(
-            f"GrowwConnection {self.account!r}: no working token. Need "
-            f"either api_key+secret, api_key+totp_seed, or a fresh "
-            f"24 h access_token. Edit credentials in /admin/brokers."
+            f"GrowwConnection {self.account!r}: no working token. "
+            f"Provided: {present_summary}. Need either api_key+secret, "
+            f"api_key+totp_seed, or a fresh 24 h access_token. "
+            f"Edit credentials in /admin/brokers."
         )
 
     def _build(self) -> None:
