@@ -2002,6 +2002,27 @@
               <span class="kv-k">R:R <InfoHint popup text={'<b>Risk-to-reward</b> = max_profit / |max_loss|. "1 : 0.5" = risk ₹100 to make ₹50. "1 : 3" = risk ₹100 to make ₹300. <b>—</b> when one side is unbounded.'} /></span>
               <span class="kv-v">{strategy.risk.rr_ratio == null ? '—' : `1 : ${pctFmt(strategy.risk.rr_ratio)}`}</span>
             </div>
+            <!-- Risk-of-ruin: |max_loss| / |net_cost|. How many times the
+                 strategy's premium budget is consumed by a single
+                 max-loss event. 1× = one max loss wipes the trade's cost
+                 basis exactly; >1× = one max loss costs more than the
+                 premium paid (sized too aggressively). CBOE Education +
+                 every options primer surfaces this alongside R:R. —
+                 when net cost is ~0 (free debit/credit) or max_loss is
+                 unbounded. Wrapped in {#if} so the {@const} satisfies
+                 Svelte's "immediate-child" rule. -->
+            {#if true}
+              {@const _ror = (strategy.risk.max_loss != null
+                              && Number.isFinite(strategy.risk.max_loss)
+                              && strategy.net_cost != null
+                              && Math.abs(strategy.net_cost) > 1)
+                ? Math.abs(strategy.risk.max_loss) / Math.abs(strategy.net_cost)
+                : null}
+              <div class="kv-pair">
+                <span class="kv-k">Risk-of-ruin <InfoHint popup text={'<b>Risk-of-ruin</b> = |max_loss| / |net_cost|. How many times the strategy\'s premium budget is consumed by a single max-loss event. <b>1.0×</b> means a single retest of max loss wipes the trade\'s cost basis exactly. <b>&gt;1×</b> means one max loss costs more than the premium paid — strategy is sized too aggressively. <b>—</b> when net cost is ~0 (free) or max loss is unbounded.'} /></span>
+                <span class="kv-v">{_ror == null ? '—' : `${_ror.toFixed(2)}×`}</span>
+              </div>
+            {/if}
             <div class="kv-pair">
               <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">

@@ -154,6 +154,17 @@
     for (const f of funds) s += Number(f?.avail_margin || 0);
     return s;
   });
+  // Margin utilisation — used / (used + avail). Operator glances at
+  // this to know how much room is left to deploy before adding risk.
+  const utilPct = $derived.by(() => {
+    let used = 0, avail = 0;
+    for (const f of funds) {
+      used  += Number(f?.used_margin  || 0);
+      avail += Number(f?.avail_margin || 0);
+    }
+    const denom = used + avail;
+    return denom > 0 ? (used / denom) * 100 : null;
+  });
 
   function fmtMoney(/** @type {number} */ v) {
     if (!isFinite(v)) return '0';
@@ -175,6 +186,14 @@
       {fmtMoney(marginTotal)}
     </span>
   </span>
+  {#if utilPct != null}
+    <span class="ps-agg" title="Margin utilisation — used / (used + avail). >70% reads as crowded; <30% means most of the pool is free to deploy.">
+      <span class="ps-agg-k">U</span>
+      <span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash')}>
+        {utilPct.toFixed(1)}%
+      </span>
+    </span>
+  {/if}
   <span class="ps-agg" title="Cash — live cash + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium)">
     <span class="ps-agg-k">C</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
