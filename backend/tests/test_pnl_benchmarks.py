@@ -102,10 +102,12 @@ async def test_multi_symbol_success():
         265:    sensex_candles,
     }
 
-    mock_kite = MagicMock()
-    mock_kite.historical_data = MagicMock(side_effect=lambda token, *a, **kw: candle_map.get(token, []))
+    # admin.py was refactored to call broker.historical_data (Broker ABC)
+    # instead of broker.kite.historical_data. Mock the new path.
     mock_broker = MagicMock()
-    mock_broker.kite = mock_kite
+    mock_broker.historical_data = MagicMock(
+        side_effect=lambda token, *a, **kw: candle_map.get(token, [])
+    )
 
     with patch("backend.shared.brokers.registry.get_price_broker", return_value=mock_broker), \
          patch("backend.api.routes.admin.get_price_broker", return_value=mock_broker, create=True):
@@ -137,10 +139,9 @@ async def test_symbol_fetch_failure_is_graceful():
 
     _BENCHMARK_CACHE.clear()
 
-    mock_kite = MagicMock()
-    mock_kite.historical_data = MagicMock(side_effect=RuntimeError("Kite down"))
+    # Same Broker-ABC pattern — mock broker.historical_data directly.
     mock_broker = MagicMock()
-    mock_broker.kite = mock_kite
+    mock_broker.historical_data = MagicMock(side_effect=RuntimeError("Kite down"))
 
     with patch("backend.shared.brokers.registry.get_price_broker", return_value=mock_broker), \
          patch("backend.api.routes.admin.get_price_broker", return_value=mock_broker, create=True):

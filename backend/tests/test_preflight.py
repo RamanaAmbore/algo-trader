@@ -7,10 +7,12 @@ Covers:
   - QTY_FREEZE blocker
   - MARGIN_SHORTFALL blocker (mocked basket_margin)
 
-Per project convention we do NOT mock broker API calls for the core
-integration flows; the preflight helper is tested by controlling the
-Connections singleton and patching the narrowest broker boundary
-(kite.basket_order_margins on the KiteConnect object) for margin tests only.
+`run_preflight` now talks to the Broker ABC (profile / instruments /
+basket_order_margins / margins / normalise_qty), resolved via the
+registry's `get_broker(account)`. The tests therefore mock that
+boundary — a stub Broker exposing the ABC methods. The previous
+`broker.kite.X` mocking layer is obsolete (the refactor that
+introduced Broker ABC moved the calls one layer up).
 """
 
 import pytest
@@ -22,39 +24,44 @@ from unittest.mock import MagicMock, patch, AsyncMock
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_kite_conn(api_secret: str = "secret"):
-    """Build a minimal stub KiteConnection that the preflight helper needs."""
-    kite_mock = MagicMock()
-
-    # profile — returns the two exchanges we care about
-    kite_mock.profile.return_value = {
-        "exchanges": ["NSE", "NFO", "BSE", "MCX", "CDS"],
-    }
-
-    # instruments — returns one row with freeze_qty for NIFTY25APRFUT
-    kite_mock.instruments.return_value = [
-        {
-            "tradingsymbol": "NIFTY25APRFUT",
-            "exchange":      "NFO",
-            "instrument_type": "FUT",
-            "freeze_qty":    6000,
-            "lot_size":      50,
-            "tick_size":     0.05,
-        }
-    ]
-
-    # basket_margin — default: success (no shortfall)
-    kite_mock.basket_order_margins.return_value = [{
-        "initial": {
-            "total": 10000.0,
-            "available": {"cash": 50000.0},
-        }
+def _make_broker_stub(*,
+                     enabled_exchanges: tuple[str, ...] = ("NSE", "NFO", "BSE", "MCX", "CDS"),
+                     instruments: list[dict] | None = None,
+                     basket_required_total: float = 10000.0,
+                     margin_net: float = 500000.0,
+                     margin_enabled: bool = True) -> MagicMock:
+    """Build a stub Broker that satisfies every method run_preflight
+    calls. Default values let the happy-path test pass; individual
+    tests override the fields they exercise."""
+    broker = MagicMock()
+    broker.profile.return_value = {"exchanges": list(enabled_exchanges)}
+    broker.instruments.return_value = instruments or [{
+        "tradingsymbol": "NIFTY25APRFUT",
+        "exchange":      "NFO",
+        "instrument_type": "FUT",
+        "freeze_qty":    6000,
+        "lot_size":      50,
+        "tick_size":     0.05,
     }]
+    broker.basket_order_margins.return_value = [{
+        "initial": {"total": basket_required_total},
+    }]
+    broker.margins.return_value = {
+        "equity":    {"enabled": margin_enabled, "net": margin_net},
+        "commodity": {"enabled": margin_enabled, "net": margin_net},
+    }
+    broker.normalise_qty.side_effect = lambda exchange, qty, lot_size: int(qty)
+    return broker
 
-    conn = MagicMock()
-    conn.api_secret = api_secret
-    conn.get_kite_conn.return_value = kite_mock
-    return conn, kite_mock
+
+def _conns_with(account: str):
+    """Build a Connections stub whose `.conn` dict contains the given
+    account (value can be anything truthy; preflight only checks the
+    KEY for ACCOUNT_UNKNOWN, then resolves the actual broker via
+    get_broker()). Returns a MagicMock for patching."""
+    c = MagicMock()
+    c.conn = {account: object()}
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -64,14 +71,15 @@ def _make_kite_conn(api_secret: str = "secret"):
 @pytest.mark.asyncio
 async def test_preflight_happy_path():
     """All checks pass → ok=True, blocked is empty."""
-    from backend.shared.helpers.connections import Connections
     from backend.api.algo.actions import run_preflight
 
-    conn_stub, _kite = _make_kite_conn()
-    conns = Connections.__new__(Connections)
-    conns.conn = {"ZG0790": conn_stub}
+    broker = _make_broker_stub()
+    conns  = _conns_with("ZG0790")
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns):
+    with patch("backend.shared.helpers.connections.Connections", return_value=conns), \
+         patch("backend.shared.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.shared.brokers.kite.get_lot_size",
+               new=AsyncMock(return_value=50)):
         result = await run_preflight("ZG0790", {
             "exchange":      "NFO",
             "tradingsymbol": "NIFTY25APRFUT",
@@ -83,7 +91,7 @@ async def test_preflight_happy_path():
             "price":         22000.0,
         })
 
-    assert result["ok"] is True
+    assert result["ok"] is True, f"unexpected blockers: {result['blocked']}"
     assert result["blocked"] == []
     assert result["diagnostics"]["basket_margin_used"] is not None
 
@@ -120,22 +128,13 @@ async def test_preflight_qty_freeze():
     """Quantity exceeds freeze_qty → QTY_FREEZE blocker."""
     from backend.api.algo.actions import run_preflight
 
-    conn_stub, kite_mock = _make_kite_conn()
-    # freeze_qty is 6000; we'll request 8000
-    kite_mock.instruments.return_value = [
-        {
-            "tradingsymbol": "NIFTY25APRFUT",
-            "exchange":      "NFO",
-            "instrument_type": "FUT",
-            "freeze_qty":    6000,
-            "lot_size":      50,
-            "tick_size":     0.05,
-        }
-    ]
-    conns = MagicMock()
-    conns.conn = {"ZG0790": conn_stub}
+    broker = _make_broker_stub()    # default instruments carry freeze_qty=6000
+    conns  = _conns_with("ZG0790")
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns):
+    with patch("backend.shared.helpers.connections.Connections", return_value=conns), \
+         patch("backend.shared.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.shared.brokers.kite.get_lot_size",
+               new=AsyncMock(return_value=50)):
         result = await run_preflight("ZG0790", {
             "exchange":      "NFO",
             "tradingsymbol": "NIFTY25APRFUT",
@@ -160,18 +159,14 @@ async def test_preflight_margin_shortfall():
     """basket_margin reports required > available → MARGIN_SHORTFALL blocker."""
     from backend.api.algo.actions import run_preflight
 
-    conn_stub, kite_mock = _make_kite_conn()
-    # Override basket_margin to return a shortfall scenario
-    kite_mock.basket_order_margins.return_value = [{
-        "initial": {
-            "total": 200000.0,               # required ₹2L
-            "available": {"cash": 50000.0},  # only ₹50k available
-        }
-    }]
-    conns = MagicMock()
-    conns.conn = {"ZG0790": conn_stub}
+    # Required ₹2L, available ₹50k — shortfall ₹1.5L.
+    broker = _make_broker_stub(basket_required_total=200000.0, margin_net=50000.0)
+    conns  = _conns_with("ZG0790")
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns):
+    with patch("backend.shared.helpers.connections.Connections", return_value=conns), \
+         patch("backend.shared.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.shared.brokers.kite.get_lot_size",
+               new=AsyncMock(return_value=50)):
         result = await run_preflight("ZG0790", {
             "exchange":      "NFO",
             "tradingsymbol": "NIFTY25APRFUT",
