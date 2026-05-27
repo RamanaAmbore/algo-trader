@@ -65,6 +65,18 @@ class Context:
     # empty on the live path until a future "watchlist polling" task
     # mirrors the simulator behaviour.
     watchlist_rows:  list = field(default_factory=list)
+    # Per-symbol position rows (one dict per Kite row, with tradingsymbol +
+    # exchange + quantity + last_price). Used by expiry-aware scopes that
+    # need per-contract granularity (sum_positions is per-account
+    # aggregated and carries no symbol). Empty when the engine hasn't
+    # populated it (e.g. early in startup or in legacy callers).
+    position_rows:   list = field(default_factory=list)
+    # Underlying spot prices keyed by underlying name (e.g. {"NIFTY":
+    # 22150.30, "BANKNIFTY": 48230.10}). Populated by the engine once
+    # per tick from broker.ltp on the distinct underlyings of the
+    # position book; consumed by is_itm / is_ntm. Empty ⇒ those
+    # resolvers return None and their leaves are skipped.
+    spot_prices:     dict = field(default_factory=dict)
     # The persistent alert_state dict: holds 'pnl_history',
     # 'session_start', 'session_date', 'last_alert' keyed by bucket. Resolvers
     # read it for rate computations and the session-minutes helpers.

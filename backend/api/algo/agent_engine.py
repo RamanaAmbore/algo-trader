@@ -860,6 +860,82 @@ for _a in _LOSS_AGENTS:
 BUILTIN_AGENTS.extend(_LOSS_AGENTS)
 
 
+# ── Expiry-day agents (Item 1 / Phase 25) ────────────────────────────
+#
+# Two seeded agents. Both ship INACTIVE — the existing ExpiryEngine
+# background task at 09:20 IST already handles the automatic close.
+# These agents add VISIBILITY (alert) + an opt-in auto-close path
+# the operator can activate per-account or globally.
+#
+# Run side-by-side with ExpiryEngine for one expiry week before
+# considering retirement of the bg task. The bg task fires at 09:20;
+# these agents fire at 14:30 (NFO) / 23:00 (MCX) — different times,
+# no collision.
+_EXPIRY_AGENTS = [
+    dict(slug="expiry-day-positions-alert",
+         tier="high",
+         topic="expiry_warning",
+         name="Positions expiring today — review alert",
+         description=(
+             "Notify-only. Fires once per session when ANY open F&O "
+             "position is expiring today (days_until_expiry ≤ 1.5). "
+             "Lets the operator review + manually close before the "
+             "existing ExpiryEngine bg task takes over at scheduled "
+             "times. Ships INACTIVE — enable once you've reviewed "
+             "what 'positions expiring today' surfaces on a real "
+             "expiry day."
+         ),
+         conditions={"metric": "days_until_expiry",
+                     "scope": "positions.expiring_today",
+                     "op": "<=", "value": 1.5},
+         scope="total",
+         schedule="market_hours",
+         cooldown_minutes=180,        # one alert per half-day, max
+         status="inactive",
+         ),
+
+    dict(slug="expiry-day-itm-auto-close",
+         tier="critical",
+         topic="expiry_warning",
+         name="Auto-close ITM options on expiry day",
+         description=(
+             "When an open option is ITM AND expiring today, chase-"
+             "close every position in the book using the adaptive "
+             "limit-order engine. Wraps the same ExpiryEngine the "
+             "bg task uses — calling it via an agent gives the "
+             "operator on/off + dry-run + simulator coverage that "
+             "the bg task lacks. Ships INACTIVE (destructive)."
+         ),
+         conditions={"all": [
+             {"metric": "is_itm",
+              "scope":  "positions.expiring_today",
+              "op":     "==", "value": 1.0},
+         ]},
+         scope="total",
+         schedule="market_hours",
+         cooldown_minutes=60,
+         status="inactive",
+         actions=[
+             {"type": "chase_close_positions",
+              "params": {"scope": "total", "timeout_minutes": 15,
+                         "adjust_pct": 0.1}},
+         ],
+         ),
+]
+_EXPIRY_AGENT_DEFAULTS = dict(
+    events=[
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email",    "enabled": True},
+        {"channel": "log",      "enabled": True},
+    ],
+    actions=[],
+)
+for _a in _EXPIRY_AGENTS:
+    for _k, _v in _EXPIRY_AGENT_DEFAULTS.items():
+        _a.setdefault(_k, _v)
+BUILTIN_AGENTS.extend(_EXPIRY_AGENTS)
+
+
 # ── Manual agent: every operator-initiated order submit fires under
 #    this slug so the audit trail (/agents Events tab + agent_events
 #    table) shows manual + automated fires in one consistent stream.
@@ -1227,6 +1303,12 @@ async def run_cycle(context: dict, broadcast_fn=None,
             sum_positions=context.get("sum_positions"),
             df_margins=context.get("df_margins"),
             watchlist_rows=context.get("watchlist_rows") or [],
+            # Phase 25 — expiry agents read per-symbol rows + underlying
+            # spot prices via these context fields. Callers (background
+            # tasks, simulator, dry-run) populate them when available;
+            # absent ⇒ expiry-* metric resolvers return None gracefully.
+            position_rows=context.get("position_rows") or [],
+            spot_prices=context.get("spot_prices") or {},
             alert_state=alert_state,
             now=now,
             segments=context.get("segments", []),

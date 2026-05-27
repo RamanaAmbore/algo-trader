@@ -133,6 +133,122 @@ def _metric_range_pnl_30m(ctx, row):  return ctx.window_range(_w_key_pos(row),  
 def _metric_range_pnl_1h(ctx, row):   return ctx.window_range(_w_key_pos(row),  60)
 
 
+# ── Expiry-aware metrics + scopes (Item 1 / Phase 25) ────────────────
+#
+# Lets an agent reason about which positions are expiring today and
+# (when spot is known) whether they're in/near the money. The resolvers
+# parse the tradingsymbol on every call — light enough to do per-tick
+# without caching since parsing is regex + dict lookups, not I/O.
+#
+# Spot prices are looked up via `ctx.spot_prices` — a dict[underlying:
+# str, ltp: float] populated by _build_context once per tick. When the
+# spot for an option's underlying isn't in the dict (broker outage,
+# unrecognised symbol, dry-run with no spot fetch), the ITM/NTM
+# resolvers return None and the leaf is skipped — same graceful path
+# the rate metrics already use when pnl_history is empty.
+
+def _parsed_or_none(symbol):
+    """Cached-on-row wrapper around parse_tradingsymbol so repeated
+    resolver calls on the same row only re-parse once per evaluation."""
+    try:
+        from backend.api.algo.derivatives import parse_tradingsymbol
+        return parse_tradingsymbol(symbol)
+    except Exception:
+        return None
+
+
+def _metric_days_until_expiry(ctx, row):
+    """Days until this position's option/future expires. None for
+    cash equity holdings (non-parseable tradingsymbol)."""
+    sym = row.get('tradingsymbol') or ''
+    parsed = _parsed_or_none(sym)
+    if not parsed or not parsed.get('expiry'):
+        return None
+    try:
+        from backend.api.algo.derivatives import days_to_expiry
+        # MCX commodity options trade until 23:30; everything else 15:30.
+        close_time = (23, 30) if (row.get('exchange') or '').upper() == 'MCX' else (15, 30)
+        return float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
+    except Exception:
+        return None
+
+
+def _option_moneyness(ctx, row):
+    """Return (kind, intrinsic_pct) for an option row — `kind` is 'CE'
+    or 'PE', `intrinsic_pct` is (spot − strike)/spot for CE or
+    (strike − spot)/spot for PE. Positive ⇒ ITM, negative ⇒ OTM.
+    Returns (None, None) when the row isn't an option or spot is
+    unavailable."""
+    sym = row.get('tradingsymbol') or ''
+    parsed = _parsed_or_none(sym)
+    if not parsed or parsed.get('kind') != 'opt':
+        return (None, None)
+    spots = getattr(ctx, 'spot_prices', None) or {}
+    spot = spots.get(parsed.get('underlying') or '')
+    if spot is None or spot <= 0:
+        return (None, None)
+    strike = parsed.get('strike')
+    if strike is None:
+        return (None, None)
+    if parsed['opt_type'] == 'CE':
+        return ('CE', (spot - strike) / spot)
+    if parsed['opt_type'] == 'PE':
+        return ('PE', (strike - spot) / spot)
+    return (None, None)
+
+
+def _metric_is_itm(ctx, row):
+    """1.0 when the option is in-the-money at current spot, 0.0
+    otherwise. None when row isn't an option or spot is unavailable."""
+    kind, intrinsic = _option_moneyness(ctx, row)
+    if kind is None:
+        return None
+    return 1.0 if intrinsic > 0 else 0.0
+
+
+def _metric_is_ntm(ctx, row):
+    """1.0 when the option is within ±1.5% of spot (near-the-money),
+    0.0 otherwise. The 1.5% threshold matches the legacy ExpiryEngine
+    default. None when row isn't an option or spot is unavailable."""
+    kind, intrinsic = _option_moneyness(ctx, row)
+    if kind is None:
+        return None
+    return 1.0 if abs(intrinsic) <= 0.015 else 0.0
+
+
+def _scope_positions_expiring_today(ctx):
+    """Per-symbol position rows where the symbol parses to an F&O
+    contract expiring TODAY (or already past expiry — days_to_expiry
+    floors at 0). Cash-equity rows skip (no parseable expiry).
+
+    Reads from ctx.position_rows — the raw per-symbol list the engine
+    fetched. sum_positions is the per-account aggregate and carries
+    no per-symbol expiry, so it's the wrong shape for this filter.
+
+    Why ≤ 1.5 day floor rather than === 0: an option that "expires
+    today" at the engine's 09:00 tick has ~6.5 hours of life left;
+    days_to_expiry yields ~0.27. The 1.5 ceiling also catches "T-1
+    intraday warning" if a future operator preference wants that —
+    keeping a single scope rather than a wider scope-token set.
+    """
+    rows_src = getattr(ctx, 'position_rows', None) or []
+    out = []
+    for r in rows_src:
+        sym = r.get('tradingsymbol') or ''
+        parsed = _parsed_or_none(sym)
+        if not parsed or not parsed.get('expiry'):
+            continue
+        try:
+            from backend.api.algo.derivatives import days_to_expiry
+            close_time = (23, 30) if (r.get('exchange') or '').upper() == 'MCX' else (15, 30)
+            d = float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
+        except Exception:
+            continue
+        if d <= 1.5:
+            out.append(r)
+    return out
+
+
 # Time metrics — useful for agents that should only fire in specific windows.
 def _metric_minutes_since_open(ctx, row):
     return ctx.minutes_since_open()
@@ -438,6 +554,22 @@ SYSTEM_TOKENS: list[dict] = [
      'description': 'max(P&L) − min(P&L) over the last hour.',
      'resolver': 'backend.api.algo.grammar._metric_range_pnl_1h'},
 
+    # ── Expiry-aware metrics (Item 1 / Phase 25) ─────────────────────
+    # Parse the tradingsymbol on every call. Returns None for
+    # non-derivatives (cash equity) → leaf is skipped.
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'days_until_expiry',
+     'value_type': 'number', 'units': 'days',
+     'description': 'Days until this position\'s option/future expires (parses tradingsymbol). None for cash equity.',
+     'resolver': 'backend.api.algo.grammar._metric_days_until_expiry'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'is_itm',
+     'value_type': 'number', 'units': '',
+     'description': 'Returns 1.0 when an option is in-the-money at current spot, 0.0 otherwise. Needs ctx.spot_prices.',
+     'resolver': 'backend.api.algo.grammar._metric_is_itm'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'is_ntm',
+     'value_type': 'number', 'units': '',
+     'description': 'Returns 1.0 when an option is within ±1.5%% of spot (near-the-money), 0.0 otherwise. Needs ctx.spot_prices.',
+     'resolver': 'backend.api.algo.grammar._metric_is_ntm'},
+
     {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'minutes_since_open',
      'value_type': 'number', 'units': 'min',
      'description': 'Minutes since the first market segment opened today.',
@@ -470,6 +602,13 @@ SYSTEM_TOKENS: list[dict] = [
      'value_type': 'object',
      'description': 'The single TOTAL row of the funds/margins dataframe.',
      'resolver': 'backend.api.algo.grammar._scope_funds_total'},
+    # Per-symbol positions expiring today (or already past expiry).
+    # Reads from ctx.position_rows (the per-symbol list the engine
+    # already fetched), NOT from the aggregate sum_positions frame.
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'positions.expiring_today',
+     'value_type': 'array',
+     'description': 'Per-symbol position rows where the F&O contract is expiring today (≤ 1.5 days). Leaf is OR-combined.',
+     'resolver': 'backend.api.algo.grammar._scope_positions_expiring_today'},
     {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'funds.any_acct',
      'value_type': 'array',
      'description': 'Every non-TOTAL account row of the funds dataframe (leaf is OR-combined).',

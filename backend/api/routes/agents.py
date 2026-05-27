@@ -330,6 +330,11 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
         sum_positions=ctx.get("sum_positions"),
         df_margins=ctx.get("df_margins"),
         watchlist_rows=ctx.get("watchlist_rows") or [],
+        # Expiry-agent inputs (Phase 25) — dry-run leaves them empty so
+        # is_itm / is_ntm leaves skip silently rather than 500. Operator
+        # validates expiry agents on real ticks once activated.
+        position_rows=ctx.get("position_rows") or [],
+        spot_prices=ctx.get("spot_prices") or {},
         alert_state={},   # empty — dry-run doesn't carry state
         now=now,
         segments=ctx.get("segments", []),
