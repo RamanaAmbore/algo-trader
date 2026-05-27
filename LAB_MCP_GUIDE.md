@@ -320,7 +320,7 @@ Same gate, same audit, same Telegram ping.
 
 ---
 
-## 5. The 24 MCP tools
+## 5. The 26 MCP tools
 
 ### Read (16) — no token required
 
@@ -439,11 +439,15 @@ one-tap drill-down to the exact audit row.
 Agents are the platform's rules-layer. Every alert, every
 auto-close, every loss-cut is an agent row in the `agents` table.
 
+For an extensive operator walkthrough — anatomy of an agent,
+condition tree authoring, the four-stage validation ladder
+(validate → dry-run → simulator → activate), and copy-paste
+patterns — see **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)**.
+
 ### Built-in agents (ship with the codebase)
 
 Seeded from `BUILTIN_AGENTS` in `backend/api/algo/agent_engine.py`
-on every boot. **7 agents today** (consolidated from 15 in the
-2026-05-26 cleanup):
+on every boot. **9 agents today** (6 loss + 2 expiry + 1 manual):
 
 | Slug | Tier | Topic | Status | Fires when |
 |---|---|---|---|---|
@@ -453,6 +457,8 @@ on every boot. **7 agents today** (consolidated from 15 in the
 | `loss-holdings-total` | critical | holdings_loss | **active** | Book-wide holdings trip total: −5% day OR −₹4k/min OR −0.15 %/min |
 | `loss-funds-negative` | critical | funds_warning | **active** | ANY account's cash OR available margin dips below 0 |
 | `loss-pos-total-auto-close` | critical | positions_loss | **inactive** | Destructive — chase-closes every position when total pnl ≤ −₹50k. Run in simulator first, then flip on. |
+| `expiry-day-positions-alert` | high | expiry_warning | **active** | Phase 25 — any F&O position with `days_until_expiry ≤ 1.5`. Notify-only. |
+| `expiry-day-itm-auto-close` | critical | expiry_warning | **inactive** | Phase 25 — ITM options expiring today get chase-closed. Wraps existing ExpiryEngine via `chase_close_positions`. |
 | `manual` | — | — | **active** | Captures every operator-initiated order (ticket / chain / console) into the agent_events stream |
 
 Each loss-* agent uses `any:` blocks to OR multiple threshold types
@@ -644,6 +650,72 @@ On `main` (= prod): every capability is always on regardless of the
 
 On any non-`main` branch: every broker-hitting action is forced to
 paper regardless of any flag. Dev is the safe playground.
+
+---
+
+## 8b. Extended grammar (Phase 24 + 25)
+
+The condition-tree grammar shipped with two recent extensions Claude
+Code should know about when authoring drafts.
+
+**Rolling-window metrics (Phase 24)** — aggregate the same
+`pnl_history` deque the rate metrics use, but with statistical
+reducers:
+
+| Token | Units | What it returns |
+|---|---|---|
+| `mean_pnl_30m` · `mean_pnl_1h` | ₹ | Average positions P&L over window |
+| `mean_day_30m` · `mean_day_1h` | ₹ | Average holdings day-change over window |
+| `max_drawdown_pnl_30m / _1h / _4h` | ₹ | Peak-to-trough drop (always ≤ 0) |
+| `max_drawdown_pnl_pct_30m / _1h` | % | Same as ratio |
+| `max_drawdown_day_1h` | ₹ | Drawdown on holdings day-change |
+| `stdev_pnl_30m / _1h` | ₹ | Volatility proxy |
+| `range_pnl_30m / _1h` | ₹ | max − min over window |
+
+Returns `None` until window holds ≥ 2 samples — no first-tick fires.
+
+**Expiry-aware metrics + scope (Phase 25)** — for F&O contracts:
+
+| Token | Kind | Notes |
+|---|---|---|
+| `days_until_expiry` | metric | Float days; NSE 15:30 + MCX 23:30 close-time aware |
+| `is_itm` | metric | 1.0 / 0.0; None when spot unknown |
+| `is_ntm` | metric | 1.0 when within ±1.5% of spot |
+| `positions.expiring_today` | scope | Per-symbol rows where contract expires in ≤ 1.5 days |
+
+Two seeded agents using them — `expiry-day-positions-alert`
+(notify-only) and `expiry-day-itm-auto-close` (destructive).
+
+**Reusable fragments (Item 2)** — saved sub-trees referenced via
+`{"$ref": "<name>"}`. Two kinds: notify (channel lists for
+`agent.events`) + condition (sub-trees for `agent.conditions`).
+
+CRUD at `/api/admin/fragments/*` (admin-guarded); UI at
+`/agents/fragments`. Seeded:
+
+- `notify-critical-trio` — telegram + email + log
+- `notify-log-only` · `notify-telegram-only`
+- `loss-positions-acct-default` · `loss-positions-total-default`
+- `near-market-close-30m` — `minutes_until_close ≤ 30` guard
+
+Cycle detection prevents A→B→A. Missing refs log a warning + skip
+gracefully.
+
+A fully-fragment-composed agent looks like:
+
+```jsonc
+{
+  "conditions": {"all": [
+    {"$ref": "loss-positions-total-default"},
+    {"$ref": "near-market-close-30m"}
+  ]},
+  "events": [{"$ref": "notify-critical-trio"}],
+  "actions": [{"type": "chase_close_positions",
+               "params": {"scope": "total"}}]
+}
+```
+
+Edit `loss-positions-total-default` once → every consumer updates.
 
 ---
 

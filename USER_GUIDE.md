@@ -364,10 +364,10 @@ once (~3 minutes of one-time setup) then come back to the
 
 ## Where to learn more
 
-- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research,
-  agent drafting, and the per-call confirm-token gate. Covers
-  GenAI usage, Claude Code setup, and the 24 MCP tools.
+- **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — extensive walkthrough for authoring + testing agents. The four-stage validation ladder (validate → dry-run → simulator → activate), every metric / scope / op, fragments, lifespan, and copy-paste patterns.
+- **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — hands-on Lab workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets, troubleshooting.
+- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 26 MCP tools.
 - **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** — exact button labels, JSON conditions, API endpoints. The operations reference.
 - **[CLAUDE.md](CLAUDE.md)** — architectural notes for engineers + AI assistants. Covers the code structure, data flow, and design decisions.
 - **`/admin/tokens`** — explore the agent grammar (every metric / scope / operator the platform knows about).
-- **`/admin/simulator`** — the safest place to learn by experimentation. Nothing you do there touches your real money.
+- **`/admin/execution?mode=sim`** — the safest place to learn by experimentation. Nothing you do there touches your real money.

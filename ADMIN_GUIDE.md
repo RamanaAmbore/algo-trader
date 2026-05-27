@@ -772,6 +772,16 @@ Anonymous visitors on the prod (`ramboq.com`) site can browse the algo pages wit
 
 ---
 
+## Where to learn more — deep dives
+
+The day-to-day operator finds it here. For extended walkthroughs:
+
+- **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — agent authoring + the four-stage validation ladder (validate → dry-run → simulator → activate). Every metric / scope / op, fragments, lifespan, troubleshooting.
+- **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — Lab page workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets.
+- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — Claude Code MCP integration. The 26 tools, confirm-token gate, audit trail.
+
+---
+
 ## Where to go when something looks wrong
 
 | Problem | Look here |

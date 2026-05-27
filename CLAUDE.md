@@ -1290,17 +1290,18 @@ Tab labels: `Daily Market Report` (was "Summary" → "Daily market summary" → 
 
 ---
 
-## Documentation surfaces — three roles
-
-We ship three doc files; they target different audiences:
+## Documentation surfaces — five roles
 
 | File | Audience | What's in it |
 |---|---|---|
 | [USER_GUIDE.md](USER_GUIDE.md) | Operator new to the platform | **Concepts in plain English.** What an agent is, what simulation does, what Greeks mean, what the chase engine does. No JSON, no code paths, no API endpoints. |
 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) | Day-to-day operator | **Operations reference.** Exact button labels, condition-tree JSON, API endpoints, config keys, troubleshooting tables. |
+| [AGENTS_GUIDE.md](AGENTS_GUIDE.md) | Operator authoring + testing agents | **Extensive testing walkthrough.** Anatomy of an agent · the grammar · fragments · four-stage validation ladder (validate → dry-run → simulator → activate) · lifespan · troubleshooting · copy-paste patterns. |
+| [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) | Operator running sim scenarios | **Hands-on simulator workflow.** Lab page anatomy · seeding modes · move primitives · scenarios · market-state presets · Run-in-Simulator · iteration mode · custom positions · troubleshooting. |
+| [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) | Operator using Claude Code MCP | **LLM-driven agent authoring runbook.** MCP server setup · `.mcp.json` · JWT bootstrap · the 26 tools · confirm-token gate · audit trail. |
 | [CLAUDE.md](CLAUDE.md) (this file) | Engineers + AI assistants | **Architecture + design notes.** Code structure, data flow, design rationale, refactoring history. |
 
-Cross-link aggressively — every page on the platform should be findable via at least one of these (USER_GUIDE for the concept, ADMIN_GUIDE for the keystrokes).
+Cross-link aggressively — every page on the platform should be findable via at least one of these (USER_GUIDE for the concept, ADMIN_GUIDE for the keystrokes, AGENTS_GUIDE / SIMULATOR_GUIDE for the deep "how to test it" walkthroughs).
 
 ---
 
