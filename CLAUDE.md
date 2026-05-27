@@ -467,13 +467,17 @@ Industry analogue: Splunk Detections workspace with tabs.
 
 ## Execution modes (mode 1 / 2 / 3 / 4 / 5)
 
-The codebase distinguishes five execution modes, each with its own quote source and trade engine. They form a **confidence ladder** — an agent graduates through these before real money moves:
+The codebase distinguishes five execution modes, each with its own quote source and trade engine. Four of them form a **confidence ladder** — an agent graduates through these before real money moves. **Replay** is a parallel research tool (historical backtests), not a step on the ladder.
 
 ```
-dev:    Simulator → Replay → Paper
-                              ↓
-prod:   Simulator → Paper → Live → Shadow → Replay
+ladder:   Simulator → Paper → Shadow → Live
+parallel: Replay (historical OHLCV backtest, any time)
+
+dev:    Simulator + Replay (every action forced to paper)
+prod:   Simulator → Paper → Shadow → Live  (+ Replay on demand)
 ```
+
+Conceptually: **Simulator** validates the agent's logic against fabricated stress moves on a fresh book; **Paper** runs the chase/fill engine end-to-end against live market data without touching the broker; **Shadow** is the final pre-Live sanity check — captures the exact `kite.place_order` payload + `basket_margin` verdict without simulating any lifecycle; **Live** flips the kill-switch and the same chase engine sends real orders. **Replay** sits orthogonal — it replays historical candles through the paper engine for backtesting and is opt-in regardless of ladder position.
 
 | Mode | Quote source | Trade engine | Where it runs | Default |
 |---|---|---|---|---|
