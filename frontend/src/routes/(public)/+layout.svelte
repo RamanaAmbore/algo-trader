@@ -58,7 +58,7 @@
           </div>
         </a>
 
-        <nav class="flex items-center gap-3">
+        <nav class="flex items-center gap-3 flex-1 justify-center">
           {#each navLinks() as link}
             <button
               onclick={() => goto(link.href)}
