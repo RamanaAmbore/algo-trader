@@ -614,7 +614,7 @@ class AgentController(Controller):
         return {"detail": f"Agent '{slug}' deleted"}
 
     @post("/{slug:str}/dry-run", guards=[admin_guard])
-    async def dry_run(self, slug: str) -> dict:
+    async def dry_run(self, slug: str, data: dict | None = None) -> dict:
         """Phase 22 — evaluate this agent's condition tree against the
         CURRENT live market state. Returns what would fire WITHOUT
         firing — no audit row, no Telegram ping, no action execution.
