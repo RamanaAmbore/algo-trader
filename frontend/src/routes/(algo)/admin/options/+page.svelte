@@ -1526,7 +1526,7 @@
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
 </div>
 
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain

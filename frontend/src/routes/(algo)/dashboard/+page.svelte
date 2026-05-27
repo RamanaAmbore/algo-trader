@@ -1466,7 +1466,7 @@
 <div class="page-header">
   <h1 class="algo-page-title">Dashboard</h1>
   <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
 </div>
 
 <!-- Hero row — 6 chips answering "what changed since I last looked?" -->

@@ -58,7 +58,7 @@
   <h1 class="page-title-chip">Health</h1>
   <InfoHint popup text="System diagnostics snapshot. Use this at market open to confirm all broker accounts are loaded, DB is reachable, and the paper/sim engines are in the expected state. Refreshes every 15 s." />
   {#if refreshedAt}
-    <span class="algo-ts">{refreshedAt}</span>
+    <span class="algo-ts ml-auto">{refreshedAt}</span>
   {/if}
 </div>
 

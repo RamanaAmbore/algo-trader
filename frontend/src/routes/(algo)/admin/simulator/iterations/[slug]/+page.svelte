@@ -86,7 +86,7 @@
   <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
   <a href="/admin/simulator/iterations" class="back-link ml-auto">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}

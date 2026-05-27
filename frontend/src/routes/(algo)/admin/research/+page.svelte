@@ -416,7 +416,7 @@
     <br><br>
     No paid GenAI in the loop — Claude Code subscription is the only LLM."
   />
-  {#if refreshedAt}<span class="algo-ts">{refreshedAt}</span>{/if}
+  {#if refreshedAt}<span class="algo-ts ml-auto">{refreshedAt}</span>{/if}
 </div>
 
 {#if error}

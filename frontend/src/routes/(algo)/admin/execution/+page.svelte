@@ -74,7 +74,7 @@
     <h1 class="algo-page-title">Lab</h1>
     <InfoHint popup text="Research workspace for the two non-execution surfaces: <b>Scenario</b> (fabricated price moves on real positions — formerly Simulator) and <b>Backtest</b> (historical Kite OHLCV candles fed through the agent engine — formerly Replay). Your persistent master mode (LIVE/PAPER) lives in the navbar dropdown, separate from this page." />
   </div>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
 </div>
 
 <div class="exec-tabs" role="tablist" aria-label="Lab workspace">

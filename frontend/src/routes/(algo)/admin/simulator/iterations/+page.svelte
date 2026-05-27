@@ -101,7 +101,7 @@
 <div class="page-header">
   <h1 class="algo-page-title">Simulator iterations</h1>
   <InfoHint popup text="Every iteration of every /start-run call lands here. Click a row to see the iteration's summary stats + replay it with the same seed." />
-  <span class="algo-ts">{refreshedAt}</span>
+  <span class="algo-ts ml-auto">{refreshedAt}</span>
   <a href="/admin/simulator" class="back-link">← Simulator</a>
 </div>
 
