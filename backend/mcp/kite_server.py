@@ -757,7 +757,7 @@ async def dry_run_agent(agent_slug: str) -> dict:
           blocked_by:  str or null — name of the gate that's blocking
           evaluated_at: ISO timestamp
     """
-    return await _post(f"/api/agents/{agent_slug}/dry-run", {})
+    return await _get(f"/api/agents/{agent_slug}/dry-run")
 
 
 @app.tool()
