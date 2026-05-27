@@ -391,7 +391,7 @@
      read with equal visual weight. */
   .pub-nav-algo-btn {
     padding: 0.28rem 0.75rem;
-    font-size: 0.78rem;
+    font-size: 0.88rem;
     font-weight: 500;
     border-radius: 0.25rem;
     background: rgba(200,168,75,0.10);
@@ -413,7 +413,7 @@
   /* Sign-in button */
   .pub-nav-signin {
     padding: 0.3rem 0.95rem;
-    font-size: 0.82rem;
+    font-size: 0.88rem;
     font-weight: 700;
     border-radius: 0.25rem;
     background: rgba(200,168,75,0.22);
