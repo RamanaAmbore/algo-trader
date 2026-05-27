@@ -711,6 +711,7 @@ _LOSS_AGENTS = [
 
     # ── Positions: per-account guardrail (high tier) ────────────────────
     dict(slug="loss-positions-acct",
+         long_name="positions-acct-loss-thresholds - high-multi-channel - alert-only",
          tier="high",
          topic="positions_loss",
          name="Positions per-account loss guardrail",
@@ -731,6 +732,7 @@ _LOSS_AGENTS = [
 
     # ── Positions: total guardrail (critical tier) ──────────────────────
     dict(slug="loss-positions-total",
+         long_name="positions-total-loss-thresholds - critical-multi-channel - alert-only",
          tier="critical",
          topic="positions_loss",
          name="Positions total loss guardrail",
@@ -751,6 +753,7 @@ _LOSS_AGENTS = [
 
     # ── Holdings: per-account guardrail (high tier) ─────────────────────
     dict(slug="loss-holdings-acct",
+         long_name="holdings-acct-loss-thresholds - high-multi-channel - alert-only",
          tier="high",
          topic="holdings_loss",
          name="Holdings per-account loss guardrail",
@@ -768,6 +771,7 @@ _LOSS_AGENTS = [
 
     # ── Holdings: total guardrail (critical tier) ───────────────────────
     dict(slug="loss-holdings-total",
+         long_name="holdings-total-loss-thresholds - critical-multi-channel - alert-only",
          tier="critical",
          topic="holdings_loss",
          name="Holdings total loss guardrail",
@@ -785,6 +789,7 @@ _LOSS_AGENTS = [
 
     # ── Funds: operational negatives (one agent — both are critical) ────
     dict(slug="loss-funds-negative",
+         long_name="funds-cash-or-margin-negative - critical-multi-channel - alert-only",
          tier="critical",
          topic="funds_warning",
          name="Account funds gone negative (cash or margin)",
@@ -809,6 +814,7 @@ _LOSS_AGENTS = [
     #   - auto-close has its own audit story (broker-touching) — easier
     #     to read in /admin/research → Audit when isolated
     dict(slug="loss-pos-total-auto-close",
+         long_name="positions-total-pnl-below-50k - critical-multi-channel - chase-close-positions",
          tier="critical",
          topic="positions_loss",
          name="Auto-close positions on total ≥ ₹50k loss",
@@ -885,6 +891,7 @@ BUILTIN_AGENTS.extend(_LOSS_AGENTS)
 # no collision.
 _EXPIRY_AGENTS = [
     dict(slug="expiry-day-positions-alert",
+         long_name="positions-expiring-today - high-multi-channel - alert-only",
          tier="high",
          topic="expiry_warning",
          name="Positions expiring today — review alert",
@@ -907,6 +914,7 @@ _EXPIRY_AGENTS = [
          ),
 
     dict(slug="expiry-day-itm-auto-close",
+         long_name="positions-expiring-today-itm - critical-multi-channel - chase-close-positions",
          tier="critical",
          topic="expiry_warning",
          name="Auto-close ITM options on expiry day",
@@ -955,6 +963,7 @@ BUILTIN_AGENTS.extend(_EXPIRY_AGENTS)
 #    (operator clicks are not throttled).
 MANUAL_AGENT = dict(
     slug="manual",
+    long_name="manual-operator-order - log-only - audit-trail",
     name="Manual operator order",
     description="Every order placed manually via ticket / chain / command writes an event here. No automated triggering.",
     conditions=None,
@@ -995,6 +1004,13 @@ async def seed_agents():
             )
             existing = result.scalar_one_or_none()
             if existing:
+                # Sync `long_name` from code unconditionally — it's a
+                # structured descriptor owned by the built-in definition,
+                # not an operator-editable field. New built-ins get it
+                # populated on first deploy; renames propagate.
+                code_long = agent_def.get("long_name")
+                if code_long and existing.long_name != code_long:
+                    existing.long_name = code_long
                 if existing.schedule != agent_def.get("schedule", "market_hours"):
                     existing.schedule = agent_def.get("schedule", "market_hours")
                 # Sync tier + topic from the built-in definition. These
@@ -1026,6 +1042,7 @@ async def seed_agents():
             agent = Agent(
                 slug=agent_def["slug"],
                 name=agent_def["name"],
+                long_name=agent_def.get("long_name"),
                 description=agent_def.get("description", ""),
                 conditions=agent_def["conditions"],
                 events=agent_def["events"],

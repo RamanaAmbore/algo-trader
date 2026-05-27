@@ -62,6 +62,9 @@ class AgentInfo(msgspec.Struct):
     id: int
     slug: str
     name: str
+    # 3-part descriptor: "condition - alert - action". Optional for
+    # legacy / custom agents; required-by-convention for built-ins.
+    long_name: str | None
     description: str | None
     conditions: dict
     events: list
@@ -98,6 +101,7 @@ class AgentCreateRequest(msgspec.Struct):
     events: list
     actions: list = []
     description: str = ""
+    long_name: str | None = None   # 3-part "condition - alert - action"
     scope: str = "total"
     schedule: str = "market_hours"
     cooldown_minutes: int = 30
@@ -121,6 +125,7 @@ class AgentCreateRequest(msgspec.Struct):
 
 class AgentUpdateRequest(msgspec.Struct):
     name: str | None = None
+    long_name: str | None = None
     description: str | None = None
     conditions: dict | None = None
     events: list | None = None
@@ -396,7 +401,9 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
 
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
-        id=a.id, slug=a.slug, name=a.name, description=a.description,
+        id=a.id, slug=a.slug, name=a.name,
+        long_name=getattr(a, "long_name", None),
+        description=a.description,
         conditions=a.conditions or {}, events=a.events or [],
         actions=a.actions or [], scope=a.scope,
         schedule=a.schedule, cooldown_minutes=a.cooldown_minutes,
@@ -517,7 +524,9 @@ class AgentController(Controller):
                 if tm not in _VALID_TRADE_MODES:
                     tm = "paper"
             agent = Agent(
-                slug=data.slug, name=data.name, description=data.description,
+                slug=data.slug, name=data.name,
+                long_name=getattr(data, "long_name", None),
+                description=data.description,
                 conditions=data.conditions, events=data.events, actions=data.actions,
                 scope=data.scope, schedule=data.schedule,
                 cooldown_minutes=data.cooldown_minutes, status="inactive",
@@ -542,8 +551,9 @@ class AgentController(Controller):
             agent = result.scalar_one_or_none()
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
-            for field in ('name', 'description', 'conditions', 'events', 'actions',
-                          'scope', 'schedule', 'cooldown_minutes', 'debounce_minutes',
+            for field in ('name', 'long_name', 'description', 'conditions',
+                          'events', 'actions', 'scope', 'schedule',
+                          'cooldown_minutes', 'debounce_minutes',
                           'tags', 'blackout_windows'):
                 val = getattr(data, field, None)
                 if val is not None:

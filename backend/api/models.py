@@ -322,8 +322,21 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    # `slug` is the short, unique, machine-friendly identifier (e.g.
+    # "loss-positions-total"). Used in URLs + API paths + condition
+    # references. Stable across renames.
     slug: Mapped[str]            = mapped_column(String(64), unique=True, nullable=False, index=True)
+    # `name` is the human-readable display name shown in alerts +
+    # in the agent list (e.g. "Positions total loss guardrail").
     name: Mapped[str]            = mapped_column(String(128), nullable=False)
+    # `long_name` is a structured 3-part descriptor encoding the
+    # agent's condition / alert / action profile, separated by ` - `.
+    # Example: "positions-total-loss-thresholds - critical-multi - alert-only"
+    # Format helps operators scan a long agent list and immediately see
+    # what each agent does without expanding the row. Optional for
+    # custom agents (the editor surfaces it as a field), required for
+    # every built-in agent.
+    long_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Condition tree (AND/OR/NOT with account selection)

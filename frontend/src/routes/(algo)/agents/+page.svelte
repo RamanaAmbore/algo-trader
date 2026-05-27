@@ -632,7 +632,16 @@
           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedSlug = isOpen ? null : agent.slug; } }}
           class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
           <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
-          <span class="text-xs text-[#fbbf24] flex-1 truncate">{agent.name}</span>
+          <!-- Name column: display name on top, 3-part long_name
+               (condition - alert - action) below in muted mono so an
+               operator can scan "what does this agent do" without
+               expanding the row. -->
+          <span class="flex-1 min-w-0 flex flex-col leading-tight">
+            <span class="text-xs text-[#fbbf24] truncate">{agent.name}</span>
+            {#if agent.long_name}
+              <span class="text-[0.55rem] text-[#7e97b8] font-mono truncate">{agent.long_name}</span>
+            {/if}
+          </span>
           <button type="button"
             onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
             title={`Trade mode: ${(agent.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}

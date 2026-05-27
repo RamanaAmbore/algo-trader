@@ -167,6 +167,12 @@ async def init_db() -> None:
             "NOT NULL DEFAULT '[]'::jsonb",
             "ALTER TABLE agents ADD COLUMN IF NOT EXISTS blackout_windows JSONB "
             "NOT NULL DEFAULT '[]'::jsonb",
+            # 3-part descriptor "condition - alert - action" so operators
+            # can scan the agent list and read what each does without
+            # expanding the row. Populated for every built-in by
+            # seed_agents; nullable so legacy / custom rows don't break.
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS long_name "
+            "VARCHAR(256)",
         ):
             await conn.execute(text(stmt))
 
