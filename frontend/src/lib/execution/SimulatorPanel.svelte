@@ -711,12 +711,15 @@
      LEFT (iter / Run / custom cards), monitoring on the RIGHT (payoff
      cards, pills, indices, activity feed, summaries, past iter).
      The cards are direct children of .sim-grid; CSS positions
-     `.sim-grid-side` items into col 1 and the single `.sim-grid-main`
-     <section> into col 2 with grid-row spanning so the monitoring
-     content flows independently from the (typically shorter) controls
-     column. Below 1100 px the grid collapses to one column, preserving
-     source order. -->
-<div class="sim-grid">
+     Single-column flow: controls (aside) at the TOP, monitoring
+     cards (.sim-grid-main section) below at full width. Operators
+     run a sim by interacting with the top strip then watch the cards
+     fill out — there's no value in a side-by-side layout when the
+     cards want full width and the controls collapse to a thin strip
+     when not actively edited. The earlier 2-col grid left a giant
+     empty 30 %-of-viewport column on the left whenever the aside
+     was collapsed. -->
+<div class="sim-stack">
   <section class="sim-grid-main">
   <!-- Per-underlying payoff cards — replace the position pills with a
        chart-driven view. Each card shows the combined net payoff
@@ -1402,8 +1405,8 @@
   {/if}
 </details>
 
-</aside>  <!-- /.sim-grid-side-col -->
-</div>    <!-- /.sim-grid — close the two-column wrapper before LogPanel -->
+</aside>  <!-- /.sim-grid-side-col — controls strip (rendered first via CSS order) -->
+</div>    <!-- /.sim-stack — single-column wrapper before LogPanel -->
 
 <LogPanel
   heightClass="h-[40vh]"
@@ -1419,32 +1422,26 @@
      column has ONE direct grid child (aside on left, section on
      right) so the columns flow independently and the grid container
      sizes to the taller column. */
-  :global(.sim-grid) {
-    display: grid;
-    grid-template-columns: 1fr;
+  /* ── Single-column Lab layout ─────────────────────────────────────
+     Replaces the earlier 2-column .sim-grid that left a ~30 %-of-
+     viewport empty column on the left whenever the controls aside
+     was collapsed. Now the entire page flows top → bottom:
+
+         1. controls strip (collapsible cards — iteration mode,
+            run controls, custom positions)
+         2. monitoring cards (Indices · Live activity · Underlyings
+            · Positions / Holdings summary · Past simulations)
+
+     Both surfaces use the FULL page width. The aside lives later
+     in source order but appears first visually via CSS `order` so
+     we don't have to move 350+ lines of template around. */
+  :global(.sim-stack) {
+    display: flex;
+    flex-direction: column;
     gap: 0.75rem;
   }
-  @media (min-width: 1100px) {
-    /* Fixed-width controls sidebar + monitoring panel taking ALL the
-       remaining horizontal real estate. The previous 1fr/2fr split
-       gave the sidebar ~33% of viewport — at 1920px that's a 640px
-       column for content that needs ~300px, with the rest of the
-       page bleeding into empty space on the left of the monitoring
-       cards. minmax(260px, 320px) keeps the controls dense; 1fr
-       lets the monitoring panel fill out to the right edge so the
-       indices / live activity / positions cards extend across the
-       page. */
-    :global(.sim-grid) {
-      grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-      align-items: start;
-    }
-    :global(.sim-grid > .sim-grid-side-col) {
-      grid-column: 1;
-    }
-    :global(.sim-grid > .sim-grid-main) {
-      grid-column: 2;
-    }
-  }
+  :global(.sim-stack > .sim-grid-side-col) { order: 0; }
+  :global(.sim-stack > .sim-grid-main)     { order: 1; }
   :global(.sim-grid-side-col) {
     display: flex;
     flex-direction: column;
