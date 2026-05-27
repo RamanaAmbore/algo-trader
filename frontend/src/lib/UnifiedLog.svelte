@@ -65,9 +65,12 @@
   async function _fetch() {
     try {
       const data = await fetchUnifiedLog(_effectiveFilter, maxRows);
-      rows  = Array.isArray(data) ? data : [];
+      // Only swap to the new payload when it's an actual array; an
+      // unexpected response shape used to silently blank `rows`.
+      if (Array.isArray(data)) rows = data;
       error = '';
     } catch (e) {
+      // Keep last-good rows; the banner above signals staleness.
       error = /** @type {any} */ (e)?.message || 'Failed to load.';
     } finally {
       loading = false;

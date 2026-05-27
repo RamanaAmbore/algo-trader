@@ -77,10 +77,8 @@
   async function loadDrafts() {
     try {
       const rows = await fetchResearchDrafts();
-      drafts = Array.isArray(rows) ? rows : [];
-    } catch (_) {
-      drafts = [];
-    }
+      if (Array.isArray(rows)) drafts = rows;
+    } catch (_) { /* keep last-good drafts on transient failure */ }
   }
 
   /** Resolve the operator's "Since" pick to an ISO timestamp.
@@ -115,12 +113,9 @@
         since:      _sinceIso(),
         limit:      200,
       });
-      audit = Array.isArray(rows) ? rows : [];
-    } catch (_) {
-      audit = [];
-    } finally {
-      auditLoading = false;
-    }
+      if (Array.isArray(rows)) audit = rows;
+    } catch (_) { /* keep last-good audit rows; banner not yet wired */ }
+    finally { auditLoading = false; }
   }
   // Re-fetch when filters change; only fires when the Audit tab is in view
   // (the panel mounts conditionally so the $effect dependency is naturally gated).

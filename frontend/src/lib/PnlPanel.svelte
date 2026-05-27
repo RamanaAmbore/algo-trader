@@ -43,11 +43,13 @@
     loading = true; error = '';
     try {
       const data = await fetchAgentPnL({ period: filterPeriod, mode: filterMode });
-      rows = data?.agents ?? data ?? [];
+      const next = data?.agents ?? data ?? [];
+      if (Array.isArray(next)) rows = next;
       refreshedAt = clientTimestamp();
     } catch (e) {
+      // Keep last-good rows visible; banner explains the failure so
+      // the operator knows the table is stale rather than empty.
       error = e.message;
-      rows = [];
     } finally {
       loading = false;
     }

@@ -115,12 +115,16 @@
   onMount(() => { load(); startPolling(); });
   onDestroy(() => { mounted = false; stopPolling(); });
 
-  // Reload when props change.
+  // Reload when props change. Earlier this pre-cleared ticks/events
+  // before kicking off load(); if the new symbol's fetch failed (or
+  // the symbol no longer existed), the chart stayed permanently blank.
+  // Now we keep the prior chart visible until applyData() lands on
+  // a successful response — `loading` flips on so a small "loading"
+  // chip can render above the stale chart if a parent wants it.
   $effect(() => {
-    // Re-trigger when mode/symbol/data switch.
     void mode; void symbol; void data;
     if (!externalData) {
-      loading = true; ticks = []; events = []; error = '';
+      loading = true; error = '';
     }
     load();
   });

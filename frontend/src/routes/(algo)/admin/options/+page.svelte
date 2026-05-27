@@ -1374,7 +1374,7 @@
     try {
       const s = await fetchSimStatus();
       simActive = !!s?.active;
-    } catch (_) { simActive = false; }
+    } catch (_) { /* keep last-known simActive; transient 502 shouldn't hide the badge */ }
   }
 
   // ── Stale-while-revalidate cache ──────────────────────────────────

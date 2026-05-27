@@ -118,10 +118,13 @@
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.detail || `HTTP ${res.status}`);
       }
-      data = await res.json();
+      const next = await res.json();
+      if (next) data = next;
     } catch (e) {
+      // Keep the prior chart payload visible on transient failure —
+      // `error` banner above the chart signals the staleness. Previously
+      // `data = null` wiped the chart on every poll failure.
       error = /** @type {any} */ (e)?.message ?? 'Load failed.';
-      data  = null;
     } finally {
       loading = false;
     }

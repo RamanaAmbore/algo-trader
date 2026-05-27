@@ -895,7 +895,7 @@
           util_pct: total > 0 ? used / total : 0,
         };
       });
-    } catch (_) { _margins = []; _funds = []; }
+    } catch (_) { /* leave _margins / _funds at last-good; banner stays stale-silent */ }
   }
 
   async function _fetchConn() {

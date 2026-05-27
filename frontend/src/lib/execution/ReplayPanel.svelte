@@ -68,18 +68,25 @@
       status       = stat;
       results      = res || [];
       orders       = ord || [];
-      chartSymbols = syms?.symbols || [];
-      chartItems   = syms?.items   || [];
-
-      if (chartSymbols.length) {
-        try {
-          const batch = await fetchChartBatch('replay', chartSymbols);
-          const map = /** @type {Record<string, any>} */ ({});
-          for (const c of (batch?.charts || [])) map[c.symbol] = c;
-          chartsBySymbol = map;
-        } catch (_) { /* charts fall back to per-chart self-poll */ }
-      } else {
-        chartsBySymbol = {};
+      // Only assign symbols/items when the /api/charts/symbols call
+      // actually returned a payload; otherwise keep last-good. Earlier
+      // a transient 500 here turned syms into null → chartSymbols=[]
+      // → the `else` branch wiped chartsBySymbol = {} → every embedded
+      // PriceChart blanked.
+      if (syms && Array.isArray(syms.symbols)) {
+        chartSymbols = syms.symbols;
+        chartItems   = syms.items || chartItems;
+        if (chartSymbols.length) {
+          try {
+            const batch = await fetchChartBatch('replay', chartSymbols);
+            const map = /** @type {Record<string, any>} */ ({});
+            for (const c of (batch?.charts || [])) map[c.symbol] = c;
+            chartsBySymbol = map;
+          } catch (_) { /* charts fall back to per-chart self-poll; keep last batch */ }
+        } else {
+          // GENUINELY empty symbol set from the backend — safe to drop charts.
+          chartsBySymbol = {};
+        }
       }
 
       error = '';
