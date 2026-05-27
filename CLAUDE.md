@@ -664,6 +664,65 @@ All gated by `admin_guard`. Every mutating endpoint calls `REGISTRY.reload()` au
 - API uses `RAMBOQ_LOG_PREFIX=api_` env var for log file naming
 - 3 handlers: rotating log file (5MB × 5), rotating error file, console
 
+### Reusable fragments — saved sub-trees referenced via `$ref`
+
+The `agent_fragments` table holds reusable sub-trees an agent can reference inline via `{"$ref": "<name>"}`. Two kinds today; `action` is reserved for a future stage.
+
+| Kind | Lives in | Resolved by |
+|---|---|---|
+| `notify` | `Agent.events` list | [`resolve_events()`](backend/api/algo/fragment_registry.py) — called from `events.dispatch()` before channel fan-out. Body is a list of `{channel, enabled}` dicts. |
+| `condition` | `Agent.conditions` tree | [`evaluate()`](backend/api/algo/agent_evaluator.py) — `$ref` is a recognised node alongside `all` / `any` / `not` / leaves. Body is a condition sub-tree (leaf or composite). |
+
+**FragmentRegistry** (`backend/api/algo/fragment_registry.py`) — singleton in-memory cache `{kind: {name: body}}`. Loaded at boot from `agent_fragments` and hot-rebuilt on every CRUD mutation (matches the `GrammarRegistry` pattern). The evaluator + dispatcher always go through the cache, never the DB on the hot path.
+
+**Cycle detection** — `evaluate()` carries an internal `_visited: set` through recursive calls. A `$ref` to a name already in the visited set logs a warning and returns `[]` instead of recursing. `A → B → A` chains can't blow the stack.
+
+**Missing-ref behaviour** — both `resolve_events` and `evaluate` treat unknown ref names as a warning + skip:
+- Notify: other channels in the list still fire; the broken ref is logged.
+- Condition: the ref node returns `[]` matches (acts as a false leaf); other branches of the tree evaluate normally.
+
+This matches the rest of the grammar pipeline — operator typos in `/agents/fragments` don't crash the engine.
+
+**Seeded system fragments** (force-reseeded on every boot from `SYSTEM_FRAGMENTS`):
+- `notify-critical-trio` — telegram + email + log (the default for every loss / expiry agent)
+- `notify-log-only` — quiet diagnostic channel
+- `notify-telegram-only` — phone-only ping
+- `loss-positions-acct-default` — per-account 4-threshold any-block
+- `loss-positions-total-default` — book-wide 4-threshold any-block
+- `near-market-close-30m` — `minutes_until_close ≤ 30` guard
+
+Operators can't delete system fragments (only toggle `is_active`); custom fragments have full CRUD.
+
+**UI**: `/agents/fragments` — filter chip (all / notify / condition), grouped list, expand-to-view-body, edit form for custom fragments. Lives as the fourth tab in `AgentWorkspaceTabs` (Agents · Activity · Tokens · Fragments · Lab).
+
+**API**:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/admin/fragments[?kind=notify\|condition]` | List |
+| `GET /api/admin/fragments/{id}` | Read one |
+| `POST /api/admin/fragments` | Create custom |
+| `PATCH /api/admin/fragments/{id}` | Update — system rows toggle-only |
+| `DELETE /api/admin/fragments/{id}` | Custom only |
+| `POST /api/admin/fragments/reload` | Hot-rebuild cache |
+
+`validate-condition` also resolves `$ref` against the registry so the `/agents` editor's Validate button drills into the fragment body and surfaces a missing-token error deep inside a referenced sub-tree.
+
+**Composing with fragments** — a fully-fragment-composed agent looks like:
+
+```json
+{
+  "conditions": {"all": [
+    {"$ref": "loss-positions-total-default"},
+    {"$ref": "near-market-close-30m"}
+  ]},
+  "events": [{"$ref": "notify-critical-trio"}],
+  "actions": [{"type": "chase_close_positions", "params": {"scope": "total"}}]
+}
+```
+
+Edit `loss-positions-total-default` once → every consumer (this agent + any future ones referencing it) updates. Industry analogue: Grafana Contact Points + Notification Policies, Datadog Monitor Templates. Started with notify-only (Stage 1), added conditions (Stage 2), shipped UI (Stage 3) — same staged path Grafana took.
+
 ---
 
 ## Settings — DB-backed tunables
