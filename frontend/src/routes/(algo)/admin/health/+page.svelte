@@ -9,6 +9,7 @@
   import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
   import { fetchSystemHealth } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import StaleBanner from '$lib/StaleBanner.svelte';
 
   /** @type {any} */
   let health      = $state(null);
@@ -62,9 +63,7 @@
   {/if}
 </div>
 
-{#if error}
-  <div class="err-banner">{error}</div>
-{/if}
+<StaleBanner {error} hasData={!!health} label="Health snapshot" />
 
 {#if loading && !health}
   <div class="empty-state">Loading…</div>

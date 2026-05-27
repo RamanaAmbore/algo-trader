@@ -11,6 +11,7 @@
   import { authStore, clientTimestamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import StaleBanner from '$lib/StaleBanner.svelte';
   import Select   from '$lib/Select.svelte';
 
   // ── State ──────────────────────────────────────────────────────────
@@ -139,9 +140,7 @@
   {/if}
 </div>
 
-{#if error}
-  <div class="err-banner">{error}</div>
-{/if}
+<StaleBanner {error} hasData={rows.length > 0} label="Alert history" />
 
 <!-- ── Filter bar ──────────────────────────────────────────────────── -->
 <div class="filter-bar">

@@ -23,6 +23,7 @@
   import EquityCurve from '$lib/EquityCurve.svelte';
   import ReplayScrubber from '$lib/ReplayScrubber.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
+  import StaleBanner   from '$lib/StaleBanner.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
 
@@ -641,11 +642,7 @@
   onDestroy(() => { refreshTeardown?.(); });
 </script>
 
-{#if error}
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">
-    {error}
-  </div>
-{/if}
+<StaleBanner {error} hasData={scenarios.length > 0} label="Simulator" />
 {#if note}
   <div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">
     {note}

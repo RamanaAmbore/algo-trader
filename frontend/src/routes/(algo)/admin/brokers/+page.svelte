@@ -26,6 +26,7 @@
     deleteBrokerAccount, testBrokerAccount,
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
+  import StaleBanner from '$lib/StaleBanner.svelte';
   import Select   from '$lib/Select.svelte';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
@@ -299,7 +300,7 @@
   <span class="algo-ts ml-auto">{$nowStamp}</span>
 </div>
 
-{#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}
+<StaleBanner {error} hasData={accounts.length > 0} label="Broker accounts" />
 {#if note}<div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">{note}</div>{/if}
 
 <!-- Account list -->

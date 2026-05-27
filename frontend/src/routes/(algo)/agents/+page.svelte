@@ -2,6 +2,7 @@
   import { onMount, onDestroy, getContext } from 'svelte';
   import { nowStamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import InfoHint from '$lib/InfoHint.svelte';
+  import StaleBanner from '$lib/StaleBanner.svelte';
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent,
     fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
@@ -559,9 +560,7 @@
 
 <AgentWorkspaceTabs />
 
-{#if error}
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
-{/if}
+<StaleBanner {error} hasData={agents.length > 0} label="Agents" />
 
 {#if aiOpen}
   <!-- AI agent draft form — operator describes the rule in plain English,

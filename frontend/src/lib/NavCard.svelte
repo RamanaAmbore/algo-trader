@@ -78,7 +78,12 @@
       nav    = data;
       status = 'ready';
     } catch (_) {
-      status = 'hidden';
+      // Only collapse the card to hidden on the FIRST-load failure
+      // (nav still null). If we already had a successful payload,
+      // keep showing it — operator gets last-good values until the
+      // next poll lands fresh data instead of the card vanishing
+      // mid-session on a transient blip.
+      if (!nav) status = 'hidden';
     }
   }
 
