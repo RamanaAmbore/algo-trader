@@ -81,11 +81,90 @@ def _fetch() -> PositionsResponse:
         PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in df_rows.to_dicts()
     ]
+    # Enrich option rows with position-Greeks (Δ × qty, Θ × qty) so the
+    # /performance + /dashboard grids can surface them as columns without
+    # round-tripping through /api/options/analytics per symbol.
+    _enrich_position_greeks(rows)
     summary = [
         PositionsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()
     ]
     return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+
+
+def _enrich_position_greeks(rows: list) -> None:
+    """In-place: compute Δ-exposure (delta × qty) and Θ-per-day (theta × qty)
+    for every row whose tradingsymbol parses as an option (CE / PE). Non-
+    option rows leave both at 0.0 (PositionRow defaults).
+
+    Underlying spots are fetched once per unique underlying via the price
+    broker (~1 round-trip total, not per-row). IV is calibrated from each
+    row's last_price using the existing bisection solver. A row's Greeks
+    are silently skipped (delta_pos / theta_pos stay 0) when:
+      - last_price is non-positive (closed-out row)
+      - the underlying spot resolves to 0 (broker quote failed)
+      - parse_tradingsymbol returns None (not a recognised F&O sym)
+    """
+    if not rows:
+        return
+    from backend.api.algo.derivatives import (
+        parse_tradingsymbol, implied_vol, greeks, underlying_ltp_key,
+    )
+    from backend.shared.brokers.registry import get_price_broker
+
+    # Pass 1 — parse + collect unique underlying keys we need spots for.
+    parsed_by_idx: dict[int, dict] = {}
+    underlying_keys: set[str] = set()
+    today = pd.Timestamp.now().normalize().date()
+    for i, r in enumerate(rows):
+        if r.quantity == 0 or r.last_price <= 0:
+            continue
+        p = parse_tradingsymbol(r.tradingsymbol)
+        if not p or p.get("kind") != "opt":
+            continue
+        parsed_by_idx[i] = p
+        underlying_keys.add(underlying_ltp_key(p["underlying"]))
+
+    if not parsed_by_idx:
+        return
+
+    # Pass 2 — single batched broker.quote() for every underlying.
+    spot_by_key: dict[str, float] = {}
+    try:
+        broker = get_price_broker()
+        spot_data = broker.quote(list(underlying_keys)) or {}
+        for k, v in spot_data.items():
+            spot_by_key[k] = float(v.get("last_price") or 0.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Greeks enrich: underlying spot fetch failed: {exc}")
+        return
+
+    # Pass 3 — per-option IV calibration + greeks compute.
+    r_rate = 0.07  # constant; matches the rate used in /api/options/analytics
+    for i, p in parsed_by_idx.items():
+        row = rows[i]
+        u_key = underlying_ltp_key(p["underlying"])
+        S = spot_by_key.get(u_key, 0.0)
+        if S <= 0:
+            continue
+        K = float(p.get("strike") or 0.0)
+        if K <= 0:
+            continue
+        expiry = p.get("expiry")
+        if not expiry:
+            continue
+        T_days = max((expiry - today).days, 0)
+        T_years = max(T_days, 1) / 365.0   # never let T hit zero
+        try:
+            sigma = implied_vol(row.last_price, S, K, T_years, r_rate, p["opt_type"])
+            g = greeks(S, K, T_years, r_rate, sigma, p["opt_type"])
+            row.delta_pos = g["delta"] * row.quantity
+            row.theta_pos = g["theta"] * row.quantity
+        except Exception:
+            # Single-row failures must NOT poison the whole positions
+            # response — the operator gets 0/0 for this row and keeps
+            # going. Log at debug, not error.
+            logger.debug(f"Greeks compute failed for {row.tradingsymbol}", exc_info=True)
 
 
 class PositionsController(Controller):

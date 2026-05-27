@@ -358,6 +358,17 @@
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'close_price',          headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    // Per-row Greeks for option positions (delta × qty, theta × qty).
+    // Backend computes once per /api/positions hit using the existing
+    // implied_vol bisection + analytical greeks. Non-option rows show
+    // 0 (default); the formatter renders 0 as em-dash to keep cash
+    // equity rows from polluting the option column.
+    { field: 'delta_pos',            headerName: 'Δ pos',     width: 62,
+      type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
+      valueFormatter: ({ value }) => value == null || value === 0 ? '—' : value.toFixed(2) },
+    { field: 'theta_pos',            headerName: 'Θ/day',     width: 62,
+      type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
+      valueFormatter: ({ value }) => value == null || value === 0 ? '—' : aggFmtGrid({ value }) },
     { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },

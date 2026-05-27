@@ -73,6 +73,12 @@ class PositionRow(msgspec.Struct):
     day_change: float = 0.0
     day_change_val: float = 0.0
     day_change_percentage: float = 0.0
+    # Position-level Greeks for F&O rows — Δ-exposure (delta × qty) and
+    # Θ-per-day (theta × qty). Non-option rows leave both at 0.0.
+    # Surfaced on /performance + /dashboard positions grids; the IBKR
+    # TWS / Bloomberg OMON convention is to show these alongside LTP.
+    delta_pos: float = 0.0
+    theta_pos: float = 0.0
 
 
 class PositionsSummaryRow(msgspec.Struct):
