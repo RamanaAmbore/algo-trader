@@ -331,6 +331,48 @@ def _normalise_holdings(resp: Any) -> list[dict]:
             inst_tok = int(h.get("securityId") or 0)
         except (TypeError, ValueError):
             inst_tok = 0
+
+        avg_price  = float(h.get("avgCostPrice", 0) or 0)
+        last_price = float(h.get("lastTradedPrice", 0) or 0)
+
+        # Derive close_price + pnl + day_change when Dhan's response
+        # omits them (the holdings endpoint frequently does — only
+        # avgCostPrice + lastTradedPrice + totalQty are reliably
+        # populated). Without the derivation downstream sees:
+        #   close_price = 0 → day_change_pct == 100% (broken display)
+        #   pnl         = 0 → P&L column shows 0 even on big movers
+        # Kite responses ship these computed, so we mirror that here
+        # to keep the cross-broker concat downstream comparable.
+        close_price = float(
+            h.get("previousClosePrice", h.get("closePrice", 0)) or 0
+        )
+        # If close_price is missing, fall back to last_price (gives a
+        # 0% day_change rather than a -100% one — least misleading
+        # display when we genuinely don't have yesterday's close).
+        if close_price <= 0:
+            close_price = last_price
+
+        pnl_raw = h.get("unrealisedProfit")
+        if pnl_raw in (None, 0, "0", 0.0):
+            pnl = (last_price - avg_price) * qty
+        else:
+            pnl = float(pnl_raw)
+
+        day_change_raw = h.get("dayChange")
+        if day_change_raw in (None, 0, "0", 0.0):
+            day_change = (last_price - close_price) * qty
+        else:
+            day_change = float(day_change_raw)
+
+        day_change_pct_raw = h.get("dayChangePerc")
+        if day_change_pct_raw in (None, 0, "0", 0.0):
+            day_change_pct = (
+                ((last_price - close_price) / close_price * 100.0)
+                if close_price > 0 else 0.0
+            )
+        else:
+            day_change_pct = float(day_change_pct_raw)
+
         out.append({
             "tradingsymbol":   h.get("tradingSymbol")  or h.get("symbol")   or "",
             "exchange":        h.get("exchange")       or "NSE",
@@ -343,13 +385,12 @@ def _normalise_holdings(resp: Any) -> list[dict]:
             # to totalQty (same shape as Kite holdings T0 → T+x).
             "opening_quantity": qty,
             "t1_quantity":      int(h.get("t1Qty",     0) or 0),
-            "average_price":    float(h.get("avgCostPrice", 0) or 0),
-            "last_price":       float(h.get("lastTradedPrice", 0) or 0),
-            "close_price":      float(h.get("previousClosePrice",
-                                            h.get("closePrice", 0)) or 0),
-            "pnl":              float(h.get("unrealisedProfit", 0) or 0),
-            "day_change":       float(h.get("dayChange", 0) or 0),
-            "day_change_percentage": float(h.get("dayChangePerc", 0) or 0),
+            "average_price":    avg_price,
+            "last_price":       last_price,
+            "close_price":      close_price,
+            "pnl":              pnl,
+            "day_change":       day_change,
+            "day_change_percentage": day_change_pct,
             "product":          "CNC",  # Holdings are always delivery on Dhan
             "_raw":             h,
         })
