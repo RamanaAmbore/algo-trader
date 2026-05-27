@@ -711,7 +711,7 @@ _LOSS_AGENTS = [
 
     # ── Positions: per-account guardrail (high tier) ────────────────────
     dict(slug="loss-positions-acct",
-         long_name="positions-acct-loss-thresholds - high-multi-channel - alert-only",
+         long_name="when:positions.any_acct.pnl<=acct-thresholds   alert:high/tg+email+log   do:notify-only",
          tier="high",
          topic="positions_loss",
          name="Positions per-account loss guardrail",
@@ -732,7 +732,7 @@ _LOSS_AGENTS = [
 
     # ── Positions: total guardrail (critical tier) ──────────────────────
     dict(slug="loss-positions-total",
-         long_name="positions-total-loss-thresholds - critical-multi-channel - alert-only",
+         long_name="when:positions.total.pnl<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
          tier="critical",
          topic="positions_loss",
          name="Positions total loss guardrail",
@@ -753,7 +753,7 @@ _LOSS_AGENTS = [
 
     # ── Holdings: per-account guardrail (high tier) ─────────────────────
     dict(slug="loss-holdings-acct",
-         long_name="holdings-acct-loss-thresholds - high-multi-channel - alert-only",
+         long_name="when:holdings.any_acct.day<=acct-thresholds   alert:high/tg+email+log   do:notify-only",
          tier="high",
          topic="holdings_loss",
          name="Holdings per-account loss guardrail",
@@ -771,7 +771,7 @@ _LOSS_AGENTS = [
 
     # ── Holdings: total guardrail (critical tier) ───────────────────────
     dict(slug="loss-holdings-total",
-         long_name="holdings-total-loss-thresholds - critical-multi-channel - alert-only",
+         long_name="when:holdings.total.day<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
          tier="critical",
          topic="holdings_loss",
          name="Holdings total loss guardrail",
@@ -789,7 +789,7 @@ _LOSS_AGENTS = [
 
     # ── Funds: operational negatives (one agent — both are critical) ────
     dict(slug="loss-funds-negative",
-         long_name="funds-cash-or-margin-negative - critical-multi-channel - alert-only",
+         long_name="when:funds.any_acct.cash<0 OR margin<0   alert:critical/tg+email+log   do:notify-only",
          tier="critical",
          topic="funds_warning",
          name="Account funds gone negative (cash or margin)",
@@ -814,7 +814,7 @@ _LOSS_AGENTS = [
     #   - auto-close has its own audit story (broker-touching) — easier
     #     to read in /admin/research → Audit when isolated
     dict(slug="loss-pos-total-auto-close",
-         long_name="positions-total-pnl-below-50k - critical-multi-channel - chase-close-positions",
+         long_name="when:positions.total.pnl<=-50k   alert:critical/tg+email+log   do:chase-close(total)",
          tier="critical",
          topic="positions_loss",
          name="Auto-close positions on total ≥ ₹50k loss",
@@ -891,7 +891,7 @@ BUILTIN_AGENTS.extend(_LOSS_AGENTS)
 # no collision.
 _EXPIRY_AGENTS = [
     dict(slug="expiry-day-positions-alert",
-         long_name="positions-expiring-today - high-multi-channel - alert-only",
+         long_name="when:positions.expiring_today.days<=1.5   alert:high/tg+email+log   do:notify-only",
          tier="high",
          topic="expiry_warning",
          name="Positions expiring today — review alert",
@@ -914,7 +914,7 @@ _EXPIRY_AGENTS = [
          ),
 
     dict(slug="expiry-day-itm-auto-close",
-         long_name="positions-expiring-today-itm - critical-multi-channel - chase-close-positions",
+         long_name="when:positions.expiring_today.is_itm==1   alert:critical/tg+email+log   do:chase-close(total)",
          tier="critical",
          topic="expiry_warning",
          name="Auto-close ITM options on expiry day",
@@ -963,7 +963,7 @@ BUILTIN_AGENTS.extend(_EXPIRY_AGENTS)
 #    (operator clicks are not throttled).
 MANUAL_AGENT = dict(
     slug="manual",
-    long_name="manual-operator-order - log-only - audit-trail",
+    long_name="when:manual(operator-order)   alert:log-only   do:audit-trail",
     name="Manual operator order",
     description="Every order placed manually via ticket / chain / command writes an event here. No automated triggering.",
     conditions=None,
