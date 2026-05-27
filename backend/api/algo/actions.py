@@ -71,6 +71,73 @@ def _resolve_mode(_action_type: str, agent, context: dict) -> str:
     return "live" if getattr(agent, "trade_mode", "paper") == "live" else "paper"
 
 
+def _action_target_exchanges(action_type: str, params: dict, context: dict) -> list[str]:
+    """Phase 23 — return the exchange(s) an action would touch.
+
+    Returns the target exchange for SINGLE-symbol actions that need
+    to be gated at the agent layer:
+      place_order / modify_order / cancel_order / close_position
+        → params.exchange (default NFO matches TicketOrderRequest).
+
+    Returns [] for actions that target multiple symbols at once
+    (chase_close_positions / chase_close). Those go through to the
+    handler, which iterates positions and lets Kite reject closed-
+    exchange ones individually — partial-close behaviour without
+    invasive per-position pre-filtering here.
+
+    Returns uppercased exchange codes (or [] when not applicable)."""
+    at = (action_type or "").lower()
+    if at in ("place_order", "modify_order", "cancel_order", "close_position"):
+        ex = (params.get("exchange") or "").upper().strip()
+        if not ex:
+            # Default mirrors TicketOrderRequest's default: NFO.
+            ex = "NFO"
+        return [ex]
+    # chase_close / chase_close_positions: skip gate. Handler iterates
+    # positions; each broker call gets per-symbol exchange validation
+    # from Kite itself. Partial close falls out naturally.
+    return []
+
+
+def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tuple[bool, str]:
+    """Phase 23 — return (allowed, reason).
+
+    `allowed=True` when EVERY exchange this action targets is open
+    (or the gate is bypassed entirely). `reason` is empty on allow,
+    a short human-readable explanation on block.
+
+    Bypasses:
+      - sim mode (the simulator drives its own clock + has its own
+        market_state_preset override)
+      - replay mode (historical bars are only available for trading
+        hours by definition; gate is a no-op)
+      - non-broker actions (returns allowed=True with no checks)
+      - empty target list (action_type doesn't touch a broker)
+
+    Per-position partial close (chase_close_positions): when SOME
+    positions are on a closed exchange, returns allowed=True but
+    annotates `reason` with the skipped count. The caller separately
+    filters params before dispatching to the live/paper handler.
+    """
+    mode = context.get("sim_mode") and "sim" or context.get("replay_mode") and "replay" or None
+    if mode in ("sim", "replay"):
+        return True, ""
+
+    targets = _action_target_exchanges(action_type, params, context)
+    if not targets:
+        return True, ""
+
+    from backend.api.algo.agent_engine import _symbol_exchange_open
+    segments = context.get("segments") or []
+    closed = [e for e in targets if not _symbol_exchange_open(e, segments)]
+    if not closed:
+        return True, ""
+    return False, (
+        f"exchange{'es' if len(closed) > 1 else ''} closed: "
+        f"{', '.join(sorted(set(closed)))}"
+    )
+
+
 async def execute(agent, actions: list, context: dict):
     """
     Execute action chain sequentially. Every broker-hitting action
@@ -91,6 +158,30 @@ async def execute(agent, actions: list, context: dict):
         mode = _resolve_mode(action_type, agent, context)
         tag  = {"sim": "[SIM] ", "replay": "[REPLAY] ", "shadow": "[SHADOW] ",
                 "paper": "[PAPER] ", "live": "", "noop": ""}.get(mode, "")
+
+        # ── Phase 23 — per-order exchange-open gate ────────────────
+        # Skip broker-touching actions when the target symbol's
+        # exchange segment is closed. Applies to BOTH paper and live
+        # (paper is meant to mirror live; Kite would reject anyway).
+        # Sim/replay bypass — they drive their own clock.
+        allowed, reason = _exchange_gate_passes(action_type, params, context)
+        if not allowed:
+            logger.info(
+                f"{tag}Agent [{agent.slug}]: skipping action '{action_type}' "
+                f"— {reason}"
+            )
+            try:
+                from backend.api.algo.events import log_event
+                await log_event(
+                    agent, "action_skipped",
+                    f"{tag}Action {action_type} skipped: {reason}",
+                    {"action_type": action_type, "params": params,
+                     "skip_reason": reason},
+                    sim_mode=sim_mode,
+                )
+            except Exception as e:
+                logger.warning(f"action_skipped log_event failed: {e}")
+            continue
 
         try:
             if mode == "sim":

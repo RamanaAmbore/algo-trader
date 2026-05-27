@@ -757,6 +757,22 @@ class OrdersController(Controller):
         if data.variety    and data.variety    not in _VARIETIES:
             raise HTTPException(status_code=400,
                 detail=f"variety must be one of {sorted(_VARIETIES)}")
+
+        # Phase 23 — per-order exchange-open gate.
+        # Block submission when the target exchange's market segment
+        # is closed. Applies to BOTH paper and live (paper is meant to
+        # mirror live; Kite itself would reject a 21:00 NSE order).
+        # Sim mode (driven by SimDriver, not this route) bypasses
+        # naturally — it doesn't call /ticket.
+        from backend.api.algo.agent_engine import _symbol_exchange_open, _segments_now
+        target_exchange = data.exchange or "NFO"   # default matches struct
+        if not _symbol_exchange_open(target_exchange, _segments_now()):
+            seg = (target_exchange or "").upper()
+            raise HTTPException(status_code=409,
+                detail=(f"Exchange {seg} is closed. Orders for {sym} "
+                        f"can only be placed during {seg}'s market "
+                        f"hours (IST holidays apply)."))
+
         # LIMIT/SL need a price; MARKET/SL-M must NOT carry one (Kite
         # rejects price on MARKET). SL/SL-M need a trigger.
         if data.order_type in ("LIMIT", "SL") and not data.price:

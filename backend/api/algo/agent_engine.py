@@ -120,6 +120,71 @@ def is_grammar_tree(cond) -> bool:
     return 'metric' in cond and 'scope' in cond
 
 
+# ── Phase 23 — per-order exchange-open gate ──────────────────────────
+#
+# Maps every Kite exchange code → the market_segment it belongs to.
+# This is the single source of truth for "is THIS symbol's market
+# open right now?" used by both the agent action layer and the
+# operator-initiated ticket route.
+#
+# NSE / BSE / NFO / BFO / CDS → equity segment (09:15-15:30 IST, NSE
+#                               holidays).
+# MCX                          → commodity segment (09:00-23:30 IST,
+#                                MCX holidays).
+# Unknown exchanges default to False (safer than wrongly allowing).
+_EXCHANGE_TO_SEGMENT = {
+    "NSE":  "equity",
+    "BSE":  "equity",
+    "NFO":  "equity",
+    "BFO":  "equity",
+    "CDS":  "equity",
+    "BCD":  "equity",
+    "MCX":  "commodity",
+}
+
+
+def _segment_for_exchange(exchange: str) -> str | None:
+    """Return the market-segment name an exchange belongs to, or None
+    when the code is unknown / unset."""
+    if not exchange:
+        return None
+    return _EXCHANGE_TO_SEGMENT.get(str(exchange).upper().strip())
+
+
+def _symbol_exchange_open(exchange: str, segments: list) -> bool:
+    """Phase 23 — return True if the exchange's market segment is
+    currently open. `segments` is the list emitted by `_build_context`
+    — each entry is `{name, open, ...}`. Unknown exchanges → False so
+    we never accidentally let a non-Kite-recognised symbol slip
+    through.
+
+    Pure function — no DB / broker calls. Designed to be called from
+    the action layer, the ticket route, and the MCP gated paths
+    without any per-call setup cost.
+    """
+    seg_name = _segment_for_exchange(exchange)
+    if not seg_name:
+        return False
+    if not segments:
+        return False
+    for s in segments:
+        if not isinstance(s, dict):
+            continue
+        if (s.get("name") or "").lower() == seg_name:
+            return bool(s.get("open"))
+    return False
+
+
+def _segments_now() -> list:
+    """Build a fresh `segments` list for the CURRENT wall-clock time.
+    Used by the ticket route + MCP gated paths where we don't have a
+    pre-built engine context. Reuses `_build_context` so the result is
+    identical to what `run_cycle` sees on the same tick."""
+    from datetime import datetime, timezone
+    ctx = _build_context(datetime.now(timezone.utc))
+    return ctx.get("segments") or []
+
+
 def _in_blackout_window(now, windows: list) -> bool:
     """Phase 22 — return True if the current IST wall-clock falls inside
     any blackout window. Each window is `{"start": "HH:MM", "end": "HH:MM"}`
