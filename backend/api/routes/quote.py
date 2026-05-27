@@ -104,7 +104,8 @@ class BatchQuoteRow(msgspec.Struct):
     ltp: float = 0.0
     bid: Optional[float] = None
     ask: Optional[float] = None
-    close: Optional[float] = None
+    open: Optional[float] = None   # Today's open (first traded price)
+    close: Optional[float] = None  # Yesterday's close (used to compute day_change)
     change: float = 0.0
     change_pct: float = 0.0
     volume: int = 0
@@ -171,6 +172,7 @@ class QuoteController(Controller):
             ltp    = float(q.get("last_price") or 0.0)
             ohlc   = q.get("ohlc") or {}
             close  = float(ohlc.get("close") or 0.0) or None
+            open_  = float(ohlc.get("open")  or 0.0) or None
             depth  = q.get("depth") or {}
             buys   = depth.get("buy") or []
             sells  = depth.get("sell") or []
@@ -180,7 +182,7 @@ class QuoteController(Controller):
             chg_pct = (change / close * 100.0) if close else 0.0
             items.append(BatchQuoteRow(
                 exchange=exch, tradingsymbol=sym,
-                ltp=ltp, bid=bid, ask=ask, close=close,
+                ltp=ltp, bid=bid, ask=ask, open=open_, close=close,
                 change=change, change_pct=chg_pct,
                 volume=int(q.get("volume") or 0),
                 stale=(not q),

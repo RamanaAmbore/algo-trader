@@ -1859,6 +1859,8 @@
         row.ltp        = liveQ.ltp;
         row.bid        = liveQ.bid ?? row.bid ?? null;
         row.ask        = liveQ.ask ?? row.ask ?? null;
+        row.open       = liveQ.open  ?? row.open  ?? null;
+        row.close      = liveQ.close ?? row.close ?? null;
         row.change     = liveQ.change     ?? row.change     ?? null;
         row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
       } else if (row.ltp == null) {
@@ -1886,6 +1888,8 @@
         row.ltp        = liveQ.ltp;
         row.bid        = liveQ.bid ?? row.bid ?? null;
         row.ask        = liveQ.ask ?? row.ask ?? null;
+        row.open       = liveQ.open  ?? row.open  ?? null;
+        row.close      = liveQ.close ?? row.close ?? null;
         row.change     = liveQ.change     ?? row.change     ?? null;
         row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
       } else {
@@ -1894,6 +1898,11 @@
           row.change = Number(r.day_change);
         if (r.day_change_percentage != null && row.change_pct == null)
           row.change_pct = Number(r.day_change_percentage);
+        // Holdings rows carry close_price (yesterday); use it as the
+        // fallback close when no live quote landed. open price isn't
+        // in the holdings payload — leaves null.
+        if (row.close == null && r.close_price != null)
+          row.close = Number(r.close_price);
       }
       row.pnl     = (row.pnl     ?? 0) + (Number(r.pnl)            || 0);
       row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
@@ -2437,6 +2446,18 @@
       { field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
+        valueFormatter: numFmt },
+      // Prev close + today's open — slotted next to LTP so the operator
+      // sees the day's frame at a glance (where the symbol started vs.
+      // where it is now). Both default to em-dash when the broker quote
+      // didn't carry an OHLC block (off-hours, illiquid contracts).
+      { field: 'close', headerName: 'Prev', width: 52, minWidth: 52, maxWidth: 70,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: numFmt },
+      { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
         valueFormatter: numFmt },
       // Day P&L at 54 px (64 × 0.85). minWidth pinned against ag-Grid's
       // 50 px numericColumn-type default so the new size holds.
