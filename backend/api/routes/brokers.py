@@ -56,6 +56,15 @@ class BrokerAccountInfo(msgspec.Struct):
     # loaded into the Connections singleton). Lets the UI render an
     # "active / not loaded" pill without a separate request.
     loaded:     bool = False
+    # Presence flags for the four encrypted credential columns. Boolean
+    # only — never the values. Operator can see at a glance which slots
+    # are filled in DB so a "test" failure with "no working token" maps
+    # back to a missing-field instead of a guessing game. Lets the UI
+    # render small ✓/✗ chips next to each credential row.
+    has_api_secret:   bool = False
+    has_password:     bool = False
+    has_totp_token:   bool = False
+    has_access_token: bool = False
 
 
 class BrokerAccountCreate(msgspec.Struct):
@@ -107,6 +116,10 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
         api_key=row.api_key,
         client_id=getattr(row, "client_id", None),
         source_ip=row.source_ip,
+        has_api_secret=bool(row.api_secret_enc),
+        has_password=bool(row.password_enc),
+        has_totp_token=bool(row.totp_token_enc),
+        has_access_token=bool(getattr(row, "access_token_enc", None)),
         is_active=bool(row.is_active),
         notes=row.notes,
         priority=int(getattr(row, "priority", 100) or 100),
