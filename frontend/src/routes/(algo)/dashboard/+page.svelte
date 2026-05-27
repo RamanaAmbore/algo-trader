@@ -971,15 +971,56 @@
     // the stored account codes may no longer exist on this server
     // (operator switched broker accounts) — silently fall back to
     // all-accounts on parse error.
+    //
+    // Important: defer restoration until AFTER the broker registry
+    // load completes. We compare the stored filter against the
+    // currently-loaded broker accounts and reset to "all" when a
+    // new broker account has appeared since the operator last set
+    // the filter. Otherwise a stale ['ZG0790','ZJ6294'] filter
+    // from before Dhan / Groww accounts were added silently keeps
+    // them hidden — operator sees an empty Dhan row instead of
+    // the obvious "your new account is here, click to include".
     function _restore(key, /** @type {(v:string[])=>void} */ setter) {
       try {
         const cached = sessionStorage.getItem(key);
-        if (cached) setter(JSON.parse(cached));
+        if (!cached) return;
+        const stored = JSON.parse(cached);
+        if (!Array.isArray(stored) || stored.length === 0) return;
+        // _knownBrokerAccounts populates via _fetchConn — may not be
+        // ready yet on first restore. Fall back to "use stored as
+        // is" when registry is empty; the watcher below re-runs
+        // once the registry lands.
+        const known = _knownBrokerAccounts;
+        if (known.length === 0) {
+          setter(stored);
+          return;
+        }
+        // Drop unknown account codes (broker removed).
+        const valid = stored.filter(a => known.includes(a));
+        // If the operator picked a subset, but a NEW broker account
+        // is now loaded that isn't covered, reset → "all" so the
+        // new account is visible by default. Operator can re-narrow.
+        const missingNew = known.some(a => !stored.includes(a));
+        if (missingNew) {
+          setter([]);            // = show all
+          sessionStorage.removeItem(key);
+        } else {
+          setter(valid);
+        }
       } catch (_) { setter([]); }
     }
     _restore('dash.eqAccounts',  v => _eqAccounts  = v);
     _restore('dash.winAccounts', v => _winAccounts = v);
     _restore('dash.losAccounts', v => _losAccounts = v);
+    // Re-run restore once the broker registry lands (_knownBrokerAccounts
+    // starts empty and populates async via _fetchConn). $effect tracks
+    // the dep and fires once the array transitions from empty → loaded.
+    $effect(() => {
+      if (_knownBrokerAccounts.length === 0) return;
+      _restore('dash.eqAccounts',  v => _eqAccounts  = v);
+      _restore('dash.winAccounts', v => _winAccounts = v);
+      _restore('dash.losAccounts', v => _losAccounts = v);
+    });
     loadHero();
     // Match the equity-curve cadence (15 s). The earlier 30 s rate
     // left the Capital card visibly stale next to the chart that
