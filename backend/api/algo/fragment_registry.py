@@ -81,6 +81,58 @@ SYSTEM_FRAGMENTS: list[dict] = [
             {"channel": "telegram", "enabled": True},
         ],
     },
+
+    # ── Condition fragments (Stage 2) ────────────────────────────────────
+    # These mirror the building blocks the loss-* and expiry-* agents
+    # use. Seeded so the LLM / operator can compose new agents that
+    # reference proven thresholds rather than re-typing them.
+    {
+        "kind": "condition",
+        "name": "loss-positions-acct-default",
+        "description": (
+            "Per-account positions threshold set used by loss-positions-acct: "
+            "pnl% ≤ -2 OR pnl ≤ -₹30k OR pnl_rate ≤ -₹3k/min OR "
+            "pnl_rate% ≤ -0.25%/min. Reference from a new agent that "
+            "wants the same trigger profile against a different "
+            "notify/action set."
+        ),
+        "body": {"any": [
+            {"metric": "pnl_pct",      "scope": "positions.any_acct", "op": "<=", "value": -2.0},
+            {"metric": "pnl",          "scope": "positions.any_acct", "op": "<=", "value": -30000},
+            {"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000},
+            {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25},
+        ]},
+    },
+    {
+        "kind": "condition",
+        "name": "loss-positions-total-default",
+        "description": (
+            "Book-wide positions threshold set: total pnl% ≤ -2 OR "
+            "pnl ≤ -₹50k OR pnl_rate ≤ -₹6k/min OR rate% ≤ -0.25%/min. "
+            "Same shape as loss-positions-total."
+        ),
+        "body": {"any": [
+            {"metric": "pnl_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
+            {"metric": "pnl",          "scope": "positions.total", "op": "<=", "value": -50000},
+            {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
+            {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+        ]},
+    },
+    {
+        "kind": "condition",
+        "name": "near-market-close-30m",
+        "description": (
+            "True within the last 30 minutes of the nearest market segment "
+            "close. Useful as a guard on auto-close agents that should "
+            "only fire near close."
+        ),
+        "body": {
+            "metric": "minutes_until_close",
+            "scope":  "positions.total",
+            "op":     "<=",
+            "value":  30,
+        },
+    },
 ]
 
 

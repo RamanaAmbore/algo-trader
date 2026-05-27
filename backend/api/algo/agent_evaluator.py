@@ -248,23 +248,60 @@ class Context:
 #  Condition tree walker
 # ═══════════════════════════════════════════════════════════════════════════
 
-def evaluate(cond: dict, ctx: Context) -> list[dict]:
+def evaluate(cond: dict, ctx: Context, _visited: set | None = None) -> list[dict]:
     """
     Walk a condition tree. Returns a list of match dicts (one per triggering
     row); empty list ⇒ the tree did not fire. Malformed nodes log a warning
     and return [] — the engine should never crash because an operator-edited
     agent has a typo.
+
+    `_visited` is the cycle-detection set carried through recursive
+    `{"$ref": <fragment-name>}` resolutions. Initialised lazily on the
+    first $ref encountered; not part of the public API.
     """
     if cond is None or not isinstance(cond, dict):
         logger.warning(f"Condition evaluator: malformed node (not dict) {cond!r}")
         return []
+
+    # --- $ref: resolve against the fragment registry ----------------------
+    # A condition fragment is a saved sub-tree referenced by name. Cycle
+    # guard prevents A→B→A from blowing the stack. Missing refs log a
+    # warning and return [] — same graceful skip the rest of the
+    # evaluator uses.
+    if '$ref' in cond:
+        ref_name = cond.get('$ref')
+        if not isinstance(ref_name, str) or not ref_name:
+            logger.warning(f"Condition evaluator: malformed $ref node {cond!r}")
+            return []
+        visited = _visited or set()
+        if ref_name in visited:
+            logger.warning(
+                f"Condition evaluator: cycle detected — fragment "
+                f"'{ref_name}' referenced inside its own resolution chain"
+            )
+            return []
+        from backend.api.algo.fragment_registry import REGISTRY as _FRAG
+        body = _FRAG.get('condition', ref_name)
+        if body is None:
+            logger.warning(
+                f"Condition evaluator: unknown condition fragment "
+                f"'{ref_name}' — leaf skipped"
+            )
+            return []
+        if not isinstance(body, dict):
+            logger.warning(
+                f"Condition evaluator: condition fragment '{ref_name}' "
+                f"body is {type(body).__name__}, expected dict"
+            )
+            return []
+        return evaluate(body, ctx, _visited=visited | {ref_name})
 
     # --- Composite: all / any / not ---------------------------------------
     if 'all' in cond:
         children = cond.get('all') or []
         all_matches = []
         for c in children:
-            m = evaluate(c, ctx)
+            m = evaluate(c, ctx, _visited=_visited)
             if not m:
                 return []          # short-circuit — one child false ⇒ AND false
             all_matches.extend(m)
@@ -274,12 +311,12 @@ def evaluate(cond: dict, ctx: Context) -> list[dict]:
         children = cond.get('any') or []
         out = []
         for c in children:
-            out.extend(evaluate(c, ctx))
+            out.extend(evaluate(c, ctx, _visited=_visited))
         return out
 
     if 'not' in cond:
         inner = cond.get('not')
-        fired = bool(evaluate(inner, ctx))
+        fired = bool(evaluate(inner, ctx, _visited=_visited))
         # NOT cannot carry the triggering row forward, so emit a synthetic
         # match carrying the inverted branch for audit.
         return [] if fired else [{'not': inner}]
@@ -353,13 +390,36 @@ def validate(cond: dict) -> list[str]:
     Dry-check a condition tree against the registry. Returns a list of
     human-readable error strings (empty list ⇒ tree looks well-formed).
     Does not evaluate — only verifies the shape and that every referenced
-    token exists in the registry.
+    token exists in the registry. Resolves `{"$ref": <name>}` against the
+    fragment registry and recurses into the resolved body so a typo
+    deep inside a fragment still surfaces.
     """
     errors: list[str] = []
 
-    def walk(c, path="root"):
+    def walk(c, path="root", visited: set | None = None):
         if not isinstance(c, dict):
             errors.append(f"{path}: not a dict — {c!r}")
+            return
+        if '$ref' in c:
+            ref = c.get('$ref')
+            if not isinstance(ref, str) or not ref:
+                errors.append(f"{path}.$ref: must be a non-empty string")
+                return
+            v = visited or set()
+            if ref in v:
+                errors.append(
+                    f"{path}.$ref: cycle — '{ref}' is already in the "
+                    f"resolution chain"
+                )
+                return
+            from backend.api.algo.fragment_registry import REGISTRY as _FRAG
+            body = _FRAG.get('condition', ref)
+            if body is None:
+                errors.append(
+                    f"{path}.$ref: unknown condition fragment '{ref}'"
+                )
+                return
+            walk(body, f"{path}.$ref({ref})", visited=v | {ref})
             return
         if 'all' in c or 'any' in c:
             key = 'all' if 'all' in c else 'any'
@@ -368,10 +428,10 @@ def validate(cond: dict) -> list[str]:
                 errors.append(f"{path}.{key}: expected non-empty list")
                 return
             for i, ch in enumerate(children):
-                walk(ch, f"{path}.{key}[{i}]")
+                walk(ch, f"{path}.{key}[{i}]", visited=visited)
             return
         if 'not' in c:
-            walk(c.get('not'), f"{path}.not")
+            walk(c.get('not'), f"{path}.not", visited=visited)
             return
         for k in ('metric', 'scope', 'op'):
             if k not in c:
