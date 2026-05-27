@@ -213,10 +213,11 @@
 
 <style>
   .ps-strip {
-    /* Last child of the algo layout's .algo-sticky-chrome wrapper —
-       the wrapper handles sticky positioning for the whole chrome
-       cluster (navbar + banners + this strip) so they don't fight
-       for the same top offset. Per-element sticky removed. */
+    /* Sticky below the navbar (which sits at top:0 z-index:50). 48px is
+       the navbar's natural rendered height (h-12). */
+    position: sticky;
+    top: 48px;
+    z-index: 49;
     display: flex;
     align-items: center;
     justify-content: flex-start;
