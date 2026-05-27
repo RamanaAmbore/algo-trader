@@ -703,21 +703,27 @@ class GrowwConnection:
 
     def _resolve_token(self) -> str:
         """Pick a working access token, preferring (in order):
-        cached fresh token → mint fresh → manually-pasted legacy
-        token. Caches every successful mint so a restart within the
-        validity window skips the round-trip."""
-        # 1) Cached fresh token? (groww_tokens.json shares the same
-        #    cache path as kite_tokens.json via the same env var).
+          1. cached fresh mint
+          2. fresh mint via api_key + (secret OR totp_seed)
+          3. api_key used directly as Bearer token — Groww's vendor
+             integration keys ARE long-lived JWTs that can be passed
+             as the Authorization Bearer header, same shape the
+             SDK's mint endpoint accepts (`_build_headers`). This is
+             the fallback path when the mint endpoint rate-limits us
+             — common after multiple service restarts in a short
+             window. Without this fallback every rate-limit response
+             killed the account until Groww's counter reset.
+          4. manually-pasted 24 h access_token
+        Caches every successful mint so a restart within the
+        validity window skips the round-trip.
+        """
         cache_key = f"groww:{self.account}"
         token, _created = _load_cached_token(cache_key)
         if token:
             return token
         # 2) Mint via api_key + secret/totp. Capture the mint failure
-        #    so we can surface it in the final RuntimeError when the
-        #    legacy access_token fallback ALSO has nothing — otherwise
-        #    operators see a generic "no working token" with no hint
-        #    of WHY mint failed (HTTP 400 from Groww's secret check
-        #    vs 401 stale api_key vs network outage).
+        #    so we can surface it in the final RuntimeError when no
+        #    fallback works either.
         mint_error: Exception | None = None
         if self._api_key and (self._secret or self._totp_seed):
             try:
@@ -729,17 +735,32 @@ class GrowwConnection:
                 mint_error = e
                 logger.warning(
                     f"GrowwConnection {self.account!r} mint failed: {e}. "
-                    f"Falling back to manually-pasted access_token if any."
+                    f"Trying api_key as Bearer token directly."
                 )
-        # 3) Legacy 24 h manual-paste token.
+        # 3) Use the api_key JWT directly as a Bearer token. Groww's
+        #    SDK puts whatever the operator passes to GrowwAPI(token)
+        #    in the Authorization header verbatim — a vendor JWT
+        #    (eyJ… prefix) authenticates just as well as a minted
+        #    short-lived token, just without the auto-refresh path.
+        #    Cache it under the same key so subsequent rebuilds skip
+        #    re-trying the mint until the rate-limit clears.
+        if self._api_key and self._api_key.startswith("eyJ"):
+            logger.info(
+                f"GrowwConnection {self.account!r}: using api_key JWT as "
+                f"Bearer token directly (mint unavailable). Cached as "
+                f"{cache_key} for {CONN_RESET_HOURS}h."
+            )
+            _save_cached_token(cache_key, self._api_key)
+            return self._api_key
+        # 4) Legacy 24 h manual-paste token.
         if self._access_token:
             return self._access_token
         # Final error — list which inputs we DO have so the operator can
         # spot the missing piece. has_secret / has_totp / has_token tell
         # them exactly which credential slot is empty without exposing
         # any value. If mint was attempted + failed, include Groww's
-        # actual response (HTTP code + message) so the operator sees
-        # "Groww 400: Invalid secret" instead of guessing.
+        # actual response so the operator sees "Groww 400: Invalid
+        # secret" instead of guessing.
         present = {
             "api_key":      bool(self._api_key),
             "secret":       bool(self._secret),
