@@ -432,6 +432,36 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 - **`agents/`** (formerly `/algo`) — Agents page: grouped compact rows (Loss & Risk / Summaries / Automation / Other), click-to-expand, Edit with live condition validation, per-row "Run in Simulator" button that deep-links to `/admin/execution?mode=sim&agent_id=<id>`. The Agent-events panel auto-scopes: real events when sim is idle, sim events when a sim is running.
 - **`console/`** — Terminal: command textarea + output + live log (equal panels)
 - **`orders/`** — Order management
+- **`agents/activity/`** — Recent agent fires (and optional action-success / -error events). Same `UnifiedLog` component the dashboard renders, lifted into a dedicated route inside the agent workspace so operators asking "what fired today?" don't have to scroll past P&L analysis.
+
+---
+
+## Algo navbar — grouped + collapsible
+
+Items in [`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte) carry a `group:` attribute ∈ `{monitor, analyze, modes, build, config}`. Render strategy splits by group size and operator frequency:
+
+- **Inline (always visible)** — `monitor` (Tour / Pulse / Dashboard / Agents / Orders), `analyze` (Derivatives), `modes` (Lab). High-frequency surfaces stay one click.
+- **Disclosure dropdowns** — `build` (Console / Research / Tokens) and `config` (Brokers / Settings / Users / Health) collapse behind labelled triggers with carets. Trigger stays lit (`algo-nav-btn-active`) when the operator's current page is inside that group, so "I'm in Config" reads at a glance even without opening the panel.
+- **Mobile drawer** (<1024px / `lg:hidden`) — hamburger opens a section-captioned drawer (MONITOR / ANALYZE / MODES / BUILD / CONFIG headers above each group's items). Operator navigates by intent, not by scrolling a flat list.
+
+Industry analogue: Grafana left-rail collapsed/expanded pattern, ported to a top bar.
+
+---
+
+## Agent workspace tabs
+
+The four surfaces operators visit when thinking about agents — rules, fires, tokens, lab — share a [`AgentWorkspaceTabs.svelte`](frontend/src/lib/AgentWorkspaceTabs.svelte) strip at the top of each page:
+
+| Tab | Route |
+|---|---|
+| Agents | `/agents` |
+| Activity | `/agents/activity` |
+| Tokens | `/admin/tokens` |
+| Lab | `/admin/research` |
+
+URLs are unchanged — this is visual unification only. Operator gets a single mental model ("Agent Workspace") and one-click navigation between the four surfaces without leaving the workspace. Moving the URLs physically under `/agents` is a follow-up if wanted; the tab component is already structured so it's a small delta.
+
+Industry analogue: Splunk Detections workspace with tabs.
 
 ---
 
@@ -578,9 +608,36 @@ leaf       ::=  { "metric": <metric-token>,
 `backend/api/algo/agent_evaluator.py`:
 - `evaluate(cond, ctx) -> list[match]` — tree walker; empty list means no fire.
 - `validate(cond) -> list[str]` — dry-check; every referenced token must exist in the registry. Used by `POST /api/agents/validate-condition` and surfaced in the `/agents` editor's Validate button.
-- `Context` — bundles `sum_holdings`, `sum_positions`, `df_margins`, `alert_state` (for rate history), `now`, `segments`, `rate_window_min`, `agent`.
+- `Context` — bundles `sum_holdings`, `sum_positions`, `df_margins`, `position_rows` (per-symbol position dicts for expiry scopes), `spot_prices` (`{underlying: ltp}` for ITM/NTM resolvers), `alert_state` (for rate history), `now`, `segments`, `rate_window_min`, `agent`. `position_rows` and `spot_prices` are populated by [`background.py::_task_performance`](backend/api/background.py) and the simulator driver; absent ⇒ expiry-aware metric leaves return None gracefully.
 
 The v1 `field/operator/rules` evaluator has been retired; every agent must use the grammar tree above. `run_cycle` calls `agent_evaluator.evaluate` directly.
+
+### Extended metric families
+
+Beyond the original point-in-time metrics (`pnl`, `pnl_pct`, `day_pct`, etc.) and rate metrics (`pnl_rate_abs`, `pnl_rate_pct`, …), the catalog ships two extension families:
+
+**Rolling-window aggregates** (Phase 24) — read the same `pnl_history` deque the rate metrics use; aggregate the whole slice with statistical reducers. Return `None` until the window holds ≥ 2 samples so first-tick fires never happen.
+
+| Token | Units | Reducer |
+|---|---|---|
+| `mean_pnl_30m` / `_1h` | ₹ | average over window |
+| `mean_day_30m` / `_1h` | ₹ | average holdings day-change over window |
+| `max_drawdown_pnl_30m` / `_1h` / `_4h` | ₹ | peak-to-trough drop (always ≤ 0) |
+| `max_drawdown_pnl_pct_30m` / `_1h` | % | same as ratio of P&L |
+| `max_drawdown_day_1h` | ₹ | drawdown on holdings day-change |
+| `stdev_pnl_30m` / `_1h` | ₹ | volatility proxy |
+| `range_pnl_30m` / `_1h` | ₹ | max − min over window |
+
+**Expiry-aware metrics + scope** (Phase 25) — parse the tradingsymbol per-call (regex + dict, no I/O) and consult `ctx.spot_prices` for moneyness.
+
+| Token | Kind | Notes |
+|---|---|---|
+| `days_until_expiry` | metric | Float days; handles NSE 15:30 + MCX 23:30 close-time boundaries. None for cash equity. |
+| `is_itm` | metric | 1.0 / 0.0 / None. None when spot is unknown — leaf skips. |
+| `is_ntm` | metric | 1.0 when within ±1.5% of spot. Same None semantics. |
+| `positions.expiring_today` | scope | Per-symbol rows where the F&O contract expires within 1.5 days. Reads `ctx.position_rows` (NOT the aggregate `sum_positions`). |
+
+Two **inactive** seeded agents use them — `expiry-day-positions-alert` (notify-only review) and `expiry-day-itm-auto-close` (destructive, wraps `chase_close_positions`). Run side-by-side with the existing `ExpiryEngine` background task at 09:20 IST; agents fire at different times (14:30 NFO / 23:00 MCX-style), no collision. Retire the bg task after one expiry-week of side-by-side validation.
 
 ### Action grammar
 
