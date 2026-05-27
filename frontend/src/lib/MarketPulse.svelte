@@ -1866,8 +1866,26 @@
       } else if (row.ltp == null) {
         row.ltp = r.last_price ?? null;
       }
-      row.pnl     = (row.pnl     ?? 0) + (Number(r.pnl)            || 0);
-      row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      // Day P&L = (live_ltp − close_price) × qty when the live quote
+      // is present; otherwise fall back to the broker's snapshot
+      // day_change_val (which is only fresh as of the last loadPulse
+      // — every 2 ticks). With the recompute, the subtotals strip +
+      // Day P&L column update on every loadQuotes tick alongside LTP.
+      const livePos = liveQ?.ltp ?? null;
+      const closePx = Number(r.close_price) || 0;
+      if (livePos != null && closePx > 0 && q !== 0) {
+        row.day_pnl = (row.day_pnl ?? 0) + (livePos - closePx) * q;
+      } else {
+        row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      }
+      // Total P&L = (live_ltp − avg_price) × qty + realised. realised
+      // only changes when a trade fills, so the live recompute stays
+      // accurate between loadPulse cycles.
+      if (livePos != null && avg > 0 && q !== 0) {
+        row.pnl = (row.pnl ?? 0) + (livePos - avg) * q + (Number(r.realised) || 0);
+      } else {
+        row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
+      }
       fill(row, sym);
     }
 
@@ -1904,8 +1922,23 @@
         if (row.close == null && r.close_price != null)
           row.close = Number(r.close_price);
       }
-      row.pnl     = (row.pnl     ?? 0) + (Number(r.pnl)            || 0);
-      row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      // Holdings: same recompute as positions — Day P&L from
+      // (live_ltp − close_price) × held_qty when LTP is live. avg cost
+      // for holdings lives on `r.average_price`; pnl recompute uses
+      // (live_ltp − avg) × qty (no realised component on holdings).
+      const liveHold = liveQ?.ltp ?? null;
+      const holdClose = Number(r.close_price) || 0;
+      const holdAvg   = Number(r.average_price) || 0;
+      if (liveHold != null && holdClose > 0 && heldQty !== 0) {
+        row.day_pnl = (row.day_pnl ?? 0) + (liveHold - holdClose) * heldQty;
+      } else {
+        row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      }
+      if (liveHold != null && holdAvg > 0 && heldQty !== 0) {
+        row.pnl = (row.pnl ?? 0) + (liveHold - holdAvg) * heldQty;
+      } else {
+        row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
+      }
       fill(row, sym);
     }
 
