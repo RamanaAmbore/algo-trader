@@ -283,6 +283,19 @@ export const deleteGrammarToken = (id) =>
   _del(`/admin/grammar/tokens/${id}`, { auth: true });
 export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { auth: true });
 
+// ── Agent fragments — reusable notify / condition saved sub-trees ─────
+// System fragments toggle-only; custom support full CRUD.
+export const fetchAgentFragments = (kind) =>
+  _get(`/admin/fragments/${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`,
+       { auth: true });
+export const createAgentFragment = (payload) =>
+  _post('/admin/fragments/', payload, { auth: true });
+export const patchAgentFragment  = (id, payload) =>
+  _patch(`/admin/fragments/${id}`, payload, { auth: true });
+export const deleteAgentFragment = (id) =>
+  _del(`/admin/fragments/${id}`, { auth: true });
+export const reloadFragments     = () => _post('/admin/fragments/reload', {}, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const updateSetting     = (key, value) =>

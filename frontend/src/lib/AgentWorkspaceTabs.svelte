@@ -21,10 +21,11 @@
   // (the rules), see what they're built from (tokens), see how to
   // research / propose new ones (lab).
   const TABS = [
-    { href: '/agents',          label: 'Agents'   },
-    { href: '/agents/activity', label: 'Activity' },
-    { href: '/admin/tokens',    label: 'Tokens'   },
-    { href: '/admin/research',  label: 'Lab'      },
+    { href: '/agents',           label: 'Agents'    },
+    { href: '/agents/activity',  label: 'Activity'  },
+    { href: '/admin/tokens',     label: 'Tokens'    },
+    { href: '/agents/fragments', label: 'Fragments' },
+    { href: '/admin/research',   label: 'Lab'       },
   ];
 
   // Longest-match — /agents/activity must beat /agents.

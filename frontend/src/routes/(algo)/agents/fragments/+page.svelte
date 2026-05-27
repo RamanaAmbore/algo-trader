@@ -1,0 +1,565 @@
+<!--
+  /agents/fragments — reusable notify / condition saved sub-trees.
+
+  Operator workflow:
+    - Browse all fragments (filter by kind via the segmented control)
+    - Expand a row to see its body
+    - Custom fragments: full edit / delete
+    - System fragments: toggle is_active only (body + description
+      are owned by code seeds)
+    - Create a new custom fragment via the form at the bottom
+
+  Stage 3 of the Item 2 build — notify ($ref in agent.events) and
+  condition ($ref in agent.conditions) are both supported. Action
+  fragments are reserved for a future stage.
+-->
+<script>
+  import { onMount } from 'svelte';
+  import { authStore, nowStamp } from '$lib/stores';
+  import {
+    fetchAgentFragments, createAgentFragment,
+    patchAgentFragment, deleteAgentFragment, reloadFragments,
+  } from '$lib/api';
+  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
+  import Select   from '$lib/Select.svelte';
+
+  let fragments = $state(/** @type {any[]} */ ([]));
+  let filterKind = $state(/** @type {'all'|'notify'|'condition'} */ ('all'));
+  let loading = $state(true);
+  let error = $state('');
+
+  // ── Expanded row state ────────────────────────────────────────────
+  let expandedId = $state(/** @type {number | null} */ (null));
+
+  // ── Edit / Create form ────────────────────────────────────────────
+  let editingId = $state(/** @type {number | null} */ (null));
+  let formKind = $state('notify');
+  let formName = $state('');
+  let formDescription = $state('');
+  let formBodyText = $state('[]');
+  let formError = $state('');
+  let busy = $state(false);
+
+  const isDemo = $derived(!$authStore.user);
+
+  async function load() {
+    loading = true; error = '';
+    try {
+      fragments = await fetchAgentFragments();
+    } catch (e) {
+      error = e.message || 'failed to load fragments';
+    } finally {
+      loading = false;
+    }
+  }
+
+  onMount(load);
+
+  const visible = $derived(
+    filterKind === 'all'
+      ? fragments
+      : fragments.filter(f => f.kind === filterKind)
+  );
+
+  // Group for display: notify first, condition second.
+  const grouped = $derived(() => {
+    const groups = { notify: [], condition: [] };
+    for (const f of visible) {
+      (groups[f.kind] ?? (groups[f.kind] = [])).push(f);
+    }
+    return groups;
+  });
+
+  function resetForm() {
+    editingId = null;
+    formKind = 'notify';
+    formName = '';
+    formDescription = '';
+    formBodyText = '[]';
+    formError = '';
+  }
+
+  function startEdit(/** @type {any} */ f) {
+    editingId = f.id;
+    formKind = f.kind;
+    formName = f.name;
+    formDescription = f.description || '';
+    formBodyText = JSON.stringify(f.body, null, 2);
+    formError = '';
+    // Scroll into view.
+    setTimeout(() => {
+      document.getElementById('frag-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+  }
+
+  async function saveForm() {
+    formError = '';
+    let body;
+    try {
+      body = JSON.parse(formBodyText);
+    } catch (e) {
+      formError = `body JSON parse: ${e.message}`;
+      return;
+    }
+    busy = true;
+    try {
+      if (editingId) {
+        await patchAgentFragment(editingId, {
+          body, description: formDescription,
+        });
+      } else {
+        await createAgentFragment({
+          kind: formKind,
+          name: formName.trim().toLowerCase(),
+          body,
+          description: formDescription,
+        });
+      }
+      resetForm();
+      await load();
+    } catch (e) {
+      formError = e.message || 'save failed';
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function toggleActive(/** @type {any} */ f) {
+    busy = true;
+    try {
+      await patchAgentFragment(f.id, { is_active: !f.is_active });
+      await load();
+    } catch (e) {
+      error = e.message || 'toggle failed';
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeFragment(/** @type {any} */ f) {
+    if (!confirm(`Delete fragment '${f.name}'? This cannot be undone.`)) return;
+    busy = true;
+    try {
+      await deleteAgentFragment(f.id);
+      await load();
+    } catch (e) {
+      error = e.message || 'delete failed';
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function doReload() {
+    busy = true;
+    try {
+      await reloadFragments();
+      await load();
+    } finally { busy = false; }
+  }
+</script>
+
+<svelte:head><title>Agent Fragments | RamboQuant Analytics</title></svelte:head>
+
+<AgentWorkspaceTabs />
+
+<div class="page-header">
+  <h1 class="page-title-chip">Fragments</h1>
+  <InfoHint popup text={'Reusable saved sub-trees an agent references via <b>{$ref: name}</b>. Two kinds: <b>notify</b> (channel lists for agent.events) and <b>condition</b> (sub-trees for agent.conditions). System fragments toggle-only; custom fragments full CRUD.'} />
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
+  <button class="reload-pill" onclick={doReload} disabled={busy} title="Re-read fragments from DB into the in-memory cache">↻ Reload</button>
+</div>
+
+<section class="algo-status-card p-3 mb-3">
+  <div class="filter-row">
+    <span class="filter-label">Show:</span>
+    {#each ['all', 'notify', 'condition'] as k}
+      <button
+        class="filter-btn"
+        class:filter-btn-on={filterKind === k}
+        onclick={() => filterKind = /** @type {any} */ (k)}
+        type="button">{k}</button>
+    {/each}
+    <span class="filter-hint ml-auto">
+      {fragments.length} total · {visible.length} shown
+    </span>
+  </div>
+</section>
+
+{#if loading}
+  <div class="muted">Loading fragments…</div>
+{:else if error}
+  <div class="err">{error}</div>
+{:else}
+  {@const g = grouped()}
+  {#each ['notify', 'condition'] as kind}
+    {#if g[kind] && g[kind].length > 0}
+      <h2 class="grp-title">{kind.toUpperCase()}</h2>
+      <ul class="frag-list">
+        {#each g[kind] as f}
+          <li class="frag-row" class:frag-row-open={expandedId === f.id}
+              class:frag-row-system={f.is_system}
+              class:frag-row-inactive={!f.is_active}>
+            <button class="frag-head" onclick={() => expandedId = expandedId === f.id ? null : f.id}>
+              <span class="frag-name">{f.name}</span>
+              {#if f.is_system}<span class="frag-pill frag-pill-system">SYSTEM</span>{/if}
+              {#if !f.is_active}<span class="frag-pill frag-pill-off">OFF</span>{/if}
+              <span class="frag-desc">{f.description || '—'}</span>
+              <span class="frag-toggle">{expandedId === f.id ? '▾' : '▸'}</span>
+            </button>
+            {#if expandedId === f.id}
+              <div class="frag-body">
+                <pre class="frag-body-pre"><code>{JSON.stringify(f.body, null, 2)}</code></pre>
+                <div class="frag-actions">
+                  <button class="action-btn" onclick={() => toggleActive(f)} disabled={busy}>
+                    {f.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                  {#if !f.is_system}
+                    <button class="action-btn" onclick={() => startEdit(f)} disabled={busy}>Edit</button>
+                    <button class="action-btn action-btn-danger" onclick={() => removeFragment(f)} disabled={busy}>Delete</button>
+                  {:else}
+                    <span class="muted">system rows are toggle-only</span>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/each}
+{/if}
+
+{#if !isDemo}
+  <section id="frag-form" class="algo-status-card p-3 mt-4 form-card">
+    <h2 class="form-title">{editingId ? `Edit fragment #${editingId}` : 'Create custom fragment'}</h2>
+
+    <div class="form-row">
+      <label>Kind</label>
+      {#if editingId}
+        <span class="form-readonly">{formKind} (cannot change after create)</span>
+      {:else}
+        <Select bind:value={formKind} options={[
+          { value: 'notify',    label: 'notify' },
+          { value: 'condition', label: 'condition' },
+        ]} />
+      {/if}
+    </div>
+
+    <div class="form-row">
+      <label>Name <span class="muted">(lowercase, hyphens)</span></label>
+      {#if editingId}
+        <span class="form-readonly">{formName}</span>
+      {:else}
+        <input class="form-input" bind:value={formName} placeholder="my-fragment-name" />
+      {/if}
+    </div>
+
+    <div class="form-row">
+      <label>Description</label>
+      <input class="form-input" bind:value={formDescription} placeholder="One-line summary of what this fragment does" />
+    </div>
+
+    <div class="form-row form-row-body">
+      <label>Body <span class="muted">(JSON)</span></label>
+      <textarea class="form-body-area" bind:value={formBodyText} rows="10"
+                placeholder={formKind === 'notify'
+                  ? '[{"channel":"telegram","enabled":true}]'
+                  : '{"metric":"pnl","scope":"positions.total","op":"<=","value":-50000}'}></textarea>
+    </div>
+
+    {#if formError}<div class="err mb-2">{formError}</div>{/if}
+
+    <div class="form-actions">
+      <button class="primary-btn" onclick={saveForm} disabled={busy}>
+        {editingId ? 'Save' : 'Create'}
+      </button>
+      {#if editingId}
+        <button class="action-btn" onclick={resetForm} disabled={busy}>Cancel</button>
+      {/if}
+    </div>
+  </section>
+{/if}
+
+<style>
+  .filter-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .filter-label {
+    font-size: 0.65rem;
+    color: rgba(180,200,230,0.6);
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-right: 0.3rem;
+  }
+  .filter-btn {
+    padding: 0.22rem 0.6rem;
+    font-size: 0.66rem;
+    font-weight: 500;
+    color: rgba(180,200,230,0.75);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.03em;
+    text-transform: lowercase;
+    transition: background-color 0.06s, color 0.06s, border-color 0.06s;
+  }
+  .filter-btn:hover {
+    background: rgba(251,191,36,0.08);
+    color: #fbbf24;
+    border-color: rgba(251,191,36,0.3);
+  }
+  .filter-btn-on {
+    background: rgba(251,191,36,0.18);
+    color: #fbbf24;
+    font-weight: 700;
+    border-color: rgba(251,191,36,0.5);
+  }
+  .filter-hint {
+    font-size: 0.6rem;
+    color: rgba(180,200,230,0.5);
+    font-family: ui-monospace, monospace;
+  }
+
+  .reload-pill {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: rgba(251,191,36,0.9);
+    background: rgba(251,191,36,0.10);
+    border: 1px solid rgba(251,191,36,0.3);
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.03em;
+    transition: background-color 0.06s;
+  }
+  .reload-pill:hover { background: rgba(251,191,36,0.2); }
+  .reload-pill:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .grp-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: rgba(251,191,36,0.65);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin: 1.1rem 0 0.4rem 0.2rem;
+    font-family: ui-monospace, monospace;
+  }
+  .frag-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .frag-row {
+    background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 0.3rem;
+    overflow: hidden;
+    transition: border-color 0.08s;
+  }
+  .frag-row:hover { border-color: rgba(251,191,36,0.25); }
+  .frag-row-open { border-color: rgba(251,191,36,0.4); }
+  .frag-row-system .frag-name { color: #c8d8f0; }
+  .frag-row-inactive { opacity: 0.55; }
+
+  .frag-head {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: 100%;
+    padding: 0.5rem 0.85rem;
+    background: transparent;
+    border: none;
+    color: rgba(200,216,240,0.85);
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    font-size: 0.72rem;
+    text-align: left;
+  }
+  .frag-name {
+    font-weight: 700;
+    color: #fbbf24;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+  .frag-pill {
+    font-size: 0.55rem;
+    font-weight: 700;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  .frag-pill-system {
+    color: #94a3b8;
+    background: rgba(148,163,184,0.12);
+    border: 1px solid rgba(148,163,184,0.32);
+  }
+  .frag-pill-off {
+    color: #fb7185;
+    background: rgba(251,113,133,0.12);
+    border: 1px solid rgba(251,113,133,0.32);
+  }
+  .frag-desc {
+    color: rgba(180,200,230,0.6);
+    font-size: 0.65rem;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .frag-toggle {
+    color: rgba(251,191,36,0.7);
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+
+  .frag-body {
+    padding: 0.55rem 0.85rem 0.75rem;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .frag-body-pre {
+    margin: 0 0 0.5rem 0;
+    padding: 0.5rem 0.7rem;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 0.25rem;
+    font-size: 0.65rem;
+    color: #c8d8f0;
+    max-height: 18rem;
+    overflow: auto;
+  }
+  .frag-actions {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .action-btn {
+    padding: 0.22rem 0.65rem;
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: rgba(200,216,240,0.85);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.03em;
+    transition: background-color 0.06s, color 0.06s, border-color 0.06s;
+  }
+  .action-btn:hover {
+    background: rgba(251,191,36,0.10);
+    color: #fbbf24;
+    border-color: rgba(251,191,36,0.35);
+  }
+  .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .action-btn-danger:hover {
+    background: rgba(251,113,133,0.12);
+    color: #fb7185;
+    border-color: rgba(251,113,133,0.45);
+  }
+
+  .primary-btn {
+    padding: 0.32rem 0.95rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #fbbf24;
+    background: rgba(251,191,36,0.18);
+    border: 1px solid rgba(251,191,36,0.5);
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+    transition: background-color 0.06s;
+  }
+  .primary-btn:hover { background: rgba(251,191,36,0.28); }
+  .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .form-card {
+    border: 1px solid rgba(251,191,36,0.18);
+  }
+  .form-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #fbbf24;
+    margin: 0 0 0.6rem 0;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .form-row {
+    display: grid;
+    grid-template-columns: 9rem 1fr;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .form-row label {
+    font-size: 0.65rem;
+    color: rgba(180,200,230,0.7);
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+  .form-row-body { align-items: start; }
+  .form-input {
+    padding: 0.3rem 0.55rem;
+    font-size: 0.7rem;
+    color: #c8d8f0;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0.25rem;
+    font-family: ui-monospace, monospace;
+    outline: none;
+  }
+  .form-input:focus { border-color: rgba(251,191,36,0.5); }
+  .form-readonly {
+    font-size: 0.7rem;
+    color: rgba(180,200,230,0.6);
+    font-family: ui-monospace, monospace;
+    padding: 0.3rem 0;
+  }
+  .form-body-area {
+    padding: 0.5rem 0.7rem;
+    font-size: 0.65rem;
+    color: #c8d8f0;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0.25rem;
+    font-family: ui-monospace, monospace;
+    resize: vertical;
+    outline: none;
+  }
+  .form-body-area:focus { border-color: rgba(251,191,36,0.5); }
+  .form-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+  }
+
+  .muted {
+    color: rgba(180,200,230,0.5);
+    font-size: 0.65rem;
+    font-family: ui-monospace, monospace;
+  }
+  .err {
+    color: #fb7185;
+    font-size: 0.65rem;
+    padding: 0.3rem 0;
+    font-family: ui-monospace, monospace;
+  }
+  .mb-2 { margin-bottom: 0.5rem; }
+  .mb-3 { margin-bottom: 0.75rem; }
+  .mt-4 { margin-top: 1rem; }
+  .ml-auto { margin-left: auto; }
+</style>
