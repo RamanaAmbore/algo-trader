@@ -499,18 +499,31 @@
   // shows up twice in the Winners/Losers list. The winners/losers
   // surface is about "which symbol moved" not "which (symbol, account)
   // pair moved" — so collapse by symbol and sum across accounts.
-  // LTP is a per-symbol global value, not additive — first non-zero
-  // ltp wins.
+  //
+  // day_pct is a per-symbol global, not additive — it's the same
+  // (last_price - close_price) / close_price * 100 for every account
+  // holding the symbol, so we take the first non-zero value and let
+  // every other account's row confirm it. Without this, _toWlRow used
+  // to derive pct = pnl_today / inv_val (= today's rupee move / cost
+  // basis), which conflates "today's % move" with "average per-rupee-
+  // invested gain" — wildly wrong when one account holds a tiny
+  // position and another holds a huge one. Operator saw IFCI's 4.98%
+  // day move reported as 13.58% via that broken formula.
+  //
+  // LTP is a per-symbol global value too — first non-zero ltp wins.
   function _aggregateBySymbol(rows) {
-    /** @type {Map<string, {symbol: string, pnl: number, inv_val: number, ltp: number}>} */
+    /** @type {Map<string, {symbol: string, pnl: number, inv_val: number, ltp: number, day_pct: number|null}>} */
     const bySym = new Map();
     for (const r of rows) {
       const sym = r.symbol;
       if (!sym) continue;
-      const cur = bySym.get(sym) ?? { symbol: sym, pnl: 0, inv_val: 0, ltp: 0 };
+      const cur = bySym.get(sym) ?? { symbol: sym, pnl: 0, inv_val: 0, ltp: 0, day_pct: null };
       cur.pnl     += Number(r.pnl) || 0;
       cur.inv_val += Number(r.inv_val) || 0;
       if (!cur.ltp && r.ltp) cur.ltp = Number(r.ltp) || 0;
+      if (cur.day_pct == null && r.day_pct != null) {
+        cur.day_pct = Number(r.day_pct);
+      }
       bySym.set(sym, cur);
     }
     return Array.from(bySym.values());
@@ -520,7 +533,7 @@
   // + per-card account filter. Aggregated by symbol so a stock held
   // in N accounts appears as one row with summed day P&L + cost basis.
   function _holdingsFor(cls, accounts) {
-    /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number}[]} */
+    /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number, day_pct: number|null}[]} */
     const raw = [];
     for (const h of _accountFilter(_holdings, accounts)) {
       const sym = String(h.tradingsymbol || h.symbol || '');
@@ -535,6 +548,13 @@
         pnl,
         inv_val: Number(h.inv_val ?? 0),
         ltp:     Number(h.last_price ?? h.ltp ?? 0),
+        // Carry the broker's per-row day_change_percentage so the
+        // aggregate keeps the correct (last-close)/close * 100 value.
+        // Without this, Winners/Losers fell back to a wrong derived
+        // formula (pnl/inv_val) — see _aggregateBySymbol.
+        day_pct: h.day_change_percentage != null
+                 ? Number(h.day_change_percentage)
+                 : null,
       });
     }
     // Aggregate first, then drop zero-pnl symbols (the dedupe could
@@ -550,7 +570,7 @@
   // across accounts (same reason as holdings). Takes a per-card
   // account filter so Winners + Losers cards can scope independently.
   function _positionsRowsFor(accounts) {
-    /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number}[]} */
+    /** @type {{symbol: string, pnl: number, inv_val: number, ltp: number, day_pct: number|null}[]} */
     const raw = [];
     for (const p of _accountFilter(_positions, accounts)) {
       const sym = String(p.tradingsymbol || p.symbol || '');
@@ -561,6 +581,12 @@
         pnl,
         inv_val: 0,
         ltp: Number(p.last_price ?? p.ltp ?? 0),
+        // Same fix as _holdingsFor — carry the broker's day-change %
+        // so _toWlRow can use it directly instead of falling back to
+        // a wrong derived formula.
+        day_pct: p.day_change_percentage != null
+                 ? Number(p.day_change_percentage)
+                 : null,
       });
     }
     return _aggregateBySymbol(raw)
@@ -628,8 +654,16 @@
     if (r.kind === 'market') {
       return { symbol: r.symbol, ltp: r.ltp || null, pct: r.pnl, pnl_abs: null };
     }
-    // user row: pct from pnl/inv_val when invested-value is known.
-    const pct = r.inv_val > 0 ? (r.pnl / r.inv_val) * 100 : null;
+    // user row: prefer the broker-supplied day_change_percentage (the
+    // canonical (last - close) / close × 100). The legacy fallback
+    // (pnl / inv_val × 100) was wrong on multiple axes:
+    //   - it mixed up "today's % move" with "today's rupee move as a
+    //     fraction of cost basis" → IFCI's 4.98 % real day move
+    //     reported as 13.58 %
+    //   - it broke entirely for positions where inv_val=0 (always)
+    const pct = r.day_pct != null
+      ? r.day_pct
+      : (r.inv_val > 0 ? (r.pnl / r.inv_val) * 100 : null);
     return { symbol: r.symbol, ltp: r.ltp || null, pct, pnl_abs: r.pnl };
   }
 
