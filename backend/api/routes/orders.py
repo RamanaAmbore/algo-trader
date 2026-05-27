@@ -758,6 +758,26 @@ class OrdersController(Controller):
             raise HTTPException(status_code=400,
                 detail=f"variety must be one of {sorted(_VARIETIES)}")
 
+        # Validate input parameters first (cheap, deterministic — bad
+        # inputs should fail with 400, not 409 from the operational
+        # market-hours gate below).
+        if data.order_type in ("LIMIT", "SL") and not data.price:
+            raise HTTPException(status_code=400, detail="price is required for LIMIT/SL")
+        if data.order_type in ("SL", "SL-M") and not data.trigger_price:
+            raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
+
+        # Resolve + validate account BEFORE the market-hours gate. An
+        # unknown account is a bad-input error (400), not an operational
+        # market-hours violation (409). Tests exercise this ordering by
+        # posting missing/unknown-account payloads outside market hours
+        # and asserting 400.
+        conns = Connections()
+        account = (data.account or "").strip()
+        if not account:
+            raise HTTPException(status_code=400, detail="Account is required.")
+        if account not in conns.conn:
+            raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
+
         # Phase 23 — per-order exchange-open gate.
         # Block submission when the target exchange's market segment
         # is closed. Applies to BOTH paper and live (paper is meant to
@@ -772,13 +792,6 @@ class OrdersController(Controller):
                 detail=(f"Exchange {seg} is closed. Orders for {sym} "
                         f"can only be placed during {seg}'s market "
                         f"hours (IST holidays apply)."))
-
-        # LIMIT/SL need a price; MARKET/SL-M must NOT carry one (Kite
-        # rejects price on MARKET). SL/SL-M need a trigger.
-        if data.order_type in ("LIMIT", "SL") and not data.price:
-            raise HTTPException(status_code=400, detail="price is required for LIMIT/SL")
-        if data.order_type in ("SL", "SL-M") and not data.trigger_price:
-            raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
 
         # Tick-size sanitisation. Kite rejects orders whose price isn't
         # an exact tick multiple ("Exchange invalid price — entered
@@ -796,15 +809,10 @@ class OrdersController(Controller):
         data.trigger_price = await _align_price_to_tick(
             _exch_for_snap, sym, data.trigger_price)
 
-        # Resolve account — caller must supply one explicitly. Silently
-        # falling back to the first available account would route an
-        # operator's order to a different account than intended.
-        conns = Connections()
-        account = (data.account or "").strip()
-        if not account:
-            raise HTTPException(status_code=400, detail="Account is required.")
-        if account not in conns.conn:
-            raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
+        # `account` / `conns` were resolved + validated above (before
+        # the market-hours gate) so a bad account fails fast with 400
+        # rather than getting swallowed by the 409 exchange-closed
+        # response on off-hours requests.
 
         # ─── LIVE branch ─────────────────────────────────────────────
         # Two gates: branch + per-action setting flag. Both must be

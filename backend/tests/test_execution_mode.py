@@ -80,13 +80,20 @@ class TestGetMode:
         assert mode == "shadow"
 
     def test_allowed_modes_constants(self):
-        """Dev branch allowed_modes filters to [sim, replay, paper]."""
+        """Picker constants reflect the persistent-mode-only design:
+        sim / replay are non-pickable workspaces, not modes; both lists
+        contain only persistent modes. Dev gets `paper` only; prod adds
+        `live`. Shadow is intentionally excluded from the dropdown
+        (toggle via /admin/settings if needed)."""
         from backend.api.routes.execution import _DEV_MODES, _PROD_MODES
 
-        assert "sim" in _DEV_MODES
-        assert "sim" not in _PROD_MODES
-        assert "live" not in _DEV_MODES
-        assert "live" in _PROD_MODES
+        assert _DEV_MODES == ["paper"]
+        assert _PROD_MODES == ["paper", "live"]
+        # sim / replay / shadow are not in EITHER list (they're not
+        # picker-selectable modes any more).
+        for m in ("sim", "replay", "shadow"):
+            assert m not in _DEV_MODES
+            assert m not in _PROD_MODES
 
 
 class TestSetMode:
@@ -103,15 +110,18 @@ class TestSetMode:
 
     @pytest.mark.asyncio
     async def test_set_sim_rejected_on_prod(self):
-        """POST 'sim' on prod branch → 403; 'sim' is not in _PROD_MODES."""
+        """POST 'sim' on prod branch → 403; 'sim' is no longer a
+        pickable mode on either branch (it's a workspace, not a
+        persistent mode), so the route rejects it everywhere."""
         from litestar.exceptions import HTTPException
         from backend.api.routes.execution import (
             ExecutionController, ExecutionModeRequest, _PROD_MODES, _DEV_MODES
         )
 
-        # 'sim' must not be in prod allowed modes — that's the invariant.
+        # 'sim' must not be in EITHER allowed-modes list — that's the
+        # post-mode-picker-narrowing invariant.
         assert "sim" not in _PROD_MODES
-        assert "sim" in _DEV_MODES
+        assert "sim" not in _DEV_MODES
 
         controller = ExecutionController.__new__(ExecutionController)
         req = ExecutionModeRequest(mode="sim")
@@ -134,7 +144,10 @@ class TestSetMode:
 
     @pytest.mark.asyncio
     async def test_get_returns_allowed_modes_for_dev(self):
-        """GET on dev → allowed_modes contains sim but not shadow/live."""
+        """GET on dev → allowed_modes is the persistent-mode subset
+        the picker offers. After the picker narrowing, dev sees
+        [paper] only (sim/replay/shadow live as workspaces, not
+        modes). live is filtered out on non-main branches."""
         from backend.api.routes.execution import ExecutionController
 
         controller = ExecutionController.__new__(ExecutionController)
@@ -147,6 +160,6 @@ class TestSetMode:
 
             resp = await get_mode_fn(controller)
 
-        assert "sim" in resp.allowed_modes
+        assert resp.allowed_modes == ["paper"]
         assert "live" not in resp.allowed_modes
         assert resp.branch == "dev"

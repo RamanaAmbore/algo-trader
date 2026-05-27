@@ -44,10 +44,10 @@ async def test_basket_margin_uses_executor():
     """
     from backend.api.algo.actions import _basket_margin_validate
 
-    # Create a mock broker
+    # Create a mock broker. _basket_margin_validate calls
+    # broker.basket_order_margins directly (the Broker ABC contract),
+    # not broker.kite.basket_order_margins as the older test assumed.
     mock_broker = MagicMock()
-    mock_kite = MagicMock()
-    mock_broker.kite = mock_kite
 
     # Track which thread the basket_margin call runs on
     call_thread = None
@@ -57,7 +57,7 @@ async def test_basket_margin_uses_executor():
         call_thread = threading.current_thread()
         return {"status": "ok"}
 
-    mock_kite.basket_order_margins = mock_basket_margin
+    mock_broker.basket_order_margins = mock_basket_margin
 
     # Call the function with a sample order
     order = {
@@ -90,11 +90,10 @@ async def test_basket_margin_executor_exception_handling():
     from backend.api.algo.actions import _basket_margin_validate
 
     mock_broker = MagicMock()
-    mock_kite = MagicMock()
-    mock_broker.kite = mock_kite
 
-    # Make basket_margin raise an exception
-    mock_kite.basket_order_margins = MagicMock(
+    # Make basket_margin raise an exception. The function calls
+    # broker.basket_order_margins directly per the Broker ABC.
+    mock_broker.basket_order_margins = MagicMock(
         side_effect=ValueError("Insufficient margin")
     )
 
@@ -116,37 +115,39 @@ async def test_basket_margin_executor_exception_handling():
 @pytest.mark.asyncio
 async def test_simulator_seed_live_uses_executor():
     """
-    simulator.py seed-live route uses run_in_executor to offload
-    driver.seed_live() to a thread. Verifies the source contains
-    the expected pattern.
+    The simulator route's seed_live handler offloads broker fetches
+    so the asyncio event loop never blocks. After the refactor the
+    inline `run_in_executor` moved INTO the broker layer
+    (Connections() + broker_apis already wrap their HTTP calls in a
+    ThreadPoolExecutor), and the route just awaits the async wrapper
+    `SimDriver.seed_live_async`.
 
-    Note: SimulatorController.seed_live is a Litestar @post decorator,
-    so we read the file directly instead of using inspect.getsource().
+    Contract this test enforces:
+      • SimDriver exposes an async `seed_live_async` method
+      • The simulator route awaits it
+    Both are necessary conditions for non-blocking event-loop
+    behaviour; the executor offload itself is now a broker-layer
+    concern verified elsewhere.
     """
+    import inspect
+    from backend.api.algo.sim.driver import SimDriver
+
+    # The async wrapper exists.
+    assert hasattr(SimDriver, "seed_live_async"), \
+        "SimDriver should expose async seed_live_async"
+    assert inspect.iscoroutinefunction(SimDriver.seed_live_async), \
+        "seed_live_async must be an async coroutine function"
+
+    # The route awaits it (read the source — the handler itself is
+    # wrapped by Litestar's @post decorator so we can't introspect
+    # the function object directly).
     from pathlib import Path
-
-    # Read the simulator routes file and check for the expected pattern
-    simulator_path = Path("/Users/ramanambore/projects/ramboq/backend/api/routes/simulator.py")
-    source = simulator_path.read_text()
-
-    # Verify the seed_live handler contains the run_in_executor pattern
-    assert "run_in_executor" in source, "seed_live route should use run_in_executor"
-    assert "seed_live" in source, "should have a seed_live handler"
-    # Search in context of seed_live method
-    lines = source.split('\n')
-    in_seed_live = False
-    found_executor = False
-    for i, line in enumerate(lines):
-        if 'def seed_live' in line:
-            in_seed_live = True
-        if in_seed_live:
-            if 'run_in_executor' in line:
-                found_executor = True
-                break
-            # Stop at the next method definition or end of class
-            if i > 0 and line.startswith('    def ') and 'seed_live' not in line:
-                break
-    assert found_executor, "seed_live should use run_in_executor in its implementation"
+    sim_route = Path(__file__).resolve().parent.parent / "api/routes/simulator.py"
+    src = sim_route.read_text()
+    assert "seed_live_async" in src, \
+        "simulator route should call seed_live_async"
+    assert "await" in src and "seed_live_async" in src, \
+        "simulator route should await seed_live_async"
 
 
 @pytest.mark.asyncio

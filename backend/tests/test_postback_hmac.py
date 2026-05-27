@@ -54,7 +54,17 @@ async def test_postback_valid_hmac(async_client, stub_connections):
     assert response.status_code == 201, f"Expected 201, got {response.status_code}: {response.text}"
     data = response.json()
     assert data.get("status") == "ok"
-    mock_broadcast.assert_called_once()
+    # The handler now broadcasts both an `order_update` (status change)
+    # AND a `position_filled` (fill confirmation) on a COMPLETE order.
+    # Two distinct events, two calls.
+    import json as _json
+    assert mock_broadcast.call_count == 2
+    call_events = [
+        _json.loads(c.args[0]).get("event")
+        for c in mock_broadcast.call_args_list
+    ]
+    assert "order_update" in call_events
+    assert "position_filled" in call_events
 
 
 @pytest.mark.asyncio
