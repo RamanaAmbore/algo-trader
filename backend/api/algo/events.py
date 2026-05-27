@@ -73,7 +73,12 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         + f"</body></html>"
     )
 
-    channels = agent.events if isinstance(agent.events, list) else []
+    # Resolve any `{"$ref": "<notify-fragment>"}` entries against the
+    # fragment registry. Plain `{channel, enabled}` entries pass through
+    # unchanged. Missing refs log a warning and are skipped — the rest
+    # of the channels still fire.
+    from backend.api.algo.fragment_registry import resolve_events
+    channels = resolve_events(agent.events if isinstance(agent.events, list) else [])
 
     for ch in channels:
         if not ch.get("enabled", False):

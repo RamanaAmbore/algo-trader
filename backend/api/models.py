@@ -643,6 +643,65 @@ class Setting(Base):
 
 
 # ---------------------------------------------------------------------------
+# Agent fragments — reusable saved condition/notify/action sub-trees
+# ---------------------------------------------------------------------------
+#
+# A fragment is a saved JSONB body that an agent can reference inline via
+# `{"$ref": "<name>"}`. Two kinds today:
+#
+#   notify — saves an events list (channels + enabled flags). Used in
+#            place of (or inside) `Agent.events`. When N agents share
+#            the same telegram+email+log trio, they all reference
+#            `notify-critical-trio` instead of each carrying their own
+#            three-row copy.
+#
+#   condition — saves a condition sub-tree (a leaf, an `any/all/not`
+#            block, or a full tree). Referenced from inside an agent's
+#            `conditions` field via `{"$ref": "loss-positions-default"}`.
+#            Stage 2 — Stage 1 lands notify only.
+#
+# System fragments ship with the code and seed on every boot. Operators
+# can deactivate but not delete them; custom fragments have full CRUD.
+#
+# The evaluator dereferences refs lazily via the FragmentRegistry
+# singleton. Cycles (A refs B refs A) are detected with a visited set
+# and surface as a warning + no-fire — same graceful path as missing
+# tokens in the existing grammar pipeline.
+
+class AgentFragment(Base):
+    __tablename__ = "agent_fragments"
+
+    id: Mapped[int]           = mapped_column(primary_key=True, autoincrement=True)
+    # 'condition' or 'notify'. Reserved 'action' for a future stage.
+    kind: Mapped[str]         = mapped_column(String(16), nullable=False, index=True)
+    # Slug-style name — what callers write inside the $ref. Lowercase,
+    # hyphenated. Unique per kind so a notify fragment and a condition
+    # fragment can share a name without colliding.
+    name: Mapped[str]         = mapped_column(String(128), nullable=False)
+    # The actual content — for notify: list of {channel, enabled} dicts;
+    # for condition: a condition sub-tree (leaf or composite).
+    body: Mapped[dict]        = mapped_column(JSONB, nullable=False)
+    description: Mapped[str]  = mapped_column(Text, nullable=False, default="")
+    # System fragments seed from code on every boot. Operators can
+    # toggle is_active but never delete.
+    is_system: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint('kind', 'name', name='uq_agent_fragment'),
+    )
+
+
+# ---------------------------------------------------------------------------
 # News headlines — accumulated throughout the day, truncated at 07:00 IST
 # ---------------------------------------------------------------------------
 
