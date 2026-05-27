@@ -167,6 +167,65 @@
   let menuOpen = $state(false);
   const closeMenu = () => { menuOpen = false; };
 
+  // ── Group disclosure for the desktop nav ──────────────────────────
+  //
+  // Groups with ≥2 items collapse behind a labelled dropdown button;
+  // single-item groups (Analyze=Derivatives, Modes=Lab) render inline
+  // because a dropdown wrapping a single child is overhead with no
+  // benefit. Monitor stays inline always — high-frequency surfaces
+  // (Pulse / Dashboard / Agents / Orders) should be one-click.
+  const GROUP_LABELS = {
+    monitor: 'Monitor',
+    analyze: 'Analyze',
+    modes:   'Modes',
+    build:   'Build',
+    config:  'Config',
+  };
+  // Order matters — defines the visual position of each dropdown
+  // trigger after the inline section. Operator-frequency-ordered.
+  const DROPDOWN_GROUPS = ['build', 'config'];
+  // Render these groups inline (never collapse).
+  const INLINE_GROUPS = new Set(['monitor', 'analyze', 'modes']);
+
+  let openGroup = $state(/** @type {string | null} */ (null));
+
+  const groupedLinks = $derived.by(() => {
+    /** @type {any[]} */ const inline = [];
+    /** @type {Record<string, any[]>} */ const dropdowns = {};
+    for (const g of DROPDOWN_GROUPS) dropdowns[g] = [];
+    for (const link of algoLinks) {
+      if (INLINE_GROUPS.has(link.group) || !DROPDOWN_GROUPS.includes(link.group)) {
+        inline.push(link);
+      } else {
+        dropdowns[link.group].push(link);
+      }
+    }
+    return { inline, dropdowns };
+  });
+
+  // Which group is the current page in? Used to keep the dropdown
+  // trigger lit (algo-nav-btn-active) when any item inside it is
+  // the active route — so the operator can see at a glance "I'm
+  // inside Config" even without opening the panel.
+  const activeGroup = $derived.by(() => {
+    const path = page.url.pathname;
+    let best = null;
+    let bestLen = 0;
+    for (const link of algoLinks) {
+      const h = link.href;
+      if ((path === h || path.startsWith(h + '/')) && h.length > bestLen) {
+        best = link.group;
+        bestLen = h.length;
+      }
+    }
+    return best;
+  });
+
+  function gotoGroupItem(/** @type {string} */ href) {
+    goto(href);
+    openGroup = null;
+  }
+
   // ── Execution-mode combobox ────────────────────────────────────────
   let modeOpen          = $state(false);
   let modeError         = $state('');
@@ -414,14 +473,50 @@
         </button>
 
         <nav class="flex items-center gap-0.5 flex-1">
-          {#each algoLinks as link, i}
-            {#if i > 0 && link.group !== algoLinks[i - 1].group}
+          <!-- Inline section — Monitor + Analyze + Modes groups always
+               visible (high-frequency surfaces). Group separators
+               match the original flat-bar look. -->
+          {#each groupedLinks.inline as link, i}
+            {#if i > 0 && link.group !== groupedLinks.inline[i - 1].group}
               <span class="algo-nav-sep" aria-hidden="true"></span>
             {/if}
             <button
               onclick={() => goto(link.href)}
               class="algo-nav-btn {isActive(link.href) ? 'algo-nav-btn-active' : ''}"
             >{link.label}</button>
+          {/each}
+
+          <!-- Disclosure dropdowns — Build + Config groups collapse
+               behind their group label. Trigger stays lit when the
+               operator's current page is inside that group. -->
+          {#each DROPDOWN_GROUPS as g}
+            {#if groupedLinks.dropdowns[g]?.length > 0}
+              <span class="algo-nav-sep" aria-hidden="true"></span>
+              <div class="algo-group-wrap">
+                <button
+                  type="button"
+                  class="algo-nav-btn algo-group-trigger {activeGroup === g ? 'algo-nav-btn-active' : ''}"
+                  aria-haspopup="menu"
+                  aria-expanded={openGroup === g}
+                  onclick={() => openGroup = openGroup === g ? null : g}
+                >{GROUP_LABELS[g]}<svg width="8" height="8" viewBox="0 0 10 6" fill="none" class="algo-group-caret">
+                    <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                          stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg></button>
+                {#if openGroup === g}
+                  <div class="algo-group-overlay" role="presentation"
+                       onclick={() => openGroup = null}></div>
+                  <div class="algo-group-panel" role="menu">
+                    {#each groupedLinks.dropdowns[g] as link}
+                      <button role="menuitem"
+                        onclick={() => gotoGroupItem(link.href)}
+                        class="algo-group-item {isActive(link.href) ? 'algo-group-item-active' : ''}"
+                      >{link.label}</button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
           {/each}
         </nav>
 
@@ -587,14 +682,22 @@
         </button>
       </div>
 
-      <!-- Mobile dropdown -->
+      <!-- Mobile drawer — grouped by section. Each group renders its
+           caption first, then its items. Order mirrors the desktop
+           layout (Monitor → Analyze → Modes → Build → Config). -->
       {#if menuOpen}
         <nav class="algo-mobile-dropdown">
-          {#each algoLinks as link}
-            <button
-              onclick={() => { goto(link.href); closeMenu(); }}
-              class="algo-mobile-item {isActive(link.href) ? 'algo-mobile-active' : ''}"
-            >{link.label}</button>
+          {#each Object.keys(GROUP_LABELS) as g}
+            {@const items = algoLinks.filter(l => l.group === g)}
+            {#if items.length > 0}
+              <div class="algo-mobile-group-label">{GROUP_LABELS[g]}</div>
+              {#each items as link}
+                <button
+                  onclick={() => { goto(link.href); closeMenu(); }}
+                  class="algo-mobile-item {isActive(link.href) ? 'algo-mobile-active' : ''}"
+                >{link.label}</button>
+              {/each}
+            {/if}
           {/each}
           <button onclick={() => { goto('/about'); closeMenu(); }} class="algo-mobile-item algo-mobile-site">↙ Investor site</button>
           <!-- Sign Out only when authenticated. Anonymous demo
@@ -969,6 +1072,76 @@
   /* Designated tier — violet, matches the DESIGNATED badge in /admin. */
   .algo-user-role.algo-user-role-designated { color: #c4b5fd; }
 
+  /* ── Desktop disclosure dropdowns (Build / Config groups) ──────── */
+  .algo-group-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .algo-group-trigger {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .algo-group-caret {
+    opacity: 0.7;
+    transition: transform 0.1s;
+  }
+  .algo-group-wrap > .algo-group-trigger[aria-expanded="true"] .algo-group-caret {
+    transform: rotate(180deg);
+  }
+  /* Full-viewport click-catch — same pattern as the mode-combo so a
+     click anywhere outside the panel closes it. z-index sits below
+     the panel itself so clicks ON the panel still register. */
+  .algo-group-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 48;
+    background: transparent;
+    cursor: default;
+  }
+  .algo-group-panel {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 49;
+    margin-top: 0.3rem;
+    min-width: 8rem;
+    padding: 0.3rem;
+    background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border: 1px solid rgba(251,191,36,0.32);
+    border-radius: 0.3rem;
+    box-shadow: 0 10px 24px rgba(0,0,0,0.65);
+    display: flex;
+    flex-direction: column;
+    gap: 0.08rem;
+  }
+  .algo-group-item {
+    padding: 0.32rem 0.7rem;
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: rgba(180,200,230,0.85);
+    background: transparent;
+    border: none;
+    border-radius: 0.2rem;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.03em;
+    text-align: left;
+    white-space: nowrap;
+    outline: none !important;
+    transition: background-color 0.06s, color 0.06s;
+  }
+  .algo-group-item:hover {
+    background: rgba(251,191,36,0.12);
+    color: #fbbf24;
+  }
+  .algo-group-item-active {
+    background: rgba(251,191,36,0.18);
+    color: #fbbf24;
+    font-weight: 700;
+  }
+
   /* Hamburger */
   .algo-hamburger {
     padding: 0.3rem;
@@ -1015,6 +1188,24 @@
   .algo-mobile-item:last-child { border-bottom: none; }
   .algo-mobile-item:hover { background: rgba(251,191,36,0.1); color: #fbbf24; }
   .algo-mobile-active { color: #fbbf24; background: rgba(251,191,36,0.1); }
+
+  /* Group caption inside the mobile drawer — small all-caps label that
+     marks each section (Monitor / Analyze / Modes / Build / Config).
+     Subtle amber so it reads as a header, not a clickable item. */
+  .algo-mobile-group-label {
+    font-size: 0.55rem;
+    font-weight: 700;
+    color: rgba(251,191,36,0.55);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 0.55rem 1.25rem 0.2rem;
+    background: rgba(0,0,0,0.18);
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+  .algo-mobile-group-label + .algo-mobile-item { border-top: none; }
+  .algo-mobile-dropdown > .algo-mobile-group-label:first-child {
+    border-top: none;
+  }
   /* Investor-site cross-link inside the mobile menu — amber-pill
      emphasis matching the desktop button. Separated from the regular
      mobile items by a thin top border so it reads as a context-switch
