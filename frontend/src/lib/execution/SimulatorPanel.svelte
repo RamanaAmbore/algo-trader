@@ -1409,8 +1409,17 @@
     gap: 0.75rem;
   }
   @media (min-width: 1100px) {
+    /* Fixed-width controls sidebar + monitoring panel taking ALL the
+       remaining horizontal real estate. The previous 1fr/2fr split
+       gave the sidebar ~33% of viewport — at 1920px that's a 640px
+       column for content that needs ~300px, with the rest of the
+       page bleeding into empty space on the left of the monitoring
+       cards. minmax(260px, 320px) keeps the controls dense; 1fr
+       lets the monitoring panel fill out to the right edge so the
+       indices / live activity / positions cards extend across the
+       page. */
     :global(.sim-grid) {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+      grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
       align-items: start;
     }
     :global(.sim-grid > .sim-grid-side-col) {
