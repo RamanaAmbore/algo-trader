@@ -16,6 +16,7 @@
   } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
+  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
 
   // Agent Tokens page — read + is_active toggle for every token in the
   // grammar_tokens table. (The DB table and backend class keep the
@@ -179,6 +180,8 @@
 </script>
 
 <svelte:head><title>Tokens | RamboQuant Analytics</title></svelte:head>
+
+<AgentWorkspaceTabs />
 
 <div class="algo-status-card p-4 mb-3" data-status="inactive">
   <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">

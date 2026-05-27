@@ -9,6 +9,7 @@
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import Select   from '$lib/Select.svelte';
+  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
 
   let agents      = $state([]);
   let agentEvents = $state([]);
@@ -499,6 +500,8 @@
 <svelte:head>
   <title>Agents | RamboQuant Analytics</title>
 </svelte:head>
+
+<AgentWorkspaceTabs />
 
 <div class="page-header">
   <h1 class="page-title-chip">

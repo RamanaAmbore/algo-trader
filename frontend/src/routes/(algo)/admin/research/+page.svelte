@@ -26,6 +26,7 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -400,6 +401,8 @@
 </script>
 
 <svelte:head><title>Research | RamboQuant Analytics</title></svelte:head>
+
+<AgentWorkspaceTabs />
 
 <div class="page-header">
   <h1 class="page-title-chip">Research</h1>
