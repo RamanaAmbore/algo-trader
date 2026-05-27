@@ -1836,9 +1836,11 @@
             {@const lg = legAnalyticsBySymbol[c.symbol]}
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
-            {@const pnl = (ltp != null && cost != null) ? (ltp - cost) * c.qty : null}
-            {@const dir = c.qty < 0 ? 'short' : c.qty > 0 ? 'long' : 'flat'}
             {@const isClosed = Number(c.qty || 0) === 0}
+            {@const pnl = isClosed
+              ? (c.pnl != null ? Number(c.pnl) : null)
+              : ((ltp != null && cost != null) ? (ltp - cost) * c.qty : null)}
+            {@const dir = c.qty < 0 ? 'short' : c.qty > 0 ? 'long' : 'flat'}
             {@const isClosable = !isClosed && c.source !== 'draft'}
             <!-- Row click → close-position ticket. Skipped on
                  drafts (no real exposure) and zero-qty rows
