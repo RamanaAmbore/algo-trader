@@ -96,6 +96,10 @@
   let agoTick          = $state(0);
   let refreshedAt = $state('');
   let error       = $state('');
+  // Per-feed broker error (positions / holdings / funds) — surfaced
+  // in a banner above the chrome row so the operator knows when the
+  // strip + grids are stale because the broker layer is down.
+  let brokerErr   = $state('');
 
   // Add-symbol form state.
   let symInput   = $state('');
@@ -1494,10 +1498,17 @@
 
   async function loadPulse() {
     try {
+      // Capture per-feed failures so we can surface a banner instead
+      // of silently blanking the strip when the broker is in a bad
+      // state (e.g. positions endpoint returning 500 from a Groww
+      // recursion). Each .catch tags itself so the banner is precise
+      // about which feed is down.
+      let pErr = '', hErr = '';
       const [p, h] = await Promise.all([
-        fetchPositions().catch(() => ({ rows: [] })),
-        fetchHoldings().catch(() => ({ rows: [] })),
+        fetchPositions().catch((e) => { pErr = e?.message || 'positions unavailable'; return { rows: [], summary: [] }; }),
+        fetchHoldings().catch((e)  => { hErr = e?.message || 'holdings unavailable';  return { rows: [], summary: [] }; }),
       ]);
+      brokerErr = [pErr, hErr].filter(Boolean).join(' · ');
       positions = (p?.rows || []).slice();
       holdings  = (h?.rows || []).slice();
       // Capture the backend's precomputed per-account summary rows
@@ -3026,6 +3037,11 @@
 
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
+  {/if}
+  {#if brokerErr}
+    <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">
+      Broker feed unavailable — <span class="font-mono">{brokerErr}</span>. Strip + Day P&L stale until recovery.
+    </div>
   {/if}
 
   {#if enableWatchlists || enableSourceToggles || accountPicker}

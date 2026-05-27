@@ -1247,6 +1247,9 @@
    *  panel — the Chain button on this page bar is always enabled,
    *  and the operator picks the routable account from the modal. */
 
+  // Surface a banner when /api/positions fails so the operator sees
+  // WHY the page is empty (instead of an opaque "no candidates" hint).
+  let positionsLoadErr = $state('');
   async function loadPositions() {
     /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, pnl:number}>} */
     const merged = [];
@@ -1254,6 +1257,7 @@
     // Live broker positions
     try {
       const r = await fetchPositions();
+      positionsLoadErr = '';
       for (const p of (r?.rows || [])) {
         const sym = p?.tradingsymbol || p?.symbol;
         if (!sym) continue;
@@ -1273,7 +1277,11 @@
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
         });
       }
-    } catch (_) { /* ignore — show sim only */ }
+    } catch (e) {
+      // Don't blank the previous candidates on a transient failure —
+      // banner explains the staleness, the prior list keeps rendering.
+      positionsLoadErr = e?.message || 'Broker positions unavailable.';
+    }
 
     // Sim positions — capture last_price + average_price from the
     // driver state at click time so the strategy endpoint can compute
@@ -1613,6 +1621,12 @@
   </div>
 </div>
 
+{#if positionsLoadErr}
+  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">
+    Positions feed unavailable — <span class="font-mono">{positionsLoadErr}</span>.
+    Candidates show stale state until /api/positions/ recovers.
+  </div>
+{/if}
 {#if strategyErr}
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{strategyErr}</div>
 {/if}
