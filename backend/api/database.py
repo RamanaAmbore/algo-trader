@@ -162,6 +162,11 @@ async def init_db() -> None:
             "INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agents ADD COLUMN IF NOT EXISTS condition_first_true_at "
             "TIMESTAMP WITH TIME ZONE",
+            # Phase 22 — tagging + quiet hours.
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS tags JSONB "
+            "NOT NULL DEFAULT '[]'::jsonb",
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS blackout_windows JSONB "
+            "NOT NULL DEFAULT '[]'::jsonb",
         ):
             await conn.execute(text(stmt))
 

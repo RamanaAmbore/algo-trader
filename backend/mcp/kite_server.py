@@ -428,6 +428,8 @@ async def save_agent_draft(
     lifespan_max_fires: int | None = None,
     lifespan_expires_at: str | None = None,
     debounce_minutes: int = 0,
+    tags: list | None = None,
+    blackout_windows: list | None = None,
 ) -> dict:
     """Promote the current research thread to an INACTIVE draft Agent.
 
@@ -504,6 +506,8 @@ async def save_agent_draft(
         "lifespan_max_fires":  lifespan_max_fires,
         "lifespan_expires_at": lifespan_expires_at,
         "debounce_minutes":    max(0, int(debounce_minutes or 0)),
+        "tags":                tags or [],
+        "blackout_windows":    blackout_windows or [],
     }
     return await _post(f"/api/research/threads/{int(thread_id)}/promote", body)
 
@@ -722,6 +726,38 @@ async def get_audit_recent(
     if status: params["status"] = status
     rows = await _get("/api/research/audit", params)
     return {"rows": rows or [], "count": len(rows or [])}
+
+
+@app.tool()
+async def dry_run_agent(agent_slug: str) -> dict:
+    """Phase 22 — evaluate this agent's condition tree against CURRENT
+    live market state. Returns what would fire WITHOUT firing. No
+    audit row, no Telegram ping, no action execution.
+
+    Use BEFORE asking the operator to mint an activate token, so you
+    can answer "this rule would fire 0 times right now" vs "this
+    rule would fire 3 times immediately if activated" and adjust
+    the thresholds accordingly.
+
+    Industry analogue: Datadog 'Test Notifications', Grafana
+    'Preview Alerts'.
+
+    Args:
+        agent_slug: The agent's slug (visible in /agents or in the
+                    save_agent_draft response).
+
+    Returns:
+        dict with:
+          agent_slug: str
+          matches:     list[dict] of per-leaf match objects
+          match_count: int (total matches, may exceed displayed)
+          would_fire:  bool — true iff matches non-empty AND no gate
+                       (schedule, cooldown, fire_at_time, blackout,
+                       debounce) is currently blocking
+          blocked_by:  str or null — name of the gate that's blocking
+          evaluated_at: ISO timestamp
+    """
+    return await _post(f"/api/agents/{agent_slug}/dry-run", {})
 
 
 @app.tool()

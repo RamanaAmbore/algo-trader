@@ -436,6 +436,24 @@ class Agent(Base):
         DateTime(timezone=True), nullable=True,
     )
 
+    # ── Phase 22: tagging + quiet hours ─────────────────────────────
+    #
+    # tags — free-form labels for filtering on /agents. Industry analogue:
+    #   Datadog tags, Grafana labels. Empty list = untagged. Operators
+    #   can group agents by strategy ("iron-condor", "nifty"), by lifecycle
+    #   ("review-q3", "draft"), or anything else. Tags are read on the
+    #   /agents page filter chips and via the MCP `list_agents(tag=...)`
+    #   path.
+    tags: Mapped[list]           = mapped_column(JSONB, nullable=False, default=list)
+    # blackout_windows — list of {"start": "HH:MM", "end": "HH:MM"} entries
+    #   in IST. When the current wall-clock IST time is INSIDE any window,
+    #   the engine skips this agent in run_cycle. Use for "no alerts during
+    #   12:00-13:00 lunch" or "muted during scheduled deploy".
+    #   Crossing-midnight windows ({"start":"23:00","end":"01:00"}) supported.
+    #   Industry analogue: Datadog `mute_until`, PagerDuty maintenance windows,
+    #   Grafana silences.
+    blackout_windows: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
     # Meta
     is_system: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(

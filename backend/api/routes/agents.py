@@ -82,6 +82,9 @@ class AgentInfo(msgspec.Struct):
     lifespan_expires_at:  str | None = None
     # Phase 21 — debounce "for N minutes" gate. 0 = fire immediately.
     debounce_minutes:     int        = 0
+    # Phase 22 — free-form tags + IST blackout windows.
+    tags:                 list       = msgspec.field(default_factory=list)
+    blackout_windows:     list       = msgspec.field(default_factory=list)
     # Per-agent trade routing — 'paper' or 'live'. Resolved by
     # actions._resolve_mode AFTER dev/shadow gates and the master
     # execution.paper_trading_mode kill-switch.
@@ -111,6 +114,9 @@ class AgentCreateRequest(msgspec.Struct):
     trade_mode:           str | None = None
     # Phase 21 — debounce ("for N minutes"). 0 = fire immediately.
     debounce_minutes:     int        = 0
+    # Phase 22 — tagging + quiet hours.
+    tags:                 list       = msgspec.field(default_factory=list)
+    blackout_windows:     list       = msgspec.field(default_factory=list)
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -124,6 +130,9 @@ class AgentUpdateRequest(msgspec.Struct):
     cooldown_minutes: int | None = None
     # Phase 21 — debounce update. None = unchanged; 0 = disable; >0 = set.
     debounce_minutes: int | None = None
+    # Phase 22 — tagging + quiet hours; None = unchanged.
+    tags: list | None = None
+    blackout_windows: list | None = None
     # HH:MM IST or empty string to clear. UNSET = leave column unchanged.
     fire_at_time: str | None = None
     lifespan_type:        str | None = None
@@ -228,6 +237,47 @@ def _normalize_fire_at(val: str | None) -> str | None:
     return f"{hh:02d}:{mm:02d}"
 
 
+async def _dry_run_context(now) -> dict:
+    """Phase 22 — build the live context for an agent dry-run.
+
+    Calls the same broker-aggregate helpers _task_performance uses,
+    but synchronously in the request path. Adds a thread-pool offload
+    so the event loop isn't blocked by the Kite REST round-trip.
+
+    No new caching layer — a dry-run is a manual operator action,
+    not a hot path. If it fires 2 broker calls per click, that's fine.
+    """
+    import asyncio
+    from backend.api.background import _fetch_holdings_direct, _fetch_positions_direct
+    from backend.shared.helpers import broker_apis
+    from backend.shared.helpers.summarise import (
+        summarise_holdings as _summarise_holdings,
+        summarise_positions as _summarise_positions,
+    )
+    from backend.api.algo.agent_engine import _build_context
+    import pandas as pd
+    loop = asyncio.get_running_loop()
+
+    df_holdings, sum_h = await loop.run_in_executor(None, _fetch_holdings_direct)
+    df_positions, _    = await loop.run_in_executor(None, _fetch_positions_direct)
+    df_margins         = await loop.run_in_executor(
+        None, lambda: pd.concat(broker_apis.fetch_margins(), ignore_index=True),
+    )
+
+    sum_holdings  = _summarise_holdings(df_holdings, sum_h, None)
+    sum_positions = _summarise_positions(df_positions)
+
+    base = _build_context(now)
+    base.update(
+        sum_holdings=sum_holdings,
+        sum_positions=sum_positions,
+        df_margins=df_margins,
+        watchlist_rows=[],
+        any_market_open=any(s.get("open") for s in base.get("segments", [])),
+    )
+    return base
+
+
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
         id=a.id, slug=a.slug, name=a.name, description=a.description,
@@ -247,6 +297,8 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         ),
         trade_mode=getattr(a, "trade_mode", "paper") or "paper",
         debounce_minutes=int(getattr(a, "debounce_minutes", 0) or 0),
+        tags=list(getattr(a, "tags", None) or []),
+        blackout_windows=list(getattr(a, "blackout_windows", None) or []),
     )
 
 
@@ -358,6 +410,8 @@ class AgentController(Controller):
                 lifespan_expires_at=_parse_iso_dt(data.lifespan_expires_at),
                 trade_mode=tm,
                 debounce_minutes=max(0, int(data.debounce_minutes or 0)),
+                tags=list(data.tags or []),
+                blackout_windows=list(data.blackout_windows or []),
             )
             session.add(agent)
             await session.commit()
@@ -372,7 +426,8 @@ class AgentController(Controller):
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
             for field in ('name', 'description', 'conditions', 'events', 'actions',
-                          'scope', 'schedule', 'cooldown_minutes', 'debounce_minutes'):
+                          'scope', 'schedule', 'cooldown_minutes', 'debounce_minutes',
+                          'tags', 'blackout_windows'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
@@ -446,6 +501,125 @@ class AgentController(Controller):
             await session.delete(agent)
             await session.commit()
         return {"detail": f"Agent '{slug}' deleted"}
+
+    @post("/{slug:str}/dry-run", guards=[admin_guard])
+    async def dry_run(self, slug: str) -> dict:
+        """Phase 22 — evaluate this agent's condition tree against the
+        CURRENT live market state. Returns what would fire WITHOUT
+        firing — no audit row, no Telegram ping, no action execution.
+
+        Use before activating an agent to answer "if I flip this on
+        right now, would it immediately fire?". Closes the gap
+        between the simulator (synthetic data) and activate (live
+        data with no preview).
+
+        Industry analogue: Datadog 'Test Notifications', Grafana
+        'Preview Alerts'. Universal in production alerting platforms.
+
+        Returns:
+            {
+              "agent_slug": str,
+              "matches": list[dict],   # per-leaf match objects
+              "would_fire": bool,      # matches non-empty + no schedule/cooldown block
+              "blocked_by": str | None,  # 'schedule' | 'cooldown' | 'fire_at_time' | 'blackout' | 'debounce' | None
+              "evaluated_at": ISO timestamp,
+            }
+        """
+        from datetime import datetime, timezone
+        from backend.api.algo.agent_engine import (
+            _build_context, _in_blackout_window, _fire_at_window_active,
+        )
+        from backend.api.algo.agent_evaluator import (
+            evaluate as v2_evaluate, V2Context,
+        )
+
+        async with async_session() as session:
+            result = await session.execute(select(Agent).where(Agent.slug == slug))
+            agent = result.scalar_one_or_none()
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
+
+        now = datetime.now(timezone.utc)
+        try:
+            ctx = await _dry_run_context(now)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Could not build live context: {e}")
+
+        # Run gates in the SAME order the engine does, but report which
+        # would block rather than continuing past.
+        blocked_by = None
+        if agent.schedule == "market_hours" and not ctx.get("any_market_open"):
+            blocked_by = "schedule"
+        elif agent.status == "cooldown":
+            blocked_by = "cooldown"
+        elif getattr(agent, "fire_at_time", None) and not _fire_at_window_active(agent.fire_at_time, now):
+            blocked_by = "fire_at_time"
+        else:
+            bw = getattr(agent, "blackout_windows", None) or []
+            if bw and _in_blackout_window(now, bw):
+                blocked_by = "blackout"
+
+        v2_ctx = V2Context(
+            sum_holdings=ctx.get("sum_holdings"),
+            sum_positions=ctx.get("sum_positions"),
+            df_margins=ctx.get("df_margins"),
+            watchlist_rows=ctx.get("watchlist_rows") or [],
+            alert_state={},   # empty — dry-run doesn't carry state
+            now=now,
+            segments=ctx.get("segments", []),
+            rate_window_min=10,
+            agent=agent,
+        )
+
+        matches = []
+        try:
+            if agent.conditions:
+                matches = v2_evaluate(agent.conditions, v2_ctx) or []
+        except Exception as e:
+            return {
+                "agent_slug": slug,
+                "matches": [],
+                "would_fire": False,
+                "blocked_by": "eval_error",
+                "eval_error": str(e),
+                "evaluated_at": now.isoformat(),
+            }
+
+        # Debounce gate: if matches but condition_first_true_at is NULL,
+        # the first true tick would just arm the latch, not fire.
+        debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+        would_fire = bool(matches) and blocked_by is None
+        if matches and blocked_by is None and debounce_min > 0:
+            if agent.condition_first_true_at is None:
+                blocked_by = "debounce"
+                would_fire = False
+            else:
+                elapsed_min = (now - agent.condition_first_true_at).total_seconds() / 60.0
+                if elapsed_min < debounce_min:
+                    blocked_by = "debounce"
+                    would_fire = False
+
+        # Convert match objects to plain dicts (some carry tuples).
+        flat_matches = []
+        for m in matches[:20]:
+            flat_matches.append({
+                "metric":   getattr(m, "metric", None),
+                "scope":    getattr(m, "scope", None),
+                "op":       getattr(m, "op", None),
+                "threshold": getattr(m, "threshold", None),
+                "value":    getattr(m, "value", None),
+                "account":  getattr(m, "account", None),
+                "symbol":   getattr(m, "symbol", None),
+            })
+
+        return {
+            "agent_slug":   slug,
+            "matches":      flat_matches,
+            "match_count":  len(matches),
+            "would_fire":   would_fire,
+            "blocked_by":   blocked_by,
+            "evaluated_at": now.isoformat(),
+        }
 
     @get("/{slug:str}/events")
     async def get_events(self, slug: str, n: int = 50) -> list[AgentEventInfo]:

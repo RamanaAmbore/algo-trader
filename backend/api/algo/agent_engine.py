@@ -120,6 +120,43 @@ def is_grammar_tree(cond) -> bool:
     return 'metric' in cond and 'scope' in cond
 
 
+def _in_blackout_window(now, windows: list) -> bool:
+    """Phase 22 — return True if the current IST wall-clock falls inside
+    any blackout window. Each window is `{"start": "HH:MM", "end": "HH:MM"}`
+    in IST. Crossing-midnight windows ({"start":"23:00","end":"01:00"})
+    are supported by treating start>end as "wraps".
+
+    Empty or malformed entries are silently skipped — defense-in-depth
+    so a bad row never accidentally mutes ALL agents."""
+    if not windows or not now:
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        now_ist = now.astimezone(ZoneInfo("Asia/Kolkata"))
+        cur_min = now_ist.hour * 60 + now_ist.minute
+        for w in windows:
+            if not isinstance(w, dict):
+                continue
+            try:
+                sh, sm = (w.get("start") or "").split(":", 1)
+                eh, em = (w.get("end")   or "").split(":", 1)
+                start = int(sh) * 60 + int(sm)
+                end   = int(eh) * 60 + int(em)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if start <= end:
+                # Same-day window: in if start ≤ cur ≤ end.
+                if start <= cur_min <= end:
+                    return True
+            else:
+                # Crossing midnight: in if cur ≥ start OR cur ≤ end.
+                if cur_min >= start or cur_min <= end:
+                    return True
+        return False
+    except Exception:
+        return False
+
+
 def _fire_at_window_active(fire_at: str, now, window_sec: int = 360) -> bool:
     """Return True when wall-clock IST is within `window_sec` of `fire_at`.
 
@@ -1077,6 +1114,18 @@ async def run_cycle(context: dict, broadcast_fn=None,
         if not bypass_schedule and getattr(agent, "fire_at_time", None):
             if not _fire_at_window_active(agent.fire_at_time, now,
                                           window_sec=int(get_int('alerts.fire_at_window_sec', 360))):
+                continue
+
+        # ── Phase 22 — blackout windows ─────────────────────────────────
+        # When the current IST wall-clock falls INSIDE any configured
+        # blackout window, skip this agent entirely. Operators use this
+        # for "no alerts during 12:00-13:00 lunch" or "muted during
+        # scheduled deploy window". Sim bypasses so operators can test
+        # against any time. Industry analogue: Datadog `mute_until`,
+        # PagerDuty maintenance windows.
+        if not bypass_schedule:
+            blackouts = getattr(agent, "blackout_windows", None) or []
+            if blackouts and _in_blackout_window(now, blackouts):
                 continue
 
         # v2 grammar dispatch: metric/scope leaves or all/any/not composites

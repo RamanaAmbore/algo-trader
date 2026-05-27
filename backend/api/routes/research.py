@@ -113,6 +113,9 @@ class PromoteRequest(msgspec.Struct):
     # backwards-compatible). N > 0 = condition must hold N consecutive
     # minutes before firing. Spike-driven false positives suppressed.
     debounce_minutes:    int = 0
+    # Phase 22 — tagging + quiet hours.
+    tags:                list = msgspec.field(default_factory=list)
+    blackout_windows:    list = msgspec.field(default_factory=list)
 
 
 class MintTokenRequest(msgspec.Struct):
@@ -428,6 +431,8 @@ _AGENT_UPDATE_FIELDS = (
     "conditions", "events", "actions",
     "scope", "schedule", "cooldown_minutes", "debounce_minutes",
     "fire_at_time", "description",
+    # Phase 22 — operator-tunable tagging + quiet hours
+    "tags", "blackout_windows",
 )
 
 
@@ -759,6 +764,8 @@ class ResearchController(Controller):
                 lifespan_type=lifespan_type,
                 lifespan_max_fires=lifespan_max_fires,
                 lifespan_expires_at=lifespan_expires_at,
+                tags=list(data.tags or []),
+                blackout_windows=list(data.blackout_windows or []),
             )
             s.add(agent)
             await s.flush()           # populate agent.id
