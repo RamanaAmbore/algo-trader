@@ -120,6 +120,51 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw, summary
 
 
+def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
+    """Fetch underlying spot LTPs for every distinct option/future
+    underlying in the open position book. One broker.ltp call covers
+    every flavour (NSE index, stock options, MCX commodity futures).
+
+    Returns {underlying_name: ltp}. Empty dict on broker failure or
+    empty book. Consumed by ctx.spot_prices for the expiry-aware
+    grammar resolvers (is_itm / is_ntm).
+    """
+    if df_positions is None or df_positions.empty or 'tradingsymbol' not in df_positions.columns:
+        return {}
+    from backend.api.algo.derivatives import (
+        parse_tradingsymbol, option_underlying_quote_key,
+    )
+    underlyings: dict[str, str] = {}   # name → kite_key
+    for sym in df_positions['tradingsymbol'].dropna().astype(str).unique():
+        parsed = parse_tradingsymbol(sym)
+        if not parsed:
+            continue
+        name = parsed.get('underlying')
+        ltp_key = option_underlying_quote_key(sym)
+        if name and ltp_key:
+            underlyings.setdefault(name, ltp_key)
+    if not underlyings:
+        return {}
+    try:
+        from backend.shared.brokers.registry import get_price_broker
+        broker = get_price_broker()
+        resp = broker.ltp(list(underlyings.values())) or {}
+    except Exception as e:
+        logger.debug(f"_resolve_spot_prices: broker.ltp failed: {e}")
+        return {}
+    out: dict[str, float] = {}
+    for name, key in underlyings.items():
+        quote = resp.get(key) or {}
+        ltp = quote.get('last_price')
+        if ltp is None:
+            continue
+        try:
+            out[name] = float(ltp)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Async wrappers — run blocking calls in thread pool
 # ---------------------------------------------------------------------------
@@ -433,12 +478,27 @@ async def _task_performance(state: dict) -> None:
                 try:
                     from backend.api.algo.agent_engine import run_cycle
                     from backend.api.routes.algo import _broadcast_event
+                    # Phase 25 — expiry-aware agents need per-symbol position
+                    # rows + underlying spots. One broker.ltp covers every
+                    # distinct underlying; helpers fall back to {} on
+                    # broker failure so the expiry leaves skip silently
+                    # rather than 500. Both populate from the same
+                    # df_positions fetch above, so no extra Kite hit on
+                    # the position side.
+                    position_rows = (
+                        df_positions.to_dict("records")
+                        if (df_positions is not None and not df_positions.empty)
+                        else []
+                    )
+                    spot_prices = await _run(_resolve_spot_prices, df_positions)
                     agent_context = {
                         "sum_holdings": sum_holdings,
                         "sum_positions": sum_positions,
                         "df_margins": df_margins,
                         "df_holdings": df_holdings,
                         "df_positions": df_positions,
+                        "position_rows": position_rows,
+                        "spot_prices":   spot_prices,
                         "ist_display": ist_display,
                         "now": now,
                         "seg_state": seg_state,
