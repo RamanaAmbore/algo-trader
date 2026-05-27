@@ -26,13 +26,13 @@
   <title>Agent Activity | RamboQuant Analytics</title>
 </svelte:head>
 
-<AgentWorkspaceTabs />
-
 <div class="page-header">
   <h1 class="page-title-chip">Agent Activity</h1>
   <InfoHint popup text="Recent agent fires (and optionally action successes/errors). Real-pipeline events only — sim runs filtered out. Click a row's slug to jump to that agent on the Agents tab." />
   <span class="algo-ts ml-auto">{$nowStamp}</span>
 </div>
+
+<AgentWorkspaceTabs />
 
 <section class="algo-status-card p-3">
   <div class="filter-row">

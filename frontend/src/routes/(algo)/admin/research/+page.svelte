@@ -402,8 +402,6 @@
 
 <svelte:head><title>Research | RamboQuant Analytics</title></svelte:head>
 
-<AgentWorkspaceTabs />
-
 <div class="page-header">
   <h1 class="page-title-chip">Research</h1>
   <InfoHint popup text="
@@ -418,6 +416,8 @@
   />
   {#if refreshedAt}<span class="algo-ts ml-auto">{refreshedAt}</span>{/if}
 </div>
+
+<AgentWorkspaceTabs />
 
 {#if error}
   <div class="err-banner">{error}</div>

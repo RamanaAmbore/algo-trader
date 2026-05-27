@@ -22,6 +22,7 @@
   } from '$lib/api';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import Select   from '$lib/Select.svelte';
 
   let fragments = $state(/** @type {any[]} */ ([]));
@@ -161,14 +162,14 @@
 
 <svelte:head><title>Agent Fragments | RamboQuant Analytics</title></svelte:head>
 
-<AgentWorkspaceTabs />
-
 <div class="page-header">
   <h1 class="page-title-chip">Fragments</h1>
   <InfoHint popup text={'Reusable saved sub-trees an agent references via <b>{$ref: name}</b>. Two kinds: <b>notify</b> (channel lists for agent.events) and <b>condition</b> (sub-trees for agent.conditions). System fragments toggle-only; custom fragments full CRUD.'} />
   <span class="algo-ts ml-auto">{$nowStamp}</span>
   <button class="reload-pill" onclick={doReload} disabled={busy} title="Re-read fragments from DB into the in-memory cache">↻ Reload</button>
 </div>
+
+<AgentWorkspaceTabs />
 
 <section class="algo-status-card p-3 mb-3">
   <div class="filter-row">
@@ -205,7 +206,7 @@
               {#if f.is_system}<span class="frag-pill frag-pill-system">SYSTEM</span>{/if}
               {#if !f.is_active}<span class="frag-pill frag-pill-off">OFF</span>{/if}
               <span class="frag-desc">{f.description || '—'}</span>
-              <span class="frag-toggle">{expandedId === f.id ? '▾' : '▸'}</span>
+              <DisclosureChevron open={expandedId === f.id} ariaLabel={expandedId === f.id ? 'Collapse fragment' : 'Expand fragment'} />
             </button>
             {#if expandedId === f.id}
               <div class="frag-body">
@@ -418,12 +419,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .frag-toggle {
-    color: rgba(251,191,36,0.7);
-    font-size: 0.85rem;
-    flex-shrink: 0;
-  }
-
   .frag-body {
     padding: 0.55rem 0.85rem 0.75rem;
     border-top: 1px solid rgba(255,255,255,0.06);

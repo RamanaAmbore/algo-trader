@@ -10,6 +10,7 @@
   import LogPanel from '$lib/LogPanel.svelte';
   import Select   from '$lib/Select.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import DisclosureChevron from '$lib/DisclosureChevron.svelte';
 
   let agents      = $state([]);
   let agentEvents = $state([]);
@@ -81,18 +82,24 @@
   let editing     = $state(null);     // slug of agent being edited
   let expandedSlug = $state(/** @type {string|null} */(null));
   let editForm    = $state(/** @type {{
-    name: string, description: string, conditions: string, events: string, actions: string,
+    name: string, long_name: string, description: string,
+    conditions: string, events: string, actions: string,
     cooldown_minutes: number, scope: string, schedule: string,
     fire_at_time: string,
     lifespan_type: string, lifespan_max_fires: number|string,
     lifespan_expires_at: string,
     tier: string, topic: string, digest_window_sec: number,
+    trade_mode: string, debounce_minutes: number,
+    tags: string, blackout_windows: string,
   }} */ ({
-    name: '', description: '', conditions: '{}', events: '[]', actions: '[]',
+    name: '', long_name: '', description: '',
+    conditions: '{}', events: '[]', actions: '[]',
     cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
     fire_at_time: '',
     lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
     tier: 'medium', topic: 'general', digest_window_sec: 30,
+    trade_mode: 'paper', debounce_minutes: 0,
+    tags: '', blackout_windows: '[]',
   }));
 
   // Tier order matters — UI segmented control lists them critical → low
@@ -213,6 +220,7 @@
     validationGrammar = '';
     editForm = {
       name: agent.name,
+      long_name: agent.long_name || '',
       description: agent.description || '',
       conditions: JSON.stringify(agent.conditions, null, 2),
       events: JSON.stringify(agent.events, null, 2),
@@ -228,13 +236,20 @@
       lifespan_expires_at:  agent.lifespan_expires_at
         ? String(agent.lifespan_expires_at).slice(0, 16)
         : '',
-      // Alert hierarchy — tier and topic drive run_cycle's topic-scoped
-      // suppression; digest_window_sec is reserved for the future
-      // dispatch-batching pass (currently unused but persisted).
+      // Priority / topic / digest — tier drives topic-scoped suppression
+      // in run_cycle; digest_window_sec batches dispatches.
       tier:                 agent.tier  || 'medium',
       topic:                agent.topic || 'general',
       digest_window_sec:    typeof agent.digest_window_sec === 'number'
                               ? agent.digest_window_sec : 30,
+      // Trade mode + debounce — execution routing + spike suppression.
+      trade_mode:           agent.trade_mode || 'paper',
+      debounce_minutes:     typeof agent.debounce_minutes === 'number'
+                              ? agent.debounce_minutes : 0,
+      // Tags: comma-joined CSV in the input, parsed back to list on save.
+      // Blackout windows: list of {start: "HH:MM", end: "HH:MM"} as JSON.
+      tags:                 Array.isArray(agent.tags) ? agent.tags.join(', ') : '',
+      blackout_windows:     JSON.stringify(agent.blackout_windows || [], null, 2),
     };
   }
 
@@ -342,9 +357,23 @@
     // agent row — v1 trees are accepted as-is.
     const ok = await runValidation();
     if (!ok) return;
+    // Parse blackout_windows JSON — invalid surfaces as a validation error
+    // (saves get blocked) instead of a silent 400 from the backend.
+    let bw;
+    try { bw = JSON.parse(editForm.blackout_windows || '[]'); }
+    catch (e) { validationErrors = [`blackout_windows JSON invalid: ${e.message}`]; return; }
+    if (!Array.isArray(bw)) {
+      validationErrors = ['blackout_windows must be a JSON array of {start, end} entries'];
+      return;
+    }
+    // Tags: split on comma, trim, drop empty. Operator types
+    // "iron-condor, nifty, review-q3" — round-tripped to a list.
+    const tagsList = String(editForm.tags || '')
+      .split(',').map(t => t.trim()).filter(Boolean);
     try {
       await updateAgent(editing, {
         name: editForm.name,
+        long_name: editForm.long_name || null,
         description: editForm.description,
         conditions: JSON.parse(editForm.conditions),
         events: JSON.parse(editForm.events),
@@ -363,6 +392,10 @@
         tier:               editForm.tier  || 'medium',
         topic:              editForm.topic || 'general',
         digest_window_sec:  Number(editForm.digest_window_sec) || 30,
+        trade_mode:         editForm.trade_mode || 'paper',
+        debounce_minutes:   Number(editForm.debounce_minutes) || 0,
+        tags:               tagsList,
+        blackout_windows:   bw,
       });
       editing = null;
       validationErrors = []; validationGrammar = '';
@@ -501,8 +534,6 @@
   <title>Agents | RamboQuant Analytics</title>
 </svelte:head>
 
-<AgentWorkspaceTabs />
-
 <div class="page-header">
   <h1 class="page-title-chip">
     Agents
@@ -525,6 +556,8 @@
     {aiOpen ? '× Close AI' : '✦ Ask AI'}
   </button>
 </div>
+
+<AgentWorkspaceTabs />
 
 {#if error}
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
@@ -659,7 +692,7 @@
                 : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
             {agent.status !== 'inactive' ? 'ON' : 'OFF'}
           </button>
-          <span class="text-[#7e97b8] text-[0.65rem] flex-shrink-0">{isOpen ? '▾' : '▸'}</span>
+          <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
         </div>
 
         {#if isOpen}
@@ -673,6 +706,15 @@
                   <input bind:value={editForm.name} class="field-input" />
                 </div>
                 <div>
+                  <label class="field-label">
+                    Long name
+                    <InfoHint popup text="Operator-readable 3-part label: <b>when:&lt;condition&gt;</b> &mdash; <b>alert:&lt;notify&gt;</b> &mdash; <b>do:&lt;action&gt;</b>. Surfaces under the short name on the agents row so an operator scanning the list sees what each agent actually does without expanding." />
+                  </label>
+                  <input bind:value={editForm.long_name}
+                         placeholder="when:positions.total.pnl<=-50k   alert:critical/tg+email   do:notify-only"
+                         class="field-input font-mono text-[0.6rem]" />
+                </div>
+                <div class="md:col-span-2">
                   <label class="field-label">Description</label>
                   <input bind:value={editForm.description} class="field-input" />
                 </div>
@@ -695,6 +737,26 @@
                 <div>
                   <label class="field-label">Cooldown (minutes)</label>
                   <input type="number" bind:value={editForm.cooldown_minutes} class="field-input" />
+                </div>
+                <div>
+                  <label class="field-label">
+                    Debounce (minutes)
+                    <InfoHint popup text="Fire only when the condition holds for N consecutive evaluations spanning at least N minutes. <b>0</b> = fire immediately on first true tick. Use to suppress single-tick spikes (e.g. a Kite glitch dropping pnl_pct to -2.1% for one cycle). Industry analogue: Datadog/Grafana <b>For:</b>, CloudWatch <b>EvaluationPeriods</b>." />
+                  </label>
+                  <input type="number" min="0"
+                         bind:value={editForm.debounce_minutes}
+                         class="field-input" />
+                </div>
+                <div>
+                  <label class="field-label">
+                    Trade mode
+                    <InfoHint popup text="Per-agent execution mode. <b>paper</b> = simulated fills against real bid/ask (default). <b>live</b> = real broker orders. Resolved against the engine's master <code>execution.paper_trading_mode</code> setting + the branch gate — dev always forces paper regardless." />
+                  </label>
+                  <Select ariaLabel="Trade mode" bind:value={editForm.trade_mode}
+                    options={[
+                      { value: 'paper', label: 'Paper (simulated)' },
+                      { value: 'live',  label: 'Live (real broker)' },
+                    ]} />
                 </div>
                 <div>
                   <label class="field-label">
@@ -762,7 +824,10 @@
                    label so it doesn't dominate. -->
               <div class="tier-strip">
                 <div class="tier-strip-left">
-                  <label class="field-label" style="margin-right: 0.5rem">Tier</label>
+                  <label class="field-label" style="margin-right: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;">
+                    Priority
+                    <InfoHint popup text="Severity bucket (a.k.a. <b>tier</b>) — <b>critical &gt; high &gt; medium &gt; low</b>. Drives topic-scoped suppression: when multiple agents in the same topic fire on one tick, only the highest priority dispatches; the others are logged as suppressed. Industry analogue: PagerDuty <b>Urgency</b>, Opsgenie <b>Priority P1-P5</b>, Datadog <b>monitor priority</b>." />
+                  </label>
                   <div class="tier-pill-row">
                     {#each TIER_PILLS as t}
                       <button type="button"
@@ -797,6 +862,31 @@
                            class="field-input"
                            style="max-width: 5rem" />
                   </div>
+                </div>
+              </div>
+
+              <!-- Tags + Blackout windows — operator-facing labels for
+                   filtering on /agents (tags) and IST quiet hours
+                   (blackout windows). Industry analogue: Datadog tags +
+                   Grafana silences / PagerDuty maintenance windows. -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                <div>
+                  <label class="field-label">
+                    Tags
+                    <InfoHint popup text="Free-form labels for filtering. Comma-separated. Examples: <b>iron-condor, nifty, review-q3</b>. Surfaces on the agents list as chips. Industry analogue: Datadog tags, Grafana labels." />
+                  </label>
+                  <input bind:value={editForm.tags}
+                         placeholder="iron-condor, nifty, review-q3"
+                         class="field-input" />
+                </div>
+                <div>
+                  <label class="field-label">
+                    Blackout windows (JSON)
+                    <InfoHint popup text="List of <b>&#123;start: 'HH:MM', end: 'HH:MM'&#125;</b> entries in IST. Agent is skipped while wall-clock IST is inside any window. Crossing-midnight windows like <code>&#123;start:'23:00',end:'01:00'&#125;</code> are supported. Industry analogue: PagerDuty maintenance windows, Grafana silences, Datadog <b>mute_until</b>." />
+                  </label>
+                  <textarea bind:value={editForm.blackout_windows}
+                            class="field-input font-mono text-[0.6rem]" rows="3"
+                            placeholder={'[{"start":"12:00","end":"13:00"}]'}></textarea>
                 </div>
               </div>
 

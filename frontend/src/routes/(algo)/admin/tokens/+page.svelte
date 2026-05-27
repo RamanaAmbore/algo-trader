@@ -181,42 +181,39 @@
 
 <svelte:head><title>Tokens | RamboQuant Analytics</title></svelte:head>
 
+<div class="page-header">
+  <h1 class="page-title-chip">Agent Tokens</h1>
+  <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
+  {#if !isDemo}
+    <button onclick={openCreate}
+      class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+      + New token
+    </button>
+    <button onclick={doReload} disabled={reloading}
+      class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold disabled:opacity-50">
+      {reloading ? 'Reloading…' : 'Reload registry'}
+    </button>
+  {/if}
+</div>
+
 <AgentWorkspaceTabs />
 
-<div class="algo-status-card p-4 mb-3" data-status="inactive">
-  <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
-    <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24]">
-      Agent Tokens
-    </h1>
-    <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
-    <span class="algo-ts ml-auto">{$nowStamp}</span>
-    <div class="flex gap-2">
-      {#if !isDemo}
-        <button onclick={openCreate}
-          class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
-          + New token
-        </button>
-        <button onclick={doReload} disabled={reloading}
-          class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold disabled:opacity-50">
-          {reloading ? 'Reloading…' : 'Reload registry'}
-        </button>
-      {/if}
-    </div>
-  </div>
-  {#if isDemo}
-    <!-- Demo read-only banner. The catalog is shown verbatim — operators
-         can browse every metric / scope / op / action handler the engine
-         supports — but creates / edits / deletes / registry reload hide
-         since the backend rejects them with admin_guard. -->
-    <div class="mt-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
+{#if isDemo}
+  <!-- Demo read-only banner. The catalog is shown verbatim — operators
+       can browse every metric / scope / op / action handler the engine
+       supports — but creates / edits / deletes / registry reload hide
+       since the backend rejects them with admin_guard. -->
+  <div class="algo-status-card p-3 mb-3" data-status="inactive">
+    <div class="p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
       <strong class="text-purple-100">Read-only in demo.</strong>
       Browse every condition / notify / action token the engine supports.
       The catalog drives every alerting + automation rule — see
       <a href="/showcase" class="underline hover:text-purple-50">the tour</a>
       for context.
     </div>
-  {/if}
-</div>
+  </div>
+{/if}
 
 {#if error}
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
