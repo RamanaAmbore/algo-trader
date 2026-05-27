@@ -241,8 +241,10 @@ async def _dry_run_context(now) -> dict:
     """Phase 22 — build the live context for an agent dry-run.
 
     Calls the same broker-aggregate helpers _task_performance uses,
-    but synchronously in the request path. Adds a thread-pool offload
-    so the event loop isn't blocked by the Kite REST round-trip.
+    in a thread-pool. Each broker fetch wrapped in try/except so a
+    single-broker outage (Groww disconnected, Kite rate-limited)
+    doesn't 500 the whole dry-run — the agent just sees whatever
+    DataFrames came back successfully (possibly empty).
 
     No new caching layer — a dry-run is a manual operator action,
     not a hot path. If it fires 2 broker calls per click, that's fine.
@@ -258,14 +260,36 @@ async def _dry_run_context(now) -> dict:
     import pandas as pd
     loop = asyncio.get_running_loop()
 
-    df_holdings, sum_h = await loop.run_in_executor(None, _fetch_holdings_direct)
-    df_positions, _    = await loop.run_in_executor(None, _fetch_positions_direct)
-    df_margins         = await loop.run_in_executor(
-        None, lambda: pd.concat(broker_apis.fetch_margins(), ignore_index=True),
+    async def _safe_fetch(fn, label, default):
+        try:
+            return await loop.run_in_executor(None, fn)
+        except Exception as e:
+            logger.warning(f"dry-run: {label} fetch failed (using empty): {e}")
+            return default
+
+    df_holdings, sum_h = await _safe_fetch(
+        _fetch_holdings_direct, "holdings",
+        (pd.DataFrame(), pd.DataFrame()),
+    )
+    df_positions, _ = await _safe_fetch(
+        _fetch_positions_direct, "positions",
+        (pd.DataFrame(), pd.DataFrame()),
+    )
+    df_margins = await _safe_fetch(
+        lambda: pd.concat(broker_apis.fetch_margins(), ignore_index=True),
+        "margins", pd.DataFrame(),
     )
 
-    sum_holdings  = _summarise_holdings(df_holdings, sum_h, None)
-    sum_positions = _summarise_positions(df_positions)
+    try:
+        sum_holdings = _summarise_holdings(df_holdings, sum_h, None)
+    except Exception as e:
+        logger.warning(f"dry-run: summarise_holdings failed: {e}")
+        sum_holdings = pd.DataFrame()
+    try:
+        sum_positions = _summarise_positions(df_positions)
+    except Exception as e:
+        logger.warning(f"dry-run: summarise_positions failed: {e}")
+        sum_positions = pd.DataFrame()
 
     base = _build_context(now)
     base.update(
@@ -542,7 +566,10 @@ class AgentController(Controller):
         now = datetime.now(timezone.utc)
         try:
             ctx = await _dry_run_context(now)
+        except HTTPException:
+            raise
         except Exception as e:
+            logger.exception("dry-run: _dry_run_context raised")
             raise HTTPException(status_code=502, detail=f"Could not build live context: {e}")
 
         # Run gates in the SAME order the engine does, but report which
