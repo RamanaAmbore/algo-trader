@@ -151,12 +151,16 @@ def _segment_for_exchange(exchange: str) -> str | None:
     return _EXCHANGE_TO_SEGMENT.get(str(exchange).upper().strip())
 
 
-def _symbol_exchange_open(exchange: str, segments: list) -> bool:
+def _symbol_exchange_open(exchange: str, ctx: dict) -> bool:
     """Phase 23 — return True if the exchange's market segment is
-    currently open. `segments` is the list emitted by `_build_context`
-    — each entry is `{name, open, ...}`. Unknown exchanges → False so
-    we never accidentally let a non-Kite-recognised symbol slip
-    through.
+    currently open. `ctx` is the dict emitted by `_build_context`
+    — it carries flat `nse_open` / `mcx_open` flags, NOT a nested
+    `segments` list.
+
+    Mapping:
+      equity-segment exchanges (NSE/BSE/NFO/BFO/CDS/BCD) → ctx['nse_open']
+      commodity-segment exchanges (MCX)                  → ctx['mcx_open']
+      unknown → False (never wrongly allow)
 
     Pure function — no DB / broker calls. Designed to be called from
     the action layer, the ticket route, and the MCP gated paths
@@ -165,24 +169,26 @@ def _symbol_exchange_open(exchange: str, segments: list) -> bool:
     seg_name = _segment_for_exchange(exchange)
     if not seg_name:
         return False
-    if not segments:
+    if not isinstance(ctx, dict):
         return False
-    for s in segments:
-        if not isinstance(s, dict):
-            continue
-        if (s.get("name") or "").lower() == seg_name:
-            return bool(s.get("open"))
+    if seg_name == "equity":
+        return bool(ctx.get("nse_open"))
+    if seg_name == "commodity":
+        return bool(ctx.get("mcx_open"))
     return False
 
 
-def _segments_now() -> list:
-    """Build a fresh `segments` list for the CURRENT wall-clock time.
-    Used by the ticket route + MCP gated paths where we don't have a
-    pre-built engine context. Reuses `_build_context` so the result is
-    identical to what `run_cycle` sees on the same tick."""
+def _build_now_ctx() -> dict:
+    """Build a fresh market-state context for the CURRENT wall-clock
+    time. Used by the ticket route + MCP gated paths where we don't
+    have a pre-built engine context. Reuses `_build_context` so the
+    result is identical to what `run_cycle` sees on the same tick."""
     from datetime import datetime, timezone
-    ctx = _build_context(datetime.now(timezone.utc))
-    return ctx.get("segments") or []
+    return _build_context(datetime.now(timezone.utc))
+
+
+# Back-compat alias used by callers that imported the old name.
+_segments_now = _build_now_ctx
 
 
 def _in_blackout_window(now, windows: list) -> bool:

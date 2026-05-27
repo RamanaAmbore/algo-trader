@@ -764,9 +764,9 @@ class OrdersController(Controller):
         # mirror live; Kite itself would reject a 21:00 NSE order).
         # Sim mode (driven by SimDriver, not this route) bypasses
         # naturally — it doesn't call /ticket.
-        from backend.api.algo.agent_engine import _symbol_exchange_open, _segments_now
+        from backend.api.algo.agent_engine import _symbol_exchange_open, _build_now_ctx
         target_exchange = data.exchange or "NFO"   # default matches struct
-        if not _symbol_exchange_open(target_exchange, _segments_now()):
+        if not _symbol_exchange_open(target_exchange, _build_now_ctx()):
             seg = (target_exchange or "").upper()
             raise HTTPException(status_code=409,
                 detail=(f"Exchange {seg} is closed. Orders for {sym} "

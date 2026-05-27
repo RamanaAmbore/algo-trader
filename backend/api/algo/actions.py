@@ -128,8 +128,9 @@ def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tupl
         return True, ""
 
     from backend.api.algo.agent_engine import _symbol_exchange_open
-    segments = context.get("segments") or []
-    closed = [e for e in targets if not _symbol_exchange_open(e, segments)]
+    # context carries flat nse_open / mcx_open flags from _build_context,
+    # not a nested 'segments' list. Pass the whole context dict.
+    closed = [e for e in targets if not _symbol_exchange_open(e, context)]
     if not closed:
         return True, ""
     return False, (
