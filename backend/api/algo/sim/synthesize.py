@@ -461,6 +461,94 @@ def _synth_day_rate_pct(leaf: dict) -> tuple[dict, list]:
     return {"holdings": holdings, "positions": [], "margins": []}, ticks
 
 
+# ── Phase 24 — Rolling-window metric synthesisers ─────────────────────────
+#
+# All rolling-window metrics share the same physical setup: a positions row
+# whose pnl is steered through a sequence of `target_pnl` ticks so that the
+# evaluator's chosen reducer (mean / drawdown / stdev / range) crosses the
+# threshold by the final tick.
+#
+# Implementation note: at the simulator's default 2-second tick rate, 30
+# ticks ≈ 1 minute of wall-clock time — plenty for the window reducers
+# (which only need ≥2 samples regardless of the actual window length) to
+# trip on their first eligible evaluation.
+
+def _synth_window_drawdown(leaf: dict) -> tuple[dict, list]:
+    """
+    max_drawdown_pnl_*m / max_drawdown_pnl_pct_* / max_drawdown_day_1h —
+    threshold is the worst tolerated peak-to-trough drop (≤ 0). Climb pnl
+    to a peak then crash past the threshold in three ticks.
+    """
+    threshold = float(leaf.get("value") or 0)   # negative
+    scope     = leaf.get("scope", "")
+    accounts  = _scope_accounts(scope)
+    kind      = _scope_kind(scope)
+    positions = [_default_position_row(a) for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
+
+    peak      = abs(threshold) * 0.5            # climb to half the magnitude
+    trough    = threshold * 1.2                 # crash 20% past threshold
+    schedule  = [peak, 0.0, trough]
+    ticks = []
+    for i, target in enumerate(schedule):
+        moves = []
+        for a in accounts:
+            per_acct = _per_acct_share(target, kind, len(accounts))
+            moves.append({"type": "target_pnl",
+                           "scope": f"positions.{a}.*", "value": per_acct})
+        ticks.append({"at": i, "moves": moves})
+    return {"positions": positions, "margins": margins}, ticks
+
+
+def _synth_window_mean(leaf: dict) -> tuple[dict, list]:
+    """
+    mean_pnl_* / mean_day_* — threshold is the bound the average has to
+    cross. Drive pnl to (value × 1.2) and hold for a few ticks so the
+    rolling mean settles past the threshold.
+    """
+    target_val = float(leaf.get("value") or 0) * 1.2
+    scope      = leaf.get("scope", "")
+    accounts   = _scope_accounts(scope)
+    kind       = _scope_kind(scope)
+    positions = [_default_position_row(a) for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
+
+    ticks = []
+    for i in range(4):
+        moves = []
+        for a in accounts:
+            per_acct = _per_acct_share(target_val, kind, len(accounts))
+            moves.append({"type": "target_pnl",
+                           "scope": f"positions.{a}.*", "value": per_acct})
+        ticks.append({"at": i, "moves": moves})
+    return {"positions": positions, "margins": margins}, ticks
+
+
+def _synth_window_spread(leaf: dict) -> tuple[dict, list]:
+    """
+    stdev_pnl_* / range_pnl_* — threshold is the volatility/range bound the
+    operator wants to flag as 'too choppy'. Oscillate pnl through ±value so
+    both stdev and range surge past the threshold.
+    """
+    spread     = abs(float(leaf.get("value") or 0)) * 1.3
+    scope      = leaf.get("scope", "")
+    accounts   = _scope_accounts(scope)
+    kind       = _scope_kind(scope)
+    positions = [_default_position_row(a) for a in accounts]
+    margins   = _margin_rows_with_total(accounts)
+
+    schedule = [+spread, -spread, +spread, -spread]
+    ticks = []
+    for i, target in enumerate(schedule):
+        moves = []
+        for a in accounts:
+            per_acct = _per_acct_share(target, kind, len(accounts))
+            moves.append({"type": "target_pnl",
+                           "scope": f"positions.{a}.*", "value": per_acct})
+        ticks.append({"at": i, "moves": moves})
+    return {"positions": positions, "margins": margins}, ticks
+
+
 _METRIC_SYNTH = {
     "pnl":            _synth_pnl,
     "pnl_pct":        _synth_pnl_pct,
@@ -472,6 +560,21 @@ _METRIC_SYNTH = {
     "day_pct":        _synth_day_pct,
     "day_rate_abs":   _synth_day_rate_abs,
     "day_rate_pct":   _synth_day_rate_pct,
+    # Phase 24 — rolling-window reducers (drawdown / mean / stdev / range).
+    "max_drawdown_pnl_30m":     _synth_window_drawdown,
+    "max_drawdown_pnl_1h":      _synth_window_drawdown,
+    "max_drawdown_pnl_4h":      _synth_window_drawdown,
+    "max_drawdown_day_1h":      _synth_window_drawdown,
+    "max_drawdown_pnl_pct_30m": _synth_window_drawdown,
+    "max_drawdown_pnl_pct_1h":  _synth_window_drawdown,
+    "mean_pnl_30m":             _synth_window_mean,
+    "mean_pnl_1h":              _synth_window_mean,
+    "mean_day_30m":             _synth_window_mean,
+    "mean_day_1h":              _synth_window_mean,
+    "stdev_pnl_30m":            _synth_window_spread,
+    "stdev_pnl_1h":             _synth_window_spread,
+    "range_pnl_30m":            _synth_window_spread,
+    "range_pnl_1h":             _synth_window_spread,
 }
 
 

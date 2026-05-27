@@ -125,6 +125,84 @@ class Context:
         """Rate of change of the percentage metric (%/min) for this bucket."""
         return self._compute_rate(key, field_idx=2)
 
+    # ─── Phase 24 — rolling-window statistical aggregates ──────────────
+    #
+    # The rate helpers above only use the oldest and newest sample inside
+    # the rate window. Strategy logic increasingly wants the full slice
+    # — mean / stdev / drawdown — so an agent can say "exit if P&L has
+    # been bleeding for 30 min" instead of "exit if THIS tick crossed a
+    # threshold". Same pnl_history dict, different reducer.
+    #
+    # All helpers return None when the window holds fewer than 2 samples
+    # (so a rate metric agent doesn't fire on the first tick of the day).
+    # field_idx mirrors _compute_rate: 1 = pnl ₹, 2 = pnl %.
+
+    def _window_slice(self, key: tuple, window_minutes: float) -> list:
+        """Samples within `window_minutes` of now for a (section, scope) key."""
+        hist = (self.alert_state.get('pnl_history') or {}).get(key, []) or []
+        if self.now is None or not hist:
+            return hist
+        cutoff = self.now - timedelta(minutes=window_minutes)
+        return [s for s in hist if s[0] >= cutoff]
+
+    @staticmethod
+    def _values(window: list, field_idx: int) -> list[float]:
+        out = []
+        for s in window:
+            v = s[field_idx] if len(s) > field_idx else None
+            if v is None:
+                continue
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def window_mean(self, key: tuple, window_minutes: float,
+                    field_idx: int = 1) -> Optional[float]:
+        vals = self._values(self._window_slice(key, window_minutes), field_idx)
+        if len(vals) < 2:
+            return None
+        return sum(vals) / len(vals)
+
+    def window_stdev(self, key: tuple, window_minutes: float,
+                     field_idx: int = 1) -> Optional[float]:
+        vals = self._values(self._window_slice(key, window_minutes), field_idx)
+        if len(vals) < 2:
+            return None
+        m = sum(vals) / len(vals)
+        var = sum((v - m) ** 2 for v in vals) / (len(vals) - 1)
+        return var ** 0.5
+
+    def window_range(self, key: tuple, window_minutes: float,
+                     field_idx: int = 1) -> Optional[float]:
+        vals = self._values(self._window_slice(key, window_minutes), field_idx)
+        if len(vals) < 2:
+            return None
+        return max(vals) - min(vals)
+
+    def window_drawdown(self, key: tuple, window_minutes: float,
+                        field_idx: int = 1) -> Optional[float]:
+        """
+        Peak-to-trough drop within the window. Walks left→right and tracks
+        the running max; returns the most-negative (current − running_max),
+        so the result is always ≤ 0 and represents "how much below the
+        window's peak we've fallen at the worst point". None when fewer
+        than 2 samples.
+        """
+        vals = self._values(self._window_slice(key, window_minutes), field_idx)
+        if len(vals) < 2:
+            return None
+        peak = vals[0]
+        worst = 0.0
+        for v in vals:
+            if v > peak:
+                peak = v
+            diff = v - peak
+            if diff < worst:
+                worst = diff
+        return worst
+
     def minutes_since_open(self) -> float:
         start = self.alert_state.get('session_start')
         if not start or self.now is None:

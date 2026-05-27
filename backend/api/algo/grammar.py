@@ -104,6 +104,35 @@ def _metric_day_rate_abs(ctx, row):
 def _metric_day_rate_pct(ctx, row):
     return ctx.rate_pct(('holdings', row.get('account')))
 
+
+# Phase 24 — Rolling-window statistical metrics. Same pnl_history bucket
+# the rate metrics read from; different reducer. Section comes from the
+# scope token (positions.* → 'positions', holdings.* → 'holdings'),
+# field_idx 1 = pnl ₹, 2 = pnl %.
+
+def _w_key_pos(row):  return ('positions', row.get('account'))
+def _w_key_hold(row): return ('holdings',  row.get('account'))
+
+def _metric_mean_pnl_30m(ctx, row):  return ctx.window_mean(_w_key_pos(row),  30)
+def _metric_mean_pnl_1h(ctx, row):   return ctx.window_mean(_w_key_pos(row),  60)
+def _metric_mean_day_30m(ctx, row):  return ctx.window_mean(_w_key_hold(row), 30)
+def _metric_mean_day_1h(ctx, row):   return ctx.window_mean(_w_key_hold(row), 60)
+
+def _metric_max_drawdown_pnl_30m(ctx, row): return ctx.window_drawdown(_w_key_pos(row),  30)
+def _metric_max_drawdown_pnl_1h(ctx, row):  return ctx.window_drawdown(_w_key_pos(row),  60)
+def _metric_max_drawdown_pnl_4h(ctx, row):  return ctx.window_drawdown(_w_key_pos(row), 240)
+def _metric_max_drawdown_day_1h(ctx, row):  return ctx.window_drawdown(_w_key_hold(row), 60)
+
+def _metric_max_drawdown_pnl_pct_30m(ctx, row): return ctx.window_drawdown(_w_key_pos(row), 30, field_idx=2)
+def _metric_max_drawdown_pnl_pct_1h(ctx, row):  return ctx.window_drawdown(_w_key_pos(row), 60, field_idx=2)
+
+def _metric_stdev_pnl_30m(ctx, row):  return ctx.window_stdev(_w_key_pos(row),  30)
+def _metric_stdev_pnl_1h(ctx, row):   return ctx.window_stdev(_w_key_pos(row),  60)
+
+def _metric_range_pnl_30m(ctx, row):  return ctx.window_range(_w_key_pos(row),  30)
+def _metric_range_pnl_1h(ctx, row):   return ctx.window_range(_w_key_pos(row),  60)
+
+
 # Time metrics — useful for agents that should only fire in specific windows.
 def _metric_minutes_since_open(ctx, row):
     return ctx.minutes_since_open()
@@ -345,6 +374,70 @@ SYSTEM_TOKENS: list[dict] = [
      'value_type': 'number', 'units': '%/min',
      'description': 'Holdings day-change rate of change in percent per minute over the last window.',
      'resolver': 'backend.api.algo.grammar._metric_day_rate_pct'},
+
+    # Phase 24 — Rolling-window statistical metrics. Read the same pnl_history
+    # buckets the rate metrics use; aggregate the whole slice instead of just
+    # endpoints. Useful when an operator wants "exit if P&L has been bleeding
+    # for 30 min" rather than "exit on a single tick crossing a threshold".
+    # Return None until the window holds ≥2 samples (newly opened sessions
+    # don't accidentally fire on cold-start).
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'mean_pnl_30m',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Average positions P&L over the last 30 minutes.',
+     'resolver': 'backend.api.algo.grammar._metric_mean_pnl_30m'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'mean_pnl_1h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Average positions P&L over the last hour.',
+     'resolver': 'backend.api.algo.grammar._metric_mean_pnl_1h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'mean_day_30m',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Average holdings day-change value over the last 30 minutes.',
+     'resolver': 'backend.api.algo.grammar._metric_mean_day_30m'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'mean_day_1h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Average holdings day-change value over the last hour.',
+     'resolver': 'backend.api.algo.grammar._metric_mean_day_1h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'max_drawdown_pnl_30m',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Worst peak-to-trough drop in positions P&L over the last 30 minutes (always ≤ 0).',
+     'resolver': 'backend.api.algo.grammar._metric_max_drawdown_pnl_30m'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'max_drawdown_pnl_1h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Worst peak-to-trough drop in positions P&L over the last hour (always ≤ 0).',
+     'resolver': 'backend.api.algo.grammar._metric_max_drawdown_pnl_1h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'max_drawdown_pnl_4h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Worst peak-to-trough drop in positions P&L over the last 4 hours (always ≤ 0).',
+     'resolver': 'backend.api.algo.grammar._metric_max_drawdown_pnl_4h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'max_drawdown_day_1h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Worst peak-to-trough drop in holdings day-change over the last hour (always ≤ 0).',
+     'resolver': 'backend.api.algo.grammar._metric_max_drawdown_day_1h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'max_drawdown_pnl_pct_30m',
+     'value_type': 'number', 'units': '%',
+     'description': 'Worst peak-to-trough drop in positions P&L percentage over the last 30 minutes (always ≤ 0).',
+     'resolver': 'backend.api.algo.grammar._metric_max_drawdown_pnl_pct_30m'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'max_drawdown_pnl_pct_1h',
+     'value_type': 'number', 'units': '%',
+     'description': 'Worst peak-to-trough drop in positions P&L percentage over the last hour (always ≤ 0).',
+     'resolver': 'backend.api.algo.grammar._metric_max_drawdown_pnl_pct_1h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'stdev_pnl_30m',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Standard deviation of positions P&L over the last 30 minutes (volatility proxy).',
+     'resolver': 'backend.api.algo.grammar._metric_stdev_pnl_30m'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'stdev_pnl_1h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Standard deviation of positions P&L over the last hour.',
+     'resolver': 'backend.api.algo.grammar._metric_stdev_pnl_1h'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'range_pnl_30m',
+     'value_type': 'number', 'units': '₹',
+     'description': 'max(P&L) − min(P&L) over the last 30 minutes (swing magnitude).',
+     'resolver': 'backend.api.algo.grammar._metric_range_pnl_30m'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'range_pnl_1h',
+     'value_type': 'number', 'units': '₹',
+     'description': 'max(P&L) − min(P&L) over the last hour.',
+     'resolver': 'backend.api.algo.grammar._metric_range_pnl_1h'},
+
     {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'minutes_since_open',
      'value_type': 'number', 'units': 'min',
      'description': 'Minutes since the first market segment opened today.',
