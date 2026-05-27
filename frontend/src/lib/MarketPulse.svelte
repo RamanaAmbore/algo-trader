@@ -1845,6 +1845,8 @@
         row.ask    = q?.ask    ?? row.ask    ?? null;
         row.change = q?.change ?? row.change ?? null;
         row.change_pct = q?.change_pct ?? row.change_pct ?? null;
+        row.volume = q?.volume ?? row.volume ?? null;
+        row.oi     = q?.oi     ?? row.oi     ?? null;
         fill(row, sym);
       }
     }
@@ -1874,6 +1876,8 @@
         row.close      = liveQ.close ?? row.close ?? null;
         row.change     = liveQ.change     ?? row.change     ?? null;
         row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
+        row.volume     = liveQ.volume ?? row.volume ?? null;
+        row.oi         = liveQ.oi     ?? row.oi     ?? null;
       } else if (row.ltp == null) {
         row.ltp = r.last_price ?? null;
       }
@@ -1937,6 +1941,8 @@
       // (live_ltp − close_price) × held_qty when LTP is live. avg cost
       // for holdings lives on `r.average_price`; pnl recompute uses
       // (live_ltp − avg) × qty (no realised component on holdings).
+      if (liveQ?.volume != null) row.volume = liveQ.volume;
+      if (liveQ?.oi     != null) row.oi     = liveQ.oi;
       const liveHold = liveQ?.ltp ?? null;
       const holdClose = Number(r.close_price) || 0;
       const holdAvg   = Number(r.average_price) || 0;
@@ -2521,6 +2527,20 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: numFmt },
+      // Volume + OI piggy-back on the same /api/quote/batch payload that
+      // already drives LTP/bid/ask — broker.quote() returns both on the
+      // raw response, surfacing them here gives the operator liquidity
+      // context (volume = how much has traded; OI = open contracts on
+      // F&O rows). Both compact-aggregate-formatted; em-dash for cash
+      // equity rows where OI doesn't apply.
+      { field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
+      { field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
       { field: 'pnl', headerName: 'P&L', width: 64,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,

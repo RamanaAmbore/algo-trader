@@ -109,6 +109,11 @@ class BatchQuoteRow(msgspec.Struct):
     change: float = 0.0
     change_pct: float = 0.0
     volume: int = 0
+    # Open interest — only meaningful for F&O symbols. Kite's quote()
+    # returns `oi` on futures + options responses (0 / absent on cash
+    # equities). Surfaced on /pulse so the operator can read liquidity
+    # alongside LTP without opening a separate chain view.
+    oi: int = 0
     stale: bool = False
 
 
@@ -185,6 +190,7 @@ class QuoteController(Controller):
                 ltp=ltp, bid=bid, ask=ask, open=open_, close=close,
                 change=change, change_pct=chg_pct,
                 volume=int(q.get("volume") or 0),
+                oi=int(q.get("oi") or 0),
                 stale=(not q),
             ))
         return BatchQuoteResponse(
