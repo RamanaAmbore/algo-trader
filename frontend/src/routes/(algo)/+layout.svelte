@@ -460,6 +460,15 @@
 
 <div class="algo-viewport">
   <div class="algo-card">
+    <!-- Sticky chrome — navbar + sim/paper/replay banners + the
+         positions strip stack as siblings inside a single sticky
+         container so they don't fight for the same `top` offset.
+         Each child flows naturally; only the wrapper is sticky.
+         Fix for the mobile overlap where every banner used to set
+         `position:sticky; top:3rem` independently and they piled
+         on top of each other (and the first page card slipped
+         under all of them when the operator scrolled). -->
+    <div class="algo-sticky-chrome">
     <!-- Top bar -->
     <header class="algo-navbar">
       <div class="algo-nav-inner hidden lg:flex items-center gap-1 h-12">
@@ -790,12 +799,12 @@
       </div>
     {/if}
 
-    <!-- Glanceable position / holdings strip — pinned just under
-         the navbar (and below SIM / PAPER banners when those are
-         active) so it reads as part of the chrome. Self-fetches
-         from /api/positions + /api/holdings on mount; auto-hides
-         when the operator has no positions. -->
+    <!-- Glanceable position / holdings strip — last child of the
+         sticky chrome wrapper above. Self-fetches from
+         /api/positions + /api/holdings on mount; auto-hides when
+         the operator has no positions. -->
     <PositionStrip />
+    </div>  <!-- /.algo-sticky-chrome -->
 
     <!-- Chase timeline drawer — rendered outside normal flow so it
          overlays everything. Mounts inside .algo-card for z-index context. -->
@@ -843,11 +852,21 @@
     background-color: #0d1829;
   }
 
-  /* ── Navbar ─────────────────────────────────────────────────────────────── */
-  .algo-navbar {
+  /* ── Sticky chrome ───────────────────────────────────────────────────────
+     Wraps navbar + sim/paper/replay banners + PositionStrip. Single
+     sticky parent means the whole chrome cluster stays pinned to the
+     top of the viewport during scroll, and the children just flow
+     vertically inside it — no more "every element fights for top:3rem"
+     overlap on mobile. */
+  .algo-sticky-chrome {
     position: sticky;
     top: 0;
     z-index: 50;
+    background: #0a1020;
+  }
+
+  /* ── Navbar ─────────────────────────────────────────────────────────────── */
+  .algo-navbar {
     background: #0a1020;
     border-bottom: 1px solid #d97706;
     overflow: visible;
@@ -1242,9 +1261,8 @@
     font-size: 0.62rem;
     font-weight: 600;
     letter-spacing: 0.02em;
-    position: sticky;
-    top: 3rem;                  /* sits just under the algo navbar */
-    z-index: 49;
+    /* Sibling of the navbar inside .algo-sticky-chrome; the wrapper
+       is the only sticky element. */
     animation: sim-banner-pulse 2.2s ease-in-out infinite;
   }
   .sim-banner-dot {
@@ -1286,9 +1304,7 @@
     font-size: 0.62rem;
     font-weight: 600;
     letter-spacing: 0.02em;
-    position: sticky;
-    top: 3rem;
-    z-index: 48;
+    /* Sibling under .algo-sticky-chrome. */
   }
   .paper-banner-dot {
     width: 0.5rem;
@@ -1309,9 +1325,6 @@
 
   /* ── Replay banner ───────────────────────────────────────────────────── */
   .replay-banner {
-    position: sticky;
-    top: 3rem;
-    z-index: 39;
     display: flex;
     align-items: center;
     gap: 0.5rem;
