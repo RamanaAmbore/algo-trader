@@ -674,6 +674,29 @@ class GrowwConnection:
         self._access_token = access_token or ""
         self._groww        = None
         self._import_error = None
+
+        # Operator-friendly auto-detect: Groww's access_token IS a JWT
+        # (starts with "eyJ" — base64-encoded '{"alg":…}'). The api_key
+        # is a separate vendor-integration string. Operators frequently
+        # paste the JWT into the `api_key` field by mistake (the
+        # /admin/brokers form labels and Groww's own dashboard call
+        # both surfaces "key" or "token" inconsistently). Without this
+        # heuristic the connection falls all the way through to
+        # "no working token" because mode 1 (api_key + secret) needs a
+        # secret we don't have, and mode 3 (legacy access_token) checks
+        # the empty access_token field.
+        if (self._api_key.startswith("eyJ")
+                and not self._access_token
+                and not self._secret
+                and not self._totp_seed):
+            self._access_token = self._api_key
+            self._api_key      = ""
+            logger.info(
+                f"GrowwConnection {account!r}: api_key looks like a JWT "
+                f"(eyJ… prefix) — treating as access_token. Fix the "
+                f"field placement in /admin/brokers if this is wrong."
+            )
+
         self._build()
 
     # ── Token mint + cache ────────────────────────────────────────────
