@@ -884,20 +884,22 @@
   <!-- Indices snapshot — always rendered. Compact name·spot·Δ%
        pill row. Falls back to a placeholder when no underlyings are
        seeded yet so the operator sees the structure even pre-run. -->
-  <div class="sim-section-label">Indices</div>
-  {#if indicesSnapshot.length}
-    <div class="sim-indices-row">
-      {#each indicesSnapshot as ix (ix.name)}
-        <span class="sim-index-pill" class:up={ix.pct >= 0} class:down={ix.pct < 0}>
-          <span class="sim-index-name">{ix.name}</span>
-          <span class="sim-index-spot">{priceFmt(ix.spot)}</span>
-          <span class="sim-index-pct">{ix.pct >= 0 ? '+' : ''}{ix.pct.toFixed(2)}%</span>
-        </span>
-      {/each}
-    </div>
-  {:else}
-    <div class="sim-empty">No underlyings seeded. Start a sim to populate.</div>
-  {/if}
+  <section class="sim-card">
+    <div class="sim-section-label">Indices</div>
+    {#if indicesSnapshot.length}
+      <div class="sim-indices-row">
+        {#each indicesSnapshot as ix (ix.name)}
+          <span class="sim-index-pill" class:up={ix.pct >= 0} class:down={ix.pct < 0}>
+            <span class="sim-index-name">{ix.name}</span>
+            <span class="sim-index-spot">{priceFmt(ix.spot)}</span>
+            <span class="sim-index-pct">{ix.pct >= 0 ? '+' : ''}{ix.pct.toFixed(2)}%</span>
+          </span>
+        {/each}
+      </div>
+    {:else}
+      <div class="sim-empty">No underlyings seeded. Start a sim to populate.</div>
+    {/if}
+  </section>
 
   <!-- Live activity — last 30 agent fires + sim orders, newest first.
        Pattern borrowed from QuantConnect Live Log / TradingView List
@@ -905,89 +907,103 @@
        adjacent to the chart so signal + order timing is glanceable.
        Persists across sim runs so the operator can always refer back
        to recent activity even when no sim is currently running. -->
-  <div class="sim-section-label">Live activity</div>
-  {#if activityFeed.length}
-    <div class="sim-activity">
-      {#each activityFeed as row, i (row.kind + i + row.ts)}
-        <div class="sim-activity-row sim-activity-{row.kind}">
-          <span class="sim-activity-ts">{@html dualTsHtml(row.ts)}</span>
-          {#if row.kind === 'agent'}
-            <span class="sim-activity-chip sim-activity-chip-agent">AGENT</span>
-            <span class="sim-activity-slug">{row.slug || ''}</span>
-            <span class="sim-activity-detail">{row.type || ''} · {row.detail}</span>
-          {:else}
-            <span class="sim-activity-chip sim-activity-chip-order">ORDER</span>
-            <span class="sim-activity-slug">{row.side} {qtyFmt(row.qty)} {row.symbol}</span>
-            <span class="sim-activity-detail">@₹{priceFmt(row.price)} · {row.status} {row.detail ? '· ' + row.detail : ''}</span>
-          {/if}
-        </div>
-      {/each}
-    </div>
-  {:else}
-    <div class="sim-empty">No agent fires or orders yet. Start a sim to populate.</div>
-  {/if}
+  <section class="sim-card">
+    <div class="sim-section-label">Live activity</div>
+    {#if activityFeed.length}
+      <div class="sim-activity">
+        {#each activityFeed as row, i (row.kind + i + row.ts)}
+          <div class="sim-activity-row sim-activity-{row.kind}">
+            <span class="sim-activity-ts">{@html dualTsHtml(row.ts)}</span>
+            {#if row.kind === 'agent'}
+              <span class="sim-activity-chip sim-activity-chip-agent">AGENT</span>
+              <span class="sim-activity-slug">{row.slug || ''}</span>
+              <span class="sim-activity-detail">{row.type || ''} · {row.detail}</span>
+            {:else}
+              <span class="sim-activity-chip sim-activity-chip-order">ORDER</span>
+              <span class="sim-activity-slug">{row.side} {qtyFmt(row.qty)} {row.symbol}</span>
+              <span class="sim-activity-detail">@₹{priceFmt(row.price)} · {row.status} {row.detail ? '· ' + row.detail : ''}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <div class="sim-empty">No agent fires or orders yet. Start a sim to populate.</div>
+    {/if}
+  </section>
 
   <!-- Per-underlying charts — always section-labelled. -->
-  <div class="sim-section-label">Underlyings</div>
-  {#if underlyingNames.length}
-    <div class="sim-charts">
-      {#each underlyingNames as name (name)}
-        <PriceChart mode="sim" symbol={name} height={180}
-                    data={chartsBySymbol[name]}
-                    {chartsBySymbol} />
-      {/each}
-    </div>
-  {:else}
-    <div class="sim-empty">No underlying charts yet. Charts populate when sim positions/holdings have parseable F&amp;O symbols.</div>
-  {/if}
-
-  <!-- Positions summary — always rendered with placeholder. -->
-  <div class="sim-section-label">Positions summary</div>
-  {#if summaryPositions.length}
-    <table class="sim-summary-grid">
-      <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
-      <tbody>
-        {#each summaryPositions as row (row.account)}
-          <tr class:sim-summary-total={row.account === 'TOTAL'}>
-            <td>{row.account}</td>
-            <td class="sim-num">{priceFmt(row.cur_val)}</td>
-            <td class="sim-num" class:up={row.pnl > 0} class:down={row.pnl < 0}>{priceFmt(row.pnl)}</td>
-            <td class="sim-num" class:up={row.day_pnl > 0} class:down={row.day_pnl < 0}>{priceFmt(row.day_pnl)}</td>
-          </tr>
+  <section class="sim-card">
+    <div class="sim-section-label">Underlyings</div>
+    {#if underlyingNames.length}
+      <div class="sim-charts">
+        {#each underlyingNames as name (name)}
+          <PriceChart mode="sim" symbol={name} height={180}
+                      data={chartsBySymbol[name]}
+                      {chartsBySymbol} />
         {/each}
-      </tbody>
-    </table>
-  {:else}
-    <div class="sim-empty">No positions seeded.</div>
-  {/if}
+      </div>
+    {:else}
+      <div class="sim-empty">No underlying charts yet. Charts populate when sim positions/holdings have parseable F&amp;O symbols.</div>
+    {/if}
+  </section>
 
-  <!-- Holdings summary — same shape, conditional on the operator
-       selecting `holdings` in the sim Inputs multi-select. Backend
-       returns [] when holdings isn't in inputs; we hide the section
-       in that case so dev sessions that only seed positions don't see
-       an empty holdings grid. -->
-  {#if summaryHoldings.length}
-    <div class="sim-section-label">Holdings summary</div>
-    <table class="sim-summary-grid">
-      <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
-      <tbody>
-        {#each summaryHoldings as row (row.account)}
-          <tr class:sim-summary-total={row.account === 'TOTAL'}>
-            <td>{row.account}</td>
-            <td class="sim-num">{priceFmt(row.cur_val)}</td>
-            <td class="sim-num" class:up={row.pnl > 0} class:down={row.pnl < 0}>{priceFmt(row.pnl)}</td>
-            <td class="sim-num" class:up={row.day_pnl > 0} class:down={row.day_pnl < 0}>{priceFmt(row.day_pnl)}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  {/if}
+  <!-- Summary grids — positions + holdings sit side-by-side on wide
+       viewports (≥1100 px main column) so the operator can scan both
+       at once without scrolling. The two cards collapse to a single
+       column below that breakpoint. -->
+  <div class="sim-summary-row">
+    <section class="sim-card">
+      <div class="sim-section-label">Positions summary</div>
+      {#if summaryPositions.length}
+        <table class="sim-summary-grid">
+          <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+          <tbody>
+            {#each summaryPositions as row (row.account)}
+              <tr class:sim-summary-total={row.account === 'TOTAL'}>
+                <td>{row.account}</td>
+                <td class="sim-num">{priceFmt(row.cur_val)}</td>
+                <td class="sim-num" class:up={row.pnl > 0} class:down={row.pnl < 0}>{priceFmt(row.pnl)}</td>
+                <td class="sim-num" class:up={row.day_pnl > 0} class:down={row.day_pnl < 0}>{priceFmt(row.day_pnl)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <div class="sim-empty">No positions seeded.</div>
+      {/if}
+    </section>
+
+    <!-- Holdings summary — same shape, conditional on the operator
+         selecting `holdings` in the sim Inputs multi-select. Backend
+         returns [] when holdings isn't in inputs; we hide the section
+         in that case so dev sessions that only seed positions don't see
+         an empty holdings grid. -->
+    {#if summaryHoldings.length}
+      <section class="sim-card">
+        <div class="sim-section-label">Holdings summary</div>
+        <table class="sim-summary-grid">
+          <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+          <tbody>
+            {#each summaryHoldings as row (row.account)}
+              <tr class:sim-summary-total={row.account === 'TOTAL'}>
+                <td>{row.account}</td>
+                <td class="sim-num">{priceFmt(row.cur_val)}</td>
+                <td class="sim-num" class:up={row.pnl > 0} class:down={row.pnl < 0}>{priceFmt(row.pnl)}</td>
+                <td class="sim-num" class:up={row.day_pnl > 0} class:down={row.day_pnl < 0}>{priceFmt(row.day_pnl)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </section>
+    {/if}
+  </div>
 
   <!-- Past simulations — last 5 iteration rows, persisted across page
        reloads. Inline Re-run button kicks off a new single-iteration
        sim with the same regime + seed + agent_ids (deterministic).
        Slug is clickable for the detail page. -->
-  <div class="sim-section-label">Past simulations</div>
+  <section class="sim-card">
+    <div class="sim-section-label">Past simulations</div>
   {#if pastIterations.length}
     <table class="sim-summary-grid sim-past-grid">
       <thead><tr><th>Slug</th><th>Regime</th><th>Started</th><th>End</th><th class="sim-num">Fees</th><th class="sim-num">Net P&amp;L</th><th></th></tr></thead>
@@ -1868,6 +1884,49 @@
     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 0.5rem;
   }
+
+  /* ── Card wrapper for each section in the main column ─────────────
+     Earlier the section labels + content were sibling divs with no
+     visual separation — everything stacked into one long flat column
+     and the operator couldn't tell where Indices ended and Live
+     Activity began. Wrapping each section in .sim-card adds a subtle
+     bg + border so the boundaries are obvious without shouting.
+     Same gradient as .algo-status-card so the page reads as one
+     consistent dark surface, not a quilt of different card styles. */
+  .sim-card {
+    background: linear-gradient(180deg, rgba(15,23,41,0.65) 0%, rgba(10,16,32,0.65) 100%);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 0.35rem;
+    padding: 0.55rem 0.85rem 0.7rem;
+    margin-bottom: 0.55rem;
+  }
+  .sim-card:last-child { margin-bottom: 0; }
+  /* Section labels inside cards: drop the top margin so the label
+     sits flush with the card's top padding. */
+  .sim-card > .sim-section-label:first-child {
+    margin-top: 0;
+  }
+
+  /* Positions + Holdings summaries sit side-by-side on a wide main
+     column. Each card is its own column; collapse to one column
+     below ~720 px so the grid stays readable on narrow viewports
+     (when the operator has the side aside visible + a tablet
+     window). The grid is the only place we want a 2-col layout
+     inside the main panel; everything else (Indices / Live Activity
+     / Underlyings / Past Simulations) wants full width because of
+     long pill rows + wide tables. */
+  .sim-summary-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+    margin-bottom: 0.55rem;
+  }
+  @media (min-width: 720px) {
+    .sim-summary-row {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
+  .sim-summary-row > .sim-card { margin-bottom: 0; }
   /* Section label between chart / summary blocks. Same amber as
      MarketPulse's mp-section-label so the sim panel feels consistent
      with /dashboard's existing summary headings. */
