@@ -210,7 +210,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,pnl?:number,source:string,kind:string,draftId?:number}[]} */
+  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,source:string,kind:string,draftId?:number}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -1251,7 +1251,7 @@
   // WHY the page is empty (instead of an opaque "no candidates" hint).
   let positionsLoadErr = $state('');
   async function loadPositions() {
-    /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, pnl:number}>} */
+    /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number}>} */
     const merged = [];
 
     // Live broker positions
@@ -1271,6 +1271,10 @@
           source:   'live',
           avg_cost: p?.average_price != null ? Number(p.average_price) : null,
           ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
+          // Yesterday's close — anchors the per-row Prev Close column and
+          // the day's % move calculation. close_price is on every Kite
+          // position row; sim driver supplies it on the sim-position too.
+          prev_close: p?.close_price != null ? Number(p.close_price) : null,
           // Broker P&L (realised + unrealised). For qty=0 closed-out
           // intraday rows this is the realized P&L; the chart adds it
           // up separately so the legs panel + dashboard reconcile.
@@ -1299,6 +1303,7 @@
           source:   'sim',
           avg_cost: p?.average_price != null ? Number(p.average_price) : null,
           ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
+          prev_close: p?.close_price != null ? Number(p.close_price) : null,
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
         });
       }
@@ -1822,15 +1827,18 @@
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
             <span>Symbol</span>
+            <span class="num">Expiry</span>
             {#if !hideAcct}<span>Acct</span>{/if}
             <span class="num">Qty</span>
-            <span class="num">P&amp;L</span>
-            <span class="num">Cost</span>
             <span class="num">LTP</span>
+            <span class="num">Prev</span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
+            <span class="num">Γ</span>
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
+            <span class="num">P&amp;L</span>
+            <span class="num">Cost</span>
           </div>
           {#each candidatePositions as c (c.source + '|' + c.account + '|' + c.symbol)}
             {@const lg = legAnalyticsBySymbol[c.symbol]}
@@ -1850,6 +1858,8 @@
                  inadvertently fire the close handler. -->
             {@const isDraft = c.source === 'draft'}
             {@const isActionable = isDraft || isClosable}
+            {@const _instParsed = getInstrument(c.symbol)}
+            {@const _expiryStr = _instParsed?.x || ''}
             <div class="cand-row cand-row-{dir}"
                  class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
@@ -1917,17 +1927,20 @@
                           }}>×</button>
                 {/if}
               </span>
+              <span class="num font-mono text-[0.55rem]">{_expiryStr ? _expiryStr.slice(5) : '—'}</span>
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
               <span class="num {c.qty < 0 ? 'kv-neg' : 'kv-pos'}">{c.qty}</span>
+              <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
+              <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
+              <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
+              <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
+              <span class="num">{lg ? pctFmt(lg.greeks.gamma) : '—'}</span>
+              <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
+              <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
               <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cand-pnl-pos' : 'cand-pnl-neg'}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
-              <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
-              <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
-              <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
-              <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
-              <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
             </div>
           {/each}
         </div>
@@ -2580,16 +2593,19 @@
     display: grid;
     grid-template-columns:
       auto                        /* checkbox */
-      minmax(max-content, 1.4fr)  /* symbol (longest content — full readout always) */
+      minmax(max-content, 1.4fr)  /* symbol */
+      minmax(40px, 0.8fr)         /* expiry (MM-DD slice) */
       minmax(max-content, 1fr)    /* account */
-      minmax(26px, 1fr)           /* qty (-25 % of the 34 px numeric floor per operator) */
-      minmax(34px, 1fr)           /* pnl */
-      minmax(34px, 1fr)           /* cost */
+      minmax(26px, 1fr)           /* qty */
       minmax(34px, 1fr)           /* ltp */
+      minmax(34px, 1fr)           /* prev close */
       minmax(34px, 1fr)           /* iv */
       minmax(34px, 1fr)           /* delta */
+      minmax(34px, 1fr)           /* gamma */
       minmax(34px, 1fr)           /* theta */
-      minmax(34px, 1fr);          /* vega */
+      minmax(34px, 1fr)           /* vega */
+      minmax(34px, 1fr)           /* pnl */
+      minmax(34px, 1fr);          /* cost */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
     width: 100%;
@@ -2601,14 +2617,17 @@
     grid-template-columns:
       auto                        /* checkbox */
       minmax(max-content, 1.4fr)  /* symbol */
+      minmax(40px, 0.8fr)         /* expiry */
       minmax(26px, 1fr)           /* qty */
-      minmax(34px, 1fr)           /* pnl */
-      minmax(34px, 1fr)           /* cost */
       minmax(34px, 1fr)           /* ltp */
+      minmax(34px, 1fr)           /* prev close */
       minmax(34px, 1fr)           /* iv */
       minmax(34px, 1fr)           /* delta */
+      minmax(34px, 1fr)           /* gamma */
       minmax(34px, 1fr)           /* theta */
-      minmax(34px, 1fr);          /* vega */
+      minmax(34px, 1fr)           /* vega */
+      minmax(34px, 1fr)           /* pnl */
+      minmax(34px, 1fr);          /* cost */
   }
   /* Cell-level truncation so numeric tracks can shrink below their
      natural max-content without breaking row layout. Scoped to

@@ -19,7 +19,7 @@
    * }} */
   let { symbol, exchange = 'NFO', onQuote = null } = $props();
 
-  /** @type {{ ltp: number, bid: number|null, ask: number|null, depth_buy: any[], depth_sell: any[] } | null} */
+  /** @type {{ ltp: number, bid: number|null, ask: number|null, depth_buy: any[], depth_sell: any[], ohlc?: { close?: number } | null } | null} */
   let q = $state(null);
   /** @type {string} */
   let err = $state('');
@@ -64,6 +64,9 @@
     Depth · {symbol}{exchange ? ' · ' + exchange : ''}
     {#if q && q.ltp}
       <span class="ot-depth-ltp">LTP ₹{priceFmt(q.ltp)}</span>
+      {#if q.ohlc?.close && q.ohlc.close > 0}
+        <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
+      {/if}
     {:else if err}
       <span class="ot-depth-meta">{err}</span>
     {:else}
@@ -118,6 +121,17 @@
     font-size: 0.62rem;
     text-transform: none;
     letter-spacing: 0;
+  }
+  /* Prev close anchor right beside LTP — neutral cyan, lighter
+     weight so the eye reads LTP first (the live number) and PREV
+     second (the reference). */
+  .ot-depth-prev {
+    color: #7dd3fc;
+    font-weight: 600;
+    font-size: 0.62rem;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: 0.5rem;
   }
   .ot-depth-grid {
     display: grid;

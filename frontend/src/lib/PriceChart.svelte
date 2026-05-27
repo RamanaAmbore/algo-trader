@@ -27,6 +27,13 @@
     // amber dashed line at that x so multiple charts on the page
     // share the same "you are here" visual reference.
     /** @type {string | null} */ scrubbedTs = null,
+    // Yesterday's close. When set, drawn as a horizontal dashed line
+    // across the chart with a small label at the y-axis. Universal
+    // convention across Bloomberg / TWS / Kite — gives the operator
+    // an instant "above prev close vs below" anchor without comparing
+    // numbers. Parent supplies the value because the row that opens
+    // the chart already has close_price from /api/positions.
+    /** @type {number | null} */ prevClose = null,
   } = $props();
 
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
@@ -434,6 +441,25 @@
       <!-- Bid/ask band -->
       {#if bandPath}
         <path d={bandPath} fill="rgba(125,211,252,0.10)" stroke="none"/>
+      {/if}
+
+      <!-- Previous close reference line — dashed amber across the chart
+           at yesterday's close so the operator reads "above prev / below
+           prev" without comparing numbers. Bloomberg / TWS / Kite all
+           ship this. Renders only when (a) prev close was supplied and
+           (b) it sits inside the visible y-range. -->
+      {#if prevClose != null && Number.isFinite(prevClose) && prevClose > 0}
+        {@const _pcY = yOf(prevClose)}
+        {#if _pcY >= PAD_T && _pcY <= xAxisY}
+          <line x1={PAD_L} x2={W - PAD_R} y1={_pcY} y2={_pcY}
+                stroke="rgba(251,191,36,0.55)" stroke-width="1"
+                stroke-dasharray="4 3"/>
+          <text x={W - PAD_R - 4} y={_pcY - 3}
+                text-anchor="end" font-size="9"
+                fill="rgba(251,191,36,0.85)" font-family="ui-monospace, monospace">
+            prev {prevClose.toFixed(2)}
+          </text>
+        {/if}
       {/if}
 
       <!-- Underlying overlay — sky-blue dashed line, normalized into the

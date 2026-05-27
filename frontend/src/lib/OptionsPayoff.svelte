@@ -570,6 +570,16 @@
           <span class={'ps-v ps-spot-' + spotDir}>{fmtSpot(spot)}</span>
         </div>
       {/if}
+      {#if prevClose != null && Number.isFinite(prevClose) && prevClose > 0}
+        <!-- Yesterday's close — anchors the SPOT colour direction and
+             gives the operator a quick read on the day's spot drift
+             without comparing the SPOT row to a number stored in their
+             head. Bloomberg / TWS / Kite all show this. -->
+        <div class="ps-row" title="Yesterday's close for the underlying — anchor for today's spot drift">
+          <span class="ps-k">PREV</span>
+          <span class="ps-v ps-flat">{fmtSpot(prevClose)}</span>
+        </div>
+      {/if}
       {#if curveAtSpot}
         <div class="ps-row"
              title={realizedPnl !== 0
@@ -1103,6 +1113,10 @@
   .ps-v.ps-spot-flat { color: #7dd3fc; }
   .ps-v.ps-pos  { color: #4ade80; }
   .ps-v.ps-neg  { color: #f87171; }
+  /* PREV row sits between SPOT and TDAY; neutral cyan so the eye
+     reads SPOT (directional colour) → PREV (anchor) without
+     re-tinting itself. */
+  .ps-v.ps-flat { color: #c8d8f0; }
   .payoff-multi-expiry-note {
     margin: 0.25rem 0 0;
     font-size: 0.6rem;
