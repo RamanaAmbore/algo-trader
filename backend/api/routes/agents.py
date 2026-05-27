@@ -309,7 +309,7 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
     from backend.api.algo.agent_engine import (
         _fire_at_window_active, _in_blackout_window,
     )
-    from backend.api.algo.agent_evaluator import evaluate as v2_evaluate, V2Context
+    from backend.api.algo.agent_evaluator import evaluate as v2_evaluate, Context
 
     # Run gates in the SAME order the engine does, but report which
     # would block rather than continuing past.
@@ -325,7 +325,7 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
         if bw and _in_blackout_window(now, bw):
             blocked_by = "blackout"
 
-    v2_ctx = V2Context(
+    v2_ctx = Context(
         sum_holdings=ctx.get("sum_holdings"),
         sum_positions=ctx.get("sum_positions"),
         df_margins=ctx.get("df_margins"),
@@ -641,7 +641,7 @@ class AgentController(Controller):
             _build_context, _in_blackout_window, _fire_at_window_active,
         )
         from backend.api.algo.agent_evaluator import (
-            evaluate as v2_evaluate, V2Context,
+            evaluate as v2_evaluate, Context,
         )
 
         async with async_session() as session:
