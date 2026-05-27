@@ -1313,6 +1313,37 @@ Most algo admin pages used to ship a long descriptive paragraph at the top — f
 
 ---
 
+## Disclosure / collapse — two components, two semantics
+
+Two shared visual primitives handle the "expand / collapse" affordance:
+
+| Component | Use for | Persists? | Visual |
+|---|---|---|---|
+| [`CollapseButton.svelte`](frontend/src/lib/CollapseButton.svelte) | **Card-level** collapse — Dashboard panels, Options analytics cards | Yes — localStorage `ramboq.collapse.<user>.<cardId>` | Chevron SVG, top-right card-header |
+| [`DisclosureChevron.svelte`](frontend/src/lib/DisclosureChevron.svelte) | **Row-level** inline disclosure — Agents rows, Fragments rows | No (ephemeral) | `▾ / ▸`, 0.65rem, `#7e97b8`, flex-shrink-0 |
+
+Earlier the row-level triangles were hand-rolled per page with mismatched colours and font sizes (Agents used `#7e97b8 0.65rem`; Fragments used `rgba(251,191,36,0.7) 0.85rem`). One component now = one identity across the workspace.
+
+`<DisclosureChevron open={isOpen} ariaLabel?="…" />` — drop in next to the row's clickable affordance. Accepts an optional `ariaLabel` so screen readers announce expand/collapse intent.
+
+---
+
+## Agent editor — every column is editable
+
+[`/agents`](frontend/src/routes/(algo)/agents/+page.svelte)'s inline editor now exposes every `Agent` column that's mutable through the API. Operators can read the agent's full state from one screen without falling back to "edit JSON" workarounds. Fields covered today:
+
+- **Identity** — `name`, `long_name` (3-part `when:… alert:… do:…` operator label), `description`
+- **Routing** — `scope`, `schedule`, `cooldown_minutes`, `fire_at_time`
+- **Lifespan** — `lifespan_type` (persistent / one_shot / n_fires / until_date), `lifespan_max_fires`, `lifespan_expires_at`
+- **Priority / alert hierarchy** — `tier` (labelled **Priority** in the UI per PagerDuty / Opsgenie convention), `topic`, `digest_window_sec`
+- **Execution** — `trade_mode` (paper / live), `debounce_minutes`
+- **Filtering + quiet hours** — `tags` (CSV input, parsed to list), `blackout_windows` (JSON array of `{start, end}` in IST)
+- **Trees** — `conditions` (JSON), `events` (channel checkbox grid), `actions` (JSON + quick-add pills)
+
+Industry analogue: PagerDuty / Opsgenie / Sentry expose every alert-rule column in the editor — hiding fields creates "ghost config" the operator can't account for.
+
+---
+
 ## Reusable order ticket (`<OrderTicket>`)
 
 A single Svelte component handles every order op the platform needs (open / close / modify / repeat / cancel) across every instrument (EQ / FUT / OPT / commodities). One callsite per page; the ticket renders the right fields per instrument, owns its own validation, depth ladder, and submit lifecycle.
