@@ -24,9 +24,16 @@
 <style>
   .disclosure-chevron {
     color: #7e97b8;
-    font-size: 0.65rem;
+    font-size: 0.95rem;
     line-height: 1;
     flex-shrink: 0;
     user-select: none;
+    /* A bit of breathing room so the chevron reads as a clear
+       affordance instead of disappearing among the row pills. */
+    padding: 0 0.15rem;
+    transition: color 0.12s;
+  }
+  .disclosure-chevron:hover {
+    color: #fbbf24;
   }
 </style>

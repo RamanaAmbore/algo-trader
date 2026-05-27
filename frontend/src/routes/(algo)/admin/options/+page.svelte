@@ -1617,10 +1617,18 @@
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{strategyErr}</div>
 {/if}
 
-{#if !strategy && !strategyErr && !loading && !selectedUnderlying && !drafts.length}
+{#if !strategy && !strategyErr && !loading && !drafts.length}
   <div class="text-[0.65rem] text-[#7e97b8] italic mb-3">
-    Pick an underlying to surface {simActive ? 'sim' : 'live'} candidates, or click
-    <b>+ Add</b> to drop a draft strike into the payoff.
+    {#if !selectedUnderlying}
+      Pick an underlying to surface {simActive ? 'sim' : 'live'} candidates, or click
+      <b>+ Add</b> to drop a draft strike into the payoff.
+    {:else if candidatePositions.length === 0}
+      No {simActive ? 'sim' : 'live'} positions on <b>{selectedUnderlying}</b> and no drafts yet.
+      Click <b>+ Add</b> to drop a draft strike on this underlying.
+    {:else}
+      No legs selected. Tick at least one row in the Candidates panel
+      below to render the payoff.
+    {/if}
   </div>
 {/if}
 

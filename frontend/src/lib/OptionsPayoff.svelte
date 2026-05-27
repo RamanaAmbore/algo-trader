@@ -283,6 +283,7 @@
 
   import { untrack } from 'svelte';
   import { priceFmt, aggFmt } from '$lib/format';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Profit + loss zones — shade above and below zero on the today curve
   // up to the chart bounds. Two filled paths whose top/bottom rides the
@@ -538,23 +539,14 @@
               onclick={resetZoom}>reset zoom</button>
     {/if}
     {#if onRefresh}
-      <!-- Top-right refresh button. Absolutely positioned so the
-           "Refresh" → "Refreshing…" text swap can never push the
-           SVG / stat overlay / legend around. Width is locked to
-           the wider "Refreshing…" string so the button itself also
-           stays put across state changes.
-           No `title` attribute — the visible "↻ Refresh" label is
-           self-explanatory, and the native tooltip was reading as
-           a popup when the operator pressed the button. -->
-      <button type="button"
-              class="payoff-refresh"
-              class:payoff-refresh-busy={loading}
-              disabled={loading}
-              onclick={() => { hover = null; onRefresh && onRefresh(); }}>
-        <span class="payoff-refresh-label">
-          {#if loading}↻ refreshing{:else}↻ Refresh{/if}
-        </span>
-      </button>
+      <!-- Icon-only refresh — matches the rest of the app's
+           RefreshButton convention. The icon spins while loading,
+           absolutely positioned top-right so it never shifts the
+           SVG / stat overlay / legend. -->
+      <span class="payoff-refresh-wrap">
+        <RefreshButton onClick={() => { hover = null; onRefresh && onRefresh(); }}
+                       {loading} label="payoff" />
+      </span>
     {/if}
     <!-- Top-left stat overlay — the chart's at-a-glance numerics so the
          operator doesn't have to glance at the Greeks / Risk cards just
@@ -974,10 +966,9 @@
   .payoff-reset {
     position: absolute;
     top: 0.4rem;
-    /* Sit to the LEFT of the wider Refresh button (6.2rem + 0.6rem
-       offset + 0.3rem gap = 7.1rem) so the two top-right buttons
-       never overlap. */
-    right: 7.1rem;
+    /* Sit to the LEFT of the 1.4rem icon RefreshButton at right: 0.6rem
+       (0.6 + 1.4 + 0.3 gap = 2.3 rem). */
+    right: 2.3rem;
     font-family: monospace;
     font-size: 0.5rem;
     text-transform: uppercase;
@@ -996,51 +987,14 @@
     border-color: rgba(251,191,36,0.65);
   }
 
-  /* Refresh button — top-right corner of the chart. Width is locked
-     so the "Refresh" / "Refreshing…" swap never reflows; the inner
-     <span> centers either label inside the same fixed box. Position
-     is absolute so the button + its state changes can never push the
-     SVG / stat overlay / legend around. */
-  .payoff-refresh {
+  /* Icon RefreshButton — pinned top-right of the chart so it can
+     never push the SVG / stat overlay around. The button itself owns
+     its sky-300 palette + spin animation (RefreshButton.svelte). */
+  .payoff-refresh-wrap {
     position: absolute;
     top: 0.4rem;
     right: 0.6rem;
-    width: 6.2rem;
-    height: 1.5rem;
-    padding: 0;
-    border-radius: 4px;
-    border: 1px solid rgba(125,211,252,0.55);
-    background: rgba(125,211,252,0.10);
-    color: #7dd3fc;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 1;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    /* SVG below has z-index: 2 — refresh must sit above it. */
     z-index: 5;
-    transition: background 0.1s, border-color 0.1s, color 0.1s;
-  }
-  .payoff-refresh-label {
-    /* Center the label inside the fixed-width button; tabular-nums
-       keeps any digits steady if a future variant interleaves them. */
-    display: inline-block;
-    text-align: center;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-  }
-  .payoff-refresh:hover:not(:disabled) {
-    background: rgba(125,211,252,0.22);
-    border-color: rgba(125,211,252,0.85);
-  }
-  .payoff-refresh:disabled,
-  .payoff-refresh-busy {
-    cursor: progress;
-    opacity: 0.7;
   }
   .payoff-empty {
     height: var(--chart-h, 280px);
