@@ -479,7 +479,8 @@ class AgentController(Controller):
             return {
                 "ok": False,
                 "errors": ["condition tree must be a grammar node: "
-                           "either a metric/scope leaf or an all/any/not composite"],
+                           "a metric/scope leaf, an all/any/not composite, "
+                           "or a {$ref: <fragment>} reference"],
                 "grammar": "v2",
             }
         errors = v2_validate(cond)

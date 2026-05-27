@@ -115,6 +115,9 @@ def is_grammar_tree(cond) -> bool:
     """True when `cond` is a structurally plausible grammar tree."""
     if not isinstance(cond, dict):
         return False
+    if '$ref' in cond:
+        # Fragment reference — validator will resolve + recurse.
+        return True
     if 'all' in cond or 'any' in cond or 'not' in cond:
         return True
     return 'metric' in cond and 'scope' in cond
