@@ -2495,7 +2495,7 @@
       // sees the day's frame at a glance (where the symbol started vs.
       // where it is now). Both default to em-dash when the broker quote
       // didn't carry an OHLC block (off-hours, illiquid contracts).
-      { field: 'close', headerName: 'Prev', width: 52, minWidth: 52, maxWidth: 70,
+      { field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: numFmt },
@@ -2668,10 +2668,10 @@
         { field: 'pnl_percentage',        headerName: 'P&L %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: dirCellClass, valueFormatter: pctFmtGrid },
-        { field: 'cur_val',               headerName: 'Cur Val', width: 78,
+        { field: 'cur_val',               headerName: 'Value', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'inv_val',               headerName: 'Inv Val', width: 78,
+        { field: 'inv_val',               headerName: 'Invested', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
       ];

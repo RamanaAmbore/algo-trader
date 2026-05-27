@@ -1325,7 +1325,7 @@
         { field: 'pnl', headerName: 'Open P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
-        { field: 'cur_val', headerName: 'Cur Val', minWidth: 80, flex: 1,
+        { field: 'cur_val', headerName: 'Value', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell', valueFormatter: _agAggFmt },
       ],

@@ -141,6 +141,12 @@
   let rawHoldingsSummary  = $state([]);
   let rawPositionsSummary = $state([]);
 
+  // Total cur_val across the currently visible holdings — used by the
+  // Weight % valueGetter. Updated whenever the filter applies. Plain
+  // mutable variable (not $state) because it's only read inside the
+  // synchronous valueGetter closure that AG Grid invokes per cell.
+  let _holdingsTotalCurVal = 0;
+
   // Static grid refs
   let fundsEl            = null;
   let holdingsSummaryEl  = null;
@@ -270,24 +276,37 @@
     { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'cur_val',               headerName: 'Cur Val',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'inv_val',               headerName: 'Inv Val',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Value',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'inv_val',               headerName: 'Invested',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
-  // Order priority: LTP → Avg Price → Day P&L → Day % → P&L → P&L % → Qty → Cur Val.
-  // Day cols promoted from index 7-8 to 5-6 so they read in the visible scan
-  // column on narrow viewports (operator was scrolling to find them).
+  // Order priority: LTP → Prev Close → Avg → Day P&L → Day % → P&L → P&L % → Weight % → Qty → Value.
+  // Day cols promoted so they read in the visible scan column on narrow
+  // viewports. Prev Close inserted between LTP and Avg — operator can
+  // see today's gap from yesterday's close at a glance. Weight % inserted
+  // between P&L % and Qty (Kite Holdings convention).
   const holdingsCols = [
     { field: 'account',               headerName: 'Account',  width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 78, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price',         headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'close_price',           headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    // Weight % = this row's cur_val / total cur_val across the visible
+    // holdings filter. Computed in valueGetter so it tracks the AG Grid
+    // row-filter live (per-account view stays meaningful).
+    { field: 'weight_pct',            headerName: 'Weight %', width: 70, type: 'numericColumn', headerClass: numericHdr,
+      valueGetter: (p) => {
+        const cv = Number(p.data?.cur_val) || 0;
+        const total = _holdingsTotalCurVal;
+        return total > 0 ? (cv / total) * 100 : null;
+      },
+      valueFormatter: pctFmtGrid },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'cur_val',               headerName: 'Cur Val',  width: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cur_val',               headerName: 'Value',  width: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Positions summary — same Day-leading order as holdings summary.
@@ -337,7 +356,8 @@
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price',        headerName: 'Avg Price', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'close_price',          headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -345,11 +365,24 @@
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
   ]);
 
+  // Order priority: Net (real balance) → Avail Margin → Utilisation %
+  // (headroom) → Used Margin → Cash → Collateral. Operator decides
+  // "can I deploy more" off Net + Utilisation %; the components
+  // follow. Kite + IBKR both lead with the summary number, not Cash.
   const fundsCols = [
     { field: 'account',      headerName: 'Account',      width: 54, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { headerName: 'Net', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
+      valueGetter: (p) => (Number(p.data?.cash) || 0) + (Number(p.data?.collateral) || 0) - (Number(p.data?.used_margin) || 0) },
     { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { headerName: 'Util %', flex: 1, valueFormatter: pctFmtGrid, type: 'numericColumn', headerClass: numericHdr,
+      valueGetter: (p) => {
+        const used = Number(p.data?.used_margin) || 0;
+        const avail = Number(p.data?.avail_margin) || 0;
+        const denom = used + avail;
+        return denom > 0 ? (used / denom) * 100 : null;
+      } },
     { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
@@ -491,6 +524,10 @@
       .slice().sort(closedLast);
     const pRows = rawPositions.filter(r => keepAcct(r) && keepSym(r))
       .slice().sort(closedLast);
+    // Recompute total cur_val so the Weight % column always reflects
+    // the currently-filtered view (per-account picks change the base).
+    _holdingsTotalCurVal = hRows.reduce(
+      (s, r) => s + (Number(r.cur_val) || 0), 0);
     const hSummary  = rawHoldingsSummary.filter(keepAcct);
     const pSummary  = rawPositionsSummary.filter(keepAcct);
     const fRows     = rawFunds.filter(keepAcct);

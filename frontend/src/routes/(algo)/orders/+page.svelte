@@ -273,13 +273,15 @@
         </div>
         <div class="text-[0.65rem] text-[#c8d8f0] flex flex-wrap gap-x-2 uppercase">
           <span>QTY:<b class="order-card-num">{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</b></span>
-          <span>ORDER:<b>{o.order_type}</b></span>
+          <span>TYPE:<b>{o.order_type}</b></span>
           <span>PRICE:<b class="order-card-num">{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</b></span>
           {#if o.trigger_price}<span>TRIGGER:<b class="order-card-num">{priceFmt(o.trigger_price)}</b></span>{/if}
+          {#if o.validity}<span>VALIDITY:<b>{o.validity}</b></span>{/if}
           <span>PRODUCT:<b>{o.product}</b></span>
           <span>VARIETY:<b>{o.variety}</b></span>
+          {#if o.order_timestamp}<span>TIME:<b>{logTimeIst(o.order_timestamp)}</b></span>{/if}
           {#if o.tag}<span>TAG:<b>{o.tag}</b></span>{/if}
-          {#if o.status_message}<span>MSG:<b>{o.status_message}</b></span>{/if}
+          {#if o.status_message}<span>NOTE:<b>{o.status_message}</b></span>{/if}
         </div>
       </button>
     {/each}

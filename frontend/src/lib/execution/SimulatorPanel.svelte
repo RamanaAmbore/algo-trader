@@ -956,7 +956,7 @@
       <div class="sim-section-label">Positions summary</div>
       {#if summaryPositions.length}
         <table class="sim-summary-grid">
-          <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+          <thead><tr><th>Account</th><th>Value</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
           <tbody>
             {#each summaryPositions as row (row.account)}
               <tr class:sim-summary-total={row.account === 'TOTAL'}>
@@ -982,7 +982,7 @@
       <section class="sim-card">
         <div class="sim-section-label">Holdings summary</div>
         <table class="sim-summary-grid">
-          <thead><tr><th>Account</th><th>Cur Val</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+          <thead><tr><th>Account</th><th>Value</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
           <tbody>
             {#each summaryHoldings as row (row.account)}
               <tr class:sim-summary-total={row.account === 'TOTAL'}>
