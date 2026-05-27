@@ -108,12 +108,18 @@ def _enrich_position_greeks(rows: list) -> None:
     if not rows:
         return
     from backend.api.algo.derivatives import (
-        parse_tradingsymbol, implied_vol, greeks, underlying_ltp_key,
+        parse_tradingsymbol, implied_vol, greeks, option_underlying_quote_key,
     )
     from backend.shared.brokers.registry import get_price_broker
 
     # Pass 1 — parse + collect unique underlying keys we need spots for.
-    parsed_by_idx: dict[int, dict] = {}
+    # option_underlying_quote_key() returns the right key shape for both
+    # equity options (NSE:RELIANCE / NSE:NIFTY 50) AND MCX commodity
+    # options (MCX:CRUDEOIL26JUNFUT — the matching-month future, which
+    # serves as the spot proxy for MCX since the exchange has no separate
+    # spot ticker). Falling back to a naked NSE:<name> for MCX would
+    # always 404 and silently zero out the Greeks for every commodity row.
+    parsed_by_idx: dict[int, tuple[dict, str]] = {}
     underlying_keys: set[str] = set()
     today = pd.Timestamp.now().normalize().date()
     for i, r in enumerate(rows):
@@ -122,8 +128,11 @@ def _enrich_position_greeks(rows: list) -> None:
         p = parse_tradingsymbol(r.tradingsymbol)
         if not p or p.get("kind") != "opt":
             continue
-        parsed_by_idx[i] = p
-        underlying_keys.add(underlying_ltp_key(p["underlying"]))
+        u_key = option_underlying_quote_key(r.tradingsymbol)
+        if not u_key:
+            continue
+        parsed_by_idx[i] = (p, u_key)
+        underlying_keys.add(u_key)
 
     if not parsed_by_idx:
         return
@@ -141,9 +150,8 @@ def _enrich_position_greeks(rows: list) -> None:
 
     # Pass 3 — per-option IV calibration + greeks compute.
     r_rate = 0.07  # constant; matches the rate used in /api/options/analytics
-    for i, p in parsed_by_idx.items():
+    for i, (p, u_key) in parsed_by_idx.items():
         row = rows[i]
-        u_key = underlying_ltp_key(p["underlying"])
         S = spot_by_key.get(u_key, 0.0)
         if S <= 0:
             continue
