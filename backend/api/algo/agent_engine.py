@@ -185,9 +185,18 @@ def _build_now_ctx() -> dict:
     """Build a fresh market-state context for the CURRENT wall-clock
     time. Used by the ticket route + MCP gated paths where we don't
     have a pre-built engine context. Reuses `_build_context` so the
-    result is identical to what `run_cycle` sees on the same tick."""
-    from datetime import datetime, timezone
-    return _build_context(datetime.now(timezone.utc))
+    result is identical to what `run_cycle` sees on the same tick.
+
+    `now` MUST be IST (Asia/Kolkata) — _build_context's hours_start /
+    hours_end values are IST times of day, and `now.replace(hour=…)`
+    keeps the original tz. Passing a UTC `now` would silently shift
+    every comparison by 5h30m and erroneously report MCX (09:00–23:30
+    IST) as closed for IST hours 09–14 (= UTC 03:30–08:30). The
+    background engine path uses `timestamp_indian()` for exactly this
+    reason; this helper now mirrors that contract.
+    """
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    return _build_context(timestamp_indian())
 
 
 # Back-compat alias used by callers that imported the old name.
