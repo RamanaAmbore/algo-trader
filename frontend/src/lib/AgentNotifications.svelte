@@ -110,11 +110,20 @@
       {:else}
         <ul class="anb-list">
           {#each display as e (e.id)}
+            <!-- Two-row layout per event: top row carries timestamp +
+                 kind chip + SIM marker; the message wraps under them
+                 at full panel width. Previously a 4-column grid
+                 squeezed the message into ~10 chars on a 22 rem
+                 popover; the operator couldn't read fire-condition
+                 detail without expanding. -->
             <li class="anb-row anb-row-{e.event_type}">
-              <span class="anb-ts">{logTime(e.timestamp)}</span>
-              <span class="anb-kind anb-kind-{e.event_type}">{kindLabel(e.event_type)}</span>
-              {#if e.sim_mode}<span class="anb-sim">SIM</span>{/if}
-              <span class="anb-msg">{e.detail || e.trigger_condition || `agent #${e.agent_id}`}</span>
+              <div class="anb-row-meta">
+                <span class="anb-ts">{logTime(e.timestamp)}</span>
+                <span class="anb-kind anb-kind-{e.event_type}">{kindLabel(e.event_type)}</span>
+                {#if e.sim_mode}<span class="anb-sim">SIM</span>{/if}
+                <span class="anb-agent-id">#{e.agent_id}</span>
+              </div>
+              <div class="anb-msg">{e.detail || e.trigger_condition || ''}</div>
             </li>
           {/each}
         </ul>
@@ -213,20 +222,33 @@
     text-align: center;
   }
   .anb-list { list-style: none; margin: 0; padding: 0.2rem 0; }
+  /* Each event is now a vertical stack: a compact meta row (ts + kind
+     + sim + agent_id) followed by the message at full popover width.
+     Lets long fire-condition messages and action error details wrap
+     naturally instead of being squeezed into a narrow grid column. */
   .anb-row {
-    display: grid;
-    grid-template-columns: auto auto auto 1fr;
-    gap: 0.4rem;
-    align-items: baseline;
-    padding: 0.28rem 0.65rem;
-    font-size: 0.6rem;
-    line-height: 1.25;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.3rem 0.65rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
   .anb-row:last-child { border-bottom: 0; }
+  .anb-row-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .anb-agent-id {
+    color: rgba(200, 216, 240, 0.4);
+    font-size: 0.5rem;
+    font-family: ui-monospace, monospace;
+    margin-left: auto;
+  }
   .anb-ts {
-    color: rgba(200, 216, 240, 0.45);
-    font-size: 0.52rem;
+    color: rgba(200, 216, 240, 0.55);
+    font-size: 0.55rem;
     white-space: nowrap;
   }
   .anb-kind {
@@ -260,5 +282,12 @@
   .anb-msg {
     color: #e5edf7;
     overflow-wrap: anywhere;
+    font-size: 0.6rem;
+    line-height: 1.35;
+    /* Indent slightly so the message visually sits as a continuation
+       of the meta row, not a fresh row. Empty messages (rare) collapse
+       to zero height. */
+    padding-left: 0.05rem;
   }
+  .anb-msg:empty { display: none; }
 </style>

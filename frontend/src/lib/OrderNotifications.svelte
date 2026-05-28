@@ -206,13 +206,19 @@
                   {g.terminalKind ? kindLabel(g.terminalKind) : 'OPEN'}
                 </span>
               </div>
-              <!-- Per-order flow: newest event at top. -->
+              <!-- Per-order flow: newest event at top. Bullet + line
+                   timeline rendered via ::before / ::after on each
+                   step (see CSS below). The message wraps under the
+                   meta row at full width rather than fighting for a
+                   narrow grid column. -->
               <ul class="onb-flow">
                 {#each g.events as e (e.id)}
                   <li class="onb-step onb-step-{e.kind}">
-                    <span class="onb-ts">{logTime(e.ts)}</span>
-                    <span class="onb-kind onb-kind-{e.kind}">{kindLabel(e.kind)}</span>
-                    <span class="onb-msg">{e.message}</span>
+                    <div class="onb-step-meta">
+                      <span class="onb-ts">{logTime(e.ts)}</span>
+                      <span class="onb-kind onb-kind-{e.kind}">{kindLabel(e.kind)}</span>
+                    </div>
+                    <div class="onb-msg">{e.message}</div>
                   </li>
                 {/each}
               </ul>
@@ -374,19 +380,78 @@
   .onb-group-cancel { box-shadow: inset 3px 0 0 0 rgba(200,216,240,0.35); padding-left: 0.95rem; }
   .onb-group-open   { box-shadow: inset 3px 0 0 0 rgba(56,189,248,0.45);  padding-left: 0.95rem; }
 
-  /* Per-order flow — newest event at top. */
-  .onb-flow { list-style: none; margin: 0; padding: 0; }
+  /* Per-order flow — newest event at top. Each step is rendered as a
+     timeline-style row: a coloured bullet on the left, a vertical
+     connector line linking adjacent bullets, then the timestamp +
+     kind chip + message wrapping under them. The connector line is
+     a pseudo-element on the bullet so it visually flows top-to-bottom
+     even when message bodies have different heights. */
+  .onb-flow { list-style: none; margin: 0; padding: 0.15rem 0 0; position: relative; }
   .onb-step {
-    display: grid;
-    grid-template-columns: auto auto 1fr;
+    position: relative;
+    padding: 0.3rem 0 0.3rem 1.1rem;
+    font-size: 0.6rem;
+    line-height: 1.35;
+  }
+  /* Bullet — coloured by kind (override below). */
+  .onb-step::before {
+    content: '';
+    position: absolute;
+    left: 0.32rem;
+    top: 0.55rem;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: #7e97b8;
+    border: 2px solid rgba(13, 21, 38, 0.95);
+    box-shadow: 0 0 0 1px rgba(200, 216, 240, 0.35);
+    z-index: 1;
+  }
+  /* Connector — a vertical line from this bullet down through the
+     next bullet. Last child drops the line via the empty-of-next
+     state below. */
+  .onb-step::after {
+    content: '';
+    position: absolute;
+    left: 0.575rem;
+    top: 1.05rem;
+    bottom: -0.3rem;
+    width: 1px;
+    background: rgba(200, 216, 240, 0.18);
+  }
+  .onb-step:last-child::after { display: none; }
+
+  /* Per-kind bullet colours. Inherits from the kind chip palette so
+     a green bullet on a filled step reads consistently with the
+     green FILLED chip on the same line. */
+  .onb-step-fill::before          { background: #4ade80; box-shadow: 0 0 0 1px rgba(74,222,128,0.55); }
+  .onb-step-placed::before        { background: #7dd3fc; box-shadow: 0 0 0 1px rgba(125,211,252,0.55); }
+  .onb-step-chase_modify::before  { background: #fbbf24; box-shadow: 0 0 0 1px rgba(251,191,36,0.55); }
+  .onb-step-unfill::before,
+  .onb-step-reject::before,
+  .onb-step-error::before         { background: #f87171; box-shadow: 0 0 0 1px rgba(248,113,113,0.55); }
+  .onb-step-cancel::before        { background: #c8d8f0; box-shadow: 0 0 0 1px rgba(200,216,240,0.45); }
+  .onb-step-postback::before      { background: #c4b5fd; box-shadow: 0 0 0 1px rgba(196,181,253,0.55); }
+  .onb-step-margin_check::before,
+  .onb-step-preflight_ok::before,
+  .onb-step-preflight_block::before { background: #a78bfa; box-shadow: 0 0 0 1px rgba(167,139,250,0.4); }
+
+  /* Two-row layout inside each step: meta line (ts + kind chip)
+     followed by message at full width. Matches the agent log
+     pattern so both popovers feel like one component family. */
+  .onb-step .onb-step-meta {
+    display: flex;
+    align-items: center;
     gap: 0.4rem;
-    align-items: baseline;
-    padding: 0.12rem 0;
-    font-size: 0.58rem;
-    line-height: 1.25;
+    flex-wrap: wrap;
+  }
+  .onb-step .onb-msg {
+    color: #e5edf7;
+    overflow-wrap: anywhere;
+    margin-top: 0.1rem;
   }
   .onb-ts {
-    color: rgba(200, 216, 240, 0.45);
+    color: rgba(200, 216, 240, 0.55);
     font-size: 0.52rem;
     white-space: nowrap;
   }
