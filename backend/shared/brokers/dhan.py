@@ -40,12 +40,53 @@ fix at that point with the live trace in hand.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from backend.shared.brokers.base import Broker
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Auth-retry plumbing ──────────────────────────────────────────────
+#
+# Dhan's SDK doesn't raise on auth failure — it returns a dict
+# `{"status": "failure", "remarks": "Invalid access token", ...}`
+# instead. To match the "cache → use → re-mint on failure" lifecycle
+# Kite (@retry_kite_conn) and Groww (@_retry_groww_auth) already use,
+# every broker method that touches the SDK runs its call through
+# DhanBroker._safe_call(...).
+#
+# _safe_call passes the live SDK handle into the operator's lambda
+# and inspects the raw response BEFORE normalisation. If the response
+# carries an auth-error shape (status=failure + auth-keyword remarks),
+# it forces a re-login via get_dhan_conn(test_conn=True) — which
+# re-runs _do_login() with the stored PIN + TOTP seed — and retries
+# once with the new SDK handle. If the account isn't configured for
+# headless re-login, _do_login raises and the original auth-failure
+# response propagates to the caller unchanged.
+_AUTH_ERROR_HINTS = (
+    "invalid access token",
+    "invalid token",
+    "token expired",
+    "unauthorized",
+    "unauthorised",
+    "auth failed",
+    "401",
+    "dh-901",   # Dhan: Invalid Authentication
+    "dh-905",   # Dhan: Invalid Token
+)
+
+
+def _looks_like_auth_failure(resp: Any) -> bool:
+    """True when a Dhan SDK response carries an auth-error signal."""
+    if not isinstance(resp, dict):
+        return False
+    status = str(resp.get("status", "")).lower()
+    if status != "failure":
+        return False
+    remarks = str(resp.get("remarks", "")).lower()
+    return any(hint in remarks for hint in _AUTH_ERROR_HINTS)
 
 
 # Dhan exchange-segment constants. The SDK uses opaque integer codes;
@@ -110,6 +151,26 @@ class DhanBroker(Broker):
         hatch for SDK features not lifted into the Broker ABC."""
         return self._conn.get_dhan_conn()
 
+    def _safe_call(self, sdk_call: Callable[[Any], Any]) -> Any:
+        """Invoke an SDK call with auto re-login on auth failure.
+
+        `sdk_call` is a one-arg lambda receiving the live SDK handle —
+        e.g. `lambda d: d.get_holdings()`. If the raw response carries
+        an auth-failure shape, we evict the cached token (via
+        get_dhan_conn(test_conn=True)) and retry once with the freshly
+        minted SDK handle. Network / 5xx / param exceptions propagate
+        immediately — only auth-shaped failures trigger the retry."""
+        resp = sdk_call(self.dhan)
+        if _looks_like_auth_failure(resp):
+            logger.warning(
+                f"DhanBroker for {self.account!r} got auth failure "
+                f"(remarks={resp.get('remarks')!r}). Forcing re-login "
+                f"via PIN+TOTP and retrying once."
+            )
+            fresh = self._conn.get_dhan_conn(test_conn=True)
+            resp = sdk_call(fresh)
+        return resp
+
     # ── Account state ─────────────────────────────────────────────────
 
     def profile(self) -> dict:
@@ -118,7 +179,7 @@ class DhanBroker(Broker):
         Synthesise a Kite-shape dict so the /admin/brokers test button
         gets a recognisable success message."""
         try:
-            funds = self.dhan.get_fund_limits()
+            funds = self._safe_call(lambda d: d.get_fund_limits())
             data = funds.get("data") if isinstance(funds, dict) else None
             return {
                 "user_id":   self._conn.client_id,
@@ -130,23 +191,23 @@ class DhanBroker(Broker):
             raise RuntimeError(f"Dhan auth check failed: {e}") from e
 
     def holdings(self) -> list[dict]:
-        resp = self.dhan.get_holdings()
+        resp = self._safe_call(lambda d: d.get_holdings())
         return _normalise_holdings(resp)
 
     def positions(self) -> dict:
-        resp = self.dhan.get_positions()
+        resp = self._safe_call(lambda d: d.get_positions())
         return _normalise_positions(resp)
 
     def margins(self, segment: str | None = None) -> dict:
-        resp = self.dhan.get_fund_limits()
+        resp = self._safe_call(lambda d: d.get_fund_limits())
         return _normalise_margins(resp, segment)
 
     def orders(self) -> list[dict]:
-        resp = self.dhan.get_order_list()
+        resp = self._safe_call(lambda d: d.get_order_list())
         return _normalise_orders(resp)
 
     def trades(self) -> list[dict]:
-        resp = self.dhan.get_trade_book()
+        resp = self._safe_call(lambda d: d.get_trade_book())
         return _normalise_trades(resp)
 
     # ── Market data ───────────────────────────────────────────────────
@@ -220,14 +281,14 @@ class DhanBroker(Broker):
                 # raw POST if missing. Either path returns a dict with
                 # a `data.totalMargin` field we map to Kite's `total`.
                 if hasattr(self.dhan, "margin_calculator"):
-                    resp = self.dhan.margin_calculator(
+                    resp = self._safe_call(lambda d: d.margin_calculator(
                         security_id=str(o.get("security_id", "")),
                         exchange_segment=ex_seg,
                         transaction_type=txn,
                         quantity=qty,
                         product_type=product,
                         price=price,
-                    )
+                    ))
                 else:
                     raise RuntimeError("dhanhq SDK missing margin_calculator method")
                 data = resp.get("data") if isinstance(resp, dict) else {}
@@ -249,7 +310,7 @@ class DhanBroker(Broker):
         ex_seg  = _dhan_exchange(kwargs.get("exchange", ""))
         product = _PRODUCT_TO_DHAN.get(kwargs.get("product", "MIS"), "INTRADAY")
         otype   = _ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", "MARKET"), "MARKET")
-        resp = self.dhan.place_order(
+        resp = self._safe_call(lambda d: d.place_order(
             security_id=str(kwargs.get("security_id", "")),
             exchange_segment=ex_seg,
             transaction_type=kwargs.get("transaction_type", "BUY"),
@@ -258,26 +319,26 @@ class DhanBroker(Broker):
             product_type=product,
             price=float(kwargs.get("price") or 0),
             trigger_price=float(kwargs.get("trigger_price") or 0),
-        )
+        ))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_order rejected: {resp}")
         return str(resp.get("data", {}).get("orderId", ""))
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
-        resp = self.dhan.modify_order(
+        resp = self._safe_call(lambda d: d.modify_order(
             order_id=order_id,
             quantity=int(kwargs.get("quantity", 0)) if kwargs.get("quantity") else None,
             price=float(kwargs.get("price") or 0) if kwargs.get("price") else None,
             trigger_price=(float(kwargs.get("trigger_price") or 0)
                            if kwargs.get("trigger_price") else None),
             order_type=_ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", ""), None),
-        )
+        ))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan modify_order rejected: {resp}")
         return order_id
 
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
-        resp = self.dhan.cancel_order(order_id=order_id)
+        resp = self._safe_call(lambda d: d.cancel_order(order_id=order_id))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan cancel_order rejected: {resp}")
         return order_id
