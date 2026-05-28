@@ -48,26 +48,30 @@ logger = get_logger(__name__)
 # access token, mint a fresh one via TOTP, and retry the call ONCE
 # with the new SDK handle. Non-auth errors propagate immediately so
 # real bugs (bad params, 5xx, network) aren't masked by silent retries.
+
+# Resolved once at module load — moves the SDK lookup off the hot path.
+# Tuple is empty when the SDK isn't installed (lets the broker module
+# stay importable while the registry surfaces a cleaner error). Empty
+# tuple makes `isinstance(e, ())` always False, so the decorator
+# becomes a transparent passthrough until growwapi lands.
+try:
+    from growwapi.groww.exceptions import (  # type: ignore[import-not-found]
+        GrowwAPIAuthenticationException,
+        GrowwAPIAuthorisationException,
+    )
+    _GROWW_AUTH_EXC: tuple = (
+        GrowwAPIAuthenticationException, GrowwAPIAuthorisationException,
+    )
+except ImportError:
+    _GROWW_AUTH_EXC = ()
+
+
 def _retry_groww_auth(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapper(self: "GrowwBroker", *args, **kwargs):
         try:
             return fn(self, *args, **kwargs)
-        except Exception as e:
-            # Lazy import — keeps groww.py importable without the SDK
-            # installed (lets the registry surface a clear error rather
-            # than crashing at module load).
-            try:
-                from growwapi.groww.exceptions import (
-                    GrowwAPIAuthenticationException,
-                    GrowwAPIAuthorisationException,
-                )
-                auth_types = (GrowwAPIAuthenticationException,
-                              GrowwAPIAuthorisationException)
-            except ImportError:
-                auth_types = ()
-            if not isinstance(e, auth_types):
-                raise
+        except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
             logger.warning(
                 f"GrowwBroker.{fn.__name__} for {self.account!r} hit "
                 f"{type(e).__name__}: {e}. Evicting cached access token "

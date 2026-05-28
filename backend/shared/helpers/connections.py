@@ -682,6 +682,12 @@ class GrowwConnection:
         self._access_token = access_token or ""
         self._groww        = None
         self._import_error = None
+        # Serialises concurrent re-mints — matches Kite + Dhan. Without
+        # this, N parallel broker calls hitting an invalidated token
+        # would each independently POST to Groww's mint endpoint
+        # (waste + rate-limit exposure). The cross-process file lock
+        # keeps the prod + dev services from racing each other too.
+        self._login_lock   = threading.Lock()
         self._build()
 
     # ── Token mint + cache ────────────────────────────────────────────
@@ -813,12 +819,35 @@ class GrowwConnection:
     def refresh(self) -> None:
         """Force-evict the cached token + re-mint. Call when an SDK
         call fails with auth error. Caller retries the SDK call once
-        with the new handle."""
-        try:
-            _save_cached_token(f"groww:{self.account}", "")
-        except Exception:
-            pass
-        self._build()
+        with the new handle.
+
+        Serialised by `_login_lock` (in-process) + a cross-process file
+        lock (so prod + dev services don't race). A peer thread that
+        already re-minted while we were waiting for the lock will have
+        written a fresh token to the file cache — the inner check uses
+        that token instead of running another HTTP mint."""
+        cache_key = f"groww:{self.account}"
+        with self._login_lock, _cross_process_login_lock(cache_key):
+            # Did a peer just refresh? If the cached token is fresh and
+            # different from the one we're holding, use it and skip the
+            # mint entirely.
+            cached, _ = _load_cached_token(cache_key)
+            if cached and cached != self._access_token:
+                self._access_token = cached
+                try:
+                    from growwapi import GrowwAPI  # type: ignore[import-not-found]
+                    self._groww = GrowwAPI(cached)
+                    return
+                except Exception:
+                    # Fall through to a full re-mint if the SDK rejects.
+                    pass
+            # No peer mint observed — clear cache + re-build (which will
+            # mint via TOTP under `_resolve_token`).
+            try:
+                _save_cached_token(cache_key, "")
+            except Exception:
+                pass
+            self._build()
 
     def get_groww_conn(self):
         if self._groww is None:
