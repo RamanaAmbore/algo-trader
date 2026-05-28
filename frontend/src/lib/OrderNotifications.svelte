@@ -283,7 +283,11 @@
     position: absolute;
     top: calc(100% + 0.35rem);
     right: 0;
-    z-index: 45;
+    /* High z-index so the panel sits above the OptionsPayoff chart
+       and any other absolutely-positioned page content. Matches the
+       sibling AgentNotifications panel + the InfoHint popouts so all
+       three "popover-style" surfaces win against the chart. */
+    z-index: 9999;
     width: min(22rem, 92vw);
     max-height: 70vh;
     overflow-y: auto;

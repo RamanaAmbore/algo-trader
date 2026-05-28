@@ -1402,9 +1402,20 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 0.5rem;
+    /* 0.5rem → 0.3rem so title chip + InfoHint + timestamp + notify
+       bells cluster tighter on a narrow row. flex-wrap still kicks in
+       on very-narrow viewports so a vertical stack remains an option. */
+    gap: 0.3rem;
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
+  }
+  /* Order/agent notification bells should sit flush against the
+     timestamp and each other — the .page-header `gap` covers the
+     title→ts space; this knocks out the second gap between the two
+     bells so they read as one paired icon cluster. */
+  :global(.page-header .onb-wrap + .anb-wrap),
+  :global(.page-header .algo-ts + .onb-wrap) {
+    margin-left: -0.15rem;
   }
   /* Every algo page gets the full-width amber underline that dashboard
      already had — keeps the headline visually separated from the

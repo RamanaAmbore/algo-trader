@@ -254,12 +254,10 @@ export function clientTimestamp() {
     const pick = (t) => (parts.find(p => p.type === t) || {}).value || '';
     return `${pick('weekday')} ${pick('day')} ${pick('month')} ${pick('hour')}:${pick('minute')}`;
   };
-  // Two-letter country codes — IST → IN, EST/EDT → US. Saves 2 chars
-  // per side vs IST / EDT (4 chars total) which matters on the narrow
-  // page-header chips. Country code is unambiguous for an Indian
-  // operator watching US markets; no DST flip to worry about either
-  // (US covers both EST winter and EDT summer).
-  return `${fmt('Asia/Kolkata')} IN | ${fmt('America/New_York')} US`;
+  const estTz = now.toLocaleTimeString('en-US', {
+    timeZoneName: 'short', timeZone: 'America/New_York',
+  }).split(' ').pop();   // "EST" / "EDT" by season
+  return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} ${estTz}`;
 }
 
 // Reactive ticking version of clientTimestamp(). Pages binding `{$nowStamp}`
@@ -282,9 +280,11 @@ export function logTime(iso) {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false, timeZone: tz,
   }).replace(',', '');
-  // Compact IN / US country labels matching clientTimestamp() — saves
-  // 4 chars per log row across thousands of rows.
-  return `${fmt('Asia/Kolkata')} IN | ${fmt('America/New_York')} US`;
+  // EST in winter, EDT in summer — derive from the date itself.
+  const estTz = d.toLocaleTimeString('en-US', {
+    timeZoneName: 'short', timeZone: 'America/New_York',
+  }).split(' ').pop();
+  return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} ${estTz}`;
 }
 
 /** HH:MM:SS in IST. Compact form for inline log rows; pair with

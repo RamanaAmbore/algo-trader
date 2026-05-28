@@ -62,6 +62,53 @@ export function chipsHtml(
 }
 
 /**
+ * Render an object as a compact `[key:value, key:value]` text string —
+ * no HTML, no `{@html}` consumer needed. Used by surfaces that show
+ * the same key:value data inline as plain text (e.g. the
+ * AgentNotifications popover panel where the rest of the row is
+ * normal Svelte template text).
+ *
+ * Square brackets instead of JSON's curly braces — operator feedback:
+ * "key value pair can use square brackets instead of curly brackets".
+ */
+export function chipsAsText(
+  /** @type {Record<string, unknown> | null | undefined} */ obj,
+  /** @type {{ skipEmpty?: boolean }} */ opts = {},
+) {
+  if (!obj || typeof obj !== 'object') return '';
+  const skipEmpty = opts.skipEmpty !== false;
+  const parts = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (skipEmpty && (v == null || v === '')) continue;
+    const display = Array.isArray(v) ? v.join(',') : (typeof v === 'object' ? JSON.stringify(v) : v);
+    parts.push(`${k}:${display}`);
+  }
+  return parts.length ? `[${parts.join(', ')}]` : '';
+}
+
+/**
+ * Parse a JSON-string trigger_condition / detail field and render as
+ * `[key:value, key:value]` plain text. Falls through unchanged when
+ * the input isn't a JSON object literal.
+ */
+export function chipsAsTextFromJson(/** @type {unknown} */ raw, /** @type {{ skipEmpty?: boolean }} */ opts = {}) {
+  if (raw == null || raw === '') return '';
+  if (typeof raw === 'object') return chipsAsText(/** @type any */ (raw), opts);
+  if (typeof raw !== 'string') return String(raw);
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) return raw;
+  try {
+    const obj = JSON.parse(trimmed);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      return chipsAsText(obj, opts);
+    }
+    return raw;
+  } catch (_) {
+    return raw;
+  }
+}
+
+/**
  * Render a JSON string as chips. Returns the raw string verbatim when
  * the input doesn't parse as a JSON object — so an agent's
  * `trigger_condition` that's a plain sentence falls through unchanged.

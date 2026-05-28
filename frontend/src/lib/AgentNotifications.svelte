@@ -20,6 +20,7 @@
     agentEventsStore, agentUnreadCount, markAgentEventsSeen,
     startAgentEventsPoller, logTime,
   } from '$lib/stores';
+  import { chipsAsTextFromJson } from '$lib/logChips';
 
   let open = $state(false);
   /** @type {HTMLElement|null} */
@@ -123,7 +124,12 @@
                 {#if e.sim_mode}<span class="anb-sim">SIM</span>{/if}
                 <span class="anb-agent-id">#{e.agent_id}</span>
               </div>
-              <div class="anb-msg">{e.detail || e.trigger_condition || ''}</div>
+              <!-- detail / trigger_condition are usually JSON objects.
+                   chipsAsTextFromJson renders them as
+                   `[metric:pnl, scope:total, op:<=, value:-50000]` —
+                   square-bracket compact form replaces the raw curly
+                   JSON the operator was reading before. -->
+              <div class="anb-msg">{chipsAsTextFromJson(e.detail) || chipsAsTextFromJson(e.trigger_condition) || ''}</div>
             </li>
           {/each}
         </ul>
@@ -183,7 +189,12 @@
     position: absolute;
     top: calc(100% + 0.35rem);
     right: 0;
-    z-index: 45;
+    /* High z-index so the panel overlaps the OptionsPayoff chart (and
+       any other absolutely-positioned page content). Was 45 — the
+       payoff chart card's stacking context outranked it and the
+       operator couldn't read the agent log on /admin/options. 9999
+       matches the FullscreenButton backdrop level. */
+    z-index: 9999;
     width: min(24rem, 92vw);
     max-height: 70vh;
     overflow-y: auto;
