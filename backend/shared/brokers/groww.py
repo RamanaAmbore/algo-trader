@@ -1,28 +1,32 @@
 """
 Groww implementation of the `Broker` interface.
 
-Wraps the official `growwapi.GrowwAPI` Python SDK. Groww's auth model
-mirrors Dhan's: a single access token. Token validity depends on how
-it was generated:
+Wraps the official `growwapi.GrowwAPI` Python SDK. Auth + method
+shapes follow the docs at https://groww.in/trade-api/docs/python-sdk
+verbatim — every SDK call below corresponds 1:1 to an example in
+those docs:
 
-  * Dashboard-generated token — typically 24 h, manual refresh.
-  * Programmatically generated via API key + secret + TOTP — same flow
-    Kite uses; auto-refresh wired in a follow-up sprint.
+  * `GrowwAPI.get_access_token(api_key, secret=…)` — API-key flow
+  * `GrowwAPI.get_access_token(api_key, totp=…)` — TOTP flow
+  * `GrowwAPI(access_token)` — instantiate the client
+  * `g.get_user_profile()`, `g.get_holdings_for_user()`,
+    `g.get_positions_for_user()`, `g.get_available_margin_details()`
+  * `g.get_quote(trading_symbol=, exchange=, segment=)` — single
+  * `g.get_ohlc(exchange_trading_symbols=tuple, segment=)` — batch
+  * `g.get_ltp(exchange_trading_symbols=tuple, segment=)` — batch
+  * `g.get_historical_candles(…)` with `CANDLE_INTERVAL_*` constants
+  * `g.place_order(…)`, `g.modify_order(…)`, `g.cancel_order(…)`
 
-v0 reads the access token from `broker_accounts.access_token_enc`
-(Fernet-encrypted), operator pastes a fresh one daily via /admin/brokers.
+Constant *values* below (e.g. `"FNO"`, `"SL_M"`, `"1day"`) are taken
+from the installed `growwapi` SDK so passing them via kwargs is
+equivalent to passing `GrowwAPI.SEGMENT_FNO` / `ORDER_TYPE_STOP_LOSS_MARKET`
+/ `CANDLE_INTERVAL_DAY` directly. Kept as bare strings to avoid an
+SDK import at module load.
 
-Response normalisation — Groww's REST shapes are different from both
-Kite and Dhan. Field names are usually `snake_case` already (closer to
-Kite than to Dhan), but the column names differ — e.g. `quantity` vs
-Kite's `quantity` is fine, but `average_price` may come back as
-`avg_price`. Each helper translates Groww field names to Kite field
-names so the rest of the codebase consumes a uniform shape.
-
-Status: scaffold. Every method that hits Groww's API is wired but
-response-shape normalisers are best-effort based on Groww's docs.
-First real call against a live account will surface any field-shape
-drift; fix in place with the live trace in hand.
+Response normalisation — Groww's REST shapes differ from Kite's. Each
+helper translates Groww field names (`trading_symbol`, `avg_price`,
+`ltp`, `order_status`, `groww_order_id`, …) into the Kite-shape
+field names the rest of the codebase consumes.
 """
 
 from __future__ import annotations
@@ -69,13 +73,47 @@ _PRODUCT_TO_GROWW: dict[str, str] = {
     "MTF":  "MTF",
 }
 
-# Kite order_type → Groww order_type. Same strings, mapping kept for
-# clarity + future drift.
+# Kite order_type → Groww order_type. Values match GrowwAPI constants:
+#   GrowwAPI.ORDER_TYPE_MARKET             = "MARKET"
+#   GrowwAPI.ORDER_TYPE_LIMIT              = "LIMIT"
+#   GrowwAPI.ORDER_TYPE_STOP_LOSS          = "SL"        (NOT "STOP_LOSS")
+#   GrowwAPI.ORDER_TYPE_STOP_LOSS_MARKET   = "SL_M"      (NOT "STOP_LOSS_MARKET")
+# Earlier mapping used the constant *names* as values — Groww would
+# reject any SL / SL-M order placed through this path.
 _ORDER_TYPE_TO_GROWW: dict[str, str] = {
     "MARKET": "MARKET",
     "LIMIT":  "LIMIT",
-    "SL":     "STOP_LOSS",
-    "SL-M":   "STOP_LOSS_MARKET",
+    "SL":     "SL",
+    "SL-M":   "SL_M",
+}
+
+# Kite-style candle interval → Groww `CANDLE_INTERVAL_*` value.
+# Values match the SDK constants:
+#   CANDLE_INTERVAL_DAY     = "1day"
+#   CANDLE_INTERVAL_HOUR_1  = "1hour"
+#   CANDLE_INTERVAL_MIN_5   = "5minute"   (and 1/2/3/10/15/30)
+#   CANDLE_INTERVAL_WEEK    = "1week"
+#   CANDLE_INTERVAL_MONTH   = "1month"
+_INTERVAL_TO_GROWW: dict[str, str] = {
+    "minute":         "1minute",
+    "1minute":        "1minute",
+    "2minute":        "2minute",
+    "3minute":        "3minute",
+    "5minute":        "5minute",
+    "10minute":       "10minute",
+    "15minute":       "15minute",
+    "30minute":       "30minute",
+    "hour":           "1hour",
+    "60minute":       "1hour",
+    "1hour":          "1hour",
+    "4hour":          "4hour",
+    "240minute":      "4hour",
+    "day":            "1day",
+    "1day":           "1day",
+    "week":           "1week",
+    "1week":          "1week",
+    "month":          "1month",
+    "1month":         "1month",
 }
 
 
@@ -190,25 +228,72 @@ class GrowwBroker(Broker):
             raise RuntimeError(f"Groww ltp failed: {e}") from e
 
     def quote(self, symbols: list[str]) -> dict:
-        """Groww's `get_quote` takes one symbol at a time. Loop over
-        the batch and aggregate; matches Kite's batch-quote response
-        shape (`{"NSE:RELIANCE": {...}}`)."""
+        """Two-tier quote fetch:
+          * **Single symbol** — call `get_quote(trading_symbol, exchange,
+            segment)` for the full Kite-shape row (depth + OI + Greeks).
+          * **Batch** (>1 symbol) — call `get_ohlc(exchange_trading_symbols,
+            segment)` once per segment (Groww supports up to 50 keys
+            per call, much faster than looping `get_quote`).
+        Both paths return the same `{"NSE:RELIANCE": {...}}` shape so
+        callers don't branch on batch size."""
         if not symbols:
             return {}
+        if len(symbols) == 1:
+            return self._quote_single(symbols[0])
+        return self._quote_batch_ohlc(symbols)
+
+    def _quote_single(self, sym: str) -> dict:
+        """Single-symbol path — richer payload via `get_quote`."""
+        if ":" not in sym:
+            return {}
         out: dict[str, dict] = {}
+        try:
+            exch, ts = sym.split(":", 1)
+            _, seg = _groww_exchange_and_segment(exch)
+            resp = self.groww.get_quote(trading_symbol=ts, exchange=exch,
+                                        segment=seg)
+            data = resp.get("data") if isinstance(resp, dict) else {}
+            if isinstance(data, dict):
+                out[sym] = _normalise_quote_row(data)
+        except Exception as e:
+            logger.debug(f"GrowwBroker._quote_single skipping {sym}: {e}")
+        return out
+
+    def _quote_batch_ohlc(self, symbols: list[str]) -> dict:
+        """Batch path — one `get_ohlc(exchange_trading_symbols=tuple,
+        segment=…)` call per segment. Output preserves Kite's quote-row
+        shape (`last_price`, `ohlc.*`, `volume`, …) but omits depth and
+        OI — callers needing those use `_quote_single` instead."""
+        by_seg: dict[str, list[tuple[str, str]]] = {}
         for sym in symbols:
             if ":" not in sym:
                 continue
+            exch, ts = sym.split(":", 1)
             try:
-                exch, ts = sym.split(":", 1)
                 _, seg = _groww_exchange_and_segment(exch)
-                resp = self.groww.get_quote(trading_symbol=ts, exchange=exch,
-                                            segment=seg)
-                data = resp.get("data") if isinstance(resp, dict) else {}
-                if isinstance(data, dict):
-                    out[sym] = _normalise_quote_row(data)
+            except ValueError:
+                continue
+            by_seg.setdefault(seg, []).append((sym, f"{exch}_{ts}"))
+        out: dict[str, dict] = {}
+        for seg, pairs in by_seg.items():
+            kite_keys = [p[0] for p in pairs]
+            groww_keys = tuple(p[1] for p in pairs)
+            try:
+                resp = self.groww.get_ohlc(
+                    exchange_trading_symbols=groww_keys, segment=seg,
+                )
+                data = resp.get("data") if isinstance(resp, dict) else resp
+                if not isinstance(data, dict):
+                    continue
+                # Groww returns {"NSE_RELIANCE": {"open":…, "high":…,
+                # "low":…, "close":…, "ltp":…, "volume":…}, …}.
+                # Translate back to Kite-shape quote rows.
+                for kite_key, gk in zip(kite_keys, groww_keys):
+                    row = data.get(gk) or {}
+                    if isinstance(row, dict):
+                        out[kite_key] = _normalise_quote_row(row)
             except Exception as e:
-                logger.debug(f"GrowwBroker.quote skipping {sym}: {e}")
+                logger.debug(f"GrowwBroker._quote_batch_ohlc segment={seg}: {e}")
         return out
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
@@ -243,16 +328,70 @@ class GrowwBroker(Broker):
         from_date: Any,
         to_date: Any,
         interval: str = "day",
+        *,
+        trading_symbol: str | None = None,
+        exchange: str | None = None,
+        segment: str | None = None,
     ) -> list[dict]:
-        """Groww's `get_historical_candles` wants Groww-specific candle
-        interval constants (`CANDLE_INTERVAL_DAY` etc.) and a different
-        date format. Stubbed — PriceBroker falls over to Kite for
-        historical data until a full mapping ships."""
-        raise NotImplementedError(
-            "GrowwBroker.historical_data not yet wired. Groww uses its "
-            "own interval constants + date format; needs translator. "
-            "PriceBroker falls back to Kite."
+        """Groww's `get_historical_candles` is keyed by trading_symbol /
+        exchange / segment, not by instrument_token. Callers wiring this
+        path must pass `trading_symbol`, `exchange` (and optionally
+        `segment`); otherwise the call short-circuits since Groww has
+        no token→symbol lookup parallel to Kite's. Date params accept
+        ISO strings (`"YYYY-MM-DD HH:MM:SS"`) or `datetime` objects;
+        we coerce to Groww's expected format below.
+
+        Returns a list of Kite-shape candle dicts:
+            [{"date": …, "open": …, "high": …, "low": …,
+              "close": …, "volume": …}, …]
+        """
+        if not trading_symbol or not exchange:
+            raise ValueError(
+                "GrowwBroker.historical_data requires trading_symbol + "
+                "exchange kwargs (Groww has no token→symbol lookup)."
+            )
+        ex, seg = _groww_exchange_and_segment(exchange)
+        seg = segment or seg
+        groww_interval = _INTERVAL_TO_GROWW.get(interval.lower())
+        if not groww_interval:
+            raise ValueError(
+                f"Unknown candle interval {interval!r}. Supported: "
+                f"{sorted(set(_INTERVAL_TO_GROWW.values()))}"
+            )
+        # Groww accepts either `datetime` or ISO `"YYYY-MM-DD HH:MM:SS"`.
+        def _coerce(d: Any) -> str:
+            if hasattr(d, "strftime"):
+                return d.strftime("%Y-%m-%d %H:%M:%S")
+            return str(d)
+        resp = self.groww.get_historical_candles(
+            trading_symbol=trading_symbol,
+            exchange=ex,
+            segment=seg,
+            start_time=_coerce(from_date),
+            end_time=_coerce(to_date),
+            interval=groww_interval,
         )
+        data = resp.get("data") if isinstance(resp, dict) else resp
+        # Two shapes documented: `{"candles": [[ts,o,h,l,c,v], …]}` or
+        # `[[ts,o,h,l,c,v], …]`. Tolerate both.
+        candles: list = []
+        if isinstance(data, dict):
+            candles = data.get("candles", [])
+        elif isinstance(data, list):
+            candles = data
+        out: list[dict] = []
+        for row in candles:
+            if not isinstance(row, (list, tuple)) or len(row) < 6:
+                continue
+            out.append({
+                "date":   row[0],
+                "open":   float(row[1] or 0),
+                "high":   float(row[2] or 0),
+                "low":    float(row[3] or 0),
+                "close":  float(row[4] or 0),
+                "volume": int(row[5] or 0),
+            })
+        return out
 
     def holidays(self, exchange: str) -> set[str]:
         """Groww doesn't publish a holidays endpoint. PriceBroker
