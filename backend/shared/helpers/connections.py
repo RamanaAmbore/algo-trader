@@ -642,16 +642,22 @@ class DhanConnection:
 
 class GrowwConnection:
     """Groww client wrapper. Holds a `growwapi.GrowwAPI(access_token)`
-    handle. Three auth modes, tried in order:
+    handle. Two auth modes, tried in order:
 
-      1. api_key + secret (approval-based, programmatic refresh)
-      2. api_key + totp_seed (TOTP-based, programmatic refresh)
-      3. access_token alone (legacy 24 h manual-refresh path —
+      1. api_key + totp_seed (TOTP-based, programmatic refresh) —
+         the SDK computes a fresh 6-digit code from the seed on every
+         mint call; renewals are silent.
+      2. access_token alone (legacy 24 h manual-refresh path —
          operator pastes a fresh token from Groww's developer
          dashboard when the current one expires)
 
-    Modes 1 + 2 mint a token via `GrowwAPI.get_access_token(api_key,
-    secret=…)` (or `totp=…`) on first use, then cache it to disk
+    The approval-secret flow (`api_key + secret`) was retired:
+    approval mints prompt the operator to OK the request in the Groww
+    app/web every 24 h, which is incompatible with an unattended
+    trading service.
+
+    Mode 1 mints a token via `GrowwAPI.get_access_token(api_key,
+    totp=<code>)` on first use, then caches it to disk
     (`.log/groww_tokens.json`) keyed by account. Cached tokens
     survive a service restart within the validity window. The cache
     file is shared between prod + dev via the same `/opt/ramboq/.log`
@@ -663,13 +669,15 @@ class GrowwConnection:
         account: str,
         *,
         api_key: Optional[str] = None,
-        secret: Optional[str] = None,
         totp_seed: Optional[str] = None,
         access_token: Optional[str] = None,
+        # `secret` accepted but ignored — kept in the signature so
+        # rebuild_from_db() callers don't have to special-case Groww.
+        # The approval-secret flow was retired (see _mint_access_token).
+        secret: Optional[str] = None,  # noqa: ARG002
     ) -> None:
         self.account       = account
         self._api_key      = api_key or ""
-        self._secret       = secret or ""
         self._totp_seed    = totp_seed or ""
         self._access_token = access_token or ""
         self._groww        = None
@@ -679,42 +687,34 @@ class GrowwConnection:
     # ── Token mint + cache ────────────────────────────────────────────
 
     def _mint_access_token(self) -> str:
-        """Mint a fresh access token from api_key + (totp_seed OR secret).
-        Raises if neither mint mode is configured. Returns the token
-        string.
+        """Mint a fresh access token via the TOTP flow (only).
 
-        Mint order — TOTP first, then approval (secret). Groww's TOTP
-        flow has no daily re-approval prompt; the SDK computes a fresh
-        6-digit code from the seed on each call. The approval flow
-        produces ~24 h tokens but requires the operator to OK the
-        request in the Groww app/web on first mint per day. TOTP
-        therefore wins when both are present — silent renewals beat
-        manual approvals for an unattended trading service."""
+        The approval-secret flow was retired in favour of TOTP only:
+        approval mints prompt the operator to OK the request in the
+        Groww app/web every 24 h, which is incompatible with an
+        unattended trading service. TOTP renewals are silent — the
+        SDK computes a fresh 6-digit code from `self._totp_seed` on
+        every mint call.
+
+        Requires `api_key` (vendor TOTP api key) + `totp_seed` (base32
+        seed paired with that api key in Groww's developer dashboard).
+        Raises if either is missing."""
         from growwapi import GrowwAPI  # type: ignore[import-not-found]
-        if not self._api_key:
+        if not self._api_key or not self._totp_seed:
             raise RuntimeError(
-                f"GrowwConnection {self.account!r} needs api_key + (totp_seed "
-                f"OR secret) to mint a token, or a manually-pasted "
+                f"GrowwConnection {self.account!r} needs api_key + "
+                f"totp_seed to mint a token, or a manually-pasted "
                 f"access_token. Fill credentials in /admin/brokers."
             )
-        if self._totp_seed:
-            import pyotp  # type: ignore[import-not-found]
-            totp_code = pyotp.TOTP(self._totp_seed).now()
-            return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
-        if self._secret:
-            return GrowwAPI.get_access_token(self._api_key, secret=self._secret)
-        raise RuntimeError(
-            f"GrowwConnection {self.account!r} has api_key but no totp_seed "
-            f"or secret — cannot mint. Paste a 24 h access_token "
-            f"instead via /admin/brokers."
-        )
+        import pyotp  # type: ignore[import-not-found]
+        totp_code = pyotp.TOTP(self._totp_seed).now()
+        return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
 
     def _resolve_token(self) -> str:
         """Pick a working access token, preferring (in order):
           1. cached fresh mint
-          2. fresh mint via api_key + (totp_seed OR secret) —
-             TOTP is preferred when both are present (silent renewal,
-             no daily approval prompt).
+          2. fresh mint via api_key + totp_seed (TOTP flow only —
+             approval-secret flow was retired)
           3. api_key used directly as Bearer token — Groww's vendor
              integration keys ARE long-lived JWTs that can be passed
              as the Authorization Bearer header, same shape the
@@ -731,11 +731,11 @@ class GrowwConnection:
         token, _created = _load_cached_token(cache_key)
         if token:
             return token
-        # 2) Mint via api_key + totp_seed/secret. Capture the mint failure
+        # 2) Mint via api_key + totp_seed. Capture the mint failure
         #    so we can surface it in the final RuntimeError when no
         #    fallback works either.
         mint_error: Exception | None = None
-        if self._api_key and (self._totp_seed or self._secret):
+        if self._api_key and self._totp_seed:
             try:
                 token = self._mint_access_token()
                 if token:
@@ -766,14 +766,11 @@ class GrowwConnection:
         if self._access_token:
             return self._access_token
         # Final error — list which inputs we DO have so the operator can
-        # spot the missing piece. has_secret / has_totp / has_token tell
-        # them exactly which credential slot is empty without exposing
-        # any value. If mint was attempted + failed, include Groww's
-        # actual response so the operator sees "Groww 400: Invalid
-        # secret" instead of guessing.
+        # spot the missing piece without exposing any value. If mint
+        # was attempted + failed, include Groww's actual response so
+        # the operator sees "Groww 400: Invalid TOTP" instead of guessing.
         present = {
             "api_key":      bool(self._api_key),
-            "secret":       bool(self._secret),
             "totp_seed":    bool(self._totp_seed),
             "access_token": bool(self._access_token),
         }
@@ -785,8 +782,8 @@ class GrowwConnection:
             )
         raise RuntimeError(
             f"GrowwConnection {self.account!r}: no working token. "
-            f"Provided: {present_summary}. Need either api_key+secret, "
-            f"api_key+totp_seed, or a fresh 24 h access_token. "
+            f"Provided: {present_summary}. Need api_key + totp_seed "
+            f"or a fresh 24 h access_token. "
             f"Edit credentials in /admin/brokers."
         )
 
@@ -990,25 +987,24 @@ class Connections(SingletonBase):
                     #   (3) access_token alone    → manual 24 h paste
                     # The connection class picks whichever it can, mints
                     # a token from disk cache if fresh, and falls back to
-                    # mint-on-build otherwise. Operators with an
-                    # approval secret should leave the access_token
-                    # field blank; the schema reuses the same
-                    # api_secret_enc / totp_token_enc columns Kite uses,
-                    # so /admin/brokers paints them as plain text fields.
-                    api_secret  = (decrypt(r.api_secret_enc)
-                                   if r.api_secret_enc else "")
+                    # mint-on-build otherwise. Approval-secret flow was
+                    # retired; only api_key + totp_seed (TOTP mint) or a
+                    # manually-pasted access_token are accepted. The
+                    # schema reuses the same totp_token_enc / access_token_enc
+                    # columns Kite uses, so /admin/brokers paints them as
+                    # plain text fields.
                     totp_token  = (decrypt(r.totp_token_enc)
                                    if r.totp_token_enc else "")
                     access_token = (decrypt(r.access_token_enc)
                                     if r.access_token_enc else "")
                     if not (
-                        (r.api_key and (api_secret or totp_token))
+                        (r.api_key and totp_token)
                         or access_token
                     ):
                         logger.warning(
                             f"Groww account {r.account!r} has no usable "
-                            f"credentials. Provide api_key + (secret OR "
-                            f"totp_token), OR paste a 24 h access_token "
+                            f"credentials. Provide api_key + totp_seed "
+                            f"(TOTP flow), OR paste a 24 h access_token "
                             f"from Groww's developer dashboard. Edit in "
                             f"/admin/brokers."
                         )
@@ -1016,7 +1012,6 @@ class Connections(SingletonBase):
                     new_conn[r.account] = GrowwConnection(
                         r.account,
                         api_key=(r.api_key or None),
-                        secret=(api_secret or None),
                         totp_seed=(totp_token or None),
                         access_token=(access_token or None),
                     )
