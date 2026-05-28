@@ -1052,9 +1052,13 @@
   function _ticketAccountDefault() {
     // Prefer the operator's filter (single account picked in the
     // multiselect) when it's a real value. Then a single available
-    // real account. Then the masked-but-only choice — falls back to
-    // empty so the picker forces an explicit pick. Never returns a
-    // masked value that the order endpoint can't route on.
+    // real account. Then the masked-but-only choice. Finally fall
+    // back to the FIRST real account so the operator can drop legs
+    // without needing to open the account picker first — previously
+    // the empty fallback caused the chain Buy/Sell buttons to fail
+    // silently (addOptionToBasket has an early `if (!_account)
+    // return`, no toast). Operator can still switch accounts via
+    // the picker inside the modal.
     if (selectedAccounts.length === 1 && _isRealAccount(selectedAccounts[0])) {
       return selectedAccounts[0];
     }
@@ -1062,6 +1066,7 @@
     if (accountChoices.length === 1 && _isRealAccount(accountChoices[0])) {
       return String(accountChoices[0]);
     }
+    if (realAccounts.length > 0) return realAccounts[0];
     return '';
   }
   // Per-row buttons pass the side explicitly. Default to chainSide so
