@@ -462,17 +462,23 @@
   <div class="algo-card">
     <!-- Top bar -->
     <header class="algo-navbar">
-      <div class="algo-nav-inner hidden lg:flex items-center gap-1 h-12">
-        <!-- Vertical ALGO label, flush at the left edge. Bare text —
-             no chip, no background, no border. -->
-        <span class="algo-vert" aria-hidden="true">ALGO</span>
-        <!-- Site label -->
-        <button onclick={() => goto('/about')} class="algo-brand">
-          <img src={bullSrc} alt="" class="algo-brand-bull" />
-          <span class="algo-brand-name">RamboQuant</span>
-        </button>
+      <!-- Desktop grid: [Left auto | Nav 1fr | Status cluster 1fr | Right auto].
+           Two 1fr columns guarantee the primary nav AND the status
+           cluster (mode chip + chase + demo + user-pill) each take an
+           equal share of leftover horizontal space and center within
+           it, independent of brand or trailing-auth widths. -->
+      <div class="algo-nav-inner hidden lg:grid items-center h-12 algo-nav-grid">
+        <!-- Left column — ALGO vertical + brand. Wrapped so the whole
+             group lands in grid col 1. -->
+        <div class="flex items-center gap-1">
+          <span class="algo-vert" aria-hidden="true">ALGO</span>
+          <button onclick={() => goto('/about')} class="algo-brand">
+            <img src={bullSrc} alt="" class="algo-brand-bull" />
+            <span class="algo-brand-name">RamboQuant</span>
+          </button>
+        </div>
 
-        <nav class="flex items-center gap-0.5 flex-1">
+        <nav class="flex items-center gap-0.5 justify-center min-w-0">
           <!-- Inline section — Monitor + Analyze + Modes groups always
                visible (high-frequency surfaces). Group separators
                match the original flat-bar look. -->
@@ -520,6 +526,10 @@
           {/each}
         </nav>
 
+        <!-- Status cluster (grid col 3) — mode chip · chase chip · DEMO ·
+             user pill. Centers in its 1fr column independent of the nav
+             cluster on the left and the auth trail on the right. -->
+        <div class="flex items-center justify-center gap-1 min-w-0">
         <!-- ── Execution-mode chip + dropdown ──────────────────────
              This is BOTH the current-mode badge AND the picker trigger.
              Replaces the old "MODE: PAPER ▾" button and the transient
@@ -588,11 +598,19 @@
               <span class="algo-user-role">admin</span>
             {/if}
           </span>
-          <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
-        {:else if isDemo}
-          <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
         {/if}
-        <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
+        </div>
+
+        <!-- Trail cluster (grid col 4) — auth action + investor cross-link.
+             auto width, sits on the right edge. -->
+        <div class="flex items-center gap-1">
+          {#if $authStore.user}
+            <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
+          {:else if isDemo}
+            <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
+          {/if}
+          <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
+        </div>
       </div>
 
       <!-- Mobile -->
@@ -857,6 +875,17 @@
     width: 100%;
     margin: 0 auto;
     padding: 0 0.5rem;
+  }
+
+  /* Desktop grid — four columns: left (auto) · nav (1fr) · status
+     cluster (1fr) · trail (auto). Two equal 1fr columns split the
+     leftover horizontal space; nav links center in their column,
+     status pills (mode/chase/demo/user-pill) center in theirs. Matches
+     the public-site navbar's grid pattern for visual consistency. */
+  .algo-nav-grid {
+    display: grid;
+    grid-template-columns: auto 1fr 1fr auto;
+    column-gap: 0.25rem;
   }
 
   /* Brand mark — vertical-centered by both the parent flex's
