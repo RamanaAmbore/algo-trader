@@ -1937,13 +1937,13 @@
             <span class="num">Qty</span>
             <span class="num">LTP</span>
             <span class="num">Prev</span>
+            <span class="num">Avg</span>
+            <span class="num">P&amp;L</span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
             <span class="num">Γ</span>
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
-            <span class="num">P&amp;L</span>
-            <span class="num">Cost</span>
           </div>
           {#each candidatePositions as c (c.source + '|' + c.account + '|' + c.symbol)}
             {@const lg = legAnalyticsBySymbol[c.symbol]}
@@ -2037,15 +2037,15 @@
               <span class="num {c.qty < 0 ? 'kv-neg' : 'kv-pos'}">{c.qty}</span>
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
+              <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
+              <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cand-pnl-pos' : 'cand-pnl-neg'}">
+                {pnl == null ? '—' : aggCompact(pnl)}
+              </span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.gamma) : '—'}</span>
               <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
               <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
-              <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cand-pnl-pos' : 'cand-pnl-neg'}">
-                {pnl == null ? '—' : aggCompact(pnl)}
-              </span>
-              <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
             </div>
           {/each}
         </div>
@@ -2726,10 +2726,11 @@
   /* Parent grid — defines column tracks once. Children (`.cand-headrow`
      and each `.cand-row`) consume the same tracks via `subgrid` so
      headers + data cells line up precisely.
-     Column order (post-Apr-2026 reshuffle): checkbox · Symbol ·
-     Account · Qty · P&L · Cost · LTP · IV · Δ · Θ · 𝒱 · Source.
-     P&L sits between Qty and Cost so the operator's eye scans
-     "what I have → what I'm making/losing → what I paid".
+     Column order (cluster rule, May 2026): checkbox · Symbol ·
+     Expiry · Account · Qty · LTP · Prev · Avg · P&L · IV · Δ · Γ ·
+     Θ · 𝒱. The LTP → Prev → Avg → P&L block stays contiguous (the
+     codebase-wide adjacency rule); Greeks trail at the end so they
+     don't break the price-action cluster.
 
      Track sizing — split into two policies:
        • Symbol + Account: `minmax(max-content, Nfr)`. Min stays at
@@ -2757,13 +2758,13 @@
       minmax(26px, 1fr)           /* qty */
       minmax(34px, 1fr)           /* ltp */
       minmax(34px, 1fr)           /* prev close */
+      minmax(34px, 1fr)           /* avg (cost basis) */
+      minmax(34px, 1fr)           /* pnl */
       minmax(34px, 1fr)           /* iv */
       minmax(34px, 1fr)           /* delta */
       minmax(34px, 1fr)           /* gamma */
       minmax(34px, 1fr)           /* theta */
-      minmax(34px, 1fr)           /* vega */
-      minmax(34px, 1fr)           /* pnl */
-      minmax(34px, 1fr);          /* cost */
+      minmax(34px, 1fr);          /* vega */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
     width: 100%;
@@ -2779,13 +2780,13 @@
       minmax(26px, 1fr)           /* qty */
       minmax(34px, 1fr)           /* ltp */
       minmax(34px, 1fr)           /* prev close */
+      minmax(34px, 1fr)           /* avg (cost basis) */
+      minmax(34px, 1fr)           /* pnl */
       minmax(34px, 1fr)           /* iv */
       minmax(34px, 1fr)           /* delta */
       minmax(34px, 1fr)           /* gamma */
       minmax(34px, 1fr)           /* theta */
-      minmax(34px, 1fr)           /* vega */
-      minmax(34px, 1fr)           /* pnl */
-      minmax(34px, 1fr);          /* cost */
+      minmax(34px, 1fr);          /* vega */
   }
   /* Cell-level truncation so numeric tracks can shrink below their
      natural max-content without breaking row layout. Scoped to

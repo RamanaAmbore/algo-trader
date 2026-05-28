@@ -170,17 +170,17 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 1.5rem; height: 1.5rem;
     padding: 0;
-    background: transparent;
-    border: 1px solid transparent;
+    background: rgba(167, 139, 250, 0.10);
+    border: 1px solid rgba(167, 139, 250, 0.32);
     border-radius: 0.25rem;
-    color: rgba(200, 216, 240, 0.78);
+    color: #a78bfa;
     cursor: pointer;
     transition: background-color 0.08s, color 0.08s, border-color 0.08s;
   }
   .anb-btn:hover {
-    color: #a78bfa;
-    background: rgba(167, 139, 250, 0.10);
-    border-color: rgba(167, 139, 250, 0.32);
+    color: #c4b5fd;
+    background: rgba(167, 139, 250, 0.22);
+    border-color: rgba(167, 139, 250, 0.6);
   }
   .anb-btn-active {
     color: #a78bfa;

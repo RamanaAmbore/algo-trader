@@ -258,17 +258,17 @@
     display: inline-flex; align-items: center; justify-content: center;
     width: 1.5rem; height: 1.5rem;
     padding: 0;
-    background: transparent;
-    border: 1px solid transparent;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.28);
     border-radius: 0.25rem;
-    color: rgba(200, 216, 240, 0.78);
+    color: #fbbf24;
     cursor: pointer;
     transition: background-color 0.08s, color 0.08s, border-color 0.08s;
   }
   .onb-btn:hover {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.08);
-    border-color: rgba(251, 191, 36, 0.28);
+    color: #fde047;
+    background: rgba(251, 191, 36, 0.18);
+    border-color: rgba(251, 191, 36, 0.55);
   }
   .onb-btn-active {
     color: #fbbf24;
