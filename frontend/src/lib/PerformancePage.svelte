@@ -280,26 +280,21 @@
     { field: 'inv_val',               headerName: 'Invested',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
-  // Order priority: LTP → Prev Close → Avg → Day P&L → Day % → P&L → P&L % → Weight % → Qty → Value.
-  // Day cols promoted so they read in the visible scan column on narrow
-  // viewports. Prev Close inserted between LTP and Avg — operator can
-  // see today's gap from yesterday's close at a glance. Weight % inserted
-  // between P&L % and Qty (Kite Holdings convention).
-  // LTP → Prev → Day P&L → Day % → P&L → P&L % kept adjacent in that
-  // sequence per operator request. Avg + Weight % + Qty + Value land
-  // AFTER the P&L cluster so the eye reads LTP/Prev (where it is now /
-  // came from yesterday) then Day P&L / Day % (today's move) then P&L
-  // / P&L % (lifetime) without a column break.
+  // Cluster: LTP → Prev → Avg → Day P&L → Day % → P&L → P&L %.
+  // Avg slots between Prev and Day P&L per operator request — the eye
+  // reads "where it is now (LTP) → where it closed yesterday (Prev) →
+  // where it came in (Avg) → today's move → lifetime change" in a
+  // single uninterrupted run.
   const holdingsCols = [
     { field: 'account',               headerName: 'Account',  width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 78, pinned: 'left', cellClass: symFill, headerClass: symFill },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'close_price',           headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     // Weight % = this row's cur_val / total cur_val across the visible
     // holdings filter. Computed in valueGetter so it tracks the AG Grid
     // row-filter live (per-account view stays meaningful).
@@ -355,10 +350,11 @@
     ? { field: 'tradingsymbol', headerName: 'Symbol', width: 171, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
     : { field: 'tradingsymbol', headerName: 'Symbol', width: 152, pinned: 'left', cellClass: symFill, headerClass: symFill });
 
-  // LTP → Prev → Day P&L → Day % → P&L → P&L % kept adjacent in that
-  // sequence per operator request. Avg + Δ pos + Θ/day land AFTER the
-  // P&L cluster so the contiguous "today's number" run isn't broken
-  // by the position-Greeks columns. Qty remains the trailing column.
+  // Cluster: LTP → Prev → Avg → Day P&L → Day % → P&L → P&L %.
+  // Avg slots between Prev and Day P&L (operator request — the eye
+  // reads price-where-it-is then close then entry then today's P&L).
+  // Δ pos + Θ/day land AFTER the cluster so the contiguous run isn't
+  // broken by the position-Greeks columns. Qty remains trailing.
   const positionsCols = $derived([
     { field: 'account',       headerName: 'Account',   width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
@@ -366,11 +362,11 @@
     positionsSymbolCol,
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'close_price',          headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     // Per-row Greeks for option positions (delta × qty, theta × qty).
     // Backend computes once per /api/positions hit using the existing
     // implied_vol bisection + analytical greeks. Non-option rows show
