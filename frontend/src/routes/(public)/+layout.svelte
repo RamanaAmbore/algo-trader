@@ -47,7 +47,12 @@
   <div class="pub-card">
     <!-- Desktop navbar -->
     <header class="pub-navbar">
-      <div class="pub-nav-inner hidden md:flex items-center gap-1 h-14">
+      <!-- Desktop grid: [Brand auto | Nav 1fr | Rambo+pill 1fr | Sign In auto].
+           Two 1fr columns guarantee the two middle clusters share the
+           leftover space equally; each cluster centers its content
+           inside its own column, independent of how wide the brand or
+           sign-in pill end up being. -->
+      <div class="pub-nav-inner hidden md:grid items-center h-14 pub-nav-grid">
         <a href="/about" class="pub-brand shrink-0 mr-5" tabindex="-1">
           <img src={bullSrc} alt="" style="height:2.6rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
           <div class="pub-brand-text">
@@ -58,7 +63,7 @@
           </div>
         </a>
 
-        <nav class="flex items-center gap-3 flex-1 justify-center">
+        <nav class="flex items-center gap-3 justify-center min-w-0">
           {#each navLinks() as link}
             <button
               onclick={() => goto(link.href)}
@@ -73,7 +78,7 @@
              the right. Industry analogue: Vercel / Linear desktop bars
              that pin context-switch + user-identity in the middle and
              keep auth on the trailing edge. -->
-        <div class="flex-1 flex items-center justify-center gap-3">
+        <div class="flex items-center justify-center gap-3 min-w-0">
           <!-- Rambo Terminal cross-link visible to everyone. Lands on
                /pulse (Pulse) — the most useful entry surface regardless
                of role: live positions / holdings / pinned market data.
@@ -292,6 +297,17 @@
     max-width: 1280px;
     margin: 0 auto;
     padding: 0 1rem;
+  }
+
+  /* Desktop grid — four columns: brand (auto) · nav (1fr) · Rambo+pill (1fr) · auth (auto).
+     Two equal 1fr columns guarantee the two centered clusters split
+     the leftover space symmetrically regardless of brand or auth pill
+     widths. column-gap stays tight so cluster contents drive the
+     spacing, not the grid template. */
+  .pub-nav-grid {
+    display: grid;
+    grid-template-columns: auto 1fr 1fr auto;
+    column-gap: 0.25rem;
   }
 
   /* ── Brand text logo ────────────────────────────────────────────────────── */
