@@ -1137,11 +1137,15 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
 
         # Use the shared trading-day helper so Muhurat / special weekend
         # sessions configured via `market.extra_trading_days` register
-        # as open. is_trading_day combines: holiday list + operator
-        # override + weekday default.
+        # as open. Passing `exchange=` also enables the live-quote probe
+        # — if Kite shows fresh ticks for this exchange's bellwether,
+        # the day is treated as open regardless of what the NSE/Kite
+        # holiday master says. Catches MCX evening sessions on equity
+        # holidays that the COM segment doesn't surface.
         from backend.shared.helpers.date_time_utils import is_trading_day
         is_holiday = now.date() in holidays
-        is_trading = is_trading_day(now.date(), holidays)
+        is_trading = is_trading_day(now.date(), holidays,
+                                    exchange=holiday_exchange)
         # is_weekend is retained for the legacy `*_closed` semantics
         # (which want "session ended today" — only meaningful on a
         # day when the market actually traded). A trading Saturday

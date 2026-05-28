@@ -357,10 +357,16 @@ async def _task_performance(state: dict) -> None:
                     logger.debug(f"Background: holiday load skipped for {exch}: {e}")
                     holiday_cache[exch] = set()
 
+        # Pass `exchange=` to is_market_open so the live-quote probe
+        # can override the calendar verdict. Catches MCX evening
+        # sessions on equity holidays (NSE's COM segment lists those
+        # as closed but MCX is actually trading) and Muhurat days
+        # the calendar doesn't list.
         open_segments = [
             seg for seg in segments
             if is_market_open(now, holiday_cache.get(seg['holiday_exchange'], set()),
-                              seg['hours_start'], seg['hours_end'])
+                              seg['hours_start'], seg['hours_end'],
+                              exchange=seg['holiday_exchange'])
         ]
 
         if not open_segments:

@@ -122,41 +122,64 @@ def _parse_extra_trading_days() -> set:
 
 
 def is_trading_day(d, holiday_set: set | None = None,
-                   extra_trading_days: set | None = None) -> bool:
+                   extra_trading_days: set | None = None,
+                   exchange: str | None = None) -> bool:
     """Authoritative "is this a trading day?" check used by every gate
     (is_market_open, agent_engine._build_context). Resolution order:
 
-      1. Date is in `holiday_set` (real NSE/MCX holiday list from Kite)
-         → CLOSED.
-      2. Date is in `extra_trading_days` (operator override for Muhurat
-         and similar special weekend sessions) → OPEN.
-      3. Date is a weekday (Mon-Fri) → OPEN.
-      4. Otherwise (weekend, not in override) → CLOSED.
+      1. Date is in `extra_trading_days` (operator override) → OPEN.
+      2. `exchange` was passed AND a live broker quote shows fresh
+         activity for that exchange's bellwether → OPEN. Catches:
+           * MCX evening session on equity holidays (NSE COM holiday
+             list flags the day as closed but MCX actually trades)
+           * Diwali Muhurat sessions (not in any holiday list, fall
+             on a weekend, but Kite ticks them like any other day)
+           * Ad-hoc SEBI-announced sessions
+      3. Date is in `holiday_set` → CLOSED.
+      4. Date is a weekday (Mon-Fri) → OPEN.
+      5. Otherwise (weekend, no override, no fresh ticks) → CLOSED.
 
-    `extra_trading_days` defaults to the settings-table value so callers
-    that don't pass it still pick up the operator override. Pass an
-    explicit set to short-circuit (e.g. tests, simulator)."""
-    if holiday_set and d in holiday_set:
-        return False
+    The probe is cached per-exchange for 60s and gracefully no-ops
+    when no broker handle is reachable, so the gate stays fast on the
+    hot path and degrades to calendar-only behaviour during a broker
+    outage. Pass `exchange=None` to skip the probe entirely (tests,
+    sim driver, code paths that have their own market-state)."""
     if extra_trading_days is None:
         extra_trading_days = _parse_extra_trading_days()
     if d in extra_trading_days:
         return True
+    if exchange:
+        try:
+            from backend.shared.helpers.market_probe import probe_market_active
+            probe = probe_market_active(exchange)
+            if probe is True:
+                return True
+        except Exception:
+            pass
+    if holiday_set and d in holiday_set:
+        return False
     return d.weekday() < 5  # Mon-Fri = trading
 
 
 def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
-                   market_end: dtime = dtime(15, 30)) -> bool:
+                   market_end: dtime = dtime(15, 30),
+                   exchange: str | None = None) -> bool:
     """
     Returns True if the market is currently open.
     - now: timezone-aware datetime in IST
     - holiday_set: set of date objects from fetch_holidays(exchange)
+    - exchange (optional): when passed, the gate also consults
+      market_probe.probe_market_active(exchange) — a live Kite-quote
+      check that overrides the calendar verdict when the broker shows
+      fresh ticks. Catches MCX evening sessions on equity holidays
+      and Muhurat days that calendar APIs don't surface.
     - Weekend handling: regular Sat/Sun are closed, BUT operator can
       list Muhurat / special-session dates in the
-      `market.extra_trading_days` setting and they'll register as open.
+      `market.extra_trading_days` setting (or just let the probe
+      detect them automatically when ticks start landing).
     - Falls back to time-window-only check if holiday_set is empty.
     """
-    if not is_trading_day(now.date(), holiday_set):
+    if not is_trading_day(now.date(), holiday_set, exchange=exchange):
         return False
     t = now.time().replace(second=0, microsecond=0)
     return market_start <= t <= market_end
