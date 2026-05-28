@@ -1144,8 +1144,12 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
         # holidays that the COM segment doesn't surface.
         from backend.shared.helpers.date_time_utils import is_trading_day
         is_holiday = now.date() in holidays
+        # Passing `now=` lets is_trading_day suppress the probe when
+        # we're outside the widest Indian market window (09:00-23:30
+        # IST), so a 3 AM tick doesn't fire a useless Kite quote call.
         is_trading = is_trading_day(now.date(), holidays,
-                                    exchange=holiday_exchange)
+                                    exchange=holiday_exchange,
+                                    now=now)
         # is_weekend is retained for the legacy `*_closed` semantics
         # (which want "session ended today" — only meaningful on a
         # day when the market actually traded). A trading Saturday

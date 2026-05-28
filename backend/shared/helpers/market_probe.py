@@ -44,25 +44,33 @@ logger = get_logger(__name__)
 # contract for a highly-liquid commodity is the safest fallback.
 # Operator can override per-exchange via the
 # `market.bellwether_symbols` setting (CSV of `EXCHANGE:SYMBOL`).
+# Static bellwethers for index-driven exchanges. These symbols don't
+# roll over (NIFTY/SENSEX are perpetual indices) so a hardcoded list
+# is safe and faster than instruments-dump discovery.
 _DEFAULT_BELLWETHERS: dict[str, list[str]] = {
     "NSE": ["NSE:NIFTY 50", "NSE:NIFTY BANK"],
     "NFO": ["NSE:NIFTY 50", "NSE:NIFTY BANK"],
     "BSE": ["BSE:SENSEX"],
     "BFO": ["BSE:SENSEX"],
     "CDS": ["NSE:NIFTY 50"],
-    # MCX has no shared index — pick the most actively traded futures.
-    # The contract month suffix changes monthly; we ask for several so
-    # at least one is active. Operator override is the right place to
-    # pin a specific live contract if these miss.
-    "MCX": [
-        "MCX:CRUDEOIL26JUNFUT", "MCX:CRUDEOIL26JULFUT",
-        "MCX:GOLD26JUNFUT",     "MCX:GOLD26AUGFUT",
-        "MCX:SILVER26JULFUT",
-    ],
+    # MCX falls into the dynamic path — no index, contract months
+    # roll monthly. See _discover_mcx_bellwethers below.
 }
+
+# Commodities probed for MCX activity, in descending liquidity order.
+# We pick the nearest unexpired futures contract for the first few
+# matches from broker.instruments("MCX"). Crude oil + gold are the
+# most reliably-active globally and intraday on Indian sessions.
+_MCX_LIQUID_COMMODITIES = (
+    "CRUDEOIL", "NATURALGAS",
+    "GOLD", "GOLDM",
+    "SILVER", "SILVERM", "SILVERMIC",
+    "COPPER", "ZINC",
+)
 
 
 _PROBE_CACHE: dict[str, tuple[float, Optional[bool]]] = {}
+_DYNAMIC_BELLWETHER_CACHE: dict[str, tuple[Any, list[str]]] = {}
 _PROBE_LOCK = threading.Lock()
 _CACHE_TTL_SEC = 60.0
 _STALE_THRESHOLD_MIN = 15  # last_trade_time older than this ⇒ stale
@@ -89,11 +97,86 @@ def _parse_overrides() -> dict[str, list[str]]:
     return out
 
 
-def _candidates(exchange: str) -> list[str]:
+def _discover_mcx_bellwethers(broker: Any) -> list[str]:
+    """Pull the live MCX instruments dump and pick the nearest
+    unexpired futures contract for each liquid commodity.
+
+    Cached for the current trading date — the instruments list
+    doesn't change intraday, so one fetch per day is sufficient.
+    Returns a short list of canonical `MCX:<TS>` symbols suitable
+    for kite.quote() probes; empty when the broker has no Kite/Dhan
+    handle or the instruments call fails.
+
+    Independent of contract-month suffixes (`26JUN`, `26JUL`, …) so
+    rolls are seamless: when June crude expires it drops out of the
+    instruments list and the function picks July automatically."""
+    from datetime import date as _date
+    today = _date.today()
+    cached = _DYNAMIC_BELLWETHER_CACHE.get("MCX")
+    if cached and cached[0] == today:
+        return cached[1]
+
+    try:
+        instruments = broker.instruments("MCX")
+    except Exception as e:
+        logger.debug(f"market_probe: MCX instruments fetch failed: {e}")
+        return []
+
+    # Group active futures by underlying name, sorted by expiry asc.
+    by_name: dict[str, list[dict]] = {}
+    for i in instruments or []:
+        if (i.get("instrument_type") or "").upper() != "FUT":
+            continue
+        exp = i.get("expiry")
+        if not exp:
+            continue
+        # Tolerate both date objects and ISO strings.
+        if hasattr(exp, "date"):
+            exp_date = exp.date() if hasattr(exp, "isoformat") and "T" in str(exp) else exp
+        else:
+            try:
+                from datetime import datetime as _dt
+                exp_date = _dt.fromisoformat(str(exp)[:10]).date()
+            except Exception:
+                continue
+        if exp_date < today:
+            continue
+        name = (i.get("name") or "").upper()
+        if not name:
+            continue
+        by_name.setdefault(name, []).append((exp_date, i.get("tradingsymbol") or ""))
+
+    out: list[str] = []
+    for name in _MCX_LIQUID_COMMODITIES:
+        contracts = by_name.get(name)
+        if not contracts:
+            continue
+        contracts.sort()  # nearest expiry first
+        ts = contracts[0][1]
+        if ts:
+            out.append(f"MCX:{ts}")
+        if len(out) >= 4:  # 4 commodities is plenty of redundancy
+            break
+
+    if out:
+        _DYNAMIC_BELLWETHER_CACHE["MCX"] = (today, out)
+    return out
+
+
+def _candidates(exchange: str, broker: Any = None) -> list[str]:
+    """Resolve the bellwether symbol list for `exchange`. Operator
+    override (settings `market.bellwether_symbols`) always wins;
+    otherwise static defaults for index-driven exchanges, dynamic
+    instruments-dump discovery for MCX."""
     overrides = _parse_overrides()
     if exchange in overrides:
         return overrides[exchange]
-    return list(_DEFAULT_BELLWETHERS.get(exchange, []))
+    static = _DEFAULT_BELLWETHERS.get(exchange)
+    if static:
+        return list(static)
+    if exchange == "MCX" and broker is not None:
+        return _discover_mcx_bellwethers(broker)
+    return []
 
 
 def _ist_now() -> datetime:
@@ -126,26 +209,37 @@ def probe_market_active(exchange: str, kite: Any = None,
         if cached and (now_ts - cached[0]) < _CACHE_TTL_SEC:
             return cached[1]
 
-    candidates = _candidates(exchange)
-    if not candidates:
-        return None
-
-    # Lazy-resolve a Kite handle from Connections() if the caller
-    # didn't pass one. We use any available Kite account — quote
-    # access is shared across the operator's accounts.
+    # Lazy-resolve a Kite handle + a Broker adapter from Connections()
+    # / the broker registry when the caller didn't pass them. Quote
+    # access is shared across the operator's accounts; instruments
+    # are exposed via the Broker ABC.
+    broker = None
     if kite is None:
         try:
             from backend.shared.helpers.connections import Connections
-            for c in (Connections().conn or {}).values():
+            for acct, c in (Connections().conn or {}).items():
                 if hasattr(c, "get_kite_conn"):
                     try:
                         kite = c.get_kite_conn()
+                        # Attach a Broker adapter for instruments-dump
+                        # lookups (used by MCX dynamic discovery).
+                        try:
+                            from backend.shared.brokers.registry import get_broker
+                            broker = get_broker(acct)
+                        except Exception:
+                            broker = None
                         break
                     except Exception:
                         continue
         except Exception:
             pass
     if kite is None:
+        return None
+
+    candidates = _candidates(exchange, broker=broker)
+    if not candidates:
+        with _PROBE_LOCK:
+            _PROBE_CACHE[exchange] = (now_ts, None)
         return None
 
     try:

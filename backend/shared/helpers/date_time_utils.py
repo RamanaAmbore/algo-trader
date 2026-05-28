@@ -121,44 +121,69 @@ def _parse_extra_trading_days() -> set:
     return out
 
 
+# Widest plausible Indian-market window across exchanges. NSE is
+# 09:15-15:30, MCX is 09:00-23:30. Outside this window NO exchange
+# can be trading, so probes are guaranteed to return False — skip
+# them entirely. Used as a probe-suppression guard in is_trading_day.
+_WIDEST_MARKET_WINDOW = (dtime(9, 0), dtime(23, 30))
+
+
+def _calendar_says_closed(d, holiday_set: set | None) -> bool:
+    """Pure-calendar verdict for `d`: True if the date is in the
+    holiday list OR is a weekend. No probe, no override — just the
+    cheap test we run first."""
+    if holiday_set and d in holiday_set:
+        return True
+    return d.weekday() >= 5  # Sat/Sun
+
+
 def is_trading_day(d, holiday_set: set | None = None,
                    extra_trading_days: set | None = None,
-                   exchange: str | None = None) -> bool:
-    """Authoritative "is this a trading day?" check used by every gate
-    (is_market_open, agent_engine._build_context). Resolution order:
+                   exchange: str | None = None,
+                   now=None) -> bool:
+    """Authoritative "is this a trading day?" check. Resolution order
+    is layered cheapest-first so the broker probe runs only when it's
+    actually needed:
 
       1. Date is in `extra_trading_days` (operator override) → OPEN.
-      2. `exchange` was passed AND a live broker quote shows fresh
-         activity for that exchange's bellwether → OPEN. Catches:
-           * MCX evening session on equity holidays (NSE COM holiday
-             list flags the day as closed but MCX actually trades)
-           * Diwali Muhurat sessions (not in any holiday list, fall
-             on a weekend, but Kite ticks them like any other day)
+      2. Calendar says open (weekday + not in holiday list) → OPEN.
+         Skip probe — calendar is authoritative for the common path.
+      3. Calendar says closed (holiday or weekend), AND `exchange` is
+         provided, AND `now` is inside the widest Indian market
+         window (09:00-23:30 IST): probe Kite for fresh ticks on
+         the exchange's bellwether. If active → OPEN. Catches:
+           * MCX evening session on equity holidays
+           * Diwali Muhurat sessions on Saturdays
            * Ad-hoc SEBI-announced sessions
-      3. Date is in `holiday_set` → CLOSED.
-      4. Date is a weekday (Mon-Fri) → OPEN.
-      5. Otherwise (weekend, no override, no fresh ticks) → CLOSED.
+         When `now` is outside the window, the probe would return
+         stale data anyway — skip it.
+      4. Otherwise → CLOSED.
 
-    The probe is cached per-exchange for 60s and gracefully no-ops
-    when no broker handle is reachable, so the gate stays fast on the
-    hot path and degrades to calendar-only behaviour during a broker
-    outage. Pass `exchange=None` to skip the probe entirely (tests,
-    sim driver, code paths that have their own market-state)."""
+    Probe cost on the hot path: zero. A weekday non-holiday tick goes
+    through the calendar branch and returns immediately; an off-hours
+    tick is rejected by the window guard before any network IO.
+
+    Probe call rate (rough):
+      Mon-Fri non-holiday:  0 probes/day
+      Holiday or weekend:   ~1/min during 09:00-23:30 (cache TTL)"""
     if extra_trading_days is None:
         extra_trading_days = _parse_extra_trading_days()
     if d in extra_trading_days:
         return True
-    if exchange:
-        try:
-            from backend.shared.helpers.market_probe import probe_market_active
-            probe = probe_market_active(exchange)
-            if probe is True:
-                return True
-        except Exception:
-            pass
-    if holiday_set and d in holiday_set:
-        return False
-    return d.weekday() < 5  # Mon-Fri = trading
+    if not _calendar_says_closed(d, holiday_set):
+        return True
+    # Calendar says closed — probe only if the time-window guard
+    # suggests fresh ticks could exist.
+    if exchange and now is not None:
+        t = now.time() if hasattr(now, "time") else now
+        if _WIDEST_MARKET_WINDOW[0] <= t <= _WIDEST_MARKET_WINDOW[1]:
+            try:
+                from backend.shared.helpers.market_probe import probe_market_active
+                if probe_market_active(exchange) is True:
+                    return True
+            except Exception:
+                pass
+    return False
 
 
 def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
@@ -168,21 +193,25 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
     Returns True if the market is currently open.
     - now: timezone-aware datetime in IST
     - holiday_set: set of date objects from fetch_holidays(exchange)
-    - exchange (optional): when passed, the gate also consults
-      market_probe.probe_market_active(exchange) — a live Kite-quote
-      check that overrides the calendar verdict when the broker shows
-      fresh ticks. Catches MCX evening sessions on equity holidays
-      and Muhurat days that calendar APIs don't surface.
-    - Weekend handling: regular Sat/Sun are closed, BUT operator can
-      list Muhurat / special-session dates in the
-      `market.extra_trading_days` setting (or just let the probe
-      detect them automatically when ticks start landing).
-    - Falls back to time-window-only check if holiday_set is empty.
+    - exchange (optional): when passed, the gate consults a live
+      Kite-quote probe (market_probe.probe_market_active) on calendar-
+      closed days so MCX evening sessions and Muhurat are caught
+      without an operator override.
+
+    Cheapest-first ordering: clock → calendar → probe. Outside the
+    exchange's published session window the function returns False
+    in nanoseconds without touching holidays or probes; inside the
+    window on a weekday non-holiday it returns True via the calendar
+    fast-path; the probe only fires on calendar-closed dates inside
+    the session window.
     """
-    if not is_trading_day(now.date(), holiday_set, exchange=exchange):
-        return False
+    # ① Clock — outside published hours, definitely closed.
     t = now.time().replace(second=0, microsecond=0)
-    return market_start <= t <= market_end
+    if not (market_start <= t <= market_end):
+        return False
+    # ② Calendar + probe (probe gated to in-window only).
+    return is_trading_day(now.date(), holiday_set,
+                          exchange=exchange, now=now)
 
 
 def convert_to_timezone(date_str, format='%Y-%m-%d', return_date=True, tz=INDIAN_TIMEZONE):
