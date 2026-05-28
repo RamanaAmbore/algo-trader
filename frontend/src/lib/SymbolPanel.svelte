@@ -456,7 +456,7 @@
           failedIdx.add(i);
           continue;
         }
-        await placeTicketOrder({
+        const brokerResp = await placeTicketOrder({
           mode:             basketMode2,
           side:             leg.side,
           tradingsymbol:    leg.sym,
@@ -471,7 +471,23 @@
           chase_aggressiveness: leg.chaseAgg || 'low',
         });
         ok++;
-        onSubmit?.({ ...leg, _basketLeg: true });
+        // Surface the full ticket-shape payload to the parent (mode +
+        // broker_response are what /admin/options needs to push a
+        // completion toast and link the fill broadcast back to the
+        // right order). Earlier we only spread `leg` which had no
+        // mode/broker_response, so the parent's toast logic silently
+        // fell through and the operator saw nothing land.
+        onSubmit?.({
+          mode:           basketMode2,
+          side:           leg.side,
+          symbol:         leg.sym,
+          quantity:       (leg.lots || 1) * (leg.lotSize || 1),
+          price:          Number(leg.limit),
+          account:        leg.account || account || '',
+          broker_response: brokerResp,
+          _basketLeg:     true,
+          ...leg,
+        });
       } catch (e) {
         fails.push(`${leg.side} ${leg.sym}: ${/** @type {any} */ (e)?.message || 'failed'}`);
         failedIdx.add(i);

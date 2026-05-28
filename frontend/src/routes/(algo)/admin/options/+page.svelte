@@ -49,6 +49,7 @@
   let teardown;
   let posTeardown;
   let simTeardown;
+  let wsTeardown;
 
   // Sim status — when true, the candidates panel shows sim positions
   // instead of live. Polled every few seconds.
@@ -1606,7 +1607,6 @@
       loadPositions();
     });
   });
-  let wsTeardown = $state(/** @type {(() => void) | null} */ (null));
   onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); });
 
   // ── Helpers ──────────────────────────────────────────────────────
