@@ -18,6 +18,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
+  import OrderNotifications from '$lib/OrderNotifications.svelte';
   import {
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
@@ -409,7 +410,8 @@
     <br><br>
     No paid GenAI in the loop — Claude Code subscription is the only LLM."
   />
-  {#if refreshedAt}<span class="algo-ts ml-auto">{refreshedAt}</span>{/if}
+  {#if refreshedAt}<span class="algo-ts ml-auto">{refreshedAt}</span>{:else}<span class="ml-auto"></span>{/if}
+  <OrderNotifications />
 </div>
 
 <AgentWorkspaceTabs />

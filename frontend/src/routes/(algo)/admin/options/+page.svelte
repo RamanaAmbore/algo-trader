@@ -8,6 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp, marketAwareInterval } from '$lib/stores';
+  import OrderNotifications from '$lib/OrderNotifications.svelte';
   import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchPositions, fetchSimStatus, fetchStrategyAnalytics,
@@ -1579,7 +1580,7 @@
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
-  <span class="algo-ts ml-auto">{$nowStamp}</span>
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
 </div>
 
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain

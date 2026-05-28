@@ -9,7 +9,7 @@
  * immediately when navigating back.
  */
 
-import { writable } from 'svelte/store';
+import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
 import { isMarketOpen } from '$lib/marketHours';
 
@@ -433,4 +433,105 @@ export function parseLogLineTime(line) {
   const m = line?.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
   if (!m) return null;
   return logTime(`${m[1]}T${m[2]}Z`);
+}
+
+/* ── Global order-events store ────────────────────────────────────────
+   One poller, one shared state, used by the OrderNotifications bell on
+   every algo page. Polls /api/orders/events/recent every 8 s for
+   fill / chase_modify / unfill / reject / cancel events. Tracks
+   "unread since last bell-open" via a localStorage timestamp so the
+   badge count survives page navigation.
+
+   The bell component subscribes to `orderEventsStore` for the event
+   list and to `orderUnreadCount` for the badge. Calling
+   `markOrderEventsSeen()` clears the badge (writes a new "lastSeen"
+   timestamp to localStorage). */
+
+const _ORDER_LS_KEY = 'ramboq.orderEvents.lastSeenTs';
+
+function _loadLastSeen() {
+  if (!browser) return 0;
+  try {
+    const v = localStorage.getItem(_ORDER_LS_KEY);
+    const n = v ? Number(v) : 0;
+    return Number.isFinite(n) ? n : 0;
+  } catch { return 0; }
+}
+
+function _saveLastSeen(/** @type {number} */ ts) {
+  if (!browser) return;
+  try { localStorage.setItem(_ORDER_LS_KEY, String(ts)); } catch { /* ignore */ }
+}
+
+/** @typedef {{
+ *   id: number, order_id: number, ts: string,
+ *   kind: string, message: string,
+ *   payload_json: string | null,
+ *   tradingsymbol?: string, side?: string, qty?: number,
+ *   mode?: string, account?: string,
+ * }} OrderEvent */
+
+/** Rolling buffer of the last ~200 order events seen on this client.
+ *  Oldest-first within the window. */
+export const orderEventsStore = writable(/** @type {OrderEvent[]} */ ([]));
+
+/** Last-seen ts (unix ms) — the bell click handler writes here when
+ *  the operator opens the popover. Reactive so the badge updates
+ *  immediately on open. */
+const _lastSeenStore = writable(_loadLastSeen());
+
+/** Unread count = events with ts > lastSeen. Computed reactively. */
+export const orderUnreadCount = derived(
+  [orderEventsStore, _lastSeenStore],
+  ([$events, $lastSeen]) => {
+    if (!$events?.length) return 0;
+    let n = 0;
+    for (const e of $events) {
+      const t = e?.ts ? Date.parse(e.ts) : 0;
+      if (t > $lastSeen) n++;
+    }
+    return n;
+  }
+);
+
+/** Mark every currently-visible event as seen. Bell calls this on
+ *  popover open so the badge clears. */
+export function markOrderEventsSeen() {
+  const now = Date.now();
+  _saveLastSeen(now);
+  _lastSeenStore.set(now);
+}
+
+let _orderPollerStarted = false;
+let _orderPollerTeardown = /** @type {(() => void) | null} */ (null);
+
+/** Start the global poller. Idempotent — safe to call from any page's
+ *  onMount; the second+ calls are no-ops. Stopped automatically on
+ *  page hide via visibleInterval, restarted on visibility return. */
+export function startOrderEventsPoller() {
+  if (!browser || _orderPollerStarted) return;
+  _orderPollerStarted = true;
+
+  const poll = async () => {
+    try {
+      // Lazy import to avoid circular dependency between stores.js + api.js.
+      const { fetchOrderEvents } = await import('$lib/api');
+      const rows = await fetchOrderEvents(50, 'all');
+      if (Array.isArray(rows)) orderEventsStore.set(rows);
+    } catch { /* swallow — no toasts on failure */ }
+  };
+
+  // Fire once immediately so the badge is correct on first paint.
+  poll();
+  _orderPollerTeardown = visibleInterval(poll, 8000);
+}
+
+/** Stop the poller. Only used during logout / signout to release the
+ *  interval cleanly. */
+export function stopOrderEventsPoller() {
+  if (_orderPollerTeardown) {
+    _orderPollerTeardown();
+    _orderPollerTeardown = null;
+  }
+  _orderPollerStarted = false;
 }

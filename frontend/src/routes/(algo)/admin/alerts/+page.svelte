@@ -9,6 +9,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import OrderNotifications from '$lib/OrderNotifications.svelte';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
@@ -136,7 +137,7 @@
   <h1 class="page-title-chip">Alerts</h1>
   <InfoHint popup text="History of agent fires (real and simulated). Each row shows when an agent's condition matched, what action ran, and which channels were notified. Use the filters to scope by agent, event type, or time window." />
   {#if refreshedAt}
-    <span class="algo-ts ml-auto">{refreshedAt}</span>
+    <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications />
   {/if}
 </div>
 
