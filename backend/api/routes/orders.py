@@ -725,14 +725,16 @@ class OrdersController(Controller):
             raise HTTPException(status_code=400,
                 detail=f"unknown mode '{data.mode}'")
 
-        # Demo mode chokepoint: silently downgrade LIVE → PAPER. Rather
-        # than 403-ing, we let the visitor's order land as paper so the
-        # "click Submit, see something happen" flow keeps working — the
-        # ticket UI still warns this is a real trade with the LIVE
-        # confirmation dialog, but the backend won't actually let the
-        # order touch a broker.
+        # Demo mode chokepoint: reject up-front with a clear "demo
+        # cannot place orders" message. Earlier we silently downgraded
+        # LIVE → PAPER and let the request fall through to the account
+        # check, which then 400-ed with "Account is required" because
+        # anonymous demo sessions don't carry a broker account. The
+        # operator-facing error read as a missing-field problem instead
+        # of the actual gate.
         if getattr(request.state, "is_demo", False):
-            data = msgspec.structs.replace(data, mode="paper")
+            raise HTTPException(status_code=403,
+                detail="Demo mode — orders cannot be placed. Sign in to trade.")
 
         # Server-side enum validation — same set the regular /place
         # endpoint uses. Kite errors on invalid values look cryptic

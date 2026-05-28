@@ -515,9 +515,57 @@ export function startOrderEventsPoller() {
   const poll = async () => {
     try {
       // Lazy import to avoid circular dependency between stores.js + api.js.
-      const { fetchOrderEvents } = await import('$lib/api');
-      const rows = await fetchOrderEvents(50, 'all');
-      if (Array.isArray(rows)) orderEventsStore.set(rows);
+      const { fetchOrderEvents, fetchOrders } = await import('$lib/api');
+      // Fetch BOTH platform chase events (algo_order_events) AND broker
+      // orders (Kite order book) in parallel. The bell merges both so it
+      // surfaces ANY order activity the operator should know about,
+      // including orders the operator placed via Kite mobile or via a
+      // path that doesn't write to algo_orders. Without the broker
+      // overlay, prod sessions showed an empty bell whenever the
+      // operator hadn't placed through OrderTicket since service start.
+      const [evRows, brokerOrders] = await Promise.all([
+        fetchOrderEvents(50, 'all').catch(() => []),
+        fetchOrders().catch(() => []),
+      ]);
+      const algoEvents = Array.isArray(evRows) ? evRows : [];
+      // Synthesise virtual events for every broker order so the panel
+      // groups by Kite's order_id. status → kind mapping mirrors the
+      // panel's terminal-state CSS palette.
+      const synth = (Array.isArray(brokerOrders) ? brokerOrders : (brokerOrders?.rows || []))
+        .map((o) => {
+          const status = String(o?.status || '').toUpperCase();
+          const kind = status === 'COMPLETE' ? 'fill'
+                     : status === 'REJECTED' ? 'reject'
+                     : status === 'CANCELLED' ? 'cancel'
+                     : 'placed';
+          return {
+            id: `broker-${o.order_id}`,
+            order_id: o.order_id,
+            ts: o.order_timestamp || o.exchange_timestamp || new Date().toISOString(),
+            kind,
+            message: `${o.transaction_type} ${o.filled_quantity ?? o.quantity}/${o.quantity} ${o.tradingsymbol} ${o.status} @₹${o.average_price ?? o.price ?? '—'}`,
+            payload_json: null,
+            tradingsymbol: o.tradingsymbol,
+            side: o.transaction_type,
+            qty: o.quantity,
+            account: o.account,
+          };
+        });
+      // Merge algo events first (placements / chase / fills) + broker
+      // orders. Dedup by order_id+kind so a broker COMPLETE doesn't
+      // double-up when the platform also recorded a "fill" event.
+      const seen = new Set();
+      const merged = [];
+      for (const e of [...algoEvents, ...synth]) {
+        const key = `${e.order_id}|${e.kind}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(e);
+      }
+      // Sort by ts ascending so the panel's "oldest-first within window"
+      // contract is preserved.
+      merged.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+      orderEventsStore.set(merged);
     } catch { /* swallow — no toasts on failure */ }
   };
 

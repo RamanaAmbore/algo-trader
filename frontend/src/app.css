@@ -680,6 +680,11 @@
    gradient + soft sky border lifts the chip from the flat log
    background; the earlier flat off-white-on-navy read as "good but
    not great" per operator feedback. */
+/* Scope dropped — same key:value chip styling is used outside the
+   .log-panel (the /orders page card row, future surfaces). Operator
+   feedback: order format should look the same across log + orders +
+   notification panel. */
+.log-chip,
 .log-panel .log-chip {
   display: inline-block;
   font-size: 0.6rem;
@@ -693,6 +698,7 @@
   letter-spacing: 0.01em;
   vertical-align: baseline;
 }
+.log-chip-key,
 .log-panel .log-chip-key {
   color: #7dd3fc;
   font-weight: 700;

@@ -273,17 +273,21 @@
             : o.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
             : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{o.status}</span>
         </div>
-        <div class="text-[0.65rem] text-[#c8d8f0] flex flex-wrap gap-x-2 uppercase">
-          <span>QTY:<b class="order-card-num">{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</b></span>
-          <span>TYPE:<b>{o.order_type}</b></span>
-          <span>PRICE:<b class="order-card-num">{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</b></span>
-          {#if o.trigger_price}<span>TRIGGER:<b class="order-card-num">{priceFmt(o.trigger_price)}</b></span>{/if}
-          {#if o.validity}<span>VALIDITY:<b>{o.validity}</b></span>{/if}
-          <span>PRODUCT:<b>{o.product}</b></span>
-          <span>VARIETY:<b>{o.variety}</b></span>
-          {#if o.order_timestamp}<span>TIME:<b>{logTimeIst(o.order_timestamp)}</b></span>{/if}
-          {#if o.tag}<span>TAG:<b>{o.tag}</b></span>{/if}
-          {#if o.status_message}<span>NOTE:<b>{o.status_message}</b></span>{/if}
+        <!-- Order chip row uses the same .log-chip / .log-chip-key
+             styles as LogPanel's order log + agent log so the operator
+             reads a single chip family across every surface
+             (operator feedback: "keep them in sync"). -->
+        <div class="flex flex-wrap items-center gap-y-1">
+          <span class="log-chip"><span class="log-chip-key">qty:</span>{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</span>
+          <span class="log-chip"><span class="log-chip-key">type:</span>{o.order_type}</span>
+          <span class="log-chip"><span class="log-chip-key">price:</span>{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</span>
+          {#if o.trigger_price}<span class="log-chip"><span class="log-chip-key">trigger:</span>{priceFmt(o.trigger_price)}</span>{/if}
+          {#if o.validity}<span class="log-chip"><span class="log-chip-key">validity:</span>{o.validity}</span>{/if}
+          <span class="log-chip"><span class="log-chip-key">product:</span>{o.product}</span>
+          <span class="log-chip"><span class="log-chip-key">variety:</span>{o.variety}</span>
+          {#if o.order_timestamp}<span class="log-chip"><span class="log-chip-key">time:</span>{logTimeIst(o.order_timestamp)}</span>{/if}
+          {#if o.tag}<span class="log-chip"><span class="log-chip-key">tag:</span>{o.tag}</span>{/if}
+          {#if o.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{o.status_message}</span>{/if}
         </div>
       </button>
     {/each}

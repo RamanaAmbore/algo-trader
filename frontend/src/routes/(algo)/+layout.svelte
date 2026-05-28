@@ -1402,20 +1402,30 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    /* 0.5rem → 0.3rem so title chip + InfoHint + timestamp + notify
-       bells cluster tighter on a narrow row. flex-wrap still kicks in
-       on very-narrow viewports so a vertical stack remains an option. */
-    gap: 0.3rem;
+    /* Tight gap so title chip + InfoHint + timestamp + bells stay on
+       one row on mobile. flex-wrap still kicks in only when the row
+       genuinely overflows. */
+    gap: 0.15rem;
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
   }
-  /* Order/agent notification bells should sit flush against the
-     timestamp and each other — the .page-header `gap` covers the
-     title→ts space; this knocks out the second gap between the two
-     bells so they read as one paired icon cluster. */
+  /* Page-header timestamp leaves only a hair of space before the
+     notification bells — operator feedback: the gap was pushing the
+     agent icon to a second line on mobile. The bells then sit flush
+     against each other. */
+  :global(.page-header .algo-ts) {
+    margin-right: 0.15rem;
+  }
   :global(.page-header .onb-wrap + .anb-wrap),
   :global(.page-header .algo-ts + .onb-wrap) {
-    margin-left: -0.15rem;
+    margin-left: -0.2rem;
+  }
+  /* When the row genuinely can't fit (mobile-portrait at narrowest)
+     keep the bells as a paired unit at the END of whatever line they
+     land on, instead of wrapping the agent bell alone. */
+  :global(.page-header .onb-wrap),
+  :global(.page-header .anb-wrap) {
+    flex-shrink: 0;
   }
   /* Every algo page gets the full-width amber underline that dashboard
      already had — keeps the headline visually separated from the
