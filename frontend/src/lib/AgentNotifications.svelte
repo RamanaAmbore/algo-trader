@@ -127,7 +127,10 @@
   /* Mirrors OrderNotifications sizing so the two bells sit flush
      side-by-side. Single set of class names (anb-*) keeps the
      selector cascade isolated from the order bell's onb-*. */
-  .anb-wrap { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }
+  /* See OrderNotifications for why align-self: center is needed — the
+     page-header parent uses align-items: baseline, which leaves the
+     icon button visually low relative to the timestamp text baseline. */
+  .anb-wrap { position: relative; display: inline-flex; align-items: center; align-self: center; flex-shrink: 0; }
   .anb-btn {
     position: relative;
     display: inline-flex; align-items: center; justify-content: center;
