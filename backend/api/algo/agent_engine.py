@@ -913,32 +913,65 @@ _EXPIRY_AGENTS = [
          status="inactive",
          ),
 
-    dict(slug="expiry-day-itm-auto-close",
-         long_name="when:positions.expiring_today.is_itm==1   alert:critical/tg+email+log   do:chase-close(total)",
+    dict(slug="expiry-day-equity-itm-auto-close",
+         long_name="when:positions.expiring_today.nfo.is_itm==1 @15:00   alert:critical/tg+email+log   do:expiry-auto-close(NFO)",
          tier="critical",
          topic="expiry_warning",
-         name="Auto-close ITM options on expiry day",
+         name="Auto-close ITM equity options on expiry day (T-30min)",
          description=(
-             "When an open option is ITM AND expiring today, chase-"
-             "close every position in the book using the adaptive "
-             "limit-order engine. Wraps the same ExpiryEngine the "
-             "bg task uses — calling it via an agent gives the "
-             "operator on/off + dry-run + simulator coverage that "
-             "the bg task lacks. Ships INACTIVE (destructive)."
+             "At 15:00 IST (30 min before NSE 15:30 close) on expiry "
+             "day, chase-close EVERY ITM equity option (NFO). Equity "
+             "rules: hedged or not, every ITM contract must be "
+             "closed before expiry — Zerodha does not net-settle "
+             "NFO option pairs and physical settlement / STT on ITM "
+             "longs is the trap. Wraps the ExpiryEngine scan+close, "
+             "restricted to NFO. Ships INACTIVE (destructive)."
          ),
          conditions={"all": [
              {"metric": "is_itm",
-              "scope":  "positions.expiring_today",
+              "scope":  "positions.expiring_today.nfo",
               "op":     "==", "value": 1.0},
          ]},
          scope="total",
          schedule="market_hours",
+         fire_at_time="15:00",
          cooldown_minutes=60,
          status="inactive",
          actions=[
-             {"type": "chase_close_positions",
-              "params": {"scope": "total", "timeout_minutes": 15,
-                         "adjust_pct": 0.1}},
+             {"type": "expiry_auto_close",
+              "params": {"exchange": "NFO"}},
+         ],
+         ),
+
+    dict(slug="expiry-day-commodity-itm-auto-close",
+         long_name="when:positions.expiring_today.mcx_unhedged.is_itm==1 @23:00   alert:critical/tg+email+log   do:expiry-auto-close(MCX)",
+         tier="critical",
+         topic="expiry_warning",
+         name="Auto-close ITM commodity options on expiry day (T-30min)",
+         description=(
+             "At 23:00 IST (30 min before MCX 23:30 close) on expiry "
+             "day, chase-close ITM commodity options that are NOT "
+             "offset by an opposite-side leg. Commodity rules: "
+             "perfectly hedged CE/PE pairs on the same "
+             "underlying+expiry net to zero at settlement and need "
+             "no action; only UNHEDGED ITM legs are closed. "
+             "Wraps the ExpiryEngine scan+close, restricted to MCX "
+             "(the engine applies the hedging filter internally). "
+             "Ships INACTIVE (destructive)."
+         ),
+         conditions={"all": [
+             {"metric": "is_itm",
+              "scope":  "positions.expiring_today.mcx_unhedged",
+              "op":     "==", "value": 1.0},
+         ]},
+         scope="total",
+         schedule="market_hours",
+         fire_at_time="23:00",
+         cooldown_minutes=60,
+         status="inactive",
+         actions=[
+             {"type": "expiry_auto_close",
+              "params": {"exchange": "MCX"}},
          ],
          ),
 ]

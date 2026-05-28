@@ -21,6 +21,7 @@ BROKER_ACTIONS = {
     "cancel_order", "cancel_all_orders",
     "close_position",
     "chase_close", "chase_close_positions",
+    "expiry_auto_close",
 }
 
 
@@ -93,6 +94,12 @@ def _action_target_exchanges(action_type: str, params: dict, context: dict) -> l
             # Default mirrors TicketOrderRequest's default: NFO.
             ex = "NFO"
         return [ex]
+    if at == "expiry_auto_close":
+        # Single-exchange action — gate it so a misconfigured agent
+        # (e.g. NFO agent retimed to fire after 15:30) gets a clean
+        # "exchange closed" skip rather than a Kite reject.
+        ex = (params.get("exchange") or "").upper().strip()
+        return [ex] if ex else []
     # chase_close / chase_close_positions: skip gate. Handler iterates
     # positions; each broker call gets per-symbol exchange validation
     # from Kite itself. Partial close falls out naturally.
@@ -208,6 +215,8 @@ async def execute(agent, actions: list, context: dict):
                     await _action_live_cancel_order(agent, context, params)
                 elif action_type == "cancel_all_orders":
                     await _action_live_cancel_all_orders(agent, context, params)
+                elif action_type == "expiry_auto_close":
+                    await _action_live_expiry_auto_close(agent, context, params)
                 else:
                     logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")
             else:  # 'noop' — non-broker action
@@ -463,6 +472,45 @@ async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict)
                 "qty":      abs(qty_held),
                 "price":    price,
                 "exchange": str(p.get("exchange") or "NFO"),
+            })
+        return
+
+    if action_type == "expiry_auto_close":
+        # Sim-mode dry-run for the expiry agents. The synthesizer +
+        # market_state preset (expiry_day) can drive the condition,
+        # so the operator can verify the agent fires; the action then
+        # closes whatever's in the sim book on the matching exchange.
+        # Hedging filter is not applied in sim mode — the operator's
+        # validating the timing + condition path, not the live
+        # ExpiryEngine grouping logic.
+        exch = (params.get("exchange") or "NFO").upper()
+        all_pos = _sim_positions_in_scope({"scope": "total"})
+        targets = [p for p in all_pos
+                   if (p.get("exchange") or "").upper() == exch]
+        if not targets:
+            logger.info(f"[SIM] expiry_auto_close: no {exch} positions in sim book "
+                        f"for {agent.slug}")
+            await _write_sim_order(agent, action_type, {
+                "account":  "TOTAL",
+                "symbol":   f"(no {exch} positions in sim book)",
+                "side":     "SELL", "qty": 0, "price": None,
+                "exchange": exch,
+            })
+            return
+        for p in targets:
+            qty_held = int(p.get("quantity") or 0)
+            if qty_held == 0:
+                continue
+            side = "SELL" if qty_held > 0 else "BUY"
+            price = (p.get("bid") if side == "SELL" else p.get("ask")) \
+                    or p.get("last_price")
+            await _write_sim_order(agent, action_type, {
+                "account":  str(p.get("account", "SIM")),
+                "symbol":   str(p.get("tradingsymbol", "")),
+                "side":     side,
+                "qty":      abs(qty_held),
+                "price":    price,
+                "exchange": exch,
             })
         return
 
@@ -1109,6 +1157,64 @@ async def _paper_trade(agent, action_type: str, params: dict, context: dict):
             }, context)
         return
 
+    if action_type == "expiry_auto_close":
+        # Paper-mode dry-run: read live positions, filter by exchange,
+        # filter to F&O contracts expiring today, and write a paper
+        # order per matched row. The MCX hedging-net filter is NOT
+        # applied in paper mode — operators reviewing the paper book
+        # want to see EVERY ITM/NTM expiring leg the live path would
+        # consider; the live ExpiryEngine path is where the hedging
+        # check actually fires.
+        from backend.api.algo.derivatives import parse_tradingsymbol, days_to_expiry
+        exch = (params.get("exchange") or "").upper()
+        if exch not in ("NFO", "MCX"):
+            logger.warning(f"[PAPER] expiry_auto_close: invalid exchange {exch!r} for {agent.slug}")
+            return
+        all_positions = _live_positions_in_scope(context, {"scope": "total"})
+        targets = []
+        for p in all_positions:
+            if (p.get("exchange") or "").upper() != exch:
+                continue
+            qty_held = int(p.get("quantity") or 0)
+            if qty_held == 0:
+                continue
+            parsed = parse_tradingsymbol(p.get("tradingsymbol") or "")
+            if not parsed or not parsed.get("expiry"):
+                continue
+            try:
+                close_time = (23, 30) if exch == "MCX" else (15, 30)
+                d = float(days_to_expiry(parsed["expiry"], ref=context.get("now"),
+                                         close_time=close_time))
+            except Exception:
+                continue
+            if d > 1.5:
+                continue
+            targets.append(p)
+        if not targets:
+            logger.info(f"[PAPER] expiry_auto_close: no {exch} expiring positions "
+                        f"for {agent.slug}")
+            await _write_paper_order(agent, action_type, {
+                "account":  "TOTAL",
+                "symbol":   f"(no {exch} expiring positions)",
+                "side":     "SELL", "qty": 0, "price": None,
+                "exchange": exch,
+            }, context)
+            return
+        for p in targets:
+            qty_held = int(p.get("quantity") or 0)
+            side = "SELL" if qty_held > 0 else "BUY"
+            ltp = p.get("last_price") or p.get("close_price")
+            price = float(ltp) if ltp is not None else None
+            await _write_paper_order(agent, action_type, {
+                "account":  str(p.get("account", "")),
+                "symbol":   str(p.get("tradingsymbol", "")),
+                "side":     side,
+                "qty":      abs(qty_held),
+                "price":    price,
+                "exchange": exch,
+            }, context)
+        return
+
     if action_type in {"place_order", "close_position", "modify_order",
                        "cancel_order", "cancel_all_orders"}:
         account = str(params.get("account") or "")
@@ -1717,6 +1823,50 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
                     pass
 
 
+async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
+    """
+    Expiry-day surgical close restricted to ONE exchange.
+
+    Wraps the legacy ExpiryEngine so the agent path inherits the
+    battle-tested rules:
+      - NFO: close ALL ITM + NTM expiring today (no hedging exception
+        — Indian equity F&O is settled per-leg, no broker netting).
+      - MCX: close only UNHEDGED ITM + NTM (CE/PE pairs whose net qty
+        across the underlying+expiry sum to zero are skipped — the
+        broker nets them at settlement, no operator action needed).
+
+    Reads NTM buffer + chase config from `algo.expiry_*` settings (same
+    knobs the bg task uses), so a single /admin/settings change tunes
+    both paths.
+    """
+    from backend.api.algo.expiry import ExpiryEngine
+
+    exch = (params.get("exchange") or "").upper()
+    if exch not in ("NFO", "MCX"):
+        logger.error(f"[LIVE] expiry_auto_close: invalid exchange param {exch!r} for agent {agent.slug}")
+        return
+
+    engine = ExpiryEngine()
+    try:
+        to_close = engine.scan_positions()
+    except Exception as e:
+        logger.error(f"[LIVE] expiry_auto_close: scan failed for agent {agent.slug}: {e}")
+        return
+
+    targets = [p for p in to_close if (p.exchange or "").upper() == exch]
+    if not targets:
+        logger.info(f"[LIVE] expiry_auto_close: no {exch} positions need closing "
+                    f"(agent={agent.slug}, scanned={len(to_close)})")
+        return
+
+    logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} closing "
+                f"{len(targets)} {exch} positions")
+    await engine.close_positions(targets)
+    logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} done — "
+                f"closed={len(engine.state.closed)} failed={len(engine.state.failed)} "
+                f"slippage=₹{engine.state.total_slippage:.2f}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Grammar-token action handlers (dotted-path resolvers from grammar.py)
 #
@@ -1750,6 +1900,17 @@ async def cancel_all_orders(ctx, params: dict) -> dict:
 async def chase_close_positions(ctx, params: dict) -> dict:
     """Close every open position in scope via the adaptive chase engine."""
     return _log_invoke("chase_close_positions", params)
+
+
+async def expiry_auto_close(ctx, params: dict) -> dict:
+    """Run ExpiryEngine scan + close restricted to one exchange.
+
+    Grammar-token stub — the real wiring lives in
+    `_action_live_expiry_auto_close` (live path) and the paper/sim
+    paths in `_paper_trade` / `_sim_paper_trade`. execute() dispatches
+    by mode before reaching this resolver.
+    """
+    return _log_invoke("expiry_auto_close", params)
 
 
 async def close_position(ctx, params: dict) -> dict:

@@ -243,8 +243,12 @@ SEEDS: list[tuple] = [
      "interval. Bump higher to avoid hammering Kite on structural "
      "rejections (margin, tick, permission).",
      "s", {"min": 0, "max": 300, "step": 1}),
-    ("algo",        "algo.expiry_start_offset_hours","float", 2,
-     "Hours before market close to begin expiry-day auto-close scan.",
+    ("algo",        "algo.expiry_start_offset_hours","float", 0.5,
+     "Hours before market close to begin expiry-day auto-close scan. "
+     "Default 0.5h = T-30min (Indian retail-algo convention; matches "
+     "Sensibull / Streak auto-square-off windows). NFO triggers at "
+     "15:00 IST, MCX at 23:00 IST. Bg task does the equity (close all "
+     "ITM/NTM) vs commodity (close unhedged ITM only) split internally.",
      "h", {"min": 0, "max": 6, "step": 0.25}),
     ("algo",        "algo.expiry_ntm_buffer_pct",   "float", 2.0,
      "% from strike to flag as near-the-money on expiry-day scan.",

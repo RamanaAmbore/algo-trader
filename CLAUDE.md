@@ -640,12 +640,23 @@ Beyond the original point-in-time metrics (`pnl`, `pnl_pct`, `day_pct`, etc.) an
 | `is_itm` | metric | 1.0 / 0.0 / None. None when spot is unknown — leaf skips. |
 | `is_ntm` | metric | 1.0 when within ±1.5% of spot. Same None semantics. |
 | `positions.expiring_today` | scope | Per-symbol rows where the F&O contract expires within 1.5 days. Reads `ctx.position_rows` (NOT the aggregate `sum_positions`). |
+| `positions.expiring_today.nfo` | scope | Subset of `expiring_today` restricted to NFO (equity F&O). Used by the equity auto-close agent. |
+| `positions.expiring_today.mcx_unhedged` | scope | Subset of `expiring_today` restricted to MCX rows whose CE/PE net qty per `(underlying, expiry)` is non-zero. Hedged pairs (net 0) are skipped — broker nets them at settlement, no operator action needed. |
 
-Two **inactive** seeded agents use them — `expiry-day-positions-alert` (notify-only review) and `expiry-day-itm-auto-close` (destructive, wraps `chase_close_positions`). Run side-by-side with the existing `ExpiryEngine` background task at 09:20 IST; agents fire at different times (14:30 NFO / 23:00 MCX-style), no collision. Retire the bg task after one expiry-week of side-by-side validation.
+Three **inactive** seeded agents use them. `expiry-day-positions-alert` is notify-only. The auto-close path is split into two segment-specific destructive agents:
+
+| Agent slug | Fires at | Condition leaf | Action |
+|---|---|---|---|
+| `expiry-day-equity-itm-auto-close` | 15:00 IST (T-30min) | `positions.expiring_today.nfo` filtered by `is_itm == 1` | `expiry_auto_close` with `exchange: NFO` |
+| `expiry-day-commodity-itm-auto-close` | 23:00 IST (T-30min) | `positions.expiring_today.mcx_unhedged` filtered by `is_itm == 1` | `expiry_auto_close` with `exchange: MCX` |
+
+The `expiry_auto_close` action wraps the legacy [`ExpiryEngine`](backend/api/algo/expiry.py) so the agents inherit its battle-tested rules: NFO closes ALL ITM + NTM; MCX closes only UNHEDGED ITM + NTM (CE/PE pairs that net to zero are skipped at settlement). Both agents ship INACTIVE; activate from `/agents` to graduate off the bg task after a side-by-side validation pass.
+
+The default `algo.expiry_start_offset_hours` setting is now `0.5h` (T-30min, matching Sensibull / Streak conventions). The seeder PRESERVES the operator's live override, so prod boxes upgraded from the old 2h default still see `value=2` — flip to 0.5h via `/admin/settings`.
 
 ### Action grammar
 
-Action tokens (seeded): `place_order`, `modify_order`, `cancel_order`, `cancel_all_orders`, `chase_close_positions`, `monitor_order`, `deactivate_agent`, `set_flag`, `emit_log`. Every token carries a typed `params_schema` with `required` / `enum` / `default` / `token_ref_ok` fields so the admin UI and the runtime agree on the shape. Handlers live in `backend/api/algo/actions.py` — currently stubs that log the invocation; real broker wiring lands as each action type is promoted out of stub mode.
+Action tokens (seeded): `place_order`, `modify_order`, `cancel_order`, `cancel_all_orders`, `chase_close_positions`, `expiry_auto_close`, `monitor_order`, `deactivate_agent`, `set_flag`, `emit_log`. Every token carries a typed `params_schema` with `required` / `enum` / `default` / `token_ref_ok` fields so the admin UI and the runtime agree on the shape. Handlers live in `backend/api/algo/actions.py` — currently stubs that log the invocation; real broker wiring lands as each action type is promoted out of stub mode.
 
 ### Admin endpoints
 

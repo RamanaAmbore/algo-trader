@@ -579,6 +579,95 @@
       moves: []
 
 # ─────────────────────────────────────────────────────────────────────────
+# Expiry-day MCX — pre-rehearsal for the commodity auto-close agent.
+# Drives GOLD/GOLDM/CRUDEOIL underlyings toward typical ITM strikes,
+# clock pinned to 23:00 IST (T-30min before MCX close, exactly when the
+# `expiry-day-commodity-itm-auto-close` agent's fire_at_time window
+# opens). Pair with seed_mode=live or live+scenario so the operator's
+# REAL GOLD/GOLDM positions face the synthetic spot moves and the
+# unhedged-ITM scope filter runs over the actual book.
+#
+# Why a dedicated scenario: the generic gap / random-walk scenarios use
+# NIFTY/BANKNIFTY presets and mid_session clock; commodity expiry needs
+# MCX market_state + 23:00 IST clock + commodity underlyings.
+#
+# Recommended run before tomorrow's GOLD/GOLDM expiry:
+#   1. From /agents, click Run-in-Simulator on
+#      `expiry-day-commodity-itm-auto-close` (does NOT activate the
+#       real agent — uses the synthesizer to exercise its condition
+#       tree against the sim book).
+#   2. OR from /admin/execution?mode=sim, pick this scenario, choose
+#      seed_mode=live, click Start. Watch the LogPanel: condition
+#      should fire at tick 0, then `expiry_auto_close MCX` action
+#      writes paper orders for every unhedged ITM leg.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: mcx-expiry-itm-stress
+  name: MCX expiry — GOLD/GOLDM +2% spot, 23:00 IST clock
+  mode: symbol
+  market_state:
+    nse_open: false
+    mcx_open: true
+    minutes_since_nse_close: 450    # 23:00 IST = NSE closed 7h30
+    is_expiry_day: true
+  description: >-
+    Pre-rehearsal for the commodity expiry auto-close agent. Drives
+    GOLD + GOLDM + CRUDEOIL underlyings +2% over two ticks so any
+    ATM/NTM call goes ITM and any short put loses money. Clock pinned
+    to 23:00 IST (T-30min before MCX 23:30 close, exactly when the
+    fire_at_time window opens). Pair with seed_mode=live (or
+    live+scenario) so your REAL MCX positions get re-priced.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.GOLD",     value: 0.01}
+        - {type: underlying_pct, scope: "underlying.GOLDM",    value: 0.01}
+        - {type: underlying_pct, scope: "underlying.CRUDEOIL", value: 0.01}
+        - {type: underlying_pct, scope: "underlying.CRUDEOILM", value: 0.01}
+        - {type: underlying_pct, scope: "underlying.SILVER",   value: 0.01}
+        - {type: underlying_pct, scope: "underlying.SILVERM",  value: 0.01}
+    - at: 1
+      moves:
+        - {type: underlying_pct, scope: "underlying.GOLD",     value: 0.01}
+        - {type: underlying_pct, scope: "underlying.GOLDM",    value: 0.01}
+        - {type: underlying_pct, scope: "underlying.CRUDEOIL", value: 0.01}
+        - {type: underlying_pct, scope: "underlying.CRUDEOILM", value: 0.01}
+        - {type: underlying_pct, scope: "underlying.SILVER",   value: 0.01}
+        - {type: underlying_pct, scope: "underlying.SILVERM",  value: 0.01}
+
+# ─────────────────────────────────────────────────────────────────────────
+# NFO expiry — mirror scenario for the equity auto-close agent. Drives
+# NIFTY / BANKNIFTY +2% with the clock pinned to 15:00 IST (T-30min
+# before NSE 15:30 close). Lets the operator dry-rehearse the equity
+# auto-close path before activating it on a real Thursday expiry.
+# ─────────────────────────────────────────────────────────────────────────
+- slug: nfo-expiry-itm-stress
+  name: NFO expiry — NIFTY/BANKNIFTY +2% spot, 15:00 IST clock
+  mode: symbol
+  market_state:
+    preset: pre_close
+    is_expiry_day: true
+  description: >-
+    Pre-rehearsal for the equity expiry auto-close agent. NIFTY +
+    BANKNIFTY +1% +1% over two ticks; any ATM call goes ITM. Equity
+    rules: hedging does NOT save you — every ITM equity option must
+    close. Clock pinned to 15:00 IST (T-30min before NSE 15:30
+    close, fire_at_time window). Pair with seed_mode=live or
+    live+scenario.
+  ticks:
+    - at: 0
+      moves:
+        - {type: underlying_pct, scope: "underlying.NIFTY",     value: 0.01}
+        - {type: underlying_pct, scope: "underlying.BANKNIFTY", value: 0.01}
+        - {type: underlying_pct, scope: "underlying.FINNIFTY",  value: 0.01}
+        - {type: underlying_pct, scope: "underlying.MIDCPNIFTY", value: 0.01}
+    - at: 1
+      moves:
+        - {type: underlying_pct, scope: "underlying.NIFTY",     value: 0.01}
+        - {type: underlying_pct, scope: "underlying.BANKNIFTY", value: 0.01}
+        - {type: underlying_pct, scope: "underlying.FINNIFTY",  value: 0.01}
+        - {type: underlying_pct, scope: "underlying.MIDCPNIFTY", value: 0.01}
+
+# ─────────────────────────────────────────────────────────────────────────
 # Holdings stress — drives the day P&L on every holding down 1% / 2% / 3%.
 # Tests the day_pct / day_rate_abs / day_rate_pct agents that previously
 # could only run against live data (positions-only sim restriction lifted).

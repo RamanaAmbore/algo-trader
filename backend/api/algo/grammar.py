@@ -249,6 +249,58 @@ def _scope_positions_expiring_today(ctx):
     return out
 
 
+def _scope_positions_expiring_today_nfo(ctx):
+    """Subset of positions.expiring_today restricted to NFO (equity
+    F&O). Used by the equity-only auto-close agent which fires at
+    T-30min before the 15:30 IST equity close. Kite's `exchange`
+    field is the source of truth — NSE for cash equity, NFO for
+    equity F&O contracts. Returns NFO rows only.
+    """
+    rows = _scope_positions_expiring_today(ctx)
+    return [r for r in rows if (r.get('exchange') or '').upper() == 'NFO']
+
+
+def _scope_positions_expiring_today_mcx_unhedged(ctx):
+    """Subset of positions.expiring_today restricted to MCX
+    contracts whose CE/PE net qty across the underlying does NOT
+    balance — i.e. unhedged legs that will face cash settlement.
+
+    Mirrors the legacy ExpiryEngine grouping: group MCX expiring
+    rows by `(underlying, expiry)`; if the sum of CE quantities +
+    sum of PE quantities is 0, the pair is perfectly hedged and the
+    broker nets them against each other (no close needed). Anything
+    else is unhedged and returned.
+
+    Why "underlying + expiry": a long-CE-short-PE collar on the
+    same strike + expiry is the typical hedge structure; the net
+    qty test catches both single-strike hedges and asymmetric
+    multi-strike combos (e.g. long 2 CE, short 2 PE → net 0).
+    """
+    rows = _scope_positions_expiring_today(ctx)
+    mcx = [r for r in rows if (r.get('exchange') or '').upper() == 'MCX']
+    if not mcx:
+        return []
+    groups: dict = {}
+    for r in mcx:
+        parsed = _parsed_or_none(r.get('tradingsymbol') or '')
+        if not parsed:
+            continue
+        key = f"{parsed.get('underlying', '')}_{parsed.get('expiry', '')}"
+        groups.setdefault(key, []).append((r, parsed))
+    out = []
+    for entries in groups.values():
+        ce_qty = sum(int(r.get('quantity', 0) or 0)
+                     for r, p in entries if p.get('opt_type') == 'CE')
+        pe_qty = sum(int(r.get('quantity', 0) or 0)
+                     for r, p in entries if p.get('opt_type') == 'PE')
+        if ce_qty + pe_qty == 0:
+            # Perfectly hedged group — broker nets settlement; skip.
+            continue
+        for r, _p in entries:
+            out.append(r)
+    return out
+
+
 # Time metrics — useful for agents that should only fire in specific windows.
 def _metric_minutes_since_open(ctx, row):
     return ctx.minutes_since_open()
@@ -609,6 +661,19 @@ SYSTEM_TOKENS: list[dict] = [
      'value_type': 'array',
      'description': 'Per-symbol position rows where the F&O contract is expiring today (≤ 1.5 days). Leaf is OR-combined.',
      'resolver': 'backend.api.algo.grammar._scope_positions_expiring_today'},
+    # Segment-specific expiry scopes — see the equity / commodity
+    # auto-close agents in agent_engine.py for the operator-facing
+    # rationale. NFO closes ALL ITM; MCX closes only UNHEDGED ITM
+    # (CE/PE pairs that net to zero are skipped, mirroring the legacy
+    # ExpiryEngine grouping logic).
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'positions.expiring_today.nfo',
+     'value_type': 'array',
+     'description': 'Per-symbol position rows expiring today on NFO (equity F&O). Leaf is OR-combined.',
+     'resolver': 'backend.api.algo.grammar._scope_positions_expiring_today_nfo'},
+    {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'positions.expiring_today.mcx_unhedged',
+     'value_type': 'array',
+     'description': 'Per-symbol position rows expiring today on MCX where CE/PE net qty does NOT balance — i.e. unhedged. Hedged pairs (net = 0) are skipped because broker settles them against each other. Leaf is OR-combined.',
+     'resolver': 'backend.api.algo.grammar._scope_positions_expiring_today_mcx_unhedged'},
     {'grammar_kind': 'condition', 'token_kind': 'scope', 'token': 'funds.any_acct',
      'value_type': 'array',
      'description': 'Every non-TOTAL account row of the funds dataframe (leaf is OR-combined).',
@@ -805,6 +870,21 @@ SYSTEM_TOKENS: list[dict] = [
                               'description': 'Bail out if not filled within this many minutes.'},
          'adjust_pct':       {'type': 'number', 'default': 0.1,
                               'description': 'Percent of spread to adjust on each chase step.'},
+     }},
+
+    # Expiry-day surgical close. Unlike chase_close_positions (which
+    # closes everything in scope), this wraps the legacy ExpiryEngine
+    # so it APPLIES THE SAME RULES THE BG TASK USES — NFO closes all
+    # ITM + NTM; MCX closes only UNHEDGED ITM/NTM. The exchange param
+    # narrows the scan to ONE segment so the equity (15:00 IST) and
+    # commodity (23:00 IST) agents don't step on each other.
+    {'grammar_kind': 'action', 'token_kind': 'action_type', 'token': 'expiry_auto_close',
+     'value_type': 'void',
+     'description': 'Run ExpiryEngine scan + close, restricted to ONE exchange. NFO closes all ITM/NTM; MCX closes only unhedged ITM/NTM (CE/PE pairs that net to zero are skipped). Used by the expiry-day auto-close agents.',
+     'resolver': 'backend.api.algo.actions.expiry_auto_close',
+     'params_schema': {
+         'exchange':         {'type': 'enum', 'enum': ['NFO','MCX'], 'required': True,
+                              'description': 'Restrict scan + close to this exchange.'},
      }},
 
     # Simpler one-shot close of a specific position — LIMIT order at the
