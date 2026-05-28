@@ -576,22 +576,47 @@ def _normalise_holdings(resp: Any) -> list[dict]:
     rows = _iter_rows(payload, "holdings")
     out: list[dict] = []
     for h in rows:
+        qty    = int(h.get("quantity", 0) or 0)
+        t1_qty = int(h.get("t1_quantity", 0) or 0)
+        avg    = float(h.get("average_price",  h.get("avg_price", 0)) or 0)
+        ltp    = float(h.get("last_price",     h.get("ltp", 0)) or 0)
+        close  = float(h.get("close_price",    h.get("previous_close", 0)) or 0)
+        # opening_quantity is REQUIRED by the holdings API model — rows
+        # missing it get dropped at serialisation, which is why a Groww
+        # holding (HFCL / NATIONALUM …) would silently disappear from
+        # /api/holdings even though the broker layer returned it.
+        # Mirror Kite's convention: opening_quantity is the deliverable
+        # count (qty minus any T1 not-yet-settled). Groww carries the
+        # field under `quantity` for delivered, `t1_quantity` for in-flight.
+        opening_qty = max(qty - t1_qty, 0)
+        # Derive missing close_price / pnl / day_change from the values
+        # Groww does send. Some Groww account shapes omit these and rely
+        # on the consumer (e.g. our /performance UI) to compute them.
+        if close <= 0 and ltp > 0:
+            close = ltp
+        pnl = float(h.get("pnl", 0) or 0)
+        if not pnl and ltp > 0 and avg > 0 and qty:
+            pnl = (ltp - avg) * qty
+        day_change = float(h.get("day_change", 0) or 0)
+        if not day_change and ltp > 0 and close > 0:
+            day_change = ltp - close
+        day_change_pct = float(h.get("day_change_percentage", 0) or 0)
+        if not day_change_pct and close > 0:
+            day_change_pct = (day_change / close) * 100
         out.append({
             "tradingsymbol":   h.get("trading_symbol") or h.get("tradingsymbol") or "",
             "exchange":        h.get("exchange") or "NSE",
             "instrument_token": h.get("exchange_token") or h.get("instrument_token"),
             "isin":            h.get("isin"),
-            "quantity":        int(h.get("quantity", 0) or 0),
-            "t1_quantity":     int(h.get("t1_quantity", 0) or 0),
-            "average_price":   float(h.get("average_price",
-                                           h.get("avg_price", 0)) or 0),
-            "last_price":      float(h.get("last_price",
-                                           h.get("ltp", 0)) or 0),
-            "close_price":     float(h.get("close_price",
-                                           h.get("previous_close", 0)) or 0),
-            "pnl":             float(h.get("pnl", 0) or 0),
-            "day_change":      float(h.get("day_change", 0) or 0),
-            "day_change_percentage": float(h.get("day_change_percentage", 0) or 0),
+            "quantity":        qty,
+            "opening_quantity": opening_qty,
+            "t1_quantity":     t1_qty,
+            "average_price":   avg,
+            "last_price":      ltp,
+            "close_price":     close,
+            "pnl":             pnl,
+            "day_change":      day_change,
+            "day_change_percentage": day_change_pct,
             "product":         h.get("product", "CNC"),
             "_raw":            h,
         })
