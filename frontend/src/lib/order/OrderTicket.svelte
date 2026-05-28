@@ -612,11 +612,13 @@
       chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
     };
     submitting = true; submitErr = ''; submitOk = '';
+    /** @type {any} */
+    let brokerResp = null;
     try {
       // PAPER + LIVE both route through the backend. DRAFT hands off
       // to the caller's onSubmit only (no API call).
       if (_mode === 'paper' || _mode === 'live') {
-        const resp = await placeTicketOrder({
+        brokerResp = await placeTicketOrder({
           mode:             _mode,
           side:             _side,
           tradingsymbol:    symbol,
@@ -635,7 +637,7 @@
         // landed; modal stays open until the operator clicks Exit.
         // Backend returns {order_id, mode, status, detail} — surface
         // a verbose summary line with side / qty / symbol / price.
-        const oid   = resp?.order_id || '?';
+        const oid   = brokerResp?.order_id || '?';
         const px    = showLimit && _price ? `@₹${_roundToTick(_price)}` : '@MKT';
         submitOk = (
           `${(_mode || '').toUpperCase()} ${_side} ${_qty} ${symbol} ${px} · ` +
@@ -644,7 +646,10 @@
       }
       // Notify the caller — DRAFT mode appends to drafts[]; PAPER /
       // LIVE let the caller refresh its local view if it wants to.
-      await onSubmit(payload);
+      // Thread the broker response so the caller can surface order_id /
+      // status (e.g. as a non-blocking completion toast) without
+      // re-parsing the inline submitOk string.
+      await onSubmit({ ...payload, broker_response: brokerResp });
       // DRAFT closes immediately; PAPER / LIVE stay open with an Exit
       // button so the operator can read the placed-order line. The
       // previous auto-close (200 / 600 ms) was racing the operator's

@@ -64,6 +64,41 @@
   let _draftSeq = 0;
   /** @type {Array<{id:number, symbol:string, qty:number|'', avg_cost:number|'', ltp:number|''}>} */
   let drafts = $state([]);
+
+  // Non-blocking completion toast stack. Pushed by onTicketSubmit when
+  // a paper/live order lands; rendered as fixed-position cards at the
+  // top-right corner so the chain + drafts table behind them stay
+  // fully interactive (operator can place the next order without
+  // dismissing). Auto-dismiss after 5 s; click × to clear early.
+  /** @type {Array<{id:number, mode:string, side:string, qty:number, symbol:string, price:string, orderId:string, status:string, ts:number}>} */
+  let _orderToasts = $state([]);
+  let _orderToastSeq = 0;
+  function _pushOrderToast(/** @type {any} */ payload) {
+    const resp  = payload?.broker_response || {};
+    const px    = payload.price != null
+      ? `@₹${Number(payload.price).toFixed(2)}`
+      : '@MKT';
+    const toast = {
+      id:      ++_orderToastSeq,
+      mode:    String(payload.mode || '').toUpperCase(),
+      side:    String(payload.side || ''),
+      qty:     Number(payload.quantity || 0),
+      symbol:  String(payload.symbol || ''),
+      price:   px,
+      orderId: String(resp.order_id || '?'),
+      status:  String(resp.status || 'PLACED').toUpperCase(),
+      ts:      Date.now(),
+    };
+    _orderToasts = [..._orderToasts, toast];
+    // Auto-dismiss after 5 s. Identified by toast id rather than
+    // index so concurrent dismissals don't fight each other.
+    setTimeout(() => {
+      _orderToasts = _orderToasts.filter(t => t.id !== toast.id);
+    }, 5000);
+  }
+  function _dismissOrderToast(/** @type {number} */ id) {
+    _orderToasts = _orderToasts.filter(t => t.id !== id);
+  }
   function addDraft() {
     drafts = [...drafts, { id: ++_draftSeq, symbol: '', qty: '', avg_cost: '', ltp: '' }];
   }
@@ -1116,6 +1151,11 @@
       if (did != null) {
         drafts = drafts.filter(d => d.id !== did);
       }
+      // Non-blocking completion notification — surfaces order_id +
+      // status without making the operator close the OrderTicket modal
+      // or lose their place in the chain. Auto-dismisses in 5 s;
+      // operator can click to dismiss earlier.
+      _pushOrderToast(payload);
       return;
     }
     if (payload.mode !== 'draft') return;
@@ -2111,6 +2151,38 @@
       }];
       basketError = '';
     }} />
+{/if}
+
+<!-- Order-completion toast stack — fixed top-right, non-blocking.
+     Pointer-events: auto only on the toasts themselves so the
+     surrounding screen (chain, drafts table, OrderTicket modal that
+     might still be open) stays fully interactive. Each toast shows
+     mode + side + qty + symbol + price + order_id + status; auto-
+     dismisses after 5 s with the option to dismiss earlier via ×. -->
+{#if _orderToasts.length > 0}
+  <div class="order-toast-stack" aria-live="polite" aria-atomic="false">
+    {#each _orderToasts as t (t.id)}
+      <div class="order-toast order-toast-{t.status.toLowerCase()}"
+           role="status">
+        <div class="order-toast-head">
+          <span class="order-toast-mode order-toast-mode-{t.mode.toLowerCase()}">{t.mode}</span>
+          <span class="order-toast-status">{t.status}</span>
+          <button type="button" class="order-toast-close"
+                  aria-label="Dismiss"
+                  onclick={() => _dismissOrderToast(t.id)}>×</button>
+        </div>
+        <div class="order-toast-body">
+          <span class="order-toast-side order-toast-side-{t.side.toLowerCase()}">{t.side}</span>
+          <span class="order-toast-qty">{t.qty}</span>
+          <span class="order-toast-sym">{t.symbol}</span>
+          <span class="order-toast-px">{t.price}</span>
+        </div>
+        <div class="order-toast-foot">
+          <span class="order-toast-oid">#{t.orderId}</span>
+        </div>
+      </div>
+    {/each}
+  </div>
 {/if}
 
 <style>
@@ -3459,4 +3531,95 @@
   /* "chain" source pill on legs added via the chain picker — sky-blue
      to distinguish from manual / live / sim. */
   .leg-source-chain { color: #c084fc; }
+
+  /* ── Order-completion toast stack ─────────────────────────────────
+     Fixed top-right, pointer-events: none on the wrapper so the
+     chain + drafts behind the toasts stay clickable. Individual
+     toasts are pointer-events: auto so × can be clicked.
+     Slide-in from the right + auto-dismiss after 5 s. */
+  .order-toast-stack {
+    position: fixed;
+    top: 4.5rem;     /* clears the navbar + any mode banners */
+    right: 1rem;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+    max-width: 22rem;
+  }
+  .order-toast {
+    pointer-events: auto;
+    background: rgba(13,21,38,0.96);
+    border: 1px solid rgba(167,139,250,0.55);
+    border-left: 3px solid #a78bfa;
+    border-radius: 0.35rem;
+    padding: 0.45rem 0.65rem 0.4rem;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    font-family: ui-monospace, monospace;
+    color: #e5edf7;
+    animation: order-toast-in 180ms ease-out;
+  }
+  @keyframes order-toast-in {
+    from { transform: translateX(120%); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+  }
+  /* Per-status accent — overrides the default violet for filled /
+     unfilled / rejected outcomes so the operator catches errors at
+     a glance without reading the text. */
+  .order-toast-filled   { border-left-color: #4ade80; border-color: rgba(74,222,128,0.55); }
+  .order-toast-unfilled { border-left-color: #f87171; border-color: rgba(248,113,113,0.55); }
+  .order-toast-rejected { border-left-color: #f87171; border-color: rgba(248,113,113,0.55); }
+
+  .order-toast-head {
+    display: flex; align-items: center; gap: 0.45rem;
+    font-size: 0.55rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #c8d8f0;
+    opacity: 0.85;
+    margin-bottom: 0.25rem;
+  }
+  .order-toast-mode {
+    padding: 0.05rem 0.4rem;
+    border-radius: 0.2rem;
+    font-weight: 700;
+    background: rgba(167,139,250,0.18);
+    color: #c4b5fd;
+    border: 1px solid rgba(167,139,250,0.4);
+  }
+  .order-toast-mode-paper { background: rgba(56,189,248,0.18);  color: #7dd3fc; border-color: rgba(56,189,248,0.4); }
+  .order-toast-mode-live  { background: rgba(248,113,113,0.18); color: #fca5a5; border-color: rgba(248,113,113,0.5); }
+  .order-toast-status { font-weight: 600; }
+  .order-toast-close {
+    margin-left: auto;
+    width: 1.2rem; height: 1.2rem;
+    background: transparent;
+    border: 0;
+    color: rgba(200,216,240,0.7);
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    border-radius: 0.2rem;
+    padding: 0;
+  }
+  .order-toast-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
+  .order-toast-body {
+    display: flex; align-items: baseline; gap: 0.4rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .order-toast-side-buy  { color: #4ade80; }
+  .order-toast-side-sell { color: #f87171; }
+  .order-toast-qty { color: #fbbf24; }
+  .order-toast-sym { color: #e5edf7; }
+  .order-toast-px  { color: #c8d8f0; opacity: 0.9; }
+
+  .order-toast-foot {
+    margin-top: 0.2rem;
+    font-size: 0.55rem;
+    color: rgba(200,216,240,0.55);
+  }
+  .order-toast-oid { font-family: ui-monospace, monospace; }
 </style>

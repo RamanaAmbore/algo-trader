@@ -308,6 +308,16 @@
   let basketJustDone = $state(false);
   /** @type {{key:string, msg:string}|null} */
   let quickToast = $state(null);
+  // Sticky "active row" marker. Last strike + opt_type the operator
+  // poked. Survives the 900 ms quickToast so the row the operator
+  // just hit stays visually pinned — useful when they're going to
+  // place several orders in a row off the same strike. Stays until
+  // they click a different row OR explicitly clear (e.g. close the
+  // OrderTicket modal). Coexists with chain-row-atm coloring; the
+  // active class adds an outline + background tint without
+  // overriding the ATM cyan/orange direction stripe.
+  /** @type {{strike:number, optType:'CE'|'PE'}|null} */
+  let activeOptionRow = $state(null);
 
   function _quickKeyOpt(/** @type {number} */ strike, /** @type {string} */ optType) { return `o:${strike}:${optType}`; }
   function _quickKeyFut(/** @type {string} */ sym) { return `f:${sym}`; }
@@ -315,6 +325,10 @@
   function _flashToast(/** @type {string} */ key, /** @type {string} */ msg) {
     quickToast = { key, msg };
     setTimeout(() => { if (quickToast?.key === key) quickToast = null; }, 900);
+  }
+
+  function _markActive(/** @type {number} */ strike, /** @type {'CE'|'PE'} */ optType) {
+    activeOptionRow = { strike, optType };
   }
 
   function _mergeIntoBasket(/** @type {{sym:string,side:'BUY'|'SELL',lots:number}} */ incoming) {
@@ -354,6 +368,8 @@
     if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
     if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
+    // Pin the active row visual marker — survives the 900 ms toast.
+    _markActive(strike, optType);
     // Place-mode short-circuit: route directly to the Ticket tab
     // pre-filled with this leg, bypassing the basket entirely.
     if (_placeMode && onPlaceLeg) {
@@ -648,8 +664,11 @@
             {@const dir   = chainSpot != null ? (k < chainSpot ? 'itm-call' : k > chainSpot ? 'itm-put' : 'atm') : ''}
             {@const ceKey = _quickKeyOpt(k, 'CE')}
             {@const peKey = _quickKeyOpt(k, 'PE')}
+            {@const activeCe = activeOptionRow?.strike === k && activeOptionRow?.optType === 'CE'}
+            {@const activePe = activeOptionRow?.strike === k && activeOptionRow?.optType === 'PE'}
+            {@const activeRow = activeCe || activePe}
             {#if isAtm}
-              <tr class="chain-row chain-row-{dir} chain-row-atm" use:chainAtmRow>
+              <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe} use:chainAtmRow>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-side-action">
@@ -697,7 +716,7 @@
                 </td>
               </tr>
             {:else}
-              <tr class="chain-row chain-row-{dir}">
+              <tr class="chain-row chain-row-{dir}" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe}>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-side-action">
@@ -976,6 +995,38 @@
     background: rgba(251,191,36,0.18);
     border-top:    1px solid rgba(251,191,36,0.55);
     border-bottom: 1px solid rgba(251,191,36,0.55);
+  }
+  /* Sticky "active row" — the strike the operator last poked. Distinct
+     violet accent so it never fights the amber ATM stripe (which
+     persists when the active row happens to be ATM) or the cyan/orange
+     ITM tint. Applied to either side of the row via -ce / -pe variants
+     so the operator sees WHICH leg was last touched, not just which
+     strike. Box-shadow inset rather than background so it stacks
+     visually with the ATM background without erasing it. */
+  .chain-row-active > td {
+    box-shadow: inset 0 0 0 1px rgba(167,139,250,0.55);
+    background-image: linear-gradient(
+      to bottom,
+      rgba(167,139,250,0.10),
+      rgba(167,139,250,0.10)
+    );
+  }
+  .chain-row-active.chain-row-atm > td {
+    /* When the active row is also the ATM row, keep the amber stripe
+       and overlay a softer violet tint so both signals remain visible. */
+    background-image: linear-gradient(
+      to bottom,
+      rgba(167,139,250,0.14),
+      rgba(167,139,250,0.14)
+    );
+  }
+  /* Per-side emphasis — left edge for CE, right edge for PE — to
+     show the operator which option leg they last touched on the row. */
+  .chain-row-active-ce > .chain-td-ce {
+    border-left: 2px solid #a78bfa;
+  }
+  .chain-row-active-pe > .chain-td-pe {
+    border-right: 2px solid #a78bfa;
   }
   .chain-spot-pill {
     display: inline-flex; align-items: center; gap: 0.3rem;
