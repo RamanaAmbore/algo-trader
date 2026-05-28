@@ -679,32 +679,42 @@ class GrowwConnection:
     # ── Token mint + cache ────────────────────────────────────────────
 
     def _mint_access_token(self) -> str:
-        """Mint a fresh access token from api_key + (secret OR totp).
+        """Mint a fresh access token from api_key + (totp_seed OR secret).
         Raises if neither mint mode is configured. Returns the token
-        string."""
+        string.
+
+        Mint order — TOTP first, then approval (secret). Groww's TOTP
+        flow has no daily re-approval prompt; the SDK computes a fresh
+        6-digit code from the seed on each call. The approval flow
+        produces ~24 h tokens but requires the operator to OK the
+        request in the Groww app/web on first mint per day. TOTP
+        therefore wins when both are present — silent renewals beat
+        manual approvals for an unattended trading service."""
         from growwapi import GrowwAPI  # type: ignore[import-not-found]
         if not self._api_key:
             raise RuntimeError(
-                f"GrowwConnection {self.account!r} needs api_key + (secret "
-                f"OR totp_seed) to mint a token, or a manually-pasted "
+                f"GrowwConnection {self.account!r} needs api_key + (totp_seed "
+                f"OR secret) to mint a token, or a manually-pasted "
                 f"access_token. Fill credentials in /admin/brokers."
             )
-        if self._secret:
-            return GrowwAPI.get_access_token(self._api_key, secret=self._secret)
         if self._totp_seed:
             import pyotp  # type: ignore[import-not-found]
             totp_code = pyotp.TOTP(self._totp_seed).now()
             return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
+        if self._secret:
+            return GrowwAPI.get_access_token(self._api_key, secret=self._secret)
         raise RuntimeError(
-            f"GrowwConnection {self.account!r} has api_key but no secret "
-            f"or totp_seed — cannot mint. Paste a 24 h access_token "
+            f"GrowwConnection {self.account!r} has api_key but no totp_seed "
+            f"or secret — cannot mint. Paste a 24 h access_token "
             f"instead via /admin/brokers."
         )
 
     def _resolve_token(self) -> str:
         """Pick a working access token, preferring (in order):
           1. cached fresh mint
-          2. fresh mint via api_key + (secret OR totp_seed)
+          2. fresh mint via api_key + (totp_seed OR secret) —
+             TOTP is preferred when both are present (silent renewal,
+             no daily approval prompt).
           3. api_key used directly as Bearer token — Groww's vendor
              integration keys ARE long-lived JWTs that can be passed
              as the Authorization Bearer header, same shape the
@@ -721,11 +731,11 @@ class GrowwConnection:
         token, _created = _load_cached_token(cache_key)
         if token:
             return token
-        # 2) Mint via api_key + secret/totp. Capture the mint failure
+        # 2) Mint via api_key + totp_seed/secret. Capture the mint failure
         #    so we can surface it in the final RuntimeError when no
         #    fallback works either.
         mint_error: Exception | None = None
-        if self._api_key and (self._secret or self._totp_seed):
+        if self._api_key and (self._totp_seed or self._secret):
             try:
                 token = self._mint_access_token()
                 if token:
