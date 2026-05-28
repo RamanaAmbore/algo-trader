@@ -9,6 +9,7 @@
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchSimIterations } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -102,7 +103,7 @@
 <div class="page-header">
   <h1 class="algo-page-title">Simulator iterations</h1>
   <InfoHint popup text="Every iteration of every /start-run call lands here. Click a row to see the iteration's summary stats + replay it with the same seed." />
-  <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications /><AgentNotifications />
   <a href="/admin/simulator" class="back-link">← Simulator</a>
 </div>
 

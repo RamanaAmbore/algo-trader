@@ -19,6 +19,7 @@
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import {
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
@@ -411,7 +412,7 @@
     No paid GenAI in the loop — Claude Code subscription is the only LLM."
   />
   {#if refreshedAt}<span class="algo-ts ml-auto">{refreshedAt}</span>{:else}<span class="ml-auto"></span>{/if}
-  <OrderNotifications />
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <AgentWorkspaceTabs />

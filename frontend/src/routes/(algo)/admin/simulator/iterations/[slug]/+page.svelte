@@ -10,6 +10,7 @@
   import { goto } from '$app/navigation';
   import { authStore, logTime, dualTsHtml, nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -87,7 +88,7 @@
   <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
   <a href="/admin/simulator/iterations" class="back-link ml-auto">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}

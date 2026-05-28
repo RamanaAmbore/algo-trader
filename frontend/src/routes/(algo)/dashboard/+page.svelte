@@ -3,6 +3,7 @@
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -1467,7 +1468,7 @@
 <div class="page-header">
   <h1 class="algo-page-title">Dashboard</h1>
   <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
 </div>
 
 <!-- Hero row — 6 chips answering "what changed since I last looked?" -->

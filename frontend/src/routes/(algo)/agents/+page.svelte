@@ -2,6 +2,7 @@
   import { onMount, onDestroy, getContext } from 'svelte';
   import { nowStamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import {
@@ -550,7 +551,7 @@
        the action pills wrap to a second line via flex-wrap when there's
        no horizontal room. Earlier the ts was inside the same ml-auto
        cluster as the pills and wrapped as a unit. -->
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
   <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
     🔔 History
   </a>

@@ -535,3 +535,87 @@ export function stopOrderEventsPoller() {
   }
   _orderPollerStarted = false;
 }
+
+/* ── Global agent-events store ───────────────────────────────────────
+   Mirror of the order-events plumbing for agent fires + action
+   success/error events. One shared poller per session, badge counter
+   keyed off a separate localStorage timestamp so order + agent
+   unread counts move independently.
+
+   Backs the AgentNotifications bell on every algo page (sibling to
+   OrderNotifications). Same poll cadence (8 s) and pause-on-hide
+   behaviour via visibleInterval. */
+
+const _AGENT_LS_KEY = 'ramboq.agentEvents.lastSeenTs';
+
+function _loadAgentLastSeen() {
+  if (!browser) return 0;
+  try {
+    const v = localStorage.getItem(_AGENT_LS_KEY);
+    const n = v ? Number(v) : 0;
+    return Number.isFinite(n) ? n : 0;
+  } catch { return 0; }
+}
+
+function _saveAgentLastSeen(/** @type {number} */ ts) {
+  if (!browser) return;
+  try { localStorage.setItem(_AGENT_LS_KEY, String(ts)); } catch { /* ignore */ }
+}
+
+/** @typedef {{
+ *   id: number, agent_id: number, event_type: string,
+ *   trigger_condition: string | null, detail: string | null,
+ *   timestamp: string, sim_mode: boolean,
+ * }} AgentEvent */
+
+/** Rolling buffer of the last ~100 agent events. The /agents/events
+ *  endpoint returns newest-first; we keep that order so the bell
+ *  popover's "most recent at top" needs no reversal. */
+export const agentEventsStore = writable(/** @type {AgentEvent[]} */ ([]));
+
+const _agentLastSeenStore = writable(_loadAgentLastSeen());
+
+export const agentUnreadCount = derived(
+  [agentEventsStore, _agentLastSeenStore],
+  ([$events, $lastSeen]) => {
+    if (!$events?.length) return 0;
+    let n = 0;
+    for (const e of $events) {
+      const t = e?.timestamp ? Date.parse(e.timestamp) : 0;
+      if (t > $lastSeen) n++;
+    }
+    return n;
+  }
+);
+
+export function markAgentEventsSeen() {
+  const now = Date.now();
+  _saveAgentLastSeen(now);
+  _agentLastSeenStore.set(now);
+}
+
+let _agentPollerStarted = false;
+let _agentPollerTeardown = /** @type {(() => void) | null} */ (null);
+
+export function startAgentEventsPoller() {
+  if (!browser || _agentPollerStarted) return;
+  _agentPollerStarted = true;
+
+  const poll = async () => {
+    try {
+      const { fetchRecentAgentEvents } = await import('$lib/api');
+      const rows = await fetchRecentAgentEvents(50);
+      if (Array.isArray(rows)) agentEventsStore.set(rows);
+    } catch { /* swallow */ }
+  };
+  poll();
+  _agentPollerTeardown = visibleInterval(poll, 8000);
+}
+
+export function stopAgentEventsPoller() {
+  if (_agentPollerTeardown) {
+    _agentPollerTeardown();
+    _agentPollerTeardown = null;
+  }
+  _agentPollerStarted = false;
+}

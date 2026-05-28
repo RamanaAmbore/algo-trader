@@ -8,6 +8,7 @@
   import { goto } from '$app/navigation';
   import { authStore, nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchSettings, updateSetting, resetSetting } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
@@ -125,7 +126,7 @@
 <div class="page-header">
   <h1 class="page-title-chip">Settings</h1>
   <InfoHint popup text={'DB-backed tunables. Edits take effect on the next agent tick / sim run without a deploy. Values are preserved across deploys; pressing <b>Reset</b> returns a key to its code-shipped default. Infrastructure parameters (DB credentials, market hours, Kite URLs, IPv6 addresses) deliberately stay in <span class="font-mono">backend_config.yaml</span> — they change once a quarter and have no business being in the DB.'} />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
 </div>
 
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}

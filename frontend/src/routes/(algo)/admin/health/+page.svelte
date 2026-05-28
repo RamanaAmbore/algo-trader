@@ -8,6 +8,7 @@
   import { goto } from '$app/navigation';
   import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchSystemHealth } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
@@ -60,7 +61,7 @@
   <h1 class="page-title-chip">Health</h1>
   <InfoHint popup text="System diagnostics snapshot. Use this at market open to confirm all broker accounts are loaded, DB is reachable, and the paper/sim engines are in the expected state. Refreshes every 15 s." />
   {#if refreshedAt}
-    <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications />
+    <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications /><AgentNotifications />
   {/if}
 </div>
 

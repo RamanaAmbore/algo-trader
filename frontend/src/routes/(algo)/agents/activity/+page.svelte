@@ -9,6 +9,7 @@
 <script>
   import { nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
@@ -30,7 +31,7 @@
 <div class="page-header">
   <h1 class="page-title-chip">Agent Activity</h1>
   <InfoHint popup text="Recent agent fires (and optionally action successes/errors). Real-pipeline events only — sim runs filtered out. Click a row's slug to jump to that agent on the Agents tab." />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
 </div>
 
 <AgentWorkspaceTabs />

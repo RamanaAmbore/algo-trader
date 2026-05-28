@@ -17,6 +17,7 @@
   import { onMount } from 'svelte';
   import { authStore, nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
+  import AgentNotifications from '$lib/AgentNotifications.svelte';
   import {
     fetchAgentFragments, createAgentFragment,
     patchAgentFragment, deleteAgentFragment, reloadFragments,
@@ -166,7 +167,7 @@
 <div class="page-header">
   <h1 class="page-title-chip">Fragments</h1>
   <InfoHint popup text={'Reusable saved sub-trees an agent references via <b>{$ref: name}</b>. Two kinds: <b>notify</b> (channel lists for agent.events) and <b>condition</b> (sub-trees for agent.conditions). System fragments toggle-only; custom fragments full CRUD.'} />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
   <button class="reload-pill" onclick={doReload} disabled={busy} title="Re-read fragments from DB into the in-memory cache">↻ Reload</button>
 </div>
 
