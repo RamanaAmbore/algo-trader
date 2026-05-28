@@ -436,6 +436,21 @@
     return events.filter(e => e.enabled).map(e => e.channel).join(', ');
   }
 
+  /** Map a channel id → single emoji. Used on the agent row for the
+   *  notify-icon strip so the operator scans which agents page Telegram
+   *  vs which only log silently. Keep glyphs ascii-light so the row
+   *  height doesn't jump. */
+  const CHANNEL_ICON = {
+    telegram:  '📨',
+    email:     '✉',
+    websocket: '🌐',
+    log:       '📝',
+  };
+  function enabledChannels(/** @type {any[]} */ events) {
+    if (!Array.isArray(events)) return [];
+    return events.filter(e => e?.enabled).map(e => e.channel).filter(Boolean);
+  }
+
   // ── Category grouping ────────────────────────────────────────────────────
   // Derive category from slug prefix so new agents bucket automatically
   // without needing a DB field. If the catalog grows unwieldy, promote
@@ -675,6 +690,17 @@
             {#if agent.long_name}
               <span class="text-[0.55rem] text-[#7e97b8] font-mono truncate">{agent.long_name}</span>
             {/if}
+          </span>
+          <!-- Notify-channel icon strip — one tiny emoji per enabled
+               channel. Grouped on the right alongside the trade-mode +
+               ON/OFF buttons + chevron so every controller-style affordance
+               clusters in one visual zone. Operator scans "📨✉" to know
+               "this agent pages Telegram + email"; the tooltip carries
+               the full channel list for accessibility. -->
+          <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(agent.events).join(', ') || 'none')}>
+            {#each enabledChannels(agent.events) as ch (ch)}
+              <span class="agent-notify-ico" aria-label={ch}>{CHANNEL_ICON[ch] || '•'}</span>
+            {/each}
           </span>
           <button type="button"
             onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
@@ -1171,6 +1197,23 @@
     transition: background 0.1s;
   }
   .history-pill:hover { background: rgba(125,211,252,0.18); }
+
+  /* Notify-channel icon strip on each agent row — sits between the
+     name and the trade-mode / ON-OFF cluster on the right. Single
+     consistent palette (sky-300 at low alpha) so all controller-style
+     icons (notify, chevron, refresh, fullscreen) read as one family. */
+  .agent-row-icons {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    flex-shrink: 0;
+  }
+  .agent-notify-ico {
+    font-size: 0.65rem;
+    line-height: 1;
+    opacity: 0.85;
+    filter: grayscale(0.4);
+  }
   .ai-card {
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
     border: 1px solid rgba(167,139,250,0.30);

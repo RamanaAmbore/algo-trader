@@ -670,8 +670,35 @@
   background: rgba(251,191,36,0.28);
   color: #fde68a;
 }
-.log-panel .log-chip              { display: inline-block; font-size: 0.6rem; padding: 0 0.3rem; margin: 0 0.1rem; border-radius: 0.2rem; background: rgba(39,53,82,0.55); border: 1px solid rgba(255,255,255,0.08); }
-.log-panel .log-chip-key          { color: #7dd3fc; font-weight: 600; text-transform: uppercase; margin-right: 0.15rem; font-size: 0.5rem; }
+/* Key-value chips in the log surfaces — agent log + order log share
+   the same chip family. Key sits in sky-300 small-caps, value sits in
+   bright cream-white at full weight so the operator's eye lands on
+   what changed (the value), not on the label. Subtle vertical
+   gradient + soft sky border lifts the chip from the flat log
+   background; the earlier flat off-white-on-navy read as "good but
+   not great" per operator feedback. */
+.log-panel .log-chip {
+  display: inline-block;
+  font-size: 0.6rem;
+  padding: 0.05rem 0.32rem;
+  margin: 0 0.12rem;
+  border-radius: 0.22rem;
+  background: linear-gradient(180deg, rgba(39, 53, 82, 0.78) 0%, rgba(28, 40, 64, 0.78) 100%);
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  color: #f1f5f9;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  vertical-align: baseline;
+}
+.log-panel .log-chip-key {
+  color: #7dd3fc;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-right: 0.2rem;
+  font-size: 0.52rem;
+  letter-spacing: 0.05em;
+  opacity: 0.85;
+}
 
 /* ── Button design tokens ─────────────────────────────────────────────────── */
 /*

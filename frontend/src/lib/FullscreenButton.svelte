@@ -103,9 +103,9 @@
        summary), guaranteeing top-right placement without needing
        every card header to opt into justify-content: space-between
        or a sibling spacer.
-       Amber icon + soft amber border as the resting state — matches
-       the algo terminal accent across every card. Hover bumps the
-       fill so the affordance reads as clickable. */
+       Sky-300 palette to match RefreshButton + DisclosureChevron —
+       every controller-style icon now reads as one family
+       (info/affordance, not action). */
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -113,21 +113,21 @@
     height: 1.4rem;
     padding: 0;
     margin: 0 0 0 auto;
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.32);
+    background: rgba(125, 211, 252, 0.08);
+    border: 1px solid rgba(125, 211, 252, 0.32);
     border-radius: 3px;
-    color: #fbbf24;
+    color: #7dd3fc;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
   }
   .fs-btn:hover {
-    background: rgba(251, 191, 36, 0.20);
-    border-color: rgba(251, 191, 36, 0.65);
-    color: #fde047;
+    background: rgba(125, 211, 252, 0.20);
+    border-color: rgba(125, 211, 252, 0.65);
+    color: #bae6fd;
   }
   .fs-btn:focus-visible {
-    outline: 2px solid rgba(251, 191, 36, 0.55);
+    outline: 2px solid rgba(125, 211, 252, 0.55);
     outline-offset: 1px;
   }
 

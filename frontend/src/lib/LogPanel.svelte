@@ -8,6 +8,7 @@
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
+  import { chipsHtml, chipsFromJson } from '$lib/logChips';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -335,10 +336,6 @@
     // Prefer fill_price once the chase landed; otherwise show the initial
     // limit price the operator submitted.
     const price     = fillPrice || initPrice;
-    const statusChip  = o.status   ? ` <span class="log-chip"><span class="log-chip-key">status:</span>${o.status}</span>` : '';
-    const attemptChip = (o.attempts != null && o.attempts > 0)
-      ? ` <span class="log-chip"><span class="log-chip-key">chase:</span>#${o.attempts}</span>`
-      : '';
     // Preflight verdict — a tiny ✓/✗ chip whose title= carries the
     // detail. ✓ when the order made it past preflight (FILLED / OPEN
     // / SHADOW_OK / FILLED-on-live). ✗ when REJECTED / SHADOW_REJECTED
@@ -351,12 +348,21 @@
     } else if (status === 'FILLED' || status === 'SHADOW_OK') {
       preflightChip = ` <span class="log-pf log-pf-ok" title="Preflight OK">✓</span>`;
     }
-    const engine = o.engine ? ` <span class="log-chip"><span class="log-chip-key">engine:</span>${o.engine}</span>` : '';
-    // Agent-id chip — links back to the firing agent on /agents.
+    // Detail chips — keyed via the shared chipsHtml helper so order rows
+    // and agent rows render the same key:value pattern. order param
+    // fixes display order ahead of chipsHtml's insertion-order default.
+    const chips = chipsHtml({
+      status:  o.status || null,
+      chase:   (o.attempts != null && o.attempts > 0) ? `#${o.attempts}` : null,
+      engine:  o.engine || null,
+    }, { order: ['status', 'chase', 'engine'] });
+    // Agent-id chip stays bespoke (it's an <a>, not a plain span — the
+    // chipsHtml helper deliberately doesn't emit anchors).
     const agentChip = o.agent_id
       ? ` <a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
-    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${statusChip}${attemptChip}${engine}${agentChip}</span>`;
+    const chipsBlock = chips ? ' ' + chips : '';
+    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -451,7 +457,13 @@
   // this tab; the pill makes them impossible to confuse with real
   // agent activity. Amber matches the SIMULATOR banner palette.
   const simPill = e.sim_mode ? '<span class="log-sim-pill" title="Simulator entry — not live activity">SIM</span> ' : '';
-  return `<span class="${cls}">${t} ${simPill}${e.event_type||''} ${e.trigger_condition||''}</span>`;
+  // trigger_condition is usually a JSON object like
+  //   {metric:'pnl', scope:'positions.total', op:'<=', value:-50000}
+  // — render as the same key:value chip pattern the order rows use
+  // (chipsFromJson silently falls through for plain-text triggers).
+  const cond = chipsFromJson(e.trigger_condition);
+  const condBlock = cond ? ' ' + cond : '';
+  return `<span class="${cls}">${t} ${simPill}${e.event_type||''}${condBlock}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
   // System log lines carry a leading ISO timestamp (parsed by
   // parseLogLineTime → dual-zone). When parse fails, render the raw

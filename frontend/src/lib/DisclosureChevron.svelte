@@ -23,7 +23,10 @@
 
 <style>
   .disclosure-chevron {
-    color: #7e97b8;
+    /* Single sky-300 palette across every controller-style icon
+       (RefreshButton, FullscreenButton, DisclosureChevron, agent
+       notify icons). Reads as one consistent affordance family. */
+    color: #7dd3fc;
     font-size: 0.95rem;
     line-height: 1;
     flex-shrink: 0;
@@ -32,8 +35,10 @@
        affordance instead of disappearing among the row pills. */
     padding: 0 0.15rem;
     transition: color 0.12s;
+    opacity: 0.85;
   }
   .disclosure-chevron:hover {
-    color: #fbbf24;
+    color: #bae6fd;
+    opacity: 1;
   }
 </style>
