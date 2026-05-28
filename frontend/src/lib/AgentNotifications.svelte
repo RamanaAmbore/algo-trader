@@ -27,6 +27,19 @@
   let panelEl = /** @type {HTMLElement|null} */ ($state(null));
   /** @type {HTMLElement|null} */
   let btnEl   = /** @type {HTMLElement|null} */ ($state(null));
+  // Dynamic anchor — when the icon is in the LEFT half of the viewport
+  // we anchor the panel's LEFT edge to the icon (panel extends right);
+  // when on the RIGHT half we anchor the RIGHT edge (panel extends
+  // left). Earlier the panel was hard-right-anchored, so on /admin/options
+  // where the header is narrow + the icons sit in the left half of the
+  // viewport, the panel extended off-screen to the left and the
+  // operator couldn't read the agent log.
+  let _anchorRight = $state(true);
+  function _recomputeAnchor() {
+    if (!btnEl || typeof window === 'undefined') return;
+    const r = btnEl.getBoundingClientRect();
+    _anchorRight = (r.left + r.right) / 2 > window.innerWidth / 2;
+  }
 
   let events = $state(/** @type {any[]} */ ([]));
   let unread = $state(0);
@@ -61,7 +74,10 @@
 
   function toggle() {
     open = !open;
-    if (open) markAgentEventsSeen();
+    if (open) {
+      markAgentEventsSeen();
+      _recomputeAnchor();
+    }
   }
 
   // agent_events endpoint returns newest-first already; just slice
@@ -100,7 +116,10 @@
   </button>
 
   {#if open}
-    <div bind:this={panelEl} class="anb-panel" role="dialog" aria-label="Agent log">
+    <div bind:this={panelEl}
+         class="anb-panel"
+         class:anb-panel-left={!_anchorRight}
+         role="dialog" aria-label="Agent log">
       <div class="anb-head">
         <span class="anb-title">Agent Log</span>
         <button type="button" class="anb-close" aria-label="Close"
@@ -185,10 +204,16 @@
     display: inline-flex; align-items: center; justify-content: center;
   }
 
+  /* Default: anchor panel's RIGHT edge to the icon, panel extends
+     LEFT. When `_anchorRight` is false (icon sits in the left half of
+     the viewport) we flip via .anb-panel-left so the panel extends
+     RIGHT instead — keeps it inside the viewport regardless of icon
+     placement. */
   .anb-panel {
     position: absolute;
     top: calc(100% + 0.35rem);
     right: 0;
+    left: auto;
     /* High z-index so the panel overlaps the OptionsPayoff chart (and
        any other absolutely-positioned page content). Was 45 — the
        payoff chart card's stacking context outranked it and the
@@ -245,6 +270,7 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
   .anb-row:last-child { border-bottom: 0; }
+  .anb-panel-left { left: 0; right: auto; }
   .anb-row-meta {
     display: flex;
     align-items: center;

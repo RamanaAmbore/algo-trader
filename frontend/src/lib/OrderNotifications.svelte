@@ -29,6 +29,17 @@
   let panelEl = /** @type {HTMLElement|null} */ ($state(null));
   /** @type {HTMLElement|null} */
   let btnEl   = /** @type {HTMLElement|null} */ ($state(null));
+  // Dynamic anchor — see AgentNotifications for the rationale. When
+  // the icon is in the LEFT half of the viewport the panel anchors
+  // its LEFT edge to the icon (extends right); when on the RIGHT
+  // half it anchors the RIGHT edge (extends left). Keeps the panel
+  // on-screen regardless of icon position.
+  let _anchorRight = $state(true);
+  function _recomputeAnchor() {
+    if (!btnEl || typeof window === 'undefined') return;
+    const r = btnEl.getBoundingClientRect();
+    _anchorRight = (r.left + r.right) / 2 > window.innerWidth / 2;
+  }
 
   // Mirror the global store into local $state — keeps the template
   // reactive without a $:-dance every render.
@@ -65,7 +76,10 @@
 
   function toggle() {
     open = !open;
-    if (open) markOrderEventsSeen();
+    if (open) {
+      markOrderEventsSeen();
+      _recomputeAnchor();
+    }
   }
 
   const KIND_LABEL = {
@@ -179,7 +193,10 @@
   </button>
 
   {#if open}
-    <div bind:this={panelEl} class="onb-panel" role="dialog" aria-label="Order notifications">
+    <div bind:this={panelEl}
+         class="onb-panel"
+         class:onb-panel-left={!_anchorRight}
+         role="dialog" aria-label="Order notifications">
       <div class="onb-head">
         <span class="onb-title">Orders &amp; Chase</span>
         <button type="button" class="onb-close" aria-label="Close"
@@ -279,10 +296,14 @@
   /* Dropdown panel — anchored to the right edge of the bell so it
      doesn't overflow viewport on narrow screens. z-index above the
      ag-Grid + algo cards but below modal dialogs. */
+  /* Default: anchor panel's RIGHT edge to icon. .onb-panel-left flips
+     to left-anchor when the icon sits in the left half of the viewport
+     so the panel stays on-screen. */
   .onb-panel {
     position: absolute;
     top: calc(100% + 0.35rem);
     right: 0;
+    left: auto;
     /* High z-index so the panel sits above the OptionsPayoff chart
        and any other absolutely-positioned page content. Matches the
        sibling AgentNotifications panel + the InfoHint popouts so all
@@ -319,6 +340,7 @@
     border-radius: 0.2rem;
   }
   .onb-close:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+  .onb-panel-left { left: 0; right: auto; }
   .onb-empty {
     padding: 0.9rem 0.65rem;
     font-size: 0.65rem;
