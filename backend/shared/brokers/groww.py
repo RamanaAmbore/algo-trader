@@ -31,12 +31,51 @@ field names the rest of the codebase consumes.
 
 from __future__ import annotations
 
-from typing import Any
+import functools
+from typing import Any, Callable
 
 from backend.shared.brokers.base import Broker
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Auth-retry decorator ──────────────────────────────────────────────
+#
+# Mirrors Kite's `@retry_kite_conn` pattern but scoped to Groww auth
+# errors only: if a method raises GrowwAPIAuthenticationException (or
+# the loose GrowwAPIException carrying a 401 status), evict the cached
+# access token, mint a fresh one via TOTP, and retry the call ONCE
+# with the new SDK handle. Non-auth errors propagate immediately so
+# real bugs (bad params, 5xx, network) aren't masked by silent retries.
+def _retry_groww_auth(fn: Callable) -> Callable:
+    @functools.wraps(fn)
+    def wrapper(self: "GrowwBroker", *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception as e:
+            # Lazy import — keeps groww.py importable without the SDK
+            # installed (lets the registry surface a clear error rather
+            # than crashing at module load).
+            try:
+                from growwapi.groww.exceptions import (
+                    GrowwAPIAuthenticationException,
+                    GrowwAPIAuthorisationException,
+                )
+                auth_types = (GrowwAPIAuthenticationException,
+                              GrowwAPIAuthorisationException)
+            except ImportError:
+                auth_types = ()
+            if not isinstance(e, auth_types):
+                raise
+            logger.warning(
+                f"GrowwBroker.{fn.__name__} for {self.account!r} hit "
+                f"{type(e).__name__}: {e}. Evicting cached access token "
+                f"and re-minting via TOTP."
+            )
+            self._conn.refresh()
+            return fn(self, *args, **kwargs)
+    return wrapper
 
 
 # Kite → Groww exchange string. Groww uses NSE / BSE / NFO directly so
@@ -151,6 +190,7 @@ class GrowwBroker(Broker):
 
     # ── Account state ─────────────────────────────────────────────────
 
+    @_retry_groww_auth
     def profile(self) -> dict:
         try:
             prof = self.groww.get_user_profile()
@@ -167,18 +207,22 @@ class GrowwBroker(Broker):
         except Exception as e:
             raise RuntimeError(f"Groww auth check failed: {e}") from e
 
+    @_retry_groww_auth
     def holdings(self) -> list[dict]:
         resp = self.groww.get_holdings_for_user()
         return _normalise_holdings(resp)
 
+    @_retry_groww_auth
     def positions(self) -> dict:
         resp = self.groww.get_positions_for_user()
         return _normalise_positions(resp)
 
+    @_retry_groww_auth
     def margins(self, segment: str | None = None) -> dict:
         resp = self.groww.get_available_margin_details()
         return _normalise_margins(resp, segment)
 
+    @_retry_groww_auth
     def orders(self) -> list[dict]:
         resp = self.groww.get_order_list()
         return _normalise_orders(resp)
@@ -195,6 +239,7 @@ class GrowwBroker(Broker):
 
     # ── Market data ───────────────────────────────────────────────────
 
+    @_retry_groww_auth
     def ltp(self, symbols: list[str]) -> dict:
         """Groww's `get_ltp` wants a Tuple of `"EXCHANGE_TRADINGSYMBOL"` keys
         plus a segment. The codebase passes Kite-style `"NSE:RELIANCE"`
@@ -227,6 +272,7 @@ class GrowwBroker(Broker):
         except Exception as e:
             raise RuntimeError(f"Groww ltp failed: {e}") from e
 
+    @_retry_groww_auth
     def quote(self, symbols: list[str]) -> dict:
         """Two-tier quote fetch:
           * **Single symbol** — call `get_quote(trading_symbol, exchange,
@@ -296,6 +342,7 @@ class GrowwBroker(Broker):
                 logger.debug(f"GrowwBroker._quote_batch_ohlc segment={seg}: {e}")
         return out
 
+    @_retry_groww_auth
     def instruments(self, exchange: str | None = None) -> list[dict]:
         """Groww's `get_all_instruments()` returns the master CSV as a
         list. Field names are close to Kite's but not identical — map
@@ -322,6 +369,7 @@ class GrowwBroker(Broker):
             })
         return out
 
+    @_retry_groww_auth
     def historical_data(
         self,
         instrument_token: int,
@@ -403,6 +451,7 @@ class GrowwBroker(Broker):
 
     # ── Order entry ───────────────────────────────────────────────────
 
+    @_retry_groww_auth
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         """Groww exposes per-order margin via `get_order_margin_details`;
         no batch endpoint. Loop and return Kite-shape list."""
@@ -439,6 +488,7 @@ class GrowwBroker(Broker):
                 out.append({"total": 0.0, "error": str(e), "raw": None})
         return out
 
+    @_retry_groww_auth
     def place_order(self, **kwargs: Any) -> str:
         ex, seg = _groww_exchange_and_segment(kwargs.get("exchange", ""))
         resp = self.groww.place_order(
@@ -462,6 +512,7 @@ class GrowwBroker(Broker):
             raise RuntimeError(f"Groww place_order rejected: {resp}")
         return str(order_id)
 
+    @_retry_groww_auth
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
         _, seg = _groww_exchange_and_segment(kwargs.get("exchange", ""))
         self.groww.modify_order(
@@ -476,6 +527,7 @@ class GrowwBroker(Broker):
         )
         return order_id
 
+    @_retry_groww_auth
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
         _, seg = _groww_exchange_and_segment(kwargs.get("exchange", "NSE"))
         self.groww.cancel_order(segment=seg, groww_order_id=order_id)
