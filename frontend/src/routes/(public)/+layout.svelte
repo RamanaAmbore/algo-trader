@@ -47,12 +47,7 @@
   <div class="pub-card">
     <!-- Desktop navbar -->
     <header class="pub-navbar">
-      <!-- Desktop grid: [Brand auto | Nav 1fr | Rambo+pill 1fr | Sign In auto].
-           Two 1fr columns guarantee the two middle clusters share the
-           leftover space equally; each cluster centers its content
-           inside its own column, independent of how wide the brand or
-           sign-in pill end up being. -->
-      <div class="pub-nav-inner hidden md:grid items-center h-14 pub-nav-grid">
+      <div class="pub-nav-inner hidden md:flex items-center gap-1 h-14">
         <a href="/about" class="pub-brand shrink-0 mr-5" tabindex="-1">
           <img src={bullSrc} alt="" style="height:2.6rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
           <div class="pub-brand-text">
@@ -63,7 +58,7 @@
           </div>
         </a>
 
-        <nav class="flex items-center gap-3 justify-center min-w-0">
+        <nav class="flex items-center gap-3 flex-1 justify-center">
           {#each navLinks() as link}
             <button
               onclick={() => goto(link.href)}
@@ -72,37 +67,29 @@
           {/each}
         </nav>
 
-        <!-- Centered cluster — Rambo Terminal + user-pill sit
-             centered in the leftover horizontal space between the
-             primary nav (ending at Contact) and the Sign In button on
-             the right. Industry analogue: Vercel / Linear desktop bars
-             that pin context-switch + user-identity in the middle and
-             keep auth on the trailing edge. -->
-        <div class="flex items-center justify-center gap-3 min-w-0">
-          <!-- Rambo Terminal cross-link visible to everyone. Lands on
-               /pulse (Pulse) — the most useful entry surface regardless
-               of role: live positions / holdings / pinned market data.
-                - admin → /pulse with full access
-                - anonymous on prod → demo mode (real broker data,
-                  masked accounts, paper-only writes)
-                - anonymous on dev → /signin via algo layout's auth guard. -->
-          <button onclick={() => goto('/pulse')} class="pub-nav-algo-btn">
-            Rambo Terminal ↗
-          </button>
-
-          {#if $authStore.user}
-            <span class="pub-user-pill">
-              {$authStore.user.username}
-              {#if $authStore.user.role === 'designated'}
-                <span class="pub-user-role pub-user-role-designated">designated</span>
-              {:else if $authStore.user.role === 'admin'}
-                <span class="pub-user-role">admin</span>
-              {/if}
-            </span>
-          {/if}
-        </div>
+        <!-- Rambo Terminal cross-link visible to everyone. Lands on
+             /pulse (Pulse) — the most useful entry surface
+             regardless of role: live positions / holdings / pinned
+             market data. The previous target /dashboard is more
+             admin-flavoured (P&L analysis + agent fires); operators
+             reach it via the algo navbar from /pulse if they want it.
+              - admin → /pulse with full access
+              - anonymous on prod → demo mode (real broker data, masked
+                accounts, paper-only writes)
+              - anonymous on dev → /signin via algo layout's auth guard. -->
+        <button onclick={() => goto('/pulse')} class="pub-nav-algo-btn">
+          Rambo Terminal ↗
+        </button>
 
         {#if $authStore.user}
+          <span class="pub-user-pill">
+            {$authStore.user.username}
+            {#if $authStore.user.role === 'designated'}
+              <span class="pub-user-role pub-user-role-designated">designated</span>
+            {:else if $authStore.user.role === 'admin'}
+              <span class="pub-user-role">admin</span>
+            {/if}
+          </span>
           <button onclick={signOut} class="pub-nav-btn">Sign Out</button>
         {:else}
           <button onclick={() => goto('/signin')} class="pub-nav-signin {isActive('/signin') ? 'pub-nav-btn-active' : ''}">Sign In</button>
@@ -299,17 +286,6 @@
     padding: 0 1rem;
   }
 
-  /* Desktop grid — four columns: brand (auto) · nav (1fr) · Rambo+pill (1fr) · auth (auto).
-     Two equal 1fr columns guarantee the two centered clusters split
-     the leftover space symmetrically regardless of brand or auth pill
-     widths. column-gap stays tight so cluster contents drive the
-     spacing, not the grid template. */
-  .pub-nav-grid {
-    display: grid;
-    grid-template-columns: auto 1fr 1fr auto;
-    column-gap: 0.25rem;
-  }
-
   /* ── Brand text logo ────────────────────────────────────────────────────── */
   .pub-brand {
     display: flex;
@@ -414,10 +390,7 @@
      amber-pill "Investor site" link so both context-switch buttons
      read with equal visual weight. */
   .pub-nav-algo-btn {
-    /* Padding mirrors .pub-nav-btn (and its active variant) so the
-       button reads at the same height as the primary nav links —
-       sits in the centered cluster without towering over them. */
-    padding: 0.18rem 0.45rem 0.04rem;
+    padding: 0.28rem 0.75rem;
     font-size: 0.88rem;
     font-weight: 500;
     border-radius: 0.25rem;
@@ -429,6 +402,7 @@
     transition: background-color 0.08s, border-color 0.08s, color 0.08s;
     outline: none !important;
     white-space: nowrap;
+    margin-right: 0.25rem;
   }
   .pub-nav-algo-btn:hover {
     background: rgba(200,168,75,0.20);
