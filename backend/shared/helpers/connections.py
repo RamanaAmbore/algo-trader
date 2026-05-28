@@ -166,12 +166,49 @@ CONN_RESET_HOURS = int(config['conn_reset_hours'])
 logger = get_logger(__name__)
 
 
-def _load_cached_token(account: str) -> tuple[str | None, datetime | None]:
-    """Load a cached access token for an account. Returns (token, created_at) or (None, None)."""
+# File-system lock around the shared token cache file. The
+# per-account login locks (`_cross_process_login_lock`) only serialise
+# mint *calls*; this serialises the read-modify-write of the cache
+# JSON itself. Both prod and dev mint tokens for different accounts
+# into the same `kite_tokens.json` / `groww_tokens.json` — without
+# this, a fast-enough save by prod while dev is mid-write could lose
+# either side's update.
+@contextlib.contextmanager
+def _cache_file_lock(shared: bool = False):
+    """Acquire an advisory lock on a sibling .lock file. `shared=True`
+    grants a read lock (multiple readers, no writers); `shared=False`
+    grants an exclusive lock (one writer, no readers). The lock is
+    released when the context exits."""
+    lock_path = _TOKEN_CACHE_PATH.with_suffix('.cache.lock')
     try:
-        if not _TOKEN_CACHE_PATH.exists():
-            return None, None
-        data = json.loads(_TOKEN_CACHE_PATH.read_text())
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fp = None
+    try:
+        fp = open(lock_path, 'a+')
+        fcntl.flock(fp.fileno(),
+                    fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        yield
+    finally:
+        if fp is not None:
+            try:
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            fp.close()
+
+
+def _load_cached_token(account: str) -> tuple[str | None, datetime | None]:
+    """Load a cached access token for an account. Returns
+    (token, created_at) or (None, None). Reads under a shared lock so
+    a concurrent writer's read-modify-write doesn't surface a
+    half-written file."""
+    try:
+        with _cache_file_lock(shared=True):
+            if not _TOKEN_CACHE_PATH.exists():
+                return None, None
+            data = json.loads(_TOKEN_CACHE_PATH.read_text())
         entry = data.get(account)
         if not entry:
             return None, None
@@ -186,20 +223,42 @@ def _load_cached_token(account: str) -> tuple[str | None, datetime | None]:
 
 
 def _save_cached_token(account: str, access_token: str) -> None:
-    """Persist an access token for an account. Empty token removes the entry."""
+    """Persist an access token for an account. Empty token removes
+    the entry. The whole read-modify-write happens under an exclusive
+    lock and the final write is atomic (tempfile + os.replace), so:
+      * a partial / crash-interrupted write can never surface to a reader
+      * two concurrent writers for different accounts can't lose updates
+      * a writer never overwrites a fresher entry written between the
+        read and the write."""
     try:
-        data = {}
-        if _TOKEN_CACHE_PATH.exists():
-            data = json.loads(_TOKEN_CACHE_PATH.read_text())
-        if not access_token:
-            data.pop(account, None)
-        else:
-            data[account] = {
-                'access_token': access_token,
-                'created_at': datetime.now(timezone.utc).isoformat(),
-            }
         _TOKEN_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _TOKEN_CACHE_PATH.write_text(json.dumps(data, indent=2))
+        with _cache_file_lock(shared=False):
+            data = {}
+            if _TOKEN_CACHE_PATH.exists():
+                try:
+                    data = json.loads(_TOKEN_CACHE_PATH.read_text())
+                except json.JSONDecodeError:
+                    # Corrupt file (interrupted legacy write?) — start
+                    # fresh rather than crashing. Other accounts will
+                    # re-mint on their next call.
+                    logger.warning(
+                        f"Token cache file unparseable; recreating: "
+                        f"{_TOKEN_CACHE_PATH}"
+                    )
+                    data = {}
+            if not access_token:
+                data.pop(account, None)
+            else:
+                data[account] = {
+                    'access_token': access_token,
+                    'created_at':  datetime.now(timezone.utc).isoformat(),
+                }
+            # Atomic write — POSIX rename is atomic, so a reader either
+            # sees the old file or the new file, never a partial.
+            tmp_path = _TOKEN_CACHE_PATH.with_suffix(
+                _TOKEN_CACHE_PATH.suffix + '.tmp')
+            tmp_path.write_text(json.dumps(data, indent=2))
+            os.replace(tmp_path, _TOKEN_CACHE_PATH)
     except Exception as e:
         logger.debug(f"Token cache write failed for {account}: {e}")
 
