@@ -656,7 +656,10 @@
   font-size: 0.5rem;
   font-weight: 600;
   padding: 0 0.35rem;
-  margin-left: 0.15rem;
+  /* Tightened from 0.15rem so the agent chip sits flush against the
+     last log-chip; the order-chip strip + agent chip read as one
+     contiguous run of chips, not two separate clusters. */
+  margin-left: 0.02rem;
   border-radius: 0.2rem;
   background: rgba(251,191,36,0.15);
   color: #fbbf24;

@@ -220,7 +220,12 @@
     position: fixed;
     top: 0;
     left: 0;
-    z-index: 50;
+    /* High z-index so the popout sits above absolutely-positioned
+       cards (Options payoff chart, fullscreen panels, ag-Grid popups).
+       Was 50 — got clipped behind the payoff chart on /admin/options
+       because the chart card's stacking context outranked it. 9999
+       matches the FullscreenButton backdrop level. */
+    z-index: 9999;
     flex: none;
     width: max-content;
     min-width: min(12rem, calc(100vw - 1rem));

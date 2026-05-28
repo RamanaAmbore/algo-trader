@@ -11,6 +11,7 @@
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { isMarketOpen } from '$lib/marketHours';
+  import { createPerformanceSocket } from '$lib/ws';
   import {
     fetchPositions, fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
@@ -100,6 +101,47 @@
   }
   function _dismissOrderToast(/** @type {number} */ id) {
     _orderToasts = _orderToasts.filter(t => t.id !== id);
+  }
+  /** Mark a toast as FILLED in-place when the WS broadcasts a fill
+   *  for an order_id we previously placed. Refreshes the auto-
+   *  dismiss timer so the operator sees the FILLED status for 5 s
+   *  starting NOW (not stale from the original placement). */
+  function _markToastFilled(/** @type {string} */ orderId, /** @type {number} */ fillPrice) {
+    const idx = _orderToasts.findIndex(t => String(t.orderId) === String(orderId));
+    if (idx < 0) return false;
+    const next = [..._orderToasts];
+    next[idx] = {
+      ...next[idx],
+      status: 'FILLED',
+      price: fillPrice ? `@₹${Number(fillPrice).toFixed(2)}` : next[idx].price,
+      ts: Date.now(),
+    };
+    _orderToasts = next;
+    const tid = next[idx].id;
+    setTimeout(() => {
+      _orderToasts = _orderToasts.filter(t => t.id !== tid);
+    }, 5000);
+    return true;
+  }
+  /** Push a fresh FILLED toast when the WS reports a fill we don't
+   *  have a prior placement toast for (e.g. an algo-engine fill the
+   *  operator didn't manually place via the OrderTicket modal). */
+  function _pushFillToast(/** @type {any} */ msg) {
+    const toast = {
+      id:      ++_orderToastSeq,
+      mode:    'FILL',
+      side:    msg.qty > 0 ? 'BUY' : msg.qty < 0 ? 'SELL' : '',
+      qty:     Math.abs(Number(msg.qty || 0)),
+      symbol:  String(msg.tradingsymbol || ''),
+      price:   msg.fill_price ? `@₹${Number(msg.fill_price).toFixed(2)}` : '',
+      orderId: String(msg.order_id || ''),
+      status:  'FILLED',
+      ts:      Date.now(),
+    };
+    _orderToasts = [..._orderToasts, toast];
+    setTimeout(() => {
+      _orderToasts = _orderToasts.filter(t => t.id !== toast.id);
+    }, 5000);
   }
   function addDraft() {
     drafts = [...drafts, { id: ++_draftSeq, symbol: '', qty: '', avg_cost: '', ltp: '' }];
@@ -1548,8 +1590,24 @@
     // polling for no benefit. 30 s catches sim-start transitions
     // within one cycle without burning extra requests.
     simTeardown = marketAwareInterval(loadSimStatus, 30000);
+
+    // Real-time fill notifications — Kite postback fires a
+    // `position_filled` ws event the moment an order completes.
+    // Subscribe so the placement toast can transition to FILLED in-
+    // place (or a fresh FILLED toast lands when the fill is from an
+    // algo-engine path the operator didn't manually place here).
+    // Refreshes loadPositions too so the Candidates panel reflects
+    // the new fill within one ws round-trip, not on the 30 s poll.
+    wsTeardown = createPerformanceSocket((msg) => {
+      if (msg?.event !== 'position_filled') return;
+      const orderId = String(msg.order_id || '');
+      const matched = orderId ? _markToastFilled(orderId, Number(msg.fill_price || 0)) : false;
+      if (!matched) _pushFillToast(msg);
+      loadPositions();
+    });
   });
-  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); });
+  let wsTeardown = $state(/** @type {(() => void) | null} */ (null));
+  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); });
 
   // ── Helpers ──────────────────────────────────────────────────────
   // Number formatters delegate to format.js — no ₹ prefix and no leading
@@ -3592,6 +3650,11 @@
   }
   .order-toast-mode-paper { background: rgba(56,189,248,0.18);  color: #7dd3fc; border-color: rgba(56,189,248,0.4); }
   .order-toast-mode-live  { background: rgba(248,113,113,0.18); color: #fca5a5; border-color: rgba(248,113,113,0.5); }
+  /* FILL toast — emerald, fired when a position_filled ws event lands.
+     Either replaces an in-flight placement toast (updates its status to
+     FILLED in place) or pushes fresh when the fill came from an algo
+     path the operator didn't manually place. */
+  .order-toast-mode-fill  { background: rgba(74,222,128,0.18);  color: #4ade80; border-color: rgba(74,222,128,0.5); }
   .order-toast-status { font-weight: 600; }
   .order-toast-close {
     margin-left: auto;

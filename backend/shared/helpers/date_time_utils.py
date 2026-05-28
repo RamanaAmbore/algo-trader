@@ -59,8 +59,9 @@ def timestamp_display() -> str:
     stores.js::clientTimestamp so client-generated banners and
     server-generated refreshed_at stamps look identical everywhere.
 
-    Example: "Sat 25 Apr 07:03 IST | Fri 24 Apr 21:33 EDT"
-    %Z renders EST / EDT automatically by season.
+    Example: "Sat 25 Apr 07:03 IN | Fri 24 Apr 21:33 US"
+    Two-letter country codes save 4 chars per stamp vs IST/EDT and
+    sidestep the EST/EDT DST flip (US covers both).
     """
     return format_dual_tz(datetime.now(tz=INDIAN_TIMEZONE))
 
@@ -82,7 +83,7 @@ def format_dual_tz(dt) -> str:
         dt = dt.replace(tzinfo=_tz.utc)
     ist = dt.astimezone(INDIAN_TIMEZONE)
     est = dt.astimezone(EST_ZONE)
-    return f"{ist.strftime('%a %d %b %H:%M IST')} | {est.strftime('%a %d %b %H:%M %Z')}"
+    return f"{ist.strftime('%a %d %b %H:%M IN')} | {est.strftime('%a %d %b %H:%M US')}"
 
 
 def _parse_extra_trading_days() -> set:

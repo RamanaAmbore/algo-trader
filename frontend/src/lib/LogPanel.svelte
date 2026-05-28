@@ -357,9 +357,12 @@
       engine:  o.engine || null,
     }, { order: ['status', 'chase', 'engine'] });
     // Agent-id chip stays bespoke (it's an <a>, not a plain span — the
-    // chipsHtml helper deliberately doesn't emit anchors).
+    // chipsHtml helper deliberately doesn't emit anchors). No leading
+    // space — the .log-agent-chip CSS uses a tiny 0.02rem margin so it
+    // sits flush against the last log-chip, keeping the right-edge
+    // cluster compact.
     const agentChip = o.agent_id
-      ? ` <a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
+      ? `<a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
     const chipsBlock = chips ? ' ' + chips : '';
     return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
