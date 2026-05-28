@@ -1135,16 +1135,26 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
         except Exception:
             holidays = set()
 
+        # Use the shared trading-day helper so Muhurat / special weekend
+        # sessions configured via `market.extra_trading_days` register
+        # as open. is_trading_day combines: holiday list + operator
+        # override + weekday default.
+        from backend.shared.helpers.date_time_utils import is_trading_day
         is_holiday = now.date() in holidays
-        is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
+        is_trading = is_trading_day(now.date(), holidays)
+        # is_weekend is retained for the legacy `*_closed` semantics
+        # (which want "session ended today" — only meaningful on a
+        # day when the market actually traded). A trading Saturday
+        # therefore correctly emits *_closed once we pass close_time.
+        is_non_trading_weekend = not is_trading and now.weekday() >= 5
         in_time_range = open_time <= now <= close_time
-        is_open = in_time_range and not is_holiday and not is_weekend
+        is_open = in_time_range and is_trading
 
         ctx[f"{prefix}_open"] = is_open
-        ctx[f"{prefix}_closed"] = (now > close_time) and not is_holiday and not is_weekend
+        ctx[f"{prefix}_closed"] = (now > close_time) and is_trading
         ctx[f"{prefix}_holiday"] = is_holiday
         ctx[f"minutes_since_{prefix}_open"] = max(0, int((now - open_time).total_seconds() / 60)) if now >= open_time and is_open else 0
-        ctx[f"minutes_since_{prefix}_close"] = max(0, int((now - close_time).total_seconds() / 60)) if now > close_time and not is_holiday else 0
+        ctx[f"minutes_since_{prefix}_close"] = max(0, int((now - close_time).total_seconds() / 60)) if now > close_time and is_trading else 0
 
     # Sim-mode overrides — a scenario's `market_state` block wins over the
     # computed values above. Only keys present in the override dict are

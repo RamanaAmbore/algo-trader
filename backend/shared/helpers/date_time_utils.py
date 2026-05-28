@@ -85,23 +85,78 @@ def format_dual_tz(dt) -> str:
     return f"{ist.strftime('%a %d %b %H:%M IST')} | {est.strftime('%a %d %b %H:%M %Z')}"
 
 
+def _parse_extra_trading_days() -> set:
+    """Parse `market.extra_trading_days` setting (CSV of YYYY-MM-DD) into
+    a set of `date` objects. Operator-managed list of weekend dates that
+    ARE trading days — Muhurat Diwali, special SEBI expiry Saturdays,
+    etc. Kite's holiday endpoint doesn't carry these (it only lists
+    weekday closures), so they need an explicit override or the
+    weekday-hardcode below silently treats them as closed.
+
+    Resolves to empty set on import error (settings table missing during
+    bootstrap) or parse failure (operator typed a malformed date)."""
+    try:
+        from backend.shared.helpers.settings import get_string
+        raw = get_string("market.extra_trading_days", "") or ""
+    except Exception:
+        return set()
+    out = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            from datetime import date as _date
+            y, m, d = part.split("-")
+            out.add(_date(int(y), int(m), int(d)))
+        except Exception:
+            # Bad input — log and skip. Don't crash the gate.
+            try:
+                from backend.shared.helpers.ramboq_logger import get_logger
+                get_logger(__name__).warning(
+                    f"market.extra_trading_days has invalid date {part!r}"
+                )
+            except Exception:
+                pass
+    return out
+
+
+def is_trading_day(d, holiday_set: set | None = None,
+                   extra_trading_days: set | None = None) -> bool:
+    """Authoritative "is this a trading day?" check used by every gate
+    (is_market_open, agent_engine._build_context). Resolution order:
+
+      1. Date is in `holiday_set` (real NSE/MCX holiday list from Kite)
+         → CLOSED.
+      2. Date is in `extra_trading_days` (operator override for Muhurat
+         and similar special weekend sessions) → OPEN.
+      3. Date is a weekday (Mon-Fri) → OPEN.
+      4. Otherwise (weekend, not in override) → CLOSED.
+
+    `extra_trading_days` defaults to the settings-table value so callers
+    that don't pass it still pick up the operator override. Pass an
+    explicit set to short-circuit (e.g. tests, simulator)."""
+    if holiday_set and d in holiday_set:
+        return False
+    if extra_trading_days is None:
+        extra_trading_days = _parse_extra_trading_days()
+    if d in extra_trading_days:
+        return True
+    return d.weekday() < 5  # Mon-Fri = trading
+
+
 def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
                    market_end: dtime = dtime(15, 30)) -> bool:
     """
     Returns True if the market is currently open.
     - now: timezone-aware datetime in IST
-    - holiday_set: set of date objects from fetch_nse_holidays()
-    - Weekends are NOT hardcoded as closed — special trading sessions on
-      Saturdays/Sundays are handled correctly since they won't appear in
-      the NSE holiday list. Regular weekends will run the broker fetch but
-      return stale closing data (day change = 0, no alerts fire).
+    - holiday_set: set of date objects from fetch_holidays(exchange)
+    - Weekend handling: regular Sat/Sun are closed, BUT operator can
+      list Muhurat / special-session dates in the
+      `market.extra_trading_days` setting and they'll register as open.
     - Falls back to time-window-only check if holiday_set is empty.
     """
-    if holiday_set and now.date() in holiday_set:
-        return False
-    # Regular weekends are closed (Muhurat trading on special Saturdays
-    # will need an explicit override if needed in future)
-    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+    if not is_trading_day(now.date(), holiday_set):
         return False
     t = now.time().replace(second=0, microsecond=0)
     return market_start <= t <= market_end

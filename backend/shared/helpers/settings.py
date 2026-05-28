@@ -84,6 +84,21 @@ SEEDS: list[tuple] = [
      "Append a per-underlying breakdown to the open/close summary "
      "Telegram + email message.", None, None),
 
+    # ── Market calendar overrides ───────────────────────────────────────
+    # Comma-separated YYYY-MM-DD dates the operator pre-populates for
+    # special weekend trading sessions (Diwali Muhurat, SEBI-announced
+    # F&O Saturday expiries, ad-hoc sessions). Kite's holiday list
+    # doesn't carry these — it only lists weekday closures. Without an
+    # override, our weekday hardcode would silently mark Muhurat as
+    # "market closed" and every market_hours agent would skip the
+    # session. Operator owns this list; check NSE / MCX circulars
+    # ahead of known dates and add them here.
+    ("market", "market.extra_trading_days", "string", "",
+     "CSV of YYYY-MM-DD dates that ARE trading days even though they're "
+     "weekends — Muhurat Diwali sessions, special expiry Saturdays, etc. "
+     "Example: '2026-11-08,2026-11-09'. Empty = standard calendar.",
+     None, None),
+
     # ── Performance refresh ─────────────────────────────────────────────
     ("performance", "performance.refresh_interval",        "int", 5,
      "Minutes between live broker refreshes during market hours.",
