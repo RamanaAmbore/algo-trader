@@ -2493,19 +2493,16 @@
       // breathing room. Explicit minWidth/maxWidth pair pins it
       // against ag-Grid's default 50 px numericColumn minWidth and
       // against persisted-state overrides.
+      // LTP → Prev Close → Day P&L → Day % → P&L kept adjacent in that
+      // sequence per operator request. Open / Bid / Ask / Vol / OI all
+      // moved AFTER the P&L cluster so the operator's scan column reads
+      // today's-number progression without quote-context columns
+      // interrupting. Expiry stays trailing.
       { field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
-      // Prev close + today's open — slotted next to LTP so the operator
-      // sees the day's frame at a glance (where the symbol started vs.
-      // where it is now). Both default to em-dash when the broker quote
-      // didn't carry an OHLC block (off-hours, illiquid contracts).
       { field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
-      { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: numFmt },
@@ -2519,6 +2516,17 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: pctFmtGrid },
+      { field: 'pnl', headerName: 'P&L', width: 64,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
+        valueFormatter: aggFmtGrid },
+      // Quote-context columns (Open / Bid / Ask / Vol / OI) sit after
+      // the P&L cluster — they're useful for sizing the next order but
+      // don't belong inside the live-number scan column.
+      { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: numFmt },
       { field: 'bid', headerName: 'Bid', width: 52,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
@@ -2541,10 +2549,6 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
-      { field: 'pnl', headerName: 'P&L', width: 64,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
-        valueFormatter: aggFmtGrid },
       { field: 'expiry', headerName: 'Expiry', width: 60,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: 'ag-right-aligned-cell cell-muted',
