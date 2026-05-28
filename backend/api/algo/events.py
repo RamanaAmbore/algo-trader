@@ -97,6 +97,22 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
                     "condition": condition_text,
                     "sim_mode": sim_mode,
                 })
+            elif channel == "inapp" and broadcast_fn:
+                # In-app rich popup. Separate WS event from `agent_alert`
+                # so the frontend can subscribe specifically to fires
+                # the operator opted into surfacing (some agents may
+                # ship telegram-only without the popup interrupt).
+                broadcast_fn("agent_inapp_notify", {
+                    "slug":      agent.slug,
+                    "name":      agent.name,
+                    "tier":      getattr(agent, "tier", "info"),
+                    "topic":     getattr(agent, "topic", None),
+                    "condition": condition_text,
+                    "detail":    eval_result.detail or {},
+                    "when":      ist_display,
+                    "sim_mode":  sim_mode,
+                    "branch":    branch,
+                })
             elif channel == "log":
                 # Log lines use [SIM] for brevity; user-facing Telegram /
                 # email keep the longer "SIMULATOR " prefix above.

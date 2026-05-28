@@ -21,8 +21,11 @@
     startAgentEventsPoller, logTime,
   } from '$lib/stores';
   import { chipsAsTextFromJson } from '$lib/logChips';
+  import AgentFireModal from '$lib/AgentFireModal.svelte';
 
   let open = $state(false);
+  /** @type {object | null} — fire payload pinned to the modal */
+  let _fireForModal = $state(null);
   /** @type {HTMLElement|null} */
   let panelEl = /** @type {HTMLElement|null} */ ($state(null));
   /** @type {HTMLElement|null} */
@@ -93,6 +96,31 @@
   };
   /** @param {string} k */
   function kindLabel(k) { return /** @type {any} */ (KIND_LABEL)[k] || (k || '').toUpperCase(); }
+
+  // Build a fire-shaped object the AgentFireModal can render.
+  // agent_events rows carry slightly different field names than the
+  // live `agent_inapp_notify` WS payload (event_type vs tier, etc),
+  // so we adapt before opening the modal.
+  function openRow(/** @type {any} */ e) {
+    /** @type {any} */
+    let detail = e.detail;
+    try { if (typeof detail === 'string') detail = JSON.parse(detail); } catch {}
+    _fireForModal = {
+      slug:      e.agent_slug || `agent#${e.agent_id}`,
+      name:      e.agent_name || detail?.agent_name || (e.agent_slug || `agent#${e.agent_id}`),
+      tier:      detail?.tier || (e.event_type === 'agent_action_error' ? 'critical' : 'info'),
+      topic:     detail?.topic,
+      condition: e.trigger_condition || detail?.condition || '',
+      detail,
+      when:      e.timestamp || '',
+      sim_mode:  !!e.sim_mode,
+      branch:    detail?.branch,
+    };
+    // Closing the bell first keeps focus on the modal — otherwise the
+    // outside-click handler on this popover would also fire and the
+    // operator sees a flicker.
+    open = false;
+  }
 </script>
 
 <span class="anb-wrap">
@@ -137,18 +165,24 @@
                  popover; the operator couldn't read fire-condition
                  detail without expanding. -->
             <li class="anb-row anb-row-{e.event_type}">
-              <div class="anb-row-meta">
-                <span class="anb-ts">{logTime(e.timestamp)}</span>
-                <span class="anb-kind anb-kind-{e.event_type}">{kindLabel(e.event_type)}</span>
-                {#if e.sim_mode}<span class="anb-sim">SIM</span>{/if}
-                <span class="anb-agent-id">#{e.agent_id}</span>
-              </div>
-              <!-- detail / trigger_condition are usually JSON objects.
-                   chipsAsTextFromJson renders them as
-                   `[metric:pnl, scope:total, op:<=, value:-50000]` —
-                   square-bracket compact form replaces the raw curly
-                   JSON the operator was reading before. -->
-              <div class="anb-msg">{chipsAsTextFromJson(e.detail) || chipsAsTextFromJson(e.trigger_condition) || ''}</div>
+              <!-- Whole row is now a button: click opens the rich
+                   AgentFireModal pinned to this event. The old
+                   passive log-line behaviour is preserved for
+                   read-only viewing — content + chips are unchanged. -->
+              <button type="button" class="anb-row-btn"
+                      onclick={() => openRow(e)}
+                      title="Click for full detail">
+                <div class="anb-row-meta">
+                  <span class="anb-ts">{logTime(e.timestamp)}</span>
+                  <span class="anb-kind anb-kind-{e.event_type}">{kindLabel(e.event_type)}</span>
+                  {#if e.sim_mode}<span class="anb-sim">SIM</span>{/if}
+                  <span class="anb-agent-id">#{e.agent_id}</span>
+                </div>
+                <!-- detail / trigger_condition are usually JSON objects.
+                     chipsAsTextFromJson renders them as
+                     `[metric:pnl, scope:total, op:<=, value:-50000]`. -->
+                <div class="anb-msg">{chipsAsTextFromJson(e.detail) || chipsAsTextFromJson(e.trigger_condition) || ''}</div>
+              </button>
             </li>
           {/each}
         </ul>
@@ -156,6 +190,10 @@
     </div>
   {/if}
 </span>
+
+{#if _fireForModal}
+  <AgentFireModal fire={_fireForModal} onClose={() => { _fireForModal = null; }} />
+{/if}
 
 <style>
   /* Mirrors OrderNotifications sizing so the two bells sit flush
@@ -263,13 +301,28 @@
      Lets long fire-condition messages and action error details wrap
      naturally instead of being squeezed into a narrow grid column. */
   .anb-row {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .anb-row:last-child { border-bottom: 0; }
+  /* Row button — full-row click target. Styled to look like the
+     original flat <li> row but with a subtle hover affordance so
+     operators discover it's interactive. */
+  .anb-row-btn {
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
     padding: 0.3rem 0.65rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
   }
-  .anb-row:last-child { border-bottom: 0; }
+  .anb-row-btn:hover {
+    background: rgba(167, 139, 250, 0.06);
+  }
   .anb-panel-left { left: 0; right: auto; }
   .anb-row-meta {
     display: flex;

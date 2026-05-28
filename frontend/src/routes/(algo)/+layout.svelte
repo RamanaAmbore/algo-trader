@@ -12,6 +12,7 @@
   import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
+  import AgentToast from '$lib/AgentToast.svelte';
 
   const { children } = $props();
 
@@ -810,6 +811,12 @@
     <main class="algo-content">
       {@render children()}
     </main>
+
+    <!-- In-app rich popup channel: AgentToast subscribes to /ws/algo
+         for inapp notifications + paints stacked toasts top-right.
+         Click a toast → opens AgentFireModal. Mounted once at the
+         layout root so it survives route changes. -->
+    <AgentToast />
 
     <footer class="algo-footer">
       <span class="algo-footer-text">RamboQuant Analytics</span>

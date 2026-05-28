@@ -49,14 +49,18 @@ SYSTEM_FRAGMENTS: list[dict] = [
         "kind": "notify",
         "name": "notify-critical-trio",
         "description": (
-            "Telegram + email + log. The default for any critical-tier "
-            "agent. Edit once to add/remove a channel across every "
+            "Telegram + email + log + in-app popup. The default for any "
+            "critical-tier agent — every channel an operator actually "
+            "monitors. Kept under the historical 'trio' name even though "
+            "it now ships four channels; renaming would orphan every "
+            "agent's $ref. Edit once to add/remove a channel across every "
             "consumer."
         ),
         "body": [
             {"channel": "telegram", "enabled": True},
             {"channel": "email",    "enabled": True},
             {"channel": "log",      "enabled": True},
+            {"channel": "inapp",    "enabled": True},
         ],
     },
     {

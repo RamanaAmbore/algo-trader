@@ -16,6 +16,7 @@
  */
 
 const WS_PATH = '/ws/performance';
+const WS_ALGO_PATH = '/ws/algo';
 
 /**
  * Opens a WebSocket connection and calls `onMessage` for each performance
@@ -68,6 +69,64 @@ export function createPerformanceSocket(onMessage) {
     socket.addEventListener('error', () => {
       socket?.close();
     });
+  }
+
+  connect();
+
+  return function unsub() {
+    closed = true;
+    clearInterval(pingInterval);
+    clearTimeout(reconnectTimer);
+    socket?.close();
+  };
+}
+
+/**
+ * Opens a WebSocket connection to /ws/algo and calls `onMessage` for each
+ * event the agent engine broadcasts. Same reconnect / heartbeat behaviour
+ * as createPerformanceSocket — pulled out so the in-app notification
+ * surface (AgentToast / AgentFireModal) can subscribe independently of
+ * the performance feed.
+ *
+ * @param {(msg: object) => void} onMessage
+ * @returns {() => void} cleanup function
+ */
+export function createAlgoSocket(onMessage) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const host  = import.meta.env.DEV
+    ? 'localhost:8000'
+    : location.host;
+  const url = `${proto}://${host}${WS_ALGO_PATH}`;
+
+  let socket = null;
+  let pingInterval = null;
+  let closed = false;
+  let reconnectTimer = null;
+
+  function connect() {
+    if (closed) return;
+    socket = new WebSocket(url);
+
+    socket.addEventListener('open', () => {
+      pingInterval = setInterval(() => {
+        if (socket?.readyState === WebSocket.OPEN) socket.send('ping');
+      }, 25_000);
+    });
+
+    socket.addEventListener('message', (e) => {
+      if (e.data === 'pong') return;
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg?.event) onMessage(msg);
+      } catch {}
+    });
+
+    socket.addEventListener('close', () => {
+      clearInterval(pingInterval);
+      if (!closed) reconnectTimer = setTimeout(connect, 2_000);
+    });
+
+    socket.addEventListener('error', () => { socket?.close(); });
   }
 
   connect();

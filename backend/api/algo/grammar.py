@@ -759,6 +759,18 @@ SYSTEM_TOKENS: list[dict] = [
     {'grammar_kind': 'notify', 'token_kind': 'channel', 'token': 'log',
      'value_type': 'enum',
      'description': 'Write to the app log only — useful for silent testing of new agents.'},
+    # In-app rich popup channel. Distinct from `websocket` (which is the
+    # raw live-data feed every algo page subscribes to). `inapp` is
+    # operator-facing: it raises a toast top-right and bumps the
+    # AgentNotifications bell badge so the fire interrupts attention
+    # exactly the way an order-ticket popup does. Surface is the
+    # AgentFireModal in the frontend — pair this channel with the
+    # other channels (telegram, email, log) on the loss / expiry
+    # agents so a Telegram-muted operator still sees the popup in
+    # the browser tab.
+    {'grammar_kind': 'notify', 'token_kind': 'channel', 'token': 'inapp',
+     'value_type': 'enum',
+     'description': 'In-app rich popup + toast for the AgentNotifications bell. Same delivery surface as the order-ticket modal.'},
 
     # ══════════════════════════════════════════════════════════════════════
     #  NOTIFY — FORMATS (how the alert body is rendered)
