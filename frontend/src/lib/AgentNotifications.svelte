@@ -129,14 +129,16 @@
           title={unread ? `${unread} new agent event${unread > 1 ? 's' : ''}` : 'Agent log'}
           aria-haspopup="dialog" aria-expanded={open}
           onclick={toggle}>
-    <!-- Heroicons "cpu-chip" outline — represents the rule-evaluation
-         engine. Distinct enough from the bell icon that the operator
-         can tell the two bells apart at a glance even without the
-         tooltip. -->
+    <!-- Heroicons "shield-check" outline (shield silhouette + inner
+         check). Reads as a guardrail watching the book — the
+         semantic match for the agent system (loss / expiry / chase
+         rules that auto-fire on threat). Replaced the earlier
+         cpu-chip which read as "AI" generically rather than "guard".
+         Stroke + viewBox match the order bell so the two icons sit
+         visually balanced side-by-side in the page header. -->
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
          stroke-linecap="round" stroke-linejoin="round" class="anb-icon">
-      <path d="M8.25 7.5V6.108c0-1.135.845-2.098 1.976-2.192.373-.03.748-.057 1.123-.08M15.75 7.5V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08M15.75 7.5h-7.5M21 16.5h-5.25m5.25 0v-5.25M3 16.5h5.25m-5.25 0v-5.25M3 11.25h5.25M21 11.25h-5.25m-3 0V7.5m0 8.25v-3.75m-3 0V7.5m0 0H8.25M12 7.5h3.75"/>
-      <rect x="6.75" y="6.75" width="10.5" height="10.5" rx="1.5"/>
+      <path d="M9 12.75 11.25 15 15 9.75M12 2.714c-2.15 2.037-5.054 3.286-8.25 3.286h-.152a11.99 11.99 0 0 0-.598 3.75c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.75H21c-3.196 0-6.1-1.249-8.25-3.286Z"/>
     </svg>
     {#if unread > 0}
       <span class="anb-badge">{unread > 99 ? '99+' : unread}</span>
