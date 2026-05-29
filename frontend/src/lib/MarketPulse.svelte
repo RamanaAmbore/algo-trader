@@ -944,6 +944,12 @@
           change_pct:    pct,
           previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
           _moverGroup:   group,
+          // Direction split: positive day-change = winners,
+          // negative = losers. Drives the new direction-major
+          // ordering inside the Movers section (winners block first,
+          // then losers block; each carries its own
+          // underlying / midcap / smallcap sub-grouping).
+          _moverDirection: pct >= 0 ? 'winners' : 'losers',
         });
       }
       movers = rows;
@@ -1074,11 +1080,22 @@
     // smallcap. Unknown / null sub-groups go last (defensive — every
     // row from loadMovers carries one of the three tags).
     const MOVER_GROUP_ORDER = { underlying: 0, midcap: 1, smallcap: 2 };
+    // Direction order: Winners first, Losers second. Within each
+    // direction the underlying → midcap → smallcap sub-grouping
+    // applies. Result inside Movers:
+    //   Winners → Underlyings, Midcap, Smallcap
+    //   Losers  → Underlyings, Midcap, Smallcap
+    const MOVER_DIRECTION_ORDER = { winners: 0, losers: 1 };
     const _mgOrder = (r) =>
       r._majorGroup === 'movers' ? (MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
+    const _mdOrder = (r) =>
+      r._majorGroup === 'movers' ? (MOVER_DIRECTION_ORDER[r._moverDirection] ?? 9) : -1;
     rows.sort((a, b) => {
       const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
       if (moA !== moB) return moA - moB;
+      // Direction first inside Movers (winners → losers).
+      const mdA = _mdOrder(a), mdB = _mdOrder(b);
+      if (mdA !== mdB) return mdA - mdB;
       // Sub-group ordering applies ONLY to the Movers major — other
       // majors keep their existing underlying-then-tier sort. _mgOrder
       // returns -1 for non-mover rows so this branch is a no-op there.
@@ -1096,18 +1113,27 @@
       if (ta !== tb) return ta - tb;
       return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
     });
-    // First-row flags: major divider as before, plus a sub-group divider
-    // for the first row of each (underlying / midcap / smallcap) section
-    // inside the Movers major.
+    // First-row flags: major divider as before; direction divider for
+    // the first row of each Winners/Losers block; sub-group divider for
+    // each (underlying / midcap / smallcap) section inside the
+    // direction block.
     let lastMajor = null;
+    let lastMoverDirection = null;
     let lastMoverGroup = null;
     for (const r of rows) {
       r._majorFirst = (r._majorGroup !== lastMajor);
       lastMajor = r._majorGroup;
       if (r._majorGroup === 'movers') {
+        r._moverDirectionFirst = (r._moverDirection !== lastMoverDirection);
+        lastMoverDirection = r._moverDirection;
+        // Reset sub-group tracker when direction flips so the first
+        // sub-group of Losers gets its own divider regardless of what
+        // the last Winners sub-group was.
+        if (r._moverDirectionFirst) lastMoverGroup = null;
         r._moverGroupFirst = (r._moverGroup !== lastMoverGroup);
         lastMoverGroup = r._moverGroup;
       } else {
+        r._moverDirectionFirst = false;
         r._moverGroupFirst = false;
       }
     }
@@ -2546,13 +2572,24 @@
     if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned') {
       classes.push(`major-divider major-${r._majorGroup}`);
     }
-    // Within Movers, first row of each sub-group (underlying / midcap
-    // / smallcap) gets its own divider so operators can scan the
-    // three universes individually. Skip when the row is ALSO the
-    // major-first (that already paints the Movers divider — adding a
-    // second one would double-line). Carries a mover-grp-<x> class
-    // for per-group tint in CSS.
-    if (r._majorGroup === 'movers' && r._moverGroupFirst && !r._majorFirst) {
+    // Within Movers, first row of each direction (Winners / Losers)
+    // carries a stronger top-divider + colour label (green for winners,
+    // red for losers). Suppressed on the major-first row because that
+    // already paints the Movers divider; the operator sees the major
+    // label then the direction label as the body begins.
+    if (r._majorGroup === 'movers' && r._moverDirectionFirst && !r._majorFirst) {
+      classes.push(`mover-direction-divider mover-dir-${r._moverDirection || 'unknown'}`);
+    }
+    if (r._majorGroup === 'movers' && r._moverDirection) {
+      classes.push(`mover-dir-row-${r._moverDirection}`);
+    }
+    // Within each direction, first row of each sub-group (underlying /
+    // midcap / smallcap) gets a thinner divider so operators can scan
+    // the three universes individually. Skip when the row is ALSO the
+    // major-first OR direction-first (those already paint dividers —
+    // stacking three would triple-line).
+    if (r._majorGroup === 'movers' && r._moverGroupFirst
+        && !r._majorFirst && !r._moverDirectionFirst) {
       classes.push(`mover-group-divider mover-grp-${r._moverGroup || 'unknown'}`);
     }
     if (r._majorGroup === 'movers' && r._moverGroup) {
@@ -3858,6 +3895,20 @@
   }
   :global(.ag-theme-algo .ag-row.mover-smallcap .ag-cell:first-child) {
     box-shadow: inset 3px 0 0 rgba(94, 234, 212, 0.35);
+  }
+
+  /* Direction dividers inside Movers — bolder than the sub-group
+     dashes so the Winners → Losers split reads as the primary
+     internal split, with sub-groups (underlying / midcap / smallcap)
+     nesting below. Green for winners, red for losers. */
+  :global(.ag-theme-algo .ag-row.mover-direction-divider) {
+    border-top: 2px solid rgba(74, 222, 128, 0.55);
+  }
+  :global(.ag-theme-algo .ag-row.mover-dir-winners) {
+    border-top-color: rgba(74, 222, 128, 0.55);
+  }
+  :global(.ag-theme-algo .ag-row.mover-dir-losers) {
+    border-top-color: rgba(248, 113, 113, 0.55);
   }
 
   /* Grid containers */
