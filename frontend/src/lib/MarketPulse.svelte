@@ -294,14 +294,20 @@
     { value: 'watchlist', label: 'Watchlist' },
     { value: 'positions', label: 'Positions' },
     { value: 'holdings',  label: 'Holdings'  },
-    { value: 'movers',    label: 'Movers'    },
+    // Movers was a single toggle in the legacy unified-grid era; the
+    // 6-grid layout renders winners + losers as two distinct buckets,
+    // so the Show filter mirrors that split — operator can show one
+    // direction or both. Both toggles roll up to the same upstream
+    // `enableMovers` prop because the data source (loadMovers) is one.
+    { value: 'winners',   label: 'Winners'   },
+    { value: 'losers',    label: 'Losers'    },
   ];
   const _availableSourceValues = $derived(new Set([
     ...(enablePinned     ? ['pinned']    : []),
     ...(enableWatchlists ? ['watchlist'] : []),
     'positions',
     'holdings',
-    ...(enableMovers     ? ['movers']    : []),
+    ...(enableMovers     ? ['winners', 'losers'] : []),
   ]));
   // SOURCE_OPTIONS derived removed — the unified Show MultiSelect now
   // builds its options inline via _showOptions, so the legacy
@@ -334,7 +340,7 @@
   // movers, pinned, etc. via props still works). Watchlist tokens get
   // appended later by loadLists() once /watchlists comes back.
   let selectedShow = $state(/** @type {string[]} */ ([
-    'src:pinned', 'src:positions', 'src:holdings', 'src:movers',
+    'src:pinned', 'src:positions', 'src:holdings', 'src:winners', 'src:losers',
   ]));
 
   // Options list rebuilds whenever the available sources or the user's
@@ -418,16 +424,24 @@
   let showHoldings  = $state(true);
 
   // Movers — top-% movers from /watchlist/movers. Polled every 30 s.
-  // Failure is non-fatal: the rest of the page keeps working.
+  // Failure is non-fatal: the rest of the page keeps working. Internal
+  // state still uses a single `movers` array (loadMovers tags each
+  // row with `_moverDirection: winners|losers`); the Show filter
+  // exposes the two directions as separate toggles so the operator
+  // can hide one side without losing the other.
   let movers     = $state(/** @type {any[]} */ ([]));
-  let showMovers = $state(true);
+  let showMovers = $state(true);  // legacy umbrella — true iff EITHER direction is on
+  let showWinners = $state(true);
+  let showLosers  = $state(true);
 
   $effect(() => {
     showPinned    = selectedSources.includes('pinned');
     showWatchlist = selectedSources.includes('watchlist');
     showPositions = selectedSources.includes('positions');
     showHoldings  = selectedSources.includes('holdings');
-    showMovers    = selectedSources.includes('movers');
+    showWinners   = selectedSources.includes('winners');
+    showLosers    = selectedSources.includes('losers');
+    showMovers    = showWinners || showLosers;
   });
   // Account-picker state. Now a MultiSelect — operator can scope
   // positions / holdings INPUTS to buildUnified to any subset of
@@ -1157,7 +1171,7 @@
   const watchRows      = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
   const positionsRows  = $derived(mainRows.filter(r => r._majorGroup === 'positions'));
   const holdingsRows   = $derived(mainRows.filter(r => r._majorGroup === 'holdings'));
-  const winRows        = $derived(mainRows.filter(r =>
+  const winRows       = $derived(mainRows.filter(r =>
     r._majorGroup === 'movers' && r._moverDirection === 'winners'));
   const loseRows       = $derived(mainRows.filter(r =>
     r._majorGroup === 'movers' && r._moverDirection === 'losers'));
@@ -3398,14 +3412,18 @@
         <div class="mp-bucket-label mp-bucket-label-holdings">Holdings</div>
         <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
       </section>
-      <section class="mp-bucket-wrap mp-bucket-winners">
-        <div class="mp-bucket-label mp-bucket-label-winners">Winners</div>
-        <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
-      <section class="mp-bucket-wrap mp-bucket-losers">
-        <div class="mp-bucket-label mp-bucket-label-losers">Losers</div>
-        <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
+      {#if showWinners}
+        <section class="mp-bucket-wrap mp-bucket-winners">
+          <div class="mp-bucket-label mp-bucket-label-winners">Winners</div>
+          <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+        </section>
+      {/if}
+      {#if showLosers}
+        <section class="mp-bucket-wrap mp-bucket-losers">
+          <div class="mp-bucket-label mp-bucket-label-losers">Losers</div>
+          <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+        </section>
+      {/if}
     </div>
   {/if}
 </div>
