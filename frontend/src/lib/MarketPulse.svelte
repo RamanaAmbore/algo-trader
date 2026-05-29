@@ -3597,7 +3597,6 @@
                         aria-selected={winTab === t}
                         onclick={() => winTab = t}>
                   {MOVER_TAB_LABEL[t]}
-                  {#if winnerCounts[t] > 0}<span class="mp-wl-tab-count">{winnerCounts[t]}</span>{/if}
                 </button>
               {/each}
             </div>
@@ -3618,7 +3617,6 @@
                         aria-selected={loseTab === t}
                         onclick={() => loseTab = t}>
                   {MOVER_TAB_LABEL[t]}
-                  {#if loserCounts[t] > 0}<span class="mp-wl-tab-count">{loserCounts[t]}</span>{/if}
                 </button>
               {/each}
             </div>

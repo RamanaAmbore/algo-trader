@@ -288,6 +288,26 @@
     expiryCloseAnalysis.equity.length + expiryCloseAnalysis.commodity.length
   );
 
+  // Rows surfaced inside the Legs card's grid. When legsTab='legs'
+  // the operator sees the full candidate set. When 'expiry', we
+  // narrow to positions that have an action verdict and stash that
+  // verdict on each row so the grid tints it (equity-close / red,
+  // commodity-close / amber, hedged / muted).
+  const displayedCandidates = $derived.by(() => {
+    if (legsTab !== 'expiry') return candidatePositions;
+    /** @type {Record<string, string>} */
+    const statusBySym = {};
+    for (const r of expiryCloseAnalysis.equity)
+      statusBySym[r.account + '|' + r.symbol] = 'equity-close';
+    for (const r of expiryCloseAnalysis.commodity)
+      statusBySym[r.account + '|' + r.symbol] = 'commodity-close';
+    for (const r of expiryCloseAnalysis.hedged)
+      statusBySym[r.account + '|' + r.symbol] = 'hedged';
+    return candidatePositions
+      .filter(c => statusBySym[c.account + '|' + c.symbol] != null)
+      .map(c => ({ ...c, _expiryStatus: statusBySym[c.account + '|' + c.symbol] }));
+  });
+
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
    *  the latest strategy response. Lets the Candidates panel show
    *  per-row IV / Δ / Θ / 𝒱 without a second endpoint. */
@@ -381,7 +401,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,source:string,kind:string,exchange?:string,draftId?:number}[]} */
+  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -1991,10 +2011,11 @@
     <div class="legs-header-row">
       <div class="legs-header legs-header-static">
         {#if selectedUnderlying}
-          <span class="opt-section-tag tag-deriv">{selectedUnderlying}</span>
+          <span class="legs-underlying-chip">{selectedUnderlying}</span>
+          <span class="legs-header-sep" aria-hidden="true"></span>
         {/if}
         <!-- Tabs replace the static title — operator flips between
-             the full leg list and the expiry-action summary. -->
+             the full leg list and the close-list summary. -->
         <div class="legs-tabs" role="tablist" aria-label="Legs view">
           <button type="button" role="tab"
                   class="legs-tab"
@@ -2012,7 +2033,7 @@
                   aria-selected={legsTab === 'expiry'}
                   title="Positions identified for close before expiry day"
                   onclick={() => legsTab = 'expiry'}>
-            Expiry Action
+            Close
             {#if expiryCloseTotal > 0}
               <span class="legs-tab-count legs-tab-count-alert">{expiryCloseTotal}</span>
             {/if}
@@ -2022,7 +2043,7 @@
       <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
       <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
     </div>
-    {#if !_colLegs && legsTab === 'legs' && candidatePositions.length}
+    {#if !_colLegs && displayedCandidates.length}
       {@const hideAcct = selectedAccounts.length === 1}
       <div class="cand-scroll">
         <div class="cand-grid" class:cand-grid-noacct={hideAcct}>
@@ -2059,7 +2080,7 @@
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
           </div>
-          {#each candidatePositions as c (c.source + '|' + c.account + '|' + c.symbol)}
+          {#each displayedCandidates as c (c.source + '|' + c.account + '|' + c.symbol)}
             {@const lg = legAnalyticsBySymbol[c.symbol]}
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
@@ -2083,6 +2104,9 @@
                  class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
+                 class:cand-row-equity-close={c._expiryStatus === 'equity-close'}
+                 class:cand-row-commodity-close={c._expiryStatus === 'commodity-close'}
+                 class:cand-row-hedged={c._expiryStatus === 'hedged'}
                  role="button"
                  tabindex="0"
                  title={isDraft
@@ -2164,85 +2188,15 @@
           {/each}
         </div>
       </div>
-    {:else if !_colLegs && legsTab === 'legs'}
+    {:else if !_colLegs}
       <div class="text-[0.6rem] text-[#7e97b8] italic">
-        No options or futures on <b>{selectedUnderlying}</b> in
-        {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
-        Try a different underlying / account, or click <b>+</b> to drop a
-        draft strike into the payoff.
-      </div>
-    {/if}
-
-    {#if !_colLegs && legsTab === 'expiry'}
-      <div class="expiry-action-body">
-        <p class="expiry-action-note">
-          Equity (NFO): every ITM contract must close — Zerodha does not
-          net-settle option pairs, physical settlement applies.
-          Commodity (MCX): only unhedged ITM contracts — perfectly hedged
-          CE/PE pairs per (underlying, expiry) net to zero at settlement.
-        </p>
-
-        {#if expiryCloseAnalysis.equity.length > 0}
-          <div class="expiry-section-title expiry-section-equity">
-            Equity ITM — Close All ({expiryCloseAnalysis.equity.length})
-          </div>
-          <div class="expiry-rows">
-            {#each expiryCloseAnalysis.equity as r (r.account + '|' + r.symbol)}
-              <div class="expiry-row">
-                <span class="font-mono">{r.symbol}</span>
-                <span class="expiry-tag">{r._optType}</span>
-                <span class="num font-mono">qty {r._qty}</span>
-                <span class="num font-mono">K {r._strike}</span>
-                <span class="num font-mono">spot {r._spot}</span>
-                <span class="expiry-reason">{r._reason}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        {#if expiryCloseAnalysis.commodity.length > 0}
-          <div class="expiry-section-title expiry-section-commodity">
-            Commodity Unhedged ITM — Close ({expiryCloseAnalysis.commodity.length})
-          </div>
-          <div class="expiry-rows">
-            {#each expiryCloseAnalysis.commodity as r (r.account + '|' + r.symbol)}
-              <div class="expiry-row">
-                <span class="font-mono">{r.symbol}</span>
-                <span class="expiry-tag">{r._optType}</span>
-                <span class="num font-mono">qty {r._qty}</span>
-                <span class="num font-mono">K {r._strike}</span>
-                <span class="num font-mono">spot {r._spot}</span>
-                <span class="expiry-reason">{r._reason}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        {#if expiryCloseAnalysis.hedged.length > 0}
-          <div class="expiry-section-title expiry-section-hedged">
-            Commodity Hedged ITM — No Action ({expiryCloseAnalysis.hedged.length})
-          </div>
-          <div class="expiry-rows expiry-rows-muted">
-            {#each expiryCloseAnalysis.hedged as r (r.account + '|' + r.symbol)}
-              <div class="expiry-row">
-                <span class="font-mono">{r.symbol}</span>
-                <span class="expiry-tag">{r._optType}</span>
-                <span class="num font-mono">qty {r._qty}</span>
-                <span class="num font-mono">K {r._strike}</span>
-                <span class="num font-mono">spot {r._spot}</span>
-                <span class="expiry-reason">{r._reason}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        {#if expiryCloseTotal === 0 && expiryCloseAnalysis.hedged.length === 0}
-          <div class="text-[0.6rem] text-[#7e97b8] italic">
-            No ITM options in the current candidate set.
-            {#if !Number(strategy?.spot)}
-              (Spot price unavailable — analytics didn't return a spot for this underlying.)
-            {/if}
-          </div>
+        {#if legsTab === 'expiry'}
+          No ITM options in the current candidate set.
+        {:else}
+          No options or futures on <b>{selectedUnderlying}</b> in
+          {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
+          Try a different underlying / account, or click <b>+</b> to drop a
+          draft strike into the payoff.
         {/if}
       </div>
     {/if}
@@ -2954,76 +2908,54 @@
     color: #f87171;
   }
 
-  /* Expiry-action body — sits in the same card as the legs grid
-     when legsTab === 'expiry'. Sections (equity ITM, commodity
-     unhedged ITM, hedged-no-action) each carry a coloured top
-     border + tinted title. */
-  .expiry-action-body {
-    padding: 0 0.25rem 0.5rem;
+  /* Underlying chip — sits before the legs/close tabs. Visually
+     distinct from the tabs so the operator's eye reads it as
+     "what symbol am I looking at" first, then "which view".
+     Solid amber pill with a darker background; the separator
+     below pushes the tabs visually apart. */
+  .legs-underlying-chip {
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    background: rgba(251, 191, 36, 0.22);
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
     font-family: ui-monospace, monospace;
-  }
-  .expiry-action-note {
-    margin: 0 0 0.55rem;
-    padding: 0.4rem 0.5rem;
-    background: rgba(125, 211, 252, 0.08);
-    border-left: 3px solid rgba(125, 211, 252, 0.45);
-    border-radius: 3px;
-    color: #c8d8f0;
-    font-size: 0.6rem;
-    line-height: 1.4;
-  }
-  .expiry-section-title {
-    font-size: 0.62rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0.3rem 0.4rem;
-    margin: 0.5rem 0 0.18rem;
-    border-left: 3px solid;
-  }
-  .expiry-section-equity {
-    color: #f87171;
-    border-left-color: rgba(248, 113, 113, 0.65);
-  }
-  .expiry-section-commodity {
-    color: #fbbf24;
-    border-left-color: rgba(251, 191, 36, 0.65);
-  }
-  .expiry-section-hedged {
-    color: #94a3b8;
-    border-left-color: rgba(148, 163, 184, 0.4);
-  }
-  .expiry-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 0.18rem;
-  }
-  .expiry-rows-muted { opacity: 0.55; }
-  .expiry-row {
-    display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    padding: 0.22rem 0.4rem;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 3px;
-    font-size: 0.6rem;
-    flex-wrap: wrap;
-  }
-  .expiry-row .num { color: rgba(200, 216, 240, 0.7); }
-  .expiry-tag {
-    padding: 0.05rem 0.32rem;
-    border-radius: 2px;
-    background: rgba(251, 191, 36, 0.18);
-    color: #fbbf24;
-    font-size: 0.55rem;
+    font-size: 0.7rem;
     font-weight: 800;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    line-height: 1;
   }
-  .expiry-reason {
-    color: rgba(200, 216, 240, 0.65);
-    font-size: 0.55rem;
-    margin-left: auto;
-    font-style: italic;
+  .legs-header-sep {
+    display: inline-block;
+    width: 1px;
+    height: 1.1rem;
+    background: rgba(200, 216, 240, 0.25);
+    margin: 0 0.25rem;
+    flex-shrink: 0;
+  }
+
+  /* Close-tab row tints — applied to .cand-row when legsTab is
+     'expiry'. Same grid layout as Legs (no extra columns, no
+     extra text), only the row background + left accent border
+     changes by category:
+       equity-close    → red (must close, no hedge exception)
+       commodity-close → amber (MCX ITM, not net-hedged)
+       hedged          → muted grey (info — broker nets these)
+     Specificity has to outrank cand-row-long / cand-row-short
+     so the close tint reads on the existing dir-coloured rows. */
+  .cand-row.cand-row-equity-close {
+    background-color: rgba(248, 113, 113, 0.10) !important;
+    box-shadow: inset 3px 0 0 rgba(248, 113, 113, 0.65);
+  }
+  .cand-row.cand-row-commodity-close {
+    background-color: rgba(251, 191, 36, 0.10) !important;
+    box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
+  }
+  .cand-row.cand-row-hedged {
+    background-color: rgba(148, 163, 184, 0.04) !important;
+    box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.45);
+    opacity: 0.6;
   }
   .legs-chevron {
     /* Bumped to match the Select / MultiSelect dropdown carets
