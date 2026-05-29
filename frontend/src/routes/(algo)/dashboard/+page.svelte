@@ -1071,12 +1071,10 @@
     // it within one frame of arrival.
     _fetchEquity();
     _equityPollStop = visibleInterval(_fetchEquity, 15000);
-    // Market-wide quotes for Underlying / Midcap / Smallcap winners
-    // and losers. One batched request covers all three universes;
-    // 60 s poll keeps the buckets fresh during market hours without
-    // hammering Kite's quote endpoint.
-    loadMarketMovers();
-    _stopMarketPoll = visibleInterval(loadMarketMovers, 60000);
+    // loadMarketMovers retired — the Top Winners / Top Losers cards
+    // moved to /pulse (where MarketPulse owns its own movers fetch).
+    // Removing the dashboard poll stops the 60s batchQuote round-trip
+    // that was driving the now-deleted cards.
   });
 
   async function loadMarketMovers() {
@@ -1436,9 +1434,8 @@
   const _losAcctDisabled = $derived(!_USER_TABS.has(_losTab));
 
   onDestroy(() => {
-    _heroTeardown?.(); _stopMarketPoll?.(); _equityPollStop?.();
+    _heroTeardown?.(); _equityPollStop?.();
     _fundsGrid?.destroy();  _marginGrid?.destroy();
-    _winGrid?.destroy();    _losGrid?.destroy();
     _eqPosGrid?.destroy();  _eqHoldGrid?.destroy();
   });
 
@@ -1808,95 +1805,10 @@
 <!-- Capital + Equity moved into the split row above as tabs. -->
 
 
-<!-- Row 2: Top Winners (left) + Top Losers (right). Each card carries
-     five tabbed buckets — Underlying · Midcap · Smallcap · Holdings ·
-     Positions. Active tab carries the amber underline; count chip on
-     each tab so the operator sees every bucket's denominator without
-     flipping. Default tab: Underlying (the broadest aggregation, the
-     operator's first question on the dashboard).
-
-     Tabbed (not stacked) so each card stays compact — earlier the
-     stacked version filled an extra full screen-height with 5×3 rows
-     per side. -->
-{#if _hasWinners || _hasLosers}
-  <div class="dash-row2">
-    {#if _hasWinners}
-      <section class="wl-tile wl-tile-win"
-        class:fs-card-on={_fsWinners}
-        class:is-collapsed={_colWinners}>
-        <div class="card-header-row">
-          <span class="mp-section-label wl-tile-label">TOP WINNERS</span>
-          <AccountMultiSelect
-            bind:value={_winAccounts}
-            options={_availableAccounts.map(a => ({ value: a, label: a }))}
-            disabled={_winAcctDisabled}
-            disabledReason="Account filter applies only to Holdings + Positions tabs" />
-          <CollapseButton bind:isCollapsed={_colWinners} cardId="winners" label="Top Winners" />
-          <FullscreenButton bind:isFullscreen={_fsWinners} label="Top Winners" />
-        </div>
-        <div class="card-body" hidden={_colWinners}>
-          <div class="wl-tabs" role="tablist">
-            {#each _winnerBuckets as bucket}
-              {@const key = _bucketKey(bucket.label)}
-              <button
-                type="button"
-                role="tab"
-                class="wl-tab"
-                class:wl-tab-on={_winTab === key}
-                aria-selected={_winTab === key}
-                onclick={() => _winTab = key}>
-                {_tabShort(bucket.label)}
-                {#if bucket.count > 0}<span class="wl-tab-count">{bucket.count}</span>{/if}
-              </button>
-            {/each}
-          </div>
-          <div
-            bind:this={_winEl}
-            class="ag-theme-algo dash-wl-grid"
-            class:is-empty={_winRowsAg.length === 0}></div>
-        </div>
-      </section>
-    {/if}
-
-    {#if _hasLosers}
-      <section class="wl-tile wl-tile-loss"
-        class:fs-card-on={_fsLosers}
-        class:is-collapsed={_colLosers}>
-        <div class="card-header-row">
-          <span class="mp-section-label wl-tile-label">TOP LOSERS</span>
-          <AccountMultiSelect
-            bind:value={_losAccounts}
-            options={_availableAccounts.map(a => ({ value: a, label: a }))}
-            disabled={_losAcctDisabled}
-            disabledReason="Account filter applies only to Holdings + Positions tabs" />
-          <CollapseButton bind:isCollapsed={_colLosers} cardId="losers" label="Top Losers" />
-          <FullscreenButton bind:isFullscreen={_fsLosers} label="Top Losers" />
-        </div>
-        <div class="card-body" hidden={_colLosers}>
-          <div class="wl-tabs" role="tablist">
-            {#each _loserBuckets as bucket}
-              {@const key = _bucketKey(bucket.label)}
-              <button
-                type="button"
-                role="tab"
-                class="wl-tab"
-                class:wl-tab-on={_losTab === key}
-                aria-selected={_losTab === key}
-                onclick={() => _losTab = key}>
-                {_tabShort(bucket.label)}
-                {#if bucket.count > 0}<span class="wl-tab-count">{bucket.count}</span>{/if}
-              </button>
-            {/each}
-          </div>
-          <div
-            bind:this={_losEl}
-            class="ag-theme-algo dash-wl-grid"
-            class:is-empty={_losRowsAg.length === 0}></div>
-        </div>
-      </section>
-    {/if}
-  </div>
-{/if}
+<!-- Row 2 retired (Top Winners + Top Losers cards moved to /pulse,
+     where they sit in the 6-grid layout alongside the rest of the
+     monitoring surfaces). Dashboard now jumps straight from the
+     equity card to the news strip. -->
 
 <!-- Row 3: Market news strip — single column. -->
 <div class="dash-row3"

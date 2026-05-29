@@ -3291,16 +3291,8 @@
       <div class="w-44 shrink-0">
         <MultiSelect bind:value={selectedShow} options={_showOptions} placeholder="Show…" />
       </div>
-      {#if accountPicker && availableAccounts.length > 0}
-        {@const _acctOff = !selectedSources.includes('positions')
-                        && !selectedSources.includes('holdings')}
-        <div class="w-28 shrink-0">
-          <AccountMultiSelect bind:value={selectedAccounts}
-            options={availableAccounts.map(a => ({ value: a, label: a }))}
-            disabled={_acctOff}
-            disabledReason="Account filter applies only when Positions or Holdings is selected" />
-        </div>
-      {/if}
+      <!-- Account picker moved to its own row just above the
+           Positions/Holdings grids (the only surface it affects). -->
       <button onclick={openSearch} title="Add symbol or watchlist  (/)"
         aria-label="Add symbol or watchlist"
         class="mp-add-btn">
@@ -3392,8 +3384,11 @@
       ag-Grid container; the wrap's overflow keeps the header
       pinned above each grid's internal scrollbar.
         Row 1 → Pinned     | Watchlist        (monitoring lists)
-        Row 2 → Positions  | Holdings         (operator's book)
-        Row 3 → Winners    | Losers           (market scan)
+        Row 2 → Winners    | Losers           (market scan)
+        Row 3 → Positions  | Holdings         (operator's book — last)
+      The Account picker is anchored between Row 2 and Row 3 so it
+      sits directly above the only grids it filters (Positions /
+      Holdings). Show dropdown stays in the top chrome row.
     -->
     <div class="mp-grids6">
       <section class="mp-bucket-wrap mp-bucket-pinned">
@@ -3403,14 +3398,6 @@
       <section class="mp-bucket-wrap mp-bucket-watch">
         <div class="mp-bucket-label mp-bucket-label-watch">Watchlist</div>
         <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
-      <section class="mp-bucket-wrap mp-bucket-positions">
-        <div class="mp-bucket-label mp-bucket-label-positions">Positions</div>
-        <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
-      <section class="mp-bucket-wrap mp-bucket-holdings">
-        <div class="mp-bucket-label mp-bucket-label-holdings">Holdings</div>
-        <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
       </section>
       {#if showWinners}
         <section class="mp-bucket-wrap mp-bucket-winners">
@@ -3424,6 +3411,40 @@
           <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
         </section>
       {/if}
+    </div>
+
+    <!-- Account picker — sits above the Positions/Holdings row so
+         the operator's eye lands on "whose book am I about to see"
+         immediately before the book grids render. Spans the full
+         page width on its own row. Visible only when the embedder
+         passes accountPicker={true} and there are accounts to
+         choose from. -->
+    {#if accountPicker && availableAccounts.length > 0}
+      {@const _acctOff = !selectedSources.includes('positions')
+                      && !selectedSources.includes('holdings')}
+      <div class="mp-acct-row">
+        <span class="mp-acct-label">Account</span>
+        <div class="w-28 shrink-0">
+          <AccountMultiSelect bind:value={selectedAccounts}
+            options={availableAccounts.map(a => ({ value: a, label: a }))}
+            disabled={_acctOff}
+            disabledReason="Account filter applies only when Positions or Holdings is selected" />
+        </div>
+      </div>
+    {/if}
+
+    <!-- Row 3 — Positions + Holdings, the operator's book. Kept as
+         the final pair so the page reads top-to-bottom as
+         "watchlists → market scan → my book". -->
+    <div class="mp-grids6">
+      <section class="mp-bucket-wrap mp-bucket-positions">
+        <div class="mp-bucket-label mp-bucket-label-positions">Positions</div>
+        <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
+      <section class="mp-bucket-wrap mp-bucket-holdings">
+        <div class="mp-bucket-label mp-bucket-label-holdings">Holdings</div>
+        <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
     </div>
   {/if}
 </div>
@@ -4164,6 +4185,25 @@
   }
   /* Tab buttons inside the row never shrink (would clip the label). */
   .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
+
+  /* Account picker row — sits between the Winners/Losers row and the
+     Positions/Holdings row. The visual label clarifies which surface
+     the picker affects (operators were occasionally confused by the
+     top-anchored picker filtering only the bottom grids). */
+  .mp-acct-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.4rem 0 0.25rem;
+  }
+  .mp-acct-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(200, 216, 240, 0.65);
+  }
 
   /* Unified `+` add button — single chip at the end of the chrome row.
      Bigger glyph than the surrounding watchlist tabs so it reads as
