@@ -915,6 +915,30 @@
         </g>
       {/if}
     </svg>
+    <!-- Foreground SVG — just the curves + the live spot dot,
+         redrawn ON TOP of the .payoff-stats overlay so the curve
+         reads through the panel while text labels (breakeven
+         chips, σ ticks, price values) stay underneath. Same
+         viewBox / dimensions as the bg SVG so coords align. No
+         event handlers + pointer-events:none so hover / zoom /
+         pan stay on the bg SVG; this layer is purely visual. -->
+    <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
+         class="payoff-svg-fg"
+         aria-hidden="true"
+         pointer-events="none">
+      {#each intermediatePaths as ip (ip.elapsed)}
+        <path d={ip.d} fill="none" stroke={ip.color}
+              stroke-width="1" stroke-dasharray="2 2"
+              stroke-opacity="0.65"/>
+      {/each}
+      <path d={pathExpiry} fill="none" stroke="#7dd3fc"
+            stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
+      <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
+      {#if currentPnl != null && spot >= sMin && spot <= sMax}
+        <circle cx={spotX} cy={yOf(currentPnl)} r="4"
+                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
+      {/if}
+    </svg>
     <div class="payoff-legend">
       <span class="legend-item">
         <span class="legend-line legend-today"></span>
@@ -969,9 +993,27 @@
     cursor: crosshair;
     touch-action: pan-y;
     position: relative;
-    z-index: 2;
+    /* Background layer — text labels, axis ticks, breakeven chips,
+       grid. Sits BELOW the .payoff-stats overlay so the overlay
+       covers any text underneath when they collide. */
+    z-index: 1;
   }
   .payoff-svg.payoff-panning { cursor: grabbing; }
+  /* Foreground layer — curves only, redrawn on top of the
+     overlay so the chart line stays readable across the stats
+     panel. Top/left/right match the .payoff-chart padding so
+     the SVG overlays the bg SVG pixel-for-pixel; height pinned
+     to --chart-h so the viewBox maps identically. */
+  .payoff-svg-fg {
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    right: 8px;
+    height: var(--chart-h, 280px);
+    display: block;
+    pointer-events: none;
+    z-index: 4;
+  }
   .payoff-reset {
     position: absolute;
     top: 0.4rem;
@@ -1072,7 +1114,11 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.575rem;
     line-height: 1.2;
-    z-index: 0;
+    /* Sits BETWEEN the bg SVG (z=1, text labels) and the fg SVG
+       (z=4, curves). Text labels behind the overlay are covered
+       by the stats panel; the curve gets redrawn over the panel
+       by the fg SVG so the chart line reads clean across. */
+    z-index: 3;
   }
   .ps-row {
     display: contents;
