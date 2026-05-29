@@ -2703,18 +2703,12 @@
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
       // ─── Quote-context columns (visible, scan-trailing) ─────────────
-      // Operator asked to keep these on-screen. Sit after the P&L cluster
-      // so the scan column reads today's-numbers progression first;
-      // Open / Bid / Ask / Vol / OI / Expiry stay one glance to the right.
+      // Open / Vol / OI sit after the P&L cluster — useful for sizing
+      // the next order without breaking the live-number scan column.
+      // Bid / Ask / Expiry retired per operator request: the order
+      // ticket carries its own depth ladder when sizing is needed,
+      // and Expiry sits inside the F&O tradingsymbol itself.
       { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
-      { field: 'bid', headerName: 'Bid', width: 52,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
-      { field: 'ask', headerName: 'Ask', width: 52,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: numFmt },
@@ -2726,10 +2720,6 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
-      { field: 'expiry', headerName: 'Expiry', width: 60,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: 'ag-right-aligned-cell cell-muted',
-        valueFormatter: ({ value }) => value || '' },
     ]);
 
     grid = createGrid(gridEl, {
@@ -3215,14 +3205,12 @@
   }
 
   // ── Column-state persistence (sort + width) ───────────────────────
-  // v3: column reorder + Day P&L % insertion (May 2026 b).
-  //   - Day P&L % added immediately after LTP (replaces the old
-  //     change_pct-based Day %).
-  //   - Open / Bid / Ask / Vol / OI / Expiry flipped BACK to visible
-  //     per operator request (v2 had them default-hidden).
-  // Bumping the key flushes prior persisted state so the new layout
-  // lands cleanly without operators having to reset the column tool.
-  const COL_STATE_KEY = 'pulse.gridColumnState.v3';
+  // v4: Bid / Ask / Expiry retired (May 2026 c). Persisted state
+  // referencing those colIds is otherwise harmless to ag-Grid (it
+  // just ignores unknown entries) but bumping keeps the operator's
+  // column map clean and lets a future re-add land at the default
+  // position rather than wherever the retired column used to sit.
+  const COL_STATE_KEY = 'pulse.gridColumnState.v4';
 
   function saveColumnState() {
     if (!grid) return;
