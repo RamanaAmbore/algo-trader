@@ -969,18 +969,22 @@
       // in midcap, and pure indices / large-cap-F&O land in underlying.
       /** @type {any[]} */
       const rows = [];
-      // Precedence: smallcap > midcap > indices > large_cap. Many
-      // midcap/smallcap stocks ARE F&O-eligible, so checking the
-      // narrower universes first avoids the "everything tagged
-      // large_cap" symptom the dashboard had pre-fix. Indices
-      // ("NIFTY 50", "SENSEX", …) are checked before large_cap
-      // because they live in the FO_QUOTE_KEYS umbrella too.
+      // 'underlying' = anything in the F&O universe (indices + F&O-
+      // eligible stocks). Many midcap/smallcap stocks are ALSO F&O-
+      // eligible, so we check the narrower universes first; everything
+      // else that's FO_QUOTE_KEYS falls into 'underlying'.
+      //
+      // Large Cap is tracked as a SEPARATE flag (_isLargeCap) rather
+      // than a single-value bucket because LARGECAP_QUOTE_KEYS is a
+      // subset of FO_QUOTE_KEYS — a single-string `_moverGroup` can't
+      // capture both memberships. The Underlying tab reads
+      // `_moverGroup === 'underlying'`; the Large Cap tab reads
+      // `_isLargeCap`. Operator can see the full FO universe under
+      // Underlying or drill into just the LC stocks via Large Cap.
       const _groupFor = (key) =>
         sml.has(key) ? 'smallcap'
       : mid.has(key) ? 'midcap'
-      : idx.has(key) ? 'underlying'
-      : lcp.has(key) ? 'large_cap'
-      : fo.has(key)  ? 'underlying'   // fallback for older FO keys
+      : fo.has(key)  ? 'underlying'
       : null;
       for (const [key, it] of Object.entries(byKey)) {
         const group = _groupFor(key);
@@ -999,6 +1003,11 @@
           change_pct:    pct,
           previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
           _moverGroup:   group,
+          // Large Cap = F&O stocks (FO underlyings minus indices).
+          // Carried as a separate flag because LARGECAP is a subset
+          // of the broader 'underlying' bucket — both tabs need to
+          // be able to surface the same row.
+          _isLargeCap:   lcp.has(key),
           // Direction split: positive day-change = winners,
           // negative = losers. Drives the new direction-major
           // ordering inside the Movers section (winners block first,
@@ -1272,7 +1281,16 @@
         if (!Number.isFinite(p) || p === 0) return false;
         return direction === 'winners' ? p > 0 : p < 0;
       });
+    } else if (tab === 'large_cap') {
+      // Large Cap = F&O stocks only. Reads the _isLargeCap flag
+      // (set in loadMovers) rather than the _moverGroup bucket so
+      // we don't compete with the broader Underlying tab.
+      pool = mainRows.filter(r =>
+        r._majorGroup === 'movers'
+        && r._moverDirection === direction
+        && r._isLargeCap === true);
     } else {
+      // Underlying / Midcap / Smallcap → straight bucket match.
       pool = mainRows.filter(r =>
         r._majorGroup === 'movers'
         && r._moverDirection === direction
@@ -1303,8 +1321,10 @@
       }
       if (r._majorGroup !== 'movers') continue;
       if (r._moverDirection !== direction) continue;
-      const g = /** @type {MoverTab} */ (r._moverGroup);
-      if (g in out) out[g]++;
+      const g = /** @type {'underlying'|'midcap'|'smallcap'} */ (r._moverGroup);
+      if (g === 'underlying' || g === 'midcap' || g === 'smallcap') out[g]++;
+      // Large Cap is a SUBSET of underlying — counted in addition.
+      if (r._isLargeCap) out.large_cap++;
     }
     return out;
   }
@@ -2358,6 +2378,7 @@
       // identifiable underlying / midcap / smallcap sections in the grid.
       if (m._moverGroup)     row._moverGroup     = m._moverGroup;
       if (m._moverDirection) row._moverDirection = m._moverDirection;
+      if (m._isLargeCap != null) row._isLargeCap = !!m._isLargeCap;
     }
     // When showMovers is off, strip the Movers-major rows entirely.
     if (!includeMovers) {
@@ -3540,6 +3561,7 @@
       <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
         <div class="mp-bucket-head">
           <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
+          <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
           {#if _userLists.length > 1}
             <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
               {#each _userLists as l (l.id)}
@@ -3555,14 +3577,18 @@
               {/each}
             </div>
           {/if}
-          <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
         </div>
         <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
       </section>
       {#if showWinners}
         <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
+          <!-- CollapseButton sits IMMEDIATELY next to the heading
+               label so the toggle reads as part of the heading
+               row, regardless of whether the tab strip wraps to a
+               second line on narrow viewports. -->
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+            <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
             <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
               {#each MOVER_TABS as t}
                 <button type="button" role="tab"
@@ -3575,7 +3601,6 @@
                 </button>
               {/each}
             </div>
-            <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
           </div>
           <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
         </section>
@@ -3584,6 +3609,7 @@
         <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+            <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
             <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
               {#each MOVER_TABS as t}
                 <button type="button" role="tab"
@@ -3596,7 +3622,6 @@
                 </button>
               {/each}
             </div>
-            <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
           </div>
           <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
         </section>
