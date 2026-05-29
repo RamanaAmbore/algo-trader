@@ -691,28 +691,34 @@
   // simultaneously. Within-window skip preserves up-to-5 s freshness
   // on the watchlist while removing the thundering herd.
   let _lastPulseAt = 0;
-  let gridEl;
-  // Desktop split companion (≥lg) — the right-side grid carrying
-  // Positions + Holdings with their pinned-top TOTAL rows. Same
-  // columnDefs as the left grid. On mobile, this div stacks under
-  // the left one via the .mp-grids flex direction.
-  let gridRightEl = $state(/** @type {HTMLDivElement | null} */ (null));
-  // $state on the bind:this refs so Svelte 5's reactive-update
-  // analyzer doesn't warn (gridEl was grandfathered in pre-Phase 2;
-  // the new summary / funds refs need the explicit annotation).
+  // 6-grid layout — one ag-Grid instance per bucket. Desktop renders
+  // them in a 2 × 3 CSS-grid (Pinned + Watchlist | Positions +
+  // Holdings | Winners + Losers); mobile stacks vertically. Each
+  // grid scrolls independently, owns its own column set, and (for
+  // Positions / Holdings) pins a TOTAL row at the bottom edge.
+  let gridPinnedEl     = $state(/** @type {HTMLDivElement | null} */ (null));
+  let gridWatchEl      = $state(/** @type {HTMLDivElement | null} */ (null));
+  let gridPositionsEl  = $state(/** @type {HTMLDivElement | null} */ (null));
+  let gridHoldingsEl   = $state(/** @type {HTMLDivElement | null} */ (null));
+  let gridWinEl        = $state(/** @type {HTMLDivElement | null} */ (null));
+  let gridLoseEl       = $state(/** @type {HTMLDivElement | null} */ (null));
   let positionsSummaryEl = $state(/** @type {HTMLDivElement | null} */ (null));
   let holdingsSummaryEl  = $state(/** @type {HTMLDivElement | null} */ (null));
   let fundsEl            = $state(/** @type {HTMLDivElement | null} */ (null));
-  let grid;
-  let gridRight;
+  let gridPinned, gridWatch, gridPositions, gridHoldings, gridWin, gridLose;
   let positionsSummaryGrid;
   let holdingsSummaryGrid;
   let fundsGrid;
-  // Sentinel that flips to true once createGrid runs — used by the
-  // $effect below to push unifiedRows into ag-Grid the moment both
-  // (a) the grid is mounted and (b) the derived row set has populated.
-  let gridReady              = $state(false);
-  let gridRightReady         = $state(false);
+  // Sentinel flags flip true once each createGrid runs so the $effect
+  // that pushes filtered row data into the grid is gated on both
+  // (a) the grid being mounted and (b) the derived row set having
+  // populated.
+  let gridPinnedReady     = $state(false);
+  let gridWatchReady      = $state(false);
+  let gridPositionsReady  = $state(false);
+  let gridHoldingsReady   = $state(false);
+  let gridWinReady        = $state(false);
+  let gridLoseReady       = $state(false);
   let positionsSummaryReady  = $state(false);
   let holdingsSummaryReady   = $state(false);
   let fundsReady             = $state(false);
@@ -1141,27 +1147,28 @@
     return rows;
   });
 
-  // Desktop split (≥lg) — left grid carries Pinned (as pinned-top
-  // strip), Watchlist, and Movers; right grid carries Positions and
-  // Holdings with per-bucket TOTAL rows pinned at the top so the
-  // operator's eye lands on the consolidated number regardless of
-  // sort. Mobile (<lg) keeps the legacy single-grid layout; the
-  // right-grid wrapper just collapses below the left one via the
-  // .mp-grids flex direction. Both grids share columnDefs +
-  // defaults so visual identity stays consistent.
-  const leftRows  = $derived(mainRows.filter(r =>
-    r._majorGroup === 'watchlist' || r._majorGroup === 'movers'));
-  const rightRows = $derived(mainRows.filter(r =>
-    r._majorGroup === 'positions' || r._majorGroup === 'holdings'));
+  // 6-grid layout — derive each bucket's rows from mainRows /
+  // pinnedTopRows so each ag-Grid instance receives exactly the
+  // subset it renders. Pinned + Watchlist + Movers Winners + Movers
+  // Losers feed the left-style monitoring grids; Positions +
+  // Holdings feed the right-style book grids (with TOTAL rows
+  // pinned at the bucket's bottom edge).
+  const pinnedRows     = $derived(pinnedTopRows);
+  const watchRows      = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
+  const positionsRows  = $derived(mainRows.filter(r => r._majorGroup === 'positions'));
+  const holdingsRows   = $derived(mainRows.filter(r => r._majorGroup === 'holdings'));
+  const winRows        = $derived(mainRows.filter(r =>
+    r._majorGroup === 'movers' && r._moverDirection === 'winners'));
+  const loseRows       = $derived(mainRows.filter(r =>
+    r._majorGroup === 'movers' && r._moverDirection === 'losers'));
 
-  // TOTAL rows for the right grid — one for Positions, one for
-  // Holdings. Each carries summed day_pnl + pnl + cost_basis so
-  // Day P&L % and P&L % auto-derive via their valueGetters. The
-  // `_isTotal` flag drives row styling + sort stability (totals
-  // live in pinnedTopRowData so they can't be sorted into the body).
-  function _totalsRowFor(major, label) {
-    const rows = rightRows.filter(r => r._majorGroup === major);
-    if (rows.length === 0) return null;
+  // TOTAL row for one major (positions / holdings). Each carries
+  // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
+  // columns auto-derive via their valueGetters. Wrapped in an array
+  // for direct use as pinnedBottomRowData (ag-Grid accepts an empty
+  // array when there's nothing to sum).
+  function _totalsRowFor(rows, major, label) {
+    if (!rows.length) return null;
     let day_pnl = 0, pnl = 0, cost = 0, qty_pos = 0, qty_hold = 0;
     let anyDayPnl = false, anyPnl = false;
     for (const r of rows) {
@@ -1182,34 +1189,34 @@
       qty_pos, qty_hold,
     };
   }
-  // TOTAL rows now live INSIDE the right grid's body so postSortRows
-  // can pin them to the bottom of their respective bucket (Positions
-  // / Holdings) regardless of which column the operator clicked to
-  // sort. Pinned-top rows would have stayed visually frozen too, but
-  // the operator asked for end-of-bucket placement so they read as
-  // "sum of the block above" rather than "header strip".
-  const rightRowsWithTotals = $derived.by(() => {
-    const pos = _totalsRowFor('positions', 'TOTAL Positions');
-    const hld = _totalsRowFor('holdings',  'TOTAL Holdings');
-    return [...rightRows, ...(pos ? [pos] : []), ...(hld ? [hld] : [])];
+  const positionsTotalRows = $derived.by(() => {
+    const t = _totalsRowFor(positionsRows, 'positions', 'TOTAL Positions');
+    return t ? [t] : [];
+  });
+  const holdingsTotalRows = $derived.by(() => {
+    const t = _totalsRowFor(holdingsRows, 'holdings', 'TOTAL Holdings');
+    return t ? [t] : [];
   });
 
-  $effect(() => {
-    if (!gridReady || !grid) return;
-    grid.setGridOption('rowData', leftRows);
-    grid.setGridOption('pinnedTopRowData', pinnedTopRows);
-    // Curve column is ALWAYS visible — cells render `—` when sparkline
-    // data is missing (sparkRenderer handles that). The earlier
-    // auto-hide-when-empty logic interacted badly with column-state
-    // persistence: any sort/resize after the column went hidden saved
-    // the hidden state to localStorage, leaving the column permanently
-    // gone across reloads even after data came back.
-  });
-
-  $effect(() => {
-    if (!gridRightReady || !gridRight) return;
-    gridRight.setGridOption('rowData', rightRowsWithTotals);
-  });
+  // One effect per grid — Svelte 5 reactivity tracks the closed-over
+  // derivation so any source change automatically pushes fresh row
+  // data without us having to re-bundle effects.
+  $effect(() => { if (gridPinnedReady && gridPinned)
+    gridPinned.setGridOption('rowData', pinnedRows); });
+  $effect(() => { if (gridWatchReady && gridWatch)
+    gridWatch.setGridOption('rowData', watchRows); });
+  $effect(() => { if (gridPositionsReady && gridPositions) {
+    gridPositions.setGridOption('rowData', positionsRows);
+    gridPositions.setGridOption('pinnedBottomRowData', positionsTotalRows);
+  } });
+  $effect(() => { if (gridHoldingsReady && gridHoldings) {
+    gridHoldings.setGridOption('rowData', holdingsRows);
+    gridHoldings.setGridOption('pinnedBottomRowData', holdingsTotalRows);
+  } });
+  $effect(() => { if (gridWinReady && gridWin)
+    gridWin.setGridOption('rowData', winRows); });
+  $effect(() => { if (gridLoseReady && gridLose)
+    gridLose.setGridOption('rowData', loseRows); });
 
   // ag-Grid doesn't observe $state reads inside cell renderers, so
   // sparkline updates after the row data has stabilised won't trigger
@@ -1217,15 +1224,13 @@
   // whenever the sparklines map changes.
   $effect(() => {
     sparklines;
-    if (!gridReady || !grid) return;
-    grid.refreshCells({ columns: ['sparkline'], force: true });
-  });
-
-  // Same explicit-refresh dance for the right grid.
-  $effect(() => {
-    sparklines;
-    if (!gridRightReady || !gridRight) return;
-    gridRight.refreshCells({ columns: ['sparkline'], force: true });
+    // Refresh the Curve column on every grid that's mounted.
+    if (gridPinnedReady     && gridPinned)     gridPinned.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridWatchReady      && gridWatch)      gridWatch.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridPositionsReady  && gridPositions)  gridPositions.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridHoldingsReady   && gridHoldings)   gridHoldings.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridWinReady        && gridWin)        gridWin.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridLoseReady       && gridLose)       gridLose.refreshCells({ columns: ['sparkline'], force: true });
   });
 
   // Per-source summary derivations for the two separate summary grids.
@@ -1362,8 +1367,12 @@
     stopPulseTick?.(); stopWS?.();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
-    grid?.destroy?.();
-    gridRight?.destroy?.();
+    gridPinned?.destroy?.();
+    gridWatch?.destroy?.();
+    gridPositions?.destroy?.();
+    gridHoldings?.destroy?.();
+    gridWin?.destroy?.();
+    gridLose?.destroy?.();
     positionsSummaryGrid?.destroy?.();
     holdingsSummaryGrid?.destroy?.();
     fundsGrid?.destroy?.();
@@ -2618,7 +2627,7 @@
     // per-symbol view (/pulse). /dashboard passes showSymbolsGrid=false
     // because it shows only summary + funds; the summary/funds grids
     // below still need to mount in that case.
-    if (showSymbolsGrid && gridEl) {
+    if (showSymbolsGrid && gridPinnedEl) {
 
     // ─── Shared column shapes ────────────────────────────────────
     // Left and right grids serve different audiences:
@@ -2792,106 +2801,15 @@
       },
     ]);
 
-    grid = createGrid(gridEl, {
-      theme: 'legacy',
-      columnDefs: leftColDefs,
-      rowData: unifiedRows,
-      // Stable row identity — without this, ag-Grid treats every
-      // rowData update (every 10 s poll) as a fresh dataset and
-      // resets the scroll position to the top. The operator scrolls
-      // down to see Holdings, the next poll fires, and the grid
-      // yanks back to row 0. Defining getRowId via the key field
-      // (set in buildUnified per (symbol, major)) lets ag-Grid match
-      // pre/post rows and preserve scroll position + row state.
-      getRowId: ({ data }) => String(data?.key || data?.tradingsymbol || ''),
-      defaultColDef: {
-        resizable: true, sortable: true, suppressMovable: true,
-        suppressHeaderMenuButton: true,
-      },
-      sortingOrder: ['asc', 'desc', null],
-      overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">No rows — add symbols to your watchlist or load positions/holdings</span>',
-      // Fixed-height layout (not autoHeight) so ag-Grid's built-in
-      // sticky header behaviour kicks in — data rows scroll inside
-      // the grid viewport while the column headers stay pinned at
-      // the top of the grid box. autoHeight was making the grid
-      // grow with every new row, so when the operator scrolled the
-      // page the header slid out of view with the rows. Fixed
-      // height = sticky header + scrolling data area.
-      // 28 px header + 28 px row × 18 rows + 6 px slack = ~520 px.
-      // Long lists scroll inside the grid; short lists just leave
-      // empty white space at the bottom which the operator can
-      // tolerate (we'd otherwise have to swap autoHeight in
-      // dynamically — overkill for the current row counts).
-      domLayout: 'normal',
-      getRowClass,
-      rowHeight: 28,
-      headerHeight: 28,
-      // Sort never breaks bucket/group integrity. ag-Grid sorts normally
-      // first (by whatever column the operator clicked), then this hook
-      // re-stitches the sorted rows so:
-      //   1. Bucket order (positions → holdings → other) is preserved
-      //      regardless of sort direction.
-      //   2. Within each bucket, rows are grouped by their underlying;
-      //      the group's first-appearance position in the column-sorted
-      //      list determines group order (so sorting by P&L surfaces
-      //      the best-performing group first, not interleaved).
-      //   3. Within each group, the column-sort order survives — so
-      //      strikes still sort by LTP / Day P&L / whatever within
-      //      their NIFTY (or BANKNIFTY, etc.) cluster.
-      postSortRows: (params) => {
-        const nodes = params.nodes;
-        if (!nodes || nodes.length === 0) return;
-        const groupOf = (n) =>
-          String(n.data?.underlying || n.data?.tradingsymbol || '').toUpperCase();
-        // Group by bucket → group key, recording first-appearance index
-        // so we can order groups by their best column-sorted row.
-        const bucketMap = /** @type {Record<number, Record<string, any[]>>} */ ({});
-        const groupFirstSeen = /** @type {Record<string, number>} */ ({});
-        for (let i = 0; i < nodes.length; i++) {
-          const n = nodes[i];
-          const b = bucketOf(n.data || {});
-          const g = groupOf(n);
-          (bucketMap[b] ??= {})[g] ??= [];
-          bucketMap[b][g].push(n);
-          if (!(g in groupFirstSeen)) groupFirstSeen[g] = i;
-        }
-        const out = [];
-        const bucketKeys = Object.keys(bucketMap).map(Number).sort((a, b) => a - b);
-        for (const b of bucketKeys) {
-          const groups = bucketMap[b];
-          const groupKeys = Object.keys(groups).sort(
-            (a, b) => groupFirstSeen[a] - groupFirstSeen[b]
-          );
-          for (const gk of groupKeys) out.push(...groups[gk]);
-        }
-        params.nodes.length = 0;
-        params.nodes.push(...out);
-      },
-      onRowClicked: handleRowClick,
-      onSortChanged: saveColumnState,
-      onColumnResized: saveColumnState,
-      onGridReady: () => { restoreColumnState(); },
-      onCellContextMenu: (ev) => {
-        if (ev.data) openContextMenu(ev.event, ev.data);
-      },
-    });
-    gridReady = true;
-    // Right grid — Positions + Holdings with TOTAL rows pinned to
-    // the top. Same columnDefs, same defaults, no column-state
-    // persistence (the left grid owns that since the operator
-    // tweaks columns on one surface — both grids stay in sync via
-    // shared columnDefs). postSortRows still scopes the sort to
-    // each bucket so Positions and Holdings stay in their own
-    // blocks under any column sort.
-    if (gridRightEl) {
-      gridRight = createGrid(gridRightEl, {
+    // Factory: every per-bucket grid shares the same shape (height
+    // tracks, getRowClass, sort + resize defaults, click handlers).
+    // Only columnDefs / emptyMsg / pinnedBottom vary per bucket.
+    function makeBucketGrid(el, columnDefs, emptyMsg, pinnedBottom = []) {
+      return createGrid(el, {
         theme: 'legacy',
-        columnDefs: rightColDefs,
-        rowData: rightRowsWithTotals,
-        // No pinnedTopRowData here — totals move into the body and
-        // postSortRows pins them to the bottom of their bucket so
-        // the operator sees Positions block → TOTAL Positions →
-        // Holdings block → TOTAL Holdings, sort-stable.
+        columnDefs,
+        rowData: [],
+        pinnedBottomRowData: pinnedBottom,
         getRowId: ({ data }) => String(data?.key || data?.tradingsymbol || ''),
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
@@ -2899,62 +2817,51 @@
         },
         sortingOrder: ['asc', 'desc', null],
         overlayNoRowsTemplate:
-          '<span style="font-size:0.65rem;color:#7e97b8">Pick an account to load positions + holdings</span>',
+          `<span style="font-size:0.65rem;color:#7e97b8">${emptyMsg}</span>`,
         domLayout: 'normal',
         getRowClass,
         rowHeight: 28,
         headerHeight: 28,
-        postSortRows: (params) => {
-          const nodes = params.nodes;
-          if (!nodes || nodes.length === 0) return;
-          const groupOf = (n) =>
-            String(n.data?.underlying || n.data?.tradingsymbol || '').toUpperCase();
-          // Separate TOTAL rows up-front — they get appended LAST to
-          // their bucket regardless of the column sort. Without this
-          // step a "sort by P&L descending" would float the TOTAL row
-          // (largest P&L by definition) to the top of its bucket.
-          const totalsByBucket = /** @type {Record<number, any[]>} */ ({});
-          const bucketMap = /** @type {Record<number, Record<string, any[]>>} */ ({});
-          const groupFirstSeen = /** @type {Record<string, number>} */ ({});
-          for (let i = 0; i < nodes.length; i++) {
-            const n = nodes[i];
-            const b = bucketOf(n.data || {});
-            if (n.data?._isTotal) {
-              (totalsByBucket[b] ??= []).push(n);
-              continue;
-            }
-            const g = groupOf(n);
-            (bucketMap[b] ??= {})[g] ??= [];
-            bucketMap[b][g].push(n);
-            if (!(g in groupFirstSeen)) groupFirstSeen[g] = i;
-          }
-          const out = [];
-          // Walk every bucket key that appears in EITHER the body
-          // bucketMap or the totalsByBucket — a Positions block with
-          // zero rows but a TOTAL still needs to surface the total
-          // (degenerate but possible during the moment between
-          // position fetch and TOTAL recompute).
-          const bucketKeys = Array.from(new Set([
-            ...Object.keys(bucketMap).map(Number),
-            ...Object.keys(totalsByBucket).map(Number),
-          ])).sort((a, b) => a - b);
-          for (const b of bucketKeys) {
-            const groups = bucketMap[b] || {};
-            const groupKeys = Object.keys(groups).sort(
-              (a, b) => groupFirstSeen[a] - groupFirstSeen[b]
-            );
-            for (const gk of groupKeys) out.push(...groups[gk]);
-            if (totalsByBucket[b]) out.push(...totalsByBucket[b]);
-          }
-          params.nodes.length = 0;
-          params.nodes.push(...out);
-        },
         onRowClicked: handleRowClick,
         onCellContextMenu: (ev) => {
           if (ev.data) openContextMenu(ev.event, ev.data);
         },
       });
-      gridRightReady = true;
+    }
+
+    // Left-column buckets (monitoring views — leftColDefs).
+    if (gridPinnedEl) {
+      gridPinned = makeBucketGrid(gridPinnedEl, leftColDefs,
+        'Pinned watchlist is empty — add a symbol to Default or Markets.');
+      gridPinnedReady = true;
+    }
+    if (gridWatchEl) {
+      gridWatch = makeBucketGrid(gridWatchEl, leftColDefs,
+        'No custom watchlists — create one to track symbols here.');
+      gridWatchReady = true;
+    }
+    if (gridWinEl) {
+      gridWin = makeBucketGrid(gridWinEl, leftColDefs,
+        'No top winners right now.');
+      gridWinReady = true;
+    }
+    if (gridLoseEl) {
+      gridLose = makeBucketGrid(gridLoseEl, leftColDefs,
+        'No top losers right now.');
+      gridLoseReady = true;
+    }
+    // Right-column buckets (operator's book — rightColDefs + TOTAL
+    // pinned at the bottom edge, sort-stable by ag-Grid native
+    // pinnedBottomRowData semantics).
+    if (gridPositionsEl) {
+      gridPositions = makeBucketGrid(gridPositionsEl, rightColDefs,
+        'Pick an account to load positions.');
+      gridPositionsReady = true;
+    }
+    if (gridHoldingsEl) {
+      gridHoldings = makeBucketGrid(gridHoldingsEl, rightColDefs,
+        'Pick an account to load holdings.');
+      gridHoldingsReady = true;
     }
     }  // end main symbols grid block
 
@@ -3279,9 +3186,13 @@
       return;
     }
     if (ev.key === 'j' || ev.key === 'k') {
-      if (!grid) return;
+      // j/k navigation retired in the 6-grid refactor — focus would
+      // need a "current grid" tracker to walk rows across instances.
+      // Operator can still use ag-Grid's native arrow-key nav inside
+      // whichever grid has focus.
+      if (false) {
       ev.preventDefault();
-      const api = grid;
+      const api = /** @type {any} */ (null);
       // Attempt to move selection.
       try {
         const focused = api.getFocusedCell();
@@ -3292,52 +3203,17 @@
           if (next >= 0) api.setFocusedCell(next, focused.column);
         }
       } catch (_) {}
+      }  // end if(false) — j/k handler suppressed for 6-grid layout
     }
   }
 
-  // ── Column-state persistence (sort + width) ───────────────────────
-  // v4: Bid / Ask / Expiry retired (May 2026 c). Persisted state
-  // referencing those colIds is otherwise harmless to ag-Grid (it
-  // just ignores unknown entries) but bumping keeps the operator's
-  // column map clean and lets a future re-add land at the default
-  // position rather than wherever the retired column used to sit.
-  const COL_STATE_KEY = 'pulse.gridColumnState.v4';
-
-  function saveColumnState() {
-    if (!grid) return;
-    try {
-      const state = grid.getColumnState();
-      localStorage.setItem(COL_STATE_KEY, JSON.stringify(state));
-    } catch (_) {}
-  }
-
-  function restoreColumnState() {
-    if (!grid) return;
-    try {
-      const raw = localStorage.getItem(COL_STATE_KEY);
-      if (!raw) return;
-      const state = JSON.parse(raw);
-      // Force the sparkline (5d) column visible AND override any
-      // legacy persisted width. Earlier builds shipped 36 px, then
-      // 64 px, then briefly 18 px — all of which sit in operator
-      // localStorage and would otherwise win over the current
-      // 36 px default. The width pin + hide=false eviction below
-      // covers every regression in one shot.
-      // Force-evict persisted widths for columns whose default we
-      // shrank recently — without this every operator with stale
-      // localStorage keeps the old widths regardless of new column
-      // defaults. Sparkline: 36→44 (post-spacing change). LTP: 80→44.
-      const cleaned = Array.isArray(state)
-        ? state.map(c => {
-            if (c?.colId === 'sparkline') return { ...c, hide: false, width: 44, actualWidth: 44, flex: null };
-            if (c?.colId === 'ltp')       return { ...c,              width: 77, actualWidth: 77, flex: null };
-            if (c?.colId === 'day_pnl')   return { ...c,              width: 54, actualWidth: 54, flex: null };
-            return c;
-          })
-        : state;
-      grid.applyColumnState({ state: cleaned, applyOrder: true });
-    } catch (_) {}
-  }
+  // Column-state persistence retired in the 6-grid refactor — the
+  // single-grid getColumnState/applyColumnState pattern doesn't map
+  // cleanly when there are 6 separate ag-Grid instances each with a
+  // different columnDef shape (left-style vs right-style). Operators
+  // can still sort + resize columns in-session; the values just
+  // don't carry across reloads. If we need cross-session persistence
+  // back, the new shape would be a per-grid map: {bucket: state}.
 
   // ── Per-source subtotals (item 1) ─────────────────────────────────
   const subtotals = $derived.by(() => {
@@ -3495,9 +3371,41 @@
       watchlist content on phones — same scan order as the
       original unified grid).
     -->
-    <div class="mp-grids">
-      <div bind:this={gridEl} class="ag-theme-algo unified-grid mp-grid-left"></div>
-      <div bind:this={gridRightEl} class="ag-theme-algo unified-grid mp-grid-right"></div>
+    <!--
+      6-grid layout — desktop renders three rows of 2 grids each
+      (CSS-grid template). Mobile stacks vertically (one column).
+      Each .mp-bucket-wrap carries its own header label + the
+      ag-Grid container; the wrap's overflow keeps the header
+      pinned above each grid's internal scrollbar.
+        Row 1 → Pinned     | Watchlist        (monitoring lists)
+        Row 2 → Positions  | Holdings         (operator's book)
+        Row 3 → Winners    | Losers           (market scan)
+    -->
+    <div class="mp-grids6">
+      <section class="mp-bucket-wrap mp-bucket-pinned">
+        <div class="mp-bucket-label mp-bucket-label-pinned">Pinned</div>
+        <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
+      <section class="mp-bucket-wrap mp-bucket-watch">
+        <div class="mp-bucket-label mp-bucket-label-watch">Watchlist</div>
+        <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
+      <section class="mp-bucket-wrap mp-bucket-positions">
+        <div class="mp-bucket-label mp-bucket-label-positions">Positions</div>
+        <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
+      <section class="mp-bucket-wrap mp-bucket-holdings">
+        <div class="mp-bucket-label mp-bucket-label-holdings">Holdings</div>
+        <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
+      <section class="mp-bucket-wrap mp-bucket-winners">
+        <div class="mp-bucket-label mp-bucket-label-winners">Winners</div>
+        <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
+      <section class="mp-bucket-wrap mp-bucket-losers">
+        <div class="mp-bucket-label mp-bucket-label-losers">Losers</div>
+        <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+      </section>
     </div>
   {/if}
 </div>
@@ -3990,18 +3898,19 @@
     border-top-color: rgba(248, 113, 113, 0.55);
   }
 
-  /* Grid containers */
-  .unified-grid {
+  /* Grid containers — each ag-Grid sits inside its own .bucket-grid
+     wrapper. domLayout:'normal' (set on createGrid) pairs with a
+     fixed height so the header stays pinned at the top of each
+     box. With 6 grids on the page, individual heights are tighter
+     than the legacy unified grid was — ~260 px lets the operator
+     see ~7-8 rows per grid without scrolling, then scroll inside
+     for the rest. Width: 100% of the parent grid cell (2-col on
+     desktop, full row on mobile). */
+  .bucket-grid {
     width: 100%;
-    /* Fixed-height grid pairs with `domLayout: 'normal'` (set when the
-       grid is created) so ag-Grid pins the column header at the top
-       of this box and only the data area scrolls when row count
-       exceeds visible space. Height tuned for ~18 rows at 28 px each
-       + 28 px header + 6 px slack. Operators with longer watchlists
-       scroll inside the grid; the surrounding page no longer carries
-       the header away when it scrolls. */
-    height: 520px;
-    min-height: 520px;
+    height: 260px;
+    min-height: 260px;
+    flex: 1 1 auto;
   }
 
   /* Desktop split — two grids side-by-side in a flex row, each
@@ -4009,24 +3918,48 @@
      the grids stack one above the other (left on top of right). The
      1024 px breakpoint matches the Tailwind `lg:` cutoff used on
      the algo navbar / hamburger toggle. */
-  .mp-grids {
-    display: flex !important;
-    flex-direction: column;
-    gap: 0.5rem;
+  /* 6-grid layout — mobile stacks vertically (1 column); desktop
+     ≥lg drops to 2 columns × 3 rows via CSS grid. The two columns
+     pair semantically: row 1 = monitoring lists (Pinned/Watchlist),
+     row 2 = book (Positions/Holdings), row 3 = market scan
+     (Winners/Losers). Each grid still owns its independent
+     scrollbar via .bucket-grid's pinned height. */
+  .mp-grids6 {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.6rem;
     width: 100%;
   }
   @media (min-width: 1024px) {
-    .mp-grids {
-      flex-direction: row !important;
-      align-items: stretch;
-    }
-    .mp-grids > .mp-grid-left,
-    .mp-grids > .mp-grid-right {
-      flex: 1 1 0 !important;
-      min-width: 0 !important;
-      width: auto !important;
+    .mp-grids6 {
+      grid-template-columns: 1fr 1fr;
     }
   }
+  .mp-bucket-wrap {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  /* Bucket label — small mono caps above each grid, tinted to match
+     the per-major palette already used elsewhere on the page so the
+     six grids feel like the same family seen from the top. */
+  .mp-bucket-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.35rem;
+    margin-bottom: 0.2rem;
+    border-left: 3px solid currentColor;
+    color: #c8d8f0;
+  }
+  .mp-bucket-label-pinned    { color: rgba(251, 191, 36, 0.85); }
+  .mp-bucket-label-watch     { color: rgba(251, 191, 36, 0.65); }
+  .mp-bucket-label-positions { color: rgba(125, 211, 252, 0.85); }
+  .mp-bucket-label-holdings  { color: rgba(134, 239, 172, 0.85); }
+  .mp-bucket-label-winners   { color: rgba(74, 222, 128, 0.85); }
+  .mp-bucket-label-losers    { color: rgba(248, 113, 113, 0.85); }
 
   /* Symbol cell on the RIGHT grid — account-tinted left + right
      borders with a faint tint background. The colour is injected
@@ -4078,55 +4011,22 @@
        the algo layout without overflowing the viewport. */
     min-height: calc(100vh - 7rem);
   }
-  .mp-flat-wrap .unified-grid {
-    /* Explicit calc-based height so ag-Grid's domLayout:normal viewport
-       measurement is reliable on first mount. The previous
-       `flex: 1 1 auto; height: auto;` setup rendered correctly in dev
-       preview but in production the grid's container measured at 0 px
-       during ag-Grid's synchronous mount, leaving subsequent
-       setGridOption('rowData') calls invisible. A definite pixel
-       height computed from viewport units sidesteps the issue while
-       still filling the page (the calc subtracts navbar + page chrome
-       + toolbar + sticky banners that sit between the navbar and
-       the grid). */
-    height: calc(100vh - 11rem);
-    min-height: 320px;
-    flex: none;
-  }
-  /* Desktop split — the .mp-flat-wrap rule above pins flex:none so
-     the grid hits the calc-height directly. But the parent .mp-grids
-     is a flex ROW on desktop, so the two children need to share width
-     50/50 — `flex: 1 1 0; min-width: 0; width: auto` overrides the
-     inner-grid flex:none + width:100%. Mobile (column-direction)
-     still wants the calc-height to apply naturally. Important
-     used because .mp-flat-wrap .unified-grid has the same
-     specificity and ships earlier in the cascade. */
-  @media (min-width: 1024px) {
-    .mp-flat-wrap .mp-grids > .mp-grid-left,
-    .mp-flat-wrap .mp-grids > .mp-grid-right {
-      flex: 1 1 0 !important;
-      min-width: 0 !important;
-      width: auto !important;
-    }
-  }
-  /* Mobile — the grid was rendering taller than the visible viewport,
-     so the page itself scrolled (navbar disappeared as the operator
-     swiped to see Holdings). Shrink the grid + lock the wrap to the
-     dynamic viewport so the page chrome stays anchored and only the
-     grid's internal scroll moves rows under a fixed header.
-     `dvh` (dynamic viewport height) follows the URL-bar show/hide on
-     mobile browsers, unlike plain `vh`. Buffer is 13rem: navbar
-     (3rem) + accent strip + toolbar (multi-line on narrow viewports)
-     + impersonation/sim/paper banners (sticky, occasionally up). */
+  /* Flat-mode (used by /pulse) — the 6-bucket grids share the page
+     height naturally. Desktop renders 3 rows × 2 cols, so each
+     .bucket-grid uses its default 260 px height; the .mp-flat-wrap
+     itself doesn't need to constrain the inner heights any more
+     (legacy 2-grid sizing retired). Mobile stacks vertically;
+     overall page scrolls past the 6 grids if the viewport is
+     shorter than the stack. */
   @media (max-width: 600px) {
     .mp-flat-wrap {
       min-height: 0;
       overflow: hidden;
       padding: 0.3rem;
     }
-    .mp-flat-wrap .unified-grid {
-      height: calc(100dvh - 13rem);
-      min-height: 240px;
+    .bucket-grid {
+      height: 220px;
+      min-height: 220px;
     }
   }
   .summary-grid,
