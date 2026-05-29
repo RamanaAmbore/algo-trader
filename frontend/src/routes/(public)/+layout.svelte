@@ -390,7 +390,7 @@
      amber-pill "Investor site" link so both context-switch buttons
      read with equal visual weight. */
   .pub-nav-algo-btn {
-    padding: 0.28rem 0.75rem;
+    padding: 0.18rem 0.55rem;
     font-size: 0.88rem;
     font-weight: 500;
     border-radius: 0.25rem;
@@ -412,7 +412,7 @@
 
   /* Sign-in button */
   .pub-nav-signin {
-    padding: 0.3rem 0.95rem;
+    padding: 0.18rem 0.6rem;
     font-size: 0.88rem;
     font-weight: 700;
     border-radius: 0.25rem;

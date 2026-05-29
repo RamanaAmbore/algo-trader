@@ -473,7 +473,7 @@
           <span class="algo-brand-name">RamboQuant</span>
         </button>
 
-        <nav class="flex items-center gap-0.5 flex-1">
+        <nav class="flex items-center justify-center gap-0.5 flex-1">
           <!-- Inline section — Monitor + Analyze + Modes groups always
                visible (high-frequency surfaces). Group separators
                match the original flat-bar look. -->
