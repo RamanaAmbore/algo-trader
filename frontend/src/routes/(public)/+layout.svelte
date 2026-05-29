@@ -200,6 +200,7 @@
   /* ── Viewport / card shell ─────────────────────────────────────────────── */
   .pub-viewport {
     min-height: 100vh;
+    min-height: 100dvh;   /* dvh follows actual visible area on mobile rotation */
     /* Body cream — matches the public site palette so the side
        gutters don't read as a cool-grey frame around a champagne card.
        The diagonal stripe overlay (rgba below) is now a subtle warm
@@ -252,6 +253,7 @@
     width: 100%;
     max-width: 1280px;
     min-height: 100vh;
+    min-height: 100dvh;   /* dvh fixes mobile-rotation whitespace at bottom */
     display: flex;
     flex-direction: column;
     background-color: #fffdf8;

@@ -4333,8 +4333,10 @@
     display: flex;
     flex-direction: column;
     /* 100vh minus navbar (4 rem) + page chrome (~3 rem). Fits inside
-       the algo layout without overflowing the viewport. */
+       the algo layout without overflowing the viewport. dvh stacked
+       so iOS Safari rotation doesn't leave a stale vh measurement. */
     min-height: calc(100vh - 7rem);
+    min-height: calc(100dvh - 7rem);
   }
   /* Flat-mode (used by /pulse) — the 6-bucket grids share the page
      height naturally. Desktop renders 3 rows × 2 cols, so each

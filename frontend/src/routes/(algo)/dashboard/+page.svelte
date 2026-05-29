@@ -2624,6 +2624,7 @@
     flex: 1;
     height: auto;
     min-height: calc(100vh - 14rem);
+    min-height: calc(100dvh - 14rem);
   }
   .fs-card-on .dash-wl-grid.is-empty {
     min-height: 3.5rem;
@@ -2669,6 +2670,7 @@
      the full top-10 (or top-50 in the future) without scrolling. */
   .fs-card-on .wl-rows {
     max-height: calc(100vh - 12rem);
+    max-height: calc(100dvh - 12rem);
   }
   .wl-row {
     display: flex;

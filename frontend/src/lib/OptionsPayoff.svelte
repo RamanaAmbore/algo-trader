@@ -637,6 +637,18 @@
         </div>
       {/if}
     </div>
+    <!--
+      SVG stack wrapper — both SVGs sit absolute inside a
+      relatively-positioned box whose dimensions are pinned to
+      --chart-h. On viewport rotation (portrait ↔ landscape) the
+      wrapper resizes and BOTH SVGs reflow simultaneously, so the
+      bg / fg layers stay pixel-aligned. Without the wrapper, the
+      fg SVG (absolute top/left/right) could race with the bg SVG
+      (relative width:100%) on iOS Safari rotation and end up with
+      different effective widths — the garble the operator was
+      seeing was the fg curve drifting off the bg coordinate grid.
+    -->
+    <div class="payoff-svg-stack">
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="payoff-svg" class:payoff-panning={pan !== null}
          role="img" aria-label="Option payoff diagram — wheel to zoom, drag to pan"
@@ -939,6 +951,7 @@
                 fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
       {/if}
     </svg>
+    </div>
     <div class="payoff-legend">
       <span class="legend-item">
         <span class="legend-line legend-today"></span>
@@ -986,13 +999,27 @@
     box-sizing: border-box;
     position: relative;
   }
-  .payoff-svg {
+  /* Stack container for the two SVG layers. Both SVGs use
+     position:absolute; inset:0 so they ALWAYS occupy the same
+     box regardless of reflow timing — critical for iOS Safari
+     orientation changes, where the prior top/left/right pinning
+     of the fg SVG could race against the bg SVG's width:100%
+     and end up with mismatched effective widths after rotation.
+     Pinned height via --chart-h makes the wrapper deterministic
+     so the viewBox maps the same way every frame. */
+  .payoff-svg-stack {
+    position: relative;
     width: 100%;
     height: var(--chart-h, 280px);
+  }
+  .payoff-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
     display: block;
     cursor: crosshair;
     touch-action: pan-y;
-    position: relative;
     /* Background layer — text labels, axis ticks, breakeven chips,
        grid. Sits BELOW the .payoff-stats overlay so the overlay
        covers any text underneath when they collide. */
@@ -1001,15 +1028,12 @@
   .payoff-svg.payoff-panning { cursor: grabbing; }
   /* Foreground layer — curves only, redrawn on top of the
      overlay so the chart line stays readable across the stats
-     panel. Top/left/right match the .payoff-chart padding so
-     the SVG overlays the bg SVG pixel-for-pixel; height pinned
-     to --chart-h so the viewBox maps identically. */
+     panel. Same absolute box as the bg SVG via inset:0. */
   .payoff-svg-fg {
     position: absolute;
-    top: 6px;
-    left: 8px;
-    right: 8px;
-    height: var(--chart-h, 280px);
+    inset: 0;
+    width: 100%;
+    height: 100%;
     display: block;
     pointer-events: none;
     z-index: 4;

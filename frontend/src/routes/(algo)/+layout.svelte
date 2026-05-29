@@ -830,8 +830,16 @@
 
 <style>
   /* ── Algo viewport ─────────────────────────────────────────────────────── */
+  /* 100dvh (dynamic viewport height) follows the actual visible
+     area on mobile — adjusts on rotation, URL bar show/hide,
+     keyboard open. Plain 100vh caches the prior orientation's
+     viewport on iOS Safari which leaves a phantom whitespace
+     strip at the bottom after rotating portrait → landscape →
+     portrait. Falls back to 100vh on older browsers via the
+     stacked declaration. */
   .algo-viewport {
     min-height: 100vh;
+    min-height: 100dvh;
     background-color: #080f1c;
     display: flex;
     flex-direction: column;
@@ -845,6 +853,7 @@
   .algo-card {
     width: 100%;
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     flex-direction: column;
     background-color: #0d1829;
