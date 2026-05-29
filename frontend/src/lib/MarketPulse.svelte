@@ -3463,37 +3463,12 @@
     </div>
   {/if}
 
-  <!-- Per-source subtotals strip (item 1) — shown when ≥1 source has rows. -->
-  {#if hasSubtotals}
-    <div class="subtotals-strip">
-      {#if subtotals.hCount > 0}
-        <span class="st-group">
-          <span class="st-src">H</span>
-          <span class="st-chip">Day <span class={subtotals.hDayPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.hDayPnl)}</span></span>
-          <span class="st-chip">P&amp;L <span class={subtotals.hPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.hPnl)}</span></span>
-          <span class="st-chip">Cur <span class="st-val">{aggCompact(subtotals.hCurVal)}</span></span>
-        </span>
-        {#if subtotals.pCount > 0 || subtotals.mCount > 0}<span class="st-sep">|</span>{/if}
-      {/if}
-      {#if subtotals.pCount > 0}
-        <span class="st-group">
-          <span class="st-src">P</span>
-          <span class="st-chip">Day <span class={subtotals.pDayPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.pDayPnl)}</span></span>
-          <span class="st-chip">P&amp;L <span class={subtotals.pPnl >= 0 ? 'st-pos' : 'st-neg'}>{aggCompact(subtotals.pPnl)}</span></span>
-        </span>
-        {#if subtotals.mCount > 0}<span class="st-sep">|</span>{/if}
-      {/if}
-      {#if subtotals.mCount > 0}
-        <span class="st-group">
-          <span class="st-src">M</span>
-          <span class="st-chip">{subtotals.mCount} movers{subtotals.mTopSym ? '' : ''}</span>
-          {#if subtotals.mTopSym && subtotals.mTopPct != null}
-            <span class="st-chip"><span class="st-sym">{subtotals.mTopSym}</span> <span class={subtotals.mTopPct >= 0 ? 'st-pos' : 'st-neg'}>{subtotals.mTopPct >= 0 ? '+' : ''}{subtotals.mTopPct.toFixed(2)}%</span></span>
-          {/if}
-        </span>
-      {/if}
-    </div>
-  {/if}
+  <!-- Per-source subtotals strip retired per operator request — the
+       same numbers (Holdings / Positions / Movers totals + top
+       mover) are now visible inside each bucket card's grid + tab
+       counts, so the strip duplicated information that's already
+       on-screen. -->
+
 
   <!-- Option picker is rendered as a modal at the BOTTOM of this
        component (search-overlay style) so it sits above all other
@@ -3555,9 +3530,12 @@
           <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
           <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
         </div>
-        {#if !_effColPinned}
-          <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
-        {/if}
+        <!-- bucket-grid div ALWAYS rendered so bind:this lands BEFORE
+             mountGrid() runs. Visual collapse handled by CSS via the
+             parent's .is-collapsed class — physically removing the
+             div via {#if} would leave gridPinnedEl null at mount
+             time and the grid would never instantiate. -->
+        <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
       </section>
       <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
         <div class="mp-bucket-head">
@@ -3579,9 +3557,7 @@
           {/if}
           <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
         </div>
-        {#if !_effColWatch}
-          <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
-        {/if}
+        <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
       </section>
       {#if showWinners}
         <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
@@ -3601,9 +3577,7 @@
             </div>
             <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
           </div>
-          {#if !_effColWinners}
-            <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
-          {/if}
+          <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
         </section>
       {/if}
       {#if showLosers}
@@ -3624,9 +3598,7 @@
             </div>
             <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
           </div>
-          {#if !_effColLosers}
-            <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
-          {/if}
+          <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
         </section>
       {/if}
     </div>
@@ -3660,18 +3632,14 @@
           <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
           <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
         </div>
-        {#if !_effColPositions}
-          <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
-        {/if}
+        <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
       </section>
       <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
         <div class="mp-bucket-head">
           <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
           <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
         </div>
-        {#if !_effColHoldings}
-          <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
-        {/if}
+        <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
       </section>
     </div>
   {/if}
@@ -4178,6 +4146,16 @@
     height: 260px;
     min-height: 260px;
     flex: 1 1 auto;
+  }
+  /* Collapsed card hides the grid body but keeps the header — the
+     grid div stays in the DOM (so bind:this lands at mount time and
+     ag-Grid can instantiate) but renders as zero-height. When the
+     section un-collapses, the grid div springs back to its full
+     260 px and ag-Grid resizes on the next setGridOption call. */
+  .mp-bucket-wrap.is-collapsed .bucket-grid {
+    height: 0 !important;
+    min-height: 0 !important;
+    overflow: hidden;
   }
 
   /* Desktop split — two grids side-by-side in a flex row, each
