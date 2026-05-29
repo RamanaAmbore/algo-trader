@@ -1340,14 +1340,21 @@
    *  doesn't double-fire as a close. */
   function closePosition(/** @type {any} */ c) {
     if (!c?.symbol || c.source === 'draft') return;
-    const qty = Math.abs(Number(c.qty || 0));
-    if (!qty) return;       // already closed
+    // Effective qty for the close ticket. When the row came from the
+    // Close tab's netting pass, `_residualQty` carries the un-netted
+    // remainder — that's what actually needs closing, not the gross
+    // position. Falls back to c.qty for ordinary Legs-tab rows.
+    const effectiveSignedQty = c._residualQty != null
+      ? Number(c._residualQty)
+      : Number(c.qty || 0);
+    const qty = Math.abs(effectiveSignedQty);
+    if (!qty) return;       // already closed (or fully netted)
     const inst = getInstrument(String(c.symbol).toUpperCase());
     const lot  = Number(inst?.ls || 1);
     openTicket({
       symbol:   c.symbol,
       exchange: inst?.e || 'NFO',
-      side:     c.qty < 0 ? 'BUY' : 'SELL',   // opposite of held
+      side:     effectiveSignedQty < 0 ? 'BUY' : 'SELL',   // opposite of held
       action:   'close',
       qty,
       lotSize:  lot,
@@ -1355,7 +1362,7 @@
       // as ADD / CLOSE (instead of BUY / SELL) — operator thinks in
       // "I want to close this position" terms when clicking on a
       // current position row.
-      currentQty: Number(c.qty || 0),
+      currentQty: effectiveSignedQty,
       accounts: ticketAccounts,
       account:  _rowTicketAccount(c),
     });
@@ -2180,10 +2187,19 @@
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
             {@const isClosed = Number(c.qty || 0) === 0}
+            <!-- displayQty = residual qty (after netting) when the row
+                 came from the Close tab's expiry analysis; otherwise
+                 the original position qty. Drives the qty cell, the
+                 row direction tint, P&L recompute, and the close-
+                 ticket prefill so every surface speaks to the
+                 effective exposure rather than the gross position. -->
+            {@const displayQty = c._residualQty != null
+              ? Number(c._residualQty)
+              : Number(c.qty || 0)}
             {@const pnl = isClosed
               ? (c.pnl != null ? Number(c.pnl) : null)
-              : ((ltp != null && cost != null) ? (ltp - cost) * c.qty : null)}
-            {@const dir = c.qty < 0 ? 'short' : c.qty > 0 ? 'long' : 'flat'}
+              : ((ltp != null && cost != null) ? (ltp - cost) * displayQty : null)}
+            {@const dir = displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat'}
             {@const isClosable = !isClosed && c.source !== 'draft'}
             <!-- Row click → close-position ticket. Skipped on
                  drafts (no real exposure) and zero-qty rows
@@ -2206,7 +2222,7 @@
                  title={isDraft
                    ? `Execute draft — open SymbolPanel on Ticket tab pre-filled`
                    : isClosable
-                     ? `Close ${Math.abs(c.qty)} ${c.symbol} — SymbolPanel on Ticket tab`
+                     ? `Close ${Math.abs(displayQty)} ${c.symbol} — SymbolPanel on Ticket tab`
                      : `${c.symbol} — open SymbolPanel on Chart tab`}
                  onclick={() => {
                    // Actionable rows open the Ticket tab pre-filled
@@ -2266,7 +2282,7 @@
               </span>
               <span class="num font-mono text-[0.55rem]">{_expiryStr ? _expiryStr.slice(5) : '—'}</span>
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
-              <span class="num {c.qty < 0 ? 'kv-neg' : 'kv-pos'}">{c.qty}</span>
+              <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
