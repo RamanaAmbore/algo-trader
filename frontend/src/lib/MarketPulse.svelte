@@ -616,17 +616,24 @@
     // bucket 4 here, while their `_majorGroup` was 'positions', so the
     // CRUDEOIL / GOLDM / INDIGO anchors landed AFTER the entire
     // holdings block instead of right above their option contracts.
+    //
+    // 5 distinct buckets so postSortRows sorts INSIDE each one
+    // independently (sort by P&L within Positions does not pull a
+    // pinned NIFTY row up into the Positions block). Earlier this
+    // merged Pinned + Watchlist into bucket 1 — sorting by P&L
+    // mixed those two majors.
     const mg = row?._majorGroup;
-    if (mg === 'pinned' || mg === 'watchlist') return 1;
-    if (mg === 'positions') return 2;
-    if (mg === 'holdings')  return 3;
-    if (mg === 'movers')    return 4;
+    if (mg === 'pinned')     return 1;
+    if (mg === 'watchlist')  return 2;
+    if (mg === 'positions')  return 3;
+    if (mg === 'holdings')   return 4;
+    if (mg === 'movers')     return 5;
     // Legacy fallback for callers that don't run through mainRows
     // (the watchlist add/remove helpers up at line ~384 hit this).
-    if (row?.src?.w) return 1;
-    if (row?.src?.p) return 2;
-    if (row?.src?.h) return 3;
-    return 4;
+    if (row?.src?.w) return 2;
+    if (row?.src?.p) return 3;
+    if (row?.src?.h) return 4;
+    return 5;
   }
   // Single unified ticker — replaces stopPoll / stopPulsePoll /
   // stopMoversPoll / stopSparkPoll. Tick cadence comes from the
@@ -1851,6 +1858,12 @@
         row.ltp    = q?.ltp    ?? row.ltp    ?? null;
         row.bid    = q?.bid    ?? row.bid    ?? null;
         row.ask    = q?.ask    ?? row.ask    ?? null;
+        // Prev Close + Open need to flow through here too — without
+        // them, indices in the Markets/Default watchlists (NIFTY 50,
+        // BANKNIFTY etc.) render with empty Prev Close cells even
+        // though the watch-quote payload carries the value.
+        row.close  = q?.close  ?? row.close  ?? null;
+        row.open   = q?.open   ?? row.open   ?? null;
         row.change = q?.change ?? row.change ?? null;
         row.change_pct = q?.change_pct ?? row.change_pct ?? null;
         row.volume = q?.volume ?? row.volume ?? null;
@@ -2515,6 +2528,22 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueFormatter: numFmt },
+      // Day P&L % — sits immediately after LTP. Unlike the legacy
+      // change_pct (raw symbol move), this consults qty: shows
+      // day_pnl / cost_basis × 100 so the operator sees the day's
+      // return on what they paid. Blank on watchlist/index rows
+      // (no qty → no cost basis → no position return to express).
+      { field: 'day_pnl_pct', headerName: 'Day P&L %', colId: 'day_pnl_pct',
+        width: 64, type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
+        valueGetter: (p) => {
+          const dpnl = Number(p.data?.day_pnl);
+          const cost = Number(p.data?._cost_basis);
+          if (!Number.isFinite(dpnl) || !(cost > 0)) return null;
+          return (dpnl / cost) * 100;
+        },
+        valueFormatter: pctFmtGrid,
+        headerTooltip: 'Day P&L as % of cost basis (positions + holdings). Blank when there is no position.' },
       { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
         width: 68, minWidth: 60, maxWidth: 90,
         type: 'numericColumn', headerClass: numericHdr,
@@ -2542,10 +2571,6 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      { field: 'day_pct', headerName: 'Day %', width: 56,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
-        valueFormatter: pctFmtGrid },
       // P&L% before P&L per operator request — normalised return
       // reads first when scanning across symbols of different prices.
       { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
@@ -2563,38 +2588,34 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      // ─── Hidden-by-default columns (operator can show via column tool) ───
-      // Quote-context columns (Open / Bid / Ask / Vol / OI) and Expiry
-      // start hidden so the default Pulse view stays scan-tight; the
-      // operator can re-show any of them via the ag-Grid column tool
-      // panel. Persisted column state (if the operator had them visible
-      // before this change) wins and keeps them shown.
+      // ─── Quote-context columns (visible, scan-trailing) ─────────────
+      // Operator asked to keep these on-screen. Sit after the P&L cluster
+      // so the scan column reads today's-numbers progression first;
+      // Open / Bid / Ask / Vol / OI / Expiry stay one glance to the right.
       { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt, hide: true },
+        valueFormatter: numFmt },
       { field: 'bid', headerName: 'Bid', width: 52,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt, hide: true },
+        valueFormatter: numFmt },
       { field: 'ask', headerName: 'Ask', width: 52,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt, hide: true },
+        valueFormatter: numFmt },
       { field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
-        hide: true },
+        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
       { field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
-        hide: true },
+        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
       { field: 'expiry', headerName: 'Expiry', width: 60,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: 'ag-right-aligned-cell cell-muted',
-        valueFormatter: ({ value }) => value || '', hide: true },
+        valueFormatter: ({ value }) => value || '' },
     ]);
 
     grid = createGrid(gridEl, {
@@ -3021,14 +3042,14 @@
   }
 
   // ── Column-state persistence (sort + width) ───────────────────────
-  // v2: column-set reshuffle (May 2026) — added Avg + P&L% as
-  // default-visible; Open / Bid / Ask / Vol / OI / Expiry flipped to
-  // hidden-by-default. Bumping the key forces every operator's
-  // persisted state to be discarded so the new defaults land. Their
-  // custom column toggles on the legacy column-set are lost; this is
-  // intentional — the only customisations being dropped are visibility
-  // on quote-context columns which the new defaults align with anyway.
-  const COL_STATE_KEY = 'pulse.gridColumnState.v2';
+  // v3: column reorder + Day P&L % insertion (May 2026 b).
+  //   - Day P&L % added immediately after LTP (replaces the old
+  //     change_pct-based Day %).
+  //   - Open / Bid / Ask / Vol / OI / Expiry flipped BACK to visible
+  //     per operator request (v2 had them default-hidden).
+  // Bumping the key flushes prior persisted state so the new layout
+  // lands cleanly without operators having to reset the column tool.
+  const COL_STATE_KEY = 'pulse.gridColumnState.v3';
 
   function saveColumnState() {
     if (!grid) return;
