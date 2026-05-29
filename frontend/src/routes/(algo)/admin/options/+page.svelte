@@ -212,15 +212,33 @@
   // net CE qty + net PE qty is non-zero (the broker settles
   // perfectly-hedged pairs against each other, no operator action
   // needed). Closed positions (qty 0) and drafts are skipped.
+  // MCX underlyings — used to classify a position as commodity vs
+  // equity from the parsed symbol's underlying name. The Kite
+  // exchange field can be missing on synthesized/draft rows, and
+  // some pipelines normalise GOLDM-style names without preserving
+  // exchange, so detecting segment from the symbol is more robust
+  // than reading c.exchange. Add new MCX names here as needed.
+  const _MCX_UNDERLYINGS = new Set([
+    'GOLD', 'GOLDM', 'GOLDGUINEA', 'GOLDPETAL',
+    'SILVER', 'SILVERM', 'SILVERMIC',
+    'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATURALGASM',
+    'COPPER', 'ZINC', 'ZINCMINI', 'LEAD', 'LEADMINI',
+    'ALUMINIUM', 'ALUMINI', 'NICKEL',
+    'MENTHAOIL', 'COTTON', 'CASTORSEED', 'KAPAS',
+  ]);
+
   const expiryCloseAnalysis = $derived.by(() => {
-    /** @type {{equity:any[], commodity:any[], hedged:any[]}} */
-    const result = { equity: [], commodity: [], hedged: [] };
+    /** @type {{equity:any[], commodity:any[]}} */
+    const result = { equity: [], commodity: [] };
     const spot = Number(strategy?.spot || 0);
     if (!spot || !candidatePositions.length) return result;
 
-    // First pass — annotate every option candidate with its parsed
+    // First pass — annotate every option candidate with parsed
     // metadata, ITM verdict, and theta from the strategy analytics.
-    // Skip futures, zero-qty, and drafts.
+    // Segment is derived from the underlying name (MCX list above),
+    // not the row's exchange field — GOLDM positions sometimes
+    // arrive with empty / NSE exchange and were getting tagged as
+    // equity before this fix. Skip futures, zero-qty, and drafts.
     const annotated = [];
     for (const c of candidatePositions) {
       const qty = Number(c.qty || 0);
@@ -232,10 +250,9 @@
       if (optType !== 'CE' && optType !== 'PE') continue;
       const strike = Number(inst.k || 0);
       if (!strike) continue;
-      const underlying = String(inst.u || '');
+      const underlying = String(inst.u || '').toUpperCase();
       const expiry = String(inst.x || '');
-      const exchange = String(c.exchange || '').toUpperCase();
-      const segment = exchange === 'MCX' ? 'commodity' : 'equity';
+      const segment = _MCX_UNDERLYINGS.has(underlying) ? 'commodity' : 'equity';
       const isITM = optType === 'CE' ? spot > strike : spot < strike;
       const lg = legAnalyticsBySymbol[c.symbol];
       const theta = Number(lg?.greeks?.theta ?? 0) || 0;
@@ -253,46 +270,64 @@
       });
     }
 
-    // Equity ITM → all closed.
-    for (const r of annotated) {
-      if (r._segment === 'equity' && r._isITM) {
-        result.equity.push({ ...r, _reason: 'ITM equity — physical settlement risk' });
-      }
+    // Equity ITM → all closed (no hedge exception on NFO). Sorted
+    // by theta DESC so the operator sees the more-decayed positions
+    // at the top.
+    const equityITM = annotated
+      .filter(r => r._segment === 'equity' && r._isITM)
+      .slice()
+      .sort((a, b) => (b._theta || 0) - (a._theta || 0));
+    for (const r of equityITM) {
+      result.equity.push({ ...r, _reason: 'ITM equity — physical settlement risk' });
     }
 
-    // Commodity netting — contract-level. Group ITM commodity rows
-    // by (underlying, expiry, strike, opt_type) — i.e. the SAME
-    // contract. Within each contract, sum signed qty. A zero sum
-    // means long + short on the same contract perfectly net at
-    // settlement (broker just cash-settles the difference, which
-    // is zero) — those rows show under "Hedged".
-    //
-    // For contracts with non-zero residual qty, surface every row
-    // in the group sorted by theta DESC so the operator's eye lands
-    // on the more-decayed (higher-theta) position first — matches
-    // the operator preference "more theta ones first" for display.
+    // Commodity ITM — greedy theta-priority netting. Within each
+    // (underlying, expiry) group, walk positions from highest theta
+    // to lowest; for each position try to net with a remaining
+    // opposite-sign position lower in the same list. The pair
+    // reduces both qtys by min(|qty|), so the highest-theta longs
+    // get netted against highest-theta shorts first — burning
+    // through the most-decayed exposures before residuals reach
+    // the display. Residual (non-zero remaining qty) positions are
+    // surfaced sorted by theta DESC. Perfectly-netted rows DO NOT
+    // appear in the Close tab — they're settled internally.
     /** @type {Record<string, any[]>} */
-    const contractGroups = {};
+    const groups = {};
     for (const r of annotated) {
       if (r._segment !== 'commodity' || !r._isITM) continue;
-      const key = `${r._underlying}|${r._expiry}|${r._strike}|${r._optType}`;
-      (contractGroups[key] ??= []).push(r);
+      const key = `${r._underlying}|${r._expiry}`;
+      (groups[key] ??= []).push(r);
     }
-    for (const key of Object.keys(contractGroups)) {
-      const grp = contractGroups[key];
-      const sumQty = grp.reduce((s, p) => s + (p._qty || 0), 0);
-      if (sumQty === 0) {
-        for (const r of grp) {
-          result.hedged.push({ ...r, _reason: 'Same-contract net 0 (broker settles)' });
+    for (const key of Object.keys(groups)) {
+      const grp = groups[key];
+      // Sort by theta DESC up-front; greedy walk picks pairs from
+      // high-theta down.
+      const sorted = grp.slice().sort((a, b) => (b._theta || 0) - (a._theta || 0));
+      const remaining = new Map();
+      for (const r of sorted) remaining.set(r, r._qty);
+      for (let i = 0; i < sorted.length; i++) {
+        const A = sorted[i];
+        let aq = remaining.get(A) || 0;
+        if (aq === 0) continue;
+        for (let j = i + 1; j < sorted.length && aq !== 0; j++) {
+          const B = sorted[j];
+          const bq = remaining.get(B) || 0;
+          if (bq === 0) continue;
+          if (Math.sign(aq) === Math.sign(bq)) continue;
+          const netAmt = Math.min(Math.abs(aq), Math.abs(bq));
+          remaining.set(A, aq - netAmt * Math.sign(aq));
+          remaining.set(B, bq - netAmt * Math.sign(bq));
+          aq = remaining.get(A) || 0;
         }
-      } else {
-        const sorted = grp.slice().sort((a, b) => (b._theta || 0) - (a._theta || 0));
-        for (const r of sorted) {
-          result.commodity.push({
-            ...r,
-            _reason: `Unhedged ITM commodity (net qty ${sumQty > 0 ? '+' : ''}${sumQty})`,
-          });
-        }
+      }
+      for (const r of sorted) {
+        const q = remaining.get(r) || 0;
+        if (q === 0) continue;   // fully netted, hide from Close
+        result.commodity.push({
+          ...r,
+          _residualQty: q,
+          _reason: `Unhedged ITM commodity (residual qty ${q > 0 ? '+' : ''}${q})`,
+        });
       }
     }
 
@@ -305,9 +340,10 @@
   // Rows surfaced inside the Legs card's grid. When legsTab='legs'
   // the operator sees the full candidate set in its natural order.
   // When 'expiry', we pull rows from expiryCloseAnalysis directly so
-  // the theta-DESC ordering carried out by the netting pass is
-  // preserved (equity-close block first, commodity-close sorted by
-  // theta DESC, then hedged rows last for context).
+  // the theta-DESC ordering survives the trip to the rendered grid.
+  // Either equity ITM (red) OR commodity unnetted residual (amber)
+  // — whichever segment the underlying belongs to. Perfectly-netted
+  // rows aren't displayed; they're settled internally.
   const displayedCandidates = $derived.by(() => {
     if (legsTab !== 'expiry') return candidatePositions;
     const out = [];
@@ -315,8 +351,6 @@
       out.push({ ...r, _expiryStatus: 'equity-close' });
     for (const r of expiryCloseAnalysis.commodity)
       out.push({ ...r, _expiryStatus: 'commodity-close' });
-    for (const r of expiryCloseAnalysis.hedged)
-      out.push({ ...r, _expiryStatus: 'hedged' });
     return out;
   });
 
@@ -2118,7 +2152,6 @@
                  class:cand-draft={isDraft}
                  class:cand-row-equity-close={c._expiryStatus === 'equity-close'}
                  class:cand-row-commodity-close={c._expiryStatus === 'commodity-close'}
-                 class:cand-row-hedged={c._expiryStatus === 'hedged'}
                  role="button"
                  tabindex="0"
                  title={isDraft
@@ -2963,11 +2996,6 @@
   .cand-row.cand-row-commodity-close {
     background-color: rgba(251, 191, 36, 0.10) !important;
     box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
-  }
-  .cand-row.cand-row-hedged {
-    background-color: rgba(148, 163, 184, 0.04) !important;
-    box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.45);
-    opacity: 0.6;
   }
   .legs-chevron {
     /* Bumped to match the Select / MultiSelect dropdown carets
