@@ -33,6 +33,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
+  import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
@@ -1181,13 +1182,16 @@
       qty_pos, qty_hold,
     };
   }
-  const rightPinnedRows = $derived.by(() => {
-    const out = [];
+  // TOTAL rows now live INSIDE the right grid's body so postSortRows
+  // can pin them to the bottom of their respective bucket (Positions
+  // / Holdings) regardless of which column the operator clicked to
+  // sort. Pinned-top rows would have stayed visually frozen too, but
+  // the operator asked for end-of-bucket placement so they read as
+  // "sum of the block above" rather than "header strip".
+  const rightRowsWithTotals = $derived.by(() => {
     const pos = _totalsRowFor('positions', 'TOTAL Positions');
     const hld = _totalsRowFor('holdings',  'TOTAL Holdings');
-    if (pos) out.push(pos);
-    if (hld) out.push(hld);
-    return out;
+    return [...rightRows, ...(pos ? [pos] : []), ...(hld ? [hld] : [])];
   });
 
   $effect(() => {
@@ -1204,8 +1208,7 @@
 
   $effect(() => {
     if (!gridRightReady || !gridRight) return;
-    gridRight.setGridOption('rowData',           rightRows);
-    gridRight.setGridOption('pinnedTopRowData',  rightPinnedRows);
+    gridRight.setGridOption('rowData', rightRowsWithTotals);
   });
 
   // ag-Grid doesn't observe $state reads inside cell renderers, so
@@ -2617,36 +2620,105 @@
     // below still need to mount in that case.
     if (showSymbolsGrid && gridEl) {
 
-    const colDefs = /** @type {any[]} */ ([
-      { field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
-        cellRenderer: symRenderer, sortable: true,
-        cellClass: 'ag-col-sym ag-col-fill' },
-      // 5d column at 44 px = SVG 32×14 + 6 px padding on each side so
-      // the curve never crowds the column edges. ag-Grid's default
-      // minWidth is 50 px, hence the explicit minWidth/maxWidth pair
-      // (44/48) — without them the column would silently clamp wider.
-      { field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
-        maxWidth: 48, colId: 'sparkline',
-        cellRenderer: sparkRenderer, sortable: false, resizable: false,
-        cellClass: 'spark-cell',
-        headerClass: 'ag-header-cell-spark' },
-      // ─── Default-visible cluster (operator-spec) ──────────────────
-      // Order: 5d · LTP · Avg · Prev · Qty · Day P&L · Day % · P&L% · P&L
-      // Specific to MarketPulse — diverges from the codebase-wide
-      // cluster rule (which places Prev before Avg and P&L before P&L%)
-      // because this grid is the operator's scanning surface where they
-      // want cost basis next to LTP, and a normalised P&L% before the
-      // absolute P&L. PerformancePage / Candidates panel keep the
-      // canonical cluster order.
-      { field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: RA,
-        valueFormatter: numFmt },
-      // Day P&L % — sits immediately after LTP. Unlike the legacy
-      // change_pct (raw symbol move), this consults qty: shows
-      // day_pnl / cost_basis × 100 so the operator sees the day's
-      // return on what they paid. Blank on watchlist/index rows
-      // (no qty → no cost basis → no position return to express).
+    // ─── Shared column shapes ────────────────────────────────────
+    // Left and right grids serve different audiences:
+    //   left  → market-data scan (Pinned / Watchlist / Movers)
+    //   right → operator's book (Positions / Holdings)
+    // Position-specific columns (Avg / Qty / Day P&L / P&L / P&L %)
+    // render blank on left-grid rows because those rows carry no qty
+    // — so they were noise. Right grid carries the full position set
+    // plus an Account column at the trailing edge so the operator can
+    // tell at a glance which book a row belongs to.
+    const _symColLeft = {
+      field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
+      cellRenderer: symRenderer, sortable: true,
+      cellClass: 'ag-col-sym ag-col-fill',
+    };
+    // Right-grid symbol cell carries an account-tinted background +
+    // vertical borders so the operator can colour-spot each row's
+    // owning account at a glance (matches the per-account hash
+    // palette already used on PerformancePage account stripes).
+    const _symColRight = {
+      field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
+      cellRenderer: symRenderer, sortable: true,
+      cellClass: 'ag-col-sym ag-col-fill mp-sym-acct',
+      cellStyle: (p) => {
+        if (p.data?._isTotal) return {};
+        const acct = leadAccount(p.data);
+        const color = acct ? acctColor(acct) : null;
+        if (!color) return {};
+        return {
+          '--mp-sym-acct-color': color,
+        };
+      },
+    };
+    const _sparkCol = {
+      field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
+      maxWidth: 48, colId: 'sparkline',
+      cellRenderer: sparkRenderer, sortable: false, resizable: false,
+      cellClass: 'spark-cell',
+      headerClass: 'ag-header-cell-spark',
+    };
+    const _ltpCol = {
+      field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA,
+      valueFormatter: numFmt,
+    };
+    const _prevCol = {
+      field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: `${RA} cell-muted`,
+      valueFormatter: numFmt,
+    };
+    const _openCol = {
+      field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: `${RA} cell-muted`,
+      valueFormatter: numFmt,
+    };
+    const _volCol = {
+      field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: `${RA} cell-muted`,
+      valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
+    };
+    const _oiCol = {
+      field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: `${RA} cell-muted`,
+      valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
+    };
+
+    // ─── Left grid: Pinned / Watchlist / Movers ──────────────────
+    // Day % shows raw symbol change_pct (no qty) — back-fills the
+    // information the legacy Day % column carried for non-position
+    // rows. Renders blank on rows without a quote.
+    const leftColDefs = /** @type {any[]} */ ([
+      _symColLeft,
+      _sparkCol,
+      _ltpCol,
+      { field: 'change_pct', headerName: 'Day %', colId: 'left_change_pct',
+        width: 64, type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
+        valueFormatter: pctFmtGrid,
+        headerTooltip: 'Raw symbol day-change % (no qty).' },
+      _prevCol,
+      _openCol,
+      _volCol,
+      _oiCol,
+    ]);
+
+    // ─── Right grid: Positions / Holdings ────────────────────────
+    // Full operator-spec column set plus Account at the trailing
+    // edge. Account column intentionally LAST so the eye reads
+    // "Symbol → numbers → Account" — the operator's natural scan
+    // order is "what is this row / how is it doing / whose book".
+    const rightColDefs = /** @type {any[]} */ ([
+      _symColRight,
+      _sparkCol,
+      _ltpCol,
+      // Day P&L % — qty-weighted day return on cost basis.
       { field: 'day_pnl_pct', headerName: 'Day P&L %', colId: 'day_pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
@@ -2657,20 +2729,14 @@
           return (dpnl / cost) * 100;
         },
         valueFormatter: pctFmtGrid,
-        headerTooltip: 'Day P&L as % of cost basis (positions + holdings). Blank when there is no position.' },
+        headerTooltip: 'Day P&L as % of cost basis.' },
       { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
         width: 68, minWidth: 60, maxWidth: 90,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
         valueFormatter: numFmt,
         headerTooltip: 'Weighted average entry across positions + holdings.' },
-      { field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
-      // Net qty held — positions + holdings summed (signed). When both
-      // are zero the cell renders blank. Sortable so the operator can
-      // sort by absolute exposure.
+      _prevCol,
       { field: 'qty_net', headerName: 'Qty', width: 56, colId: 'qty_net',
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
@@ -2679,14 +2745,10 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      // Day P&L at 54 px (64 × 0.85). minWidth pinned against ag-Grid's
-      // 50 px numericColumn-type default so the new size holds.
       { field: 'day_pnl', headerName: 'Day P&L', width: 54, minWidth: 54, maxWidth: 70,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      // P&L% before P&L per operator request — normalised return
-      // reads first when scanning across symbols of different prices.
       { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
         width: 60, type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
@@ -2697,34 +2759,42 @@
           return (pnl / cost) * 100;
         },
         valueFormatter: pctFmtGrid,
-        headerTooltip: 'P&L as % of cost basis (positions + holdings).' },
+        headerTooltip: 'P&L as % of cost basis.' },
       { field: 'pnl', headerName: 'P&L', width: 64,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      // ─── Quote-context columns (visible, scan-trailing) ─────────────
-      // Open / Vol / OI sit after the P&L cluster — useful for sizing
-      // the next order without breaking the live-number scan column.
-      // Bid / Ask / Expiry retired per operator request: the order
-      // ticket carries its own depth ladder when sizing is needed,
-      // and Expiry sits inside the F&O tradingsymbol itself.
-      { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
-      { field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
-      { field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
+      _openCol,
+      _volCol,
+      _oiCol,
+      // Account at trailing edge — shows the lead account (or "Mixed"
+      // when a position spans 2 accounts). Tinted to match the
+      // symbol cell's left-edge stripe via the same hash palette.
+      { field: '_acct_display', headerName: 'Account', colId: 'acct_trailing',
+        width: 78, minWidth: 60, maxWidth: 110,
+        cellClass: 'mp-acct-cell',
+        cellStyle: (p) => {
+          if (p.data?._isTotal) return {};
+          const acct = leadAccount(p.data);
+          const color = acct ? acctColor(acct) : null;
+          if (!color) return {};
+          return { color };
+        },
+        valueGetter: (p) => {
+          if (p.data?._isTotal) return '';
+          const accts = p.data?.accounts;
+          if (!accts) return '';
+          const list = accts instanceof Set ? Array.from(accts) : Array.isArray(accts) ? accts : [];
+          if (list.length === 0) return '';
+          if (list.length === 1) return list[0];
+          return `${list[0]} +${list.length - 1}`;
+        },
+      },
     ]);
 
     grid = createGrid(gridEl, {
       theme: 'legacy',
-      columnDefs: colDefs,
+      columnDefs: leftColDefs,
       rowData: unifiedRows,
       // Stable row identity — without this, ag-Grid treats every
       // rowData update (every 10 s poll) as a fresh dataset and
@@ -2816,9 +2886,12 @@
     if (gridRightEl) {
       gridRight = createGrid(gridRightEl, {
         theme: 'legacy',
-        columnDefs: colDefs,
-        rowData: rightRows,
-        pinnedTopRowData: rightPinnedRows,
+        columnDefs: rightColDefs,
+        rowData: rightRowsWithTotals,
+        // No pinnedTopRowData here — totals move into the body and
+        // postSortRows pins them to the bottom of their bucket so
+        // the operator sees Positions block → TOTAL Positions →
+        // Holdings block → TOTAL Holdings, sort-stable.
         getRowId: ({ data }) => String(data?.key || data?.tradingsymbol || ''),
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
@@ -2836,24 +2909,42 @@
           if (!nodes || nodes.length === 0) return;
           const groupOf = (n) =>
             String(n.data?.underlying || n.data?.tradingsymbol || '').toUpperCase();
+          // Separate TOTAL rows up-front — they get appended LAST to
+          // their bucket regardless of the column sort. Without this
+          // step a "sort by P&L descending" would float the TOTAL row
+          // (largest P&L by definition) to the top of its bucket.
+          const totalsByBucket = /** @type {Record<number, any[]>} */ ({});
           const bucketMap = /** @type {Record<number, Record<string, any[]>>} */ ({});
           const groupFirstSeen = /** @type {Record<string, number>} */ ({});
           for (let i = 0; i < nodes.length; i++) {
             const n = nodes[i];
             const b = bucketOf(n.data || {});
+            if (n.data?._isTotal) {
+              (totalsByBucket[b] ??= []).push(n);
+              continue;
+            }
             const g = groupOf(n);
             (bucketMap[b] ??= {})[g] ??= [];
             bucketMap[b][g].push(n);
             if (!(g in groupFirstSeen)) groupFirstSeen[g] = i;
           }
           const out = [];
-          const bucketKeys = Object.keys(bucketMap).map(Number).sort((a, b) => a - b);
+          // Walk every bucket key that appears in EITHER the body
+          // bucketMap or the totalsByBucket — a Positions block with
+          // zero rows but a TOTAL still needs to surface the total
+          // (degenerate but possible during the moment between
+          // position fetch and TOTAL recompute).
+          const bucketKeys = Array.from(new Set([
+            ...Object.keys(bucketMap).map(Number),
+            ...Object.keys(totalsByBucket).map(Number),
+          ])).sort((a, b) => a - b);
           for (const b of bucketKeys) {
-            const groups = bucketMap[b];
+            const groups = bucketMap[b] || {};
             const groupKeys = Object.keys(groups).sort(
               (a, b) => groupFirstSeen[a] - groupFirstSeen[b]
             );
             for (const gk of groupKeys) out.push(...groups[gk]);
+            if (totalsByBucket[b]) out.push(...totalsByBucket[b]);
           }
           params.nodes.length = 0;
           params.nodes.push(...out);
@@ -3937,10 +4028,32 @@
     }
   }
 
+  /* Symbol cell on the RIGHT grid — account-tinted left + right
+     borders with a faint tint background. The colour is injected
+     via the `--mp-sym-acct-color` custom property by the column's
+     cellStyle (which reads the row's leadAccount and resolves via
+     the shared hash palette in $lib/account.js). Without an account
+     (rare; broken row data), the borders disappear so totals + edge
+     cases stay clean. */
+  :global(.ag-theme-algo .mp-sym-acct) {
+    border-left: 2px solid var(--mp-sym-acct-color, transparent) !important;
+    border-right: 2px solid var(--mp-sym-acct-color, transparent) !important;
+    background-color: color-mix(in srgb, var(--mp-sym-acct-color, transparent) 14%, transparent);
+  }
+  /* Account column on the RIGHT grid — small-caps, account-colour
+     foreground, monospace to lock the +N badge alignment. */
+  :global(.ag-theme-algo .mp-acct-cell) {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
   /* TOTAL row styling — bold + slight tint so the operator's eye
-     locks onto the consolidated number ahead of the body rows.
-     Pinned rows can't be sorted into the body (ag-Grid native
-     behaviour), so the value stays put under any column sort. */
+     locks onto the consolidated number at the END of each bucket.
+     postSortRows pins them last in their bucket regardless of
+     column sort, so the value reads as "sum of the block above"
+     rather than a header strip. */
   :global(.ag-theme-algo .mp-total-row) {
     font-weight: 700;
     background: rgba(251, 191, 36, 0.06);

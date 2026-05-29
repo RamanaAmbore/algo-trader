@@ -210,6 +210,12 @@
   // djb2 hash → stable index into an 8-hue palette. TOTAL rows receive no
   // colour so they read as neutral aggregates. Palette chosen for mutual
   // distinctness + visibility on both dark (algo) and light (ramboq) grids.
+  // ACCT_PALETTE + acctColor moved to `$lib/account.js` so MarketPulse
+  // and PerformancePage share one source of truth — each account hashes
+  // to the same colour everywhere it surfaces in the UI. The const +
+  // function inlined below are kept for back-compat with the existing
+  // closures (acctCellRenderer / acctCellStyle reference them directly);
+  // they now delegate to the shared helper.
   const ACCT_PALETTE = [
     '#a78bfa', // violet
     '#5eead4', // teal
