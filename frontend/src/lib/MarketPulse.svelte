@@ -3979,6 +3979,19 @@
     min-height: 320px;
     flex: none;
   }
+  /* Desktop split — the .mp-flat-wrap rule above pins flex:none so
+     the grid hits the calc-height directly. But the parent .mp-grids
+     is a flex ROW on desktop, so the two children need to share width
+     50/50 — `flex: 1 1 0; min-width: 0` overrides the inner-grid
+     flex:none. Mobile (column-direction) still wants flex:none so the
+     grids stack at their full height. */
+  @media (min-width: 1024px) {
+    .mp-flat-wrap .mp-grid-left,
+    .mp-flat-wrap .mp-grid-right {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+  }
   /* Mobile — the grid was rendering taller than the visible viewport,
      so the page itself scrolled (navbar disappeared as the operator
      swiped to see Holdings). Shrink the grid + lock the wrap to the
