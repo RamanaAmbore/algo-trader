@@ -317,11 +317,19 @@
       return false;
     }
 
+    // Group by ACCOUNT only — every ITM commodity position in the
+    // same account is a netting candidate against every other ITM
+    // commodity position in that account, regardless of underlying
+    // or expiry. Operator-spec: the broker still settles each
+    // contract independently, but the operator manages exposure
+    // at the account level and wants the Close tab to surface
+    // only positions that lack an offsetting partner anywhere in
+    // their account's ITM book.
     /** @type {Record<string, any[]>} */
     const groups = {};
     for (const r of annotated) {
       if (r._segment !== 'commodity' || !r._isITM) continue;
-      const key = `${r.account || ''}|${r._underlying}|${r._expiry}`;
+      const key = String(r.account || '');
       (groups[key] ??= []).push(r);
     }
     for (const key of Object.keys(groups)) {
