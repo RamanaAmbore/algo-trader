@@ -219,7 +219,8 @@
     if (!spot || !candidatePositions.length) return result;
 
     // First pass — annotate every option candidate with its parsed
-    // metadata + ITM verdict. Skip futures, zero-qty, and drafts.
+    // metadata, ITM verdict, and theta from the strategy analytics.
+    // Skip futures, zero-qty, and drafts.
     const annotated = [];
     for (const c of candidatePositions) {
       const qty = Number(c.qty || 0);
@@ -236,6 +237,8 @@
       const exchange = String(c.exchange || '').toUpperCase();
       const segment = exchange === 'MCX' ? 'commodity' : 'equity';
       const isITM = optType === 'CE' ? spot > strike : spot < strike;
+      const lg = legAnalyticsBySymbol[c.symbol];
+      const theta = Number(lg?.greeks?.theta ?? 0) || 0;
       annotated.push({
         ...c,
         _strike: strike,
@@ -246,6 +249,7 @@
         _isITM: isITM,
         _spot: spot,
         _qty: qty,
+        _theta: theta,
       });
     }
 
@@ -256,29 +260,39 @@
       }
     }
 
-    // Commodity grouping for hedge check.
-    /** @type {Record<string, {ce:number, pe:number, members:any[]}>} */
-    const mcxGroups = {};
-    for (const r of annotated) {
-      if (r._segment !== 'commodity') continue;
-      const key = `${r._underlying}|${r._expiry}`;
-      const g = mcxGroups[key] ??= { ce: 0, pe: 0, members: [] };
-      if (r._optType === 'CE') g.ce += r._qty;
-      else if (r._optType === 'PE') g.pe += r._qty;
-      g.members.push(r);
-    }
+    // Commodity netting — contract-level. Group ITM commodity rows
+    // by (underlying, expiry, strike, opt_type) — i.e. the SAME
+    // contract. Within each contract, sum signed qty. A zero sum
+    // means long + short on the same contract perfectly net at
+    // settlement (broker just cash-settles the difference, which
+    // is zero) — those rows show under "Hedged".
+    //
+    // For contracts with non-zero residual qty, surface every row
+    // in the group sorted by theta DESC so the operator's eye lands
+    // on the more-decayed (higher-theta) position first — matches
+    // the operator preference "more theta ones first" for display.
+    /** @type {Record<string, any[]>} */
+    const contractGroups = {};
     for (const r of annotated) {
       if (r._segment !== 'commodity' || !r._isITM) continue;
-      const key = `${r._underlying}|${r._expiry}`;
-      const g = mcxGroups[key];
-      if (g && (g.ce + g.pe) === 0) {
-        // Net-hedged — broker settles against itself.
-        result.hedged.push({ ...r, _reason: `Hedged (net CE${g.ce >= 0 ? '+' : ''}${g.ce} + PE${g.pe >= 0 ? '+' : ''}${g.pe} = 0)` });
+      const key = `${r._underlying}|${r._expiry}|${r._strike}|${r._optType}`;
+      (contractGroups[key] ??= []).push(r);
+    }
+    for (const key of Object.keys(contractGroups)) {
+      const grp = contractGroups[key];
+      const sumQty = grp.reduce((s, p) => s + (p._qty || 0), 0);
+      if (sumQty === 0) {
+        for (const r of grp) {
+          result.hedged.push({ ...r, _reason: 'Same-contract net 0 (broker settles)' });
+        }
       } else {
-        result.commodity.push({
-          ...r,
-          _reason: `Unhedged ITM commodity (net CE${g?.ce ?? 0 >= 0 ? '+' : ''}${g?.ce ?? 0} + PE${g?.pe ?? 0 >= 0 ? '+' : ''}${g?.pe ?? 0})`,
-        });
+        const sorted = grp.slice().sort((a, b) => (b._theta || 0) - (a._theta || 0));
+        for (const r of sorted) {
+          result.commodity.push({
+            ...r,
+            _reason: `Unhedged ITM commodity (net qty ${sumQty > 0 ? '+' : ''}${sumQty})`,
+          });
+        }
       }
     }
 
@@ -289,23 +303,21 @@
   );
 
   // Rows surfaced inside the Legs card's grid. When legsTab='legs'
-  // the operator sees the full candidate set. When 'expiry', we
-  // narrow to positions that have an action verdict and stash that
-  // verdict on each row so the grid tints it (equity-close / red,
-  // commodity-close / amber, hedged / muted).
+  // the operator sees the full candidate set in its natural order.
+  // When 'expiry', we pull rows from expiryCloseAnalysis directly so
+  // the theta-DESC ordering carried out by the netting pass is
+  // preserved (equity-close block first, commodity-close sorted by
+  // theta DESC, then hedged rows last for context).
   const displayedCandidates = $derived.by(() => {
     if (legsTab !== 'expiry') return candidatePositions;
-    /** @type {Record<string, string>} */
-    const statusBySym = {};
+    const out = [];
     for (const r of expiryCloseAnalysis.equity)
-      statusBySym[r.account + '|' + r.symbol] = 'equity-close';
+      out.push({ ...r, _expiryStatus: 'equity-close' });
     for (const r of expiryCloseAnalysis.commodity)
-      statusBySym[r.account + '|' + r.symbol] = 'commodity-close';
+      out.push({ ...r, _expiryStatus: 'commodity-close' });
     for (const r of expiryCloseAnalysis.hedged)
-      statusBySym[r.account + '|' + r.symbol] = 'hedged';
-    return candidatePositions
-      .filter(c => statusBySym[c.account + '|' + c.symbol] != null)
-      .map(c => ({ ...c, _expiryStatus: statusBySym[c.account + '|' + c.symbol] }));
+      out.push({ ...r, _expiryStatus: 'hedged' });
+    return out;
   });
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
