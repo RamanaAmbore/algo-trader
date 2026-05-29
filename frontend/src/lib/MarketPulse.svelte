@@ -740,7 +740,10 @@
   // header. Each bucket persists its toggle independently via
   // CollapseButton's own localStorage layer (keyed cardId per
   // operator), so the operator can collapse Pinned permanently
-  // while keeping Positions expanded.
+  // while keeping Positions expanded. `_effCol*` (declared below
+  // once the row derivations exist) folds in the auto-collapse
+  // rule: a card with zero rows renders as collapsed regardless
+  // of the operator toggle.
   let _colPinned    = $state(false);
   let _colWatch     = $state(false);
   let _colWinners   = $state(false);
@@ -1199,7 +1202,36 @@
   // Holdings feed the right-style book grids (with TOTAL rows
   // pinned at the bucket's bottom edge).
   const pinnedRows     = $derived(pinnedTopRows);
-  const watchRows      = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
+  const _allWatchRows  = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
+  // Watchlist tab strip — one tab per non-pinned watchlist, capped at
+  // 5 (operators with many lists scroll the chrome row to reach the
+  // rest from the Show dropdown). Default tab is the first list.
+  const _userLists = $derived((lists || []).filter(l => !l.is_pinned).slice(0, 5));
+  let watchTab = $state(/** @type {number | null} */ (null));
+  // Reset watchTab when the user-list set changes (e.g., a list got
+  // deleted out from under the active tab). Default to the first
+  // available list id when nothing is selected yet.
+  $effect(() => {
+    const ids = _userLists.map(l => l.id);
+    if (watchTab == null || !ids.includes(watchTab)) {
+      watchTab = ids.length > 0 ? ids[0] : null;
+    }
+  });
+  const watchRows = $derived(
+    watchTab == null
+      ? _allWatchRows
+      : _allWatchRows.filter(r => r.watchlist_list_id === watchTab)
+  );
+  // Per-tab row counts so the tab pill can show its denominator.
+  const watchCounts = $derived.by(() => {
+    /** @type {Record<number, number>} */
+    const out = {};
+    for (const r of _allWatchRows) {
+      const id = Number(r.watchlist_list_id);
+      if (Number.isFinite(id)) out[id] = (out[id] || 0) + 1;
+    }
+    return out;
+  });
   const positionsRows  = $derived(mainRows.filter(r => r._majorGroup === 'positions'));
   const holdingsRows   = $derived(mainRows.filter(r => r._majorGroup === 'holdings'));
   // Sub-group tabs on the Winners + Losers grids — each grid scopes
@@ -1314,6 +1346,29 @@
     const t = _totalsRowFor(holdingsRows, 'holdings', 'TOTAL Holdings');
     return t ? [t] : [];
   });
+
+  // Effective collapse state per bucket — `true` when EITHER the
+  // operator collapsed the card OR the card has no rows to show.
+  // Auto-collapse on empty keeps the page tight: an empty Movers
+  // section (after-hours) or Holdings section (no account picked)
+  // doesn't take up vertical real estate. When data appears, the
+  // card auto-expands (unless the operator manually collapsed).
+  //
+  // Winners + Losers check the FULL pool (sum across all tabs) so
+  // switching tabs to an empty universe doesn't auto-collapse the
+  // whole card.
+  const _winnersTotal = $derived(
+    winnerCounts.underlying + winnerCounts.large_cap
+    + winnerCounts.midcap + winnerCounts.smallcap + winnerCounts.holdings);
+  const _losersTotal = $derived(
+    loserCounts.underlying + loserCounts.large_cap
+    + loserCounts.midcap + loserCounts.smallcap + loserCounts.holdings);
+  const _effColPinned    = $derived(_colPinned    || pinnedRows.length === 0);
+  const _effColWatch     = $derived(_colWatch     || _allWatchRows.length === 0);
+  const _effColWinners   = $derived(_colWinners   || _winnersTotal === 0);
+  const _effColLosers    = $derived(_colLosers    || _losersTotal === 0);
+  const _effColPositions = $derived(_colPositions || positionsRows.length === 0);
+  const _effColHoldings  = $derived(_colHoldings  || holdingsRows.length === 0);
 
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
@@ -3495,26 +3550,41 @@
       Holdings). Show dropdown stays in the top chrome row.
     -->
     <div class="mp-grids6">
-      <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_colPinned}>
+      <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_effColPinned}>
         <div class="mp-bucket-head">
           <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
           <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
         </div>
-        {#if !_colPinned}
+        {#if !_effColPinned}
           <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
         {/if}
       </section>
-      <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_colWatch}>
+      <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
         <div class="mp-bucket-head">
           <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
+          {#if _userLists.length > 1}
+            <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
+              {#each _userLists as l (l.id)}
+                <button type="button" role="tab"
+                        class="mp-wl-tab"
+                        class:mp-wl-tab-on={watchTab === l.id}
+                        aria-selected={watchTab === l.id}
+                        title={l.name}
+                        onclick={() => watchTab = l.id}>
+                  {l.name}
+                  {#if watchCounts[l.id] > 0}<span class="mp-wl-tab-count">{watchCounts[l.id]}</span>{/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
           <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
         </div>
-        {#if !_colWatch}
+        {#if !_effColWatch}
           <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
         {/if}
       </section>
       {#if showWinners}
-        <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_colWinners}>
+        <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
             <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
@@ -3531,13 +3601,13 @@
             </div>
             <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
           </div>
-          {#if !_colWinners}
+          {#if !_effColWinners}
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           {/if}
         </section>
       {/if}
       {#if showLosers}
-        <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_colLosers}>
+        <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
             <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
@@ -3554,7 +3624,7 @@
             </div>
             <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
           </div>
-          {#if !_colLosers}
+          {#if !_effColLosers}
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
           {/if}
         </section>
@@ -3585,21 +3655,21 @@
          the final pair so the page reads top-to-bottom as
          "watchlists → market scan → my book". -->
     <div class="mp-grids6">
-      <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_colPositions}>
+      <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
         <div class="mp-bucket-head">
           <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
           <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
         </div>
-        {#if !_colPositions}
+        {#if !_effColPositions}
           <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
         {/if}
       </section>
-      <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_colHoldings}>
+      <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
         <div class="mp-bucket-head">
           <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
           <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
         </div>
-        {#if !_colHoldings}
+        {#if !_effColHoldings}
           <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
         {/if}
       </section>
