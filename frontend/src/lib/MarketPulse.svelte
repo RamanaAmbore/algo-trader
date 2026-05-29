@@ -3919,20 +3919,21 @@
      1024 px breakpoint matches the Tailwind `lg:` cutoff used on
      the algo navbar / hamburger toggle. */
   .mp-grids {
-    display: flex;
+    display: flex !important;
     flex-direction: column;
     gap: 0.5rem;
     width: 100%;
   }
   @media (min-width: 1024px) {
     .mp-grids {
-      flex-direction: row;
+      flex-direction: row !important;
       align-items: stretch;
     }
-    .mp-grid-left,
-    .mp-grid-right {
-      flex: 1 1 0;
-      min-width: 0;
+    .mp-grids > .mp-grid-left,
+    .mp-grids > .mp-grid-right {
+      flex: 1 1 0 !important;
+      min-width: 0 !important;
+      width: auto !important;
     }
   }
 
@@ -3982,14 +3983,17 @@
   /* Desktop split — the .mp-flat-wrap rule above pins flex:none so
      the grid hits the calc-height directly. But the parent .mp-grids
      is a flex ROW on desktop, so the two children need to share width
-     50/50 — `flex: 1 1 0; min-width: 0` overrides the inner-grid
-     flex:none. Mobile (column-direction) still wants flex:none so the
-     grids stack at their full height. */
+     50/50 — `flex: 1 1 0; min-width: 0; width: auto` overrides the
+     inner-grid flex:none + width:100%. Mobile (column-direction)
+     still wants the calc-height to apply naturally. Important
+     used because .mp-flat-wrap .unified-grid has the same
+     specificity and ships earlier in the cascade. */
   @media (min-width: 1024px) {
-    .mp-flat-wrap .mp-grid-left,
-    .mp-flat-wrap .mp-grid-right {
-      flex: 1 1 0;
-      min-width: 0;
+    .mp-flat-wrap .mp-grids > .mp-grid-left,
+    .mp-flat-wrap .mp-grids > .mp-grid-right {
+      flex: 1 1 0 !important;
+      min-width: 0 !important;
+      width: auto !important;
     }
   }
   /* Mobile — the grid was rendering taller than the visible viewport,
