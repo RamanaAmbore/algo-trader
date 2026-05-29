@@ -280,15 +280,43 @@
     }
 
     // Commodity ITM — greedy theta-priority netting, scoped per
-    // ACCOUNT. Long and short positions held in different accounts
-    // can't net at the broker (they settle independently), so the
-    // grouping key includes account. Within each
-    // (account, underlying, expiry) group, walk from highest theta
-    // to lowest; pair each high-theta position with a remaining
-    // opposite-sign position lower in the same list and net by
-    // min(|qty|). Perfectly-netted rows are dropped — the broker
-    // settles them internally. Residual (non-zero) positions
-    // surface in the Close tab.
+    // ACCOUNT. Four valid pair types (broker settles each account
+    // independently, so we never net across accounts):
+    //
+    //   1. Long CE + Short CE  (any strikes — opposite sign,
+    //      same opt type → qty cancellation)
+    //   2. Long PE + Short PE  (same rule on PE side)
+    //   3. Long CE + Long PE   (both receive at settlement —
+    //      no further action so long as spot sits between
+    //      the two strikes)
+    //   4. Short CE + Short PE (locked-in payment — operator
+    //      can't reduce by closing one leg without leaving
+    //      the other exposed)
+    //
+    // Pairs NOT allowed (these remain as residual / need close):
+    //   • Long CE + Short PE (synthetic long underlying —
+    //     both bet on spot up; doesn't net)
+    //   • Short CE + Long PE (synthetic short — directional)
+    //   • Same-sign same-opt-type (Long CE + Long CE — just
+    //     more of the same exposure, can't cancel)
+    //
+    // Greedy theta priority: sort by |theta| DESC and, for each
+    // position from the top, find the highest-|theta| valid
+    // partner. Pairs reduce both qtys by min(|qty|). Residual
+    // (non-zero remaining qty) surfaces in the Close tab.
+    function _canPair(A, B, remaining) {
+      const aq = remaining.get(A) || 0;
+      const bq = remaining.get(B) || 0;
+      if (aq === 0 || bq === 0) return false;
+      const aSign = Math.sign(aq);
+      const bSign = Math.sign(bq);
+      // Rule 1 + 2: same opt type, opposite sign
+      if (A._optType === B._optType && aSign !== bSign) return true;
+      // Rule 3 + 4: different opt type, same sign
+      if (A._optType !== B._optType && aSign === bSign) return true;
+      return false;
+    }
+
     /** @type {Record<string, any[]>} */
     const groups = {};
     for (const r of annotated) {
@@ -298,27 +326,31 @@
     }
     for (const key of Object.keys(groups)) {
       const grp = groups[key];
-      // Sort by theta DESC up-front; greedy walk picks pairs from
-      // high-theta down.
-      const sorted = grp.slice().sort((a, b) => (b._theta || 0) - (a._theta || 0));
+      const sortedAbs = grp.slice().sort(
+        (a, b) => Math.abs(b._theta || 0) - Math.abs(a._theta || 0));
       const remaining = new Map();
-      for (const r of sorted) remaining.set(r, r._qty);
-      for (let i = 0; i < sorted.length; i++) {
-        const A = sorted[i];
+      for (const r of sortedAbs) remaining.set(r, r._qty);
+      for (const A of sortedAbs) {
         let aq = remaining.get(A) || 0;
-        if (aq === 0) continue;
-        for (let j = i + 1; j < sorted.length && aq !== 0; j++) {
-          const B = sorted[j];
-          const bq = remaining.get(B) || 0;
-          if (bq === 0) continue;
-          if (Math.sign(aq) === Math.sign(bq)) continue;
+        while (aq !== 0) {
+          // Pick the highest-|theta| valid partner remaining.
+          let bestB = null;
+          let bestT = -1;
+          for (const B of sortedAbs) {
+            if (B === A) continue;
+            if (!_canPair(A, B, remaining)) continue;
+            const t = Math.abs(B._theta || 0);
+            if (t > bestT) { bestB = B; bestT = t; }
+          }
+          if (!bestB) break;
+          const bq = remaining.get(bestB) || 0;
           const netAmt = Math.min(Math.abs(aq), Math.abs(bq));
           remaining.set(A, aq - netAmt * Math.sign(aq));
-          remaining.set(B, bq - netAmt * Math.sign(bq));
+          remaining.set(bestB, bq - netAmt * Math.sign(bq));
           aq = remaining.get(A) || 0;
         }
       }
-      for (const r of sorted) {
+      for (const r of sortedAbs) {
         const q = remaining.get(r) || 0;
         if (q === 0) continue;   // fully netted, hide from Close
         result.commodity.push({
