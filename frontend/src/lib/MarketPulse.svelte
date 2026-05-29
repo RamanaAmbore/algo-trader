@@ -3533,137 +3533,124 @@
       original unified grid).
     -->
     <!--
-      6-grid layout — desktop renders three rows of 2 grids each
-      (CSS-grid template). Mobile stacks vertically (one column).
+      Two-column layout — desktop puts monitoring surfaces on the
+      LEFT (Pinned · Watchlist · Winners · Losers, stacked) and the
+      operator's book on the RIGHT (Account picker · Positions ·
+      Holdings, stacked). Mobile collapses to a single column with
+      the natural reading order (left col items first, then right).
       Each .mp-bucket-wrap carries its own header label + the
-      ag-Grid container; the wrap's overflow keeps the header
-      pinned above each grid's internal scrollbar.
-        Row 1 → Pinned     | Watchlist        (monitoring lists)
-        Row 2 → Winners    | Losers           (market scan)
-        Row 3 → Positions  | Holdings         (operator's book — last)
-      The Account picker is anchored between Row 2 and Row 3 so it
-      sits directly above the only grids it filters (Positions /
-      Holdings). Show dropdown stays in the top chrome row.
+      ag-Grid container.
     -->
-    <div class="mp-grids6">
-      <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_effColPinned}>
-        <div class="mp-bucket-head">
-          <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
-          <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
-        </div>
-        <!-- bucket-grid div ALWAYS rendered so bind:this lands BEFORE
-             mountGrid() runs. Visual collapse handled by CSS via the
-             parent's .is-collapsed class — physically removing the
-             div via {#if} would leave gridPinnedEl null at mount
-             time and the grid would never instantiate. -->
-        <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
-      <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
-        <div class="mp-bucket-head">
-          <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
-          <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
-          {#if _userLists.length > 1}
-            <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
-              {#each _userLists as l (l.id)}
-                <button type="button" role="tab"
-                        class="mp-wl-tab"
-                        class:mp-wl-tab-on={watchTab === l.id}
-                        aria-selected={watchTab === l.id}
-                        title={l.name}
-                        onclick={() => watchTab = l.id}>
-                  {l.name}
-                  {#if watchCounts[l.id] > 0}<span class="mp-wl-tab-count">{watchCounts[l.id]}</span>{/if}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-        <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
-      {#if showWinners}
-        <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
-          <!-- CollapseButton sits IMMEDIATELY next to the heading
-               label so the toggle reads as part of the heading
-               row, regardless of whether the tab strip wraps to a
-               second line on narrow viewports. -->
+    <div class="mp-layout">
+      <div class="mp-col mp-col-left">
+        <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_effColPinned}>
           <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-            <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
-            <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
-              {#each MOVER_TABS as t}
-                <button type="button" role="tab"
-                        class="mp-wl-tab"
-                        class:mp-wl-tab-on={winTab === t}
-                        aria-selected={winTab === t}
-                        onclick={() => winTab = t}>
-                  {MOVER_TAB_LABEL[t]}
-                </button>
-              {/each}
-            </div>
+            <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
+            <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
           </div>
-          <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+          <!-- bucket-grid div ALWAYS rendered so bind:this lands BEFORE
+               mountGrid() runs. Visual collapse handled by CSS via the
+               parent's .is-collapsed class — physically removing the
+               div via {#if} would leave gridPinnedEl null at mount
+               time and the grid would never instantiate. -->
+          <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
         </section>
-      {/if}
-      {#if showLosers}
-        <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
+        <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
           <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-            <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
-            <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
-              {#each MOVER_TABS as t}
-                <button type="button" role="tab"
-                        class="mp-wl-tab"
-                        class:mp-wl-tab-on={loseTab === t}
-                        aria-selected={loseTab === t}
-                        onclick={() => loseTab = t}>
-                  {MOVER_TAB_LABEL[t]}
-                </button>
-              {/each}
-            </div>
+            <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
+            <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
+            {#if _userLists.length > 1}
+              <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
+                {#each _userLists as l (l.id)}
+                  <button type="button" role="tab"
+                          class="mp-wl-tab"
+                          class:mp-wl-tab-on={watchTab === l.id}
+                          aria-selected={watchTab === l.id}
+                          title={l.name}
+                          onclick={() => watchTab = l.id}>
+                    {l.name}
+                    {#if watchCounts[l.id] > 0}<span class="mp-wl-tab-count">{watchCounts[l.id]}</span>{/if}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
-          <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+          <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
         </section>
-      {/if}
-    </div>
-
-    <!-- Account picker — sits above the Positions/Holdings row so
-         the operator's eye lands on "whose book am I about to see"
-         immediately before the book grids render. Spans the full
-         page width on its own row. Visible only when the embedder
-         passes accountPicker={true} and there are accounts to
-         choose from. -->
-    {#if accountPicker && availableAccounts.length > 0}
-      {@const _acctOff = !selectedSources.includes('positions')
-                      && !selectedSources.includes('holdings')}
-      <div class="mp-acct-row">
-        <span class="mp-acct-label">Account</span>
-        <div class="w-28 shrink-0">
-          <AccountMultiSelect bind:value={selectedAccounts}
-            options={availableAccounts.map(a => ({ value: a, label: a }))}
-            disabled={_acctOff}
-            disabledReason="Account filter applies only when Positions or Holdings is selected" />
-        </div>
+        {#if showWinners}
+          <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
+            <div class="mp-bucket-head">
+              <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
+              <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
+                {#each MOVER_TABS as t}
+                  <button type="button" role="tab"
+                          class="mp-wl-tab"
+                          class:mp-wl-tab-on={winTab === t}
+                          aria-selected={winTab === t}
+                          onclick={() => winTab = t}>
+                    {MOVER_TAB_LABEL[t]}
+                  </button>
+                {/each}
+              </div>
+            </div>
+            <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+          </section>
+        {/if}
+        {#if showLosers}
+          <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
+            <div class="mp-bucket-head">
+              <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
+              <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
+                {#each MOVER_TABS as t}
+                  <button type="button" role="tab"
+                          class="mp-wl-tab"
+                          class:mp-wl-tab-on={loseTab === t}
+                          aria-selected={loseTab === t}
+                          onclick={() => loseTab = t}>
+                    {MOVER_TAB_LABEL[t]}
+                  </button>
+                {/each}
+              </div>
+            </div>
+            <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+          </section>
+        {/if}
       </div>
-    {/if}
 
-    <!-- Row 3 — Positions + Holdings, the operator's book. Kept as
-         the final pair so the page reads top-to-bottom as
-         "watchlists → market scan → my book". -->
-    <div class="mp-grids6">
-      <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
-        <div class="mp-bucket-head">
-          <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
-          <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
-        </div>
-        <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
-      <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
-        <div class="mp-bucket-head">
-          <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
-          <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
-        </div>
-        <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
-      </section>
+      <div class="mp-col mp-col-right">
+        {#if accountPicker && availableAccounts.length > 0}
+          {@const _acctOff = !selectedSources.includes('positions')
+                          && !selectedSources.includes('holdings')}
+          <!-- Account picker — anchored at the top of the right column
+               so it reads as a header for the Positions / Holdings
+               grids it actually filters. -->
+          <div class="mp-acct-row">
+            <span class="mp-acct-label">Account</span>
+            <div class="w-28 shrink-0">
+              <AccountMultiSelect bind:value={selectedAccounts}
+                options={availableAccounts.map(a => ({ value: a, label: a }))}
+                disabled={_acctOff}
+                disabledReason="Account filter applies only when Positions or Holdings is selected" />
+            </div>
+          </div>
+        {/if}
+        <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
+          <div class="mp-bucket-head">
+            <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
+            <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
+          </div>
+          <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
+        </section>
+        <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
+          <div class="mp-bucket-head">
+            <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
+            <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
+          </div>
+          <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
+        </section>
+      </div>
     </div>
   {/if}
 </div>
@@ -4186,21 +4173,33 @@
      the grids stack one above the other (left on top of right). The
      1024 px breakpoint matches the Tailwind `lg:` cutoff used on
      the algo navbar / hamburger toggle. */
-  /* 6-grid layout — mobile stacks vertically (1 column); desktop
-     ≥lg drops to 2 columns × 3 rows via CSS grid. The two columns
-     pair semantically: row 1 = monitoring lists (Pinned/Watchlist),
-     row 2 = book (Positions/Holdings), row 3 = market scan
-     (Winners/Losers). Each grid still owns its independent
-     scrollbar via .bucket-grid's pinned height. */
-  .mp-grids6 {
-    display: grid;
-    grid-template-columns: 1fr;
+  /* Two-column layout — left col carries monitoring surfaces
+     (Pinned · Watchlist · Winners · Losers); right col carries
+     the operator's book (Account picker · Positions · Holdings).
+     Mobile = single column; desktop ≥lg = side by side. Each
+     column is a flex stack so the cards inside flow naturally
+     and independently — the left col having 4 cards vs the right
+     having 2 doesn't try to align rows across columns. */
+  .mp-layout {
+    display: flex;
+    flex-direction: column;
     gap: 0.6rem;
     width: 100%;
   }
+  .mp-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-width: 0;
+  }
   @media (min-width: 1024px) {
-    .mp-grids6 {
-      grid-template-columns: 1fr 1fr;
+    .mp-layout {
+      flex-direction: row;
+      align-items: flex-start;
+    }
+    .mp-col-left,
+    .mp-col-right {
+      flex: 1 1 0;
     }
   }
   .mp-bucket-wrap {
