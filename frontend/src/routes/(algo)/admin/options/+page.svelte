@@ -197,6 +197,97 @@
   let _fsPayoff  = $state(false);
   let _fsLegs    = $state(false);
 
+  // Tab inside the Legs card — 'legs' shows the full candidate
+  // grid; 'expiry' shows positions identified for close before
+  // expiry day (equity rules: every ITM contract; commodity rules:
+  // only unhedged ITM legs where CE qty + PE qty per
+  // (underlying, expiry) doesn't net to zero).
+  /** @typedef {'legs' | 'expiry'} LegsTab */
+  let legsTab = $state(/** @type {LegsTab} */ ('legs'));
+
+  // Expiry-close analysis. Derived from candidatePositions + the
+  // strategy spot price. Splits by exchange: NFO (equity) drops
+  // all ITM contracts into the close list; MCX (commodity) groups
+  // by (underlying, expiry) and only surfaces ITM contracts whose
+  // net CE qty + net PE qty is non-zero (the broker settles
+  // perfectly-hedged pairs against each other, no operator action
+  // needed). Closed positions (qty 0) and drafts are skipped.
+  const expiryCloseAnalysis = $derived.by(() => {
+    /** @type {{equity:any[], commodity:any[], hedged:any[]}} */
+    const result = { equity: [], commodity: [], hedged: [] };
+    const spot = Number(strategy?.spot || 0);
+    if (!spot || !candidatePositions.length) return result;
+
+    // First pass — annotate every option candidate with its parsed
+    // metadata + ITM verdict. Skip futures, zero-qty, and drafts.
+    const annotated = [];
+    for (const c of candidatePositions) {
+      const qty = Number(c.qty || 0);
+      if (qty === 0) continue;
+      if (c.source === 'draft') continue;
+      const inst = getInstrument(String(c.symbol || '').toUpperCase());
+      if (!inst) continue;
+      const optType = inst.t;
+      if (optType !== 'CE' && optType !== 'PE') continue;
+      const strike = Number(inst.k || 0);
+      if (!strike) continue;
+      const underlying = String(inst.u || '');
+      const expiry = String(inst.x || '');
+      const exchange = String(c.exchange || '').toUpperCase();
+      const segment = exchange === 'MCX' ? 'commodity' : 'equity';
+      const isITM = optType === 'CE' ? spot > strike : spot < strike;
+      annotated.push({
+        ...c,
+        _strike: strike,
+        _underlying: underlying,
+        _expiry: expiry,
+        _optType: optType,
+        _segment: segment,
+        _isITM: isITM,
+        _spot: spot,
+        _qty: qty,
+      });
+    }
+
+    // Equity ITM → all closed.
+    for (const r of annotated) {
+      if (r._segment === 'equity' && r._isITM) {
+        result.equity.push({ ...r, _reason: 'ITM equity — physical settlement risk' });
+      }
+    }
+
+    // Commodity grouping for hedge check.
+    /** @type {Record<string, {ce:number, pe:number, members:any[]}>} */
+    const mcxGroups = {};
+    for (const r of annotated) {
+      if (r._segment !== 'commodity') continue;
+      const key = `${r._underlying}|${r._expiry}`;
+      const g = mcxGroups[key] ??= { ce: 0, pe: 0, members: [] };
+      if (r._optType === 'CE') g.ce += r._qty;
+      else if (r._optType === 'PE') g.pe += r._qty;
+      g.members.push(r);
+    }
+    for (const r of annotated) {
+      if (r._segment !== 'commodity' || !r._isITM) continue;
+      const key = `${r._underlying}|${r._expiry}`;
+      const g = mcxGroups[key];
+      if (g && (g.ce + g.pe) === 0) {
+        // Net-hedged — broker settles against itself.
+        result.hedged.push({ ...r, _reason: `Hedged (net CE${g.ce >= 0 ? '+' : ''}${g.ce} + PE${g.pe >= 0 ? '+' : ''}${g.pe} = 0)` });
+      } else {
+        result.commodity.push({
+          ...r,
+          _reason: `Unhedged ITM commodity (net CE${g?.ce ?? 0 >= 0 ? '+' : ''}${g?.ce ?? 0} + PE${g?.pe ?? 0 >= 0 ? '+' : ''}${g?.pe ?? 0})`,
+        });
+      }
+    }
+
+    return result;
+  });
+  const expiryCloseTotal = $derived(
+    expiryCloseAnalysis.equity.length + expiryCloseAnalysis.commodity.length
+  );
+
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
    *  the latest strategy response. Lets the Candidates panel show
    *  per-row IV / Δ / Θ / 𝒱 without a second endpoint. */
@@ -290,7 +381,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,source:string,kind:string,draftId?:number}[]} */
+  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,source:string,kind:string,exchange?:string,draftId?:number}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -1899,16 +1990,39 @@
          with every other card on the page.) -->
     <div class="legs-header-row">
       <div class="legs-header legs-header-static">
-        <span>Legs</span>
         {#if selectedUnderlying}
           <span class="opt-section-tag tag-deriv">{selectedUnderlying}</span>
         {/if}
-        <span class="opt-section-meta">{candidatePositions.length}</span>
+        <!-- Tabs replace the static title — operator flips between
+             the full leg list and the expiry-action summary. -->
+        <div class="legs-tabs" role="tablist" aria-label="Legs view">
+          <button type="button" role="tab"
+                  class="legs-tab"
+                  class:legs-tab-on={legsTab === 'legs'}
+                  aria-selected={legsTab === 'legs'}
+                  onclick={() => legsTab = 'legs'}>
+            Legs
+            {#if candidatePositions.length > 0}
+              <span class="legs-tab-count">{candidatePositions.length}</span>
+            {/if}
+          </button>
+          <button type="button" role="tab"
+                  class="legs-tab"
+                  class:legs-tab-on={legsTab === 'expiry'}
+                  aria-selected={legsTab === 'expiry'}
+                  title="Positions identified for close before expiry day"
+                  onclick={() => legsTab = 'expiry'}>
+            Expiry Action
+            {#if expiryCloseTotal > 0}
+              <span class="legs-tab-count legs-tab-count-alert">{expiryCloseTotal}</span>
+            {/if}
+          </button>
+        </div>
       </div>
       <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
       <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
     </div>
-    {#if !_colLegs && candidatePositions.length}
+    {#if !_colLegs && legsTab === 'legs' && candidatePositions.length}
       {@const hideAcct = selectedAccounts.length === 1}
       <div class="cand-scroll">
         <div class="cand-grid" class:cand-grid-noacct={hideAcct}>
@@ -2050,12 +2164,86 @@
           {/each}
         </div>
       </div>
-    {:else if !_colLegs}
+    {:else if !_colLegs && legsTab === 'legs'}
       <div class="text-[0.6rem] text-[#7e97b8] italic">
         No options or futures on <b>{selectedUnderlying}</b> in
         {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
         Try a different underlying / account, or click <b>+</b> to drop a
         draft strike into the payoff.
+      </div>
+    {/if}
+
+    {#if !_colLegs && legsTab === 'expiry'}
+      <div class="expiry-action-body">
+        <p class="expiry-action-note">
+          Equity (NFO): every ITM contract must close — Zerodha does not
+          net-settle option pairs, physical settlement applies.
+          Commodity (MCX): only unhedged ITM contracts — perfectly hedged
+          CE/PE pairs per (underlying, expiry) net to zero at settlement.
+        </p>
+
+        {#if expiryCloseAnalysis.equity.length > 0}
+          <div class="expiry-section-title expiry-section-equity">
+            Equity ITM — Close All ({expiryCloseAnalysis.equity.length})
+          </div>
+          <div class="expiry-rows">
+            {#each expiryCloseAnalysis.equity as r (r.account + '|' + r.symbol)}
+              <div class="expiry-row">
+                <span class="font-mono">{r.symbol}</span>
+                <span class="expiry-tag">{r._optType}</span>
+                <span class="num font-mono">qty {r._qty}</span>
+                <span class="num font-mono">K {r._strike}</span>
+                <span class="num font-mono">spot {r._spot}</span>
+                <span class="expiry-reason">{r._reason}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if expiryCloseAnalysis.commodity.length > 0}
+          <div class="expiry-section-title expiry-section-commodity">
+            Commodity Unhedged ITM — Close ({expiryCloseAnalysis.commodity.length})
+          </div>
+          <div class="expiry-rows">
+            {#each expiryCloseAnalysis.commodity as r (r.account + '|' + r.symbol)}
+              <div class="expiry-row">
+                <span class="font-mono">{r.symbol}</span>
+                <span class="expiry-tag">{r._optType}</span>
+                <span class="num font-mono">qty {r._qty}</span>
+                <span class="num font-mono">K {r._strike}</span>
+                <span class="num font-mono">spot {r._spot}</span>
+                <span class="expiry-reason">{r._reason}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if expiryCloseAnalysis.hedged.length > 0}
+          <div class="expiry-section-title expiry-section-hedged">
+            Commodity Hedged ITM — No Action ({expiryCloseAnalysis.hedged.length})
+          </div>
+          <div class="expiry-rows expiry-rows-muted">
+            {#each expiryCloseAnalysis.hedged as r (r.account + '|' + r.symbol)}
+              <div class="expiry-row">
+                <span class="font-mono">{r.symbol}</span>
+                <span class="expiry-tag">{r._optType}</span>
+                <span class="num font-mono">qty {r._qty}</span>
+                <span class="num font-mono">K {r._strike}</span>
+                <span class="num font-mono">spot {r._spot}</span>
+                <span class="expiry-reason">{r._reason}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if expiryCloseTotal === 0 && expiryCloseAnalysis.hedged.length === 0}
+          <div class="text-[0.6rem] text-[#7e97b8] italic">
+            No ITM options in the current candidate set.
+            {#if !Number(strategy?.spot)}
+              (Spot price unavailable — analytics didn't return a spot for this underlying.)
+            {/if}
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -2709,6 +2897,134 @@
     flex-wrap: wrap;
   }
   .legs-header:hover { color: #fde047; }
+
+  /* Legs / Expiry Action tab strip — replaces the static "Legs"
+     label. Sits inline with the underlying tag chip; CollapseButton
+     + FullscreenButton still trail at the right edge of the header
+     row. Same visual idiom as the MarketPulse Winners / Losers
+     tabs so the operator's mental model carries across. */
+  .legs-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.18rem;
+  }
+  .legs-tab {
+    background: transparent;
+    border: 1px solid rgba(200, 216, 240, 0.18);
+    border-radius: 3px;
+    color: rgba(200, 216, 240, 0.7);
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0.18rem 0.5rem;
+    cursor: pointer;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .legs-tab:hover {
+    background: rgba(200, 216, 240, 0.06);
+    border-color: rgba(200, 216, 240, 0.32);
+    color: #e5edf7;
+  }
+  .legs-tab-on {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+  }
+  .legs-tab-count {
+    font-size: 0.55rem;
+    font-weight: 800;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.25);
+    color: rgba(200, 216, 240, 0.85);
+  }
+  .legs-tab-on .legs-tab-count {
+    background: rgba(251, 191, 36, 0.22);
+    color: #fbbf24;
+  }
+  /* Alert badge when expiry-close has 1+ rows — red so the
+     operator's eye lands on it when contracts need closing. */
+  .legs-tab-count-alert {
+    background: rgba(248, 113, 113, 0.22);
+    color: #f87171;
+  }
+
+  /* Expiry-action body — sits in the same card as the legs grid
+     when legsTab === 'expiry'. Sections (equity ITM, commodity
+     unhedged ITM, hedged-no-action) each carry a coloured top
+     border + tinted title. */
+  .expiry-action-body {
+    padding: 0 0.25rem 0.5rem;
+    font-family: ui-monospace, monospace;
+  }
+  .expiry-action-note {
+    margin: 0 0 0.55rem;
+    padding: 0.4rem 0.5rem;
+    background: rgba(125, 211, 252, 0.08);
+    border-left: 3px solid rgba(125, 211, 252, 0.45);
+    border-radius: 3px;
+    color: #c8d8f0;
+    font-size: 0.6rem;
+    line-height: 1.4;
+  }
+  .expiry-section-title {
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.3rem 0.4rem;
+    margin: 0.5rem 0 0.18rem;
+    border-left: 3px solid;
+  }
+  .expiry-section-equity {
+    color: #f87171;
+    border-left-color: rgba(248, 113, 113, 0.65);
+  }
+  .expiry-section-commodity {
+    color: #fbbf24;
+    border-left-color: rgba(251, 191, 36, 0.65);
+  }
+  .expiry-section-hedged {
+    color: #94a3b8;
+    border-left-color: rgba(148, 163, 184, 0.4);
+  }
+  .expiry-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+  .expiry-rows-muted { opacity: 0.55; }
+  .expiry-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.22rem 0.4rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 3px;
+    font-size: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .expiry-row .num { color: rgba(200, 216, 240, 0.7); }
+  .expiry-tag {
+    padding: 0.05rem 0.32rem;
+    border-radius: 2px;
+    background: rgba(251, 191, 36, 0.18);
+    color: #fbbf24;
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+  }
+  .expiry-reason {
+    color: rgba(200, 216, 240, 0.65);
+    font-size: 0.55rem;
+    margin-left: auto;
+    font-style: italic;
+  }
   .legs-chevron {
     /* Bumped to match the Select / MultiSelect dropdown carets
        (0.95rem amber + weight 700). Earlier 0.6rem read as a stray
