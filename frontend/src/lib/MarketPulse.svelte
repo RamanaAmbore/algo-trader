@@ -2236,7 +2236,8 @@
       row._mover_change_pct = m.change_pct ?? null;
       // Sub-group tag carried over from loadMovers() — drives the
       // identifiable underlying / midcap / smallcap sections in the grid.
-      if (m._moverGroup) row._moverGroup = m._moverGroup;
+      if (m._moverGroup)     row._moverGroup     = m._moverGroup;
+      if (m._moverDirection) row._moverDirection = m._moverDirection;
     }
     // When showMovers is off, strip the Movers-major rows entirely.
     if (!includeMovers) {
