@@ -1227,6 +1227,18 @@ Other surfaces (PerformancePage Holdings + Positions, the `/admin/options` Candi
 
 **Account-filter rule:** Positions and Holdings are the only account-scoped sources. When the Account multiselect is empty, both are hidden from the grid entirely — only Pinned watchlists, custom Watchlists, and Movers (not account-scoped) appear. Picking an account brings Positions + Holdings back, scoped to that account.
 
+**Desktop two-grid layout (≥1024px / Tailwind `lg:`):**
+The symbols view splits into two side-by-side ag-Grid instances inside a flex row so the wide-display whitespace stops at the inter-grid gap. Mobile (`<lg`) stacks them column-wise (left on top, right below), preserving the legacy scan order.
+
+| Side | Buckets | Pinned-top behaviour |
+|---|---|---|
+| **Left** (`.mp-grid-left`) | Pinned watchlists (NIFTY 50, BANKNIFTY, etc.), custom Watchlists, Movers | The Pinned strip stays pinned at the top via `pinnedTopRowData` (Markets / Default / operator-pinned). |
+| **Right** (`.mp-grid-right`) | Positions, Holdings | **TOTAL Positions** + **TOTAL Holdings** rows are pinned at the top. Sort-stable — pinned rows can't be reordered into the body by column sort, so the consolidated number stays put under any sort. |
+
+Each grid scrolls independently. Both grids share the same `columnDefs`, `defaultColDef`, `postSortRows`, and `bucketOf` so visual identity is identical and sort behaviour matches across the split.
+
+**Bucket sort integrity:** `bucketOf` returns 5 distinct values — `pinned (1)`, `watchlist (2)`, `positions (3)`, `holdings (4)`, `movers (5)`. `postSortRows` keeps the sort scoped within each bucket, so sorting by P&L on the right grid doesn't pull pinned NIFTY rows into the Positions block (and vice versa for movers vs. watchlists on the left grid).
+
 **Show dropdown vocabulary:**
 - **Default** — operator's working watchlist; ships **empty** at signup, ready for the operator to add symbols they want to monitor (the ★ marks it as the default add-target when clicking + on any row).
 - **Markets** — auto-seeded with the major Indian indices (NIFTY 50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX) and MCX commodities (GOLD, SILVER, CRUDEOIL, …). Operator sees the broad market at-a-glance.

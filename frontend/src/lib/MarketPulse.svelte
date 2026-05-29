@@ -691,6 +691,11 @@
   // on the watchlist while removing the thundering herd.
   let _lastPulseAt = 0;
   let gridEl;
+  // Desktop split companion (≥lg) — the right-side grid carrying
+  // Positions + Holdings with their pinned-top TOTAL rows. Same
+  // columnDefs as the left grid. On mobile, this div stacks under
+  // the left one via the .mp-grids flex direction.
+  let gridRightEl = $state(/** @type {HTMLDivElement | null} */ (null));
   // $state on the bind:this refs so Svelte 5's reactive-update
   // analyzer doesn't warn (gridEl was grandfathered in pre-Phase 2;
   // the new summary / funds refs need the explicit annotation).
@@ -698,6 +703,7 @@
   let holdingsSummaryEl  = $state(/** @type {HTMLDivElement | null} */ (null));
   let fundsEl            = $state(/** @type {HTMLDivElement | null} */ (null));
   let grid;
+  let gridRight;
   let positionsSummaryGrid;
   let holdingsSummaryGrid;
   let fundsGrid;
@@ -705,6 +711,7 @@
   // $effect below to push unifiedRows into ag-Grid the moment both
   // (a) the grid is mounted and (b) the derived row set has populated.
   let gridReady              = $state(false);
+  let gridRightReady         = $state(false);
   let positionsSummaryReady  = $state(false);
   let holdingsSummaryReady   = $state(false);
   let fundsReady             = $state(false);
@@ -1107,9 +1114,59 @@
     return rows;
   });
 
+  // Desktop split (≥lg) — left grid carries Pinned (as pinned-top
+  // strip), Watchlist, and Movers; right grid carries Positions and
+  // Holdings with per-bucket TOTAL rows pinned at the top so the
+  // operator's eye lands on the consolidated number regardless of
+  // sort. Mobile (<lg) keeps the legacy single-grid layout; the
+  // right-grid wrapper just collapses below the left one via the
+  // .mp-grids flex direction. Both grids share columnDefs +
+  // defaults so visual identity stays consistent.
+  const leftRows  = $derived(mainRows.filter(r =>
+    r._majorGroup === 'watchlist' || r._majorGroup === 'movers'));
+  const rightRows = $derived(mainRows.filter(r =>
+    r._majorGroup === 'positions' || r._majorGroup === 'holdings'));
+
+  // TOTAL rows for the right grid — one for Positions, one for
+  // Holdings. Each carries summed day_pnl + pnl + cost_basis so
+  // Day P&L % and P&L % auto-derive via their valueGetters. The
+  // `_isTotal` flag drives row styling + sort stability (totals
+  // live in pinnedTopRowData so they can't be sorted into the body).
+  function _totalsRowFor(major, label) {
+    const rows = rightRows.filter(r => r._majorGroup === major);
+    if (rows.length === 0) return null;
+    let day_pnl = 0, pnl = 0, cost = 0, qty_pos = 0, qty_hold = 0;
+    let anyDayPnl = false, anyPnl = false;
+    for (const r of rows) {
+      if (r.day_pnl != null) { day_pnl += Number(r.day_pnl) || 0; anyDayPnl = true; }
+      if (r.pnl     != null) { pnl     += Number(r.pnl)     || 0; anyPnl    = true; }
+      cost    += Math.abs(Number(r._cost_basis) || 0);
+      qty_pos += Number(r.qty_pos)  || 0;
+      qty_hold += Number(r.qty_hold) || 0;
+    }
+    return {
+      key: `__total_${major}`,
+      _isTotal: true,
+      _majorGroup: major,
+      tradingsymbol: label,
+      day_pnl:  anyDayPnl ? day_pnl : null,
+      pnl:      anyPnl    ? pnl     : null,
+      _cost_basis: cost,
+      qty_pos, qty_hold,
+    };
+  }
+  const rightPinnedRows = $derived.by(() => {
+    const out = [];
+    const pos = _totalsRowFor('positions', 'TOTAL Positions');
+    const hld = _totalsRowFor('holdings',  'TOTAL Holdings');
+    if (pos) out.push(pos);
+    if (hld) out.push(hld);
+    return out;
+  });
+
   $effect(() => {
     if (!gridReady || !grid) return;
-    grid.setGridOption('rowData', mainRows);
+    grid.setGridOption('rowData', leftRows);
     grid.setGridOption('pinnedTopRowData', pinnedTopRows);
     // Curve column is ALWAYS visible — cells render `—` when sparkline
     // data is missing (sparkRenderer handles that). The earlier
@@ -1117,6 +1174,12 @@
     // persistence: any sort/resize after the column went hidden saved
     // the hidden state to localStorage, leaving the column permanently
     // gone across reloads even after data came back.
+  });
+
+  $effect(() => {
+    if (!gridRightReady || !gridRight) return;
+    gridRight.setGridOption('rowData',           rightRows);
+    gridRight.setGridOption('pinnedTopRowData',  rightPinnedRows);
   });
 
   // ag-Grid doesn't observe $state reads inside cell renderers, so
@@ -1127,6 +1190,13 @@
     sparklines;
     if (!gridReady || !grid) return;
     grid.refreshCells({ columns: ['sparkline'], force: true });
+  });
+
+  // Same explicit-refresh dance for the right grid.
+  $effect(() => {
+    sparklines;
+    if (!gridRightReady || !gridRight) return;
+    gridRight.refreshCells({ columns: ['sparkline'], force: true });
   });
 
   // Per-source summary derivations for the two separate summary grids.
@@ -1264,6 +1334,7 @@
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     grid?.destroy?.();
+    gridRight?.destroy?.();
     positionsSummaryGrid?.destroy?.();
     holdingsSummaryGrid?.destroy?.();
     fundsGrid?.destroy?.();
@@ -2456,6 +2527,12 @@
     const r = params.data || {};
     const s = r.src || {};
     const classes = [];
+    // TOTAL rows on the right grid — bold, slightly-elevated tint
+    // so the operator's eye lands on the consolidated number.
+    if (r._isTotal) {
+      classes.push('mp-total-row');
+      classes.push(`mp-total-${r._majorGroup || 'misc'}`);
+    }
     // Pin-category divider — first row of each pinned sub-group
     // (indices → forex → commodity) gets a top-border so the three
     // mini-sections at the very top of the grid feel distinct.
@@ -2702,6 +2779,65 @@
       },
     });
     gridReady = true;
+    // Right grid — Positions + Holdings with TOTAL rows pinned to
+    // the top. Same columnDefs, same defaults, no column-state
+    // persistence (the left grid owns that since the operator
+    // tweaks columns on one surface — both grids stay in sync via
+    // shared columnDefs). postSortRows still scopes the sort to
+    // each bucket so Positions and Holdings stay in their own
+    // blocks under any column sort.
+    if (gridRightEl) {
+      gridRight = createGrid(gridRightEl, {
+        theme: 'legacy',
+        columnDefs: colDefs,
+        rowData: rightRows,
+        pinnedTopRowData: rightPinnedRows,
+        getRowId: ({ data }) => String(data?.key || data?.tradingsymbol || ''),
+        defaultColDef: {
+          resizable: true, sortable: true, suppressMovable: true,
+          suppressHeaderMenuButton: true,
+        },
+        sortingOrder: ['asc', 'desc', null],
+        overlayNoRowsTemplate:
+          '<span style="font-size:0.65rem;color:#7e97b8">Pick an account to load positions + holdings</span>',
+        domLayout: 'normal',
+        getRowClass,
+        rowHeight: 28,
+        headerHeight: 28,
+        postSortRows: (params) => {
+          const nodes = params.nodes;
+          if (!nodes || nodes.length === 0) return;
+          const groupOf = (n) =>
+            String(n.data?.underlying || n.data?.tradingsymbol || '').toUpperCase();
+          const bucketMap = /** @type {Record<number, Record<string, any[]>>} */ ({});
+          const groupFirstSeen = /** @type {Record<string, number>} */ ({});
+          for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            const b = bucketOf(n.data || {});
+            const g = groupOf(n);
+            (bucketMap[b] ??= {})[g] ??= [];
+            bucketMap[b][g].push(n);
+            if (!(g in groupFirstSeen)) groupFirstSeen[g] = i;
+          }
+          const out = [];
+          const bucketKeys = Object.keys(bucketMap).map(Number).sort((a, b) => a - b);
+          for (const b of bucketKeys) {
+            const groups = bucketMap[b];
+            const groupKeys = Object.keys(groups).sort(
+              (a, b) => groupFirstSeen[a] - groupFirstSeen[b]
+            );
+            for (const gk of groupKeys) out.push(...groups[gk]);
+          }
+          params.nodes.length = 0;
+          params.nodes.push(...out);
+        },
+        onRowClicked: handleRowClick,
+        onCellContextMenu: (ev) => {
+          if (ev.data) openContextMenu(ev.event, ev.data);
+        },
+      });
+      gridRightReady = true;
+    }
     }  // end main symbols grid block
 
     // Positions Summary grid — Account | Day P&L | Day % | P&L
@@ -3230,8 +3366,23 @@
     {#if showSummary || showFunds}
       <div class="mp-section-label">Symbols</div>
     {/if}
-    <!-- Unified grid — the per-symbol detail view. -->
-    <div bind:this={gridEl} class="ag-theme-algo unified-grid"></div>
+    <!--
+      Desktop ≥lg: two side-by-side grids inside a flex row.
+      Mobile <lg: same divs stack vertically (column).
+      Each grid scrolls independently — viewport whitespace on
+      wide displays goes to the right grid rather than padding
+      the unified grid's empty right margin.
+        Left  → Pinned (pinned-top strip) · Watchlist · Movers
+        Right → Positions · Holdings (each with a TOTAL pinned at top)
+      Mobile single-column reading order: left content first,
+      then right (so Positions / Holdings appear after the
+      watchlist content on phones — same scan order as the
+      original unified grid).
+    -->
+    <div class="mp-grids">
+      <div bind:this={gridEl} class="ag-theme-algo unified-grid mp-grid-left"></div>
+      <div bind:this={gridRightEl} class="ag-theme-algo unified-grid mp-grid-right"></div>
+    </div>
   {/if}
 </div>
 
@@ -3721,6 +3872,45 @@
        the header away when it scrolls. */
     height: 520px;
     min-height: 520px;
+  }
+
+  /* Desktop split — two grids side-by-side in a flex row, each
+     filling 50% with its own scrollbar. Mobile drops to a column so
+     the grids stack one above the other (left on top of right). The
+     1024 px breakpoint matches the Tailwind `lg:` cutoff used on
+     the algo navbar / hamburger toggle. */
+  .mp-grids {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    width: 100%;
+  }
+  @media (min-width: 1024px) {
+    .mp-grids {
+      flex-direction: row;
+      align-items: stretch;
+    }
+    .mp-grid-left,
+    .mp-grid-right {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+  }
+
+  /* TOTAL row styling — bold + slight tint so the operator's eye
+     locks onto the consolidated number ahead of the body rows.
+     Pinned rows can't be sorted into the body (ag-Grid native
+     behaviour), so the value stays put under any column sort. */
+  :global(.ag-theme-algo .mp-total-row) {
+    font-weight: 700;
+    background: rgba(251, 191, 36, 0.06);
+    border-top: 1px solid rgba(251, 191, 36, 0.25);
+  }
+  :global(.ag-theme-algo .mp-total-positions) {
+    border-top-color: rgba(125, 211, 252, 0.35);
+  }
+  :global(.ag-theme-algo .mp-total-holdings) {
+    border-top-color: rgba(167, 139, 250, 0.35);
   }
   /* Flat-mode wrapper — used by /pulse to drop the .algo-status-card
      navy chrome. The page becomes a flex column whose unified grid
