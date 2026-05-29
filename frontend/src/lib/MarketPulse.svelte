@@ -1171,10 +1171,48 @@
   const watchRows      = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
   const positionsRows  = $derived(mainRows.filter(r => r._majorGroup === 'positions'));
   const holdingsRows   = $derived(mainRows.filter(r => r._majorGroup === 'holdings'));
-  const winRows       = $derived(mainRows.filter(r =>
-    r._majorGroup === 'movers' && r._moverDirection === 'winners'));
-  const loseRows       = $derived(mainRows.filter(r =>
-    r._majorGroup === 'movers' && r._moverDirection === 'losers'));
+  // Sub-group tabs on the Winners + Losers grids — each grid scopes
+  // to one of underlying / midcap / smallcap so the operator's
+  // attention stays on one universe at a time (the dashboard's
+  // legacy W/L cards used the same pattern). Default tab is
+  // 'underlying' (the F&O-eligible names operators trade against
+  // most often).
+  const MOVER_TABS = /** @type {const} */ (['underlying', 'midcap', 'smallcap']);
+  /** @typedef {'underlying'|'midcap'|'smallcap'} MoverTab */
+  let winTab  = $state(/** @type {MoverTab} */ ('underlying'));
+  let loseTab = $state(/** @type {MoverTab} */ ('underlying'));
+  const winRows = $derived(mainRows.filter(r =>
+    r._majorGroup === 'movers'
+    && r._moverDirection === 'winners'
+    && r._moverGroup === winTab));
+  const loseRows = $derived(mainRows.filter(r =>
+    r._majorGroup === 'movers'
+    && r._moverDirection === 'losers'
+    && r._moverGroup === loseTab));
+  // Per-bucket counts for the tab pills (so the operator sees the
+  // denominator before clicking through).
+  const winnerCounts = $derived.by(() => {
+    const out = { underlying: 0, midcap: 0, smallcap: 0 };
+    for (const r of mainRows) {
+      if (r._majorGroup === 'movers'
+          && r._moverDirection === 'winners'
+          && /** @type {MoverTab} */ (r._moverGroup) in out) {
+        out[/** @type {MoverTab} */ (r._moverGroup)]++;
+      }
+    }
+    return out;
+  });
+  const loserCounts = $derived.by(() => {
+    const out = { underlying: 0, midcap: 0, smallcap: 0 };
+    for (const r of mainRows) {
+      if (r._majorGroup === 'movers'
+          && r._moverDirection === 'losers'
+          && /** @type {MoverTab} */ (r._moverGroup) in out) {
+        out[/** @type {MoverTab} */ (r._moverGroup)]++;
+      }
+    }
+    return out;
+  });
 
   // TOTAL row for one major (positions / holdings). Each carries
   // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
@@ -3401,13 +3439,45 @@
       </section>
       {#if showWinners}
         <section class="mp-bucket-wrap mp-bucket-winners">
-          <div class="mp-bucket-label mp-bucket-label-winners">Winners</div>
+          <div class="mp-bucket-head">
+            <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+            <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
+              {#each MOVER_TABS as t}
+                <button type="button" role="tab"
+                        class="mp-wl-tab"
+                        class:mp-wl-tab-on={winTab === t}
+                        aria-selected={winTab === t}
+                        onclick={() => winTab = t}>
+                  {t === 'underlying' ? 'Underlying'
+                   : t === 'midcap'    ? 'Midcap'
+                   : 'Smallcap'}
+                  {#if winnerCounts[t] > 0}<span class="mp-wl-tab-count">{winnerCounts[t]}</span>{/if}
+                </button>
+              {/each}
+            </div>
+          </div>
           <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
         </section>
       {/if}
       {#if showLosers}
         <section class="mp-bucket-wrap mp-bucket-losers">
-          <div class="mp-bucket-label mp-bucket-label-losers">Losers</div>
+          <div class="mp-bucket-head">
+            <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+            <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
+              {#each MOVER_TABS as t}
+                <button type="button" role="tab"
+                        class="mp-wl-tab"
+                        class:mp-wl-tab-on={loseTab === t}
+                        aria-selected={loseTab === t}
+                        onclick={() => loseTab = t}>
+                  {t === 'underlying' ? 'Underlying'
+                   : t === 'midcap'    ? 'Midcap'
+                   : 'Smallcap'}
+                  {#if loserCounts[t] > 0}<span class="mp-wl-tab-count">{loserCounts[t]}</span>{/if}
+                </button>
+              {/each}
+            </div>
+          </div>
           <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
         </section>
       {/if}
@@ -3999,6 +4069,63 @@
   .mp-bucket-label-holdings  { color: rgba(134, 239, 172, 0.85); }
   .mp-bucket-label-winners   { color: rgba(74, 222, 128, 0.85); }
   .mp-bucket-label-losers    { color: rgba(248, 113, 113, 0.85); }
+
+  /* Bucket header — label + universe tabs on the same row above
+     each Winners / Losers grid. The label keeps its left-border
+     accent (inherited from .mp-bucket-label) so the section still
+     reads as part of the 6-bucket family. */
+  .mp-bucket-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.2rem;
+    flex-wrap: wrap;
+  }
+  .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
+  .mp-wl-tabs {
+    display: flex;
+    gap: 0.15rem;
+    margin-left: auto;
+  }
+  .mp-wl-tab {
+    background: transparent;
+    border: 1px solid rgba(200, 216, 240, 0.18);
+    border-radius: 3px;
+    color: rgba(200, 216, 240, 0.7);
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.4rem;
+    cursor: pointer;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .mp-wl-tab:hover {
+    background: rgba(200, 216, 240, 0.06);
+    border-color: rgba(200, 216, 240, 0.32);
+    color: #e5edf7;
+  }
+  .mp-wl-tab-on {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+  }
+  .mp-wl-tab-count {
+    font-size: 0.5rem;
+    font-weight: 800;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.25);
+    color: rgba(200, 216, 240, 0.85);
+  }
+  .mp-wl-tab-on .mp-wl-tab-count {
+    background: rgba(251, 191, 36, 0.22);
+    color: #fbbf24;
+  }
 
   /* Symbol cell on the RIGHT grid — account-tinted left + right
      borders with a faint tint background. The colour is injected
