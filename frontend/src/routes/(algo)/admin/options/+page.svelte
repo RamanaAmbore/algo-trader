@@ -270,32 +270,30 @@
       });
     }
 
-    // Equity ITM → all closed (no hedge exception on NFO). Sorted
-    // by theta DESC so the operator sees the more-decayed positions
-    // at the top.
-    const equityITM = annotated
-      .filter(r => r._segment === 'equity' && r._isITM)
-      .slice()
-      .sort((a, b) => (b._theta || 0) - (a._theta || 0));
-    for (const r of equityITM) {
-      result.equity.push({ ...r, _reason: 'ITM equity — physical settlement risk' });
+    // Equity ITM → all closed (no hedge exception on NFO). Brokers
+    // settle each account independently, so we don't sort here —
+    // the final account-then-symbol sort below handles display.
+    for (const r of annotated) {
+      if (r._segment === 'equity' && r._isITM) {
+        result.equity.push({ ...r, _reason: 'ITM equity — physical settlement risk' });
+      }
     }
 
-    // Commodity ITM — greedy theta-priority netting. Within each
-    // (underlying, expiry) group, walk positions from highest theta
-    // to lowest; for each position try to net with a remaining
-    // opposite-sign position lower in the same list. The pair
-    // reduces both qtys by min(|qty|), so the highest-theta longs
-    // get netted against highest-theta shorts first — burning
-    // through the most-decayed exposures before residuals reach
-    // the display. Residual (non-zero remaining qty) positions are
-    // surfaced sorted by theta DESC. Perfectly-netted rows DO NOT
-    // appear in the Close tab — they're settled internally.
+    // Commodity ITM — greedy theta-priority netting, scoped per
+    // ACCOUNT. Long and short positions held in different accounts
+    // can't net at the broker (they settle independently), so the
+    // grouping key includes account. Within each
+    // (account, underlying, expiry) group, walk from highest theta
+    // to lowest; pair each high-theta position with a remaining
+    // opposite-sign position lower in the same list and net by
+    // min(|qty|). Perfectly-netted rows are dropped — the broker
+    // settles them internally. Residual (non-zero) positions
+    // surface in the Close tab.
     /** @type {Record<string, any[]>} */
     const groups = {};
     for (const r of annotated) {
       if (r._segment !== 'commodity' || !r._isITM) continue;
-      const key = `${r._underlying}|${r._expiry}`;
+      const key = `${r.account || ''}|${r._underlying}|${r._expiry}`;
       (groups[key] ??= []).push(r);
     }
     for (const key of Object.keys(groups)) {
@@ -330,6 +328,18 @@
         });
       }
     }
+
+    // Final display sort — account ASC, then symbol ASC. Per-
+    // account grouping reads cleanly when the operator scans
+    // top-to-bottom; symbol sort within an account makes
+    // contracts on the same underlying / strike cluster visually.
+    const acctSymSort = (a, b) => {
+      const ac = String(a.account || '').localeCompare(String(b.account || ''));
+      if (ac !== 0) return ac;
+      return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+    };
+    result.equity.sort(acctSymSort);
+    result.commodity.sort(acctSymSort);
 
     return result;
   });
