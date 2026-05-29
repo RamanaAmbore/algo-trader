@@ -26,11 +26,13 @@
     fetchSparklines, fetchBrokerAccounts,
   } from '$lib/api';
   import {
-    FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS, symbolFromQuoteKey,
+    FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
+    INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
   import { visibleInterval } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import CollapseButton from '$lib/CollapseButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
@@ -733,6 +735,19 @@
   let gridHoldingsReady   = $state(false);
   let gridWinReady        = $state(false);
   let gridLoseReady       = $state(false);
+
+  // Per-bucket collapse state — driven by <CollapseButton> in each
+  // header. Each bucket persists its toggle independently via
+  // CollapseButton's own localStorage layer (keyed cardId per
+  // operator), so the operator can collapse Pinned permanently
+  // while keeping Positions expanded.
+  let _colPinned    = $state(false);
+  let _colWatch     = $state(false);
+  let _colWinners   = $state(false);
+  let _colLosers    = $state(false);
+  let _colPositions = $state(false);
+  let _colHoldings  = $state(false);
+
   let positionsSummaryReady  = $state(false);
   let holdingsSummaryReady   = $state(false);
   let fundsReady             = $state(false);
@@ -917,6 +932,14 @@
   // split into halves the same way dashboard does.
   async function loadMovers() {
     try {
+      // Four universes — INDICES (Nifty 50 / Bank / FinService / Midcap
+      // / Next50 / IT / Sensex / Bankex / VIX), LARGECAP (the F&O-
+      // eligible stocks), MIDCAP (Nifty Midcap 100), SMLCAP (Nifty
+      // Smallcap 100). The 'underlying' tab on Winners/Losers shows
+      // INDICES only; 'large_cap' shows the F&O stocks. Holdings tab
+      // works off the operator's holdings rows, not this mover fetch.
+      const idx = new Set(INDICES_QUOTE_KEYS);
+      const lcp = new Set(LARGECAP_QUOTE_KEYS);
       const fo  = new Set(FO_QUOTE_KEYS);
       const mid = new Set(MIDCAP_QUOTE_KEYS);
       const sml = new Set(SMLCAP_QUOTE_KEYS);
@@ -943,10 +966,18 @@
       // in midcap, and pure indices / large-cap-F&O land in underlying.
       /** @type {any[]} */
       const rows = [];
+      // Precedence: smallcap > midcap > indices > large_cap. Many
+      // midcap/smallcap stocks ARE F&O-eligible, so checking the
+      // narrower universes first avoids the "everything tagged
+      // large_cap" symptom the dashboard had pre-fix. Indices
+      // ("NIFTY 50", "SENSEX", …) are checked before large_cap
+      // because they live in the FO_QUOTE_KEYS umbrella too.
       const _groupFor = (key) =>
         sml.has(key) ? 'smallcap'
       : mid.has(key) ? 'midcap'
-      : fo.has(key)  ? 'underlying'
+      : idx.has(key) ? 'underlying'
+      : lcp.has(key) ? 'large_cap'
+      : fo.has(key)  ? 'underlying'   // fallback for older FO keys
       : null;
       for (const [key, it] of Object.entries(byKey)) {
         const group = _groupFor(key);
@@ -1172,47 +1203,81 @@
   const positionsRows  = $derived(mainRows.filter(r => r._majorGroup === 'positions'));
   const holdingsRows   = $derived(mainRows.filter(r => r._majorGroup === 'holdings'));
   // Sub-group tabs on the Winners + Losers grids — each grid scopes
-  // to one of underlying / midcap / smallcap so the operator's
-  // attention stays on one universe at a time (the dashboard's
-  // legacy W/L cards used the same pattern). Default tab is
-  // 'underlying' (the F&O-eligible names operators trade against
-  // most often).
-  const MOVER_TABS = /** @type {const} */ (['underlying', 'midcap', 'smallcap']);
-  /** @typedef {'underlying'|'midcap'|'smallcap'} MoverTab */
+  // to one of five universes:
+  //   underlying → major indices (NIFTY 50, BANKNIFTY, etc.)
+  //   large_cap  → F&O-eligible stocks
+  //   midcap     → Nifty Midcap 100
+  //   smallcap   → Nifty Smallcap 100
+  //   holdings   → operator's own holdings rows (only relevant when
+  //                  an account is picked; otherwise empty)
+  // Every tab caps at top 10 by |change_pct| so the grid stays
+  // scan-tight; long-tail names trail off the visible window.
+  const MOVER_TABS = /** @type {const} */ (['underlying', 'large_cap', 'midcap', 'smallcap', 'holdings']);
+  /** @typedef {'underlying'|'large_cap'|'midcap'|'smallcap'|'holdings'} MoverTab */
+  const _MOVER_TOP_N = 10;
+  const MOVER_TAB_LABEL = /** @type {Record<MoverTab,string>} */ ({
+    underlying: 'Underlying',
+    large_cap:  'Large Cap',
+    midcap:     'Midcap',
+    smallcap:   'Smallcap',
+    holdings:   'Holdings',
+  });
   let winTab  = $state(/** @type {MoverTab} */ ('underlying'));
   let loseTab = $state(/** @type {MoverTab} */ ('underlying'));
-  const winRows = $derived(mainRows.filter(r =>
-    r._majorGroup === 'movers'
-    && r._moverDirection === 'winners'
-    && r._moverGroup === winTab));
-  const loseRows = $derived(mainRows.filter(r =>
-    r._majorGroup === 'movers'
-    && r._moverDirection === 'losers'
-    && r._moverGroup === loseTab));
-  // Per-bucket counts for the tab pills (so the operator sees the
-  // denominator before clicking through).
-  const winnerCounts = $derived.by(() => {
-    const out = { underlying: 0, midcap: 0, smallcap: 0 };
+
+  // Top-N filter for a direction × tab. The Holdings tab is special:
+  // it draws from the operator's holdings rows (which only land in
+  // mainRows when an account is picked), sorted by day change in the
+  // matching direction. All other tabs draw from the movers fetch.
+  /** @param {'winners'|'losers'} direction
+   *  @param {MoverTab} tab */
+  function _topRowsFor(direction, tab) {
+    let pool;
+    if (tab === 'holdings') {
+      pool = mainRows.filter(r => {
+        if (r._majorGroup !== 'holdings') return false;
+        const p = Number(r.change_pct);
+        if (!Number.isFinite(p) || p === 0) return false;
+        return direction === 'winners' ? p > 0 : p < 0;
+      });
+    } else {
+      pool = mainRows.filter(r =>
+        r._majorGroup === 'movers'
+        && r._moverDirection === direction
+        && r._moverGroup === tab);
+    }
+    return pool
+      .slice()
+      .sort((a, b) => Math.abs(Number(b.change_pct) || 0)
+                    - Math.abs(Number(a.change_pct) || 0))
+      .slice(0, _MOVER_TOP_N);
+  }
+  const winRows  = $derived(_topRowsFor('winners', winTab));
+  const loseRows = $derived(_topRowsFor('losers',  loseTab));
+
+  // Per-tab denominator badges. Counts mirror the full pool (NOT
+  // the top-N slice) so the operator sees how many candidates
+  // exist before the cap kicks in.
+  /** @param {'winners'|'losers'} direction */
+  function _tabCounts(direction) {
+    const out = { underlying: 0, large_cap: 0, midcap: 0, smallcap: 0, holdings: 0 };
     for (const r of mainRows) {
-      if (r._majorGroup === 'movers'
-          && r._moverDirection === 'winners'
-          && /** @type {MoverTab} */ (r._moverGroup) in out) {
-        out[/** @type {MoverTab} */ (r._moverGroup)]++;
+      if (r._majorGroup === 'holdings') {
+        const p = Number(r.change_pct);
+        if (!Number.isFinite(p) || p === 0) continue;
+        if ((direction === 'winners' && p > 0)
+            || (direction === 'losers'  && p < 0)) out.holdings++;
+        continue;
       }
+      if (r._majorGroup !== 'movers') continue;
+      if (r._moverDirection !== direction) continue;
+      const g = /** @type {MoverTab} */ (r._moverGroup);
+      if (g in out) out[g]++;
     }
     return out;
-  });
-  const loserCounts = $derived.by(() => {
-    const out = { underlying: 0, midcap: 0, smallcap: 0 };
-    for (const r of mainRows) {
-      if (r._majorGroup === 'movers'
-          && r._moverDirection === 'losers'
-          && /** @type {MoverTab} */ (r._moverGroup) in out) {
-        out[/** @type {MoverTab} */ (r._moverGroup)]++;
-      }
-    }
-    return out;
-  });
+  }
+  const winnerCounts = $derived(_tabCounts('winners'));
+  const loserCounts  = $derived(_tabCounts('losers'));
 
   // TOTAL row for one major (positions / holdings). Each carries
   // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
@@ -3430,16 +3495,26 @@
       Holdings). Show dropdown stays in the top chrome row.
     -->
     <div class="mp-grids6">
-      <section class="mp-bucket-wrap mp-bucket-pinned">
-        <div class="mp-bucket-label mp-bucket-label-pinned">Pinned</div>
-        <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
+      <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_colPinned}>
+        <div class="mp-bucket-head">
+          <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
+          <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
+        </div>
+        {#if !_colPinned}
+          <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
+        {/if}
       </section>
-      <section class="mp-bucket-wrap mp-bucket-watch">
-        <div class="mp-bucket-label mp-bucket-label-watch">Watchlist</div>
-        <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
+      <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_colWatch}>
+        <div class="mp-bucket-head">
+          <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
+          <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
+        </div>
+        {#if !_colWatch}
+          <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
+        {/if}
       </section>
       {#if showWinners}
-        <section class="mp-bucket-wrap mp-bucket-winners">
+        <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_colWinners}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
             <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
@@ -3449,19 +3524,20 @@
                         class:mp-wl-tab-on={winTab === t}
                         aria-selected={winTab === t}
                         onclick={() => winTab = t}>
-                  {t === 'underlying' ? 'Underlying'
-                   : t === 'midcap'    ? 'Midcap'
-                   : 'Smallcap'}
+                  {MOVER_TAB_LABEL[t]}
                   {#if winnerCounts[t] > 0}<span class="mp-wl-tab-count">{winnerCounts[t]}</span>{/if}
                 </button>
               {/each}
             </div>
+            <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
           </div>
-          <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+          {#if !_colWinners}
+            <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+          {/if}
         </section>
       {/if}
       {#if showLosers}
-        <section class="mp-bucket-wrap mp-bucket-losers">
+        <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_colLosers}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
             <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
@@ -3471,15 +3547,16 @@
                         class:mp-wl-tab-on={loseTab === t}
                         aria-selected={loseTab === t}
                         onclick={() => loseTab = t}>
-                  {t === 'underlying' ? 'Underlying'
-                   : t === 'midcap'    ? 'Midcap'
-                   : 'Smallcap'}
+                  {MOVER_TAB_LABEL[t]}
                   {#if loserCounts[t] > 0}<span class="mp-wl-tab-count">{loserCounts[t]}</span>{/if}
                 </button>
               {/each}
             </div>
+            <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
           </div>
-          <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+          {#if !_colLosers}
+            <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+          {/if}
         </section>
       {/if}
     </div>
@@ -3508,13 +3585,23 @@
          the final pair so the page reads top-to-bottom as
          "watchlists → market scan → my book". -->
     <div class="mp-grids6">
-      <section class="mp-bucket-wrap mp-bucket-positions">
-        <div class="mp-bucket-label mp-bucket-label-positions">Positions</div>
-        <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
+      <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_colPositions}>
+        <div class="mp-bucket-head">
+          <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
+          <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
+        </div>
+        {#if !_colPositions}
+          <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
+        {/if}
       </section>
-      <section class="mp-bucket-wrap mp-bucket-holdings">
-        <div class="mp-bucket-label mp-bucket-label-holdings">Holdings</div>
-        <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
+      <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_colHoldings}>
+        <div class="mp-bucket-head">
+          <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
+          <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
+        </div>
+        {#if !_colHoldings}
+          <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
+        {/if}
       </section>
     </div>
   {/if}

@@ -128,9 +128,24 @@ export function quoteKeyFor(symbol) {
   return `NSE:${symbol}`;
 }
 
-// Pre-built quote-key arrays for the three universes — saves a map
+// Indices subset of FO_UNDERLYINGS — used by the Pulse Winners /
+// Losers tabs to split "Underlying" (indices the operator trades
+// against) from "Large Cap" (F&O-eligible stocks). Any name carrying
+// a space is an index ("NIFTY 50", "NIFTY BANK", …); stocks are
+// always single-token tradingsymbols. INDIA VIX is included as an
+// index for completeness even though it doesn't trade.
+export const FO_INDICES = new Set(
+  [...FO_UNDERLYINGS].filter(n => n.includes(' '))
+);
+export const FO_LARGECAP_STOCKS = new Set(
+  [...FO_UNDERLYINGS].filter(n => !n.includes(' '))
+);
+
+// Pre-built quote-key arrays for the four universes — saves a map
 // allocation on every poll.
 export const FO_QUOTE_KEYS      = [...FO_UNDERLYINGS].map(quoteKeyFor);
+export const INDICES_QUOTE_KEYS = [...FO_INDICES].map(quoteKeyFor);
+export const LARGECAP_QUOTE_KEYS = [...FO_LARGECAP_STOCKS].map(quoteKeyFor);
 export const MIDCAP_QUOTE_KEYS  = [...NIFTY_MIDCAP_100].map(quoteKeyFor);
 export const SMLCAP_QUOTE_KEYS  = [...NIFTY_SMLCAP_100].map(quoteKeyFor);
 
