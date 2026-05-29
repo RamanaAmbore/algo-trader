@@ -950,14 +950,20 @@ _EXPIRY_AGENTS = [
          name="Auto-close ITM commodity options on expiry day (T-30min)",
          description=(
              "At 23:00 IST (30 min before MCX 23:30 close) on expiry "
-             "day, chase-close ITM commodity options that are NOT "
-             "offset by an opposite-side leg. Commodity rules: "
-             "perfectly hedged CE/PE pairs on the same "
-             "underlying+expiry net to zero at settlement and need "
-             "no action; only UNHEDGED ITM legs are closed. "
-             "Wraps the ExpiryEngine scan+close, restricted to MCX "
-             "(the engine applies the hedging filter internally). "
-             "Ships INACTIVE (destructive)."
+             "day, chase-close MCX ITM/NTM commodity options whose "
+             "residual qty remains non-zero after the ExpiryEngine's "
+             "4-rule greedy theta-priority netting pass: \n"
+             "  1. Long CE  + Short CE  (qty cancellation)\n"
+             "  2. Long PE  + Short PE  (qty cancellation)\n"
+             "  3. Long CE  + Long PE   (both receive at settlement)\n"
+             "  4. Short CE + Short PE  (locked-in payment)\n"
+             "Same-account FUT positions on the same underlying are "
+             "also paired as delta-offset partners (Long CE↔Short "
+             "FUT, etc.). Netting is scoped per (account, underlying, "
+             "expiry) — different accounts settle independently. "
+             "Mirrors the /admin/options Close-tab logic so the "
+             "agent and the operator UI agree on what stays in the "
+             "close list. Ships INACTIVE (destructive)."
          ),
          conditions={"all": [
              {"metric": "is_itm",
