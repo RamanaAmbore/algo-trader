@@ -1724,9 +1724,16 @@
   const unifiedRows = $derived.by(() => {
     // eslint-disable-next-line no-unused-expressions
     groupOrder; detachedSymbols;
+    // Positions + Holdings are the only account-scoped sources. When
+    // the operator hasn't picked an account, hide them entirely — the
+    // grid then shows only the not-account-bound categories (Pinned
+    // watchlists, custom Watchlists, Movers). Operator picks an
+    // account → positions + holdings appear, scoped to that account.
+    const acctPicked = selectedAccounts.length > 0;
     return buildUnified(
       activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
-      showPositions, showHoldings, movers, showMovers,
+      showPositions && acctPicked, showHoldings && acctPicked,
+      movers, showMovers,
       showWatchlist,
     );
   });
@@ -1804,7 +1811,8 @@
         src: { w:false, h:false, p:false, u:false, m:false },
         qty_pos: 0, qty_hold: 0,
         pnl: null, day_pnl: null,
-        _avg_num: 0,
+        _avg_num: 0,         // Σ(positions avg × qty)
+        _avg_hold_num: 0,    // Σ(holdings  avg × qty)
         accounts: /** @type {Set<string>} */ (new Set()),
       };
     };
@@ -1915,6 +1923,11 @@
       row.src.h = true;
       const heldQty = Number(r.opening_quantity) || Number(r.quantity) || 0;
       row.qty_hold += heldQty;
+      // Carry holdings avg cost so the unified-grid Avg column can show
+      // a weighted avg across positions + holdings (some symbols carry
+      // both — e.g. an investor holding 100 INFY who also opens an
+      // intraday position).
+      row._avg_hold_num += (Number(r.average_price) || 0) * heldQty;
       if (r.account) row.accounts.add(String(r.account));
       const liveQ = cq?.[`${exch}:${sym}`];
       if (liveQ?.ltp) {
@@ -2095,12 +2108,25 @@
       }
     }
 
-    // Finalise: weighted-avg avg_pos + directional day_pct.
+    // Finalise: weighted-avg avg_pos + directional day_pct + combined Avg.
     for (const row of Object.values(byKey)) {
       if (row.qty_pos !== 0) {
         row.avg_pos = row._avg_num / row.qty_pos;
       }
+      if (row.qty_hold !== 0) {
+        row.avg_hold = row._avg_hold_num / row.qty_hold;
+      }
+      // Combined Avg shown in the unified grid's Avg column:
+      // weighted across whichever side(s) have qty. Cost basis is
+      // sign-agnostic on the qty side so a short position's positive
+      // entry price stays positive in the weighted average.
+      const posCost  = Math.abs(row._avg_num);
+      const holdCost = Math.abs(row._avg_hold_num);
+      const denom    = Math.abs(row.qty_pos) + Math.abs(row.qty_hold);
+      row.avg_combined = denom > 0 ? (posCost + holdCost) / denom : null;
+      row._cost_basis  = posCost + holdCost;   // for P&L% column below
       delete row._avg_num;
+      delete row._avg_hold_num;
       const netQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
       row.day_pct = directional(row.change_pct, netQty);
     }
@@ -2477,6 +2503,28 @@
         cellRenderer: sparkRenderer, sortable: false, resizable: false,
         cellClass: 'spark-cell',
         headerClass: 'ag-header-cell-spark' },
+      // ─── Default-visible cluster (operator-spec) ──────────────────
+      // Order: 5d · LTP · Avg · Prev · Qty · Day P&L · Day % · P&L% · P&L
+      // Specific to MarketPulse — diverges from the codebase-wide
+      // cluster rule (which places Prev before Avg and P&L before P&L%)
+      // because this grid is the operator's scanning surface where they
+      // want cost basis next to LTP, and a normalised P&L% before the
+      // absolute P&L. PerformancePage / Candidates panel keep the
+      // canonical cluster order.
+      { field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: RA,
+        valueFormatter: numFmt },
+      { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
+        width: 68, minWidth: 60, maxWidth: 90,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: numFmt,
+        headerTooltip: 'Weighted average entry across positions + holdings.' },
+      { field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: numFmt },
       // Net qty held — positions + holdings summed (signed). When both
       // are zero the cell renders blank. Sortable so the operator can
       // sort by absolute exposure.
@@ -2488,24 +2536,6 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      // LTP at 77 px (64 × 1.2) — wider than the neighbouring Day P&L
-      // column so 5-digit instrument prices like 22000.00 read with
-      // breathing room. Explicit minWidth/maxWidth pair pins it
-      // against ag-Grid's default 50 px numericColumn minWidth and
-      // against persisted-state overrides.
-      // LTP → Prev Close → Day P&L → Day % → P&L kept adjacent in that
-      // sequence per operator request. Open / Bid / Ask / Vol / OI all
-      // moved AFTER the P&L cluster so the operator's scan column reads
-      // today's-number progression without quote-context columns
-      // interrupting. Expiry stays trailing.
-      { field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: RA,
-        valueFormatter: numFmt },
-      { field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
       // Day P&L at 54 px (64 × 0.85). minWidth pinned against ag-Grid's
       // 50 px numericColumn-type default so the new size holds.
       { field: 'day_pnl', headerName: 'Day P&L', width: 54, minWidth: 54, maxWidth: 70,
@@ -2516,43 +2546,55 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: pctFmtGrid },
+      // P&L% before P&L per operator request — normalised return
+      // reads first when scanning across symbols of different prices.
+      { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
+        width: 60, type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
+        valueGetter: (p) => {
+          const pnl  = Number(p.data?.pnl);
+          const cost = Number(p.data?._cost_basis);
+          if (!Number.isFinite(pnl) || !(cost > 0)) return null;
+          return (pnl / cost) * 100;
+        },
+        valueFormatter: pctFmtGrid,
+        headerTooltip: 'P&L as % of cost basis (positions + holdings).' },
       { field: 'pnl', headerName: 'P&L', width: 64,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
-      // Quote-context columns (Open / Bid / Ask / Vol / OI) sit after
-      // the P&L cluster — they're useful for sizing the next order but
-      // don't belong inside the live-number scan column.
+      // ─── Hidden-by-default columns (operator can show via column tool) ───
+      // Quote-context columns (Open / Bid / Ask / Vol / OI) and Expiry
+      // start hidden so the default Pulse view stays scan-tight; the
+      // operator can re-show any of them via the ag-Grid column tool
+      // panel. Persisted column state (if the operator had them visible
+      // before this change) wins and keeps them shown.
       { field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
+        valueFormatter: numFmt, hide: true },
       { field: 'bid', headerName: 'Bid', width: 52,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
+        valueFormatter: numFmt, hide: true },
       { field: 'ask', headerName: 'Ask', width: 52,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt },
-      // Volume + OI piggy-back on the same /api/quote/batch payload that
-      // already drives LTP/bid/ask — broker.quote() returns both on the
-      // raw response, surfacing them here gives the operator liquidity
-      // context (volume = how much has traded; OI = open contracts on
-      // F&O rows). Both compact-aggregate-formatted; em-dash for cash
-      // equity rows where OI doesn't apply.
+        valueFormatter: numFmt, hide: true },
       { field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
+        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
+        hide: true },
       { field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value) },
+        valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
+        hide: true },
       { field: 'expiry', headerName: 'Expiry', width: 60,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: 'ag-right-aligned-cell cell-muted',
-        valueFormatter: ({ value }) => value || '' },
+        valueFormatter: ({ value }) => value || '', hide: true },
     ]);
 
     grid = createGrid(gridEl, {
@@ -2979,7 +3021,14 @@
   }
 
   // ── Column-state persistence (sort + width) ───────────────────────
-  const COL_STATE_KEY = 'pulse.gridColumnState.v1';
+  // v2: column-set reshuffle (May 2026) — added Avg + P&L% as
+  // default-visible; Open / Bid / Ask / Vol / OI / Expiry flipped to
+  // hidden-by-default. Bumping the key forces every operator's
+  // persisted state to be discarded so the new defaults land. Their
+  // custom column toggles on the legacy column-set are lost; this is
+  // intentional — the only customisations being dropped are visibility
+  // on quote-context columns which the new defaults align with anyway.
+  const COL_STATE_KEY = 'pulse.gridColumnState.v2';
 
   function saveColumnState() {
     if (!grid) return;

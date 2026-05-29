@@ -1209,6 +1209,31 @@ The grid colors are deliberately low-saturation cool-blue rather than amber — 
 
 ---
 
+## MarketPulse main grid — column rules
+
+The Pulse symbols grid ([`frontend/src/lib/MarketPulse.svelte`](frontend/src/lib/MarketPulse.svelte)) intentionally **diverges** from the codebase-wide cluster rule (which is `LTP → Prev → Avg → Day P&L → Day % → P&L → P&L%`). Pulse-specific default-visible cluster:
+
+```
+Symbol · 5d · LTP · Avg · Prev Close · Qty · Day P&L · Day % · P&L % · P&L
+```
+
+The deviations are deliberate:
+- **Avg next to LTP** — operators scan "where am I vs entry" first, before reference prices.
+- **P&L % before P&L** — normalised return reads first when scanning across symbols at different price scales (Bloomberg / IBKR MarketWatch convention).
+
+Other surfaces (PerformancePage Holdings + Positions, the `/admin/options` Candidates panel) keep the canonical cluster order. PerformancePage is the canonical-cluster reference grid.
+
+**Hidden-by-default columns:** Open, Bid, Ask, Vol, OI, Expiry. Operator can re-show via the ag-Grid column tool panel; visibility persists via `pulse.gridColumnState.v2` localStorage. The `v` suffix bumps when the column set is reshuffled so prior persisted state is discarded cleanly.
+
+**Account-filter rule:** Positions and Holdings are the only account-scoped sources. When the Account multiselect is empty, both are hidden from the grid entirely — only Pinned watchlists, custom Watchlists, and Movers (not account-scoped) appear. Picking an account brings Positions + Holdings back, scoped to that account.
+
+**Show dropdown vocabulary:**
+- **Default** — operator's working watchlist; ships **empty** at signup, ready for the operator to add symbols they want to monitor (the ★ marks it as the default add-target when clicking + on any row).
+- **Markets** — auto-seeded with the major Indian indices (NIFTY 50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX) and MCX commodities (GOLD, SILVER, CRUDEOIL, …). Operator sees the broad market at-a-glance.
+- Both are **pinned** (`is_pinned=True`), so they feed the Pinned major. Operator-created lists (`is_pinned=False`) feed a separate Watchlist major. A symbol appearing in both a pinned list and a user list renders twice — once per major, by design.
+
+---
+
 ## Public-theme row indicators
 
 Long/short indicator on `.ag-theme-ramboq` performance grids:
