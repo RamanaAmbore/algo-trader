@@ -1172,7 +1172,7 @@
         // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
         // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
         // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', minWidth: 32, pinned: 'left',
+        { field: 'account', headerName: 'Account', minWidth: 22, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1211,7 +1211,7 @@
         // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
         // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
         // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', minWidth: 32, pinned: 'left',
+        { field: 'account', headerName: 'Account', minWidth: 22, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'used', headerName: 'Used Margin', minWidth: 90, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1307,7 +1307,7 @@
         // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
         // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
         // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', minWidth: 32, pinned: 'left',
+        { field: 'account', headerName: 'Account', minWidth: 22, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1334,7 +1334,7 @@
         // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
         // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
         // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', minWidth: 32, pinned: 'left',
+        { field: 'account', headerName: 'Account', minWidth: 22, pinned: 'left',
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
