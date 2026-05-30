@@ -40,8 +40,15 @@
 <!-- accountPicker=true mounts a per-card Account MultiSelect inside
      each of the Positions and Holdings card headers. Empty selection
      on a card = "all accounts" for that card. Watchlist + option
-     underlyings are not account-scoped so they remain visible. -->
-<MarketPulse bind:this={pulseRef} title="Pulse" flat={true} accountPicker={true} />
+     underlyings are not account-scoped so they remain visible.
+
+     showSummary=true surfaces the same per-account summary tables
+     /dashboard renders (Account | Day P&L | Day % | P&L | P&L %
+     for positions; + Value | Invested for holdings) — TOTAL row
+     pinned at the bottom of each table. Pulse + Dashboard now show
+     the same firm-wide netted P&L view above the per-symbol grids. -->
+<MarketPulse bind:this={pulseRef} title="Pulse" flat={true}
+             accountPicker={true} showSummary={true} />
 
 <style>
   /* Page-header title + (i) clustered on the left, timestamp pushed
