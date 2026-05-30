@@ -1994,11 +1994,26 @@
     grid-template-columns: 1fr;
     gap: 0.6rem;
     margin-bottom: 0.75rem;
+    /* Stretch BOTH columns to the row's tallest item so the bottoms
+       align cleanly. Combined with `card-body { flex: 1 1 0 }` below,
+       the shorter card (typically Capital | Equity vs the taller
+       Intraday chart on the right) grows its body to fill the
+       remaining height instead of stranding empty space below. */
+    align-items: stretch;
   }
   @media (min-width: 1024px) {
     .dash-row1-split {
       grid-template-columns: 1fr 1fr;
     }
+  }
+  /* Body of every bucket card / chart card stretches to fill the
+     parent card's available height. Without this the shorter card's
+     content sits at the top with white space below — looks
+     vertically misaligned against the taller card in the same row. */
+  .dash-row1-split .bucket-card > .card-body,
+  .dash-row1-split .row1-col-chart > .card-body {
+    flex: 1 1 0;
+    min-height: 0;
   }
   .row1-col {
     min-width: 0;
