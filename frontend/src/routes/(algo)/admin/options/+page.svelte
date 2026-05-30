@@ -1861,6 +1861,8 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+                 loading={loading} label="derivatives" />
   <OrderNotifications /><AgentNotifications />
 </div>
 
@@ -2540,16 +2542,12 @@
     gap: 0.15rem;
     min-width: 0;          /* allow shrink past content size */
   }
-  /* On desktop the picker row pinned its three Selects to flex:1 1 0
-     so they stretched equally across the page. That left a big
-     "Account ↔ Underlying" visual gap on wide viewports because
-     each field claimed a third of the row width regardless of how
-     short its content actually was.
-     Now: Account flex-grows so the chosen-accounts pills have room
-     to wrap; Underlying + Expiry sit at content width on desktop
-     (≥900 px). Mobile retains the old all-grow behaviour because
-     content-width pickers wrap awkwardly in a narrow column. */
-  .opt-field-grow { flex: 1 1 0; min-width: 0; }
+  /* Desktop: ALL fields LEFT-aligned at natural widths. Per the
+     canonical picker-bar rule — controls cluster on the left, no
+     flex-grow on any single field, empty space pushed to the right.
+     Mobile retains all-grow so content-width pickers don't wrap
+     awkwardly in a narrow column. */
+  .opt-field-grow { flex: 0 0 auto; min-width: 10rem; }
   @media (max-width: 899px) {
     .opt-field { flex: 1 1 0; }
   }

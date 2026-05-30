@@ -9,6 +9,7 @@
   import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSystemHealth } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
@@ -62,6 +63,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={load} loading={loading} label="health" />
   <OrderNotifications /><AgentNotifications />
 </div>
 

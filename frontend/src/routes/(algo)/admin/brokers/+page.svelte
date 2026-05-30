@@ -23,6 +23,7 @@
   import { authStore, nowStamp, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     fetchBrokerAccounts, createBrokerAccount, updateBrokerAccount,
     deleteBrokerAccount, testBrokerAccount,
@@ -303,6 +304,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={load} loading={loading} label="brokers" />
   <OrderNotifications /><AgentNotifications />
 </div>
 

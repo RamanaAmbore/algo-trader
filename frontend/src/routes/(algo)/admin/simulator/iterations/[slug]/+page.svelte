@@ -11,6 +11,7 @@
   import { authStore, logTime, dualTsHtml, nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
@@ -90,6 +91,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={load} loading={loading} label="iteration" />
   <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
   <OrderNotifications /><AgentNotifications />

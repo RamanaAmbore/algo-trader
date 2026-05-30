@@ -413,6 +413,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={() => { loadThreads(); loadDrafts(); }} loading={loading} label="research" />
   <OrderNotifications /><AgentNotifications />
 </div>
 

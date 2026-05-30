@@ -505,7 +505,7 @@ Every card root carries `width: 100%; box-sizing: border-box;` so collapse never
 
 ### Page-header rule (every algo page)
 
-The canonical page-header (from the audit punch list — already applied to every page) is:
+The canonical page-header is:
 
 ```svelte
 <div class="page-header">
@@ -515,10 +515,25 @@ The canonical page-header (from the audit punch list — already applied to ever
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  [optional page-level RefreshButton + action chips]
+  <RefreshButton onClick={pageLoadFn} loading={loading} label="…" />
+  [optional page-specific action chips]
   <OrderNotifications /><AgentNotifications />
 </div>
 ```
+
+- **Every page that fetches data dynamically MUST have a page-header RefreshButton** wired to its primary load function. If the page has multiple loaders, wrap them: `onClick={() => { loadA(); loadB(); }}`.
+- Exceptions: `console` (command surface, no data), `admin/settings` (form-only), `showcase` (static narrative).
+- The `RefreshButton` placement is between the `ml-auto` spacer and the notification bells. Page-specific action chips (back-links, ✦ Ask AI, Create User, etc.) sit between the RefreshButton and the notification bells in markup order.
+- Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed.
+
+### Picker / control bars on pages (Account · Underlying · Expiry · trailing buttons)
+
+Every page-level picker bar (e.g. /admin/options `.opt-picker`) follows this rule:
+
+- **All fields LEFT-aligned at natural widths.** No single field uses `flex: 1 1 0` to stretch across the page.
+- **Empty space on the right.** No flex-grow consumer at the trailing edge; the right side stays empty so the leftmost field doesn't visually drift away from the next.
+- **Mobile (`< 900 px`) retains all-grow.** Narrow columns wrap awkwardly with content-width pickers, so flex:1 1 0 kicks back in.
+- AccountMultiSelect carries its own internal width clamps; setting a `min-width: 10rem` on the field is enough to keep pills readable without stretching.
 
 ### Source files
 

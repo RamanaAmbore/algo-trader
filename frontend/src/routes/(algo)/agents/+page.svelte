@@ -3,6 +3,7 @@
   import { nowStamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import {
@@ -566,6 +567,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={() => { loadAgents(); loadAgentLog(); }} loading={loading} label="agents" />
   <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
     🔔 History
   </a>

@@ -4,6 +4,7 @@
   import { nowStamp, logTimeIst } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -190,6 +191,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
   <OrderNotifications /><AgentNotifications />
 </div>
 
