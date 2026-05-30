@@ -229,6 +229,38 @@
   box-shadow: inset 4px 0 0 rgba(148,163,184,0.5),
               inset -4px 0 0 rgba(148,163,184,0.5) !important;
 }
+/* Day P&L indicator bar — second vertical line inside the symbol
+   cell, painted just before the right inset border. Encodes TODAY's
+   profit/loss direction (independent of the cumulative-P&L cell tint
+   on the same row). Pushed by MarketPulse.getRowClass for every
+   Positions + Holdings row.
+     day-pnl-up    → green   (operator made money today)
+     day-pnl-down  → red     (lost money today)
+     day-pnl-flat  → slate   (zero / unknown — neutral indicator)
+   Pseudo-element so it doesn't fight ag-Grid's own cell rendering
+   or shift cell content. Positioned 8 px from the right edge so it
+   reads as a distinct stripe BEFORE the 4 px outer tint border. */
+.ag-theme-algo .ag-row.day-pnl-up .ag-col-sym,
+.ag-theme-algo .ag-row.day-pnl-down .ag-col-sym,
+.ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym {
+  position: relative;
+}
+.ag-theme-algo .ag-row.day-pnl-up .ag-col-sym::after,
+.ag-theme-algo .ag-row.day-pnl-down .ag-col-sym::after,
+.ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after {
+  content: '';
+  position: absolute;
+  right: 8px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+}
+.ag-theme-algo .ag-row.day-pnl-up .ag-col-sym::after   { background: rgba(74, 222, 128, 0.85); }
+.ag-theme-algo .ag-row.day-pnl-down .ag-col-sym::after { background: rgba(248, 113, 113, 0.85); }
+.ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after { background: rgba(148, 163, 184, 0.5); }
+
 .ag-theme-algo .ag-row.row-hold-up.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-hold-down.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-hold-flat.ag-row-hover .ag-col-sym,

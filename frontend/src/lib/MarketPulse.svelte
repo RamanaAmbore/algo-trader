@@ -2892,6 +2892,18 @@
       else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
       else classes.push('row-hold-flat');
     }
+    // Day P&L indicator — Positions + Holdings carry today-only profit
+    // information that's distinct from cumulative P&L. Surface it as
+    // a second mini-bar inside the symbol cell, painted JUST BEFORE
+    // the right inset border. Same green/red/slate palette as the
+    // cumulative tint, so the operator can compare "lifetime vs today"
+    // direction at a glance without reading the Day P&L column.
+    if (s.p || s.h) {
+      const dpnl = Number(r.day_pnl);
+      if (Number.isFinite(dpnl) && dpnl > 0) classes.push('day-pnl-up');
+      else if (Number.isFinite(dpnl) && dpnl < 0) classes.push('day-pnl-down');
+      else classes.push('day-pnl-flat');
+    }
     else if (s.w) classes.push('row-watch');
     else if (s.u) classes.push('row-und');
     return classes.join(' ');
@@ -4556,11 +4568,16 @@
     box-shadow:
       inset  2px 0 0 0 rgba(74, 222, 128, 0.85),
       inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
+    /* Strip ag-Grid's default cell-divider line on the right edge
+       so only the inset tint shows. Otherwise the operator sees a
+       1 px gray hairline overlapping the right green edge. */
+    border-right: none !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
     box-shadow:
       inset  2px 0 0 0 rgba(248, 113, 113, 0.85),
       inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
+    border-right: none !important;
   }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
