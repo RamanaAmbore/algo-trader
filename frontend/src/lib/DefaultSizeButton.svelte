@@ -48,13 +48,21 @@
     }}
     aria-label={`Restore ${label} to default size`}
     title="Restore to default size">
-    <!-- Single rounded square — represents "default / inline card size".
-         Same square idiom Windows / Linux desktops use for the
-         restore-down windowing control. -->
+    <!-- Windows "Restore Down" glyph — two overlapping offset
+         rectangles. Visually distinct from FullscreenButton's outward
+         four-arrows so the operator never confuses the two icons.
+         Same universal "exit maximized window" affordance every
+         desktop OS ships. -->
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5"
+      <!-- Front (lower-left) rectangle -->
+      <rect x="2.5" y="5.5" width="8" height="8" rx="0.8"
         fill="none" stroke="currentColor" stroke-width="1.5"
         stroke-linejoin="round" />
+      <!-- Back (upper-right) rectangle — open at the bottom-left so
+           the two rectangles read as offset/stacked, not overlapping. -->
+      <path d="M5.5 5.5V2.5h8v8h-3"
+        fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round" />
     </svg>
   </button>
 {/if}

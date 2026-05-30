@@ -27,6 +27,7 @@
   import CollapseButton  from '$lib/CollapseButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -2068,6 +2069,10 @@
           title="Vega — P&L per 1% IV move (positive = long volatility)">
           𝒱 {pctFmt(strategy.aggregate_greeks.vega)}
         </span>
+        {#if _fsPayoff}
+          <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+                         loading={loading} label="payoff" />
+        {/if}
         <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
         <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
         <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
@@ -2091,7 +2096,6 @@
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         loading={loading}
-        onRefresh={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
         height={320} />
     </div>
   </div>
@@ -2146,6 +2150,10 @@
           </button>
         </div>
       </div>
+      {#if _fsLegs}
+        <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+                       loading={loading} label="legs" />
+      {/if}
       <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
       <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
       <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />

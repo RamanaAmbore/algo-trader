@@ -283,7 +283,6 @@
 
   import { untrack } from 'svelte';
   import { priceFmt, aggFmt } from '$lib/format';
-  import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Profit + loss zones — shade above and below zero on the today curve
   // up to the chart bounds. Two filled paths whose top/bottom rides the
@@ -538,16 +537,12 @@
               aria-label="Reset zoom"
               onclick={resetZoom}>reset zoom</button>
     {/if}
-    {#if onRefresh}
-      <!-- Icon-only refresh — matches the rest of the app's
-           RefreshButton convention. The icon spins while loading,
-           absolutely positioned top-right so it never shifts the
-           SVG / stat overlay / legend. -->
-      <span class="payoff-refresh-wrap">
-        <RefreshButton onClick={() => { hover = null; onRefresh && onRefresh(); }}
-                       {loading} label="payoff" />
-      </span>
-    {/if}
+    <!-- RefreshButton is now rendered by the parent page in the card
+         header (canonical icon placement) — never on the chart canvas.
+         The legacy `onRefresh` prop remains so existing callsites stay
+         compatible without re-wiring; the prop just isn't surfaced as
+         a chart-overlay control any more. -->
+
     <!-- Top-left stat overlay — the chart's at-a-glance numerics so the
          operator doesn't have to glance at the Greeks / Risk cards just
          to read TDAY P&L or max profit. Pointer-events: none so the
@@ -1062,15 +1057,6 @@
     border-color: rgba(251,191,36,0.65);
   }
 
-  /* Icon RefreshButton — pinned top-right of the chart so it can
-     never push the SVG / stat overlay around. The button itself owns
-     its sky-300 palette + spin animation (RefreshButton.svelte). */
-  .payoff-refresh-wrap {
-    position: absolute;
-    top: 0.4rem;
-    right: 0.6rem;
-    z-index: 5;
-  }
   .payoff-empty {
     height: var(--chart-h, 280px);
     display: flex;

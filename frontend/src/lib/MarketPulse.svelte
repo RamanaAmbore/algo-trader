@@ -34,6 +34,7 @@
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
@@ -3623,6 +3624,9 @@
                     aria-label="Add symbol or watchlist"
                     class="mp-add-btn">+</button>
             <span class="mp-bucket-head-spacer"></span>
+            {#if _fsPinWatch}
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="pulse" />
+            {/if}
             <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
             <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
             <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
@@ -3673,6 +3677,9 @@
                 {/each}
               </div>
               <span class="mp-bucket-head-spacer"></span>
+              {#if _fsWinners}
+                <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
+              {/if}
               <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
               <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
               <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
@@ -3698,6 +3705,9 @@
                 {/each}
               </div>
               <span class="mp-bucket-head-spacer"></span>
+              {#if _fsLosers}
+                <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
+              {/if}
               <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
               <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
               <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
@@ -3727,6 +3737,9 @@
               </div>
             {/if}
             <span class="mp-bucket-head-spacer"></span>
+            {#if _fsPositions}
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
+            {/if}
             <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
             <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
@@ -3746,6 +3759,9 @@
               </div>
             {/if}
             <span class="mp-bucket-head-spacer"></span>
+            {#if _fsHoldings}
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
+            {/if}
             <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />
             <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
@@ -4336,6 +4352,14 @@
     }
   }
   .mp-bucket-wrap {
+    /* width: 100% keeps the card filling its parent flex column
+       even when the body (grid) is collapsed to height: 0. Without
+       this, the card can shrink to its (header-only) intrinsic width
+       when collapsed — operator sees the card width jump.
+       box-sizing: border-box so padding doesn't push the card over
+       the column width. */
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-width: 0;
