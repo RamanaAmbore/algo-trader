@@ -25,6 +25,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import CollapseButton  from '$lib/CollapseButton.svelte';
+  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import {
     loadInstruments, suggestUnderlyings,
@@ -2067,8 +2068,9 @@
           title="Vega — P&L per 1% IV move (positive = long volatility)">
           𝒱 {pctFmt(strategy.aggregate_greeks.vega)}
         </span>
-        <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
         <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
+        <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
+        <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
       </div>
     </div>
     <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
@@ -2144,8 +2146,9 @@
           </button>
         </div>
       </div>
-      <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
       <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
+      <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
+      <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
     </div>
     {#if !_colLegs && displayedCandidates.length}
       {@const hideAcct = selectedAccounts.length === 1}
