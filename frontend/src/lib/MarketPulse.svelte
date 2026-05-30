@@ -1058,11 +1058,16 @@
           change_pct:    pct,
           previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
           _moverGroup:   group,
-          // Large Cap = F&O stocks (FO underlyings minus indices).
-          // Carried as a separate flag because LARGECAP is a subset
-          // of the broader 'underlying' bucket — both tabs need to
-          // be able to surface the same row.
-          _isLargeCap:   lcp.has(key),
+          // Large Cap = F&O stocks (FO underlyings minus indices) that
+          // are NOT also classified midcap or smallcap. Many F&O-
+          // eligible names (COFORGE, PERSISTENT, MPHASIS, BANDHANBNK…)
+          // sit in both the F&O largecap roster AND NIFTY_MIDCAP_100,
+          // so the raw `lcp.has(key)` flag tagged them as Large Cap on
+          // top of their natural midcap home — same stock showed in
+          // both tabs. Excluding mid + sml keeps the four mover tabs
+          // mutually exclusive: Underlying ⊕ Large Cap ⊕ Midcap ⊕
+          // Smallcap, each stock in exactly one bucket.
+          _isLargeCap:   lcp.has(key) && !mid.has(key) && !sml.has(key),
           // Direction split: positive day-change = winners,
           // negative = losers. Drives the new direction-major
           // ordering inside the Movers section (winners block first,
