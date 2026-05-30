@@ -145,7 +145,13 @@
   // accounts (no filter). Persisted to sessionStorage under
   // separate keys so the operator's per-card intent survives a
   // tab refresh.
-  let _eqAccounts  = $state(/** @type {string[]} */ ([]));   // Equity card
+  // _eqAccounts filters BOTH the Capital tab (Margin Utilisation +
+  // Funds grids) and the Equity tab (Positions Summary + Holdings
+  // Summary). The single picker rides with whichever tab is active
+  // so the operator's intent applies across the tabbed card and is
+  // mirrored onto the PositionStrip via the activeAccountFilter
+  // store below.
+  let _eqAccounts  = $state(/** @type {string[]} */ ([]));   // Capital + Equity card
   let _winAccounts = $state(/** @type {string[]} */ ([]));   // Top Winners
   let _losAccounts = $state(/** @type {string[]} */ ([]));   // Top Losers
 
@@ -1370,8 +1376,10 @@
   // derivation it cares about so unrelated state changes don't churn
   // every grid.
 
-  // Funds grid — body + TOTAL pinned at bottom.
-  const _fundsBody = $derived(_funds.map(r => ({
+  // Funds grid — body + TOTAL pinned at bottom. Filtered by the
+  // Capital + Equity card's shared `_eqAccounts` picker so the
+  // operator's filter intent applies to both tabs uniformly.
+  const _fundsBody = $derived(_accountFilter(_funds, _eqAccounts).map(r => ({
     account:      r.account,
     cash:         Number(r.cash) || 0,
     collateral:   Number(r.collateral) || 0,
@@ -1393,7 +1401,7 @@
 
   // Margin grid — same shape as the SVG donuts we retired, but as
   // a tabular view alongside Funds.
-  const _marginRows = $derived(_margins.map(r => ({
+  const _marginRows = $derived(_accountFilter(_margins, _eqAccounts).map(r => ({
     account:  r.account,
     used:     r.used,
     avail:    r.avail,
@@ -1576,11 +1584,16 @@
           aria-selected={_capEqTab === 'equity'}
           onclick={() => _capEqTab = 'equity'}>Equity</button>
       </div>
-      {#if _capEqTab === 'equity'}
-        <AccountMultiSelect
-          bind:value={_eqAccounts}
-          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      {/if}
+      <!-- Single shared account picker for BOTH Capital and Equity
+           tabs. Filter applies to whichever tab is active (Margin +
+           Funds on Capital; Positions + Holdings Summary on Equity)
+           so the operator's intent carries across tab flips without
+           re-picking. Left-aligned inside the bucket-header; the
+           control trio floats right via the first button's
+           `margin-left: auto`. -->
+      <AccountMultiSelect
+        bind:value={_eqAccounts}
+        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
       <!-- Buttons bind to the ACTIVE tab's own collapse + fullscreen
            pair so the operator's intent persists per-tab via
            CollapseButton's localStorage key. Svelte 5 doesn't permit
