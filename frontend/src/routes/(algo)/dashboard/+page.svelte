@@ -13,7 +13,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
-  import { clientTimestamp, nowStamp, visibleInterval } from '$lib/stores';
+  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
@@ -981,6 +981,11 @@
 
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
+      // Surface the auto-poll completion to every mounted RefreshButton's
+      // tooltip — `loadHero` runs via visibleInterval and doesn't flip
+      // the page-level `_refreshing` state, so the button's own
+      // loading-transition stamp wouldn't catch it.
+      lastRefreshAt.set(Date.now());
 
       // Parallel: margins + conn health + NIFTY quote.
       // _fetchEquity intentionally NOT in this batch — it has its

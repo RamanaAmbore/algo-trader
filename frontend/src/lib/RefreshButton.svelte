@@ -30,7 +30,7 @@
   twice while the first request was still in flight).
 -->
 <script>
-  import { connStatus, startConnStatusPoller } from '$lib/stores';
+  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz } from '$lib/stores';
   import { onMount } from 'svelte';
 
   /**
@@ -45,6 +45,23 @@
   // Ensure the global connection-status poller is running. Idempotent —
   // safe to call from every mounted RefreshButton.
   onMount(() => { startConnStatusPoller(); });
+
+  // Watch the `loading` prop for true → false transitions and stamp
+  // `lastRefreshAt`. Catches BOTH manual clicks (operator hits the
+  // button) AND auto-refresh — as long as the page's load() sets
+  // loading=true at the start and loading=false in finally, the
+  // tooltip timestamp updates without any per-page wiring.
+  let _prevLoading = false;
+  $effect(() => {
+    if (_prevLoading && !loading) {
+      lastRefreshAt.set(Date.now());
+    }
+    _prevLoading = loading;
+  });
+
+  // Subscribe for tooltip rendering.
+  let _lastTs = $state(0);
+  lastRefreshAt.subscribe((v) => { _lastTs = v || 0; });
 
   // Badge state derived from the store.
   let _loaded = $state(0);
@@ -61,11 +78,21 @@
     :                    'rf-badge-green'
   );
 
-  const _connTitle = $derived(
-    _total === 0
-      ? (loading ? 'Refreshing…' : 'Refresh now')
-      : `Refresh — ${_loaded} of ${_total} broker accounts loaded`
-  );
+  // Multi-line tooltip (rendered via title="…" — the newline below
+   // shows as a soft break in every browser's native tooltip). First
+   // line: action / connection state. Second line (when available):
+   // last successful refresh formatted in the same dual-tz shape
+   // the page-header wall clock uses, so the operator can compare
+   // wall clock vs data freshness without a separate visible chip.
+  const _connTitle = $derived.by(() => {
+    const head = loading
+      ? 'Refreshing…'
+      : (_total === 0
+          ? 'Refresh now'
+          : `Refresh — ${_loaded} of ${_total} broker accounts loaded`);
+    if (!_lastTs) return head;
+    return `${head}\nLast refreshed: ${formatDualTz(new Date(_lastTs))}`;
+  });
 </script>
 
 <button

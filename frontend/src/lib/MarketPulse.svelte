@@ -36,6 +36,7 @@
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
+  import { lastRefreshAt } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -2069,6 +2070,9 @@
       }
       pulseLastUpdate = Date.now();
       _lastPulseAt = pulseLastUpdate;
+      // Surface the auto-poll completion to every mounted RefreshButton's
+      // tooltip — see dashboard.loadHero for the rationale.
+      lastRefreshAt.set(pulseLastUpdate);
     } catch (_) { /* nothing fatal */ }
   }
 

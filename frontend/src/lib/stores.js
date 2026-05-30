@@ -243,6 +243,41 @@ export function branchLabel(/** @type {string|null|undefined} */ name) {
   return name === 'main' ? 'prod' : name;
 }
 
+/** Dual-timezone format helper. Same shape as `clientTimestamp()` but
+ *  accepts an arbitrary Date instead of `new Date()` — used for the
+ *  "last refreshed at" line in the RefreshButton tooltip so the
+ *  format matches the page-header wall clock exactly. */
+export function formatDualTz(/** @type {Date} */ date) {
+  const now = date instanceof Date ? date : new Date(date);
+  const parts = (tz) => {
+    const arr = new Intl.DateTimeFormat('en-GB', {
+      weekday: 'short', day: '2-digit', month: 'short',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+      timeZone: tz,
+    }).formatToParts(now);
+    const pick = (t) => (arr.find(p => p.type === t) || {}).value || '';
+    return {
+      wd: pick('weekday'),
+      d:  pick('day'),
+      m:  pick('month'),
+      h:  pick('hour'),
+      mn: pick('minute'),
+    };
+  };
+  const ist = parts('Asia/Kolkata');
+  const est = parts('America/New_York');
+  const estTz = now.toLocaleTimeString('en-US', {
+    timeZoneName: 'short', timeZone: 'America/New_York',
+  }).split(' ').pop();
+  const istHead  = `${ist.wd} ${ist.d} ${ist.m}`;
+  const istTime  = `${ist.h}:${ist.mn} IST`;
+  const sameDate = ist.d === est.d && ist.m === est.m;
+  const estHalf  = sameDate
+    ? `${est.h}:${est.mn} ${estTz}`
+    : `${est.wd} ${est.h}:${est.mn} ${estTz}`;
+  return `${istHead} · ${istTime} · ${estHalf}`;
+}
+
 export function clientTimestamp() {
   const now = new Date();
   // Pull the structured parts once per zone so we can compare dates
@@ -689,6 +724,18 @@ export function stopAgentEventsPoller() {
   }
   _agentPollerStarted = false;
 }
+
+// ── Last refresh timestamp ───────────────────────────────────────────
+// Single global "when did the last page-data refresh succeed?" ms epoch.
+// Surfaced inside every RefreshButton's tooltip — formatted via
+// `formatDualTz()` to match the page-header wall-clock format exactly
+// (e.g. "Sun 30 May · 21:42 IST · 12:12 EDT"). Updated automatically
+// when a RefreshButton sees its `loading` prop fall true → false
+// (manual click + any auto-refresh that flows through the same
+// `loading` flag), plus direct `.set()` calls from pages whose
+// auto-pollers don't go through RefreshButton (loadHero on dashboard,
+// loadPulse inside MarketPulse).
+export const lastRefreshAt = writable(0);
 
 // ── Connection-status store ──────────────────────────────────────────
 // Global broker-account loaded/total counts surfaced as a badge on
