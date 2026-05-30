@@ -524,9 +524,36 @@ The canonical page-header is:
 - **Every page that fetches data dynamically MUST have a page-header RefreshButton** wired to its primary load function. If the page has multiple loaders, wrap them: `onClick={() => { loadA(); loadB(); }}`.
 - Exceptions: `console` (command surface, no data), `admin/settings` (form-only), `showcase` (static narrative).
 - The `RefreshButton` placement is between the `ml-auto` spacer and the notification bells. Page-specific action chips (back-links, ✦ Ask AI, Create User, etc.) sit between the RefreshButton and the notification bells in markup order.
-- Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed. The badge keeps its size/color/number unchanged during a refresh (only the icon glyph swaps).
+- Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed. The badge keeps its size/color/number unchanged during a refresh (only the icon glyph swaps). It encodes THREE distinct states so the operator can diagnose without leaving the page:
+
+  | State | Trigger | Badge |
+  |---|---|---|
+  | **API unreachable** | `connStatus.backendOk === false` (poller's fetch rejected) | grey `?` |
+  | **All brokers loaded** | `loaded === total` | green count |
+  | **Partial brokers** | `0 < loaded < total` | amber count |
+  | **No brokers loaded** | `loaded === 0 && total > 0` | red count |
+  | **No broker config** | `total === 0` (demo / fresh install) | no badge |
+
+  Polling auto-retries forever via `visibleInterval(poll, 15000)`, so a backend or broker outage clears on its own as soon as connectivity returns — the operator doesn't have to do anything. When the backend goes offline mid-session, the last known broker state stays cached so the operator can still see WHICH brokers were running before the outage.
+
 - The RefreshButton swaps its **icon glyph** during `loading=true`: idle shows the canonical circular-arrow refresh symbol; loading shows a distinct arc-spinner glyph (NOT the same arrow rotated). Operator can tell at a glance "the icon changed shape, so a refresh is in flight" without needing a separate text indicator. Do NOT add `RefreshAge` / "Updated Xs ago" visible text chips alongside — the spec was tested and dropped because the text widened the header and competed with the notification icons.
-- The RefreshButton's **native tooltip** carries a two-line summary: line 1 = action/connection state (`Refresh — N of M broker accounts loaded` or `Refreshing…`), line 2 = `Last refreshed: <dual-tz timestamp>`. The timestamp uses `formatDualTz()` from `$lib/stores` which produces the same `Sun 30 May · 21:42 IST · 12:12 EDT` shape the page-header wall clock renders. Updated automatically by the RefreshButton itself on every `loading` true → false transition, plus direct `lastRefreshAt.set(Date.now())` calls from pages whose auto-pollers (loadHero on dashboard, loadPulse inside MarketPulse) don't go through the button's `loading` prop.
+- The RefreshButton's **native tooltip** carries a multi-line summary so the operator can diagnose any connection state without leaving the page:
+
+  ```
+  Refresh — 1 of 2 broker accounts loaded     ← line 1: action + state
+  Failed: ZG####                              ← line 2: WHICH broker(s), only when loaded < total
+  Last refreshed: Sun 30 May · 21:42 IST · 12:12 EDT  ← line 3: data freshness
+  ```
+
+  Line 1 morphs by state:
+  - mid-refresh → `Refreshing…`
+  - backend offline → `API unreachable — retrying every 15s`
+  - all loaded → `Refresh — N of M broker accounts loaded`
+  - no broker config → `Refresh now`
+
+  Line 2 only renders when `failingAccounts.length > 0` AND the backend is up (the list may be stale during an outage, so we hide it to avoid misleading the operator).
+
+  Line 3 uses `formatDualTz()` from `$lib/stores` which produces the same `Sun 30 May · 21:42 IST · 12:12 EDT` shape the page-header wall clock renders. Updated automatically by the RefreshButton on every `loading` true → false transition, plus direct `lastRefreshAt.set(Date.now())` calls from pages whose auto-pollers (`loadHero` on dashboard, `loadPulse` inside MarketPulse) don't go through the button's `loading` prop.
 
 ### Chart cards in fullscreen mode
 

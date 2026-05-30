@@ -66,32 +66,62 @@
   // Badge state derived from the store.
   let _loaded = $state(0);
   let _total  = $state(0);
+  let _backendOk = $state(true);
+  let _failingAccounts = $state(/** @type {string[]} */ ([]));
   connStatus.subscribe((v) => {
     _loaded = Number(v?.loaded) || 0;
     _total  = Number(v?.total)  || 0;
+    _backendOk = v?.backendOk !== false; // default true
+    _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
   });
 
+  // Three-state visual encoding:
+  //   backendOk=false              → grey + `?` (API unreachable)
+  //   backendOk=true, loaded<total → red/amber + count (broker issue)
+  //   backendOk=true, loaded===tot → green + count    (all good)
+  //   total===0                    → no badge (demo / no config)
+  const _showBadge = $derived(_total > 0 || !_backendOk);
+  const _badgeText = $derived(_backendOk ? String(_loaded) : '?');
   const _badgeClass = $derived(
-    _total === 0       ? ''
+    !_backendOk        ? 'rf-badge-grey'
+    : _total === 0     ? ''
     : _loaded === 0    ? 'rf-badge-red'
     : _loaded < _total ? 'rf-badge-amber'
     :                    'rf-badge-green'
   );
 
-  // Multi-line tooltip (rendered via title="…" — the newline below
-   // shows as a soft break in every browser's native tooltip). First
-   // line: action / connection state. Second line (when available):
-   // last successful refresh formatted in the same dual-tz shape
-   // the page-header wall clock uses, so the operator can compare
-   // wall clock vs data freshness without a separate visible chip.
+  // Multi-line native tooltip (newlines render as soft breaks in
+  // every browser's title="…" popover). Encodes the FULL connection
+  // story so the operator can diagnose without leaving the page:
+  //
+  //   Line 1 — action / connection state (`Refresh — N of M broker
+  //            accounts loaded`, or `API unreachable — retrying…`
+  //            when the backend is down, or `Refreshing…` mid-fetch).
+  //   Line 2 — failing broker accounts list, only when some are down.
+  //   Line 3 — Last refreshed: <dual-tz timestamp>, matches the
+  //            page-header wall clock format.
   const _connTitle = $derived.by(() => {
-    const head = loading
-      ? 'Refreshing…'
-      : (_total === 0
-          ? 'Refresh now'
-          : `Refresh — ${_loaded} of ${_total} broker accounts loaded`);
-    if (!_lastTs) return head;
-    return `${head}\nLast refreshed: ${formatDualTz(new Date(_lastTs))}`;
+    /** @type {string[]} */
+    const lines = [];
+    if (loading) {
+      lines.push('Refreshing…');
+    } else if (!_backendOk) {
+      lines.push('API unreachable — retrying every 15s');
+    } else if (_total === 0) {
+      lines.push('Refresh now');
+    } else {
+      lines.push(`Refresh — ${_loaded} of ${_total} broker accounts loaded`);
+    }
+    // Failing-broker detail — surface the account codes so the
+    // operator knows WHICH broker to investigate. Skip when backend
+    // is down because the list may be stale anyway.
+    if (_backendOk && _failingAccounts.length > 0) {
+      lines.push(`Failed: ${_failingAccounts.join(', ')}`);
+    }
+    if (_lastTs) {
+      lines.push(`Last refreshed: ${formatDualTz(new Date(_lastTs))}`);
+    }
+    return lines.join('\n');
   });
 </script>
 
@@ -125,8 +155,8 @@
         stroke-linecap="round" stroke-linejoin="round" />
     </svg>
   {/if}
-  {#if _total > 0}
-    <span class="rf-badge {_badgeClass}">{_loaded}</span>
+  {#if _showBadge}
+    <span class="rf-badge {_badgeClass}">{_badgeText}</span>
   {/if}
 </button>
 
@@ -197,4 +227,11 @@
   .rf-badge-green { background: #16a34a; }
   .rf-badge-amber { background: #d97706; }
   .rf-badge-red   { background: #ef4444; }
+  /* Backend-offline state — desaturated slate grey, distinct from the
+     red broker-issue state. Operator reads "no number, just a `?`" as
+     "API unreachable" rather than "all brokers failed". */
+  .rf-badge-grey  {
+    background: #475569;
+    color: rgba(255, 255, 255, 0.92);
+  }
 </style>

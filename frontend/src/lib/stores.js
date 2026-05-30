@@ -738,19 +738,29 @@ export function stopAgentEventsPoller() {
 export const lastRefreshAt = writable(0);
 
 // ── Connection-status store ──────────────────────────────────────────
-// Global broker-account loaded/total counts surfaced as a badge on
-// every RefreshButton. Polled once globally (every 15 s) so each card's
-// refresh icon shows the same state without per-page re-fetching.
-// Earlier dashboard fetched this via `_fetchConn()` for its CONN hero
-// chip; that chip is gone but the connection-state semantics live on,
-// merged into the refresh affordance.
+// Single global health snapshot surfaced as a badge + tooltip on every
+// RefreshButton. Polled every 15 s — auto-retries forever via
+// visibleInterval, so a backend or broker outage clears on its own as
+// soon as connectivity returns.
 //
-// Shape: { loaded: number, total: number }
-//   loaded === total  → green badge
-//   0 < loaded < total → amber badge
-//   loaded === 0       → red badge
-//   total === 0        → no badge (no broker config / demo mode)
-export const connStatus = writable(/** @type {{loaded:number,total:number}} */ ({ loaded: 0, total: 0 }));
+// Shape: {
+//   loaded: number,           // count of broker accounts in the live registry
+//   total:  number,           // count of broker accounts the operator configured
+//   backendOk: boolean,       // true when the last poll succeeded
+//   failingAccounts: string[] // account codes for rows where loaded === false
+// }
+//
+// Visual encoding on RefreshButton:
+//   backendOk: false              → grey badge with `?`  (API unreachable)
+//   backendOk: true, loaded < tot → red/amber + count    (broker offline)
+//   backendOk: true, loaded === tot → green + count       (all healthy)
+//   total === 0                   → no badge             (demo / no config)
+export const connStatus = writable(/** @type {{
+  loaded: number,
+  total: number,
+  backendOk: boolean,
+  failingAccounts: string[],
+}} */ ({ loaded: 0, total: 0, backendOk: true, failingAccounts: [] }));
 
 let _connPollerStarted = false;
 let _connPollerTeardown = null;
@@ -761,12 +771,28 @@ export function startConnStatusPoller() {
     try {
       const { fetchBrokerAccounts } = await import('$lib/api');
       const accounts = await fetchBrokerAccounts();
-      if (!Array.isArray(accounts)) return;
+      if (!Array.isArray(accounts)) {
+        // 200 OK but unexpected payload — treat as backend issue but
+        // keep last known broker state so the badge doesn't flicker.
+        connStatus.update((v) => ({ ...v, backendOk: false }));
+        return;
+      }
+      const failing = accounts
+        .filter((a) => a && !a.loaded)
+        .map((a) => String(a.account || ''))
+        .filter(Boolean);
       connStatus.set({
         total:  accounts.length,
         loaded: accounts.filter((a) => a?.loaded).length,
+        backendOk: true,
+        failingAccounts: failing,
       });
-    } catch { /* leave stale */ }
+    } catch {
+      // Fetch rejected → API unreachable. Mark backendOk=false but
+      // keep the prior `loaded / total / failingAccounts` so the
+      // operator can still see what was running BEFORE the outage.
+      connStatus.update((v) => ({ ...v, backendOk: false }));
+    }
   };
   poll();
   _connPollerTeardown = visibleInterval(poll, 15000);
