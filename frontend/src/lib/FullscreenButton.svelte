@@ -103,9 +103,10 @@
        summary), guaranteeing top-right placement without needing
        every card header to opt into justify-content: space-between
        or a sibling spacer.
-       Sky-300 palette to match RefreshButton + DisclosureChevron —
-       every controller-style icon now reads as one family
-       (info/affordance, not action). */
+       Vibrant cyan-400 (#22d3ee) palette — shared with RefreshButton
+       + CollapseButton so the trio of card-control icons reads as
+       one consistent family. Matches the "live data / control"
+       accent used across Bloomberg Terminal, IBKR TWS and Sensibull. */
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -113,21 +114,21 @@
     height: 1.4rem;
     padding: 0;
     margin: 0 0 0 auto;
-    background: rgba(125, 211, 252, 0.08);
-    border: 1px solid rgba(125, 211, 252, 0.32);
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.55);
     border-radius: 3px;
-    color: #7dd3fc;
+    color: #22d3ee;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
   }
   .fs-btn:hover {
-    background: rgba(125, 211, 252, 0.20);
-    border-color: rgba(125, 211, 252, 0.65);
-    color: #bae6fd;
+    background: rgba(34, 211, 238, 0.26);
+    border-color: rgba(34, 211, 238, 0.85);
+    color: #67e8f9;
   }
   .fs-btn:focus-visible {
-    outline: 2px solid rgba(125, 211, 252, 0.55);
+    outline: 2px solid rgba(34, 211, 238, 0.65);
     outline-offset: 1px;
   }
 

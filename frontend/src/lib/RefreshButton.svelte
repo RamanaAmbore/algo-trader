@@ -43,6 +43,10 @@
 </button>
 
 <style>
+  /* Vibrant cyan-400 palette — the canonical "live data / refresh"
+     accent across Bloomberg Terminal, IBKR TWS, Sensibull and Streak.
+     Shared with FullscreenButton + CollapseButton so the trio of
+     card-control icons reads as one consistent family. */
   .rf-btn {
     display: inline-flex;
     align-items: center;
@@ -51,21 +55,21 @@
     height: 1.4rem;
     padding: 0;
     margin: 0;
-    background: rgba(125, 211, 252, 0.08);
-    border: 1px solid rgba(125, 211, 252, 0.32);
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.55);
     border-radius: 3px;
-    color: #7dd3fc;
+    color: #22d3ee;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
   }
   .rf-btn:hover:not(:disabled) {
-    background: rgba(125, 211, 252, 0.20);
-    border-color: rgba(125, 211, 252, 0.65);
-    color: #bae6fd;
+    background: rgba(34, 211, 238, 0.26);
+    border-color: rgba(34, 211, 238, 0.85);
+    color: #67e8f9;
   }
   .rf-btn:focus-visible {
-    outline: 2px solid rgba(125, 211, 252, 0.55);
+    outline: 2px solid rgba(34, 211, 238, 0.65);
     outline-offset: 1px;
   }
   .rf-btn:disabled {

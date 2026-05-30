@@ -31,7 +31,6 @@
   } from '$lib/data/indexConstituents';
   import { visibleInterval } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
-  import RefreshButton from '$lib/RefreshButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
@@ -3606,7 +3605,6 @@
                     class="mp-add-btn">+</button>
             <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
-            <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="market pulse" />
           </div>
           {#if topTab === 'watchlist' && _userLists.length > 1}
             <div class="mp-bucket-subhead">
@@ -3653,7 +3651,6 @@
               </div>
               <span class="mp-bucket-head-spacer"></span>
               <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3675,7 +3672,6 @@
               </div>
               <span class="mp-bucket-head-spacer"></span>
               <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3701,7 +3697,6 @@
             {/if}
             <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
-            <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
         </section>
@@ -3717,7 +3712,6 @@
             {/if}
             <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
-            <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
         </section>

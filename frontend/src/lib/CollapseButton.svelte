@@ -113,10 +113,10 @@
 
 <style>
   .collapse-btn {
-    /* Same chrome + sizing as FullscreenButton so the pair cluster
-       visually as a single icon group when both are present.
-       Amber as the resting state (was slate-blue), matching every
-       other collapse / fullscreen icon across the terminal. */
+    /* Vibrant cyan-400 (#22d3ee) — shared with RefreshButton and
+       FullscreenButton so the trio of card-control icons reads as
+       one consistent family. Matches the "live data / control"
+       accent across Bloomberg Terminal, IBKR TWS and Sensibull. */
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -124,21 +124,21 @@
     height: 1.4rem;
     padding: 0;
     margin: 0 0 0 auto;
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.32);
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.55);
     border-radius: 3px;
-    color: #fbbf24;
+    color: #22d3ee;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
   }
   .collapse-btn:hover {
-    background: rgba(251, 191, 36, 0.20);
-    border-color: rgba(251, 191, 36, 0.65);
-    color: #fde047;
+    background: rgba(34, 211, 238, 0.26);
+    border-color: rgba(34, 211, 238, 0.85);
+    color: #67e8f9;
   }
   .collapse-btn:focus-visible {
-    outline: 2px solid rgba(251, 191, 36, 0.55);
+    outline: 2px solid rgba(34, 211, 238, 0.65);
     outline-offset: 1px;
   }
 

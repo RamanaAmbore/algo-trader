@@ -32,8 +32,8 @@
     <InfoHint popup text={'Live broker book — positions, holdings, watchlist quotes, movers and pinned indices in one grid. Tap any row to open the order ticket. Use <b>Show…</b> to toggle sources. Account multiselect scopes positions + holdings (watchlists stay visible). The toolbar carries an immediate-refresh button; auto-refresh cadence is driven by <span class="font-mono">pulse.tick_interval_ms</span> in /admin/settings.'} />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
-  <RefreshButton onClick={refreshPage} loading={_refreshing} label="pulse" />
   <span class="ml-auto"></span>
+  <RefreshButton onClick={refreshPage} loading={_refreshing} label="pulse" />
   <OrderNotifications /><AgentNotifications />
 </div>
 
