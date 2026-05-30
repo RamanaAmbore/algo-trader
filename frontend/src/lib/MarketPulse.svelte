@@ -4527,6 +4527,18 @@
     border-right: 2px solid var(--mp-sym-acct-color, transparent) !important;
     background-color: color-mix(in srgb, var(--mp-sym-acct-color, transparent) 14%, transparent);
   }
+  /* Symbol cell on the Winners / Losers grids — right-side vertical
+     border tinted to match the card's bucket-label colour (green for
+     Winners, red for Losers). Mirrors the account-tint border idiom
+     on the Positions/Holdings grids but encodes DIRECTION instead of
+     account ownership. Scope by the bucket-wrap class so only the
+     mover grids carry the rule. */
+  :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym) {
+    border-right: 2px solid rgba(74, 222, 128, 0.85) !important;
+  }
+  :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
+    border-right: 2px solid rgba(248, 113, 113, 0.85) !important;
+  }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
   :global(.ag-theme-algo .mp-acct-cell) {
