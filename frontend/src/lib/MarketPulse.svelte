@@ -4534,15 +4534,25 @@
     border-right: 0 !important;
     border-left: 0 !important;
   }
+  /* Column-header bottom border — same amber 30 % as every other
+     horizontal divider on the page (pin-divider, major-divider,
+     mover-direction-divider). Earlier ag-Grid's default header-row
+     border was too faint to read against the navy bucket-grid
+     background; making it match the section-divider colour means
+     the header row sits visually consistent with the section
+     stripes below it. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-header-row) {
+    border-bottom: 1px solid rgba(251, 191, 36, 0.30) !important;
+  }
+  /* Winners / Losers symbol cell carries the colour tint on the LEFT
+     edge ONLY. Earlier both sides were tinted, but the right tint read
+     as the 5d sparkline column's left vertical bar — operator
+     feedback: that bar isn't wanted on the 5d column. */
   :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym) {
-    box-shadow:
-      inset  2px 0 0 0 rgba(74, 222, 128, 0.85),
-      inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
+    box-shadow: inset 2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
-    box-shadow:
-      inset  2px 0 0 0 rgba(248, 113, 113, 0.85),
-      inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
+    box-shadow: inset 2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
   }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
