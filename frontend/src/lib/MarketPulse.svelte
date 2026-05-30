@@ -2966,10 +2966,16 @@
         };
       },
     };
+    // Per-symbol columns suppress their values on TOTAL rows — the
+    // aggregate doesn't have a meaningful LTP / Prev / Avg / Open /
+    // Vol / OI / sparkline, so the cell renders blank instead of a
+    // bogus number. Day P&L %, P&L %, P&L and Day P&L stay populated
+    // (those are legitimately aggregable across the bucket).
     const _sparkCol = {
       field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
       maxWidth: 48, colId: 'sparkline',
-      cellRenderer: sparkRenderer, sortable: false, resizable: false,
+      cellRenderer: (p) => p.data?._isTotal ? '' : sparkRenderer(p),
+      sortable: false, resizable: false,
       cellClass: 'spark-cell',
       headerClass: 'ag-header-cell-spark',
     };
@@ -2977,31 +2983,37 @@
       field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: RA,
-      valueFormatter: numFmt,
+      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
     };
     const _prevCol = {
       field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,
-      valueFormatter: numFmt,
+      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
     };
     const _openCol = {
       field: 'open', headerName: 'Open', width: 68, minWidth: 68, maxWidth: 90,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,
-      valueFormatter: numFmt,
+      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
     };
     const _volCol = {
       field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,
-      valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
+      valueFormatter: (p) => {
+        if (p.data?._isTotal) return '';
+        return (p.value == null || p.value === 0) ? '—' : aggCompact(p.value);
+      },
     };
     const _oiCol = {
       field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,
-      valueFormatter: ({ value }) => (value == null || value === 0) ? '—' : aggCompact(value),
+      valueFormatter: (p) => {
+        if (p.data?._isTotal) return '';
+        return (p.value == null || p.value === 0) ? '—' : aggCompact(p.value);
+      },
     };
 
     // ─── Left grid: Pinned / Watchlist / Movers ──────────────────
@@ -3048,7 +3060,7 @@
         width: 68, minWidth: 60, maxWidth: 90,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: `${RA} cell-muted`,
-        valueFormatter: numFmt,
+        valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
         headerTooltip: 'Weighted average entry across positions + holdings.' },
       _prevCol,
       { field: 'qty_net', headerName: 'Qty', width: 56, colId: 'qty_net',
@@ -4587,16 +4599,17 @@
      postSortRows pins them last in their bucket regardless of
      column sort, so the value reads as "sum of the block above"
      rather than a header strip. */
-  /* TOTAL row scheme — bold + amber bg + amber top border to close
-     the bucket below the per-row block. Industry analogue: Bloomberg
-     PRTU's TOTAL line, Sensibull's gold-accent footer. Aggregate is
-     direction-agnostic so no green/red sign-coloured variants here
-     (the per-cell P&L text inside still uses cell-pos / cell-neg
-     for value-level direction). */
+  /* TOTAL row scheme — bold + amber bg + thin amber top + bottom
+     borders to close the bucket. Top border thinned from 2 px → 1 px
+     per operator feedback; combined with the 0.12 amber bg + bold,
+     the row reads as a footer without visually shouting. Aggregate
+     is direction-agnostic so no green/red variants here (the
+     per-cell P&L text inside still uses cell-pos / cell-neg for
+     value-level direction). */
   :global(.ag-theme-algo .mp-total-row) {
     font-weight: 700;
     background: rgba(251, 191, 36, 0.12) !important;
-    border-top: 2px solid rgba(251, 191, 36, 0.55) !important;
+    border-top: 1px solid rgba(251, 191, 36, 0.55) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.25) !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
