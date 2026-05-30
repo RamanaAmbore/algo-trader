@@ -159,11 +159,10 @@
   // existence of the top-10 cap until the operator clicked away.
   let _winTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
   let _losTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
-  // Capital + Equity merged into one tabbed card so they share half
-  // the page width on desktop (with the intraday equity curve filling
-  // the right half). Default: Capital — that's the trader's first
-  // "can I take risk?" glance.
-  let _capEqTab = $state(/** @type {'capital'|'equity'} */ ('capital'));
+  // Capital + Equity render as two SEPARATE stacked cards in the left
+  // column of the row1-split — earlier these shared one tabbed card,
+  // but that hid the Positions/Holdings Summary one click away.
+  // Stacked keeps both summaries visible without operator interaction.
 
   // Row 1 right slot — tabbed card: Intraday (SVG curve) vs Performance
   // (PnlAnalysis component). Default Intraday — that's the live "what
@@ -1571,96 +1570,82 @@
      on mobile. -->
 <div class="dash-row1-split">
 
-  <!-- LEFT: Capital | Equity tabbed card -->
-  <section class="bucket-card cap-eq-tabbed"
-    class:fs-card-on={_fsCapital || _fsEquity}
-    class:is-collapsed={_colCapital && _colEquity}>
-    <div class="bucket-header">
-      <!-- Tab bar replaces the section label. Active tab carries
-           the same amber underline + bg the W/L tabs use. -->
-      <div class="cap-eq-tabs" role="tablist">
-        <button type="button" role="tab"
-          class="cap-eq-tab" class:cap-eq-tab-on={_capEqTab === 'capital'}
-          aria-selected={_capEqTab === 'capital'}
-          onclick={() => _capEqTab = 'capital'}>Capital</button>
-        <button type="button" role="tab"
-          class="cap-eq-tab" class:cap-eq-tab-on={_capEqTab === 'equity'}
-          aria-selected={_capEqTab === 'equity'}
-          onclick={() => _capEqTab = 'equity'}>Equity</button>
+  <!-- LEFT: Capital + Equity stacked (two separate cards). Earlier
+       these were Capital | Equity TABS on one card, which buried the
+       Positions/Holdings Summary one click away. Stacked makes the
+       firm-wide P&L view visible without hunting. -->
+  <div class="row1-col-stack">
+    <section class="bucket-card"
+      class:fs-card-on={_fsCapital}
+      class:is-collapsed={_colCapital}>
+      <div class="bucket-header">
+        <span class="mp-section-label">Capital</span>
+        <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
+        <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
       </div>
-      {#if _capEqTab === 'equity'}
+      <div class="card-body" hidden={_colCapital}>
+        {#if _marginRows.length > 0}
+          <div class="bucket-subheader">Margin Utilisation</div>
+        {/if}
+        <div
+          bind:this={_marginEl}
+          class="ag-theme-algo dash-mini-grid"
+          class:is-empty={_marginRows.length === 0}></div>
+
+        {#if _fundsBody.length > 0}
+          <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
+        {/if}
+        <div
+          bind:this={_fundsEl}
+          class="ag-theme-algo dash-mini-grid"
+          class:is-empty={_fundsBody.length === 0}></div>
+
+        {#if _marginRows.length === 0 && _fundsBody.length === 0}
+          <EmptyState message="No accounts connected" />
+        {/if}
+      </div>
+    </section>
+
+    <section class="bucket-card"
+      class:fs-card-on={_fsEquity}
+      class:is-collapsed={_colEquity}>
+      <div class="bucket-header">
+        <span class="mp-section-label">Equity</span>
         <AccountMultiSelect
           bind:value={_eqAccounts}
           options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      {/if}
-      <!-- Bind targets the active-tab's own state pair. Svelte 5
-           doesn't permit ternary expressions inside `bind:`, so we
-           split into two component instances guarded by {#if}. Each
-           CollapseButton hydrates from its own localStorage key, so
-           the operator's collapse intent persists per-tab. -->
-      {#if _capEqTab === 'capital'}
-        <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
-        <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
-      {:else}
         <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
         <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
-      {/if}
-    </div>
+      </div>
+      <div class="card-body" hidden={_colEquity}>
+        {#if _positionsSummary.length > 0}
+          <div class="bucket-subheader">
+            Positions
+            <span class="eq-count">{_positionsCount}</span>
+          </div>
+        {/if}
+        <div
+          bind:this={_eqPosEl}
+          class="ag-theme-algo dash-mini-grid"
+          class:is-empty={_positionsSummary.length === 0}></div>
 
-    <!-- BOTH panels stay mounted (hidden, not {#if}) so ag-Grid
-         instances don't orphan when the operator flips tabs. -->
-    <!-- Capital panel -->
-    <div class="card-body" hidden={_capEqTab !== 'capital' || _colCapital}>
-      {#if _marginRows.length > 0}
-        <div class="bucket-subheader">Margin Utilisation</div>
-      {/if}
-      <div
-        bind:this={_marginEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_marginRows.length === 0}></div>
+        {#if _holdingsSummary.length > 0}
+          <div class="bucket-subheader bucket-subheader-spaced">
+            Holdings
+            <span class="eq-count">{_holdingsCount}</span>
+          </div>
+        {/if}
+        <div
+          bind:this={_eqHoldEl}
+          class="ag-theme-algo dash-mini-grid"
+          class:is-empty={_holdingsSummary.length === 0}></div>
 
-      {#if _fundsBody.length > 0}
-        <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
-      {/if}
-      <div
-        bind:this={_fundsEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_fundsBody.length === 0}></div>
-
-      {#if _marginRows.length === 0 && _fundsBody.length === 0}
-        <EmptyState message="No accounts connected" />
-      {/if}
-    </div>
-
-    <!-- Equity panel -->
-    <div class="card-body" hidden={_capEqTab !== 'equity' || _colEquity}>
-      {#if _positionsSummary.length > 0}
-        <div class="bucket-subheader">
-          Positions
-          <span class="eq-count">{_positionsCount}</span>
-        </div>
-      {/if}
-      <div
-        bind:this={_eqPosEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_positionsSummary.length === 0}></div>
-
-      {#if _holdingsSummary.length > 0}
-        <div class="bucket-subheader bucket-subheader-spaced">
-          Holdings
-          <span class="eq-count">{_holdingsCount}</span>
-        </div>
-      {/if}
-      <div
-        bind:this={_eqHoldEl}
-        class="ag-theme-algo dash-mini-grid"
-        class:is-empty={_holdingsSummary.length === 0}></div>
-
-      {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
-        <EmptyState message="No equity exposure" />
-      {/if}
-    </div>
-  </section>
+        {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
+          <EmptyState message="No equity exposure" />
+        {/if}
+      </div>
+    </section>
+  </div>
 
   <!-- RIGHT: Intraday / Performance tabbed card. Intraday surfaces
        today's cumulative P&L curve; Performance hosts the historical
@@ -2040,35 +2025,16 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
-
-  /* Tabbed Capital/Equity card — uses the bucket-card chrome but
-     replaces the section label with a tab strip. Tabs share the
-     same amber-underline palette as the W/L tabs for consistency. */
-  .cap-eq-tabbed { display: flex; flex-direction: column; }
-  .cap-eq-tabs {
-    display: inline-flex;
-    gap: 0.15rem;
-    margin-right: 0.5rem;
+  /* Left col of the row1-split now stacks Capital + Equity vertically
+     so the operator sees Margin/Funds AND Positions/Holdings Summary
+     side-by-side with the Equity Curve. */
+  .row1-col-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    min-width: 0;
   }
-  .cap-eq-tab {
-    background: transparent;
-    border: none;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 0.2rem 0.55rem 0.18rem;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    transition: color 120ms, border-color 120ms;
-  }
-  .cap-eq-tab:hover { color: #c8d8f0; }
-  .cap-eq-tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
+  .row1-col-stack > .bucket-card { flex: 0 0 auto; }
 
   /* Equity curve */
   .eq-svg {
@@ -2158,6 +2124,12 @@
     }
   }
   .bucket-card {
+    /* width: 100% keeps the card filling its grid track / flex parent
+       even when the body is hidden via {hidden={_colXxx}}. Without
+       this rule, some browser/grid combos let the card shrink to its
+       (now header-only) intrinsic width when collapsed, causing the
+       visible row width to jump. */
+    width: 100%;
     min-width: 0;
     padding: 0.65rem 0.75rem 0.7rem;
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
@@ -2166,13 +2138,10 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
     /* Flex column so the card stretches to the row's height while
-       its content stacks naturally from the top. Without this,
-       grid-stretch makes the .bucket-card box grow but its inner
-       <table>+<div> children stay at their natural height, leaving
-       the visible content top-aligned but the card border bottom-
-       extended — which is what we want. */
+       its content stacks naturally from the top. */
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
   }
   .bucket-header {
     display: flex;
