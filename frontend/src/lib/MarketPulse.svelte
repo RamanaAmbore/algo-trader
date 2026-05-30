@@ -1253,35 +1253,28 @@
   //                  an account is picked; otherwise empty)
   // Every tab caps at top 10 by |change_pct| so the grid stays
   // scan-tight; long-tail names trail off the visible window.
-  const MOVER_TABS = /** @type {const} */ (['underlying', 'large_cap', 'midcap', 'smallcap', 'holdings']);
-  /** @typedef {'underlying'|'large_cap'|'midcap'|'smallcap'|'holdings'} MoverTab */
+  // Holdings tab retired per operator request — Winners/Losers focus
+  // on the market scan; operator's own book lives on the right column.
+  const MOVER_TABS = /** @type {const} */ (['underlying', 'large_cap', 'midcap', 'smallcap']);
+  /** @typedef {'underlying'|'large_cap'|'midcap'|'smallcap'} MoverTab */
   const _MOVER_TOP_N = 10;
   const MOVER_TAB_LABEL = /** @type {Record<MoverTab,string>} */ ({
     underlying: 'Underlying',
     large_cap:  'Large Cap',
     midcap:     'Midcap',
     smallcap:   'Smallcap',
-    holdings:   'Holdings',
   });
   let winTab  = $state(/** @type {MoverTab} */ ('underlying'));
   let loseTab = $state(/** @type {MoverTab} */ ('underlying'));
 
-  // Top-N filter for a direction × tab. The Holdings tab is special:
-  // it draws from the operator's holdings rows (which only land in
-  // mainRows when an account is picked), sorted by day change in the
-  // matching direction. All other tabs draw from the movers fetch.
+  // Top-N filter for a direction × tab. All tabs draw from the
+  // movers fetch (Holdings tab retired — operator's book lives
+  // in the right column's Holdings card).
   /** @param {'winners'|'losers'} direction
    *  @param {MoverTab} tab */
   function _topRowsFor(direction, tab) {
     let pool;
-    if (tab === 'holdings') {
-      pool = mainRows.filter(r => {
-        if (r._majorGroup !== 'holdings') return false;
-        const p = Number(r.change_pct);
-        if (!Number.isFinite(p) || p === 0) return false;
-        return direction === 'winners' ? p > 0 : p < 0;
-      });
-    } else if (tab === 'large_cap') {
+    if (tab === 'large_cap') {
       // Large Cap = F&O stocks only. Reads the _isLargeCap flag
       // (set in loadMovers) rather than the _moverGroup bucket so
       // we don't compete with the broader Underlying tab.
@@ -1310,15 +1303,8 @@
   // exist before the cap kicks in.
   /** @param {'winners'|'losers'} direction */
   function _tabCounts(direction) {
-    const out = { underlying: 0, large_cap: 0, midcap: 0, smallcap: 0, holdings: 0 };
+    const out = { underlying: 0, large_cap: 0, midcap: 0, smallcap: 0 };
     for (const r of mainRows) {
-      if (r._majorGroup === 'holdings') {
-        const p = Number(r.change_pct);
-        if (!Number.isFinite(p) || p === 0) continue;
-        if ((direction === 'winners' && p > 0)
-            || (direction === 'losers'  && p < 0)) out.holdings++;
-        continue;
-      }
       if (r._majorGroup !== 'movers') continue;
       if (r._moverDirection !== direction) continue;
       const g = /** @type {'underlying'|'midcap'|'smallcap'} */ (r._moverGroup);
@@ -1379,10 +1365,10 @@
   // whole card.
   const _winnersTotal = $derived(
     winnerCounts.underlying + winnerCounts.large_cap
-    + winnerCounts.midcap + winnerCounts.smallcap + winnerCounts.holdings);
+    + winnerCounts.midcap + winnerCounts.smallcap);
   const _losersTotal = $derived(
     loserCounts.underlying + loserCounts.large_cap
-    + loserCounts.midcap + loserCounts.smallcap + loserCounts.holdings);
+    + loserCounts.midcap + loserCounts.smallcap);
   const _effColPinned    = $derived(_colPinned    || pinnedRows.length === 0);
   const _effColWatch     = $derived(_colWatch     || _allWatchRows.length === 0);
   const _effColWinners   = $derived(_colWinners   || _winnersTotal === 0);
@@ -2875,7 +2861,7 @@
       valueFormatter: numFmt,
     };
     const _openCol = {
-      field: 'open', headerName: 'Open', width: 52, minWidth: 52, maxWidth: 70,
+      field: 'open', headerName: 'Open', width: 68, minWidth: 68, maxWidth: 90,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,
       valueFormatter: numFmt,
@@ -3559,7 +3545,11 @@
         <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
-            {#if _userLists.length > 1}
+            <span class="mp-bucket-head-spacer"></span>
+            <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
+          </div>
+          {#if _userLists.length > 1}
+            <div class="mp-bucket-subhead">
               <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
                 {#each _userLists as l (l.id)}
                   <button type="button" role="tab"
@@ -3573,16 +3563,18 @@
                   </button>
                 {/each}
               </div>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
-          </div>
+            </div>
+          {/if}
           <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
         </section>
         {#if showWinners}
           <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+              <span class="mp-bucket-head-spacer"></span>
+              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
+            </div>
+            <div class="mp-bucket-subhead">
               <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
                 {#each MOVER_TABS as t}
                   <button type="button" role="tab"
@@ -3594,8 +3586,6 @@
                   </button>
                 {/each}
               </div>
-              <span class="mp-bucket-head-spacer"></span>
-              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3604,6 +3594,10 @@
           <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+              <span class="mp-bucket-head-spacer"></span>
+              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
+            </div>
+            <div class="mp-bucket-subhead">
               <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
                 {#each MOVER_TABS as t}
                   <button type="button" role="tab"
@@ -3615,8 +3609,6 @@
                   </button>
                 {/each}
               </div>
-              <span class="mp-bucket-head-spacer"></span>
-              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -4261,16 +4253,32 @@
     align-items: center;
     gap: 0.4rem;
     margin-bottom: 0.2rem;
-    flex-wrap: wrap;
+    /* flex-wrap: nowrap so the CollapseButton stays on the same
+       row as the label across every card — uniform vertical
+       offset (operator: "watchlist expand should align with the
+       others"). Tabs moved into a dedicated .mp-bucket-subhead
+       row below so they no longer compete with the button for
+       header-row space. */
+    flex-wrap: nowrap;
   }
   .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
   /* Spacer pushes the CollapseButton to the FAR RIGHT of the
-     header regardless of whether tabs are present. Label sits
-     left, tabs (if any) flow next, spacer absorbs the gap,
-     button locks to the right edge. Card width is set by the
-     parent column flex so collapse doesn't move the button. */
+     header regardless of card content. Label sits left, spacer
+     absorbs the gap, button locks to the right edge. Card width
+     is set by the parent column flex so collapse doesn't move
+     the button. */
   .mp-bucket-head-spacer {
     flex: 1 1 0;
+  }
+  /* Sub-header row — sits BETWEEN the bucket-head and the grid.
+     Watchlist / Winners / Losers tabs render here so the main
+     header stays single-row + uniform across cards. */
+  .mp-bucket-subhead {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.2rem;
+    flex-wrap: wrap;
   }
   .mp-wl-tabs {
     display: flex;
