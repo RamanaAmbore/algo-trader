@@ -726,6 +726,11 @@
       _refreshing = false;
     }
   }
+  // Exposed so a parent page can wire the page-header RefreshButton
+  // (next to the wall-clock timestamp) into the same refresh flow the
+  // per-card RefreshButtons trigger. `bind:this={pulseRef}` from the
+  // page lets the page call `pulseRef.refresh()`.
+  export async function refresh() { await refreshAllNow(); }
   // Wall-clock timestamp (ms) of the last loadPulse() completion.
   // The 5 s loadQuotes poll consults this to skip ticks that land
   // within a 700 ms window of a loadPulse — the two pollers used to
@@ -3681,18 +3686,20 @@
         <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
-            <span class="mp-bucket-head-spacer"></span>
             {#if accountPicker && availableAccounts.length > 0}
               <!-- Per-card Account picker. Positions and Holdings each
                    carry their own filter so an operator can scope
                    Positions to ZG#### (intraday) while Holdings
-                   tracks ZJ#### (long-term) independently. -->
+                   tracks ZJ#### (long-term) independently. Left-anchored
+                   so it reads as part of the card's identity strip
+                   (label + filter), not part of the controls cluster. -->
               <div class="mp-head-acct">
                 <AccountMultiSelect bind:value={positionsAccounts}
                   options={availableAccounts.map(a => ({ value: a, label: a }))}
                   ariaLabel="Filter Positions by broker account" />
               </div>
             {/if}
+            <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
             <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
           </div>
@@ -3701,7 +3708,6 @@
         <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
-            <span class="mp-bucket-head-spacer"></span>
             {#if accountPicker && availableAccounts.length > 0}
               <div class="mp-head-acct">
                 <AccountMultiSelect bind:value={holdingsAccounts}
@@ -3709,6 +3715,7 @@
                   ariaLabel="Filter Holdings by broker account" />
               </div>
             {/if}
+            <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
             <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
           </div>

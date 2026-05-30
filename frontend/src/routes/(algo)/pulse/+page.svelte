@@ -7,7 +7,21 @@
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { nowStamp } from '$lib/stores';
+
+  // bind:this handle so the header's RefreshButton can trigger the
+  // same refreshAllNow() path the per-card buttons use. Page owns
+  // its own `_refreshing` flag — MarketPulse's internal state isn't
+  // reactively observable from outside, so we wrap the call.
+  let pulseRef = $state(/** @type {any} */ (null));
+  let _refreshing = $state(false);
+  async function refreshPage() {
+    if (_refreshing || !pulseRef) return;
+    _refreshing = true;
+    try { await pulseRef.refresh(); }
+    finally { _refreshing = false; }
+  }
 </script>
 
 <svelte:head><title>Pulse | RamboQuant Analytics</title></svelte:head>
@@ -17,15 +31,16 @@
     <h1 class="page-title-chip">Pulse</h1>
     <InfoHint popup text={'Live broker book — positions, holdings, watchlist quotes, movers and pinned indices in one grid. Tap any row to open the order ticket. Use <b>Show…</b> to toggle sources. Account multiselect scopes positions + holdings (watchlists stay visible). The toolbar carries an immediate-refresh button; auto-refresh cadence is driven by <span class="font-mono">pulse.tick_interval_ms</span> in /admin/settings.'} />
   </span>
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-ts ml-auto">{$nowStamp}</span>
+  <RefreshButton onClick={refreshPage} loading={_refreshing} label="pulse" />
+  <OrderNotifications /><AgentNotifications />
 </div>
 
-<!-- accountPicker=true mounts the broker-account MultiSelect in the
-     toolbar (right cluster, next to source toggles). Empty selection
-     = all accounts; otherwise positions + holdings inputs to
-     buildUnified are scoped to the chosen set. Watchlist + option
-     underlyings stay visible. -->
-<MarketPulse title="Pulse" flat={true} accountPicker={true} />
+<!-- accountPicker=true mounts a per-card Account MultiSelect inside
+     each of the Positions and Holdings card headers. Empty selection
+     on a card = "all accounts" for that card. Watchlist + option
+     underlyings are not account-scoped so they remain visible. -->
+<MarketPulse bind:this={pulseRef} title="Pulse" flat={true} accountPicker={true} />
 
 <style>
   /* Page-header title + (i) clustered on the left, timestamp pushed

@@ -245,19 +245,41 @@ export function branchLabel(/** @type {string|null|undefined} */ name) {
 
 export function clientTimestamp() {
   const now = new Date();
-  const fmt = (tz) => {
-    const parts = new Intl.DateTimeFormat('en-GB', {
+  // Pull the structured parts once per zone so we can compare dates
+  // and selectively elide the duplicate when both zones land on the
+  // same calendar day (the common case during market hours). When
+  // the dates differ (around UTC midnight) we keep the EST weekday
+  // so the operator still sees the date delta — no info lost.
+  const parts = (tz) => {
+    const arr = new Intl.DateTimeFormat('en-GB', {
       weekday: 'short', day: '2-digit', month: 'short',
       hour: '2-digit', minute: '2-digit', hour12: false,
       timeZone: tz,
     }).formatToParts(now);
-    const pick = (t) => (parts.find(p => p.type === t) || {}).value || '';
-    return `${pick('weekday')} ${pick('day')} ${pick('month')} ${pick('hour')}:${pick('minute')}`;
+    const pick = (t) => (arr.find(p => p.type === t) || {}).value || '';
+    return {
+      wd: pick('weekday'),
+      d:  pick('day'),
+      m:  pick('month'),
+      h:  pick('hour'),
+      mn: pick('minute'),
+    };
   };
+  const ist = parts('Asia/Kolkata');
+  const est = parts('America/New_York');
   const estTz = now.toLocaleTimeString('en-US', {
     timeZoneName: 'short', timeZone: 'America/New_York',
   }).split(' ').pop();   // "EST" / "EDT" by season
-  return `${fmt('Asia/Kolkata')} IST | ${fmt('America/New_York')} ${estTz}`;
+  const istHead  = `${ist.wd} ${ist.d} ${ist.m}`;
+  const istTime  = `${ist.h}:${ist.mn} IST`;
+  const sameDate = ist.d === est.d && ist.m === est.m;
+  // Same calendar day → elide weekday/date for EST half.
+  // Different day (EST trailing IST by a day) → keep the EST
+  // weekday only (short enough to signal the date delta).
+  const estHalf  = sameDate
+    ? `${est.h}:${est.mn} ${estTz}`
+    : `${est.wd} ${est.h}:${est.mn} ${estTz}`;
+  return `${istHead} · ${istTime} · ${estHalf}`;
 }
 
 // Reactive ticking version of clientTimestamp(). Pages binding `{$nowStamp}`
