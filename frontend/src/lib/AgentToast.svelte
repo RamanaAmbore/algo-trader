@@ -17,6 +17,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { createAlgoSocket } from '$lib/ws';
   import AgentFireModal from '$lib/AgentFireModal.svelte';
+  import { playAgentBeep } from '$lib/sound';
 
   /** @typedef {{
    *   id: number,
@@ -65,6 +66,11 @@
       // Newest on top; cap the stack at 5 so a runaway fire storm
       // doesn't paint the whole right edge of the viewport.
       toasts = [toast, ...toasts].slice(0, 5);
+      // Tier-aware audio chirp — silent no-op when the operator
+      // has muted via the speaker icon on the bell panel, or when
+      // the browser's autoplay policy hasn't unlocked yet (first
+      // user gesture flips it). See $lib/sound.
+      playAgentBeep(msg?.tier);
       // Auto-dismiss after 8 s unless the operator interacts.
       setTimeout(() => dismiss(id), 8_000);
     });

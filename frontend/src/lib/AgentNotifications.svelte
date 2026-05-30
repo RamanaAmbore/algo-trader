@@ -22,6 +22,7 @@
   } from '$lib/stores';
   import { chipsAsTextFromJson } from '$lib/logChips';
   import AgentFireModal from '$lib/AgentFireModal.svelte';
+  import { soundMuted, playAgentBeep } from '$lib/sound';
 
   let open = $state(false);
   /** @type {object | null} — fire payload pinned to the modal */
@@ -152,6 +153,37 @@
          role="dialog" aria-label="Agent log">
       <div class="anb-head">
         <span class="anb-title">Agent Log</span>
+        <span class="anb-head-spacer"></span>
+        <button type="button" class="anb-mute"
+                aria-pressed={$soundMuted}
+                title={$soundMuted ? 'Sound off — click to enable' : 'Sound on — click to mute'}
+                aria-label={$soundMuted ? 'Enable sound' : 'Mute sound'}
+                onclick={() => {
+                  const next = !$soundMuted;
+                  soundMuted.set(next);
+                  // When unmuting, play a tiny test chirp so the operator
+                  // confirms sound is working + their browser has unlocked
+                  // autoplay (first audible chirp also "primes" the
+                  // AudioContext on Safari).
+                  if (!next) playAgentBeep('info');
+                }}>
+          {#if $soundMuted}
+            <!-- Speaker-off (muted) -->
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M3 5.5h2L8.5 3v10L5 10.5H3v-5z" fill="currentColor" />
+              <path d="M11 5l4 6M15 5l-4 6" fill="none" stroke="currentColor"
+                stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          {:else}
+            <!-- Speaker-on (with sound waves) -->
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M3 5.5h2L8.5 3v10L5 10.5H3v-5z" fill="currentColor" />
+              <path d="M11 6c.8.8.8 3.2 0 4M13 4.5c1.6 1.6 1.6 5.4 0 7"
+                fill="none" stroke="currentColor"
+                stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          {/if}
+        </button>
         <button type="button" class="anb-close" aria-label="Close"
                 onclick={() => { open = false; }}>×</button>
       </div>
@@ -281,6 +313,38 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #c4b5fd;
+  }
+  .anb-head-spacer { flex: 1 1 0; }
+  /* Mute toggle — sits between the title and the × close button.
+     Speaker-on icon is purple to match the agent palette; speaker-off
+     drops to slate so the muted state reads at a glance. Persists to
+     localStorage via $lib/sound (soundMuted store). */
+  .anb-mute {
+    width: 1.3rem; height: 1.3rem;
+    background: transparent;
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 0.2rem;
+    color: #a78bfa;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin-right: 0.3rem;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .anb-mute:hover {
+    background: rgba(167, 139, 250, 0.14);
+    border-color: rgba(167, 139, 250, 0.6);
+    color: #c4b5fd;
+  }
+  .anb-mute[aria-pressed="true"] {
+    color: rgba(200, 216, 240, 0.5);
+    border-color: rgba(200, 216, 240, 0.22);
+  }
+  .anb-mute[aria-pressed="true"]:hover {
+    color: rgba(200, 216, 240, 0.85);
+    border-color: rgba(200, 216, 240, 0.4);
   }
   .anb-close {
     width: 1.2rem; height: 1.2rem;
