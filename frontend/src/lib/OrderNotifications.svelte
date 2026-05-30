@@ -67,17 +67,23 @@
     }
   });
 
+  function _close() {
+    open = false;
+    markOrderEventsSeen();
+  }
+
   function onDocClick(/** @type {MouseEvent} */ e) {
     if (!open) return;
     const t = /** @type {Node} */ (e.target);
     if (panelEl?.contains(t) || btnEl?.contains(t)) return;
-    open = false;
+    _close();
   }
 
   function toggle() {
-    open = !open;
     if (open) {
-      markOrderEventsSeen();
+      _close();
+    } else {
+      open = true;
       _recomputeAnchor();
     }
   }
@@ -200,7 +206,7 @@
       <div class="onb-head">
         <span class="onb-title">Orders &amp; Chase</span>
         <button type="button" class="onb-close" aria-label="Close"
-                onclick={() => { open = false; }}>×</button>
+                onclick={_close}>×</button>
       </div>
       {#if groups.length === 0}
         <div class="onb-empty">No order activity yet.</div>

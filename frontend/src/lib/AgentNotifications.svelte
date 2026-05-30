@@ -69,17 +69,27 @@
     }
   });
 
+  function _close() {
+    open = false;
+    // Mark seen on CLOSE — the badge stays visible while the panel
+    // is open so the operator can read the items and still see the
+    // unread count for context. Clearing on open made the number
+    // vanish before the operator had a chance to register it.
+    markAgentEventsSeen();
+  }
+
   function onDocClick(/** @type {MouseEvent} */ e) {
     if (!open) return;
     const t = /** @type {Node} */ (e.target);
     if (panelEl?.contains(t) || btnEl?.contains(t)) return;
-    open = false;
+    _close();
   }
 
   function toggle() {
-    open = !open;
     if (open) {
-      markAgentEventsSeen();
+      _close();
+    } else {
+      open = true;
       _recomputeAnchor();
     }
   }
@@ -119,8 +129,9 @@
     };
     // Closing the bell first keeps focus on the modal — otherwise the
     // outside-click handler on this popover would also fire and the
-    // operator sees a flicker.
-    open = false;
+    // operator sees a flicker. Opening a row counts as engagement,
+    // so we mark events seen here too.
+    _close();
   }
 </script>
 
@@ -185,7 +196,7 @@
           {/if}
         </button>
         <button type="button" class="anb-close" aria-label="Close"
-                onclick={() => { open = false; }}>×</button>
+                onclick={_close}>×</button>
       </div>
       {#if display.length === 0}
         <div class="anb-empty">No agent events yet.</div>

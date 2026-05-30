@@ -10,6 +10,7 @@
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import { clientTimestamp, nowStamp, visibleInterval } from '$lib/stores';
@@ -921,6 +922,26 @@
     } catch (_) { /* leave stale */ }
   }
 
+  // Operator-initiated full-page refresh — drives the RefreshButton in
+  // the page header. Fires every loader the dashboard owns so a click
+  // refreshes the entire page in one go. Spinner stays busy until the
+  // heaviest op (loadHero) settles.
+  let _refreshing = $state(false);
+  async function _refreshAll() {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      await Promise.all([
+        loadHero(),
+        _fetchEquity(),
+        _fetchMargins(),
+        _fetchConn(),
+      ]);
+    } finally {
+      _refreshing = false;
+    }
+  }
+
   async function loadHero() {
     try {
       const [positions, holdings, events] = await Promise.all([
@@ -1472,6 +1493,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
+  <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
   <OrderNotifications /><AgentNotifications />
 </div>
 
@@ -2204,11 +2226,13 @@
   }
   .bucket-subheader-spaced { margin-top: 0.7rem; }
 
-  /* Push the picker + fullscreen-toggle cluster to the right of
-     the bucket header — AccountMultiSelect carries its own width
-     clamps, so the only local rule we need is the margin-left:auto
-     on whichever element follows the heading. */
-  .bucket-header > :global(.ams) { margin-left: auto; }
+  /* AccountMultiSelect (.ams) is LEFT-aligned in the bucket header,
+     sitting right after the tabs / label. The card-control trio gets
+     pushed right via its first button's existing margin-left:auto.
+     Was: margin-left:auto on .ams (right-aligned next to the icon
+     cluster) — moved per operator feedback so the picker reads as
+     part of the card's identity strip, not part of the controls. */
+  .bucket-header > :global(.ams) { margin-left: 0; }
 
   /* Inline count chip used inside Equity sub-headings (Positions
      and Holdings). Small muted pill — at-a-glance "how many", not
