@@ -250,11 +250,14 @@
 .ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after {
   content: '';
   position: absolute;
-  right: 8px;
-  top: 3px;
-  bottom: 3px;
+  /* Sits IMMEDIATELY adjacent to the outer cumulative-tint border
+     (which is 4 px wide via inset -4px on row-hold-* / pos-long
+     etc), so the two bars touch with no gap. Same top/bottom as the
+     outer border so the heights match exactly. */
+  right: 4px;
+  top: 0;
+  bottom: 0;
   width: 2px;
-  border-radius: 1px;
   pointer-events: none;
 }
 .ag-theme-algo .ag-row.day-pnl-up .ag-col-sym::after   { background: rgba(74, 222, 128, 0.85); }

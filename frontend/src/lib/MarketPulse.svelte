@@ -4568,16 +4568,23 @@
     box-shadow:
       inset  2px 0 0 0 rgba(74, 222, 128, 0.85),
       inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
-    /* Strip ag-Grid's default cell-divider line on the right edge
-       so only the inset tint shows. Otherwise the operator sees a
-       1 px gray hairline overlapping the right green edge. */
-    border-right: none !important;
+    /* Strip ag-Grid's default cell-divider on BOTH the symbol cell
+       AND the cell immediately following it — otherwise a 1 px gray
+       hairline still shows just to the right of the green tint
+       (originating from the next column's border-left). */
+    border-right: 0 !important;
+  }
+  :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym + .ag-cell) {
+    border-left: 0 !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
     box-shadow:
       inset  2px 0 0 0 rgba(248, 113, 113, 0.85),
       inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
-    border-right: none !important;
+    border-right: 0 !important;
+  }
+  :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym + .ag-cell) {
+    border-left: 0 !important;
   }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
