@@ -95,18 +95,21 @@
   aria-expanded={!isCollapsed}
   title={isCollapsed ? 'Expand card' : 'Collapse card'}>
   {#if isCollapsed}
-    <!-- Chevron right — "click to expand" -->
+    <!-- Restore from minimized — two stacked horizontal lines,
+         representing "this card has content waiting; click to bring
+         it back". Reads as the inverse of the single-line minimize
+         glyph, so the pair flips naturally between the two states. -->
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <path d="M6 4l4 4-4 4"
-        fill="none" stroke="currentColor" stroke-width="1.8"
-        stroke-linecap="round" stroke-linejoin="round" />
+      <rect x="3" y="5" width="10" height="1.6" fill="currentColor" rx="0.5" />
+      <rect x="3" y="9.4" width="10" height="1.6" fill="currentColor" rx="0.5" />
     </svg>
   {:else}
-    <!-- Chevron down — "click to collapse" -->
+    <!-- Minimize — single horizontal line at the BOTTOM of the icon
+         box. Universal Windows / Linux desktop convention for the
+         minimize-window control: the line is where the card collapses
+         to. -->
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <path d="M4 6l4 4 4-4"
-        fill="none" stroke="currentColor" stroke-width="1.8"
-        stroke-linecap="round" stroke-linejoin="round" />
+      <rect x="3" y="11" width="10" height="1.6" fill="currentColor" rx="0.5" />
     </svg>
   {/if}
 </button>
