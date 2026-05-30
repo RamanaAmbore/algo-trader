@@ -71,8 +71,36 @@
   let bannerDismissed = $state(false);
 
   // ── Hero row state ─────────────────────────────────────────────────
-  let _todayPnl     = $state(/** @type {number|null} */ (null));
-  let _startingNav  = $state(/** @type {number|null} */ (null));
+  // Derived from filtered positions + holdings so the chart stat
+  // overlay numbers (P&L TODAY / TODAY %) always match the Equity
+  // tab's Positions/Holdings Summary TOTAL row. Earlier these were
+  // `$state` computed once inside `loadHero` with ALL positions +
+  // holdings; the Equity tab uses `_accountFilter(... _eqAccounts)`
+  // for its summaries, so picking an account filter desynced the
+  // overlay from the TOTAL row. Reactive derivation closes the gap.
+  const _todayPnl = $derived.by(() => {
+    let dayPnl = 0;
+    let any = false;
+    for (const p of _accountFilter(_positions, _eqAccounts)) {
+      const v = Number(p.day_change_val);
+      if (Number.isFinite(v)) { dayPnl += v; any = true; }
+    }
+    for (const h of _accountFilter(_holdings, _eqAccounts)) {
+      const v = Number(h.day_change_val);
+      if (Number.isFinite(v)) { dayPnl += v; any = true; }
+    }
+    return any ? dayPnl : null;
+  });
+  const _startingNav = $derived.by(() => {
+    let invVal = 0;
+    for (const p of _accountFilter(_positions, _eqAccounts)) {
+      invVal += Math.abs(Number(p.average_price) * Number(p.quantity)) || 0;
+    }
+    for (const h of _accountFilter(_holdings, _eqAccounts)) {
+      invVal += Number(h.inv_val ?? 0);
+    }
+    return invVal > 0 ? invVal : null;
+  });
   let _niftyDayPct  = $state(/** @type {number|null} */ (null));
   let _firesToday   = $state(0);
   let _paperOpen    = $state(0);
@@ -947,28 +975,12 @@
       _positions = Array.isArray(positions) ? positions : (positions?.rows ?? []);
       _holdings  = Array.isArray(holdings)  ? holdings  : (holdings?.rows  ?? []);
 
-      // Sum today's P&L + total capital base across BOTH books.
-      //   - positions: day P&L = day_change_val (NOT pnl — that's
-      //     life-to-date and inflates the hero number when used as
-      //     "today's" change). Capital deployed ≈ Σ |avg_price × qty|
-      //     (notional cost basis — premium paid for longs, premium
-      //     received for shorts, both as positive value).
-      //   - holdings: day P&L = day_change_val. Capital = inv_val.
-      // Earlier `_startingNav = holdings.inv_val` only, which ignored
-      // positions capital — `_todayPct = dayPnl / inv_val` inflated
-      // the displayed % whenever F&O positions were open.
-      let dayPnl = 0;
-      let invVal  = 0;
-      for (const p of _positions) {
-        dayPnl += Number(p.day_change_val) || 0;
-        invVal += Math.abs(Number(p.average_price) * Number(p.quantity)) || 0;
-      }
-      for (const h of _holdings) {
-        dayPnl += Number(h.day_change_val) || 0;
-        invVal += Number(h.inv_val ?? 0);
-      }
-      _todayPnl    = dayPnl;
-      _startingNav = invVal > 0 ? invVal : null;
+      // _todayPnl + _startingNav are reactive derivations now (see
+      // top of file). They scope to the same `_accountFilter(...
+      // _eqAccounts)` the Equity tab's Positions/Holdings summary
+      // uses, so the chart stat overlay numbers and the Equity tab
+      // TOTAL row can never drift apart when the operator picks an
+      // account filter.
 
       // Agent fires today (IST midnight boundary).
       const todayStart = istMidnightTodayAsDate();
