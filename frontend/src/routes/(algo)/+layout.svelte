@@ -94,6 +94,11 @@
     // ── Monitor ──
     { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
+    // Derivatives lives in the monitor cluster between Dashboard and
+    // Agents — operators reach for the option payoff / Greeks far
+    // more often than Agents config, so the chain entry sits one
+    // click earlier in the navbar.
+    { href: '/admin/options',    label: 'Derivatives', group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     // /admin/alerts is reachable from the 🔔 History link in the
@@ -102,7 +107,6 @@
     // (Agents = rules, Alerts = fires).
     // ── Analyze ──
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
-    { href: '/admin/options',    label: 'Derivatives', group: 'analyze' },
     // ── Lab ──
     // "Lab" workspace hosts the two non-execution research surfaces:
     // Scenario (fabricated price moves) and Backtest (historical

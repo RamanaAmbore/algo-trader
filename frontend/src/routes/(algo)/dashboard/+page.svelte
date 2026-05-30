@@ -181,25 +181,13 @@
   // loading window before the fetch resolves.
   let _pnlHasData = $state(true);
 
-  // Auto-collapse the Intraday/Performance card when BOTH tabs are
-  // confirmed empty (no intraday equity points AND PnlAnalysis returned
-  // zero dates). One-shot per emptiness event: once latched, the
-  // operator can manually expand without us re-collapsing them. The
-  // latch resets when data appears, so a later empty-state recurrence
-  // (broker reconnect → data cleared) re-triggers cleanly.
-  let _autoCollapseLatched = $state(false);
-  $effect(() => {
-    const intradayEmpty = _equityPoints.length === 0;
-    const pnlEmpty      = !_pnlHasData;
-    if (!intradayEmpty || _pnlHasData) {
-      _autoCollapseLatched = false;
-      return;
-    }
-    if (pnlEmpty && intradayEmpty && !_autoCollapseLatched) {
-      _colEquityCurve = true;
-      _autoCollapseLatched = true;
-    }
-  });
+  // Performance card stays EXPANDED even when empty — operator
+  // feedback. The earlier auto-collapse latch hid both tabs once the
+  // Intraday + Performance feeds returned no data, but that took the
+  // card off-screen before the operator could inspect what was
+  // happening (e.g. broker disconnect, pre-market load). Now the
+  // card always renders its body and the empty-state message lives
+  // inside the panel.
 
   // Per-card fullscreen toggles. Each card binds its own slot —
   // multiple cards can theoretically open at once but only one is
@@ -2043,10 +2031,22 @@
     height: calc(100vh - 10rem) !important;
     min-height: 320px;
   }
+  /* Stat overlay magnifies in step with the chart so the P&L numerics
+     stay readable at viewport size. */
+  .fs-card-on .eq-stats {
+    gap: 1.4rem;
+    top: 0.6rem;
+    left: 0.7rem;
+  }
+  .fs-card-on .eq-stat-k { font-size: 0.72rem; margin-bottom: 0.32rem; }
+  .fs-card-on .eq-stat-v { font-size: 1.4rem; }
   @media (max-width: 600px) {
     .fs-card-on .eq-svg {
       height: calc(100vh - 8rem) !important;
     }
+    .fs-card-on .eq-stats { gap: 0.8rem; }
+    .fs-card-on .eq-stat-k { font-size: 0.6rem; }
+    .fs-card-on .eq-stat-v { font-size: 0.95rem; }
   }
   /* Stat overlay — at-a-glance P&L numerics (P&L TODAY · TODAY % ·
      vs NIFTY) anchored top-left inside the chart card body. Same

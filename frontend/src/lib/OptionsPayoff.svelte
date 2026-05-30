@@ -1015,10 +1015,26 @@
     height: calc(100vh - 12rem) !important;
     min-height: 360px;
   }
+  /* Scale the stat overlay to match the magnified chart so the
+     numerics stay legible at viewport size. Same ratio the chart
+     itself grows by — roughly 1.6× the inline font sizes. */
+  :global(.fs-card-on) .payoff-stats {
+    font-size: 0.92rem;
+    padding: 0.55rem 0.85rem;
+    column-gap: 0.7rem;
+    row-gap: 0.15rem;
+    top: 0.7rem;
+    left: 0.9rem;
+  }
+  :global(.fs-card-on) .ps-k     { font-size: 14px; }
+  :global(.fs-card-on) .ps-k-hint { font-size: 12px; }
   @media (max-width: 600px) {
     :global(.fs-card-on) .payoff-svg-stack {
       height: calc(100vh - 9rem) !important;
     }
+    :global(.fs-card-on) .payoff-stats { font-size: 0.72rem; }
+    :global(.fs-card-on) .ps-k         { font-size: 11px; }
+    :global(.fs-card-on) .ps-k-hint    { font-size: 10px; }
   }
   .payoff-svg {
     position: absolute;
