@@ -4564,27 +4564,31 @@
      the opposite edge. Same inset-box-shadow idiom as `.mp-sym-acct`
      so the line lands at the exact same pixel position regardless
      of which grid the cell is in. */
+  /* Global divider-strip on every Pulse bucket grid. Per operator
+     feedback the five grids (Pinned/Watchlist, Winners, Losers,
+     Positions, Holdings) need to look IDENTICAL except for the
+     symbol-cell tint (encoding direction / account) and the row
+     background tint. ag-Grid's 1 px gray cell-divider would otherwise
+     show on some grids and not others (Winners/Losers had them
+     stripped earlier so the green/red tint border read clean, the
+     others kept them — visually inconsistent). Strip both border-
+     right + border-left on every cell so the gray hairlines never
+     show; the meaningful colored inset borders on symbol cells stay
+     because they're painted via box-shadow, not border. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell),
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-header-cell) {
+    border-right: 0 !important;
+    border-left: 0 !important;
+  }
   :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym) {
     box-shadow:
       inset  2px 0 0 0 rgba(74, 222, 128, 0.85),
       inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
-    /* Strip ag-Grid's default cell-divider on BOTH the symbol cell
-       AND the cell immediately following it — otherwise a 1 px gray
-       hairline still shows just to the right of the green tint
-       (originating from the next column's border-left). */
-    border-right: 0 !important;
-  }
-  :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym + .ag-cell) {
-    border-left: 0 !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
     box-shadow:
       inset  2px 0 0 0 rgba(248, 113, 113, 0.85),
       inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
-    border-right: 0 !important;
-  }
-  :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym + .ag-cell) {
-    border-left: 0 !important;
   }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
