@@ -184,9 +184,13 @@
 
 <div class="flex flex-col h-[calc(100vh-8rem)]">
 <div class="page-header">
-  <h1 class="page-title-chip">Orders</h1>
-  <InfoHint popup text="Live order book across every loaded broker account. Click a row for the full status / fill timeline; Cancel and Modify hit the broker directly. Status pills: OPEN (in book), TRIGGER_PENDING (SL waiting), COMPLETE (filled), REJECTED (broker / margin failure)." />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Orders</h1>
+    <InfoHint popup text="Live order book across every loaded broker account. Click a row for the full status / fill timeline; Cancel and Modify hit the broker directly. Status pills: OPEN (in book), TRIGGER_PENDING (SL waiting), COMPLETE (filled), REJECTED (broker / margin failure)." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}

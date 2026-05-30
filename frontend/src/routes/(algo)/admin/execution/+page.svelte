@@ -72,11 +72,13 @@
 <svelte:head><title>Lab | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <div class="exec-header-left">
-    <h1 class="algo-page-title">Lab</h1>
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Lab</h1>
     <InfoHint popup text="Research workspace for the two non-execution surfaces: <b>Scenario</b> (fabricated price moves on real positions — formerly Simulator) and <b>Backtest</b> (historical Kite OHLCV candles fed through the agent engine — formerly Replay). Your persistent master mode (LIVE/PAPER) lives in the navbar dropdown, separate from this page." />
-  </div>
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <div class="exec-tabs" role="tablist" aria-label="Lab workspace">
@@ -109,30 +111,6 @@
 {/if}
 
 <style>
-  .algo-page-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #fbbf24;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-family: ui-monospace, monospace;
-  }
-  :global(.page-header:has(.algo-page-title)) {
-    border-bottom: none;
-    padding-bottom: 0;
-    margin-bottom: 0.5rem;
-  }
-  .exec-header-left {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .algo-ts {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    color: #7e97b8;
-    margin-left: auto;
-  }
   /* Tab strip — [Scenario] [Backtest]. Active tab carries an amber
      bottom border so the visual reads as a section header for the
      workspace below. */

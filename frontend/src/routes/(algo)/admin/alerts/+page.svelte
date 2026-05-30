@@ -8,7 +8,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
@@ -23,7 +23,6 @@
   let agents     = $state([]);
   let loading    = $state(true);
   let error      = $state('');
-  let refreshedAt = $state('');
 
   // Filter state
   let filterAgent   = $state('');
@@ -68,7 +67,6 @@
 
       const data = await fetchAlertsHistory(params);
       rows = data?.events ?? data ?? [];
-      refreshedAt = clientTimestamp();
       error = '';
     } catch (e) {
       error = e.message;
@@ -135,11 +133,13 @@
 <svelte:head><title>Alerts | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Alerts</h1>
-  <InfoHint popup text="History of agent fires (real and simulated). Each row shows when an agent's condition matched, what action ran, and which channels were notified. Use the filters to scope by agent, event type, or time window." />
-  {#if refreshedAt}
-    <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications /><AgentNotifications />
-  {/if}
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Alerts</h1>
+    <InfoHint popup text="History of agent fires (real and simulated). Each row shows when an agent's condition matched, what action ran, and which channels were notified. Use the filters to scope by agent, event type, or time window." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <StaleBanner {error} hasData={rows.length > 0} label="Alert history" />

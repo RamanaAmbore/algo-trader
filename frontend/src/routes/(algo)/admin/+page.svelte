@@ -330,17 +330,21 @@
 
 <svelte:head><title>Users | RamboQuant Analytics</title></svelte:head>
 
-<div class="algo-status-card p-5 pt-4" data-status="inactive">
-  <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
-    <h1 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">User Management</h1>
+<div class="page-header">
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Users</h1>
     <InfoHint popup text="User management: approve / suspend / terminate partners. Admins and <b>designated</b> users can act; only admins can promote roles." />
-    <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
-    <button onclick={() => showCreate = !showCreate}
-      class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold">
-      {showCreate ? 'Cancel' : 'Create User'}
-    </button>
-  </div>
-  <div class="border-b border-[rgba(251,191,36,0.25)] mb-4"></div>
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <button onclick={() => showCreate = !showCreate}
+    class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+    {showCreate ? 'Cancel' : '+ Create User'}
+  </button>
+  <OrderNotifications /><AgentNotifications />
+</div>
+
+<div class="algo-status-card p-5 pt-4" data-status="inactive">
 
   {#if success}
     <div class="mb-3 p-2 rounded bg-green-500/15 text-green-300 text-xs border border-green-500/40">{success}</div>

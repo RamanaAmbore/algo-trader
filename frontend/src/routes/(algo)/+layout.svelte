@@ -1432,6 +1432,15 @@
   :global(.page-header .algo-ts) {
     margin-right: 0.15rem;
   }
+  /* Title chip + InfoHint cluster on the LEFT of every algo page
+     header. Without this, flex-wrap separates them onto two lines
+     on narrow viewports. Shared so per-page declarations like
+     .pulse-title-group / .opt-title-group can be retired. */
+  :global(.page-header .algo-title-group) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
   :global(.page-header .onb-wrap + .anb-wrap),
   :global(.page-header .algo-ts + .onb-wrap) {
     margin-left: -0.2rem;

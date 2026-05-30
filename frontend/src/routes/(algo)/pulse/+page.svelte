@@ -27,7 +27,7 @@
 <svelte:head><title>Pulse | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <span class="pulse-title-group">
+  <span class="algo-title-group">
     <h1 class="page-title-chip">Pulse</h1>
     <InfoHint popup text={'Live broker book — positions, holdings, watchlist quotes, movers and pinned indices in one grid. Tap any row to open the order ticket. Use <b>Show…</b> to toggle sources. Account multiselect scopes positions + holdings (watchlists stay visible). The toolbar carries an immediate-refresh button; auto-refresh cadence is driven by <span class="font-mono">pulse.tick_interval_ms</span> in /admin/settings.'} />
   </span>
@@ -42,21 +42,8 @@
      on a card = "all accounts" for that card. Watchlist + option
      underlyings are not account-scoped so they remain visible.
 
-     showSummary=true surfaces the same per-account summary tables
-     /dashboard renders (Account | Day P&L | Day % | P&L | P&L %
-     for positions; + Value | Invested for holdings) — TOTAL row
-     pinned at the bottom of each table. Pulse + Dashboard now show
-     the same firm-wide netted P&L view above the per-symbol grids. -->
-<MarketPulse bind:this={pulseRef} title="Pulse" flat={true}
-             accountPicker={true} showSummary={true} />
+     Per-account summary tables (Account | Day P&L | Day % | P&L | P&L %)
+     live on /dashboard. /pulse stays focused on the per-symbol
+     unified grid + per-card TOTAL pinned at the bottom. -->
+<MarketPulse bind:this={pulseRef} title="Pulse" flat={true} accountPicker={true} />
 
-<style>
-  /* Page-header title + (i) clustered on the left, timestamp pushed
-     right by .page-header's existing space-between. Mirrors the
-     pattern on /admin/options (Derivatives). */
-  .pulse-title-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-</style>

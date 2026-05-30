@@ -83,12 +83,16 @@
 </svelte:head>
 
 <div class="page-header">
-  <h1 class="algo-page-title">Iteration</h1>
-  <span class="slug-chip">{slug || '—'}</span>
-  <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
-  <a href="/admin/simulator/iterations" class="back-link ml-auto">← Iterations</a>
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Iteration</h1>
+    <span class="slug-chip">{slug || '—'}</span>
+    <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}
@@ -159,19 +163,6 @@
 {/if}
 
 <style>
-  .algo-page-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #fbbf24;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-family: ui-monospace, monospace;
-  }
-  :global(.page-header:has(.algo-page-title)) {
-    border-bottom: none;
-    padding-bottom: 0;
-    margin-bottom: 0.5rem;
-  }
   .slug-chip {
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;

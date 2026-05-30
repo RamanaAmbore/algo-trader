@@ -1850,14 +1850,16 @@
 <svelte:head><title>Derivatives | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <span class="opt-title-group">
+  <span class="algo-title-group">
     <h1 class="page-title-chip">Derivatives</h1>
-    <InfoHint text={'Pick an underlying to load every option / future on it from your ' + (simActive ? '<b>simulator</b> book' : '<b>live</b> book') + '. The payoff diagram below charts the aggregated position; uncheck a row in the Candidates panel to drop it from the payoff. Click <b>+ Add</b> to open the option chain and pick draft strikes (modelled as hypothetical positions). Stats below the chart explain themselves — click any <span class="font-mono">(i)</span> chip for a definition.'} />
+    <InfoHint popup text={'Pick an underlying to load every option / future on it from your ' + (simActive ? '<b>simulator</b> book' : '<b>live</b> book') + '. The payoff diagram below charts the aggregated position; uncheck a row in the Candidates panel to drop it from the payoff. Click <b>+ Add</b> to open the option chain and pick draft strikes (modelled as hypothetical positions). Stats below the chart explain themselves — click any <span class="font-mono">(i)</span> chip for a definition.'} />
     {#if simActive}
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain
@@ -2509,12 +2511,6 @@
      sat as direct flex children of .page-header, which spread the (i)
      midway down the row instead of beside the title — the operator
      wanted the (i) snug to the title with the timestamp on the right. */
-  .opt-title-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
   /* Picker bar — Account / Underlying / Expiry / + always on a
      single row, even on narrow viewports. flex-wrap: nowrap forces
      the row; min-width: 0 on each field lets the Selects shrink to

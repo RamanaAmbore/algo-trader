@@ -6,7 +6,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchSystemHealth } from '$lib/api';
@@ -17,13 +17,11 @@
   let health      = $state(null);
   let error       = $state('');
   let loading     = $state(true);
-  let refreshedAt = $state('');
   let teardown;
 
   async function load() {
     try {
       health      = await fetchSystemHealth();
-      refreshedAt = clientTimestamp();
       error       = '';
     } catch (e) {
       error = e.message;
@@ -58,11 +56,13 @@
 <svelte:head><title>Health | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Health</h1>
-  <InfoHint popup text="System diagnostics snapshot. Use this at market open to confirm all broker accounts are loaded, DB is reachable, and the paper/sim engines are in the expected state. Refreshes every 15 s." />
-  {#if refreshedAt}
-    <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications /><AgentNotifications />
-  {/if}
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Health</h1>
+    <InfoHint popup text="System diagnostics snapshot. Use this at market open to confirm all broker accounts are loaded, DB is reachable, and the paper/sim engines are in the expected state. Refreshes every 15 s." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <StaleBanner {error} hasData={!!health} label="Health snapshot" />

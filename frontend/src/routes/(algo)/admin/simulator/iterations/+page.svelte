@@ -7,7 +7,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import { fetchSimIterations } from '$lib/api';
@@ -18,7 +18,6 @@
   let rows        = $state([]);
   let loading     = $state(true);
   let error       = $state('');
-  let refreshedAt = $state('');
   let teardown;
 
   onMount(async () => {
@@ -33,7 +32,6 @@
   async function load() {
     try {
       rows = await fetchSimIterations(null, 100);
-      refreshedAt = clientTimestamp();
       error = '';
     } catch (e) {
       error = e.message || 'Failed to load iterations';
@@ -101,10 +99,14 @@
 </svelte:head>
 
 <div class="page-header">
-  <h1 class="algo-page-title">Simulator iterations</h1>
-  <InfoHint popup text="Every iteration of every /start-run call lands here. Click a row to see the iteration's summary stats + replay it with the same seed." />
-  <span class="algo-ts ml-auto">{refreshedAt}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Simulator iterations</h1>
+    <InfoHint popup text="Every iteration of every /start-run call lands here. Click a row to see the iteration's summary stats + replay it with the same seed." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
   <a href="/admin/simulator" class="back-link">← Simulator</a>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}
@@ -170,25 +172,6 @@
 {/if}
 
 <style>
-  .algo-page-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #fbbf24;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-family: ui-monospace, monospace;
-  }
-  :global(.page-header:has(.algo-page-title)) {
-    border-bottom: none;
-    padding-bottom: 0;
-    margin-bottom: 0.5rem;
-  }
-  .algo-ts {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    color: #7e97b8;
-    margin-left: auto;
-  }
   .back-link {
     font-family: ui-monospace, monospace;
     font-size: 0.65rem;

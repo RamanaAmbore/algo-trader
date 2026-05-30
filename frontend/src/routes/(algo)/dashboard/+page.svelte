@@ -1463,9 +1463,13 @@
 
 <!-- Page header -->
 <div class="page-header">
-  <h1 class="algo-page-title">Dashboard</h1>
-  <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Dashboard</h1>
+    <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <!-- Hero row — 6 chips answering "what changed since I last looked?" -->
@@ -1881,20 +1885,6 @@
 </section>
 
 <style>
-  .algo-page-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #fbbf24;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-family: ui-monospace, monospace;
-  }
-  :global(.page-header:has(.algo-page-title)) {
-    border-bottom: none;
-    padding-bottom: 0;
-    margin-bottom: 0.3rem;
-  }
-
   /* Section labels — used as the heading inside every dashboard card
      (Intraday Equity Curve, Margin Utilisation, Top Winners, Top
      Losers, Market News, P&L Analysis, Agent activity, OPEN ORDERS).

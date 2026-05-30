@@ -4,6 +4,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Demo gate — on dev, anonymous visitors get redirected to /signin by
   // the algo layout before this page loads, so an unsigned viewer here
@@ -184,19 +185,20 @@
 <svelte:head><title>Tokens | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Agent Tokens</h1>
-  <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Agent Tokens</h1>
+    <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
   {#if !isDemo}
+    <RefreshButton onClick={doReload} loading={reloading} label="registry" />
     <button onclick={openCreate}
       class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
       + New token
     </button>
-    <button onclick={doReload} disabled={reloading}
-      class="text-[0.65rem] py-1 px-3 rounded border border-[#fbbf24]/50 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25 font-semibold disabled:opacity-50">
-      {reloading ? 'Reloading…' : 'Reload registry'}
-    </button>
   {/if}
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <AgentWorkspaceTabs />

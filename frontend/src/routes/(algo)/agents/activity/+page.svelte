@@ -29,9 +29,13 @@
 </svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Agent Activity</h1>
-  <InfoHint popup text="Recent agent fires (and optionally action successes/errors). Real-pipeline events only — sim runs filtered out. Click a row's slug to jump to that agent on the Agents tab." />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Agent Activity</h1>
+    <InfoHint popup text="Recent agent fires (and optionally action successes/errors). Real-pipeline events only — sim runs filtered out. Click a row's slug to jump to that agent on the Agents tab." />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <AgentWorkspaceTabs />

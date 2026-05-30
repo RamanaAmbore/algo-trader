@@ -17,7 +17,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, clientTimestamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import {
@@ -36,7 +36,6 @@
   let selected    = $state(null);
   let error       = $state('');
   let loading     = $state(true);
-  let refreshedAt = $state('');
   let teardown;
   let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'settings'} */ ('research'));
 
@@ -67,7 +66,6 @@
   async function loadThreads() {
     try {
       threads     = await fetchResearchThreads();
-      refreshedAt = clientTimestamp();
       error       = '';
     } catch (e) {
       error = e.message;
@@ -400,18 +398,21 @@
 <svelte:head><title>Research | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Research</h1>
-  <InfoHint popup text="
-    <b>Lab workspace</b> for chat-driven stock research.
-    <br><br>
-    The chat happens in Claude Code (your terminal); this page reads back
-    the persisted threads + the draft agents you've promoted out of them.
-    <br><br>
-    Open the <b>Settings</b> tab for the one-time .mcp.json bootstrap.
-    <br><br>
-    No paid GenAI in the loop — Claude Code subscription is the only LLM."
-  />
-  {#if refreshedAt}<span class="algo-ts ml-auto">{refreshedAt}</span>{:else}<span class="ml-auto"></span>{/if}
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Research</h1>
+    <InfoHint popup text="
+      <b>Lab workspace</b> for chat-driven stock research.
+      <br><br>
+      The chat happens in Claude Code (your terminal); this page reads back
+      the persisted threads + the draft agents you've promoted out of them.
+      <br><br>
+      Open the <b>Settings</b> tab for the one-time .mcp.json bootstrap.
+      <br><br>
+      No paid GenAI in the loop — Claude Code subscription is the only LLM."
+    />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
   <OrderNotifications /><AgentNotifications />
 </div>
 

@@ -18,6 +18,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     fetchAgentFragments, createAgentFragment,
     patchAgentFragment, deleteAgentFragment, reloadFragments,
@@ -165,10 +166,14 @@
 <svelte:head><title>Agent Fragments | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
-  <h1 class="page-title-chip">Fragments</h1>
-  <InfoHint popup text={'Reusable saved sub-trees an agent references via <b>{$ref: name}</b>. Two kinds: <b>notify</b> (channel lists for agent.events) and <b>condition</b> (sub-trees for agent.conditions). System fragments toggle-only; custom fragments full CRUD.'} />
-  <span class="algo-ts ml-auto">{$nowStamp}</span><OrderNotifications /><AgentNotifications />
-  <button class="reload-pill" onclick={doReload} disabled={busy} title="Re-read fragments from DB into the in-memory cache">↻ Reload</button>
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">Fragments</h1>
+    <InfoHint popup text={'Reusable saved sub-trees an agent references via <b>{$ref: name}</b>. Two kinds: <b>notify</b> (channel lists for agent.events) and <b>condition</b> (sub-trees for agent.conditions). System fragments toggle-only; custom fragments full CRUD.'} />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  <RefreshButton onClick={doReload} loading={busy} label="fragments" />
+  <OrderNotifications /><AgentNotifications />
 </div>
 
 <AgentWorkspaceTabs />
@@ -328,22 +333,6 @@
     color: rgba(180,200,230,0.5);
     font-family: ui-monospace, monospace;
   }
-
-  .reload-pill {
-    padding: 0.25rem 0.7rem;
-    font-size: 0.65rem;
-    font-weight: 500;
-    color: rgba(251,191,36,0.9);
-    background: rgba(251,191,36,0.10);
-    border: 1px solid rgba(251,191,36,0.3);
-    border-radius: 0.25rem;
-    cursor: pointer;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.03em;
-    transition: background-color 0.06s;
-  }
-  .reload-pill:hover { background: rgba(251,191,36,0.2); }
-  .reload-pill:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .grp-title {
     font-size: 0.65rem;
