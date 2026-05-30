@@ -3633,12 +3633,6 @@
       Each .mp-bucket-wrap carries its own header label + the
       ag-Grid container.
     -->
-    <!-- Outer card wrapping every Pulse bucket card (Pinned/Watchlist,
-         Winners, Losers, Positions, Holdings). Zero internal padding
-         so the inner cards keep their natural widths — only the
-         border + background + rounded corners add visual chrome
-         around the cluster. -->
-    <div class="mp-outer-card">
     <div class="mp-layout">
       <div class="mp-col mp-col-left">
         <!--
@@ -3818,7 +3812,6 @@
         </section>
       </div>
     </div>
-    </div><!-- /.mp-outer-card -->
   {/if}
 </div>
 
@@ -4319,20 +4312,6 @@
      column is a flex stack so the cards inside flow naturally
      and independently — the left col having 4 cards vs the right
      having 2 doesn't try to align rows across columns. */
-  /* Outer wrapper carrying card chrome (border + background + rounded
-     corners + drop shadow) around every bucket card. Zero internal
-     padding so the existing flex layout's column widths are
-     unchanged — the wrapper only adds visual frame, not new spacing. */
-  .mp-outer-card {
-    width: 100%;
-    padding: 0;
-    background: linear-gradient(180deg, rgba(39, 53, 82, 0.55) 0%, rgba(29, 42, 68, 0.55) 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
-                inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    box-sizing: border-box;
-  }
   .mp-layout {
     display: flex;
     flex-direction: column;
