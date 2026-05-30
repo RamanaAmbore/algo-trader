@@ -1497,65 +1497,21 @@
   <OrderNotifications /><AgentNotifications />
 </div>
 
-<!-- Hero row — 6 chips answering "what changed since I last looked?" -->
-<div class="hero-row" role="status">
-  <!-- 1. P&L TODAY -->
-  <div class="hero-chip {_pnlClass}">
-    <span class="hero-label">P&amp;L TODAY</span>
-    <span class="hero-value">
-      {#if _todayPnl == null}—{:else}{_todayPnl >= 0 ? '+' : ''}₹{priceFmt(_todayPnl)}{/if}
-    </span>
-  </div>
+<!-- Hero strip retired. Its six chips lived elsewhere:
+       - P&L TODAY / TODAY % / vs NIFTY → stat overlay inside the
+         Intraday equity-curve panel
+       - AGENT FIRES → Agent activity card header (already shows
+         "fires today")
+       - PAPER OPEN → navbar PAPER banner ("N open chase orders ·
+         fake fills against live quotes")
+       - CONN → badge on every RefreshButton (cyan + count, green/
+         amber/red by broker-account health)
+     `_pnlClass / _todayPctClass / _vsNiftyClass / _todayPnl /
+     _todayPct / _vsNifty / _niftyDayPct / _firesToday / _paperOpen
+     / _conn / _connIcon / _connClass / _heroLoadedAt` derivations
+     are preserved so the stat overlay + future surfaces can keep
+     reading them. -->
 
-  <!-- 2. TODAY % — portfolio day return -->
-  <div class="hero-chip {_todayPctClass}">
-    <span class="hero-label">TODAY %</span>
-    <span class="hero-value">
-      {#if _todayPct == null}—{:else}{_todayPct >= 0 ? '+' : ''}{pctFmt(_todayPct)}%{/if}
-    </span>
-    {#if _startingNav != null}
-      <span class="hero-meta">of ₹{aggCompact(_startingNav)}</span>
-    {/if}
-  </div>
-
-  <!-- 3. vs NIFTY — outperformance spread -->
-  <div class="hero-chip {_vsNiftyClass}">
-    <span class="hero-label">vs NIFTY</span>
-    <span class="hero-value">
-      {#if _vsNifty == null}—{:else}{_vsNifty >= 0 ? '+' : ''}{pctFmt(_vsNifty)}%{/if}
-    </span>
-    {#if _niftyDayPct != null}
-      <span class="hero-meta">NIFTY {_niftyDayPct >= 0 ? '+' : ''}{pctFmt(_niftyDayPct)}%</span>
-    {/if}
-  </div>
-
-  <!-- 4. AGENT FIRES -->
-  <div class="hero-chip hero-chip-fires">
-    <span class="hero-label">AGENT FIRES</span>
-    <span class="hero-value">{_firesToday}</span>
-    <span class="hero-meta">today</span>
-  </div>
-
-  <!-- 5. PAPER OPEN -->
-  <div class="hero-chip hero-chip-paper">
-    <span class="hero-label">PAPER OPEN</span>
-    <span class="hero-value">{_paperOpen}</span>
-    <span class="hero-meta">orders</span>
-  </div>
-
-  <!-- 6. CONN — broker connection health -->
-  <div class="hero-chip hero-chip-conn {_connClass}">
-    <span class="hero-label">CONN</span>
-    <span class="hero-value conn-icon">{_connIcon}</span>
-    {#if _conn.total > 0}
-      <span class="hero-meta">{_conn.loaded}/{_conn.total}</span>
-    {/if}
-  </div>
-
-  {#if _heroLoadedAt}
-    <span class="hero-refresh">refreshed {_heroLoadedAt}</span>
-  {/if}
-</div>
 
 <!-- Open orders strip — hidden when nothing is chasing -->
 {#if _openOrders.length > 0}
@@ -1730,6 +1686,30 @@
         No data yet — markets open at 09:15 IST
       </div>
     {:else}
+      <!-- Stat overlay — at-a-glance P&L numerics so the operator
+           doesn't need a separate hero strip. Pointer-events: none
+           so SVG hover / zoom never blocks. Same pattern OptionsPayoff
+           uses. -->
+      <div class="eq-stats" aria-hidden="true">
+        <div class="eq-stat">
+          <span class="eq-stat-k">P&amp;L TODAY</span>
+          <span class="eq-stat-v {_pnlClass}">
+            {#if _todayPnl == null}—{:else}{_todayPnl >= 0 ? '+' : ''}₹{priceFmt(_todayPnl)}{/if}
+          </span>
+        </div>
+        <div class="eq-stat">
+          <span class="eq-stat-k">TODAY %</span>
+          <span class="eq-stat-v {_todayPctClass}">
+            {#if _todayPct == null}—{:else}{_todayPct >= 0 ? '+' : ''}{pctFmt(_todayPct)}%{/if}
+          </span>
+        </div>
+        <div class="eq-stat">
+          <span class="eq-stat-k">vs NIFTY</span>
+          <span class="eq-stat-v {_vsNiftyClass}">
+            {#if _vsNifty == null}—{:else}{_vsNifty >= 0 ? '+' : ''}{pctFmt(_vsNifty)}%{/if}
+          </span>
+        </div>
+      </div>
       <svg
         class="eq-svg"
         viewBox="0 0 {CHART_W} {CHART_H}"
@@ -1966,84 +1946,10 @@
      algo-status-card chrome — gradient bg + 1.5px border + box-shadow.
      Match the visual depth of /agents, /admin/options, /admin/execution
      so the dashboard doesn't read as one-generation-back. */
-  /* Hide the CONN chip on narrow viewports — it tends to wrap onto a
-     row of its own (single chip, looks orphaned) and "no accounts
-     connected" has no actionable meaning for a demo / recruiter
-     visitor scanning the dashboard on a phone. Operators on desktop
-     keep it as a glanceable broker-health indicator. */
-  @media (max-width: 600px) {
-    .hero-chip.hero-chip-conn { display: none; }
-  }
-  .hero-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem 0.6rem;
-    margin: 0 0 0.6rem 0;
-    padding: 0.5rem 0.7rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  }
-  .hero-chip {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    padding: 0.18rem 0.55rem;
-    border-left: 2px solid;
-    background: rgba(255,255,255,0.02);
-    border-radius: 2px;
-    font-family: ui-monospace, monospace;
-    line-height: 1;
-  }
-  .hero-label {
-    color: #7e97b8;
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  .hero-value {
-    font-size: 0.82rem;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-    color: #f1f7ff;
-  }
-  .hero-meta {
-    color: #7e97b8;
-    font-size: 0.55rem;
-    letter-spacing: 0.04em;
-  }
-  .hero-pnl-up      { border-left-color: #4ade80; }
-  .hero-pnl-up      .hero-value { color: #4ade80; }
-  .hero-pnl-down    { border-left-color: #f87171; }
-  .hero-pnl-down    .hero-value { color: #f87171; }
-  .hero-pnl-neutral { border-left-color: #7e97b8; }
-  .hero-chip-fires  { border-left-color: #fbbf24; }
-  .hero-chip-paper  { border-left-color: #7dd3fc; }
-
-  /* CONN chip — border driven by conn state class */
-  .hero-chip-conn { border-left-color: #7e97b8; }
-  .hero-chip-conn-green { border-left-color: #4ade80; }
-  .hero-chip-conn-green .hero-value,
-  .hero-chip-conn-green .conn-icon { color: #4ade80; }
-  .hero-chip-conn-amber { border-left-color: #fbbf24; }
-  .hero-chip-conn-amber .hero-value,
-  .hero-chip-conn-amber .conn-icon { color: #fbbf24; }
-  .hero-chip-conn-red   { border-left-color: #f87171; }
-  .hero-chip-conn-red   .hero-value,
-  .hero-chip-conn-red   .conn-icon { color: #f87171; }
-  .hero-chip-conn-neutral { border-left-color: #7e97b8; }
-
-  .hero-refresh {
-    margin-left: auto;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    letter-spacing: 0.04em;
-  }
+  /* Hero strip CSS retired alongside its markup — the three pnl
+     stat classes the stat overlay consumes (`hero-pnl-up`,
+     `hero-pnl-down`, `hero-pnl-neutral`) live alongside `.eq-stat-v`
+     above. */
 
   /* Refresh chip per-card header. Same palette as .hero-refresh but
      sized to sit alongside the section label without pushing the
@@ -2125,6 +2031,46 @@
     cursor: crosshair;
     overflow: visible;
   }
+  /* Stat overlay — at-a-glance P&L numerics (P&L TODAY · TODAY % ·
+     vs NIFTY) anchored top-left inside the chart card body. Same
+     pointer-events:none HTML overlay pattern OptionsPayoff uses;
+     never blocks SVG hover / zoom. Replaces the retired top-of-page
+     `.hero-row` chips. */
+  .eq-stats {
+    position: absolute;
+    top: 0.3rem;
+    left: 0.4rem;
+    display: flex;
+    gap: 0.65rem;
+    font-family: ui-monospace, monospace;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .eq-stat {
+    display: inline-flex;
+    flex-direction: column;
+    line-height: 1;
+  }
+  .eq-stat-k {
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(200, 216, 240, 0.6);
+    margin-bottom: 0.18rem;
+  }
+  .eq-stat-v {
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: #c8d8f0;
+  }
+  .eq-stat-v.hero-pnl-up   { color: #4ade80; }
+  .eq-stat-v.hero-pnl-down { color: #f87171; }
+  .eq-stat-v.hero-pnl-neutral { color: rgba(200, 216, 240, 0.6); }
+  /* Card body is the overlay's positioning context — make it relative
+     so .eq-stats anchors inside the chart panel. */
+  .row1-col-chart .card-body { position: relative; }
   .eq-empty {
     display: flex;
     align-items: center;

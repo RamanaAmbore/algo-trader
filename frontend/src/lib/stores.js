@@ -689,3 +689,46 @@ export function stopAgentEventsPoller() {
   }
   _agentPollerStarted = false;
 }
+
+// ── Connection-status store ──────────────────────────────────────────
+// Global broker-account loaded/total counts surfaced as a badge on
+// every RefreshButton. Polled once globally (every 15 s) so each card's
+// refresh icon shows the same state without per-page re-fetching.
+// Earlier dashboard fetched this via `_fetchConn()` for its CONN hero
+// chip; that chip is gone but the connection-state semantics live on,
+// merged into the refresh affordance.
+//
+// Shape: { loaded: number, total: number }
+//   loaded === total  → green badge
+//   0 < loaded < total → amber badge
+//   loaded === 0       → red badge
+//   total === 0        → no badge (no broker config / demo mode)
+export const connStatus = writable(/** @type {{loaded:number,total:number}} */ ({ loaded: 0, total: 0 }));
+
+let _connPollerStarted = false;
+let _connPollerTeardown = null;
+export function startConnStatusPoller() {
+  if (!browser || _connPollerStarted) return;
+  _connPollerStarted = true;
+  const poll = async () => {
+    try {
+      const { fetchBrokerAccounts } = await import('$lib/api');
+      const accounts = await fetchBrokerAccounts();
+      if (!Array.isArray(accounts)) return;
+      connStatus.set({
+        total:  accounts.length,
+        loaded: accounts.filter((a) => a?.loaded).length,
+      });
+    } catch { /* leave stale */ }
+  };
+  poll();
+  _connPollerTeardown = visibleInterval(poll, 15000);
+}
+
+export function stopConnStatusPoller() {
+  if (_connPollerTeardown) {
+    _connPollerTeardown();
+    _connPollerTeardown = null;
+  }
+  _connPollerStarted = false;
+}
