@@ -95,6 +95,32 @@
       link: { href: '/orders', label: 'Open Orders' },
     },
     {
+      title: 'Unified card UX + connection health on every Refresh',
+      tag: 'Operator UX',
+      color: '#22d3ee',
+      body: 'Every card across every page speaks one UX language — Collapse / Default / Fullscreen sit top-right in the same cyan-400 trio, refresh affordances bake into the same icon family, and a connection-status badge on every Refresh button shows broker-account health at-a-glance from any page. One mental model, twelve cards, four pages.',
+      bullets: [
+        'Default-mode trio: Collapse → Default → Fullscreen (DefaultSize hidden when not maximized)',
+        'Fullscreen mode reverses to Refresh + Default — Collapse is hidden, OrderNotif + AgentNotif bells lift to viewport top-right',
+        'Connection badge on Refresh: green (all broker accounts loaded), amber (partial), red (none) — single 15 s global poll, every Refresh icon subscribes',
+        'Charts scale to viewport in fullscreen mode (OptionsPayoff, PriceChart, dashboard equity curve)',
+      ],
+      link: { href: '/admin/options', label: 'See it on Derivatives' },
+    },
+    {
+      title: 'Real-time alerting with tier-aware audio',
+      tag: 'In-app alerting',
+      color: '#a78bfa',
+      body: 'Two persistent surfaces keep the operator aware. Bell dropdowns in every page header list recent events with one-click drill-down to a rich modal; toast notifications fire on every agent_inapp_notify with a tier-aware Web Audio chirp — critical lands as a descending two-note urgent pattern, info as a single high chirp. Mute toggle in the bell panel persists per browser.',
+      bullets: [
+        'Order bell + Agent bell on every page header; badge persists while the panel is open so the operator reads items with the unread count for context',
+        'Web Audio API generates the tone — no audio file shipped, zero bundle weight',
+        'Sound autoplays cleanly after the first user interaction; silently no-ops on cold-load per browser policy',
+        'Telegram + email + WebSocket + log channels all wire through the same agent grammar — alert routing is per-agent opt-in',
+      ],
+      link: { href: '/agents/activity', label: 'View activity feed' },
+    },
+    {
       title: 'Production deployment',
       tag: 'Ops',
       color: '#c4b5fd',
@@ -115,6 +141,7 @@
     { val: '3',    lbl: 'broker adapters' },
     { val: '14+',  lbl: 'loss/risk agents' },
     { val: '24×7', lbl: 'background risk engine' },
+    { val: '0',    lbl: 'chart libraries (all hand-rolled SVG)' },
     { val: '1',    lbl: 'engineer (start to ship)' },
   ];
 </script>
