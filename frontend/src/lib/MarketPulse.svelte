@@ -3635,12 +3635,7 @@
           <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-              <span class="mp-bucket-head-spacer"></span>
-              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
-            </div>
-            <div class="mp-bucket-subhead">
-              <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
+              <div class="mp-wl-tabs mp-head-tabs" role="tablist" aria-label="Winners universe">
                 {#each MOVER_TABS as t}
                   <button type="button" role="tab"
                           class="mp-wl-tab"
@@ -3651,6 +3646,9 @@
                   </button>
                 {/each}
               </div>
+              <span class="mp-bucket-head-spacer"></span>
+              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3659,12 +3657,7 @@
           <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-              <span class="mp-bucket-head-spacer"></span>
-              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
-            </div>
-            <div class="mp-bucket-subhead">
-              <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
+              <div class="mp-wl-tabs mp-head-tabs" role="tablist" aria-label="Losers universe">
                 {#each MOVER_TABS as t}
                   <button type="button" role="tab"
                           class="mp-wl-tab"
@@ -3675,6 +3668,9 @@
                   </button>
                 {/each}
               </div>
+              <span class="mp-bucket-head-spacer"></span>
+              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -4637,6 +4633,19 @@
     flex: 0 0 auto;
     width: 7rem;
     min-width: 0;
+  }
+  /* Universe tabs (Underlying / Large Cap / Midcap / Smallcap)
+     inline in the Winners / Losers bucket-head. Sits BETWEEN the
+     label and the spacer so it reads as "Winners → which universe
+     → controls". `flex-wrap: wrap` lets the tabs wrap onto a
+     second row when the card width is tight (narrow viewports),
+     keeping the card width unchanged. `min-width: 0` allows the
+     flex container to shrink rather than forcing the card wider. */
+  .mp-head-tabs {
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 0.18rem;
   }
 
   /* Unified `+` add button — single chip at the end of the chrome row.
