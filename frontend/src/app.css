@@ -976,29 +976,62 @@
   }
 }
 
-/* Keep the FullscreenButton (.fs-btn) anchored at the card's
-   top-right corner WHILE FULLSCREEN even when the card scrolls.
-   In default mode the button sits inline in the card header (flex
-   layout pushes it right) — that's already top-right. In fullscreen
-   mode the card has overflow:auto, so the header (and the button
-   inside it) would slide out of view on scroll. Pinning the button
-   via position:fixed keeps it visible at the viewport's top-right
-   corner regardless of how deeply the operator scrolls inside the
-   modal card.
+/* Keep the entire card-control trio visible WHILE FULLSCREEN even
+   when the card scrolls. Pre-trio era this rule pinned only the
+   .fs-btn; the new canonical ordering (Fullscreen → Default →
+   Collapse) means we now have three buttons clustered at the right
+   edge of every card header, and all three need to stay reachable.
 
-   The offset matches the .fs-card-on inset (2rem desktop / 0.5rem
-   mobile) plus a small inner pad so the button sits just inside
-   the card's top-right edge, not against the viewport border. */
+   Strategy: instead of computing per-button right offsets that have
+   to know about the cluster's order + width, pin a single
+   .card-control-cluster wrapper… but we don't have one. So we
+   pin each button individually, ordered right-to-left:
+
+     [Collapse] is the rightmost  → right: base
+     [Default ] middle            → right: base + (width + gap)
+     [Fullscr.] leftmost          → right: base + 2 × (width + gap)
+
+   width = 1.4rem, gap = 0.3rem ⇒ step = 1.7rem.
+
+   `:has()` lets us scope the multi-button geometry ONLY to cards
+   that actually have the trio — single-button cards fall back to
+   the legacy single-fs-btn pin. */
 .fs-card-on .fs-btn {
   position: fixed !important;
   top: calc(2rem + 0.55rem) !important;
   right: calc(2rem + 0.65rem) !important;
   z-index: 10000 !important;
 }
+.fs-card-on:has(.default-btn) .collapse-btn {
+  position: fixed !important;
+  top: calc(2rem + 0.55rem) !important;
+  right: calc(2rem + 0.65rem) !important;
+  z-index: 10000 !important;
+}
+.fs-card-on:has(.default-btn) .default-btn {
+  position: fixed !important;
+  top: calc(2rem + 0.55rem) !important;
+  right: calc(2rem + 0.65rem + 1.7rem) !important;
+  z-index: 10000 !important;
+}
+.fs-card-on:has(.default-btn) .fs-btn {
+  right: calc(2rem + 0.65rem + 3.4rem) !important;
+}
 @media (max-width: 600px) {
   .fs-card-on .fs-btn {
     top: calc(0.5rem + 0.5rem) !important;
     right: calc(0.5rem + 0.55rem) !important;
+  }
+  .fs-card-on:has(.default-btn) .collapse-btn {
+    top: calc(0.5rem + 0.5rem) !important;
+    right: calc(0.5rem + 0.55rem) !important;
+  }
+  .fs-card-on:has(.default-btn) .default-btn {
+    top: calc(0.5rem + 0.5rem) !important;
+    right: calc(0.5rem + 0.55rem + 1.7rem) !important;
+  }
+  .fs-card-on:has(.default-btn) .fs-btn {
+    right: calc(0.5rem + 0.55rem + 3.4rem) !important;
   }
 }
 

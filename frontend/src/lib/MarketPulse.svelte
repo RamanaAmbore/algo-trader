@@ -32,6 +32,8 @@
   import { visibleInterval } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
   import CollapseButton from '$lib/CollapseButton.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
@@ -789,6 +791,16 @@
   let _colLosers    = $state(false);
   let _colPositions = $state(false);
   let _colHoldings  = $state(false);
+  // Per-card fullscreen toggles — pair with the existing collapse
+  // toggles so every bucket gets the canonical card-control trio
+  // (Fullscreen / Default / Collapse). Each card owns its own
+  // `_fsXxx` state so the operator can promote any single card to
+  // viewport while the others stay inline.
+  let _fsPinWatch   = $state(false);
+  let _fsWinners    = $state(false);
+  let _fsLosers     = $state(false);
+  let _fsPositions  = $state(false);
+  let _fsHoldings   = $state(false);
 
   let positionsSummaryReady  = $state(false);
   let holdingsSummaryReady   = $state(false);
@@ -3585,7 +3597,9 @@
           ag-Grid's ResizeObserver re-measures the active grid
           when the operator flips tabs.
         -->
-        <section class="mp-bucket-wrap mp-bucket-pinwatch" class:is-collapsed={_effColPinWatch}>
+        <section class="mp-bucket-wrap mp-bucket-pinwatch"
+                 class:is-collapsed={_effColPinWatch}
+                 class:fs-card-on={_fsPinWatch}>
           <div class="mp-bucket-head">
             <div class="mp-toptabs" role="tablist" aria-label="Pinned / Watchlist">
               <button type="button" role="tab"
@@ -3604,6 +3618,8 @@
                     aria-label="Add symbol or watchlist"
                     class="mp-add-btn">+</button>
             <span class="mp-bucket-head-spacer"></span>
+            <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
+            <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
             <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
           </div>
           {#if topTab === 'watchlist' && _userLists.length > 1}
@@ -3635,7 +3651,9 @@
                class:mp-grid-hidden={topTab !== 'watchlist'}></div>
         </section>
         {#if showWinners}
-          <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
+          <section class="mp-bucket-wrap mp-bucket-winners"
+                   class:is-collapsed={_effColWinners}
+                   class:fs-card-on={_fsWinners}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
               <div class="mp-wl-tabs mp-head-tabs" role="tablist" aria-label="Winners universe">
@@ -3650,13 +3668,17 @@
                 {/each}
               </div>
               <span class="mp-bucket-head-spacer"></span>
+              <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
+              <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
               <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
         {#if showLosers}
-          <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
+          <section class="mp-bucket-wrap mp-bucket-losers"
+                   class:is-collapsed={_effColLosers}
+                   class:fs-card-on={_fsLosers}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
               <div class="mp-wl-tabs mp-head-tabs" role="tablist" aria-label="Losers universe">
@@ -3671,6 +3693,8 @@
                 {/each}
               </div>
               <span class="mp-bucket-head-spacer"></span>
+              <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
+              <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
               <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
@@ -3679,7 +3703,9 @@
       </div>
 
       <div class="mp-col mp-col-right">
-        <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
+        <section class="mp-bucket-wrap mp-bucket-positions"
+                 class:is-collapsed={_effColPositions}
+                 class:fs-card-on={_fsPositions}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
             {#if accountPicker && availableAccounts.length > 0}
@@ -3696,11 +3722,15 @@
               </div>
             {/if}
             <span class="mp-bucket-head-spacer"></span>
+            <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
+            <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
         </section>
-        <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
+        <section class="mp-bucket-wrap mp-bucket-holdings"
+                 class:is-collapsed={_effColHoldings}
+                 class:fs-card-on={_fsHoldings}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
             {#if accountPicker && availableAccounts.length > 0}
@@ -3711,6 +3741,8 @@
               </div>
             {/if}
             <span class="mp-bucket-head-spacer"></span>
+            <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />
+            <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
@@ -4231,6 +4263,19 @@
     height: 0 !important;
     min-height: 0 !important;
     overflow: hidden;
+  }
+  /* Fullscreen card promotes the bucket-grid to fill the viewport
+     minus the card's inset + header height. ag-Grid's ResizeObserver
+     re-measures on the next paint so rows fill the new height. */
+  .mp-bucket-wrap.fs-card-on .bucket-grid {
+    height: calc(100vh - 8rem) !important;
+    min-height: 320px !important;
+    flex: 1 1 auto;
+  }
+  @media (max-width: 600px) {
+    .mp-bucket-wrap.fs-card-on .bucket-grid {
+      height: calc(100vh - 6rem) !important;
+    }
   }
 
   /* Desktop split — two grids side-by-side in a flex row, each
