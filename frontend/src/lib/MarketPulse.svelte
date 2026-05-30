@@ -4523,21 +4523,27 @@
      (rare; broken row data), the borders disappear so totals + edge
      cases stay clean. */
   :global(.ag-theme-algo .mp-sym-acct) {
-    border-left: 2px solid var(--mp-sym-acct-color, transparent) !important;
-    border-right: 2px solid var(--mp-sym-acct-color, transparent) !important;
+    /* Use `box-shadow: inset` instead of `border` so the tint line
+       sits AT the cell's inner edge without consuming layout width
+       AND without competing with ag-Grid's own cell-divider rendering.
+       border-right used to shift the cell content + create an
+       inconsistent visual against the divider line. The inset shadow
+       overlays on top of the cell — same visual on every grid. */
+    box-shadow:
+      inset  2px 0 0 0 var(--mp-sym-acct-color, transparent),
+      inset -2px 0 0 0 var(--mp-sym-acct-color, transparent) !important;
     background-color: color-mix(in srgb, var(--mp-sym-acct-color, transparent) 14%, transparent);
   }
   /* Symbol cell on the Winners / Losers grids — right-side vertical
-     border tinted to match the card's bucket-label colour (green for
-     Winners, red for Losers). Mirrors the account-tint border idiom
-     on the Positions/Holdings grids but encodes DIRECTION instead of
-     account ownership. Scope by the bucket-wrap class so only the
-     mover grids carry the rule. */
+     tint matching the card's bucket-label colour (green for Winners,
+     red for Losers). Same inset-box-shadow idiom as `.mp-sym-acct` so
+     the line lands at the exact same pixel position regardless of
+     which grid the cell is in. */
   :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym) {
-    border-right: 2px solid rgba(74, 222, 128, 0.85) !important;
+    box-shadow: inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
-    border-right: 2px solid rgba(248, 113, 113, 0.85) !important;
+    box-shadow: inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
   }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
