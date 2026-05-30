@@ -11,10 +11,9 @@
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import RefreshAge from '$lib/RefreshAge.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
-  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt } from '$lib/stores';
+  import { clientTimestamp, nowStamp, visibleInterval } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
@@ -982,10 +981,6 @@
 
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
-      // Drive the global RefreshAge chip — every successful loadHero
-      // resets the "updated Xs ago" countdown so the operator sees
-      // auto-refresh activity even when they didn't click manually.
-      lastRefreshAt.set(Date.now());
 
       // Parallel: margins + conn health + NIFTY quote.
       // _fetchEquity intentionally NOT in this batch — it has its
@@ -1485,7 +1480,6 @@
     <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
-  <RefreshAge />
   <span class="ml-auto"></span>
   <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
   <OrderNotifications /><AgentNotifications />

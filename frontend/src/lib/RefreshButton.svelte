@@ -30,7 +30,7 @@
   twice while the first request was still in flight).
 -->
 <script>
-  import { connStatus, startConnStatusPoller, lastRefreshAt } from '$lib/stores';
+  import { connStatus, startConnStatusPoller } from '$lib/stores';
   import { onMount } from 'svelte';
 
   /**
@@ -45,19 +45,6 @@
   // Ensure the global connection-status poller is running. Idempotent —
   // safe to call from every mounted RefreshButton.
   onMount(() => { startConnStatusPoller(); });
-
-  // Watch the `loading` prop for true → false transitions and stamp
-  // `lastRefreshAt` so the global RefreshAge chip ticks. Fires for
-  // BOTH manual clicks (operator hits the button) AND auto-refresh
-  // (background visibleInterval poll), as long as the page's load()
-  // sets loading=true at the start and loading=false in finally.
-  let _prevLoading = false;
-  $effect(() => {
-    if (_prevLoading && !loading) {
-      lastRefreshAt.set(Date.now());
-    }
-    _prevLoading = loading;
-  });
 
   // Badge state derived from the store.
   let _loaded = $state(0);
@@ -89,15 +76,28 @@
   disabled={loading}
   aria-label={loading ? `Refreshing ${label}` : `Refresh ${label}`}
   title={_connTitle}>
-  <!-- Circular-arrow refresh icon. -->
-  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-    <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
-      fill="none" stroke="currentColor" stroke-width="1.5"
-      stroke-linecap="round" />
-    <path d="M13.5 2v3.5H10"
-      fill="none" stroke="currentColor" stroke-width="1.5"
-      stroke-linecap="round" stroke-linejoin="round" />
-  </svg>
+  {#if loading}
+    <!-- Loading state — distinct arc-spinner glyph (NOT the same
+         refresh-arrow rotated). Reads as "working / fetching" rather
+         than "refresh affordance". The arc spins via the rf-spinning
+         keyframe below. -->
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.5"
+        fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round"
+        stroke-dasharray="9 30" />
+    </svg>
+  {:else}
+    <!-- Idle / refresh affordance — circular-arrow icon. -->
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
+        fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" />
+      <path d="M13.5 2v3.5H10"
+        fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  {/if}
   {#if _total > 0}
     <span class="rf-badge {_badgeClass}">{_loaded}</span>
   {/if}

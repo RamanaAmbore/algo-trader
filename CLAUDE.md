@@ -524,7 +524,8 @@ The canonical page-header is:
 - **Every page that fetches data dynamically MUST have a page-header RefreshButton** wired to its primary load function. If the page has multiple loaders, wrap them: `onClick={() => { loadA(); loadB(); }}`.
 - Exceptions: `console` (command surface, no data), `admin/settings` (form-only), `showcase` (static narrative).
 - The `RefreshButton` placement is between the `ml-auto` spacer and the notification bells. Page-specific action chips (back-links, ✦ Ask AI, Create User, etc.) sit between the RefreshButton and the notification bells in markup order.
-- Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed.
+- Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed. The badge keeps its size/color/number unchanged during a refresh (only the icon glyph swaps).
+- The RefreshButton swaps its **icon glyph** during `loading=true`: idle shows the canonical circular-arrow refresh symbol; loading shows a distinct arc-spinner glyph (NOT the same arrow rotated). Operator can tell at a glance "the icon changed shape, so a refresh is in flight" without needing a separate text indicator. Do NOT add `RefreshAge` / "Updated Xs ago" text chips alongside — the spec was tested and dropped because the text widened the header and competed with the notification icons.
 
 ### Chart cards in fullscreen mode
 
