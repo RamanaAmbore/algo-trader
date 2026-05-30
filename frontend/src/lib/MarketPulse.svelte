@@ -2746,6 +2746,13 @@
     const row = params.data || {};
     const alias = row.alias ? `<span class="sym-alias"> → ${row.tradingsymbol}</span>` : '';
     const main  = row.alias || row.tradingsymbol || '';
+    // CE / PE tint on the symbol text — Sensibull / Streak convention.
+    // Green = Call (right to BUY the underlying), red = Put (right to
+    // SELL). Operator scanning their book tells calls from puts at a
+    // glance without reading the strike.
+    const optClass = row.opt_type === 'CE' ? 'sym-ce'
+                    : row.opt_type === 'PE' ? 'sym-pe'
+                    : '';
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
@@ -2790,7 +2797,7 @@
       ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
         `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
       : '';
-    return `<span class="sym-main">${main}</span>${alias}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
+    return `<span class="sym-main ${optClass}">${main}</span>${alias}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
   }
 
   /**
@@ -2857,7 +2864,10 @@
     // already paints the Movers divider; the operator sees the major
     // label then the direction label as the body begins.
     if (r._majorGroup === 'movers' && r._moverDirectionFirst && !r._majorFirst) {
-      classes.push(`mover-direction-divider mover-dir-${r._moverDirection || 'unknown'}`);
+      // Direction-specific sub-class (`mover-dir-winners` / `-losers`)
+      // was retired with the per-colour divider rules; only the
+      // parent class is consumed by CSS now.
+      classes.push('mover-direction-divider');
     }
     if (r._majorGroup === 'movers' && r._moverDirection) {
       classes.push(`mover-dir-row-${r._moverDirection}`);
@@ -2869,7 +2879,12 @@
     // stacking three would triple-line).
     if (r._majorGroup === 'movers' && r._moverGroupFirst
         && !r._majorFirst && !r._moverDirectionFirst) {
-      classes.push(`mover-group-divider mover-grp-${r._moverGroup || 'unknown'}`);
+      // Group-specific sub-class (`mover-grp-underlying` / `-midcap`
+      // / `-smallcap`) was retired with the per-colour divider rules;
+      // only the parent class is consumed by CSS now. The per-group
+      // left-edge accent uses `mover-${r._moverGroup}` (a different
+      // class, pushed below).
+      classes.push('mover-group-divider');
     }
     if (r._majorGroup === 'movers' && r._moverGroup) {
       classes.push(`mover-${r._moverGroup}`);
@@ -4095,6 +4110,11 @@
 <style>
   /* Symbol cell — main + alias. */
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
+  /* CE = green (right to BUY = bullish), PE = red (right to SELL =
+     bearish). Sensibull / Streak convention. Operator scanning
+     positions tells calls from puts at a glance. */
+  :global(.sym-main.sym-ce) { color: #4ade80; }
+  :global(.sym-main.sym-pe) { color: #f87171; }
   :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
@@ -4543,6 +4563,17 @@
      stripes below it. */
   :global(.mp-bucket-wrap .ag-theme-algo .ag-header-row) {
     border-bottom: 1px solid rgba(251, 191, 36, 0.30) !important;
+  }
+  /* Winners / Losers ROW background tint — completes the "every
+     section has a row-tint" rhythm. Same 0.06 alpha as Holdings
+     row-hold-up / row-hold-down so the bucket reads as part of the
+     family. Tinted on every row (not just first/last), matching
+     pos-long / pos-short / row-watch. */
+  :global(.mp-bucket-winners .ag-theme-algo .ag-row) {
+    background-color: rgba(74, 222, 128, 0.06) !important;
+  }
+  :global(.mp-bucket-losers .ag-theme-algo .ag-row) {
+    background-color: rgba(248, 113, 113, 0.06) !important;
   }
   /* Winners / Losers symbol cell paints the colour tint on BOTH edges
      — matches the pinned grid's symbol cell (which gets row-watch

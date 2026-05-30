@@ -176,15 +176,21 @@
    left and right edges. Earlier iterations tinted the whole row + put
    a single-edge bar; the user prefers the indicator scoped to the
    symbol cell so it doesn't dominate the row visually. */
+/* Long / short → green / red, matching Bloomberg / IBKR TWS /
+   Sensibull / Streak convention. Earlier RamboQuant used cyan/orange
+   to avoid colliding with day-P&L direction; the day-P&L mini-bar
+   now sits with a 4 px gap (see day-pnl-* below) so colour collision
+   is moot. Operator from any other algo platform reads long/short
+   without a learning curve. */
 .ag-theme-algo .ag-row.pos-long .ag-col-sym {
-  background-color: rgba(56,189,248,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(56,189,248,0.85),
-              inset -2px 0 0 rgba(56,189,248,0.85) !important;
+  background-color: rgba(74,222,128,0.10) !important;
+  box-shadow: inset 2px 0 0 rgba(74,222,128,0.85),
+              inset -2px 0 0 rgba(74,222,128,0.85) !important;
 }
 .ag-theme-algo .ag-row.pos-short .ag-col-sym {
-  background-color: rgba(251,146,60,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(251,146,60,0.85),
-              inset -2px 0 0 rgba(251,146,60,0.85) !important;
+  background-color: rgba(248,113,113,0.10) !important;
+  box-shadow: inset 2px 0 0 rgba(248,113,113,0.85),
+              inset -2px 0 0 rgba(248,113,113,0.85) !important;
 }
 .ag-theme-algo .ag-row.pos-long.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.pos-short.ag-row-hover .ag-col-sym {
@@ -250,11 +256,12 @@
 .ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after {
   content: '';
   position: absolute;
-  /* Sits IMMEDIATELY adjacent to the outer cumulative-tint border
-     (now 2 px wide via inset -2px — narrowed for grid consistency),
-     so the two bars touch with no gap. Same top/bottom as the
-     outer border so the heights match exactly. */
-  right: 2px;
+  /* 4 px gap from the outer 2 px cumulative-tint border so the day
+     mini-bar reads as a distinct second stripe even when its colour
+     matches the cumulative border (e.g. both green = "long-up").
+     Previously adjacent + same colour rendered as one merged band —
+     operator couldn't see the day indicator at all 50 % of the time. */
+  right: 6px;
   top: 0;
   bottom: 0;
   width: 2px;
