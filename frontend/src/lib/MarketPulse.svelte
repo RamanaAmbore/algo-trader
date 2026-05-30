@@ -2880,7 +2880,18 @@
       else if (q > 0) classes.push('pos-long');
       else classes.push('row-pos');
     }
-    else if (s.h) classes.push('row-hold');
+    else if (s.h) {
+      // Differentiate Holdings rows by P&L sign so the symbol-cell
+      // tint border encodes "this holding is up / down / flat" at a
+      // glance, matching the pos-long / pos-short visual idiom on
+      // Positions. Earlier every Holding got the same green tint
+      // regardless of whether the operator was up or down on it —
+      // visually uniform but information-blind.
+      const pnl = Number(r.pnl);
+      if (Number.isFinite(pnl) && pnl > 0) classes.push('row-hold-up');
+      else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
+      else classes.push('row-hold-flat');
+    }
     else if (s.w) classes.push('row-watch');
     else if (s.u) classes.push('row-und');
     return classes.join(' ');
@@ -4534,16 +4545,22 @@
       inset -2px 0 0 0 var(--mp-sym-acct-color, transparent) !important;
     background-color: color-mix(in srgb, var(--mp-sym-acct-color, transparent) 14%, transparent);
   }
-  /* Symbol cell on the Winners / Losers grids — right-side vertical
-     tint matching the card's bucket-label colour (green for Winners,
-     red for Losers). Same inset-box-shadow idiom as `.mp-sym-acct` so
-     the line lands at the exact same pixel position regardless of
-     which grid the cell is in. */
+  /* Symbol cell on the Winners / Losers grids — vertical tint on
+     BOTH left + right edges (matching the bucket-label colour) so
+     the cell reads as a clean coloured frame instead of a one-sided
+     accent with ag-Grid's default gray divider showing through on
+     the opposite edge. Same inset-box-shadow idiom as `.mp-sym-acct`
+     so the line lands at the exact same pixel position regardless
+     of which grid the cell is in. */
   :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym) {
-    box-shadow: inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
+    box-shadow:
+      inset  2px 0 0 0 rgba(74, 222, 128, 0.85),
+      inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
-    box-shadow: inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
+    box-shadow:
+      inset  2px 0 0 0 rgba(248, 113, 113, 0.85),
+      inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
   }
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */

@@ -194,10 +194,25 @@
 /* Watchlist / holdings / underlying tints — mirror the pos-long /
    pos-short symbol-cell pattern but in green / amber / violet so the
    unified watchlist grid uses the same idiom as the positions page. */
-.ag-theme-algo .ag-row.row-hold .ag-col-sym {
+/* Holdings — three sign variants. Border colour encodes whether the
+   operator is UP / DOWN / FLAT on the holding so the symbol cell
+   reads as P&L direction at a glance, same idiom Positions uses with
+   pos-long (cyan, long) vs pos-short (warm, short). MarketPulse's
+   getRowClass pushes exactly one of these per holdings row. */
+.ag-theme-algo .ag-row.row-hold-up .ag-col-sym {
   background-color: rgba(74,222,128,0.10) !important;
   box-shadow: inset 4px 0 0 rgba(74,222,128,0.85),
               inset -4px 0 0 rgba(74,222,128,0.85) !important;
+}
+.ag-theme-algo .ag-row.row-hold-down .ag-col-sym {
+  background-color: rgba(248,113,113,0.10) !important;
+  box-shadow: inset 4px 0 0 rgba(248,113,113,0.85),
+              inset -4px 0 0 rgba(248,113,113,0.85) !important;
+}
+.ag-theme-algo .ag-row.row-hold-flat .ag-col-sym {
+  background-color: rgba(148,163,184,0.08) !important;
+  box-shadow: inset 4px 0 0 rgba(148,163,184,0.5),
+              inset -4px 0 0 rgba(148,163,184,0.5) !important;
 }
 .ag-theme-algo .ag-row.row-watch .ag-col-sym {
   background-color: rgba(251,191,36,0.10) !important;
@@ -214,7 +229,9 @@
   box-shadow: inset 4px 0 0 rgba(148,163,184,0.5),
               inset -4px 0 0 rgba(148,163,184,0.5) !important;
 }
-.ag-theme-algo .ag-row.row-hold.ag-row-hover .ag-col-sym,
+.ag-theme-algo .ag-row.row-hold-up.ag-row-hover .ag-col-sym,
+.ag-theme-algo .ag-row.row-hold-down.ag-row-hover .ag-col-sym,
+.ag-theme-algo .ag-row.row-hold-flat.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-watch.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-und.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-pos.ag-row-hover .ag-col-sym {
