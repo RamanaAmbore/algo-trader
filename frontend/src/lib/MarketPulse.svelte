@@ -36,6 +36,7 @@
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
+  import { lastRefreshAt } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -2069,6 +2070,10 @@
       }
       pulseLastUpdate = Date.now();
       _lastPulseAt = pulseLastUpdate;
+      // Drive the global RefreshAge chip — every successful loadPulse
+      // resets the "updated Xs ago" countdown so the operator sees
+      // auto-refresh activity even when they didn't click manually.
+      lastRefreshAt.set(pulseLastUpdate);
     } catch (_) { /* nothing fatal */ }
   }
 

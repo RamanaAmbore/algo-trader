@@ -30,7 +30,7 @@
   twice while the first request was still in flight).
 -->
 <script>
-  import { connStatus, startConnStatusPoller } from '$lib/stores';
+  import { connStatus, startConnStatusPoller, lastRefreshAt } from '$lib/stores';
   import { onMount } from 'svelte';
 
   /**
@@ -45,6 +45,19 @@
   // Ensure the global connection-status poller is running. Idempotent —
   // safe to call from every mounted RefreshButton.
   onMount(() => { startConnStatusPoller(); });
+
+  // Watch the `loading` prop for true → false transitions and stamp
+  // `lastRefreshAt` so the global RefreshAge chip ticks. Fires for
+  // BOTH manual clicks (operator hits the button) AND auto-refresh
+  // (background visibleInterval poll), as long as the page's load()
+  // sets loading=true at the start and loading=false in finally.
+  let _prevLoading = false;
+  $effect(() => {
+    if (_prevLoading && !loading) {
+      lastRefreshAt.set(Date.now());
+    }
+    _prevLoading = loading;
+  });
 
   // Badge state derived from the store.
   let _loaded = $state(0);

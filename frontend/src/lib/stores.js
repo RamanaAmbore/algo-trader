@@ -690,6 +690,16 @@ export function stopAgentEventsPoller() {
   _agentPollerStarted = false;
 }
 
+// ── Last refresh timestamp ───────────────────────────────────────────
+// Single global "when did we last refresh page data?" timestamp,
+// updated automatically by every <RefreshButton> when its `loading`
+// prop falls true → false (i.e. a load() call settled). Drives the
+// `<RefreshAge />` chip next to every page-header timestamp so the
+// operator can tell at-a-glance how stale the visible data is — both
+// after a manual click AND after every background visibleInterval
+// tick. ms epoch; 0 ⇒ "no refresh yet".
+export const lastRefreshAt = writable(0);
+
 // ── Connection-status store ──────────────────────────────────────────
 // Global broker-account loaded/total counts surfaced as a badge on
 // every RefreshButton. Polled once globally (every 15 s) so each card's
