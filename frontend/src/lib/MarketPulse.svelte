@@ -4212,58 +4212,26 @@
     border-top: none;
   }
 
-  /* Major-group dividers — first row of each major in mainRows
-     (Watchlist → Positions → Holdings → Movers) gets a thicker
-     amber top-border + a thin amber gradient strip above. The very
-     first major (watchlist when active, else positions) doesn't
-     skip the divider — pinnedTopRowData sits above mainRows so the
-     transition from Pinned → next-major is visually meaningful.
-     Per-major sub-tint controls the colour temperature of the
-     divider (sky for positions/holdings activity-related, amber
-     for watchlist/movers signal-related). */
-  :global(.ag-theme-algo .ag-row.major-divider) {
-    border-top: 2px solid rgba(251, 191, 36, 0.55);
-    box-shadow: inset 0 1px 0 rgba(251, 191, 36, 0.18);
-  }
-  :global(.ag-theme-algo .ag-row.major-watchlist) {
-    border-top-color: rgba(251, 191, 36, 0.55);
-  }
-  :global(.ag-theme-algo .ag-row.major-positions) {
-    border-top-color: rgba(125, 211, 252, 0.55);
-    box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.18);
-  }
-  :global(.ag-theme-algo .ag-row.major-holdings) {
-    border-top-color: rgba(134, 239, 172, 0.55);
-    box-shadow: inset 0 1px 0 rgba(134, 239, 172, 0.18);
-  }
-  :global(.ag-theme-algo .ag-row.major-movers) {
-    border-top-color: rgba(196, 181, 253, 0.55);
-    box-shadow: inset 0 1px 0 rgba(196, 181, 253, 0.18);
-  }
-
-  /* Movers sub-group dividers — first row of each (underlying /
-     midcap / smallcap) section inside the Movers major. Lighter
-     accent than the major divider so the visual hierarchy reads
-     as "block of movers → sub-section → row" rather than "four
-     equal blocks". Per-group hue distinguishes the three universes
-     at a glance: violet for F&O underlying (matches the major hue),
-     teal for midcap (cool mid-tone), cyan for smallcap (cool,
-     slightly more saturated). */
+  /* Horizontal section dividers across EVERY bucket grid — unified
+     thin amber 30 % alpha so the five grids (Pinned/Watchlist,
+     Winners, Losers, Positions, Holdings) carry the same horizontal
+     border thickness + colour as the pin-divider on the pinned grid.
+     Operator gets one visual idiom for "section break" instead of
+     a different colour per grid type. Background tints on the row
+     still differentiate (positions sky / holdings green / movers
+     violet etc), so the section identity is encoded in the FILL,
+     not the divider. */
+  :global(.ag-theme-algo .ag-row.major-divider),
+  :global(.ag-theme-algo .ag-row.mover-direction-divider),
   :global(.ag-theme-algo .ag-row.mover-group-divider) {
-    border-top: 1px dashed rgba(196, 181, 253, 0.45);
+    border-top: 1px solid rgba(251, 191, 36, 0.30);
+    box-shadow: none;
   }
-  :global(.ag-theme-algo .ag-row.mover-grp-underlying) {
-    border-top-color: rgba(196, 181, 253, 0.50);
-  }
-  :global(.ag-theme-algo .ag-row.mover-grp-midcap) {
-    border-top-color: rgba(56, 189, 248, 0.50);
-  }
-  :global(.ag-theme-algo .ag-row.mover-grp-smallcap) {
-    border-top-color: rgba(94, 234, 212, 0.50);
-  }
-  /* Per-row left-edge accent — kept faint so it reads as a
-     section-membership cue without competing with the direction
-     tint on pos-long / pos-short rows. */
+  /* Per-row left-edge accent on the movers sub-groups — kept faint
+     so it reads as a section-membership cue without competing with
+     the direction tint on pos-long / pos-short rows. Colour scales
+     stay (violet/sky/teal) since this is a per-ROW indicator, not
+     a per-section divider. */
   :global(.ag-theme-algo .ag-row.mover-underlying .ag-cell:first-child) {
     box-shadow: inset 3px 0 0 rgba(196, 181, 253, 0.35);
   }
@@ -4272,20 +4240,6 @@
   }
   :global(.ag-theme-algo .ag-row.mover-smallcap .ag-cell:first-child) {
     box-shadow: inset 3px 0 0 rgba(94, 234, 212, 0.35);
-  }
-
-  /* Direction dividers inside Movers — bolder than the sub-group
-     dashes so the Winners → Losers split reads as the primary
-     internal split, with sub-groups (underlying / midcap / smallcap)
-     nesting below. Green for winners, red for losers. */
-  :global(.ag-theme-algo .ag-row.mover-direction-divider) {
-    border-top: 2px solid rgba(74, 222, 128, 0.55);
-  }
-  :global(.ag-theme-algo .ag-row.mover-dir-winners) {
-    border-top-color: rgba(74, 222, 128, 0.55);
-  }
-  :global(.ag-theme-algo .ag-row.mover-dir-losers) {
-    border-top-color: rgba(248, 113, 113, 0.55);
   }
 
   /* Grid containers — each ag-Grid sits inside its own .bucket-grid
