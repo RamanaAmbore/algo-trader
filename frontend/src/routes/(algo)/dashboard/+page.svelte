@@ -2609,10 +2609,11 @@
     letter-spacing: 0.04em;
     text-align: center;
   }
-  /* AccountMultiSelect on W/L card headers pushes itself + the
-     fullscreen toggle to the right of the section label. The
-     component carries its own width clamps. */
-  .card-header-row > :global(.ams) { margin-left: auto; }
+  /* AccountMultiSelect (.ams) is LEFT-aligned in card-header-row,
+     matching the canonical card-header rule (text + picker on the
+     LEFT, control trio on the right via the first button's
+     `margin-left: auto`). */
+  .card-header-row > :global(.ams) { margin-left: 0; }
 
   /* Compact ag-Grid wrappers inside the Capital + W/L cards. Width
      is 100% (grid columns flex to fill); height is driven by the

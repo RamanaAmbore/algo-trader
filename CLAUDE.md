@@ -436,6 +436,106 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 
 ---
 
+## Canonical card-header rule (apply by default to every card)
+
+Every card across every algo page follows ONE structural rule. The operator gets identical mental model + muscle memory regardless of which page they're on. Update this section when the rule changes — every subsequent edit MUST conform to whatever is documented here.
+
+### Markup layout (left-to-right inside the card's `<div class="…header">`)
+
+```
+[Title/Label]  [Tabs?]  [AccountMultiSelect?]  [Inline chips?]  → … spacer …  [Card-control trio]
+```
+
+- **Text / title left-aligned.** The label or `mp-section-label`/`page-title-chip` sits at the leftmost slot of the header. Optional sub-tabs follow immediately after (underline pattern: `mp-toptab`, `cap-eq-tab`, `legs-tab`, `lab-tab`, `exec-tab`, `mp-wl-tab`).
+- **AccountMultiSelect (and similar pickers) LEFT-aligned**, right after the tabs/label. Reads as part of the card's identity strip, not part of the controls cluster. The `margin-left: auto` previously on `.bucket-header > .ams` is now `margin-left: 0` — do NOT push pickers right.
+- **Card-control trio RIGHT-aligned** via the first button's `margin-left: auto`.
+
+### Default-mode controls (card NOT in fullscreen)
+
+Visible icons, left-to-right:
+
+```
+[Collapse]  [Fullscreen]
+```
+
+Markup order at every callsite (DefaultSizeButton stays in the middle but self-hides when not fullscreen):
+
+```svelte
+<CollapseButton bind:isCollapsed={_colXxx} cardId="…" label="…" />
+<DefaultSizeButton bind:isFullscreen={_fsXxx} bind:isCollapsed={_colXxx} label="…" />
+<FullscreenButton bind:isFullscreen={_fsXxx} label="…" />
+```
+
+- No RefreshButton in default mode (page-level header has one).
+- No notification bells in default mode (they live in the page header).
+- Cyan-400 palette: `#22d3ee` resting, `#67e8f9` hover, bg α 0.14, border α 0.55.
+- 1.4rem × 1.4rem buttons with 0.3rem inter-button gap.
+
+### Fullscreen-mode controls (card has `.fs-card-on` class)
+
+Visible icons, right-to-left:
+
+```
+… [OrderNotif] [AgentNotif] [Refresh] [Default]
+       5.2rem      3.4rem     1.7rem    base
+```
+
+Conditionally rendered at each callsite (place the RefreshButton BEFORE the rest of the trio in markup; visibility is `{#if _fsXxx}`):
+
+```svelte
+{#if _fsXxx}
+  <RefreshButton onClick={pageRefresh} loading={_refreshing} label="…" />
+{/if}
+<CollapseButton … />  <!-- hidden via .fs-card-on .collapse-btn { display: none } -->
+<DefaultSizeButton … />  <!-- self-shows via {#if isFullscreen} -->
+<FullscreenButton … />  <!-- self-hides via {#if !isFullscreen} -->
+```
+
+- `OrderNotifications` + `AgentNotifications` are NOT placed inside the card — they're the global page-header instances pinned to the viewport via `body:has(.fs-card-on) .page-header .anb-wrap, .onb-wrap { position: fixed }` in `frontend/src/app.css`.
+- DefaultSizeButton glyph is the Windows "Restore Down" two-overlapping-rectangles icon (visually distinct from FullscreenButton's outward arrows).
+- All four card-control icons share the same cyan-400 palette.
+
+### Width on collapse
+
+Every card root carries `width: 100%; box-sizing: border-box;` so collapse never shrinks the card horizontally. Icons stay in their default location of the header regardless of body state.
+
+### Notification badge behaviour
+
+`OrderNotifications` + `AgentNotifications` mark events seen on CLOSE (not on OPEN). Badge stays visible while the panel is open so the operator can read items + still register the count.
+
+### Page-header rule (every algo page)
+
+The canonical page-header (from the audit punch list — already applied to every page) is:
+
+```svelte
+<div class="page-header">
+  <span class="algo-title-group">
+    <h1 class="page-title-chip">…</h1>
+    <InfoHint popup text="…" />
+  </span>
+  <span class="algo-ts">{$nowStamp}</span>
+  <span class="ml-auto"></span>
+  [optional page-level RefreshButton + action chips]
+  <OrderNotifications /><AgentNotifications />
+</div>
+```
+
+### Source files
+
+| What | Where |
+|---|---|
+| FullscreenButton (self-hides when fullscreen) | [`frontend/src/lib/FullscreenButton.svelte`](frontend/src/lib/FullscreenButton.svelte) |
+| DefaultSizeButton (self-shows when fullscreen, Windows restore icon) | [`frontend/src/lib/DefaultSizeButton.svelte`](frontend/src/lib/DefaultSizeButton.svelte) |
+| CollapseButton (cyan-400, persists per user via localStorage) | [`frontend/src/lib/CollapseButton.svelte`](frontend/src/lib/CollapseButton.svelte) |
+| RefreshButton (cyan-400, spin animation) | [`frontend/src/lib/RefreshButton.svelte`](frontend/src/lib/RefreshButton.svelte) |
+| Global fullscreen pinning, bell lift, collapse hide | [`frontend/src/app.css`](frontend/src/app.css) (search `.fs-card-on`) |
+| `.algo-title-group` global helper | [`frontend/src/routes/(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte) |
+| Notification close-mark semantics | [`OrderNotifications.svelte`](frontend/src/lib/OrderNotifications.svelte) + [`AgentNotifications.svelte`](frontend/src/lib/AgentNotifications.svelte) `_close()` helper |
+
+When adding a new card, copy the trio + AccountMultiSelect placement from MarketPulse Positions/Holdings or dashboard Capital/Equity. Do NOT invent a new variant.
+
+---
+
 ## Algo navbar — grouped + collapsible
 
 Items in [`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte) carry a `group:` attribute ∈ `{monitor, analyze, modes, build, config}`. Render strategy splits by group size and operator frequency:

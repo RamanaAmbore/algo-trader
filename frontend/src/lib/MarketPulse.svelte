@@ -4699,10 +4699,10 @@
   /* Tab buttons inside the row never shrink (would clip the label). */
   .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
 
-  /* Per-card Account picker inside each bucket-head. Sits between the
-     spacer and the CollapseButton so it locks to the right side of
-     the card next to the controls it operates alongside. Narrow
-     width so it doesn't crowd the row on tighter viewports. */
+  /* Per-card Account picker inside each bucket-head. LEFT-aligned
+     (canonical rule) — sits immediately after the card label, before
+     the spacer + control trio. Narrow width so it doesn't crowd the
+     row on tighter viewports. */
   .mp-head-acct {
     flex: 0 0 auto;
     width: 7rem;
