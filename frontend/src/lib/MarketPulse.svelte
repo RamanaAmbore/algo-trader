@@ -3546,6 +3546,7 @@
         <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_effColPinned}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
+            <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
           </div>
           <!-- bucket-grid div ALWAYS rendered so bind:this lands BEFORE
@@ -3558,7 +3559,6 @@
         <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
-            <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
             {#if _userLists.length > 1}
               <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
                 {#each _userLists as l (l.id)}
@@ -3574,6 +3574,8 @@
                 {/each}
               </div>
             {/if}
+            <span class="mp-bucket-head-spacer"></span>
+            <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
           </div>
           <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
         </section>
@@ -3581,7 +3583,6 @@
           <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
               <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
                 {#each MOVER_TABS as t}
                   <button type="button" role="tab"
@@ -3593,6 +3594,8 @@
                   </button>
                 {/each}
               </div>
+              <span class="mp-bucket-head-spacer"></span>
+              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3601,7 +3604,6 @@
           <section class="mp-bucket-wrap mp-bucket-losers" class:is-collapsed={_effColLosers}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
               <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
                 {#each MOVER_TABS as t}
                   <button type="button" role="tab"
@@ -3613,6 +3615,8 @@
                   </button>
                 {/each}
               </div>
+              <span class="mp-bucket-head-spacer"></span>
+              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3639,6 +3643,7 @@
         <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
+            <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
@@ -3646,6 +3651,7 @@
         <section class="mp-bucket-wrap mp-bucket-holdings" class:is-collapsed={_effColHoldings}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
+            <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
@@ -4195,11 +4201,29 @@
   @media (min-width: 1024px) {
     .mp-layout {
       flex-direction: row;
-      align-items: flex-start;
+      /* align-items: stretch (default) → right col matches the
+         height of the left col so the operator's book grids
+         occupy the full available height. */
+      align-items: stretch;
     }
-    .mp-col-left,
-    .mp-col-right {
+    /* Left col carries the monitoring grids (leftColDefs: 8
+       columns), right col carries the book grids (rightColDefs:
+       14 columns). Width ratio mirrors the column-count ratio so
+       each row reads at roughly the same px-per-column. */
+    .mp-col-left  { flex: 4 1 0; }
+    .mp-col-right { flex: 6 1 0; }
+    /* Right col distributes its (left-col-matched) height:
+       Account picker auto, Positions = Pinned's height (fixed
+       via the .bucket-grid default), Holdings grows to fill the
+       remaining space. */
+    .mp-col-right .mp-bucket-holdings {
       flex: 1 1 0;
+      min-height: 200px;
+    }
+    .mp-col-right .mp-bucket-holdings .bucket-grid {
+      height: auto;
+      flex: 1 1 0;
+      min-height: 200px;
     }
   }
   .mp-bucket-wrap {
@@ -4240,10 +4264,17 @@
     flex-wrap: wrap;
   }
   .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
+  /* Spacer pushes the CollapseButton to the FAR RIGHT of the
+     header regardless of whether tabs are present. Label sits
+     left, tabs (if any) flow next, spacer absorbs the gap,
+     button locks to the right edge. Card width is set by the
+     parent column flex so collapse doesn't move the button. */
+  .mp-bucket-head-spacer {
+    flex: 1 1 0;
+  }
   .mp-wl-tabs {
     display: flex;
     gap: 0.15rem;
-    margin-left: auto;
   }
   .mp-wl-tab {
     background: transparent;
