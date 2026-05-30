@@ -177,20 +177,16 @@
    a single-edge bar; the user prefers the indicator scoped to the
    symbol cell so it doesn't dominate the row visually. */
 /* Long / short → green / red, matching Bloomberg / IBKR TWS /
-   Sensibull / Streak convention. Earlier RamboQuant used cyan/orange
-   to avoid colliding with day-P&L direction; the day-P&L mini-bar
-   now sits with a 4 px gap (see day-pnl-* below) so colour collision
-   is moot. Operator from any other algo platform reads long/short
-   without a learning curve. */
+   Sensibull / Streak convention. Per the symbol-cell simplification
+   pass: direction is encoded by BACKGROUND TINT ONLY (no inset
+   border bars). Bloomberg PRTU does the same — solid bg tint, no
+   extra edges. Account info lives in the trailing Account column;
+   day P&L sign lives in the right-side mini-bar pseudo-element. */
 .ag-theme-algo .ag-row.pos-long .ag-col-sym {
   background-color: rgba(74,222,128,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(74,222,128,0.85),
-              inset -2px 0 0 rgba(74,222,128,0.85) !important;
 }
 .ag-theme-algo .ag-row.pos-short .ag-col-sym {
   background-color: rgba(248,113,113,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(248,113,113,0.85),
-              inset -2px 0 0 rgba(248,113,113,0.85) !important;
 }
 .ag-theme-algo .ag-row.pos-long.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.pos-short.ag-row-hover .ag-col-sym {
@@ -207,33 +203,21 @@
    getRowClass pushes exactly one of these per holdings row. */
 .ag-theme-algo .ag-row.row-hold-up .ag-col-sym {
   background-color: rgba(74,222,128,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(74,222,128,0.85),
-              inset -2px 0 0 rgba(74,222,128,0.85) !important;
 }
 .ag-theme-algo .ag-row.row-hold-down .ag-col-sym {
   background-color: rgba(248,113,113,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(248,113,113,0.85),
-              inset -2px 0 0 rgba(248,113,113,0.85) !important;
 }
 .ag-theme-algo .ag-row.row-hold-flat .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
-  box-shadow: inset 2px 0 0 rgba(148,163,184,0.5),
-              inset -2px 0 0 rgba(148,163,184,0.5) !important;
 }
 .ag-theme-algo .ag-row.row-watch .ag-col-sym {
   background-color: rgba(251,191,36,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(251,191,36,0.85),
-              inset -2px 0 0 rgba(251,191,36,0.85) !important;
 }
 .ag-theme-algo .ag-row.row-und .ag-col-sym {
   background-color: rgba(196,181,253,0.10) !important;
-  box-shadow: inset 2px 0 0 rgba(196,181,253,0.85),
-              inset -2px 0 0 rgba(196,181,253,0.85) !important;
 }
 .ag-theme-algo .ag-row.row-pos .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
-  box-shadow: inset 2px 0 0 rgba(148,163,184,0.5),
-              inset -2px 0 0 rgba(148,163,184,0.5) !important;
 }
 /* Day P&L indicator bar — second vertical line inside the symbol
    cell, painted just before the right inset border. Encodes TODAY's

@@ -4520,15 +4520,9 @@
      (rare; broken row data), the borders disappear so totals + edge
      cases stay clean. */
   :global(.ag-theme-algo .mp-sym-acct) {
-    /* Use `box-shadow: inset` instead of `border` so the tint line
-       sits AT the cell's inner edge without consuming layout width
-       AND without competing with ag-Grid's own cell-divider rendering.
-       border-right used to shift the cell content + create an
-       inconsistent visual against the divider line. The inset shadow
-       overlays on top of the cell — same visual on every grid. */
-    box-shadow:
-      inset  2px 0 0 0 var(--mp-sym-acct-color, transparent),
-      inset -2px 0 0 0 var(--mp-sym-acct-color, transparent) !important;
+    /* Per the symbol-cell simplification: drop the per-account inset
+       bars and rely on the trailing Account column for account
+       identity. The bg tint stays as a subtle marker. */
     background-color: color-mix(in srgb, var(--mp-sym-acct-color, transparent) 14%, transparent);
   }
   /* Symbol cell on the Winners / Losers grids — vertical tint on
@@ -4575,21 +4569,10 @@
   :global(.mp-bucket-losers .ag-theme-algo .ag-row) {
     background-color: rgba(248, 113, 113, 0.06) !important;
   }
-  /* Winners / Losers symbol cell paints the colour tint on BOTH edges
-     — matches the pinned grid's symbol cell (which gets row-watch
-     2 px amber both-sides via the row class), so the symbol-to-5d
-     boundary reads identically across every Pulse bucket grid: a
-     thin 2 px inset bar in the row's identity colour. */
-  :global(.mp-bucket-winners .ag-theme-algo .ag-col-sym) {
-    box-shadow:
-      inset  2px 0 0 0 rgba(74, 222, 128, 0.85),
-      inset -2px 0 0 0 rgba(74, 222, 128, 0.85) !important;
-  }
-  :global(.mp-bucket-losers .ag-theme-algo .ag-col-sym) {
-    box-shadow:
-      inset  2px 0 0 0 rgba(248, 113, 113, 0.85),
-      inset -2px 0 0 0 rgba(248, 113, 113, 0.85) !important;
-  }
+  /* Per the symbol-cell simplification pass: Winners / Losers no
+     longer paint inset bars on the symbol cell. The per-bucket row
+     background tint (added above) and the bucket-label header carry
+     the direction identity. */
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
   :global(.ag-theme-algo .mp-acct-cell) {
@@ -4604,16 +4587,29 @@
      postSortRows pins them last in their bucket regardless of
      column sort, so the value reads as "sum of the block above"
      rather than a header strip. */
+  /* TOTAL row scheme — bold + amber bg + amber top border to close
+     the bucket below the per-row block. Industry analogue: Bloomberg
+     PRTU's TOTAL line, Sensibull's gold-accent footer. Aggregate is
+     direction-agnostic so no green/red sign-coloured variants here
+     (the per-cell P&L text inside still uses cell-pos / cell-neg
+     for value-level direction). */
   :global(.ag-theme-algo .mp-total-row) {
     font-weight: 700;
-    background: rgba(251, 191, 36, 0.06);
-    border-top: 1px solid rgba(251, 191, 36, 0.25);
+    background: rgba(251, 191, 36, 0.12) !important;
+    border-top: 2px solid rgba(251, 191, 36, 0.55) !important;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.25) !important;
   }
-  :global(.ag-theme-algo .mp-total-positions) {
-    border-top-color: rgba(125, 211, 252, 0.35);
+  /* TOTAL row symbol cell — amber tint instead of the per-row
+     direction tint so the row reads as an aggregate, not as a
+     direction-coded data row. */
+  :global(.ag-theme-algo .mp-total-row .ag-col-sym) {
+    background-color: rgba(251, 191, 36, 0.10) !important;
   }
-  :global(.ag-theme-algo .mp-total-holdings) {
-    border-top-color: rgba(167, 139, 250, 0.35);
+  /* Hide the day-P&L mini-bar on TOTAL rows — the aggregate doesn't
+     get a per-day sign indicator (the operator reads the TOTAL P&L
+     value directly). */
+  :global(.ag-theme-algo .mp-total-row .ag-col-sym::after) {
+    display: none !important;
   }
   /* Flat-mode wrapper — used by /pulse to drop the .algo-status-card
      navy chrome. The page becomes a flex column whose unified grid
