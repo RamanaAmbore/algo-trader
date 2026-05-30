@@ -744,8 +744,16 @@
   // once the row derivations exist) folds in the auto-collapse
   // rule: a card with zero rows renders as collapsed regardless
   // of the operator toggle.
+  // Pinned + Watchlist merged into ONE tabbed card. _colPinWatch
+  // is its single collapse state; topTab toggles which feed is
+  // visible inside the card. The legacy _colPinned / _colWatch
+  // remain in the code (still read by the per-bucket effects
+  // upstream) — they default to false so they never block their
+  // grids; the visible-grid gate is now _colPinWatch.
   let _colPinned    = $state(false);
   let _colWatch     = $state(false);
+  let _colPinWatch  = $state(false);
+  let topTab        = $state(/** @type {'pinned'|'watchlist'} */ ('pinned'));
   let _colWinners   = $state(false);
   let _colLosers    = $state(false);
   let _colPositions = $state(false);
@@ -1371,6 +1379,12 @@
     + loserCounts.midcap + loserCounts.smallcap);
   const _effColPinned    = $derived(_colPinned    || pinnedRows.length === 0);
   const _effColWatch     = $derived(_colWatch     || _allWatchRows.length === 0);
+  // Merged card collapses only when BOTH feeds are empty (or the
+  // operator manually collapsed it). When one feed has data, the
+  // card stays expanded; topTab decides which grid the operator
+  // sees inside.
+  const _effColPinWatch  = $derived(
+    _colPinWatch || (pinnedRows.length === 0 && _allWatchRows.length === 0));
   const _effColWinners   = $derived(_colWinners   || _winnersTotal === 0);
   const _effColLosers    = $derived(_colLosers    || _losersTotal === 0);
   const _effColPositions = $derived(_colPositions || positionsRows.length === 0);
@@ -3446,29 +3460,10 @@
     </div>
   {/if}
 
-  {#if enableWatchlists || enableSourceToggles || accountPicker}
-    <!-- Single chrome row — every control left-aligned. The previous
-         tabs strip + Sources picker have been consolidated into ONE
-         "Show" MultiSelect that lists source toggles AND every
-         watchlist as peer options (flat list per operator preference).
-         Watchlists added via the `+` popup automatically appear in the
-         dropdown via the reactive _showOptions derivation. -->
-    <div class="mp-chrome-row mb-1">
-      <div class="w-44 shrink-0">
-        <MultiSelect bind:value={selectedShow} options={_showOptions} placeholder="Show…" />
-      </div>
-      <!-- Account picker moved to its own row just above the
-           Positions/Holdings grids (the only surface it affects). -->
-      <button onclick={openSearch} title="Add symbol or watchlist  (/)"
-        aria-label="Add symbol or watchlist"
-        class="mp-add-btn">
-        +
-      </button>
-      <span class="ml-auto">
-        <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="market pulse" />
-      </span>
-    </div>
-  {/if}
+  <!-- Chrome row retired — Show dropdown removed, + moved into the
+       Pinned/Watchlist card header, refresh moved into each card's
+       header (after the CollapseButton). -->
+
 
   <!-- Per-source subtotals strip retired per operator request — the
        same numbers (Holdings / Positions / Movers totals + top
@@ -3529,26 +3524,39 @@
     -->
     <div class="mp-layout">
       <div class="mp-col mp-col-left">
-        <section class="mp-bucket-wrap mp-bucket-pinned" class:is-collapsed={_effColPinned}>
+        <!--
+          Pinned + Watchlist merged into ONE tabbed card. Top tab
+          strip picks the visible feed (Pinned ★ or Watchlist N).
+          The + button anchors immediately after the top tabs
+          (operator: "+ before expand/contract"). Two ag-Grid
+          containers always live in the DOM so bind:this lands at
+          mount time; CSS hides the inactive one via display:none.
+          ag-Grid's ResizeObserver re-measures the active grid
+          when the operator flips tabs.
+        -->
+        <section class="mp-bucket-wrap mp-bucket-pinwatch" class:is-collapsed={_effColPinWatch}>
           <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-pinned">Pinned</span>
+            <div class="mp-toptabs" role="tablist" aria-label="Pinned / Watchlist">
+              <button type="button" role="tab"
+                      class="mp-toptab mp-toptab-pinned"
+                      class:mp-toptab-on={topTab === 'pinned'}
+                      aria-selected={topTab === 'pinned'}
+                      onclick={() => topTab = 'pinned'}>Pinned</button>
+              <button type="button" role="tab"
+                      class="mp-toptab mp-toptab-watch"
+                      class:mp-toptab-on={topTab === 'watchlist'}
+                      aria-selected={topTab === 'watchlist'}
+                      onclick={() => topTab = 'watchlist'}>Watchlist</button>
+            </div>
+            <button onclick={openSearch}
+                    title="Add symbol or watchlist  (/)"
+                    aria-label="Add symbol or watchlist"
+                    class="mp-add-btn">+</button>
             <span class="mp-bucket-head-spacer"></span>
-            <CollapseButton bind:isCollapsed={_colPinned} cardId="pulse-pinned" label="Pinned" />
+            <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
+            <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="market pulse" />
           </div>
-          <!-- bucket-grid div ALWAYS rendered so bind:this lands BEFORE
-               mountGrid() runs. Visual collapse handled by CSS via the
-               parent's .is-collapsed class — physically removing the
-               div via {#if} would leave gridPinnedEl null at mount
-               time and the grid would never instantiate. -->
-          <div bind:this={gridPinnedEl} class="ag-theme-algo bucket-grid"></div>
-        </section>
-        <section class="mp-bucket-wrap mp-bucket-watch" class:is-collapsed={_effColWatch}>
-          <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-watch">Watchlist</span>
-            <span class="mp-bucket-head-spacer"></span>
-            <CollapseButton bind:isCollapsed={_colWatch} cardId="pulse-watchlist" label="Watchlist" />
-          </div>
-          {#if _userLists.length > 1}
+          {#if topTab === 'watchlist' && _userLists.length > 1}
             <div class="mp-bucket-subhead">
               <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
                 {#each _userLists as l (l.id)}
@@ -3565,7 +3573,16 @@
               </div>
             </div>
           {/if}
-          <div bind:this={gridWatchEl} class="ag-theme-algo bucket-grid"></div>
+          <!-- Both ag-Grid containers stay in the DOM at all times so
+               bind:this lands before mountGrid() runs. CSS hides the
+               inactive one — switching tabs is a paint-only flip,
+               no remount. -->
+          <div bind:this={gridPinnedEl}
+               class="ag-theme-algo bucket-grid"
+               class:mp-grid-hidden={topTab !== 'pinned'}></div>
+          <div bind:this={gridWatchEl}
+               class="ag-theme-algo bucket-grid"
+               class:mp-grid-hidden={topTab !== 'watchlist'}></div>
         </section>
         {#if showWinners}
           <section class="mp-bucket-wrap mp-bucket-winners" class:is-collapsed={_effColWinners}>
@@ -3573,6 +3590,7 @@
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
               <span class="mp-bucket-head-spacer"></span>
               <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
             </div>
             <div class="mp-bucket-subhead">
               <div class="mp-wl-tabs" role="tablist" aria-label="Winners universe">
@@ -3596,6 +3614,7 @@
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
               <span class="mp-bucket-head-spacer"></span>
               <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
+              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
             </div>
             <div class="mp-bucket-subhead">
               <div class="mp-wl-tabs" role="tablist" aria-label="Losers universe">
@@ -3637,6 +3656,7 @@
             <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
             <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
+            <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
         </section>
@@ -3645,6 +3665,7 @@
             <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
             <span class="mp-bucket-head-spacer"></span>
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
+            <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
         </section>
@@ -4283,6 +4304,53 @@
   .mp-wl-tabs {
     display: flex;
     gap: 0.15rem;
+  }
+
+  /* Top-tab strip inside the merged Pinned/Watchlist card.
+     Visually distinct from the universe-sub-tabs strip (which
+     lives in .mp-wl-tabs / .mp-bucket-subhead) — bolder + uses
+     the per-feed colour identity (amber for Pinned, sky for
+     Watchlist) so the operator reads the toggle as a primary
+     navigation control. */
+  .mp-toptabs {
+    display: flex;
+    gap: 0.18rem;
+  }
+  .mp-toptab {
+    background: transparent;
+    border: 1px solid rgba(200, 216, 240, 0.18);
+    border-radius: 3px;
+    color: rgba(200, 216, 240, 0.65);
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .mp-toptab:hover {
+    color: #e5edf7;
+    background: rgba(200, 216, 240, 0.06);
+  }
+  .mp-toptab-on.mp-toptab-pinned {
+    color: rgba(251, 191, 36, 0.95);
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.55);
+  }
+  .mp-toptab-on.mp-toptab-watch {
+    color: rgba(125, 211, 252, 0.95);
+    background: rgba(125, 211, 252, 0.16);
+    border-color: rgba(125, 211, 252, 0.55);
+  }
+
+  /* Hidden grid container (inactive tab) — display:none keeps it
+     in the DOM so bind:this lands at mount, but ag-Grid won't
+     render anything until the operator flips back. ag-Grid's
+     ResizeObserver re-measures + repaints when display restores. */
+  .bucket-grid.mp-grid-hidden {
+    display: none;
   }
   .mp-wl-tab {
     background: transparent;
