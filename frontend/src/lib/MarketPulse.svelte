@@ -3089,6 +3089,11 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
         valueGetter: (p) => {
+          // Blank on TOTAL — summing qty across different symbols
+          // (100 NIFTY + 50 RELIANCE etc.) gives a meaningless
+          // number. Stays populated on per-symbol rows where qty is
+          // a real shares/contracts count.
+          if (p.data?._isTotal) return null;
           const q = (Number(p.data?.qty_pos) || 0) + (Number(p.data?.qty_hold) || 0);
           return q === 0 ? null : q;
         },
