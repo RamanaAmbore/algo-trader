@@ -725,18 +725,6 @@ export function stopAgentEventsPoller() {
   _agentPollerStarted = false;
 }
 
-// ── Active account filter (propagates from page to chrome) ───────────
-// Pages that own an account picker (e.g. /dashboard's Equity tab) push
-// their selection here; chrome surfaces like the PositionStrip
-// subscribe and apply the same filter so the operator's intent stays
-// consistent across "this page's totals" and "the glanceable strip
-// at the top". Empty array = no filter = firm-wide.
-//
-// On page change, the publishing page is responsible for clearing
-// the store (publish [] in onDestroy / cleanup) so the strip doesn't
-// stay scoped to a stale filter when the operator navigates away.
-export const activeAccountFilter = writable(/** @type {string[]} */ ([]));
-
 // ── Last refresh timestamp ───────────────────────────────────────────
 // Single global "when did the last page-data refresh succeed?" ms epoch.
 // Surfaced inside every RefreshButton's tooltip — formatted via

@@ -13,7 +13,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
-  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, activeAccountFilter } from '$lib/stores';
+  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
@@ -146,13 +146,6 @@
   // separate keys so the operator's per-card intent survives a
   // tab refresh.
   let _eqAccounts  = $state(/** @type {string[]} */ ([]));   // Equity card
-  // Propagate the Equity-tab account filter to the global
-  // `activeAccountFilter` store so the PositionStrip under the
-  // navbar (which would otherwise sum firm-wide) scopes to the same
-  // accounts the dashboard summaries do. Cleared on navigation away
-  // so other pages see the strip in its default firm-wide state.
-  $effect(() => { activeAccountFilter.set(_eqAccounts); });
-  onDestroy(() => { activeAccountFilter.set([]); });
   let _winAccounts = $state(/** @type {string[]} */ ([]));   // Top Winners
   let _losAccounts = $state(/** @type {string[]} */ ([]));   // Top Losers
 

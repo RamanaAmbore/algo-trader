@@ -5,7 +5,7 @@
   // and /dashboard use. Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy } from 'svelte';
-  import { dataCache, marketAwareInterval, activeAccountFilter } from '$lib/stores';
+  import { dataCache, marketAwareInterval } from '$lib/stores';
   import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
@@ -13,18 +13,6 @@
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
   let funds     = $state(/** @type {any[]} */ ([]));
-
-  // Subscribe to the global account-filter store. Pages that own an
-  // account picker (e.g. /dashboard's Equity tab) publish their
-  // selection here; the strip mirrors it so the strip totals and the
-  // page totals stay in sync. Empty array = firm-wide (no filter).
-  let _filter = $state(/** @type {string[]} */ ([]));
-  activeAccountFilter.subscribe((v) => { _filter = Array.isArray(v) ? v : []; });
-  function _scoped(/** @type {any[]} */ rows) {
-    if (!_filter.length) return rows;
-    const allow = new Set(_filter.map(String));
-    return rows.filter((r) => allow.has(String(r?.account || '')));
-  }
 
   /** @type {ReturnType<typeof marketAwareInterval> | null} */
   let teardown = null;
@@ -88,27 +76,27 @@
   // P∆   = today's mark-to-market move on positions (day_change_val).
   const positionsPnl = $derived.by(() => {
     let s = 0;
-    for (const p of _scoped(positions)) s += Number(p?.pnl || 0);
+    for (const p of positions) s += Number(p?.pnl || 0);
     return s;
   });
   const positionsToday = $derived.by(() => {
     let s = 0;
-    for (const p of _scoped(positions)) s += Number(p?.day_change_val || 0);
+    for (const p of positions) s += Number(p?.day_change_val || 0);
     return s;
   });
   const holdingsToday = $derived.by(() => {
     let s = 0;
-    for (const h of _scoped(holdings))  s += Number(h?.day_change_val || 0);
+    for (const h of holdings)  s += Number(h?.day_change_val || 0);
     return s;
   });
   const holdingsTotal = $derived.by(() => {
     let s = 0;
-    for (const h of _scoped(holdings))  s += Number(h?.pnl || 0);
+    for (const h of holdings)  s += Number(h?.pnl || 0);
     return s;
   });
   const holdingsValue = $derived.by(() => {
     let s = 0;
-    for (const h of _scoped(holdings))  s += Number(h?.cur_val || 0);
+    for (const h of holdings)  s += Number(h?.cur_val || 0);
     return s;
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
@@ -116,7 +104,7 @@
   // `live_cash` yet (older deploys).
   const liveCashTotal = $derived.by(() => {
     let s = 0;
-    for (const f of _scoped(funds)) {
+    for (const f of funds) {
       const lc = Number(f?.live_cash ?? 0);
       s += lc !== 0 ? lc : Number(f?.cash || 0);
     }
@@ -140,7 +128,7 @@
   // qty in lots instead of contracts.
   const longOptionsCashPaid = $derived.by(() => {
     let s = 0;
-    for (const p of _scoped(positions)) {
+    for (const p of positions) {
       const sym = String(p?.tradingsymbol || '').toUpperCase();
       const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
       const qty   = Math.abs(Number(p?.quantity) || 0);
@@ -163,14 +151,14 @@
   const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
   const marginTotal = $derived.by(() => {
     let s = 0;
-    for (const f of _scoped(funds)) s += Number(f?.avail_margin || 0);
+    for (const f of funds) s += Number(f?.avail_margin || 0);
     return s;
   });
   // Margin utilisation — used / (used + avail). Operator glances at
   // this to know how much room is left to deploy before adding risk.
   const utilPct = $derived.by(() => {
     let used = 0, avail = 0;
-    for (const f of _scoped(funds)) {
+    for (const f of funds) {
       used  += Number(f?.used_margin  || 0);
       avail += Number(f?.avail_margin || 0);
     }
