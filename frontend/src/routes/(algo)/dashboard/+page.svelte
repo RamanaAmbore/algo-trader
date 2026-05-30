@@ -1589,11 +1589,16 @@
            Funds on Capital; Positions + Holdings Summary on Equity)
            so the operator's intent carries across tab flips without
            re-picking. Left-aligned inside the bucket-header; the
-           control trio floats right via the first button's
-           `margin-left: auto`. -->
+           explicit flex spacer below pushes the control trio right. -->
       <AccountMultiSelect
         bind:value={_eqAccounts}
         options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      <!-- Explicit `flex: 1` spacer guarantees the trio aligns to the
+           card's right edge. Without it, both CollapseButton and
+           FullscreenButton carry their own `margin: 0 0 0 auto` from
+           the component-scoped CSS, which competes through Svelte 5's
+           reactivity anchors and can leave the trio mid-row. -->
+      <span class="cap-eq-spacer"></span>
       <!-- Buttons bind to the ACTIVE tab's own collapse + fullscreen
            pair so the operator's intent persists per-tab via
            CollapseButton's localStorage key. Svelte 5 doesn't permit
@@ -2245,11 +2250,21 @@
 
   /* AccountMultiSelect (.ams) is LEFT-aligned in the bucket header,
      sitting right after the tabs / label. The card-control trio gets
-     pushed right via its first button's existing margin-left:auto.
+     pushed right via the explicit `.cap-eq-spacer` below.
      Was: margin-left:auto on .ams (right-aligned next to the icon
      cluster) — moved per operator feedback so the picker reads as
      part of the card's identity strip, not part of the controls. */
   .bucket-header > :global(.ams) { margin-left: 0; }
+
+  /* Flex spacer between the AccountMultiSelect and the trailing
+     control trio (Refresh? + Collapse + DefaultSize + Fullscreen).
+     The trio's individual `margin: 0 0 0 auto` rules each push
+     right, but with two buttons carrying auto-margins the free
+     space splits between them and the trio drifts mid-row. An
+     explicit `flex: 1` spacer collapses the auto-margin behaviour
+     into a single push, guaranteeing the trio sits at the card's
+     right edge. Zero visible width — pure layout glue. */
+  .cap-eq-spacer { flex: 1 1 0; }
 
   /* Inline count chip used inside Equity sub-headings (Positions
      and Holdings). Small muted pill — at-a-glance "how many", not
