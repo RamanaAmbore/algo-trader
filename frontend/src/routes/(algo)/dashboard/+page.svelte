@@ -1626,10 +1626,16 @@
            ternary expressions inside `bind:`, so we split into two
            component instances guarded by {#if}. -->
       {#if _capEqTab === 'capital'}
+        {#if _fsCapital}
+          <RefreshButton onClick={_refreshAll} loading={_refreshing} label="capital" />
+        {/if}
         <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
         <DefaultSizeButton bind:isFullscreen={_fsCapital} bind:isCollapsed={_colCapital} label="Capital" />
         <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
       {:else}
+        {#if _fsEquity}
+          <RefreshButton onClick={_refreshAll} loading={_refreshing} label="equity" />
+        {/if}
         <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
         <DefaultSizeButton bind:isFullscreen={_fsEquity} bind:isCollapsed={_colEquity} label="Equity" />
         <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
@@ -1709,6 +1715,9 @@
           aria-selected={_chartTab === 'performance'}
           onclick={() => _chartTab = 'performance'}>Performance</button>
       </div>
+      {#if _fsEquityCurve}
+        <RefreshButton onClick={_refreshAll} loading={_refreshing} label="chart" />
+      {/if}
       <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Chart" />
       <DefaultSizeButton bind:isFullscreen={_fsEquityCurve} bind:isCollapsed={_colEquityCurve} label="Chart" />
       <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Chart" />
@@ -1848,6 +1857,9 @@
   class:is-collapsed={_colNews}>
   <div class="row3-header">
     <span class="mp-section-label">MARKET NEWS</span>
+    {#if _fsNews}
+      <RefreshButton onClick={_refreshAll} loading={_refreshing} label="news" />
+    {/if}
     <CollapseButton bind:isCollapsed={_colNews} cardId="news" label="Market News" />
     <DefaultSizeButton bind:isFullscreen={_fsNews} bind:isCollapsed={_colNews} label="Market News" />
     <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
@@ -1886,6 +1898,9 @@
       <span class="dash-agent-count">{_firesToday}</span>
       <span class="dash-agent-label">fires today</span>
     </span>
+    {#if _fsAgent}
+      <RefreshButton onClick={_refreshAll} loading={_refreshing} label="agent activity" />
+    {/if}
     <CollapseButton bind:isCollapsed={_colAgent} cardId="agent"
       initialCollapsed={true} label="Agent activity" />
     <DefaultSizeButton bind:isFullscreen={_fsAgent} bind:isCollapsed={_colAgent} label="Agent activity" />
