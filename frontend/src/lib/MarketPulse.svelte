@@ -452,46 +452,67 @@
   // Watchlist + option-underlying rows are not account-scoped —
   // they always show.
   //
-  // Both the old single-value `selectedAccount` and the new array
-  // `selectedAccounts` co-exist here only as a one-call mental model
-  // — every downstream check reads `selectedAccounts`. The picker
-  // persists to sessionStorage so the filter survives a refresh.
-  let selectedAccounts = $state(/** @type {string[]} */ ([]));
-  // Derived membership predicate — `true` when EITHER no filter is
-  // applied (length === 0) OR the given account is in the chosen set.
-  // Hot-path helper used by every per-account derivation below.
+  // Per-card account filters. Positions and Holdings each own a
+  // separate picker — operator can scope Positions to ZG#### (intraday
+  // book) while Holdings tracks ZJ#### (long-term holds) without one
+  // filter clobbering the other. EMPTY array = "all accounts" for
+  // that card. Both arrays persist to sessionStorage so the filter
+  // survives a tab refresh.
+  let positionsAccounts = $state(/** @type {string[]} */ ([]));
+  let holdingsAccounts  = $state(/** @type {string[]} */ ([]));
+  // Derived membership predicates — `true` when EITHER no filter is
+  // applied for that card (length === 0) OR the given account is in
+  // the chosen set. Hot-path helpers used by per-account derivations.
   //
-  // IMPORTANT: we read selectedAccounts at derivation time (via the
-  // length+map below) so Svelte 5's reactivity subscribes this
-  // derivation to selectedAccounts. The earlier version
-  //   $derived((acct) => selectedAccounts.length === 0 || ...)
-  // returned a fresh arrow function each call but the derivation body
-  // itself NEVER touched selectedAccounts — Svelte 5 had no
-  // subscription, so the function captured the initial empty array and
-  // never re-derived. Result: Account picker label updated but
-  // scopedPositions / scopedHoldings stayed unfiltered.
-  const _includesAccount = $derived.by(() => {
-    const allow = selectedAccounts.length === 0
+  // IMPORTANT: read the array at derivation time (via length+map) so
+  // Svelte 5's reactivity subscribes the derivation. An earlier shape
+  // that returned a fresh arrow without touching the state inside
+  // the derivation body never re-derived (capture trap); the same
+  // pattern below for both cards.
+  const _includesPosAcct = $derived.by(() => {
+    const allow = positionsAccounts.length === 0
       ? null
-      : new Set(selectedAccounts.map(String));
+      : new Set(positionsAccounts.map(String));
     return (/** @type {any} */ acct) =>
       allow === null || allow.has(String(acct || ''));
+  });
+  const _includesHoldAcct = $derived.by(() => {
+    const allow = holdingsAccounts.length === 0
+      ? null
+      : new Set(holdingsAccounts.map(String));
+    return (/** @type {any} */ acct) =>
+      allow === null || allow.has(String(acct || ''));
+  });
+  // Funds strip is rendered above the two cards — it's not owned by
+  // either one. Scope = UNION of both pickers (so an account selected
+  // in either card surfaces in Funds). Empty + empty = show all.
+  const _includesFundsAcct = $derived.by(() => {
+    const hasPos = positionsAccounts.length > 0;
+    const hasHold = holdingsAccounts.length > 0;
+    if (!hasPos && !hasHold) return (/** @type {any} */ _a) => true;
+    const allow = new Set([
+      ...positionsAccounts.map(String),
+      ...holdingsAccounts.map(String),
+    ]);
+    return (/** @type {any} */ acct) => allow.has(String(acct || ''));
   });
   let availableAccounts = $state(/** @type {string[]} */ ([]));
   // Prune stale account selections that aren't in availableAccounts.
   // Without this, a persisted selection from a PRIOR session can
   // survive a role / mask-mode change — e.g., an admin session
   // persisted [ZG0790, ZJ6294]; later session is demo where accounts
-  // surface as [ZG####, ZJ####]. selectedAccounts retains the unmasked
-  // codes while availableAccounts has the masked ones, so the trigger
-  // label renders BOTH sets (real codes from selectedAccounts, masked
-  // from options) → looks like 2× the accounts. Pruning keeps
-  // selectedAccounts a strict subset of availableAccounts.
+  // surface as [ZG####, ZJ####]. The selection retains unmasked codes
+  // while availableAccounts has the masked ones, so the trigger label
+  // renders BOTH sets (real codes from the selection, masked from
+  // options) → looks like 2× the accounts. Pruning keeps each card's
+  // selection a strict subset of availableAccounts.
   $effect(() => {
     if (availableAccounts.length === 0) return;
     const allow = new Set(availableAccounts);
-    const pruned = selectedAccounts.filter((a) => allow.has(a));
-    if (pruned.length !== selectedAccounts.length) selectedAccounts = pruned;
+    const prunedP = positionsAccounts.filter((a) => allow.has(a));
+    if (prunedP.length !== positionsAccounts.length) positionsAccounts = prunedP;
+    const prunedH = holdingsAccounts.filter((a) => allow.has(a));
+    if (prunedH.length !== holdingsAccounts.length) holdingsAccounts = prunedH;
   });
   // Broker-registry-loaded accounts — surfaced via /api/admin/brokers
   // on mount. Unioned into availableAccounts so the Account picker
@@ -505,18 +526,24 @@
   // toggles on later loadPulse polls.
   let _seededFromBrokers = false;
 
-  // Persist account-multiselect to sessionStorage on change so the
-  // filter survives a tab refresh; cleared per session.
+  // Persist per-card account selections to sessionStorage on change so
+  // the filters survive a tab refresh; cleared per session.
   $effect(() => {
     if (typeof sessionStorage === 'undefined') return;
     try {
-      sessionStorage.setItem('mp.selectedAccounts', JSON.stringify(selectedAccounts));
+      sessionStorage.setItem('mp.positionsAccounts', JSON.stringify(positionsAccounts));
+    } catch (_) { /* quota / blocked — silent. */ }
+  });
+  $effect(() => {
+    if (typeof sessionStorage === 'undefined') return;
+    try {
+      sessionStorage.setItem('mp.holdingsAccounts', JSON.stringify(holdingsAccounts));
     } catch (_) { /* quota / blocked — silent. */ }
   });
   // Persist the unified Show filter alongside. Without this, the
   // operator's deselected sources / watchlists reset on every refresh
   // (defaults re-seed everything ON). Same sessionStorage scope as
-  // selectedAccounts so the two pickers feel symmetric.
+  // the per-card account pickers so they feel symmetric.
   $effect(() => {
     if (typeof sessionStorage === 'undefined') return;
     try {
@@ -823,9 +850,13 @@
     // current server (operator switched broker accounts).
     if (accountPicker) {
       try {
-        const cached = sessionStorage.getItem('mp.selectedAccounts');
-        if (cached) selectedAccounts = JSON.parse(cached) || [];
-      } catch (_) { selectedAccounts = []; }
+        const cachedP = sessionStorage.getItem('mp.positionsAccounts');
+        if (cachedP) positionsAccounts = JSON.parse(cachedP) || [];
+      } catch (_) { positionsAccounts = []; }
+      try {
+        const cachedH = sessionStorage.getItem('mp.holdingsAccounts');
+        if (cachedH) holdingsAccounts = JSON.parse(cachedH) || [];
+      } catch (_) { holdingsAccounts = []; }
     }
     // Restore the Show filter (sources + watchlists). The eager seed
     // at $state declaration acts as fallback when no persisted value
@@ -1440,12 +1471,12 @@
   // reflects every account, not the filtered subset.
   const positionsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('positions')) return [];
-    const filterActive = selectedAccounts && selectedAccounts.length > 0;
+    const filterActive = positionsAccounts && positionsAccounts.length > 0;
     return positionsSummary
       .filter(r => {
         if (!r?.account) return false;
         if (r.account === 'TOTAL') return !filterActive;
-        return _includesAccount(r.account);
+        return _includesPosAcct(r.account);
       })
       .map(r => ({
         account: r.account,
@@ -1464,12 +1495,12 @@
   // different number for the same column on the same screen.
   const holdingsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('holdings')) return [];
-    const filterActive = selectedAccounts && selectedAccounts.length > 0;
+    const filterActive = holdingsAccounts && holdingsAccounts.length > 0;
     return holdingsSummary
       .filter(r => {
         if (!r?.account) return false;
         if (r.account === 'TOTAL') return !filterActive;
-        return _includesAccount(r.account);
+        return _includesHoldAcct(r.account);
       })
       .map(r => ({
         account: r.account,
@@ -1483,12 +1514,12 @@
   });
 
   const positionsSummaryBody  = $derived(
-    positionsSummaryData.filter(r => !isTotalRow(r) && _includesAccount(r.account))
+    positionsSummaryData.filter(r => !isTotalRow(r) && _includesPosAcct(r.account))
   );
   const positionsSummaryTotal = $derived(positionsSummaryData.filter(isTotalRow));
 
   const holdingsSummaryBody  = $derived(
-    holdingsSummaryData.filter(r => !isTotalRow(r) && _includesAccount(r.account))
+    holdingsSummaryData.filter(r => !isTotalRow(r) && _includesHoldAcct(r.account))
   );
   const holdingsSummaryTotal = $derived(holdingsSummaryData.filter(isTotalRow));
 
@@ -1537,8 +1568,10 @@
   });
 
   const scopedFunds = $derived.by(() => {
-    // Filter funds by the active account-multiselect (empty = all).
-    const list = funds.filter(r => isTotalRow(r) || _includesAccount(r.account));
+    // Funds isn't owned by either Positions or Holdings — scope by
+    // the UNION of both pickers so an account selected in either
+    // card shows up here. Empty + empty = all.
+    const list = funds.filter(r => isTotalRow(r) || _includesFundsAcct(r.account));
     // Inject _long_opt_cash so the grid's `cash_total` valueGetter
     // can pick it up without poking back into the positions array.
     return list.map(r => ({
@@ -1841,39 +1874,50 @@
         for (const a of _knownBrokerAccounts) accts.add(String(a));
         const sorted = [...accts].sort();
         availableAccounts = sorted;
-        // First-load seed of the Account picker. selectedAccounts
-        // = union of (whatever we've seeded so far) + (newly-
-        // discovered accounts) — this auto-extends to include broker
-        // accounts that fetchBrokerAccounts() returned AFTER the
-        // first loadPulse fired (e.g., empty-holdings Dhan / Groww
-        // accounts that wouldn't surface from positions+holdings
-        // rows). Operator toggles never get clobbered because we
-        // only ADD, never REMOVE, and we stop adding once
-        // _seededAccountsAt has run (persistence layer takes over).
-        // Skipped entirely if persisted state was already restored.
+        // First-load seed of BOTH per-card pickers. Each card's
+        // selection = union of (whatever's been seeded so far) +
+        // (newly-discovered accounts) — auto-extends to include
+        // broker accounts that fetchBrokerAccounts() returned AFTER
+        // the first loadPulse fired (e.g., empty-holdings Dhan /
+        // Groww accounts that wouldn't surface from positions /
+        // holdings rows). Operator toggles never get clobbered
+        // because we only ADD, never REMOVE, and we stop adding
+        // once a persisted state on either card has been restored.
         if (sorted.length > 0 && !_seededFromBrokers) {
-          let restored = false;
+          let restoredP = false;
+          let restoredH = false;
           try {
-            const cached = sessionStorage.getItem('mp.selectedAccounts');
-            if (cached) {
-              const parsed = JSON.parse(cached);
-              if (Array.isArray(parsed) && parsed.length > 0) restored = true;
+            const cP = sessionStorage.getItem('mp.positionsAccounts');
+            if (cP) {
+              const parsed = JSON.parse(cP);
+              if (Array.isArray(parsed) && parsed.length > 0) restoredP = true;
+            }
+            const cH = sessionStorage.getItem('mp.holdingsAccounts');
+            if (cH) {
+              const parsed = JSON.parse(cH);
+              if (Array.isArray(parsed) && parsed.length > 0) restoredH = true;
             }
           } catch (_) {}
-          if (!restored) {
-            const cur = new Set(selectedAccounts);
+          if (!restoredP) {
+            const cur = new Set(positionsAccounts);
             let changed = false;
             for (const a of sorted) {
               if (!cur.has(a)) { cur.add(a); changed = true; }
             }
-            if (changed) selectedAccounts = [...cur].sort();
-            // Mark as seeded once the broker fetch has confirmed
-            // (at least one wl_ token in there from the broker
-            // registry, OR the operator has had time to interact).
-            if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
-          } else {
-            _seededFromBrokers = true;
+            if (changed) positionsAccounts = [...cur].sort();
           }
+          if (!restoredH) {
+            const cur = new Set(holdingsAccounts);
+            let changed = false;
+            for (const a of sorted) {
+              if (!cur.has(a)) { cur.add(a); changed = true; }
+            }
+            if (changed) holdingsAccounts = [...cur].sort();
+          }
+          // Mark as seeded once the broker fetch has confirmed —
+          // subsequent loadPulse polls won't try to re-seed either
+          // picker (persistence layer takes over).
+          if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
         }
       }
       const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
@@ -2006,20 +2050,20 @@
     } catch (_) { /* nothing fatal */ }
   }
 
-  // Account-scoped inputs to buildUnified. Empty selectedAccounts
-  // (default) passes the raw arrays straight through. Otherwise
-  // filter positions / holdings to the chosen set — watchlist items
-  // and option underlyings are not account-scoped so they remain
-  // visible.
+  // Per-card account-scoped inputs to buildUnified. Empty per-card
+  // selection (default) passes the raw array straight through.
+  // Otherwise filter the corresponding source to that card's chosen
+  // set — watchlist items and option underlyings are not account-
+  // scoped so they remain visible regardless.
   const scopedPositions = $derived(
-    selectedAccounts.length === 0
+    positionsAccounts.length === 0
       ? positions
-      : positions.filter(r => _includesAccount(r.account))
+      : positions.filter(r => _includesPosAcct(r.account))
   );
   const scopedHoldings = $derived(
-    selectedAccounts.length === 0
+    holdingsAccounts.length === 0
       ? holdings
-      : holdings.filter(r => _includesAccount(r.account))
+      : holdings.filter(r => _includesHoldAcct(r.account))
   );
 
   // buildUnified reads groupOrder + detachedSymbols from module scope.
@@ -2032,15 +2076,18 @@
   const unifiedRows = $derived.by(() => {
     // eslint-disable-next-line no-unused-expressions
     groupOrder; detachedSymbols;
-    // Positions + Holdings are the only account-scoped sources. When
-    // the operator hasn't picked an account, hide them entirely — the
-    // grid then shows only the not-account-bound categories (Pinned
-    // watchlists, custom Watchlists, Movers). Operator picks an
-    // account → positions + holdings appear, scoped to that account.
-    const acctPicked = selectedAccounts.length > 0;
+    // Positions + Holdings are the only account-scoped sources, and
+    // they now carry per-card pickers. When a card's picker is empty
+    // (and the picker is visible — i.e. accountPicker on), hide that
+    // card's rows in the unified grid. Operator picks at least one
+    // account in either picker → those rows appear, scoped to that
+    // card's selection. When the picker isn't rendered at all (no
+    // accountPicker prop), passes through unconditionally.
+    const posPicked = !accountPicker || positionsAccounts.length > 0;
+    const holdPicked = !accountPicker || holdingsAccounts.length > 0;
     return buildUnified(
       activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
-      showPositions && acctPicked, showHoldings && acctPicked,
+      showPositions && posPicked, showHoldings && holdPicked,
       movers, showMovers,
       showWatchlist,
     );
@@ -3635,26 +3682,21 @@
       </div>
 
       <div class="mp-col mp-col-right">
-        {#if accountPicker && availableAccounts.length > 0}
-          {@const _acctOff = !selectedSources.includes('positions')
-                          && !selectedSources.includes('holdings')}
-          <!-- Account picker — anchored at the top of the right column
-               so it reads as a header for the Positions / Holdings
-               grids it actually filters. -->
-          <div class="mp-acct-row">
-            <span class="mp-acct-label">Account</span>
-            <div class="w-28 shrink-0">
-              <AccountMultiSelect bind:value={selectedAccounts}
-                options={availableAccounts.map(a => ({ value: a, label: a }))}
-                disabled={_acctOff}
-                disabledReason="Account filter applies only when Positions or Holdings is selected" />
-            </div>
-          </div>
-        {/if}
         <section class="mp-bucket-wrap mp-bucket-positions" class:is-collapsed={_effColPositions}>
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
             <span class="mp-bucket-head-spacer"></span>
+            {#if accountPicker && availableAccounts.length > 0}
+              <!-- Per-card Account picker. Positions and Holdings each
+                   carry their own filter so an operator can scope
+                   Positions to ZG#### (intraday) while Holdings
+                   tracks ZJ#### (long-term) independently. -->
+              <div class="mp-head-acct">
+                <AccountMultiSelect bind:value={positionsAccounts}
+                  options={availableAccounts.map(a => ({ value: a, label: a }))}
+                  ariaLabel="Filter Positions by broker account" />
+              </div>
+            {/if}
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
             <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
           </div>
@@ -3664,6 +3706,13 @@
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
             <span class="mp-bucket-head-spacer"></span>
+            {#if accountPicker && availableAccounts.length > 0}
+              <div class="mp-head-acct">
+                <AccountMultiSelect bind:value={holdingsAccounts}
+                  options={availableAccounts.map(a => ({ value: a, label: a }))}
+                  ariaLabel="Filter Holdings by broker account" />
+              </div>
+            {/if}
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
             <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
           </div>
@@ -4580,23 +4629,14 @@
   /* Tab buttons inside the row never shrink (would clip the label). */
   .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
 
-  /* Account picker row — sits between the Winners/Losers row and the
-     Positions/Holdings row. The visual label clarifies which surface
-     the picker affects (operators were occasionally confused by the
-     top-anchored picker filtering only the bottom grids). */
-  .mp-acct-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin: 0.4rem 0 0.25rem;
-  }
-  .mp-acct-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(200, 216, 240, 0.65);
+  /* Per-card Account picker inside each bucket-head. Sits between the
+     spacer and the CollapseButton so it locks to the right side of
+     the card next to the controls it operates alongside. Narrow
+     width so it doesn't crowd the row on tighter viewports. */
+  .mp-head-acct {
+    flex: 0 0 auto;
+    width: 7rem;
+    min-width: 0;
   }
 
   /* Unified `+` add button — single chip at the end of the chrome row.
