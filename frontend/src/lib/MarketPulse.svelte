@@ -3627,9 +3627,9 @@
             {#if _fsPinWatch}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="pulse" />
             {/if}
-            <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
-            <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
             <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
+            <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
+            <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
           </div>
           {#if topTab === 'watchlist' && _userLists.length > 1}
             <div class="mp-bucket-subhead">
@@ -3680,9 +3680,9 @@
               {#if _fsWinners}
                 <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
               {/if}
-              <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
-              <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
               <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
+              <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
+              <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3708,9 +3708,9 @@
               {#if _fsLosers}
                 <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
               {/if}
-              <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
-              <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
               <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
+              <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
+              <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
           </section>
@@ -3740,9 +3740,9 @@
             {#if _fsPositions}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
             {/if}
-            <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
-            <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
+            <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
+            <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
         </section>
@@ -3762,9 +3762,9 @@
             {#if _fsHoldings}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
             {/if}
-            <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />
-            <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
+            <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
+            <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
         </section>

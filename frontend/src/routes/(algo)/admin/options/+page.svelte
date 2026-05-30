@@ -2073,9 +2073,9 @@
           <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
                          loading={loading} label="payoff" />
         {/if}
-        <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
-        <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
         <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
+        <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
+        <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
       </div>
     </div>
     <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
@@ -2154,9 +2154,9 @@
         <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
                        loading={loading} label="legs" />
       {/if}
-      <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
-      <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
       <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
+      <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
+      <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
     </div>
     {#if !_colLegs && displayedCandidates.length}
       {@const hideAcct = selectedAccounts.length === 1}

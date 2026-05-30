@@ -1581,9 +1581,9 @@
       class:is-collapsed={_colCapital}>
       <div class="bucket-header">
         <span class="mp-section-label">Capital</span>
-        <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
-        <DefaultSizeButton bind:isFullscreen={_fsCapital} bind:isCollapsed={_colCapital} label="Capital" />
         <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
+        <DefaultSizeButton bind:isFullscreen={_fsCapital} bind:isCollapsed={_colCapital} label="Capital" />
+        <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
       </div>
       <div class="card-body" hidden={_colCapital}>
         {#if _marginRows.length > 0}
@@ -1616,9 +1616,9 @@
         <AccountMultiSelect
           bind:value={_eqAccounts}
           options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-        <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
-        <DefaultSizeButton bind:isFullscreen={_fsEquity} bind:isCollapsed={_colEquity} label="Equity" />
         <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
+        <DefaultSizeButton bind:isFullscreen={_fsEquity} bind:isCollapsed={_colEquity} label="Equity" />
+        <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
       </div>
       <div class="card-body" hidden={_colEquity}>
         {#if _positionsSummary.length > 0}
@@ -1670,9 +1670,9 @@
           aria-selected={_chartTab === 'performance'}
           onclick={() => _chartTab = 'performance'}>Performance</button>
       </div>
-      <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Chart" />
-      <DefaultSizeButton bind:isFullscreen={_fsEquityCurve} bind:isCollapsed={_colEquityCurve} label="Chart" />
       <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Chart" />
+      <DefaultSizeButton bind:isFullscreen={_fsEquityCurve} bind:isCollapsed={_colEquityCurve} label="Chart" />
+      <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Chart" />
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->
@@ -1809,9 +1809,9 @@
   class:is-collapsed={_colNews}>
   <div class="row3-header">
     <span class="mp-section-label">MARKET NEWS</span>
-    <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
-    <DefaultSizeButton bind:isFullscreen={_fsNews} bind:isCollapsed={_colNews} label="Market News" />
     <CollapseButton bind:isCollapsed={_colNews} cardId="news" label="Market News" />
+    <DefaultSizeButton bind:isFullscreen={_fsNews} bind:isCollapsed={_colNews} label="Market News" />
+    <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
   </div>
   <div class="card-body" hidden={_colNews}>
     <!-- Two-column magazine flow on wide viewports (≥900 px) so the
@@ -1847,10 +1847,10 @@
       <span class="dash-agent-count">{_firesToday}</span>
       <span class="dash-agent-label">fires today</span>
     </span>
-    <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
-    <DefaultSizeButton bind:isFullscreen={_fsAgent} bind:isCollapsed={_colAgent} label="Agent activity" />
     <CollapseButton bind:isCollapsed={_colAgent} cardId="agent"
       initialCollapsed={true} label="Agent activity" />
+    <DefaultSizeButton bind:isFullscreen={_fsAgent} bind:isCollapsed={_colAgent} label="Agent activity" />
+    <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
   </div>
   <div class="card-body" hidden={_colAgent}>
     <div class="dash-agent-filter">
