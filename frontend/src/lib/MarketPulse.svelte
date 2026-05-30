@@ -4353,42 +4353,39 @@
   }
 
   /* Top-tab strip inside the merged Pinned/Watchlist card.
-     Visually distinct from the universe-sub-tabs strip (which
-     lives in .mp-wl-tabs / .mp-bucket-subhead) — bolder + uses
-     the per-feed colour identity (amber for Pinned, sky for
-     Watchlist) so the operator reads the toggle as a primary
-     navigation control. */
+     Underline pattern shared with every other sub-tab strip on
+     the algo site (lab-tab, cap-eq-tab, exec-tab, mp-wl-tab,
+     legs-tab) — Bloomberg / Sensibull / IBKR convention. Per-feed
+     colour identity (amber for Pinned, sky for Watchlist) is
+     preserved via the active-state underline + text colour so
+     the operator can still tell the two apart at a glance. */
   .mp-toptabs {
     display: flex;
-    gap: 0.18rem;
+    gap: 0;
   }
   .mp-toptab {
     background: transparent;
-    border: 1px solid rgba(200, 216, 240, 0.18);
-    border-radius: 3px;
-    color: rgba(200, 216, 240, 0.65);
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #7e97b8;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    padding: 0.2rem 0.5rem;
+    padding: 0.22rem 0.6rem 0.2rem;
     cursor: pointer;
     line-height: 1;
+    transition: color 0.12s, border-color 0.12s;
   }
-  .mp-toptab:hover {
-    color: #e5edf7;
-    background: rgba(200, 216, 240, 0.06);
-  }
+  .mp-toptab:hover { color: #c8d8f0; }
   .mp-toptab-on.mp-toptab-pinned {
-    color: rgba(251, 191, 36, 0.95);
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+    border-bottom-color: #fbbf24;
   }
   .mp-toptab-on.mp-toptab-watch {
-    color: rgba(125, 211, 252, 0.95);
-    background: rgba(125, 211, 252, 0.16);
-    border-color: rgba(125, 211, 252, 0.55);
+    color: #7dd3fc;
+    border-bottom-color: #7dd3fc;
   }
 
   /* Hidden grid container (inactive tab) — display:none keeps it
@@ -4398,39 +4395,41 @@
   .bucket-grid.mp-grid-hidden {
     display: none;
   }
+  /* Sub-tab strip used for the watchlist list (when multiple
+     custom lists exist) and the Winners/Losers universe filters.
+     Same underline pattern as .mp-toptab — one consistent sub-tab
+     family across the algo site. Smaller font-size since this
+     strip sometimes shares the bucket-head with the label, the
+     account picker and the controls cluster. */
   .mp-wl-tab {
     background: transparent;
-    border: 1px solid rgba(200, 216, 240, 0.18);
-    border-radius: 3px;
-    color: rgba(200, 216, 240, 0.7);
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #7e97b8;
     font-family: ui-monospace, monospace;
     font-size: 0.55rem;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    padding: 0.15rem 0.4rem;
+    padding: 0.18rem 0.45rem 0.16rem;
     cursor: pointer;
     line-height: 1;
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+    transition: color 0.12s, border-color 0.12s;
   }
-  .mp-wl-tab:hover {
-    background: rgba(200, 216, 240, 0.06);
-    border-color: rgba(200, 216, 240, 0.32);
-    color: #e5edf7;
-  }
+  .mp-wl-tab:hover { color: #c8d8f0; }
   .mp-wl-tab-on {
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
     color: #fbbf24;
+    border-bottom-color: #fbbf24;
   }
   .mp-wl-tab-count {
     font-size: 0.5rem;
     font-weight: 800;
-    padding: 0 0.25rem;
+    padding: 0 0.3rem;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.25);
+    background: rgba(126, 151, 184, 0.18);
     color: rgba(200, 216, 240, 0.85);
   }
   .mp-wl-tab-on .mp-wl-tab-count {

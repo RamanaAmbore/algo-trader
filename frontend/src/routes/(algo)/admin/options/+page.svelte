@@ -2962,49 +2962,44 @@
   }
   .legs-header:hover { color: #fde047; }
 
-  /* Legs / Expiry Action tab strip — replaces the static "Legs"
-     label. Sits inline with the underlying tag chip; CollapseButton
-     + FullscreenButton still trail at the right edge of the header
-     row. Same visual idiom as the MarketPulse Winners / Losers
-     tabs so the operator's mental model carries across. */
+  /* Legs / Expiry Action tab strip — same underline pattern shared
+     across every sub-tab strip on the algo site (mp-toptab,
+     mp-wl-tab, lab-tab, cap-eq-tab, exec-tab). Bloomberg / Sensibull
+     / IBKR TWS convention. */
   .legs-tabs {
     display: flex;
     align-items: center;
-    gap: 0.18rem;
+    gap: 0;
   }
   .legs-tab {
     background: transparent;
-    border: 1px solid rgba(200, 216, 240, 0.18);
-    border-radius: 3px;
-    color: rgba(200, 216, 240, 0.7);
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #7e97b8;
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    padding: 0.18rem 0.5rem;
+    padding: 0.22rem 0.55rem 0.2rem;
     cursor: pointer;
     line-height: 1;
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
+    transition: color 0.12s, border-color 0.12s;
   }
-  .legs-tab:hover {
-    background: rgba(200, 216, 240, 0.06);
-    border-color: rgba(200, 216, 240, 0.32);
-    color: #e5edf7;
-  }
+  .legs-tab:hover { color: #c8d8f0; }
   .legs-tab-on {
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
     color: #fbbf24;
+    border-bottom-color: #fbbf24;
   }
   .legs-tab-count {
     font-size: 0.55rem;
     font-weight: 800;
     padding: 0 0.3rem;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.25);
+    background: rgba(126, 151, 184, 0.18);
     color: rgba(200, 216, 240, 0.85);
   }
   .legs-tab-on .legs-tab-count {
