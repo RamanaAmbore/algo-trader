@@ -1389,8 +1389,18 @@
     let day_pnl = 0, pnl = 0, cost = 0, qty_pos = 0, qty_hold = 0;
     let anyDayPnl = false, anyPnl = false;
     for (const r of rows) {
-      if (r.day_pnl != null) { day_pnl += Number(r.day_pnl) || 0; anyDayPnl = true; }
-      if (r.pnl     != null) { pnl     += Number(r.pnl)     || 0; anyPnl    = true; }
+      // Prefer the BROKER raw values (`_broker_pnl`, `_broker_day_pnl`
+      // mirrored on each row inside buildUnified) so the TOTAL row
+      // matches PositionStrip exactly — the strip reads `r.pnl` and
+      // `r.day_change_val` straight off the API. Per-row P&L cells
+      // still display the live-recomputed `row.pnl` / `row.day_pnl`
+      // so they tick with quotes; only the TOTAL falls back to the
+      // broker snapshot for cross-surface sync. Small per-row vs
+      // TOTAL delta during active trading is an accepted tradeoff.
+      const rowPnl     = (r._broker_pnl     != null) ? r._broker_pnl     : r.pnl;
+      const rowDayPnl  = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
+      if (rowDayPnl != null) { day_pnl += Number(rowDayPnl) || 0; anyDayPnl = true; }
+      if (rowPnl    != null) { pnl     += Number(rowPnl)    || 0; anyPnl    = true; }
       cost    += Math.abs(Number(r._cost_basis) || 0);
       qty_pos += Number(r.qty_pos)  || 0;
       qty_hold += Number(r.qty_hold) || 0;
@@ -2296,6 +2306,13 @@
       } else {
         row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
       }
+      // Mirror the BROKER raw values per-row so the TOTAL footer can
+      // sum the same numbers PositionStrip uses (the strip reads
+      // `r.pnl` and `r.day_change_val` straight off /api/holdings +
+      // /api/positions). Per-row `row.pnl` / `row.day_pnl` keep the
+      // live-recompute path above so the cells still tick.
+      row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
+      row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
       fill(row, sym);
     }
 
@@ -2356,6 +2373,11 @@
       } else {
         row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
       }
+      // Mirror the BROKER raw values per-row so the TOTAL footer can
+      // sum the same numbers PositionStrip uses. Per-row live recompute
+      // path above stays untouched.
+      row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
+      row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
       fill(row, sym);
     }
 
