@@ -72,28 +72,27 @@
   });
 </script>
 
-<button
-  type="button"
-  class="fs-btn"
-  onclick={(e) => { e.stopPropagation(); isFullscreen = !isFullscreen; }}
-  aria-label={isFullscreen ? `Exit fullscreen ${label}` : `Expand ${label} to fullscreen`}
-  title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Expand to fullscreen'}>
-  {#if isFullscreen}
-    <!-- Contract / minimize icon — four arrows pointing inward -->
-    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <path d="M6 1v4H2M10 1v4h4M6 15v-4H2M10 15v-4h4"
-        fill="none" stroke="currentColor" stroke-width="1.5"
-        stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
-  {:else}
+<!-- Only renders in the DEFAULT state (not fullscreen). The "exit
+     fullscreen" affordance is handled by DefaultSizeButton, which is
+     conditionally rendered as the other half of this either/or pair.
+     One slot, one button — operator sees ONE size-control icon at a
+     time, alternating between "expand" (this) and "restore" depending
+     on the current state. -->
+{#if !isFullscreen}
+  <button
+    type="button"
+    class="fs-btn"
+    onclick={(e) => { e.stopPropagation(); isFullscreen = true; }}
+    aria-label={`Expand ${label} to fullscreen`}
+    title="Expand to fullscreen">
     <!-- Expand / fullscreen icon — four arrows pointing outward -->
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"
         fill="none" stroke="currentColor" stroke-width="1.5"
         stroke-linecap="round" stroke-linejoin="round" />
     </svg>
-  {/if}
-</button>
+  </button>
+{/if}
 
 <style>
   .fs-btn {

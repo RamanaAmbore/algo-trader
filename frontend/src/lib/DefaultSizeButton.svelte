@@ -31,31 +31,33 @@
     /** Card name for a11y / tooltip. */
     label = 'card',
   } = $props();
-
-  const isDefault = $derived(!isFullscreen && !isCollapsed);
 </script>
 
-<button
-  type="button"
-  class="default-btn"
-  class:default-btn-active={isDefault}
-  onclick={(e) => {
-    e.stopPropagation();
-    isFullscreen = false;
-    isCollapsed = false;
-  }}
-  aria-pressed={isDefault}
-  aria-label={`Restore ${label} to default size`}
-  title="Default size">
-  <!-- Single rounded square — represents "default / inline card size".
-       Sits visually between FullscreenButton's outward arrows and
-       CollapseButton's chevron. -->
-  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-    <rect x="2.5" y="2.5" width="11" height="11" rx="1.5"
-      fill="none" stroke="currentColor" stroke-width="1.5"
-      stroke-linejoin="round" />
-  </svg>
-</button>
+<!-- Only renders in the FULLSCREEN state. Paired with FullscreenButton
+     (rendered only in default state) as a single size-control slot —
+     the operator sees "expand" when default, "restore" when fullscreen.
+     Click restores to default inline size + un-collapses in one move. -->
+{#if isFullscreen}
+  <button
+    type="button"
+    class="default-btn"
+    onclick={(e) => {
+      e.stopPropagation();
+      isFullscreen = false;
+      isCollapsed = false;
+    }}
+    aria-label={`Restore ${label} to default size`}
+    title="Restore to default size">
+    <!-- Single rounded square — represents "default / inline card size".
+         Same square idiom Windows / Linux desktops use for the
+         restore-down windowing control. -->
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5"
+        fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linejoin="round" />
+    </svg>
+  </button>
+{/if}
 
 <style>
   /* Shared cyan-400 palette with RefreshButton + FullscreenButton +
@@ -88,14 +90,6 @@
     outline: 2px solid rgba(34, 211, 238, 0.65);
     outline-offset: 1px;
   }
-  /* Slightly brighter resting state when the card IS in the default
-     mode — operator can tell at a glance which of the three states
-     they're in. */
-  .default-btn-active {
-    background: rgba(34, 211, 238, 0.22);
-    color: #67e8f9;
-  }
-
   /* When the canonical trio sits in a flex parent, ensure tight
      spacing between adjacent control buttons regardless of their
      parent's `gap`. Mirrors CollapseButton's existing
