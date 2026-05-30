@@ -1007,6 +1007,19 @@
     width: 100%;
     height: var(--chart-h, 280px);
   }
+  /* Fullscreen card → chart fills the viewport. The parent card has
+     `.fs-card-on` (position: fixed; inset: 2rem); take everything
+     minus the card header (~5rem) + a comfortable bottom pad for
+     stats + legend. */
+  :global(.fs-card-on) .payoff-svg-stack {
+    height: calc(100vh - 12rem) !important;
+    min-height: 360px;
+  }
+  @media (max-width: 600px) {
+    :global(.fs-card-on) .payoff-svg-stack {
+      height: calc(100vh - 9rem) !important;
+    }
+  }
   .payoff-svg {
     position: absolute;
     inset: 0;

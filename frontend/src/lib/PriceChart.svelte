@@ -679,5 +679,19 @@
     height: var(--chart-h, 180px);
     display: block;
   }
+  /* Fullscreen card → chart fills the viewport. Same idiom as
+     OptionsPayoff — parent card carries `.fs-card-on`, we take the
+     viewport minus card-header + a comfortable pad. */
+  :global(.fs-card-on) .chart-svg,
+  :global(.fs-card-on) .chart-empty {
+    height: calc(100vh - 10rem) !important;
+    min-height: 320px;
+  }
+  @media (max-width: 600px) {
+    :global(.fs-card-on) .chart-svg,
+    :global(.fs-card-on) .chart-empty {
+      height: calc(100vh - 8rem) !important;
+    }
+  }
   :global(.price-chart .ev-marker) { cursor: pointer; }
 </style>

@@ -526,6 +526,29 @@ The canonical page-header is:
 - The `RefreshButton` placement is between the `ml-auto` spacer and the notification bells. Page-specific action chips (back-links, ✦ Ask AI, Create User, etc.) sit between the RefreshButton and the notification bells in markup order.
 - Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed.
 
+### Chart cards in fullscreen mode
+
+Every chart inside a card MUST scale to fill the viewport when the parent card is `.fs-card-on`. The chart container's height is normally `var(--chart-h, …)` (pinned via a `style="--chart-h: {height}px"` on the wrapper). In fullscreen, override:
+
+```css
+:global(.fs-card-on) .<chart-element> {
+  height: calc(100vh - 10rem) !important;
+  min-height: 320px;
+}
+@media (max-width: 600px) {
+  :global(.fs-card-on) .<chart-element> {
+    height: calc(100vh - 8rem) !important;
+  }
+}
+```
+
+The `10rem` budget covers the card's 2rem inset (top+bottom = 4rem) + card header + comfortable bottom pad. Charts with stat overlays or a heavier header (e.g. OptionsPayoff has stats + legend + footnote) use `calc(100vh - 12rem)` instead.
+
+Existing implementations to copy from:
+- [`OptionsPayoff.svelte`](frontend/src/lib/OptionsPayoff.svelte) — `.payoff-svg-stack` rule, `12rem` budget
+- [`PriceChart.svelte`](frontend/src/lib/PriceChart.svelte) — `.chart-svg + .chart-empty` rule, `10rem` budget
+- [`dashboard/+page.svelte`](frontend/src/routes/(algo)/dashboard/+page.svelte) — `.eq-svg` rule, `10rem` budget
+
 ### Picker / control bars on pages (Account · Underlying · Expiry · trailing buttons)
 
 Every page-level picker bar (e.g. /admin/options `.opt-picker`) follows this rule:

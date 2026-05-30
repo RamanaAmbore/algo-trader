@@ -2031,6 +2031,17 @@
     cursor: crosshair;
     overflow: visible;
   }
+  /* Fullscreen card → chart fills the viewport. Same idiom OptionsPayoff
+     + PriceChart use. */
+  .fs-card-on .eq-svg {
+    height: calc(100vh - 10rem) !important;
+    min-height: 320px;
+  }
+  @media (max-width: 600px) {
+    .fs-card-on .eq-svg {
+      height: calc(100vh - 8rem) !important;
+    }
+  }
   /* Stat overlay — at-a-glance P&L numerics (P&L TODAY · TODAY % ·
      vs NIFTY) anchored top-left inside the chart card body. Same
      pointer-events:none HTML overlay pattern OptionsPayoff uses;
