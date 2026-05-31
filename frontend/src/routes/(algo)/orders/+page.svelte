@@ -80,25 +80,18 @@
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
-  // on CollapseButton) so every page load opens all cards expanded
+  // on CollapseButton) so every page load opens both cards expanded
   // — matches the dashboard pattern.
   let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
   let _fsActivity  = $state(false);
-  let _colBook     = $state(false);
-  let _fsBook      = $state(false);
 
-  // Activity-card tab state. The card splits Order Log (UnifiedLog
-  // of recent order/agent events) from Order History (pending +
-  // completed orders for the operator's own placements).
-  let _activityTab = $state(/** @type {'log'|'history'} */ ('log'));
-
-  // Derived pending / completed lists for the Order History tab. Uses
-  // the page's existing `orders` snapshot — no separate fetch.
-  const _PENDING_STATUSES = new Set(['OPEN', 'TRIGGER PENDING', 'VALIDATION PENDING', 'PENDING']);
-  const _historyPending = $derived(orders.filter(o => _PENDING_STATUSES.has(o.status)));
-  const _historyDone    = $derived(orders.filter(o => !_PENDING_STATUSES.has(o.status)));
+  // Activity-card tab state. Order Book (the order grid that used to
+  // be its own card below) is the default; Order Log (UnifiedLog of
+  // recent order / agent events) is the second tab. Order History
+  // was retired — it duplicated Order Book.
+  let _activityTab = $state(/** @type {'book'|'log'} */ ('book'));
 
   // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
   // logic SymbolPanel uses internally; duplicated here so the tab
@@ -274,7 +267,7 @@
 
 <svelte:head><title>Orders | RamboQuant Analytics</title></svelte:head>
 
-<div class="flex flex-col">
+<div class="flex flex-col oc-page-wrap">
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Orders</h1>
@@ -437,31 +430,50 @@
   </div>
 </section>
 
-<!-- Order Activity card — Order Log (UnifiedLog of agent / order
-     events) + Order History (pending + completed orders from the
-     page's existing snapshot). Was previously the SymbolPanel's
-     internal bottom panel; lifted out into its own bucket-card so
-     the operator can collapse / fullscreen it independently. -->
-<section class="bucket-card bucket-card-activity mb-2"
+<!-- Order Activity card — single card that absorbs both Order Book
+     (the order grid that used to be its own card) and Order Log
+     (UnifiedLog of order / agent events). Book is the default tab;
+     Log is one click away. Order History was retired — it
+     duplicated Order Book. -->
+<section class="bucket-card bucket-card-activity oc-fill mb-2"
   class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}>
   <div class="bucket-header">
     <span class="mp-section-label">Order Activity</span>
     <div class="oc-act-tabs" role="tablist">
       <button type="button" role="tab" class="oc-act-tab"
+        class:on={_activityTab === 'book'}
+        aria-selected={_activityTab === 'book'}
+        onclick={() => _activityTab = 'book'}>
+        Order Book
+        {#if _filteredOrders.length > 0}
+          <span class="oc-act-badge">{_filteredOrders.length}</span>
+        {/if}
+      </button>
+      <button type="button" role="tab" class="oc-act-tab"
         class:on={_activityTab === 'log'}
         aria-selected={_activityTab === 'log'}
         onclick={() => _activityTab = 'log'}>Order Log</button>
-      <button type="button" role="tab" class="oc-act-tab"
-        class:on={_activityTab === 'history'}
-        aria-selected={_activityTab === 'history'}
-        onclick={() => _activityTab = 'history'}>
-        Order History
-        {#if _historyPending.length > 0}
-          <span class="oc-act-badge">{_historyPending.length}</span>
-        {/if}
-      </button>
     </div>
+    {#if _activityTab === 'book'}
+      <!-- Book-only filters — Account multi-select + Exchange chips.
+           Lifted from the retired Order Book card's header. -->
+      {#if _availableAccounts.length > 1}
+        <AccountMultiSelect
+          bind:value={_accountFilter}
+          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      {/if}
+      {#if _availableExchanges.length > 1}
+        <div class="oc-ex-strip" role="group" aria-label="Exchange filter">
+          <button type="button" class="oc-chip" class:oc-chip-on={_exchangeFilter === 'all'}
+            onclick={() => _exchangeFilter = 'all'}>All</button>
+          {#each _availableExchanges as ex}
+            <button type="button" class="oc-chip" class:oc-chip-on={_exchangeFilter === ex}
+              onclick={() => _exchangeFilter = ex}>{ex}</button>
+          {/each}
+        </div>
+      {/if}
+    {/if}
     <span class="oc-spacer"></span>
     {#if _fsActivity}
       <RefreshButton onClick={loadOrders} loading={loading} label="activity" />
@@ -470,100 +482,24 @@
     <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Order Activity" />
     <FullscreenButton bind:isFullscreen={_fsActivity} label="Order Activity" />
   </div>
-  <div class="card-body" hidden={_colActivity}>
+  <div class="card-body oc-act-body" hidden={_colActivity}>
     {#if _activityTab === 'log'}
       <!-- Wrap in .oc-activity-log so the :global overrides above
            restyle UnifiedLog's card-mode rows to match /market's
            news-row look (flat row, time on the left, thin bottom
            divider, no left accent). -->
-      <div class="oc-activity-log">
+      <div class="oc-activity-log oc-act-scroll">
         <UnifiedLog
           filter={{}}
           pollMs={3000}
-          maxRows={30}
-          heightClass="oc-act-scroll"
+          maxRows={50}
+          heightClass=""
           cardMode={true} />
       </div>
-    {:else}
-      <div class="oc-act-history">
-        {#if _historyPending.length === 0 && _historyDone.length === 0}
-          <div class="oc-act-empty">No orders yet.</div>
-        {:else}
-          {#if _historyPending.length > 0}
-            <header class="oc-act-head">PENDING <span class="oc-act-count">{_historyPending.length}</span></header>
-            {#each _historyPending as o (o.order_id)}
-              <article class="oc-act-row">
-                <span class="oc-act-status oc-act-status-pending">{o.status}</span>
-                <span class="oc-act-side" style="{txnColor(o.transaction_type)}">{o.transaction_type}</span>
-                <span class="oc-act-qty">{qtyFmt(o.quantity)}</span>
-                <span class="oc-act-sym">{o.tradingsymbol}</span>
-                <span class="oc-act-px">{priceFmt(o.price ?? 0)}</span>
-                <span class="oc-act-meta">acct={o.account} · #{o.order_id} · {o.order_timestamp ? logTimeIst(o.order_timestamp) : ''}</span>
-              </article>
-            {/each}
-          {/if}
-          {#if _historyDone.length > 0}
-            <header class="oc-act-head oc-act-head-done">COMPLETED <span class="oc-act-count">{_historyDone.length}</span></header>
-            {#each _historyDone as o (o.order_id)}
-              <article class="oc-act-row oc-act-row-done">
-                <span class="oc-act-status oc-act-status-{o.status?.toLowerCase()}">{o.status}</span>
-                <span class="oc-act-side" style="{txnColor(o.transaction_type)}">{o.transaction_type}</span>
-                <span class="oc-act-qty">{qtyFmt(o.quantity)}</span>
-                <span class="oc-act-sym">{o.tradingsymbol}</span>
-                <span class="oc-act-px">{priceFmt(o.average_price ?? o.price ?? 0)}</span>
-                <span class="oc-act-meta">acct={o.account} · #{o.order_id} · {o.order_timestamp ? logTimeIst(o.order_timestamp) : ''}</span>
-              </article>
-            {/each}
-          {/if}
-        {/if}
-      </div>
-    {/if}
-  </div>
-</section>
-
-<!-- Order Book card — bucket-card chrome re-added per operator
-     request. Has its own [Collapse · DefaultSize · Fullscreen] trio
-     on the right. Filter chips + Account picker stay in the header. -->
-<section class="bucket-card bucket-card-book mb-2"
-  class:fs-card-on={_fsBook}
-  class:is-collapsed={_colBook}>
-  <div class="bucket-header">
-    <span class="mp-section-label">Order Book</span>
-    <span class="oc-count">
-      {#if _filteredOrders.length !== orders.length}
-        {_filteredOrders.length} of {orders.length}
-      {:else}
-        {orders.length} today
-      {/if}
-    </span>
-    {#if _availableAccounts.length > 1}
-      <AccountMultiSelect
-        bind:value={_accountFilter}
-        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-    {/if}
-    {#if _availableExchanges.length > 1}
-      <div class="oc-ex-strip" role="group" aria-label="Exchange filter">
-        <button type="button" class="oc-chip" class:oc-chip-on={_exchangeFilter === 'all'}
-          onclick={() => _exchangeFilter = 'all'}>All</button>
-        {#each _availableExchanges as ex}
-          <button type="button" class="oc-chip" class:oc-chip-on={_exchangeFilter === ex}
-            onclick={() => _exchangeFilter = ex}>{ex}</button>
-        {/each}
-      </div>
-    {/if}
-    <span class="oc-spacer"></span>
-    {#if _fsBook}
-      <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colBook} label="Order Book" />
-    <DefaultSizeButton bind:isFullscreen={_fsBook} bind:isCollapsed={_colBook} label="Order Book" />
-    <FullscreenButton bind:isFullscreen={_fsBook} label="Order Book" />
-  </div>
-  <div class="card-body" hidden={_colBook}>
-    {#if loading && !orders.length}
+    {:else if loading && !orders.length}
       <div class="text-center text-muted text-xs animate-pulse py-2">Loading orders…</div>
     {:else if _filteredOrders.length}
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-1 max-h-[min(40vh,22rem)] overflow-y-auto">
+      <div class="oc-book-grid">
         {#each _filteredOrders as o (o.order_id)}
           <!-- Outer is a div role=button (not <button>) so the inline
                Cancel / Modify / Repeat <button> elements can nest
@@ -705,6 +641,45 @@
 <style>
   .order-card-num { font-variant-numeric: tabular-nums; }
 
+  /* Outer page wrap — fills the viewport between the navbar/strip
+     above and the footer so the Activity card can grow to take all
+     remaining vertical space. Status filter strip + Order Entry
+     card stay at their natural heights; Activity flexes. */
+  .oc-page-wrap {
+    min-height: calc(100vh - 6.5rem);
+  }
+  .oc-fill {
+    flex: 1 1 0;
+    min-height: 12rem;
+  }
+  .oc-act-body {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .oc-act-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  /* Book tab — order grid uses the same scroll container as the log
+     tab so card height is consistent when flipping between them. */
+  .oc-book-grid {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+  @media (min-width: 640px) {
+    .oc-book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (min-width: 1024px) {
+    .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
   /* Card chrome — full 1.5px white-10% box-border plus a 3px colored
      left-edge accent stripe per card type. Each card has its own
      identity colour so the operator can tell them apart at a glance
@@ -781,16 +756,8 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* History list — pending + completed orders in compact rows.
-     Operator scans a flat list (sym · qty · price · meta) without
-     the per-row cards from the Order Book grid above. Tightened
-     to ~14rem max so the Activity card stays compact between the
-     Order Entry header above and the Order Book grid below. */
-  .oc-act-history {
-    max-height: min(28vh, 14rem);
-    overflow-y: auto;
-    font-family: ui-monospace, monospace;
-  }
+  /* History list — retired with the History tab. Style block kept
+     empty for callsite stability but no element uses it. */
 
   /* UnifiedLog rows inside the Activity card — restyled to look like
      the Market News rows on /performance + /market (see app.css
