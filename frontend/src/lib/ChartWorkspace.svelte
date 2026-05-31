@@ -48,19 +48,10 @@
     'GOLD', 'SILVER', 'CRUDEOIL',
   ];
 
-  /**
-   * Resolve a pinned label to a tradeable tradingsymbol.
-   * Uses the shared resolveUnderlying helper (MCX/CDS → nearest future,
-   * indices → spot, everything else → NSE:<name>).
-   * @param {string} pin
-   * @returns {string | null}
-   */
-  function _resolvePinForChart(pin) {
-    const upper = String(pin || '').toUpperCase();
-    if (!upper) return null;
-    const r = resolveUnderlying(upper, findNearestFuture);
-    return r?.tradingsymbol || null;
-  }
+  // Tracks the exchange hint of the last pinned-or-search pick.
+  // MCX commodities resolve to 'MCX'; indices/equities to 'NSE'/'BSE'.
+  // Cleared when the operator types a symbol manually via search.
+  let _resolvedExchange = $state('');
 
   let {
     symbol        = $bindable(''),
@@ -107,16 +98,21 @@
 
   /** @type {Array<{value:string,label:string}>} */
   const _OVERLAY_OPTS = [
-    { value: 'sma20', label: 'SMA20' },
-    { value: 'sma50', label: 'SMA50' },
+    { value: 'sma20', label: 'SMA 20' },
+    { value: 'sma50', label: 'SMA 50' },
+    { value: 'ema20', label: 'EMA 20' },
+    { value: 'ema50', label: 'EMA 50' },
+    { value: 'bb',    label: 'Bollinger' },
     { value: 'vol',   label: 'Volume' },
+    { value: 'rsi',   label: 'RSI 14' },
   ];
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
   function _onPickSymbol(/** @type {string} */ sym) {
     const upper = String(sym || '').toUpperCase();
     if (!upper) return;
-    _pinnedValue = '';   // search pick — clear active pin
+    _pinnedValue = '';       // search pick — clear active pin
+    _resolvedExchange = '';  // clear stale MCX/CDS hint from prior pin
     _chartLoaded = false;
     _intradayChoice = 'off';
     onSymbolChange?.(upper);
@@ -132,13 +128,14 @@
 
   /** Pick from the Pinned dropdown — resolves to tradeable + loads. */
   function _onPickPin(/** @type {string} */ pin) {
-    const resolved = _resolvePinForChart(pin);
-    if (!resolved) return;
+    const r = resolveUnderlying(String(pin || '').toUpperCase(), findNearestFuture);
+    if (!r?.tradingsymbol) return;
     _pinnedValue = pin;
-    symbol = resolved;
+    _resolvedExchange = r.exchange || '';  // capture MCX/CDS/NSE so _loadHistorical can hint the backend
+    symbol = r.tradingsymbol;
     _chartLoaded = false;
     _intradayChoice = 'off';
-    onSymbolChange?.(resolved);
+    onSymbolChange?.(r.tradingsymbol);
     _loadHistorical(true);
   }
 
@@ -178,11 +175,15 @@
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
   let _chartType   = $state(/** @type {'line'|'area'|'candle'} */('line'));
-  // Overlays MultiSelect — drives the three derived booleans below.
-  let _overlays    = $state(/** @type {string[]} */([]));
+  // Overlays MultiSelect — drives derived booleans below. Volume on by default.
+  let _overlays    = $state(/** @type {string[]} */(['vol']));
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   const _showVol   = $derived(_overlays.includes('vol'));
+  const _showEma20 = $derived(_overlays.includes('ema20'));
+  const _showEma50 = $derived(_overlays.includes('ema50'));
+  const _showBb    = $derived(_overlays.includes('bb'));
+  const _showRsi   = $derived(_overlays.includes('rsi'));
 
   // Expose loading state to parent via $bindable prop.
   $effect(() => { loading = _histLoading; });
@@ -195,8 +196,11 @@
     if (!force && _chartLoaded) return;
     _histLoading = true; _histError = '';
     try {
+      // _resolvedExchange is set when picking a pinned symbol (e.g. MCX for GOLD futures).
+      // exchange prop is the parent-supplied hint. Both take precedence over auto-detection.
+      const exchHint = _resolvedExchange || exchange || undefined;
       const promises = [
-        fetchOptionsHistorical(symbol, { days: _chartDays, exchange: exchange || undefined }),
+        fetchOptionsHistorical(symbol, { days: _chartDays, exchange: exchHint }),
       ];
       if (_isDerivative && _underlying) {
         promises.push(
@@ -298,8 +302,14 @@
   const CPAD_R  = 16;
   const CPAD_T  = 16;
   const CPAD_B  = 30;
+  const RSI_H   = 56;   // RSI sub-panel height in SVG user units
   const _innerW = $derived(_chartW - CPAD_L - CPAD_R);
-  const _innerH = $derived(_chartH - CPAD_T - CPAD_B);
+  // _bandH reserves vertical space at the bottom for sub-panels (volume + RSI).
+  // Volume bars always sit in the bottom VOL_H px of the price area; RSI sits
+  // below that. _innerH is the price-chart's usable height — overlays + price
+  // lines must not draw below CPAD_T + _innerH.
+  const _bandH  = $derived((_showRsi ? RSI_H : 0));
+  const _innerH = $derived(_chartH - CPAD_T - CPAD_B - _bandH);
 
   $effect(() => {
     const el = _chartContainerEl;
@@ -378,7 +388,8 @@
     const last  = src[src.length - 1];
     const lastT = Date.parse(last.ts);
     if (!Number.isFinite(lastT)) return '';
-    const base   = (_chartH - CPAD_B).toFixed(2);
+    // Close to the bottom of the price area (CPAD_T + _innerH), not the full SVG bottom.
+    const base   = (CPAD_T + _innerH).toFixed(2);
     const firstT = Date.parse(src[0].ts);
     return `${_linePath} L${_xOf(lastT).toFixed(2)},${base} L${_xOf(firstT).toFixed(2)},${base} Z`;
   });
@@ -437,7 +448,10 @@
     const n        = src.length;
     const slot     = n > 1 ? _innerW / (n - 1) : _innerW;
     const w        = Math.max(2, Math.min(10, slot * 0.55));
-    const baseline = _chartH - CPAD_B;
+    // Volume bars baseline sits at the bottom of the price area.
+    // When RSI is on, _innerH already excludes RSI_H so this naturally
+    // positions volume just above the RSI sub-panel.
+    const baseline = CPAD_T + _innerH;
     /** @type {Array<{x:number,y:number,h:number,w:number,up:boolean}>} */
     const out = [];
     for (const b of src) {
@@ -472,6 +486,94 @@
       d += (d === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
     }
     return d;
+  });
+
+  // ── EMA path helper ───────────────────────────────────────────────
+  // Classic EMA: EMA_t = close_t × k + EMA_{t-1} × (1−k), k = 2/(N+1).
+  // Seed is the SMA of the first N bars. Returns '' when not enough bars.
+  function _emaPath(/** @type {number} */ n) {
+    if (_bars.length < n) return '';
+    const k = 2 / (n + 1);
+    let ema = _bars.slice(0, n).reduce((s, b) => s + Number(b.close), 0) / n;
+    let d = '';
+    for (let i = n - 1; i < _bars.length; i++) {
+      if (i > n - 1) ema = Number(_bars[i].close) * k + ema * (1 - k);
+      const t = Date.parse(_bars[i].ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _xOf(t), y = _yOf(ema);
+      d += (d ? ` L${x.toFixed(2)},${y.toFixed(2)}` : `M${x.toFixed(2)},${y.toFixed(2)}`);
+    }
+    return d;
+  }
+  const _ema20Path = $derived(_showEma20 ? _emaPath(20) : '');
+  const _ema50Path = $derived(_showEma50 ? _emaPath(50) : '');
+
+  // ── Bollinger Bands (20-period, ±2σ) ─────────────────────────────
+  // Returns mid / upper / lower path strings + a closed fill path.
+  const _bbPaths = $derived.by(() => {
+    if (!_showBb || _bars.length < 20) return { mid: '', upper: '', lower: '', fill: '' };
+    const N = 20, K = 2;
+    let mid = '', upper = '', lower = '';
+    /** @type {Array<{x:number,yU:number,yL:number}>} */
+    const ribbon = [];
+    for (let i = N - 1; i < _bars.length; i++) {
+      let sum = 0;
+      for (let j = i - N + 1; j <= i; j++) sum += Number(_bars[j].close);
+      const m = sum / N;
+      let v = 0;
+      for (let j = i - N + 1; j <= i; j++) {
+        const diff = Number(_bars[j].close) - m;
+        v += diff * diff;
+      }
+      const sd = Math.sqrt(v / N);
+      const u = m + K * sd, l = m - K * sd;
+      const t = Date.parse(_bars[i].ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _xOf(t);
+      mid   += (mid   ? ` L${x.toFixed(2)},${_yOf(m).toFixed(2)}` : `M${x.toFixed(2)},${_yOf(m).toFixed(2)}`);
+      upper += (upper ? ` L${x.toFixed(2)},${_yOf(u).toFixed(2)}` : `M${x.toFixed(2)},${_yOf(u).toFixed(2)}`);
+      lower += (lower ? ` L${x.toFixed(2)},${_yOf(l).toFixed(2)}` : `M${x.toFixed(2)},${_yOf(l).toFixed(2)}`);
+      ribbon.push({ x, yU: _yOf(u), yL: _yOf(l) });
+    }
+    // Shaded fill — upper line forward, lower reversed, closed.
+    let fill = '';
+    if (ribbon.length) {
+      fill = `M${ribbon[0].x.toFixed(2)},${ribbon[0].yU.toFixed(2)}`;
+      for (let i = 1; i < ribbon.length; i++) fill += ` L${ribbon[i].x.toFixed(2)},${ribbon[i].yU.toFixed(2)}`;
+      for (let i = ribbon.length - 1; i >= 0; i--) fill += ` L${ribbon[i].x.toFixed(2)},${ribbon[i].yL.toFixed(2)}`;
+      fill += ' Z';
+    }
+    return { mid, upper, lower, fill };
+  });
+
+  // ── RSI 14 (Wilder's smoothed RSI) ───────────────────────────────
+  // Returns a series of {ts, rsi} points for sub-panel rendering.
+  // The sub-panel has its own y-scale 0–100 (independent of price).
+  const RSI_N = 14;
+  const _rsiSeries = $derived.by(() => {
+    if (!_showRsi || _bars.length < RSI_N + 1) return /** @type {Array<{ts:string,rsi:number}>} */ ([]);
+    /** @type {Array<{ts:string,rsi:number}>} */
+    const out = [];
+    let avgGain = 0, avgLoss = 0;
+    // Seed: first RSI_N changes
+    for (let i = 1; i <= RSI_N; i++) {
+      const ch = Number(_bars[i].close) - Number(_bars[i - 1].close);
+      if (ch >= 0) avgGain += ch; else avgLoss -= ch;
+    }
+    avgGain /= RSI_N; avgLoss /= RSI_N;
+    for (let i = RSI_N; i < _bars.length; i++) {
+      if (i > RSI_N) {
+        const ch = Number(_bars[i].close) - Number(_bars[i - 1].close);
+        const g = ch > 0 ? ch : 0;
+        const l = ch < 0 ? -ch : 0;
+        avgGain = (avgGain * (RSI_N - 1) + g) / RSI_N;
+        avgLoss = (avgLoss * (RSI_N - 1) + l) / RSI_N;
+      }
+      const rs  = avgLoss === 0 ? 100 : avgGain / avgLoss;
+      const rsi = 100 - (100 / (1 + rs));
+      out.push({ ts: _bars[i].ts, rsi });
+    }
+    return out;
   });
 
   // ── Grid + axis labels ────────────────────────────────────────────
@@ -757,24 +859,25 @@
           </text>
         {/each}
 
-        <!-- X-axis grid + labels -->
+        <!-- X-axis grid + labels — clamped to price area bottom -->
         {#each _xLabels as xl, i}
           {#if i > 0}
-            <line x1={xl.x} x2={xl.x} y1={CPAD_T} y2={_chartH - CPAD_B}
+            <line x1={xl.x} x2={xl.x} y1={CPAD_T} y2={CPAD_T + _innerH}
                   stroke="rgba(200,216,240,0.07)" stroke-width="1" stroke-dasharray="2 3"/>
           {/if}
-          <text x={xl.x} y={_chartH - CPAD_B + 14}
+          <text x={xl.x} y={CPAD_T + _innerH + 14}
                 text-anchor={i === 0 ? 'start' : (i === 4 ? 'end' : 'middle')}
                 fill="#c8d8f0" font-size="11" font-weight="600">
             {xl.label}
           </text>
         {/each}
 
-        <!-- X-axis baseline -->
-        <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={_chartH - CPAD_B} y2={_chartH - CPAD_B}
+        <!-- X-axis baseline — bottom of price area -->
+        <line x1={CPAD_L} x2={_chartW - CPAD_R}
+              y1={CPAD_T + _innerH} y2={CPAD_T + _innerH}
               stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
 
-        <!-- Volume bars (lower band) -->
+        <!-- Volume bars (lower band of price area) -->
         {#if _showVol}
           {#each _volBars as v}
             <rect x={v.x} y={v.y} width={v.w} height={v.h}
@@ -786,6 +889,16 @@
         {#if _spotOverlayPath}
           <path d={_spotOverlayPath} fill="none"
                 stroke="#7dd3fc" stroke-width="1.2" stroke-dasharray="4 3" stroke-opacity="0.65"/>
+        {/if}
+
+        <!-- Bollinger Bands fill (drawn before lines so lines appear on top) -->
+        {#if _showBb && _bbPaths.fill}
+          <path d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
+        {/if}
+        {#if _showBb && _bbPaths.upper}
+          <path d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
         {/if}
 
         <!-- Price layer — line / area / candle -->
@@ -815,9 +928,57 @@
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
-        <!-- Hover crosshair -->
+        <!-- EMA overlays -->
+        {#if _ema20Path}
+          <path d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
+                stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
+        {/if}
+        {#if _ema50Path}
+          <path d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
+                stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
+        {/if}
+
+        <!-- RSI 14 sub-panel -->
+        {#if _showRsi && _rsiSeries.length}
+          {@const rsiTop = _chartH - CPAD_B - RSI_H}
+          {@const rsiBot = _chartH - CPAD_B}
+          {@const rsiYOf = (/** @type {number} */ val) => rsiTop + ((100 - val) / 100) * (RSI_H - 6)}
+          <!-- Background tint -->
+          <rect x={CPAD_L} y={rsiTop} width={_chartW - CPAD_L - CPAD_R} height={RSI_H}
+                fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)" stroke-width="0.5"/>
+          <!-- Overbought / oversold / mid threshold lines -->
+          <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={rsiYOf(70)} y2={rsiYOf(70)}
+                stroke="rgba(248,113,113,0.5)" stroke-width="1" stroke-dasharray="3 3"/>
+          <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={rsiYOf(30)} y2={rsiYOf(30)}
+                stroke="rgba(74,222,128,0.5)" stroke-width="1" stroke-dasharray="3 3"/>
+          <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={rsiYOf(50)} y2={rsiYOf(50)}
+                stroke="rgba(200,216,240,0.20)" stroke-width="1" stroke-dasharray="2 4"/>
+          <!-- RSI level labels (left edge) -->
+          <text x={CPAD_L - 4} y={rsiYOf(70) + 3} text-anchor="end"
+                fill="rgba(248,113,113,0.7)" font-size="9" font-family="monospace">70</text>
+          <text x={CPAD_L - 4} y={rsiYOf(30) + 3} text-anchor="end"
+                fill="rgba(74,222,128,0.7)" font-size="9" font-family="monospace">30</text>
+          <!-- RSI line -->
+          {#each [_rsiSeries] as series}
+            {@const rsiPath = series.reduce((acc, pt, idx) => {
+              const t = Date.parse(pt.ts);
+              if (!Number.isFinite(t)) return acc;
+              const x = _xOf(t);
+              const y = rsiYOf(pt.rsi);
+              return acc + (idx === 0 ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
+            }, '')}
+            <path d={rsiPath} fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round"/>
+          {/each}
+          <!-- RSI label -->
+          <text x={_chartW - CPAD_R - 4} y={rsiTop + 12}
+                text-anchor="end" fill="#fbbf24" font-size="10" font-weight="700" font-family="monospace">
+            RSI 14
+          </text>
+        {/if}
+
+        <!-- Hover crosshair — clamp vertical line to price area -->
         {#if _chartHover && !pan}
-          <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={_chartH - CPAD_B}
+          <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CPAD_T + _innerH}
                 stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2"/>
           <circle cx={_chartHover.x} cy={_chartHover.y} r="3"
                   fill="#fbbf24" stroke="#fff" stroke-width="1"/>

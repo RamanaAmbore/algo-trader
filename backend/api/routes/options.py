@@ -1302,7 +1302,7 @@ class OptionsController(Controller):
         broker = get_price_broker()
         token: int | None = None
         try:
-            for ex in (exchange or "NFO", "BFO", "NSE", "BSE"):
+            for ex in (exchange or "NFO", "BFO", "NSE", "BSE", "MCX", "CDS"):
                 if ex == exchange and token:
                     break
                 insts = await asyncio.to_thread(broker.instruments, ex) or []
@@ -1324,7 +1324,7 @@ class OptionsController(Controller):
             # contract / typo / out-of-cycle expiry). Return empty
             # bars + null token; the UI shows an "unavailable" message
             # instead of a 404 ripping the whole panel.
-            logger.info(f"options historical: '{sym}' not found in NFO/BFO/NSE/BSE")
+            logger.info(f"options historical: '{sym}' not found in NFO/BFO/NSE/BSE/MCX/CDS")
             return HistoricalResponse(symbol=sym, instrument_token=None,
                                       interval=interval, bars=[])
 

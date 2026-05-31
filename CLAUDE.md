@@ -1355,7 +1355,7 @@ Live vs sim is **auto-detected** from `/api/simulator/status`. When a sim is act
 
 **Historical chart removed** — when the page collapsed to multi-leg-only, the per-symbol historical chart lost its anchor (a single picked symbol). The historical endpoint stays on the backend (`GET /api/options/historical`) for any future re-introduction; the frontend no longer calls it.
 
-**Historical-bars endpoint is graceful** — `GET /api/options/historical?symbol=…` no longer 404s when the instrument isn't in the cached dump for the first exchange tried. It walks NFO → BFO → NSE → BSE in sequence and returns an empty `bars: []` (200 OK) when nothing matches, rather than bubbling a 4xx that crashes the page's chart panel. Same pattern when the broker is unreachable — empty bars instead of 502.
+**Historical-bars endpoint is graceful** — `GET /api/options/historical?symbol=…` no longer 404s when the instrument isn't in the cached dump for the first exchange tried. It walks NFO → BFO → NSE → BSE → MCX → CDS in sequence and returns an empty `bars: []` (200 OK) when nothing matches, rather than bubbling a 4xx that crashes the page's chart panel. Same pattern when the broker is unreachable — empty bars instead of 502.
 
 **Strategy 500 traps** — two separate bugs caused 500s on the strategy endpoint and were fixed together:
 1. `parse_tradingsymbol("…FUT")` returns a dict without a `strike` key. `sorted_strikes = sorted({parse_tradingsymbol(l.symbol)["strike"] for ...})` crashed with KeyError when a futures leg was in the basket. Guarded with `(p := parse_tradingsymbol(l.symbol)) and "strike" in p`.
