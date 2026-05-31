@@ -29,15 +29,13 @@
     loadInstruments, searchByPrefix, suggestUnderlyings,
     findEquity, findNearestFuture, getInstrument,
   } from '$lib/data/instruments';
+  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { nowStamp, visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
-
-  // Minimum prefix length before the symbol search fires suggestions.
-  // 3-char gate keeps single-letter typos from dropping a ~50-row
-  // dropdown over the chart canvas while the operator is still typing.
-  const SYM_MIN_CHARS = 3;
+  import MultiSelect from '$lib/MultiSelect.svelte';
+  import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
 
   // Pinned quick-pick symbols — surface at the TOP of the symbol
   // dropdown so they're one click away whenever the operator opens
@@ -50,34 +48,18 @@
     'GOLD', 'SILVER', 'CRUDEOIL',
   ];
 
-  // Kite index-spot names → underlying root (so findNearestFuture can
-  // resolve the tradeable contract). Spots themselves don't appear in
-  // the instruments dump, so picking "NIFTY 50" needs to land on the
-  // nearest NIFTY future for the chart to fetch bars.
-  /** @type {Record<string, string>} */
-  const _PIN_TO_ROOT = {
-    'NIFTY 50':          'NIFTY',
-    'NIFTY BANK':        'BANKNIFTY',
-    'NIFTY FIN SERVICE': 'FINNIFTY',
-    'NIFTY MID SELECT':  'MIDCPNIFTY',
-  };
-
   /**
-   * Resolve a pinned label to a tradeable tradingsymbol the historical
-   * endpoint can actually fetch. Tries: direct EQ → nearest FUT for the
-   * underlying root → pin verbatim. Returns {sym, t, e} so the dropdown
-   * + active-state logic can show the right hint chip.
+   * Resolve a pinned label to a tradeable tradingsymbol.
+   * Uses the shared resolveUnderlying helper (MCX/CDS → nearest future,
+   * indices → spot, everything else → NSE:<name>).
    * @param {string} pin
+   * @returns {string | null}
    */
-  function _resolvePin(pin) {
+  function _resolvePinForChart(pin) {
     const upper = String(pin || '').toUpperCase();
     if (!upper) return null;
-    const eq = findEquity(upper);
-    if (eq) return { sym: eq.s, t: 'EQ', e: eq.e || '' };
-    const root = _PIN_TO_ROOT[upper] || upper;
-    const fut = findNearestFuture(root);
-    if (fut?.s) return { sym: fut.s, t: 'FUT', e: fut.e || '' };
-    return { sym: upper, t: '', e: '' };
+    const r = resolveUnderlying(upper, findNearestFuture);
+    return r?.tradingsymbol || null;
   }
 
   let {
@@ -94,16 +76,8 @@
   const _algoStatus = getContext('algoStatus');
   const _isDemo = $derived(_algoStatus?.isDemo ?? false);
 
-  // ── Symbol search ─────────────────────────────────────────────────
-  // Always bind input to _symQuery. On mount + external symbol change,
-  // sync _symQuery = symbol. Never revert to symbol on blur — the
-  // operator's deliberate clear stays cleared.
-  let _symQuery       = $state('');
-  let _symOpen        = $state(false);
-  let _symSuggestions = $state(/** @type {any[]} */ ([]));
-  let _symDebounce    = /** @type {any} */ (null);
-  // Type filter for the symbol dropdown. ALL = no filter (default).
-  // EQ = equities + indices; FUT = futures; OPT = CE+PE.
+  // ── Type filter for SymbolSearchInput ────────────────────────────
+  // EQ = equities + indices; FUT = futures; OPT = CE+PE; ALL = no filter.
   let _symType        = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */('ALL'));
   /** @type {Array<{value:string,label:string}>} */
   const _SYM_TYPE_OPTS = [
@@ -113,106 +87,48 @@
     { value: 'OPT', label: 'Options' },
   ];
 
-  // Sync _symQuery when the symbol prop changes externally (initial mount
-  // or parent-driven symbol swap).
-  $effect(() => {
-    // Reading `symbol` makes this reactive to external symbol changes.
-    const s = symbol;
-    if (s && s !== _symQuery) _symQuery = s;
-  });
+  /** @type {Array<{value:string,label:string}>} */
+  const _CHART_TYPE_OPTS = [
+    { value: 'line',   label: 'Line' },
+    { value: 'area',   label: 'Area' },
+    { value: 'candle', label: 'Candle' },
+  ];
 
-  // Re-run the search when the type filter changes (so flipping from
-  // ALL→OPT with an existing 3+ char query re-filters without forcing
-  // the operator to retype).
-  $effect(() => {
-    void _symType;
-    if (_symQuery.length >= SYM_MIN_CHARS) _onSymInput(_symQuery);
-  });
+  /** @type {Array<{value:number,label:string}>} */
+  const _RANGE_OPTS = [
+    { value: 1,   label: '1D' },
+    { value: 7,   label: '1W' },
+    { value: 30,  label: '1M' },
+    { value: 90,  label: '3M' },
+    { value: 180, label: '6M' },
+    { value: 365, label: '1Y' },
+  ];
 
-  /** Filter a list of instrument-like rows by the active type filter. */
-  function _filterByType(/** @type {any[]} */ rows) {
-    if (_symType === 'ALL') return rows;
-    return rows.filter(r => {
-      const t = String(r?.t || '').toUpperCase();
-      if (_symType === 'EQ')  return t === 'EQ' || t === '';
-      if (_symType === 'FUT') return t === 'FUT';
-      if (_symType === 'OPT') return t === 'CE' || t === 'PE';
-      return true;
-    });
-  }
+  /** @type {Array<{value:string,label:string}>} */
+  const _OVERLAY_OPTS = [
+    { value: 'sma20', label: 'SMA20' },
+    { value: 'sma50', label: 'SMA50' },
+    { value: 'vol',   label: 'Volume' },
+  ];
 
-  async function _onSymInput(/** @type {string} */ v) {
-    _symQuery = v;
-    _symOpen = true;
-    // Min-char gate — don't surface suggestions until the operator has
-    // typed enough to narrow the universe meaningfully.
-    if (v.length < SYM_MIN_CHARS) { _symSuggestions = []; return; }
-    // Sync fast-path — only meaningful for the All / EQ filters since
-    // suggestUnderlyings returns equity-style underlyings.
-    if (_symType === 'ALL' || _symType === 'EQ') {
-      try {
-        const sync = suggestUnderlyings(v, 24);
-        if (Array.isArray(sync) && sync.length) {
-          _symSuggestions = sync.map(s => ({ sym: s, e: '', t: 'EQ' }));
-        }
-      } catch (_) { /* sync path failed */ }
-    } else {
-      _symSuggestions = [];
-    }
-    if (_symDebounce) clearTimeout(_symDebounce);
-    _symDebounce = setTimeout(async () => {
-      try {
-        await loadInstruments();
-        // Fetch wide then filter — searchByPrefix front-loads EQ rows,
-        // so a small `limit` would starve OPT/FUT picks. 80 gives the
-        // type filter teeth on heavy-volume names like NIFTY.
-        const full = await searchByPrefix(v, 80);
-        const filtered = _filterByType(Array.isArray(full) ? full : []);
-        if (filtered.length) _symSuggestions = filtered.slice(0, 24);
-        else if (_symType !== 'ALL') _symSuggestions = [];  // honour empty type-filter result
-      } catch (_) { /* keep sync result */ }
-    }, 60);
-  }
+  /** @type {Array<{value:string,label:string}>} */
+  const _INTRADAY_OPTS = [
+    { value: 'off', label: 'Intraday Off' },
+    { value: 'on',  label: 'Intraday On' },
+  ];
 
-  function _pickSym(/** @type {any} */ inst) {
-    const sym = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
-    _symQuery = sym;
-    _symOpen = false;
-    _symSuggestions = [];
-    _activePin = '';   // search-pick — clear any active pin highlight
-    symbol = sym;
-    onSymbolChange?.(sym);
+  /** Called by SymbolSearchInput when the operator picks a symbol. */
+  function _onPickSymbol(/** @type {string} */ sym) {
+    const upper = String(sym || '').toUpperCase();
+    if (!upper) return;
+    // `symbol` is already updated by SymbolSearchInput's bind:value,
+    // but we reset chart state and trigger the historical load here
+    // (the $effect on symbol will fire, but _chartLoaded guard prevents
+    // double-load — set it false first).
     _chartLoaded = false;
-    _intradayEnabled = false;
+    _intradayChoice = 'off';
+    onSymbolChange?.(upper);
     _loadHistorical(true);
-  }
-
-  /** Pin row pick — resolves the pin label to a tradeable tradingsymbol
-   *  (nearest future for commodities/index spots) and loads the chart
-   *  against that. Input shows the pin's display label so the operator
-   *  sees what they picked, not the resolved symbol. */
-  function _pickPin(/** @type {string} */ pin) {
-    const r = _resolvePin(pin);
-    if (!r) return;
-    _symQuery = pin;                  // input shows the friendly pin label
-    _symOpen = false;
-    _symSuggestions = [];
-    _activePin = pin;                 // active-chip highlight in dropdown
-    symbol = r.sym;                   // chart fetches the resolved symbol
-    onSymbolChange?.(r.sym);
-    _chartLoaded = false;
-    _intradayEnabled = false;
-    _loadHistorical(true);
-  }
-
-  // Tracks which pin (if any) the operator last clicked, so the row in
-  // the dropdown can show an "active" highlight. Cleared by any search-
-  // based pick.
-  let _activePin = $state('');
-
-  function _handleSymKeydown(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') { _symOpen = false; _symSuggestions = []; }
-    if (e.key === 'Enter' && _symSuggestions.length) _pickSym(_symSuggestions[0]);
   }
 
   // ── Symbol classification ─────────────────────────────────────────
@@ -251,9 +167,11 @@
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
   let _chartType   = $state(/** @type {'line'|'area'|'candle'} */('line'));
-  let _showSma20   = $state(false);
-  let _showSma50   = $state(false);
-  let _showVol     = $state(false);
+  // Overlays MultiSelect — drives the three derived booleans below.
+  let _overlays    = $state(/** @type {string[]} */([]));
+  const _showSma20 = $derived(_overlays.includes('sma20'));
+  const _showSma50 = $derived(_overlays.includes('sma50'));
+  const _showVol   = $derived(_overlays.includes('vol'));
 
   /** @type {Array<{ts:string,close:number}>} */
   let _spotBars = $state([]);
@@ -295,7 +213,8 @@
   }
 
   // ── Intraday tick stream ──────────────────────────────────────────
-  let _intradayEnabled = $state(false);
+  let _intradayChoice  = $state(/** @type {'off'|'on'} */('off'));
+  const _intradayEnabled = $derived(_intradayChoice === 'on');
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
   let _ticks  = $state([]);
   /** @type {Array<{ts:string,kind:string,side:string,price:number|null}>} */
@@ -671,7 +590,6 @@
 
   onDestroy(() => {
     _mounted = false;
-    if (_symDebounce) { clearTimeout(_symDebounce); _symDebounce = null; }
     if (_statusTimer) { try { _statusTimer(); } catch (_) { clearInterval(_statusTimer); } }
     _stopTickPoll();
   });
@@ -686,7 +604,7 @@
       _bars = [];
       _spotBars = [];
       _greeks = null;
-      _intradayEnabled = false;
+      _intradayChoice = 'off';
       _loadHistorical(true);
       if (_isOption) _loadGreeks();
     }
@@ -711,7 +629,7 @@
 </script>
 
 <div class="cw-root">
-  <!-- Picker bar — type filter + symbol search (no mode pills) -->
+  <!-- Picker bar — type filter + symbol search + chart controls -->
   {#if !compact}
     <div class="cw-picker">
       <div class="cw-type-wrap">
@@ -720,64 +638,14 @@
           bind:value={_symType}
           ariaLabel="Symbol type filter" />
       </div>
-      <div class="cw-sym-wrap">
-        <input
-          class="cw-sym-input"
-          type="text"
-          placeholder="Pick or type 3+ chars…"
-          bind:value={_symQuery}
-          oninput={() => _onSymInput(_symQuery)}
-          onfocus={() => { _symOpen = true; }}
-          onblur={() => {
-            // Delay close so dropdown mousedown handlers register before
-            // the dropdown disappears. Operator's clear is preserved.
-            setTimeout(() => { _symOpen = false; }, 180);
-          }}
-          onkeydown={_handleSymKeydown}
-          aria-label="Symbol search"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        {#if _symOpen}
-          <div class="cw-sym-dropdown" role="listbox">
-            {#if _symQuery.length < SYM_MIN_CHARS}
-              <!-- Below the typing threshold — surface pinned symbols.
-                   One click loads the resolved tradeable contract
-                   (nearest future for commodities + index spots). -->
-              <div class="cw-sym-section">Pinned</div>
-              {#each DEFAULT_PINS as pin}
-                {@const _res = _resolvePin(pin)}
-                <button type="button" class="cw-sym-opt"
-                        class:active={_activePin === pin}
-                        role="option" aria-selected={_activePin === pin}
-                        title="Chart {pin}{_res?.sym && _res.sym !== pin ? ` (loads ${_res.sym})` : ''}"
-                        onmousedown={(e) => { e.preventDefault(); _pickPin(pin); }}>
-                  <span class="cw-sym-sym">{pin}</span>
-                  {#if _res?.t}<span class="cw-sym-type">{_res.t}</span>{/if}
-                  {#if _res?.e}<span class="cw-sym-exch">{_res.e}</span>{/if}
-                </button>
-              {/each}
-              {#if _symQuery.length > 0}
-                <div class="cw-sym-hint">
-                  Type {SYM_MIN_CHARS - _symQuery.length} more char{SYM_MIN_CHARS - _symQuery.length === 1 ? '' : 's'} to search…
-                </div>
-              {/if}
-            {:else if !_symSuggestions.length}
-              <div class="cw-sym-hint">No match{_symType !== 'ALL' ? ` for ${_symType}` : ''}.</div>
-            {:else}
-              <div class="cw-sym-section">Results</div>
-              {#each _symSuggestions.slice(0, 14) as inst}
-                <button type="button" class="cw-sym-opt" role="option" aria-selected="false"
-                        onmousedown={(e) => { e.preventDefault(); _pickSym(inst); }}>
-                  <span class="cw-sym-sym">{inst.sym || inst.tradingsymbol}</span>
-                  {#if inst.e}<span class="cw-sym-exch">{inst.e}</span>{/if}
-                  {#if inst.t}<span class="cw-sym-type">{inst.t}</span>{/if}
-                </button>
-              {/each}
-            {/if}
-          </div>
-        {/if}
-      </div>
+      <SymbolSearchInput
+        bind:value={symbol}
+        pins={DEFAULT_PINS}
+        resolvePin={_resolvePinForChart}
+        type={_symType}
+        placeholder="Pick or type 3+ chars…"
+        onPick={(sym) => _onPickSymbol(sym)}
+        ariaLabel="Symbol search" />
 
       {#if _isOption}
         <span class="cw-kind-pill cw-kind-deriv">OPT</span>
@@ -794,58 +662,48 @@
           {_simActive ? 'SIM' : 'PAPER'}
         </span>
       {/if}
+
+      <!-- Chart type -->
+      <div class="cw-toolbar-select">
+        <Select
+          options={_CHART_TYPE_OPTS}
+          bind:value={_chartType}
+          ariaLabel="Chart type" />
+      </div>
+
+      <!-- Date range — onValueChange drives _setRange (zoom reset + reload) -->
+      <div class="cw-toolbar-select">
+        <Select
+          options={_RANGE_OPTS}
+          value={_chartDays}
+          onValueChange={(v) => _setRange(Number(v))}
+          ariaLabel="Date range" />
+      </div>
+
+      <!-- Overlays -->
+      <div class="cw-toolbar-multi">
+        <MultiSelect
+          options={_OVERLAY_OPTS}
+          bind:value={_overlays}
+          placeholder="Overlays"
+          ariaLabel="Overlays" />
+      </div>
+
+      <!-- Intraday -->
+      <div class="cw-toolbar-select">
+        <Select
+          options={_INTRADAY_OPTS}
+          bind:value={_intradayChoice}
+          ariaLabel="Intraday" />
+      </div>
+
+      <!-- Reset zoom action button — trailing edge, only when zoomed -->
+      {#if isZoomed}
+        <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
+                title="Reset zoom — show full range">Reset</button>
+      {/if}
     </div>
   {/if}
-
-  <!-- Chart toolbar: Type | Range | Overlays | Intraday -->
-  <div class="cw-toolbar">
-    <div class="cw-ctrl-group">
-      {#each ['line', 'area', 'candle'] as t}
-        <button type="button" class="cw-pill" class:active={_chartType === t}
-                onclick={() => _chartType = /** @type {'line'|'area'|'candle'} */ (t)}
-                title="{t.charAt(0).toUpperCase() + t.slice(1)} chart">
-          {t.charAt(0).toUpperCase() + t.slice(1)}
-        </button>
-      {/each}
-    </div>
-    <div class="cw-ctrl-sep" aria-hidden="true"></div>
-    <div class="cw-ctrl-group">
-      {#each /** @type {[number,string][]} */ ([[7,'1W'],[30,'1M'],[90,'3M'],[180,'6M'],[365,'1Y']]) as [d, label]}
-        <button type="button" class="cw-pill" class:active={_chartDays === d}
-                onclick={() => _setRange(/** @type {number} */ (d))}
-                title="Past {label}">
-          {label}
-        </button>
-      {/each}
-    </div>
-    <div class="cw-ctrl-sep" aria-hidden="true"></div>
-    <div class="cw-ctrl-group">
-      <button type="button" class="cw-pill" class:active={_showSma20}
-              onclick={() => _showSma20 = !_showSma20}
-              title="20-period SMA">SMA20</button>
-      <button type="button" class="cw-pill" class:active={_showSma50}
-              onclick={() => _showSma50 = !_showSma50}
-              title="50-period SMA">SMA50</button>
-      <button type="button" class="cw-pill" class:active={_showVol}
-              onclick={() => _showVol = !_showVol}
-              title="Volume bars">Vol</button>
-    </div>
-    {#if !compact}
-      <div class="cw-ctrl-sep" aria-hidden="true"></div>
-      <div class="cw-ctrl-group">
-        <button type="button" class="cw-pill cw-intraday-pill"
-                class:active={_intradayEnabled}
-                onclick={() => _intradayEnabled = !_intradayEnabled}
-                title="Show live intraday tick chart below">
-          Intraday{_intradayEnabled ? (_simActive ? ' (SIM)' : _paperActive ? ' (PAPER)' : ' (LIVE)') : ''}
-        </button>
-      </div>
-    {/if}
-    {#if isZoomed}
-      <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
-              title="Reset zoom — show full range">Reset</button>
-    {/if}
-  </div>
 
   <!-- Historical OHLCV chart — fills available height via flex -->
   <div class="cw-chart-container" bind:this={_chartContainerEl}>
@@ -1155,92 +1013,6 @@
     max-width: 8.5rem;
     flex-shrink: 0;
   }
-  .cw-sym-wrap {
-    position: relative;
-  }
-  .cw-sym-section {
-    /* Group header inside the dropdown — "Pinned" / "Results". */
-    font-family: monospace;
-    font-size: 0.55rem;
-    font-weight: 800;
-    color: #7e97b8;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 0.3rem 0.55rem 0.15rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  }
-  .cw-sym-hint {
-    /* Below-dropdown hint — sits as a row inside the panel. */
-    padding: 0.3rem 0.55rem 0.4rem;
-    font-family: monospace;
-    font-size: 0.6rem;
-    color: #7e97b8;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-  }
-  .cw-sym-opt.active {
-    /* Active pin row — amber tint so the operator knows which pin
-       is loaded without scanning the labels. */
-    background: rgba(251, 191, 36, 0.12);
-    border-left: 2px solid rgba(251, 191, 36, 0.65);
-    padding-left: calc(0.55rem - 2px);
-  }
-  .cw-sym-input {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(125,211,252,0.30);
-    border-radius: 4px;
-    color: #7dd3fc;
-    font-family: monospace;
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 3px 8px;
-    min-width: 10rem;
-    outline: none;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .cw-sym-input:focus {
-    border-color: rgba(125,211,252,0.65);
-    background: rgba(125,211,252,0.08);
-  }
-  .cw-sym-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    z-index: 50;
-    background: #1d2a44;
-    border: 1px solid rgba(251,191,36,0.35);
-    border-radius: 4px;
-    min-width: 16rem;
-    max-height: 18rem;
-    overflow-y: auto;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-    margin-top: 2px;
-  }
-  .cw-sym-opt {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    width: 100%;
-    background: none;
-    border: none;
-    padding: 5px 10px;
-    cursor: pointer;
-    color: #c8d8f0;
-    font-size: 0.65rem;
-    font-family: monospace;
-    text-align: left;
-  }
-  .cw-sym-opt:hover { background: rgba(251,191,36,0.12); }
-  .cw-sym-sym  { font-weight: 700; color: #fbbf24; }
-  .cw-sym-exch { color: #7e97b8; }
-  .cw-sym-type {
-    font-size: 0.55rem;
-    padding: 1px 4px;
-    border-radius: 2px;
-    border: 1px solid rgba(255,255,255,0.15);
-    color: #7e97b8;
-  }
-
   .cw-kind-pill {
     font-family: monospace;
     font-size: 0.5rem;
@@ -1266,51 +1038,17 @@
   .cw-auto-mode-sim   { color: #fbbf24; background: rgba(251,191,36,0.10); border-color: rgba(251,191,36,0.40); }
   .cw-auto-mode-paper { color: #7dd3fc; background: rgba(125,211,252,0.10); border-color: rgba(125,211,252,0.40); }
 
-  /* ── Toolbar ─────────────────────────────────────────────── */
-  .cw-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.75rem;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    flex-wrap: wrap;
-    row-gap: 0.25rem;
+  /* ── Toolbar Select / MultiSelect wrappers ───────────────── */
+  .cw-toolbar-select {
     flex-shrink: 0;
+    min-width: 6rem;
+    max-width: 9rem;
   }
-  .cw-ctrl-group {
-    display: flex;
-    gap: 2px;
-  }
-  /* Visual separator between toolbar groups */
-  .cw-ctrl-sep {
-    width: 1px;
-    height: 14px;
-    background: rgba(255,255,255,0.12);
+  .cw-toolbar-multi {
     flex-shrink: 0;
-    align-self: center;
+    min-width: 9rem;
+    max-width: 12rem;
   }
-  .cw-pill {
-    font-family: monospace;
-    font-size: 0.55rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    padding: 2px 7px;
-    border-radius: 3px;
-    border: 1px solid rgba(255,255,255,0.12);
-    background: rgba(255,255,255,0.04);
-    color: #7e97b8;
-    cursor: pointer;
-    transition: all 0.1s;
-  }
-  .cw-pill:hover { background: rgba(251,191,36,0.10); border-color: rgba(251,191,36,0.30); color: #fbbf24; }
-  .cw-pill.active {
-    background: rgba(251,191,36,0.16);
-    border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
-    font-weight: 700;
-  }
-
-  .cw-intraday-pill.active { background: rgba(125,211,252,0.14); border-color: rgba(125,211,252,0.45); color: #7dd3fc; }
 
   .cw-reset-zoom {
     font-family: monospace;
@@ -1515,11 +1253,13 @@
   .cw-gk-sky   { color: #7dd3fc; }
 
   @media (max-width: 600px) {
-    .cw-picker      { gap: 0.35rem; padding: 0.4rem 0.5rem; }
-    .cw-toolbar     { gap: 0.35rem; padding: 0.25rem 0.5rem; }
-    .cw-info-strip  { padding: 0.25rem 0.5rem; gap: 0.4rem; }
-    .cw-greeks-strip { padding: 0.3rem 0.5rem; gap: 0.5rem; }
-    .cw-sym-input   { min-width: 7rem; }
+    .cw-picker        { gap: 0.35rem; padding: 0.4rem 0.5rem; }
+    .cw-info-strip    { padding: 0.25rem 0.5rem; gap: 0.4rem; }
+    .cw-greeks-strip  { padding: 0.3rem 0.5rem; gap: 0.5rem; }
+    .cw-sym-input     { min-width: 7rem; }
     .cw-intraday-section { height: 30vh; }
+    /* Let toolbar dropdowns go full-flex on phone so they wrap cleanly */
+    .cw-toolbar-select,
+    .cw-toolbar-multi { min-width: 0; flex: 1 1 auto; }
   }
 </style>

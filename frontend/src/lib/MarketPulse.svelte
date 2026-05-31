@@ -31,6 +31,7 @@
   } from '$lib/data/indexConstituents';
   import { visibleInterval } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
+  import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
@@ -1746,86 +1747,6 @@
       withTimeout(batchQuote(c)).catch(() => ({ items: [] }))
     ));
     return results.flatMap(r => (r?.items || []));
-  }
-
-  // Mirrors the backend `derivatives.underlying_ltp_key` /
-  // `is_mcx_underlying` + `findNearestFuture` chain.
-  const INDEX_LTP_KEY = {
-    NIFTY:      { tradingsymbol: 'NIFTY 50',         exchange: 'NSE' },
-    BANKNIFTY:  { tradingsymbol: 'NIFTY BANK',       exchange: 'NSE' },
-    FINNIFTY:   { tradingsymbol: 'NIFTY FIN SERVICE', exchange: 'NSE' },
-    MIDCPNIFTY: { tradingsymbol: 'NIFTY MID SELECT', exchange: 'NSE' },
-    SENSEX:     { tradingsymbol: 'SENSEX',           exchange: 'BSE' },
-    BANKEX:     { tradingsymbol: 'BANKEX',           exchange: 'BSE' },
-  };
-  const MCX_COMMODITIES = new Set([
-    'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
-    'GOLD', 'GOLDM', 'GOLDMINI', 'GOLDPETAL', 'GOLDGUINEA',
-    'SILVER', 'SILVERM', 'SILVERMINI', 'SILVERMIC',
-    'COPPER', 'ZINC', 'ZINCMINI', 'LEAD', 'LEADMINI',
-    'ALUMINIUM', 'ALUMINI', 'NICKEL',
-    'MENTHAOIL', 'COTTON', 'CASTORSEED', 'KAPAS', 'CARDAMOM',
-  ]);
-  const CDS_CURRENCIES = new Set(['USDINR']);
-
-  function resolveUnderlying(name, findNearestFut) {
-    const n = String(name || '').toUpperCase();
-    if (!n) return null;
-    const idx = INDEX_LTP_KEY[n];
-    if (idx) {
-      return {
-        tradingsymbol: idx.tradingsymbol,
-        exchange: idx.exchange,
-        quoteKey: `${idx.exchange}:${idx.tradingsymbol}`,
-        underlying_group: n,
-        kind: 'spot',
-      };
-    }
-    if (MCX_COMMODITIES.has(n)) {
-      const fut = findNearestFut?.(n);
-      if (fut?.s && fut?.e) {
-        return {
-          tradingsymbol: fut.s,
-          exchange: fut.e,
-          quoteKey: `${fut.e}:${fut.s}`,
-          underlying_group: n,
-          kind: 'fut',
-        };
-      }
-      // MCX commodity with no resolvable nearest future — fall through
-      // to a stub anchor (commodity name as tradingsymbol, no live
-      // quote). Better than dropping the anchor entirely: GOLDM /
-      // GOLDPETAL / similar mini contracts may have option positions
-      // even when MCX hasn't published a matching nearest-future
-      // tradingsymbol the instruments cache can find.
-      return {
-        tradingsymbol: n,
-        exchange: 'MCX',
-        quoteKey: `MCX:${n}`,   // synthetic; quote will silently miss
-        underlying_group: n,
-        kind: 'mcx',
-      };
-    }
-    if (CDS_CURRENCIES.has(n)) {
-      const fut = findNearestFut?.(n);
-      if (fut?.s && fut?.e) {
-        return {
-          tradingsymbol: fut.s,
-          exchange: fut.e,
-          quoteKey: `${fut.e}:${fut.s}`,
-          underlying_group: n,
-          kind: 'fut',
-        };
-      }
-      return null;
-    }
-    return {
-      tradingsymbol: n,
-      exchange: 'NSE',
-      quoteKey: `NSE:${n}`,
-      underlying_group: n,
-      kind: 'spot',
-    };
   }
 
   // Resolve underlying for an OPTION position. For MCX commodities the

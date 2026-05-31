@@ -13,10 +13,11 @@
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
-  import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
+  import { loadInstruments } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
   import Select from '$lib/Select.svelte';
+  import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import { executionMode } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -68,46 +69,6 @@
   // SymbolPanel's `headerless={true}` flag skips the shell's own
   // copy of this picker so the operator sees one chip, not two.
   let _entrySymbol     = $state('');
-  let _symQuery        = $state('');
-  let _symOpen         = $state(false);
-  let _symSuggestions  = $state(/** @type {any[]} */ ([]));
-  let _symDebounce;
-  async function _onSymInput(/** @type {string} */ v) {
-    _symQuery = v;
-    _symOpen = true;
-    if (!v) { _symSuggestions = []; return; }
-    // Sync fast-path — `suggestUnderlyings` is synchronous (just reads
-    // the in-memory sorted underlyings list) so the dropdown pops on
-    // the SAME tick the operator types. Async `searchByPrefix` runs
-    // after with full-instrument matches; whichever returns more
-    // results wins. Earlier the 60 ms debounce + async-only path made
-    // the dropdown feel like it wasn't showing up at all on the
-    // first few keystrokes.
-    try {
-      const sync = suggestUnderlyings(v, 16);
-      if (Array.isArray(sync) && sync.length) {
-        _symSuggestions = sync.map(s => /** @type {any} */ ({
-          sym: s,
-          e: '',
-          t: 'EQ',
-        }));
-      }
-    } catch (_) { /* sync path failed — async fallback below */ }
-    if (_symDebounce) clearTimeout(_symDebounce);
-    _symDebounce = setTimeout(async () => {
-      try {
-        await loadInstruments();
-        const full = await searchByPrefix(v, 16);
-        if (Array.isArray(full) && full.length) _symSuggestions = full;
-      } catch (_) { /* keep sync result */ }
-    }, 50);
-  }
-  function _pickEntrySymbol(/** @type {any} */ inst) {
-    _entrySymbol = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
-    _symQuery = '';
-    _symOpen = false;
-    _symSuggestions = [];
-  }
 
   // Page-level shared state for the Order Entry shell.
   let _entryAccount = $state('');
@@ -390,33 +351,11 @@
     <!-- Symbol picker — sits IMMEDIATELY after the section label per
          operator request. SymbolPanel below renders `headerless` so
          its own copy of this picker is suppressed. -->
-    <div class="oc-sym-pick">
-      <input
-        type="text"
-        class="oc-sym-input"
-        value={_symOpen ? _symQuery : (_entrySymbol || '')}
-        placeholder="Symbol…"
-        spellcheck="false"
-        autocomplete="off"
-        oninput={(e) => _onSymInput(/** @type {HTMLInputElement} */ (e.currentTarget).value)}
-        onfocus={(e) => { _symQuery = ''; _symOpen = true; _onSymInput(/** @type {HTMLInputElement} */ (e.currentTarget).value); }}
-        onblur={() => setTimeout(() => { _symOpen = false; }, 150)}
-        onkeydown={(e) => {
-          if (e.key === 'Enter' && _symSuggestions.length) { e.preventDefault(); _pickEntrySymbol(_symSuggestions[0]); }
-          else if (e.key === 'Escape') { _symOpen = false; }
-        }} />
-      {#if _symOpen && _symSuggestions.length}
-        <div class="oc-sym-drop">
-          {#each _symSuggestions as inst (inst.sym)}
-            <button type="button" class="oc-sym-row"
-              onmousedown={(e) => { e.preventDefault(); _pickEntrySymbol(inst); }}>
-              <span class="oc-sym-row-sym">{inst.sym}</span>
-              <span class="oc-sym-row-meta">{inst.e}{inst.t ? ' · ' + inst.t : ''}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-    </div>
+    <SymbolSearchInput
+      bind:value={_entrySymbol}
+      placeholder="Symbol…"
+      onPick={(sym) => { _entrySymbol = sym; }}
+      ariaLabel="Order entry symbol search" />
     <!-- Chart icon button — opens ChartModal for the current entry
          symbol. Same cyan-400 palette + 1.4rem sizing as the
          card-control trio. Disabled when no symbol is picked. -->
@@ -1058,78 +997,6 @@
     color: #f87171;
   }
   .oc-act-submit.oc-act-sell:hover { background: rgba(248, 113, 113, 0.30); }
-
-  /* Symbol picker inline in the Order Entry bucket-header — moved
-     here from SymbolPanel's own `.oes-sym-pick`. Visual identity is
-     identical so operators see the same control whether on /orders
-     (bucket-header) or in a chain-pick modal (SymbolPanel header). */
-  .oc-sym-pick {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-  }
-  .oc-sym-input {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 3px;
-    padding: 0.18rem 0.45rem;
-    color: #fbbf24;
-    font-size: 0.7rem;
-    font-weight: 800;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-    width: 11rem;
-    text-transform: uppercase;
-  }
-  .oc-sym-input:focus {
-    outline: none;
-    border-color: rgba(251, 191, 36, 0.55);
-    background: rgba(251, 191, 36, 0.06);
-  }
-  .oc-sym-input::placeholder {
-    color: rgba(251, 191, 36, 0.40);
-    font-weight: 600;
-  }
-  .oc-sym-drop {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    z-index: 10000;
-    margin-top: 2px;
-    min-width: 14rem;
-    max-height: 16rem;
-    overflow-y: auto;
-    background: #1b2540;
-    border: 1px solid rgba(251, 191, 36, 0.35);
-    border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
-    display: flex;
-    flex-direction: column;
-  }
-  .oc-sym-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.2rem 0.4rem;
-    background: transparent;
-    border: 0;
-    color: #c8d8f0;
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
-    cursor: pointer;
-    text-align: left;
-    width: 100%;
-  }
-  .oc-sym-row:hover {
-    background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
-  }
-  .oc-sym-row-sym { font-weight: 700; letter-spacing: 0.03em; }
-  .oc-sym-row-meta {
-    color: #7e97b8;
-    font-size: 0.55rem;
-    letter-spacing: 0.06em;
-  }
 
   /* Chart icon button next to the symbol picker in the Order Entry
      header. Same cyan-400 palette + 1.4rem sizing as the card-control
