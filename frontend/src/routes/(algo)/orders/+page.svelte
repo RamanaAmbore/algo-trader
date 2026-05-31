@@ -19,12 +19,21 @@
   import Select from '$lib/Select.svelte';
   import { executionMode } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
+  import ChartModal from '$lib/ChartModal.svelte';
+
+  // Row-level chart modal — distinct from any header-level chart state.
+  let _rowChartModalSym  = $state('');
+  let _rowChartModalExch = $state('');
+  function _openRowChart(/** @type {string} */ symbol, /** @type {string} */ exchange = '') {
+    _rowChartModalSym  = String(symbol  || '').toUpperCase();
+    _rowChartModalExch = String(exchange || '');
+  }
 
   // Tab strip metadata — duplicated from SymbolPanel so /orders can
   // render the strip itself in the bucket-header (Phase A of the
-  // orders-page redesign). Keep these in sync.
+  // orders-page redesign). Keep these in sync. Chart tab removed —
+  // chart now lives in ChartModal (icon button next to symbol picker).
   const TABS = /** @type {const} */ ([
-    { id: 'chart',   label: 'Chart',        dot: '#facc15', activeTxt: '#facc15', activeBorder: '#facc15', activeBg: 'rgba(250,204,21,0.14)' },
     { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
     { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
@@ -102,13 +111,20 @@
 
   // Page-level shared state for the Order Entry shell.
   let _entryAccount = $state('');
-  let _entryActiveTab = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ ('command'));
+  // Default to 'ticket' — most common write action on the orders page.
+  // 'command' was the previous default; ticket is the Bloomberg / Kite
+  // convention (lands on the Buy/Sell form).
+  let _entryActiveTab = $state(/** @type {'command'|'ticket'|'chain'} */ ('ticket'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
+
+  // Page-level chart modal state — opened by the chart-icon button next
+  // to the symbol picker in the Order Entry bucket-header.
+  let _orderChartModalOpen = $state(false);
 
   // Common action footer — Mode pills + Exit + +Basket + BUY/SELL
   // submit live at the page level (not inside each tab) so the
   // operator sees the same affordances regardless of which tab
-  // (Chart / Ticket / Chain / Command) is active.
+  // (Ticket / Chain / Command) is active.
   let _commonMode = $state(/** @type {'paper'|'live'|'shadow'|'sim'|'replay'} */ (
     /** @type {any} */ (executionMode).get?.() || 'paper'
   ));
@@ -401,11 +417,23 @@
         </div>
       {/if}
     </div>
-    <!-- Page-level Account picker — every shell tab (Chart, Ticket,
-         Chain, Command) inherits this. Each tab can still override
-         locally (the Ticket form's Account select stays for per-
-         ticket flips; Command Line accepts an account token to
-         override for that one command). -->
+    <!-- Chart icon button — opens ChartModal for the current entry
+         symbol. Same cyan-400 palette + 1.4rem sizing as the
+         card-control trio. Disabled when no symbol is picked. -->
+    <button type="button" class="oc-chart-btn"
+            disabled={!_entrySymbol}
+            title={_entrySymbol ? `Open chart for ${_entrySymbol}` : 'Pick a symbol first'}
+            aria-label={_entrySymbol ? `Open chart for ${_entrySymbol}` : 'Open chart'}
+            onclick={() => _orderChartModalOpen = true}>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+    <!-- Page-level Account picker — every shell tab (Ticket, Chain,
+         Command) inherits this. Each tab can still override locally
+         (the Ticket form's Account select stays for per-ticket flips;
+         Command Line accepts an account token to override for that
+         one command). -->
     {#if _entryAccounts.length > 1}
       <div class="oc-entry-account">
         <Select bind:value={_entryAccount}
@@ -453,9 +481,9 @@
     <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
   </div>
   <div class="card-body" hidden={_colEntry}>
-    <!-- 4-tab inline shell (Command Line default · Chart · Ticket ·
-         Chain). `headerless={true}` suppresses the shell's own
-         symbol picker — the bucket-header above carries it. The
+    <!-- 3-tab inline shell (Order Ticket default · Chain · Command).
+         `headerless={true}` suppresses the shell's own symbol
+         picker — the bucket-header above carries it. The
          `onSymbolChange` callback is unused here (the chain tab
          doesn't surface a way to re-pick from inside the shell)
          but reserved for future tab-internal picks. -->
@@ -468,7 +496,7 @@
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       bind:activeTab={_entryActiveTab}
-      defaultTab="command"
+      defaultTab="ticket"
       symbol={_entrySymbol}
       account={_entryAccount}
       accounts={_entryAccounts}
@@ -490,9 +518,9 @@
     {/if}
     <!-- Common action footer — Mode pills + Exit + +Basket + BUY/SELL
          submit. Lives at the page level (not inside each tab body) so
-         every order entry channel (Chart info / Order Ticket / Chain /
-         Command Line) sees the same affordances. The buttons dispatch
-         to the active tab via counter-prop signalling. -->
+         every order entry channel (Order Ticket / Chain / Command Line)
+         sees the same affordances. The buttons dispatch to the active
+         tab via counter-prop signalling. -->
     <div class="oc-actions">
       <div class="oc-actions-mode" role="group" aria-label="Execution mode">
         {#each /** @type {const} */ (['paper','live','shadow','sim','replay']) as m}
@@ -618,7 +646,15 @@
             class="algo-status-card text-left p-2.5 transition order-card"
             data-status={statusDataAttr(o.status)}>
             <div class="flex items-center justify-between mb-0.5 gap-1">
-              <span class="font-semibold text-xs"><span style="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <span class="text-[#c8d8f0]">{o.tradingsymbol}</span></span>
+              <span class="font-semibold text-xs"><span style="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <span class="text-[#c8d8f0]">{o.tradingsymbol}</span><button type="button"
+                  class="row-chart-btn"
+                  title="Chart {o.tradingsymbol}"
+                  aria-label="Open chart for {o.tradingsymbol}"
+                  onclick={(e) => { e.stopPropagation(); _openRowChart(o.tradingsymbol, o.exchange); }}>
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button></span>
               <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
                 {o.status === 'COMPLETE' ? 'bg-green-500/15 text-green-400 border-green-500/40'
                 : o.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
@@ -712,6 +748,21 @@
 />
 
 </div>
+
+{#if _orderChartModalOpen && _entrySymbol}
+  <ChartModal
+    symbol={_entrySymbol}
+    exchange=""
+    mode="live"
+    onClose={() => _orderChartModalOpen = false} />
+{/if}
+
+{#if _rowChartModalSym}
+  <ChartModal
+    symbol={_rowChartModalSym}
+    exchange={_rowChartModalExch}
+    onClose={() => { _rowChartModalSym = ''; _rowChartModalExch = ''; }} />
+{/if}
 
 {#if orderTicketProps}
   <SymbolPanel
@@ -914,8 +965,8 @@
 
   /* Common action footer at the bottom of the Order Entry card.
      Mode pills · Exit · +Basket · Side · BUY/SELL submit. The
-     buttons dispatch to whichever tab is active (Chart / Ticket /
-     Chain / Command) so the operator always sees the same row of
+     buttons dispatch to whichever tab is active (Ticket / Chain /
+     Command) so the operator always sees the same row of
      affordances regardless of which entry channel they're using. */
   .oc-actions {
     display: flex;
@@ -1078,6 +1129,34 @@
     color: #7e97b8;
     font-size: 0.55rem;
     letter-spacing: 0.06em;
+  }
+
+  /* Chart icon button next to the symbol picker in the Order Entry
+     header. Same cyan-400 palette + 1.4rem sizing as the card-control
+     trio (CollapseButton, FullscreenButton). */
+  .oc-chart-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.40);
+    border-radius: 3px;
+    color: #22d3ee;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    padding: 0;
+  }
+  .oc-chart-btn:hover:not(:disabled) {
+    background: rgba(103, 232, 249, 0.18);
+    color: #67e8f9;
+    border-color: rgba(103, 232, 249, 0.65);
+  }
+  .oc-chart-btn:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
   }
 
   /* Flat section header — section label + symbol + account + tabs.

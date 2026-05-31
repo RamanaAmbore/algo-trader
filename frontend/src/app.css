@@ -1158,3 +1158,28 @@ body:has(.fs-card-on) .page-header .onb-wrap {
 .is-collapsed > :is(.bucket-header, .card-header-row, .row3-header) {
   margin-bottom: 0 !important;
 }
+
+/* ── Row-level chart icon button ────────────────────────────────────────────
+   Used on /orders, /admin/options, and PerformancePage symbol cells.
+   Cyan-400 palette, 1.2 rem square — same family as .oc-act-btn. */
+.row-chart-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  margin-left: 0.35rem;
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  background: rgba(34, 211, 238, 0.12);
+  color: #22d3ee;
+  border-radius: 3px;
+  cursor: pointer;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.row-chart-btn:hover {
+  background: rgba(34, 211, 238, 0.22);
+  color: #67e8f9;
+  border-color: rgba(103, 232, 249, 0.65);
+}

@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+  import ChartModal from '$lib/ChartModal.svelte';
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { dataCache, authStore } from '$lib/stores';
@@ -37,6 +38,14 @@
     enableOptionsLink = false,
   } = $props();
   const isDark = $derived(theme === 'ag-theme-algo');
+
+  // Row-level chart modal — opened by the chart button in symbol cells.
+  let _chartModalSym  = $state('');
+  let _chartModalExch = $state('');
+  function _openChart(/** @type {string} */ symbol, /** @type {string} */ exchange = '') {
+    _chartModalSym  = String(symbol  || '').toUpperCase();
+    _chartModalExch = String(exchange || '');
+  }
   // Effective mask flag — admin/designated never see masked codes,
   // regardless of what the parent passed. The prop still wins for
   // partner / demo (the default `true`) and for any future caller
@@ -293,7 +302,7 @@
   // single uninterrupted run.
   const holdingsCols = [
     { field: 'account',               headerName: 'Account',  width: 54, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'tradingsymbol',         headerName: 'Symbol',   width: 78, pinned: 'left', cellClass: symFill, headerClass: symFill },
+    { field: 'tradingsymbol',         headerName: 'Symbol',   width: 90, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _symWithChartRenderer },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'close_price',           headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
@@ -323,38 +332,72 @@
     { field: 'pnl',                   headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
-  // Options deep-link cell renderer — only wired up when enableOptionsLink
-  // is true (admin /dashboard). Appends a small "→ Opt" pill after the
-  // symbol text for rows whose symbol is an option (CE/PE) or future (FUT).
-  // Returns an HTMLElement so AG Grid can mount it cleanly without innerHTML.
-  function _optionsLinkRenderer(params) {
-    const sym  = params.value || '';
-    const acct = params.data?.account || '';
-    const span = document.createElement('span');
-    span.style.cssText = 'display:inline-flex;align-items:center;gap:0.3rem;width:100%';
-    span.textContent = sym;
-    if (/(?:CE|PE|FUT)$/.test(sym)) {
-      const href = `/admin/options?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;
-      const a = document.createElement('a');
-      a.href = href;
-      a.className = 'perf-opts-link';
-      a.textContent = '→';
-      a.title = `Open ${sym} in Options`;
-      // Prevent the row-click from also firing (which would open the
-      // OrderTicket). Only the link itself routes to /admin/options.
-      a.addEventListener('click', (e) => e.stopPropagation());
-      span.appendChild(a);
+  // Symbol cell renderer with inline chart-icon button. Used on both
+  // Holdings and Positions symbol columns. Opens _chartModalSym; the
+  // exchange is derived from the row (positions carry `exchange`;
+  // holdings default to 'NSE'). Uses the DOM element pattern (same as
+  // _optionsLinkRenderer) so ag-Grid can mount it cleanly.
+  function _symWithChartRenderer(params) {
+    const sym   = String(params.value || '');
+    const exch  = String(params.data?.exchange || (params.data?.product === 'CNC' ? 'NSE' : 'NFO'));
+    const wrap  = document.createElement('span');
+    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
+    const txt = document.createElement('span');
+    txt.textContent = sym;
+    wrap.appendChild(txt);
+    if (sym && sym !== 'TOTAL') {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'row-chart-btn';
+      btn.title = `Chart ${sym}`;
+      btn.setAttribute('aria-label', `Open chart for ${sym}`);
+      btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      btn.addEventListener('click', (e) => { e.stopPropagation(); _openChart(sym, exch); });
+      wrap.appendChild(btn);
     }
-    return span;
+    return wrap;
   }
 
   // Symbol column (operator trim, -5 %): 180 → 171 with options-link,
   // 160 → 152 plain. Trims the column back without sacrificing the
   // 19-char F&O ticker fit; preserves the previous two-step bump
   // (132→180 / 120→160) less the operator-requested 5 % nudge.
-  const positionsSymbolCol = $derived(enableOptionsLink
-    ? { field: 'tradingsymbol', headerName: 'Symbol', width: 171, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _optionsLinkRenderer }
-    : { field: 'tradingsymbol', headerName: 'Symbol', width: 152, pinned: 'left', cellClass: symFill, headerClass: symFill });
+  // Symbol column for positions — chart button always present; options
+  // deep-link appended when enableOptionsLink is true (admin dashboard).
+  function _posSymRenderer(params) {
+    const sym  = String(params.value || '');
+    const acct = params.data?.account || '';
+    const span = document.createElement('span');
+    span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
+    span.textContent = sym;
+    if (sym && sym !== 'TOTAL') {
+      // Chart button
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'row-chart-btn';
+      btn.title = `Chart ${sym}`;
+      btn.setAttribute('aria-label', `Open chart for ${sym}`);
+      btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      btn.addEventListener('click', (e) => { e.stopPropagation(); _openChart(sym, params.data?.exchange || 'NFO'); });
+      span.appendChild(btn);
+      // Options deep-link (admin dashboard only)
+      if (enableOptionsLink && /(?:CE|PE|FUT)$/.test(sym)) {
+        const href = `/admin/options?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;
+        const a = document.createElement('a');
+        a.href = href;
+        a.className = 'perf-opts-link';
+        a.textContent = '→';
+        a.title = `Open ${sym} in Options`;
+        a.addEventListener('click', (e) => e.stopPropagation());
+        span.appendChild(a);
+      }
+    }
+    return span;
+  }
+
+  const positionsSymbolCol = $derived(
+    { field: 'tradingsymbol', headerName: 'Symbol', width: enableOptionsLink ? 183 : 164, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _posSymRenderer }
+  );
 
   // Cluster: LTP → Prev → Avg → Day P&L → Day % → P&L → P&L %.
   // Avg slots between Prev and Day P&L (operator request — the eye
@@ -880,6 +923,13 @@
   <h2 class="section-heading">Holdings</h2>
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
+
+{#if _chartModalSym}
+  <ChartModal
+    symbol={_chartModalSym}
+    exchange={_chartModalExch}
+    onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }} />
+{/if}
 
 {#if orderTicketProps}
   <!-- PerformancePage always opens on Ticket tab — no chain for a

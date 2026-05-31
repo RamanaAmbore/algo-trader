@@ -3,18 +3,16 @@
   // surfaces: OrderEntryShell (tabbed order entry), SymbolChartModal
   // (standalone chart popup), and SymbolActions (the ⋯ row-menu).
   //
-  // Four tabs:
-  //   chart    — 30 d historical OHLCV line (lifted from
-  //              SymbolChartModal). Default when invoked from a row
-  //              click — operator's intent is "what does this look
-  //              like?", not "place a trade".
-  //   ticket   — single-leg OrderTicket. Default when an explicit
-  //              "trade this" intent is signalled (chain +CE / +PE
-  //              click, Trade row action).
+  // Three tabs:
+  //   ticket   — single-leg OrderTicket. Default for trade intent.
   //   chain    — option-chain basket builder (OptionChainTab).
   //              Disabled for cash-equity symbols.
   //   command  — terminal-style command input (CommandLineTab).
   //              Power-user surface; lands last in the tab strip.
+  //
+  // Chart moved to ChartModal (launched via the chart-icon button
+  // in the panel header) and the /charts page so the history
+  // chart doesn't inflate the modal for operators who only trade.
   //
   // Industry shape — matches IB TWS "Symbol Detail", ThinkOrSwim
   // "Active Trader", and TradingView "Order Form" patterns: one
@@ -22,7 +20,8 @@
   // symbol, no hidden context menus.
 
   import { onMount, onDestroy } from 'svelte';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent, fetchOptionsHistorical } from '$lib/api';
+  import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
+  import ChartModal from '$lib/ChartModal.svelte';
   import { logTime } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
@@ -31,7 +30,7 @@
   import UnifiedLog       from '$lib/UnifiedLog.svelte';
 
   /** @type {{
-   *   defaultTab?:     'chart' | 'command' | 'ticket' | 'chain',
+   *   defaultTab?:     'command' | 'ticket' | 'chain',
    *   symbol?:         string,
    *   exchange?:       string,
    *   instrument?:     { kind?: string, exchange?: string },
@@ -58,14 +57,14 @@
    *   headerless?:     boolean,
    *   onSymbolChange?: ((sym: string) => void) | null,
    *   tabsExternal?:   boolean,
-   *   activeTab?:      'chart' | 'command' | 'ticket' | 'chain',
+   *   activeTab?:      'command' | 'ticket' | 'chain',
    *   hideBottomPanel?: boolean,
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
    *   triggerBasket?:  number,
    * }} */
   let {
-    defaultTab     = /** @type {'chart'|'command'|'ticket'|'chain'} */ ('ticket'),
+    defaultTab     = /** @type {'command'|'ticket'|'chain'} */ ('ticket'),
     symbol         = '',
     exchange       = '',
     instrument     = /** @type {{kind?:string,exchange?:string}} */ ({}),
@@ -126,7 +125,7 @@
     // to the requested defaultTab if no host binding is wired. When
     // tabsExternal is true the host MUST bind this prop or the body
     // won't update on tab clicks.
-    activeTab      = $bindable(/** @type {'chart'|'command'|'ticket'|'chain'|undefined} */ (undefined)),
+    activeTab      = $bindable(/** @type {'command'|'ticket'|'chain'|undefined} */ (undefined)),
     // When true the shell omits its own bottom panel (Order Log /
     // Order History). The host renders these in a separate card.
     // Used by /orders to split the entry shell from the activity
@@ -143,7 +142,7 @@
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
-  // the top search input so every tab (Chart / Ticket / Chain /
+  // the top search input so every tab (Ticket / Chain /
   // Command) re-renders against the new symbol. Synced from the prop
   // via $effect so an external pick (chain row + CE click, dashboard
   // row click, MarketPulse symbol pick) still updates the shell.
@@ -200,46 +199,20 @@
   // state internally. Either way, downstream code reads `_activeTab`
   // and tab-click handlers write to it — the two-way bind takes care
   // of pushing the change back up to the host when applicable.
-  let _activeTabInternal = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
+  let _activeTabInternal = $state(/** @type {'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
   // Seed the host's binding from the resolved default on first render.
   $effect(() => { if (activeTab === undefined) activeTab = _activeTabInternal; });
   const _activeTab = $derived(activeTab || _activeTabInternal);
-  function _setActiveTab(/** @type {'chart'|'command'|'ticket'|'chain'} */ id) {
+  function _setActiveTab(/** @type {'command'|'ticket'|'chain'} */ id) {
     _activeTabInternal = id;
     activeTab = id;
   }
 
-  // ── Chart tab state ───────────────────────────────────────────────
-  // Mirrors the body of the retired SymbolChartModal — same fetch +
-  // SVG plot, just lifted into a tab. Lazy load: only triggers when
-  // the Chart tab activates so opening the panel on Ticket doesn't
-  // hit /api/options/historical unnecessarily.
-  /** @type {Array<{ts: string, open: number, high: number, low: number, close: number, volume: number}>} */
-  let _chartBars = $state([]);
-  let _chartLoading = $state(false);
-  let _chartError = $state('');
-  let _chartLoaded = $state(false);   // sentinel — only fetch once per panel open
-  // Range selector — 1W / 1M / 3M. Default 1 M matches the retired
-  // SymbolChartModal's behaviour.
-  let _chartDays = $state(/** @type {number} */ (30));
-  // Chart-type toggle — line (default) / area / candle. Computed
-  // entirely client-side from the same OHLCV bar stream; no extra
-  // /api/options/historical fetch.
-  let _chartType = $state(/** @type {'line'|'area'|'candle'} */ ('line'));
-  // Indicator toggles — SMA(20), SMA(50), volume bars. Each
-  // computed lazily from `_chartBars` via $derived below.
-  let _showSma20 = $state(false);
-  let _showSma50 = $state(false);
-  // Fullscreen mode — modal expands to fill the viewport so the chart
-  // gets max screen real estate for inspection. The rest of the panel
-  // (ticket / chain / command tabs) stays accessible — only the modal
-  // size changes; chart fills its enlarged container naturally.
-  let _fullscreen = $state(false);
-  function _toggleFullscreen() { _fullscreen = !_fullscreen; }
-  let _showVol   = $state(false);
-  // Hover crosshair (lifted from the retired SymbolChartModal).
-  /** @type {{x:number,y:number,bar:any}|null} */
-  let _chartHover = $state(null);
+  // Chart modal — opens ChartModal for the current symbol when the
+  // operator clicks the chart-icon button in the header. Hidden in
+  // headerless mode (the host page manages its own chart button).
+  let _chartModalOpen = $state(false);
+
 
   // ── Watchlist add — flash feedback ───────────────────────────────
   // Mirrors the toast pattern from the retired SymbolActions
@@ -270,212 +243,6 @@
     }
   }
 
-  async function _loadChart(/** @type {boolean} */ force = false) {
-    if (!_localSymbol) return;
-    if (!force && _chartLoaded) return;
-    _chartLoading = true; _chartError = '';
-    try {
-      const r = await fetchOptionsHistorical(_localSymbol, { days: _chartDays, exchange });
-      _chartBars = Array.isArray(r?.bars) ? r.bars : [];
-      if (!_chartBars.length) _chartError = 'No bars available — broker may not list this contract.';
-      _chartLoaded = true;
-    } catch (e) {
-      _chartError = /** @type {any} */ (e)?.message || String(e);
-      _chartBars = [];
-    } finally {
-      _chartLoading = false;
-    }
-  }
-
-  // Auto-load when the Chart tab becomes active OR the range changes.
-  // `_chartLoaded` resets to false on range switch so the force path
-  // refetches; subsequent activations without a range change skip.
-  // Also resets when the operator picks a NEW symbol from the shell-
-  // level search so the chart re-fetches against the right symbol.
-  $effect(() => {
-    if (_activeTab === 'chart') _loadChart();
-  });
-  $effect(() => {
-    // Symbol change → invalidate cached chart so the next tab activation
-    // (or the current one) re-fetches. Reading _localSymbol here is what
-    // triggers the rerun.
-    if (_localSymbol) { _chartLoaded = false; if (_activeTab === 'chart') _loadChart(true); }
-  });
-
-  function _setChartRange(/** @type {number} */ days) {
-    if (days === _chartDays) return;
-    _chartDays = days;
-    _chartLoaded = false;
-    _chartHover = null;
-    _loadChart(true);
-  }
-
-  // ── Chart geometry (mirrors SymbolChartModal) ─────────────────────
-  const CW = 720;
-  const CH = 360;
-  const CPAD_L = 56;
-  const CPAD_R = 16;
-  const CPAD_T = 16;
-  const CPAD_B = 30;
-  const _chartInnerW = CW - CPAD_L - CPAD_R;
-  const _chartInnerH = CH - CPAD_T - CPAD_B;
-
-  const _chartXs = $derived(_chartBars.map((b) => Date.parse(b.ts)).filter(Number.isFinite));
-  const _chartXDomain = $derived(_chartXs.length
-    ? { lo: Math.min(..._chartXs), hi: Math.max(..._chartXs) }
-    : null);
-  const _chartYDomain = $derived.by(() => {
-    if (!_chartBars.length) return { lo: 0, hi: 1 };
-    let lo = Infinity, hi = -Infinity;
-    for (const b of _chartBars) {
-      const l = Number(b.low), h = Number(b.high);
-      if (Number.isFinite(l)) lo = Math.min(lo, l);
-      if (Number.isFinite(h)) hi = Math.max(hi, h);
-    }
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { lo: 0, hi: 1 };
-    const pad = (hi - lo) * 0.06 || 1;
-    return { lo: lo - pad, hi: hi + pad };
-  });
-  const _chartXOf = (/** @type {number} */ ts) => {
-    if (!_chartXDomain) return CPAD_L;
-    if (_chartXDomain.hi === _chartXDomain.lo) return CPAD_L + _chartInnerW / 2;
-    return CPAD_L + ((ts - _chartXDomain.lo) / (_chartXDomain.hi - _chartXDomain.lo)) * _chartInnerW;
-  };
-  const _chartYOf = (/** @type {number} */ v) =>
-    CPAD_T + ((_chartYDomain.hi - v) / (_chartYDomain.hi - _chartYDomain.lo)) * _chartInnerH;
-  const _chartLinePath = $derived.by(() => {
-    if (!_chartBars.length || !_chartXDomain) return '';
-    let d = '';
-    for (let i = 0; i < _chartBars.length; i++) {
-      const t = Date.parse(_chartBars[i].ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _chartXOf(t);
-      const y = _chartYOf(Number(_chartBars[i].close));
-      d += (i === 0 ? `M${x.toFixed(2)},${y.toFixed(2)}`
-                    : ` L${x.toFixed(2)},${y.toFixed(2)}`);
-    }
-    return d;
-  });
-
-  // Area path — same close-price polyline as the line chart, closed
-  // back to the bottom-of-plot baseline so the SVG fill paints the
-  // triangle below the curve. Re-uses _chartLinePath's geometry.
-  const _chartAreaPath = $derived.by(() => {
-    if (!_chartBars.length || !_chartXDomain) return '';
-    const last = _chartBars[_chartBars.length - 1];
-    const lastT = Date.parse(last.ts);
-    if (!Number.isFinite(lastT)) return '';
-    const baselineY = (CH - CPAD_B).toFixed(2);
-    return `${_chartLinePath} L${_chartXOf(lastT).toFixed(2)},${baselineY} L${_chartXOf(Date.parse(_chartBars[0].ts)).toFixed(2)},${baselineY} Z`;
-  });
-
-  // Candle geometry — one rect (body) + one line (wick) per bar.
-  // Width auto-sized to ~60 % of the per-bar slot so candles don't
-  // touch but don't get lost either.
-  const _chartCandles = $derived.by(() => {
-    if (!_chartBars.length || !_chartXDomain) return [];
-    const n = _chartBars.length;
-    const slot = n > 1 ? _chartInnerW / (n - 1) : _chartInnerW;
-    const w = Math.max(2, Math.min(12, slot * 0.6));
-    /** @type {Array<{x:number,bodyY:number,bodyH:number,w:number,wickTop:number,wickBot:number,up:boolean}>} */
-    const out = [];
-    for (const b of _chartBars) {
-      const t = Date.parse(b.ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _chartXOf(t);
-      const o = Number(b.open), c = Number(b.close);
-      const hi = Number(b.high), lo = Number(b.low);
-      const up = c >= o;
-      const yTop = _chartYOf(Math.max(o, c));
-      const yBot = _chartYOf(Math.min(o, c));
-      out.push({
-        x, bodyY: yTop, bodyH: Math.max(1, yBot - yTop), w,
-        wickTop: _chartYOf(hi), wickBot: _chartYOf(lo), up,
-      });
-    }
-    return out;
-  });
-
-  /** Simple moving average path for the given window (e.g. 20, 50).
-   * Returns '' if fewer than `window` bars are available — silently
-   * hides the line instead of plotting a partial curve. */
-  function _smaPath(/** @type {number} */ window) {
-    if (!_chartBars.length || !_chartXDomain || _chartBars.length < window) return '';
-    let d = '';
-    let started = false;
-    for (let i = window - 1; i < _chartBars.length; i++) {
-      let sum = 0;
-      for (let j = i - window + 1; j <= i; j++) sum += Number(_chartBars[j].close);
-      const avg = sum / window;
-      const t = Date.parse(_chartBars[i].ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _chartXOf(t);
-      const y = _chartYOf(avg);
-      d += (!started ? `M${x.toFixed(2)},${y.toFixed(2)}`
-                     : ` L${x.toFixed(2)},${y.toFixed(2)}`);
-      started = true;
-    }
-    return d;
-  }
-  const _sma20Path = $derived(_showSma20 ? _smaPath(20) : '');
-  const _sma50Path = $derived(_showSma50 ? _smaPath(50) : '');
-
-  // Volume bars — bottom 48 px band of the chart when enabled.
-  // Auto-scales to the period max so the tallest bar fills the band.
-  const VOL_H = 48;
-  const _chartVol = $derived.by(() => {
-    if (!_chartBars.length || !_chartXDomain || !_showVol) return [];
-    let vMax = 0;
-    for (const b of _chartBars) {
-      const v = Number(b.volume || 0);
-      if (v > vMax) vMax = v;
-    }
-    if (vMax <= 0) return [];
-    const n = _chartBars.length;
-    const slot = n > 1 ? _chartInnerW / (n - 1) : _chartInnerW;
-    const w = Math.max(2, Math.min(10, slot * 0.55));
-    const baseline = CH - CPAD_B;
-    const top = baseline - VOL_H;
-    /** @type {Array<{x:number,y:number,h:number,w:number,up:boolean}>} */
-    const out = [];
-    for (let i = 0; i < n; i++) {
-      const b = _chartBars[i];
-      const t = Date.parse(b.ts);
-      if (!Number.isFinite(t)) continue;
-      const v = Number(b.volume || 0);
-      const h = (v / vMax) * (VOL_H - 4);
-      const x = _chartXOf(t) - w / 2;
-      const up = Number(b.close) >= Number(b.open);
-      out.push({ x, y: baseline - h, h, w, up });
-    }
-    return out;
-  });
-  const _chartYTicks = $derived.by(() => {
-    if (!_chartBars.length) return [];
-    const out = [];
-    const step = (_chartYDomain.hi - _chartYDomain.lo) / 4;
-    for (let i = 0; i <= 4; i++) out.push(_chartYDomain.lo + i * step);
-    return out;
-  });
-  const _chartXLabels = $derived.by(() => {
-    if (!_chartXDomain) return [];
-    const out = [];
-    for (let i = 0; i < 5; i++) {
-      const t = _chartXDomain.lo + ((_chartXDomain.hi - _chartXDomain.lo) * i) / 4;
-      const d = new Date(t);
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      out.push({ x: _chartXOf(t), label: `${dd}/${mm}` });
-    }
-    return out;
-  });
-  const _chartFirstClose = $derived(_chartBars[0]?.close);
-  const _chartLastClose = $derived(_chartBars[_chartBars.length - 1]?.close);
-  const _chartPct = $derived(
-    (_chartFirstClose && _chartLastClose)
-      ? ((_chartLastClose - _chartFirstClose) / _chartFirstClose) * 100
-      : null,
-  );
 
   // ── Bottom-panel tab state ───────────────────────────────────────────
   let _bottomTab = $state(/** @type {'log'|'orders'} */ ('log'));
@@ -681,7 +448,6 @@
     const onKey = (/** @type {KeyboardEvent} */ e) => {
       if (e.key === 'Escape') {
         // Fullscreen exits first; second Esc closes the panel.
-        if (_fullscreen) { _fullscreen = false; return; }
         onClose();
       }
     };
@@ -695,12 +461,10 @@
     };
   });
 
-  // Tab order — Chart first (most common row-click intent: analyse
-  // before acting), then Ticket (most common write action), Chain
-  // (specialised), Command (power-user). Mirrors TWS / ToS shape.
+  // Tab order — Ticket first (most common trade action), Chain
+  // (specialised F&O), Command (power-user). Chart moved to
+  // ChartModal (header icon button) and /charts page.
   const TABS = /** @type {const} */ ([
-    { id: 'chart',   label: 'Chart',        dot: '#facc15', activeTxt: '#facc15', activeBorder: '#facc15',
-      activeBg: 'rgba(250,204,21,0.14)' },
     { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24',
       activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80',
@@ -729,14 +493,13 @@
      aria-label={inline ? undefined : (symbol || 'Symbol panel')}
      onclick={inline ? undefined : onClose}>
   <div class="oes-modal" class:oes-modal-inline={inline}
-       class:oes-modal-fs={_fullscreen}
        role="document"
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
 
     <!-- Header (close button hidden in inline mode). The plain title
          placeholder was replaced with a live Symbol picker — operator
          types a prefix, picks an instrument from the dropdown, and
-         every tab (Chart, Ticket, Chain, Command) re-renders against
+         every tab (Ticket, Chain, Command) re-renders against
          the new symbol. Symbol is the only shell-level shared state;
          per-tab values (qty, side, etc.) stay with their tabs.
 
@@ -773,14 +536,18 @@
         {/if}
       </div>
       {#if exchange}<span class="oes-exch">{exchange}</span>{/if}
-      {#if _chartLastClose != null}
-        <span class="oes-last">₹{priceFmt(_chartLastClose)}</span>
-      {/if}
-      {#if _chartPct != null}
-        <span class="oes-pct {_chartPct >= 0 ? 'up' : 'down'}">
-          {_chartPct >= 0 ? '+' : ''}{_chartPct.toFixed(2)}%
-        </span>
-      {/if}
+      <!-- Chart-icon button — opens ChartModal for the current symbol.
+           Cyan-400 palette matching the card-control trio. Disabled
+           when no symbol is picked. -->
+      <button type="button" class="oes-chart-btn"
+              disabled={!_localSymbol}
+              title={_localSymbol ? `Open chart for ${_localSymbol}` : 'Pick a symbol first'}
+              aria-label={_localSymbol ? `Open chart for ${_localSymbol}` : 'Open chart'}
+              onclick={() => _chartModalOpen = true}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
       {#if onAddToWatchlist}
         <!-- +W (add to watchlist) — visible only when the caller
              wired the callback. Callers that already have the symbol
@@ -845,180 +612,7 @@
 
     <!-- Tab content -->
     <div class="oes-body">
-      {#if _activeTab === 'chart'}
-        <!-- Chart tab — close-price line over the selected window
-             with a hover crosshair (OHLCV tooltip). Range buttons
-             (1W/1M/3M) above the SVG refire /api/options/historical
-             with the new `days` parameter. -->
-        <div class="oes-chart">
-          <!-- Toolbar — chart type, range, indicators. Three segmented
-               groups so the operator's eye groups them by purpose
-               (presentation / window / overlays). -->
-          <div class="oes-chart-toolbar">
-            <div class="oes-chart-controls">
-              <button type="button" class="oes-chart-range"
-                      class:active={_chartType === 'line'}
-                      title="Line — close price only"
-                      onclick={() => _chartType = 'line'}>Line</button>
-              <button type="button" class="oes-chart-range"
-                      class:active={_chartType === 'area'}
-                      title="Area — close price with shaded fill below"
-                      onclick={() => _chartType = 'area'}>Area</button>
-              <button type="button" class="oes-chart-range"
-                      class:active={_chartType === 'candle'}
-                      title="Candle — OHLC bars (green up / red down)"
-                      onclick={() => _chartType = 'candle'}>Candle</button>
-            </div>
-            <div class="oes-chart-controls">
-              <button type="button" class="oes-chart-range"
-                      class:active={_chartDays === 7}
-                      title="Past 1 week"
-                      onclick={() => _setChartRange(7)}>1W</button>
-              <button type="button" class="oes-chart-range"
-                      class:active={_chartDays === 30}
-                      title="Past 1 month"
-                      onclick={() => _setChartRange(30)}>1M</button>
-              <button type="button" class="oes-chart-range"
-                      class:active={_chartDays === 90}
-                      title="Past 3 months"
-                      onclick={() => _setChartRange(90)}>3M</button>
-            </div>
-            <div class="oes-chart-controls">
-              <button type="button" class="oes-chart-range"
-                      class:active={_showSma20}
-                      title="20-period simple moving average"
-                      onclick={() => _showSma20 = !_showSma20}>SMA20</button>
-              <button type="button" class="oes-chart-range"
-                      class:active={_showSma50}
-                      title="50-period simple moving average"
-                      onclick={() => _showSma50 = !_showSma50}>SMA50</button>
-              <button type="button" class="oes-chart-range"
-                      class:active={_showVol}
-                      title="Volume bars in lower band"
-                      onclick={() => _showVol = !_showVol}>Vol</button>
-            </div>
-            <!-- Chart-local fullscreen toggle retired per operator —
-                 the host card (Order Entry) already carries a
-                 fullscreen button in its bucket-header trio, so a
-                 duplicate at the top of the chart was redundant. -->
-          </div>
-          {#if _chartLoading && !_chartBars.length}
-            <div class="oes-chart-state">Loading bars…</div>
-          {:else if _chartError}
-            <div class="oes-chart-state oes-chart-err">{_chartError}</div>
-          {:else if !_chartBars.length}
-            <div class="oes-chart-state">No bars to plot.</div>
-          {:else}
-            <svg viewBox="0 0 {CW} {CH}" preserveAspectRatio="none"
-                 class="oes-chart-svg"
-                 onpointermove={(ev) => {
-                   if (!_chartBars.length || !_chartXDomain) { _chartHover = null; return; }
-                   const svg = /** @type {SVGSVGElement} */ (ev.currentTarget);
-                   const rect = svg.getBoundingClientRect();
-                   const xRel = ((ev.clientX - rect.left) / rect.width) * CW;
-                   const tMs = _chartXDomain.lo + ((xRel - CPAD_L) / _chartInnerW) * (_chartXDomain.hi - _chartXDomain.lo);
-                   let best = _chartBars[0], bestD = Infinity;
-                   for (const b of _chartBars) {
-                     const d = Math.abs(Date.parse(b.ts) - tMs);
-                     if (d < bestD) { bestD = d; best = b; }
-                   }
-                   const tx = Date.parse(best.ts);
-                   _chartHover = { x: _chartXOf(tx), y: _chartYOf(Number(best.close)), bar: best };
-                 }}
-                 onpointerleave={() => { _chartHover = null; }}>
-              {#each _chartYTicks as v}
-                <line x1={CPAD_L} x2={CW - CPAD_R} y1={_chartYOf(v)} y2={_chartYOf(v)}
-                      stroke="rgba(200,216,240,0.18)" stroke-width="1" stroke-dasharray="2 3" />
-                <text x={CPAD_L - 6} y={_chartYOf(v) + 3} text-anchor="end"
-                      fill="#c8d8f0" font-size="11" font-weight="600">₹{priceFmt(v)}</text>
-              {/each}
-              {#each _chartXLabels as l}
-                <line x1={l.x} x2={l.x} y1={CPAD_T} y2={CH - CPAD_B}
-                      stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
-                <text x={l.x} y={CH - CPAD_B + 14} text-anchor="middle"
-                      fill="#c8d8f0" font-size="11" font-weight="600">{l.label}</text>
-              {/each}
-              <!-- Volume bars (lower band, when enabled) — drawn
-                   BEFORE the price layer so the line/candle sits on
-                   top and hover crosshair logic isn't shadowed. -->
-              {#if _showVol}
-                {#each _chartVol as v}
-                  <rect x={v.x} y={v.y} width={v.w} height={v.h}
-                        fill={v.up ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)'} />
-                {/each}
-              {/if}
-
-              <!-- Price layer — chart-type branch. Line keeps the
-                   original amber polyline. Area paints the same
-                   polyline + a translucent fill below. Candle draws
-                   one OHLC rect+wick per bar (green up / red down). -->
-              {#if _chartType === 'area'}
-                <path d={_chartAreaPath} fill="rgba(251,191,36,0.16)"
-                      stroke="none" />
-                <path d={_chartLinePath} fill="none"
-                      stroke="#fbbf24" stroke-width="1.8"
-                      stroke-linejoin="round" stroke-linecap="round" />
-              {:else if _chartType === 'candle'}
-                {#each _chartCandles as c}
-                  <line x1={c.x} x2={c.x} y1={c.wickTop} y2={c.wickBot}
-                        stroke={c.up ? '#4ade80' : '#f87171'} stroke-width="1" />
-                  <rect x={c.x - c.w / 2} y={c.bodyY} width={c.w} height={c.bodyH}
-                        fill={c.up ? '#4ade80' : '#f87171'} />
-                {/each}
-              {:else}
-                <path d={_chartLinePath} fill="none"
-                      stroke="#fbbf24" stroke-width="1.8"
-                      stroke-linejoin="round" stroke-linecap="round" />
-              {/if}
-
-              <!-- SMA overlays — dashed coloured lines on top of the
-                   price layer when their respective toggles are on. -->
-              {#if _sma20Path}
-                <path d={_sma20Path} fill="none"
-                      stroke="#7dd3fc" stroke-width="1.4"
-                      stroke-dasharray="4 3"
-                      stroke-linejoin="round" stroke-linecap="round" />
-              {/if}
-              {#if _sma50Path}
-                <path d={_sma50Path} fill="none"
-                      stroke="#c084fc" stroke-width="1.4"
-                      stroke-dasharray="6 3"
-                      stroke-linejoin="round" stroke-linecap="round" />
-              {/if}
-              {#if _chartHover}
-                <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CH - CPAD_B}
-                      stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2" />
-                <circle cx={_chartHover.x} cy={_chartHover.y} r="3"
-                        fill="#fbbf24" stroke="#fff" stroke-width="1" />
-                {@const _tx = Math.min(CW - 150 - CPAD_R, Math.max(CPAD_L, _chartHover.x + 8))}
-                {@const _ty = Math.max(CPAD_T + 4, _chartHover.y - 64)}
-                <rect x={_tx} y={_ty} width="150" height="62" rx="3"
-                      fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1" />
-                <text x={_tx + 6} y={_ty + 14} fill="#fbbf24"
-                      font-size="10" font-weight="800" font-family="monospace">
-                  {_chartHover.bar.ts.slice(0, 10)}
-                </text>
-                <text x={_tx + 6} y={_ty + 28} fill="#c8d8f0"
-                      font-size="9" font-family="monospace">
-                  O ₹{priceFmt(_chartHover.bar.open)}  H ₹{priceFmt(_chartHover.bar.high)}
-                </text>
-                <text x={_tx + 6} y={_ty + 42} fill="#c8d8f0"
-                      font-size="9" font-family="monospace">
-                  L ₹{priceFmt(_chartHover.bar.low)}  C ₹{priceFmt(_chartHover.bar.close)}
-                </text>
-                <text x={_tx + 6} y={_ty + 56} fill="#7e97b8"
-                      font-size="9" font-family="monospace">
-                  Vol {Number(_chartHover.bar.volume || 0).toLocaleString()}
-                </text>
-              {/if}
-            </svg>
-            <div class="oes-chart-meta">
-              {_chartBars.length} bars · last {_chartDays === 7 ? '1 w' : _chartDays === 30 ? '1 m' : '3 m'}
-            </div>
-          {/if}
-        </div>
-
-      {:else if _activeTab === 'command'}
+      {#if _activeTab === 'command'}
         <CommandLineTab
           onParsedOrder={handleParsedOrder}
           onAddToBasket={handleCmdAddToBasket}
@@ -1224,6 +818,18 @@
   </div>
 </div>
 
+<!-- Chart modal — opened by the chart-icon button in the header.
+     Rendered at top-level so it sits above the SymbolPanel overlay
+     (z-index 200 > 100). Only mounted when the operator clicks the
+     chart button and a symbol is set. -->
+{#if _chartModalOpen && _localSymbol}
+  <ChartModal
+    symbol={_localSymbol}
+    exchange={exchange}
+    mode="live"
+    onClose={() => _chartModalOpen = false} />
+{/if}
+
 <style>
   .oes-overlay {
     position: fixed;
@@ -1261,12 +867,10 @@
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1px solid rgba(251,191,36,0.35);
     border-radius: 8px;
-    /* Widened to 50 rem so the 720 px chart SVG fits at its native
-       aspect ratio without forcing the modal to grow on Chart-tab
-       activation. Earlier 34 rem (~544 px) was sized for the order
-       ticket only — chart bars arriving pushed the modal wider,
-       contributing to the "open then resize" jank. */
-    width: min(50rem, calc(100vw - 2rem));
+    /* 38 rem fits the order ticket and chain tab comfortably on
+       desktop; chart is now in ChartModal so no 720 px SVG to
+       accommodate. */
+    width: min(38rem, calc(100vw - 2rem));
     max-height: calc(100vh - 4rem);
     overflow-y: auto;
     color: #c8d8f0;
@@ -1287,47 +891,6 @@
     border: none;
     background: transparent;
   }
-  /* Fullscreen — chart fills the viewport with minimal chrome around
-     it. Click ⤡ in the toolbar or press Esc to exit. The chart SVG
-     stretches into the enlarged container via flex; no extra layout
-     tricks needed. */
-  .oes-modal.oes-modal-fs {
-    width: calc(100vw - 1rem);
-    max-width: none;
-    height: calc(100vh - 1rem);
-    max-height: calc(100vh - 1rem);
-    border-radius: 4px;
-  }
-  /* In fullscreen, let the chart container grow vertically into the
-     available space (it was fixed to ~380px to prevent open-then-
-     resize jank in the regular modal). */
-  .oes-modal.oes-modal-fs :global(.oes-chart) {
-    min-height: calc(100vh - 14rem);
-  }
-  .oes-modal.oes-modal-fs :global(.oes-chart svg) {
-    height: 100%;
-  }
-
-  /* Fullscreen toggle button in the chart toolbar. */
-  .oes-chart-fs {
-    background: rgba(251,191,36,0.10);
-    border: 1px solid rgba(251,191,36,0.30);
-    color: #c8d8f0;
-    padding: 0.18rem 0.45rem;
-    font-size: 0.72rem;
-    font-family: ui-monospace, monospace;
-    border-radius: 3px;
-    cursor: pointer;
-    margin-left: auto;  /* push to right edge of toolbar */
-    line-height: 1;
-  }
-  .oes-chart-fs:hover { background: rgba(251,191,36,0.18); }
-  .oes-chart-fs.active {
-    background: rgba(251,191,36,0.25);
-    color: #fbbf24;
-    border-color: rgba(251,191,36,0.60);
-  }
-
   /* Header */
   .oes-header {
     display: flex;
@@ -1346,9 +909,9 @@
   }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new
-     symbol; every tab (Chart / Ticket / Chain / Command) re-renders
-     against the chosen instrument. Same amber typography as the old
-     title so the position reads identically. */
+     symbol; every tab (Ticket / Chain / Command) re-renders against
+     the chosen instrument. Same amber typography as the old title so
+     the position reads identically. */
   .oes-sym-pick {
     position: relative;
     display: inline-flex;
@@ -1430,26 +993,6 @@
     letter-spacing: 0.06em;
     font-family: ui-monospace, monospace;
   }
-  /* Last price / pct chips — read from the chart fetch when the
-     Chart tab has loaded its bars. Hidden cleanly when no bars
-     are present yet (the conditional in the template). */
-  .oes-last {
-    color: #f1f7ff;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    font-size: 0.72rem;
-    font-family: ui-monospace, monospace;
-  }
-  .oes-pct {
-    padding: 0.1rem 0.4rem;
-    border-radius: 2px;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-    font-size: 0.68rem;
-    font-family: ui-monospace, monospace;
-  }
-  .oes-pct.up   { color: #4ade80; background: rgba(74, 222, 128, 0.12); }
-  .oes-pct.down { color: #f87171; background: rgba(248, 113, 113, 0.12); }
   /* Push the close button to the right edge regardless of how many
      header chips render. */
   .oes-close { margin-left: auto; }
@@ -1492,80 +1035,32 @@
   .oes-wl-toast.ok  { color: #4ade80; background: rgba(74,222,128,0.16); }
   .oes-wl-toast.err { color: #f87171; background: rgba(248,113,113,0.16); }
 
-  /* Chart tab body — same SVG plot style as the retired
-     SymbolChartModal, just laid out as a tab content slot inside
-     the panel.
-
-     `min-height: 380 px` reserves vertical space for the SVG
-     (viewBox is 360 px + ~20 px chrome / meta line) BEFORE the
-     bars arrive — without it the modal jumped from ~80 px (the
-     "Loading bars…" line) to ~440 px once /api/options/historical
-     responded, producing the visible "open then resize" jank the
-     operator reported. */
-  .oes-chart {
-    padding: 0.6rem 0.85rem 0.4rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    min-height: 380px;
-  }
-  .oes-chart-svg {
-    width: 100%;
-    display: block;
-    cursor: crosshair;
-  }
-  .oes-chart-state {
-    text-align: center;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
-    padding: 3rem 1rem;
-  }
-  .oes-chart-state.oes-chart-err { color: #fda4a4; }
-  .oes-chart-meta {
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
-    align-self: flex-end;
-  }
-  /* Toolbar — three groups of segmented buttons (type / range /
-     indicators), each a horizontal pill cluster, flex-wrapped so
-     narrow viewports stack groups vertically instead of overflowing
-     the chart card. */
-  .oes-chart-toolbar {
-    display: flex;
-    flex-wrap: wrap;
+  /* Chart icon button — opens ChartModal for the current symbol.
+     Same 1.4rem × 1.4rem dimensions + cyan-400 palette as the
+     card-control trio (CollapseButton, FullscreenButton). */
+  .oes-chart-btn {
+    display: inline-flex;
     align-items: center;
-    gap: 0.4rem 0.8rem;
-    justify-content: flex-end;
-  }
-  /* Range selector — segmented pill row right-aligned above the
-     chart. Active state matches the algo amber palette so it reads
-     as a primary selection chip. */
-  .oes-chart-controls {
-    display: flex;
-    gap: 0.2rem;
-  }
-  .oes-chart-range {
-    background: transparent;
-    border: 1px solid rgba(126,151,184,0.32);
-    color: #94a3b8;
-    padding: 0.15rem 0.5rem;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.40);
     border-radius: 3px;
+    color: #22d3ee;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    flex-shrink: 0;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    padding: 0;
   }
-  .oes-chart-range:hover {
-    border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
+  .oes-chart-btn:hover:not(:disabled) {
+    background: rgba(103, 232, 249, 0.18);
+    color: #67e8f9;
+    border-color: rgba(103, 232, 249, 0.65);
   }
-  .oes-chart-range.active {
-    background: rgba(251,191,36,0.14);
-    border-color: rgba(251,191,36,0.7);
-    color: #fbbf24;
+  .oes-chart-btn:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
   }
   .oes-close {
     background: transparent;

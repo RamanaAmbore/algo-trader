@@ -35,6 +35,15 @@
   } from '$lib/data/instruments';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import ChartModal from '$lib/ChartModal.svelte';
+
+  // Row-level chart modal for Candidates panel rows.
+  let _chartModalSym  = $state('');
+  let _chartModalExch = $state('');
+  function _openChart(/** @type {string} */ symbol, /** @type {string} */ exchange = '') {
+    _chartModalSym  = String(symbol  || '').toUpperCase();
+    _chartModalExch = String(exchange || '');
+  }
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -2308,6 +2317,15 @@
                      }} />
               <span class="font-mono cand-sym">
                 {c.symbol}
+                <button type="button"
+                  class="row-chart-btn"
+                  title="Chart {c.symbol}"
+                  aria-label="Open chart for {c.symbol}"
+                  onclick={(e) => { e.stopPropagation(); _openChart(c.symbol, c.exchange || 'NFO'); }}>
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
                 {#if isDraft}
                   <!-- Draft remove button — page-local removal only,
                        NO order placed. Clicking the row body still
@@ -2536,6 +2554,13 @@
       </div>
     {/each}
   </div>
+{/if}
+
+{#if _chartModalSym}
+  <ChartModal
+    symbol={_chartModalSym}
+    exchange={_chartModalExch}
+    onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }} />
 {/if}
 
 <style>

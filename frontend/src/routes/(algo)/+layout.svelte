@@ -100,6 +100,7 @@
     // click earlier in the navbar.
     { href: '/admin/options',    label: 'Derivatives', group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
+    { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },
     // /admin/alerts is reachable from the 🔔 History link in the
     // /agents page header. Dropped from the top nav to slim the

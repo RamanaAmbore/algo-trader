@@ -420,7 +420,7 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 **Loss agents** (prefix `loss-`) ship as 12 pure alerting agents (holdings/positions static + rate thresholds) plus 2 fund-negative agents, all **active** by default. One additional `loss-pos-total-auto-close` agent ships **inactive** (destructive close-position action). The former `check_and_alert` loss engine is retired; toggle any agent individually from the `/agents` page.
 
 ### SvelteKit Pages (routes under `frontend/src/routes/(algo)/`)
-- **`+layout.svelte`** — algo-site top nav, ordered by usage frequency: Dashboard · Agents · Orders (live monitoring) → Options · Paper · Simulator (analysis surfaces) → Terminal · Tokens (build / extend) → Settings · Brokers (configuration) → Users (admin). The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
+- **`+layout.svelte`** — algo-site top nav, ordered by usage frequency: Dashboard · Agents · Orders (live monitoring) → Charts · Options (analysis surfaces) → Paper · Simulator (execution modes) → Terminal · Tokens (build / extend) → Settings · Brokers (configuration) → Users (admin). The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
   - Polls `/api/simulator/status` (4 s) and renders the sticky red **SIMULATOR** banner on every algo page while a sim is running.
   - Polls `/api/charts/paper-status` (4 s) and renders a sticky sky-blue **PAPER** banner whenever the prod paper engine has open chase orders. Both banners can stack — sim sits on top, paper underneath. Stickiness pins them just under the navbar so they never scroll out of view.
 - **`performance/`** (public) and **`dashboard/`** (admin). The public page uses `PerformancePage.svelte` (two-row header with timestamp + Refresh on top, tabs + account picker below). The admin `/dashboard` is its own page composed of three sections in order: **(1) P&L Analysis** (`PnlAnalysis.svelte`), **(2) MarketPulse summary grids** (Funds + Positions Summary + Holdings Summary; no per-symbol grid), **(3) Agent activity** (`UnifiedLog.svelte` filtered to `agent_fire / agent_action_success / agent_action_error` kinds). The summary grids on `/dashboard` scope to the selected account (sibling accounts + TOTAL filtered out) and hide the Account column when only one account is in view. Performance **always** shows real Kite data; the background refresh keeps going even while the simulator is active. The algo theme (`ag-theme-algo`) is the dark navy-gradient variant. Pulse symbol-cell encoding (simplified per audit + operator feedback — direction lives in the background tint, no extra inset bars):
@@ -443,7 +443,8 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 - **`admin/simulator/`** — Market simulator control plane. Scenario dropdown · Seed (Scripted / Live / Live+scenario) · Rate · Load live book · Start / Stop / Step / Run cycle / Clear sim. Shared `LogPanel` embedded at the bottom, defaulted to the Simulator tab (streams per-symbol LTP diffs in real time). See **Simulator** section below.
 - **`agents/`** (formerly `/algo`) — Agents page: grouped compact rows (Loss & Risk / Summaries / Automation / Other), click-to-expand, Edit with live condition validation, per-row "Run in Simulator" button that deep-links to `/admin/execution?mode=sim&agent_id=<id>`. The Agent-events panel auto-scopes: real events when sim is idle, sim events when a sim is running.
 - **`console/`** — Terminal: command textarea + output + live log (equal panels)
-- **`orders/`** — Order management
+- **`orders/`** — Order management. Entry card has 3 tabs: Order Ticket (BUY/SELL form) · Option Chain · Command Line. Chart-icon button on entry header + every row's symbol cell opens `<ChartModal>` for that symbol.
+- **`charts/`** — Unified chart workspace. Reads `?symbol=…&mode=…` URL params. Single `<ChartWorkspace>` instance with RefreshButton in page header.
 - **`agents/activity/`** — Recent agent fires (and optional action-success / -error events). Same `UnifiedLog` component the dashboard renders, lifted into a dedicated route inside the agent workspace so operators asking "what fired today?" don't have to scroll past P&L analysis.
 
 ---
@@ -1350,7 +1351,7 @@ Live vs sim is **auto-detected** from `/api/simulator/status`. When a sim is act
 
 **Drafts** replace the old "hypothetical" mode — operator-typed positions appear as editable rows above the candidates list. Drafts whose symbol matches the selected underlying surface in Candidates and feed the strategy analytics like any other leg. The `+` button opens the chain picker (browse strikes for the chosen underlying, click +CE / +PE / a futures pill to drop a leg into Drafts).
 
-**Candidates panel** sits immediately below the payoff chart — replaces the older Per-leg breakdown card (the same backend data was shown twice, once with checkboxes, once read-only). Rows are scrollable horizontally + vertically (`.cand-scroll` wraps the grid; max-height 22rem; rows have a 720px min-width so the layout never breaks on narrow viewports). Toggling a checkbox rebuilds `legs[]` via `$effect`, which auto-triggers the strategy analytics endpoint — no Analyze button.
+**Candidates panel** sits immediately below the payoff chart — replaces the older Per-leg breakdown card (the same backend data was shown twice, once with checkboxes, once read-only). Rows are scrollable horizontally + vertically (`.cand-scroll` wraps the grid; max-height 22rem; rows have a 720px min-width so the layout never breaks on narrow viewports). Toggling a checkbox rebuilds `legs[]` via `$effect`, which auto-triggers the strategy analytics endpoint — no Analyze button. Each Candidates row carries a chart-icon button (via the canonical `.row-chart-btn` global pattern) that opens `<ChartModal>` for that symbol.
 
 **Historical chart removed** — when the page collapsed to multi-leg-only, the per-symbol historical chart lost its anchor (a single picked symbol). The historical endpoint stays on the backend (`GET /api/options/historical`) for any future re-introduction; the frontend no longer calls it.
 
@@ -1363,6 +1364,30 @@ Live vs sim is **auto-detected** from `/api/simulator/status`. When a sim is act
 `OptionsPayoff` accepts either scalar `strike` / `breakeven` props (single-leg) or arrays `strikes` / `breakevens` (multi-leg) — same SVG, same palette.
 
 Polling: strategy analytics auto-refreshes whenever the leg set changes (an `$effect` on `legs`), plus a 5 s visibleInterval to keep Greeks + IV live while the operator stares at the page. Sim status polled at 5 s; positions list at 30 s.
+
+---
+
+## Chart workspace (`/charts`) — unified chart canvas
+
+A consolidated, reusable chart component that renders historical OHLCV + optional intraday price history + underlying-spot overlays + options Greeks for any symbol kind (underlying, future, option, equity). Serves as the entry point for all chart interactions across the platform.
+
+**Files:**
+
+| Path | Purpose |
+|---|---|
+| [`frontend/src/lib/ChartWorkspace.svelte`](frontend/src/lib/ChartWorkspace.svelte) | Unified canvas (~570 LOC). Renders OHLCV (line / area / candle, 1D / 1W / 1M / 3M / 6M / 1Y, SMA20 / SMA50 / Vol overlays). Optional intraday tick overlay (LTP stream + lifecycle markers from `/api/charts/price-history`, toggleable pill). Underlying-spot overlay for derivatives (dashed sky-blue line, fetched in parallel with bars). Greeks strip below chart for options (Δ Γ Θ V ρ IV via `fetchStrategyAnalytics`). Props: `{symbol, exchange?, mode? = 'live'\|'sim'\|'paper', compact?, showHeader?, bump?, onSymbolChange?}`. Demo-aware — anonymous sessions skip polling to avoid 401-spam. |
+| [`frontend/src/lib/ChartModal.svelte`](frontend/src/lib/ChartModal.svelte) | Thin overlay wrapper (~100 LOC). Esc / overlay-click closes; body scroll-locked. Props: `{symbol, exchange?, mode?, onClose}`. Hosts `<ChartWorkspace compact={false}>`. |
+| [`frontend/src/routes/(algo)/charts/+page.svelte`](frontend/src/routes/(algo)/charts/+page.svelte) | Standalone Charts page (~185 LOC). Reads `?symbol=…&mode=…` URL params; syncs picks back via `goto({replaceState:true})`. Page header carries RefreshButton + InfoHint + notification bells. Refresh increments `bump` integer; ChartWorkspace watches it via `$effect` to trigger reload. |
+
+**Navbar:** `Charts` entry in `monitor` group, between Orders and Agents. Demo-visible (no `adminOnly`).
+
+**Chart-icon button — canonical pattern across surfaces:** Glyph: line-chart SVG path (14×14 in headers, 12×12 in rows). Palette: cyan-400 (`#22d3ee` resting, `#67e8f9` hover, bg α 0.12 → 0.22 on hover, border α 0.45 → 0.65). Title: `"Open chart for {symbol}"`. Used in SymbolPanel header, `/orders` entry header, `/orders` row symbol cells (via `.row-chart-btn` global), `/admin/options` Candidates rows, `/performance` symbol cells (ag-Grid cellRenderer).
+
+**Symbol-kind handling:** ChartWorkspace auto-detects symbol type (underlying via `parseUnderlying()`, derivative via `parseTrading Symbol()`, equity fallback). Renders appropriate historical interval + Greeks conditionally.
+
+**Demo behavior:** `getContext('algoStatus')` gates polling. Anonymous demo sessions skip `/api/charts/price-history` polls to avoid 401 errors (intraday data is operationally less useful for visitors anyway).
+
+**`bump` reload pattern:** Parent page increments `bump` on manual refresh; ChartWorkspace watches via `$effect` and re-fetches all data (bars + historical + Greeks). Zero API calls when `bump` is stable (polling via `visibleInterval` alone).
 
 ---
 
@@ -1870,6 +1895,7 @@ The earlier `api_short_*` tail files were retired — the handler rewrote them i
 | Change deploy branch routing | `webhook/dispatch.sh` — the `if/elif/else`; copy to server after changes: `sudo cp /opt/ramboq/webhook/dispatch.sh /etc/webhook/dispatch.sh` |
 | Change browser tab title or SEO meta tags | `frontend/src/app.html` and per-route `<svelte:head>` sections |
 | Change footer text | `backend/config/frontend_config.yaml` — `footer_name`, `footer_text2`, `footer_mobile_text3`, `footer_desktop_text3` |
+| Open the chart for any symbol from any surface | Click the cyan chart-icon button — opens `<ChartModal>` via the unified `/charts` workspace. Available on `/orders` entry + rows, `/admin/options` Candidates, `/performance` symbol cells (ag-Grid cellRenderer). |
 | Change a loss threshold | Edit the corresponding `loss-*` agent from the `/agents` page (its condition tree's `value` is the threshold). Engine-wide knobs stay in `backend/config/backend_config.yaml` under `alert_cooldown_minutes`, `alert_rate_window_min`, `alert_baseline_offset_min`, `alert_suppress_delta_abs/_pct`. |
 | Change alert recipients | `backend/config/secrets.yaml` on server — `alert_emails`, `telegram_chat_id` |
 | Enable/disable deploy notification | `backend/config/backend_config.yaml` on server — `notify_on_startup` (True=dev, False=prod) |
