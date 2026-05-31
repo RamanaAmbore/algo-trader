@@ -1576,16 +1576,25 @@
           aria-selected={_capEqTab === 'equity'}
           onclick={() => _capEqTab = 'equity'}>Equity</button>
       </div>
-      {#if _capEqTab === 'equity'}
-        <AccountMultiSelect
-          bind:value={_eqAccounts}
-          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      {/if}
+      <!-- Single shared account picker visible on BOTH tabs (filter
+           applies to whichever tab is active — Margin + Funds on
+           Capital; Positions + Holdings Summary on Equity). Operator
+           intent carries across tab flips without re-picking. -->
+      <AccountMultiSelect
+        bind:value={_eqAccounts}
+        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      <!-- Explicit `flex:1` spacer pushes the icon trio to the card's
+           right edge regardless of how wide the AccountMultiSelect
+           grows. Without it, CollapseButton's `margin: 0 0 0 auto`
+           competes with FullscreenButton's identical auto-margin
+           through the AccountMultiSelect's flex behaviour and the
+           trio drifts left, sitting tight against the picker rather
+           than at the card's right edge. -->
+      <span class="cap-eq-spacer"></span>
       <!-- Buttons bind to the ACTIVE tab's own collapse + fullscreen
-           pair so the operator's intent persists per-tab via
-           CollapseButton's localStorage key. Svelte 5 doesn't permit
-           ternary expressions inside `bind:`, so we split into two
-           component instances guarded by {#if}. -->
+           pair. Svelte 5 doesn't permit ternary expressions inside
+           `bind:`, so we split into two component instances guarded
+           by {#if}. -->
       {#if _capEqTab === 'capital'}
         {#if _fsCapital}
           <RefreshButton onClick={_refreshAll} loading={_refreshing} label="capital" />
@@ -2224,11 +2233,21 @@
 
   /* AccountMultiSelect (.ams) is LEFT-aligned in the bucket header,
      sitting right after the tabs / label. The card-control trio gets
-     pushed right via its first button's existing margin-left:auto.
+     pushed right via the explicit `.cap-eq-spacer` below.
      Was: margin-left:auto on .ams (right-aligned next to the icon
      cluster) — moved per operator feedback so the picker reads as
      part of the card's identity strip, not part of the controls. */
   .bucket-header > :global(.ams) { margin-left: 0; }
+
+  /* Flex spacer between the AccountMultiSelect and the trailing
+     control trio (Refresh? + Collapse + DefaultSize + Fullscreen).
+     The trio's individual `margin: 0 0 0 auto` rules each push
+     right; with two buttons carrying auto-margins the free space
+     splits between them and the trio drifts mid-row. An explicit
+     `flex: 1` spacer collapses the auto-margin behaviour into a
+     single rightward push and guarantees the trio sits at the
+     card's right edge. Zero visible width — pure layout glue. */
+  .cap-eq-spacer { flex: 1 1 0; }
 
   /* Inline count chip used inside Equity sub-headings (Positions
      and Holdings). Small muted pill — at-a-glance "how many", not
