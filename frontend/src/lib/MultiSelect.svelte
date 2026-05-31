@@ -21,9 +21,10 @@
     // 'dark'  — algo console (navy gradient, amber accents)
     // 'light' — public site (cream + champagne gold, navy text)
     theme = 'dark',
+    // Bindable so parents can observe or control the dropdown open state,
+    // e.g. to suppress hover popups while the dropdown is open.
+    open = $bindable(false),
   } = $props();
-
-  let open = $state(false);
   let triggerEl;
   let panelEl;
 

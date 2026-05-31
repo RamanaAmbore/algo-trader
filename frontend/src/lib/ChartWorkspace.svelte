@@ -177,6 +177,9 @@
   let _chartType   = $state(/** @type {'line'|'area'|'candle'} */('line'));
   // Overlays MultiSelect — drives derived booleans below. Volume on by default.
   let _overlays    = $state(/** @type {string[]} */(['vol']));
+  // Tracks whether the Overlays MultiSelect dropdown is open — used to
+  // suppress both hover popups so they don't clash with the open panel.
+  let _overlayOpen = $state(false);
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   const _showVol   = $derived(_overlays.includes('vol'));
@@ -608,14 +611,22 @@
   });
 
   // ── Hover crosshair ───────────────────────────────────────────────
-  /** @type {{x:number,y:number,bar:any}|null} */
+  /** @type {{x:number,y:number,bar:any,pxLeft:number,pxTop:number}|null} */
   let _chartHover = $state(null);
+  /** @type {{tick:any,pxLeft:number,pxTop:number}|null} */
+  let _intradayHover = $state(null);
+
+  // Popup dimensions used for clamping (px).
+  const _TIP_W = 180;
+  const _TIP_H = 110;
+  const _ITIP_H = 80;
 
   function _onChartPointerMove(/** @type {PointerEvent} */ e) {
     const src = _visibleBars.length ? _visibleBars : _bars;
     if (!src.length) { _chartHover = null; return; }
     const svg  = /** @type {SVGSVGElement} */ (e.currentTarget);
     const rect = svg.getBoundingClientRect();
+    const containerRect = _chartContainerEl?.getBoundingClientRect();
     const xRel = ((e.clientX - rect.left) / rect.width) * _chartW;
     const tMs  = _xMin + ((xRel - CPAD_L) / _innerW) * _xSpan;
     let best = src[0], bestD = Infinity;
@@ -624,7 +635,61 @@
       if (d < bestD) { bestD = d; best = b; }
     }
     const tx = Date.parse(best.ts);
-    _chartHover = { x: _xOf(tx), y: _yOf(Number(best.close)), bar: best };
+    const baseLeft = containerRect?.left ?? rect.left;
+    const baseTop  = containerRect?.top  ?? rect.top;
+    const rawLeft = e.clientX - baseLeft + 14;
+    const rawTop  = e.clientY - baseTop  - _TIP_H - 4;
+    const cW = _chartContainerEl?.clientWidth  ?? 0;
+    const cH = _chartContainerEl?.clientHeight ?? 0;
+    const pxLeft = Math.max(6, Math.min(cW - _TIP_W - 6, rawLeft));
+    const pxTop  = Math.max(6, Math.min(cH - _TIP_H - 6, rawTop));
+    _chartHover = { x: _xOf(tx), y: _yOf(Number(best.close)), bar: best, pxLeft, pxTop };
+  }
+
+  function _onIntradayPointerMove(/** @type {PointerEvent} */ e) {
+    if (!_ticks.length) { _intradayHover = null; return; }
+    const svg  = /** @type {SVGSVGElement} */ (e.currentTarget);
+    const rect = svg.getBoundingClientRect();
+    // The intraday SVG uses a fixed 720×160 viewBox with preserveAspectRatio=none.
+    const W2 = 720, P2L = 44, P2R = 8;
+    const xRel = ((e.clientX - rect.left) / rect.width) * W2;
+    const xs   = _ticks.map(t => +new Date(t.ts));
+    const tMin = Math.min(...xs);
+    const tMax = Math.max(...xs);
+    const span = Math.max(1, tMax - tMin);
+    const tMs  = tMin + ((xRel - P2L) / (W2 - P2L - P2R)) * span;
+    let best = _ticks[0], bestD = Infinity;
+    for (const t of _ticks) {
+      const d = Math.abs(+new Date(t.ts) - tMs);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    const sectionEl = svg.closest('.cw-intraday-section');
+    const sectionRect = sectionEl?.getBoundingClientRect() ?? rect;
+    const rawLeft = e.clientX - sectionRect.left + 14;
+    const rawTop  = e.clientY - sectionRect.top  - _ITIP_H - 4;
+    const cW = /** @type {HTMLElement|null} */ (sectionEl)?.clientWidth  ?? 0;
+    const cH = /** @type {HTMLElement|null} */ (sectionEl)?.clientHeight ?? 0;
+    const pxLeft = Math.max(6, Math.min(Math.max(cW - _TIP_W - 6, 6), rawLeft));
+    const pxTop  = Math.max(6, Math.min(Math.max(cH - _ITIP_H - 6, 6), rawTop));
+    _intradayHover = { tick: best, pxLeft, pxTop };
+  }
+
+  // ── Timestamp formatters for hover popups ─────────────────────────
+  function _fmtBarTs(/** @type {string} */ ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (!Number.isFinite(d.getTime())) return ts.slice(0, 10);
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;
+  }
+  function _fmtTickTs(/** @type {string} */ ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (!Number.isFinite(d.getTime())) return ts.slice(11, 19) || ts;
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss} IST`;
   }
 
   // ── Zoom + pan handlers ───────────────────────────────────────────
@@ -745,6 +810,15 @@
       _events = [];
     }
   });
+
+  // When the Overlays dropdown opens, flush any stale hover popup so
+  // the two UI elements never visually clash.
+  $effect(() => {
+    if (_overlayOpen) {
+      _chartHover = null;
+      _intradayHover = null;
+    }
+  });
 </script>
 
 <div class="cw-root">
@@ -795,15 +869,6 @@
         {/each}
       </div>
 
-      <!-- Overlays -->
-      <div class="cw-toolbar-multi">
-        <MultiSelect
-          options={_OVERLAY_OPTS}
-          bind:value={_overlays}
-          placeholder="Overlays"
-          ariaLabel="Overlays" />
-      </div>
-
       <!-- Intraday toggle button -->
       <button type="button"
         class="cw-intraday-btn"
@@ -827,6 +892,50 @@
 
   <!-- Historical OHLCV chart — fills available height via flex -->
   <div class="cw-chart-container" bind:this={_chartContainerEl}>
+    <!-- Floating Overlays panel — TradingView-style, anchored top-right -->
+    <div class="cw-overlay-panel" role="region" aria-label="Chart overlays">
+      <MultiSelect
+        options={_OVERLAY_OPTS}
+        bind:value={_overlays}
+        bind:open={_overlayOpen}
+        placeholder="Overlays"
+        ariaLabel="Overlays" />
+    </div>
+
+    <!-- HTML hover popup for OHLCV (replaces the SVG rect+text block) -->
+    {#if _chartHover && !_overlayOpen && !pan}
+      {@const ch = Number(_chartHover.bar.close) - Number(_chartHover.bar.open)}
+      {@const pct = Number(_chartHover.bar.open) ? (ch / Number(_chartHover.bar.open)) * 100 : 0}
+      <div class="cw-hover-popup"
+           style="left: {_chartHover.pxLeft}px; top: {_chartHover.pxTop}px;">
+        <div class="cw-hp-ts">{_fmtBarTs(_chartHover.bar.ts)}</div>
+        <div class="cw-hp-row">
+          <span class="cw-hp-label">O</span>
+          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.open)}</span>
+          <span class="cw-hp-label">H</span>
+          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.high)}</span>
+        </div>
+        <div class="cw-hp-row">
+          <span class="cw-hp-label">L</span>
+          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.low)}</span>
+          <span class="cw-hp-label">C</span>
+          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.close)}</span>
+        </div>
+        {#if _chartHover.bar.volume}
+          <div class="cw-hp-row">
+            <span class="cw-hp-label">Vol</span>
+            <span class="cw-hp-val">{Number(_chartHover.bar.volume).toLocaleString()}</span>
+          </div>
+        {/if}
+        <div class="cw-hp-row">
+          <span class="cw-hp-label">Δ</span>
+          <span class="cw-hp-val" class:up={ch >= 0} class:down={ch < 0}>
+            {ch >= 0 ? '+' : ''}{ch.toFixed(2)} ({pct.toFixed(2)}%)
+          </span>
+        </div>
+      </div>
+    {/if}
+
     {#if !symbol}
       <div class="cw-state cw-state-hint">Pick a symbol to chart — type 3+ chars in the box above.</div>
     {:else if _histLoading && !_bars.length}
@@ -976,32 +1085,12 @@
           </text>
         {/if}
 
-        <!-- Hover crosshair — clamp vertical line to price area -->
+        <!-- Hover crosshair — vertical line + dot only; OHLCV text is in the HTML popup -->
         {#if _chartHover && !pan}
           <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CPAD_T + _innerH}
                 stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2"/>
           <circle cx={_chartHover.x} cy={_chartHover.y} r="3"
                   fill="#fbbf24" stroke="#fff" stroke-width="1"/>
-          {@const _tx = Math.min(_chartW - 156 - CPAD_R, Math.max(CPAD_L, _chartHover.x + 8))}
-          {@const _ty = Math.max(CPAD_T + 4, _chartHover.y - 68)}
-          <rect x={_tx} y={_ty} width="156" height="66" rx="3"
-                fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
-          <text x={_tx + 6} y={_ty + 14} fill="#fbbf24"
-                font-size="10" font-weight="800" font-family="monospace">
-            {_chartHover.bar.ts.slice(0, 10)}
-          </text>
-          <text x={_tx + 6} y={_ty + 28} fill="#c8d8f0"
-                font-size="9" font-family="monospace">
-            O ₹{priceFmt(_chartHover.bar.open)}  H ₹{priceFmt(_chartHover.bar.high)}
-          </text>
-          <text x={_tx + 6} y={_ty + 42} fill="#c8d8f0"
-                font-size="9" font-family="monospace">
-            L ₹{priceFmt(_chartHover.bar.low)}  C ₹{priceFmt(_chartHover.bar.close)}
-          </text>
-          <text x={_tx + 6} y={_ty + 56} fill="#7e97b8"
-                font-size="9" font-family="monospace">
-            Vol {Number(_chartHover.bar.volume || 0).toLocaleString()}
-          </text>
         {/if}
       </svg>
       <!-- Loading overlay — keeps prior bars visible during reload -->
@@ -1013,7 +1102,7 @@
 
   <!-- Intraday tick chart (below historical, opt-in, fixed height) -->
   {#if _intradayEnabled}
-    <div class="cw-intraday-section">
+    <div class="cw-intraday-section" style="position: relative;">
       <div class="cw-intraday-label">
         <span>Intraday ticks</span>
         <span class="cw-intraday-mode cw-mode-{mode}">{mode.toUpperCase()}</span>
@@ -1050,8 +1139,29 @@
           const v = _t2ymin + (_t2yspan * i) / 3;
           return { v, y: _t2yOf(v) };
         })}
+        <!-- Intraday hover popup -->
+        {#if _intradayHover && !_overlayOpen}
+          <div class="cw-hover-popup"
+               style="left: {_intradayHover.pxLeft}px; top: {_intradayHover.pxTop}px;">
+            <div class="cw-hp-ts">{_fmtTickTs(_intradayHover.tick.ts)}</div>
+            <div class="cw-hp-row">
+              <span class="cw-hp-label">LTP</span>
+              <span class="cw-hp-val">₹{priceFmt(_intradayHover.tick.ltp)}</span>
+            </div>
+            {#if _intradayHover.tick.bid != null && _intradayHover.tick.ask != null}
+              <div class="cw-hp-row">
+                <span class="cw-hp-label">Bid</span>
+                <span class="cw-hp-val">₹{priceFmt(_intradayHover.tick.bid)}</span>
+                <span class="cw-hp-label">Ask</span>
+                <span class="cw-hp-val">₹{priceFmt(_intradayHover.tick.ask)}</span>
+              </div>
+            {/if}
+          </div>
+        {/if}
         <svg viewBox="0 0 {W2} {H2}" preserveAspectRatio="none"
-             class="cw-intraday-svg" role="img" aria-label="Intraday tick chart">
+             class="cw-intraday-svg" role="img" aria-label="Intraday tick chart"
+             onpointermove={_onIntradayPointerMove}
+             onpointerleave={() => { _intradayHover = null; }}>
           {#each _t2YTicks as yt}
             <line x1={P2L} x2={W2 - P2R} y1={yt.y} y2={yt.y}
                   stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
@@ -1250,17 +1360,94 @@
     color: #4ade80;
   }
 
-  /* ── Toolbar Select / MultiSelect wrappers ───────────────── */
+  /* ── Toolbar Select wrappers ─────────────────────────────── */
   .cw-toolbar-select {
     flex-shrink: 0;
     min-width: 6rem;
     max-width: 9rem;
   }
-  .cw-toolbar-multi {
-    flex-shrink: 0;
-    min-width: 9rem;
-    max-width: 12rem;
+
+  /* ── Floating Overlays panel (TradingView-style, top-right of chart) */
+  .cw-overlay-panel {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    z-index: 5;
+    background: rgba(29, 42, 68, 0.82);
+    border: 1px solid rgba(125, 211, 252, 0.32);
+    border-radius: 3px;
+    padding: 2px;
+    backdrop-filter: blur(4px);
+    pointer-events: auto;
+    min-width: 7.5rem;
   }
+  /* Compact trigger so it reads as a chart control, not a form field */
+  .cw-overlay-panel :global(.rbq-multi-trigger) {
+    background: transparent;
+    border: 0;
+    color: #c8d8f0;
+    font-size: 0.6rem;
+    padding: 0.18rem 0.4rem;
+    min-height: 1.2rem;
+  }
+  .cw-overlay-panel :global(.rbq-multi-trigger:hover:not(:disabled)) {
+    background: rgba(125, 211, 252, 0.10);
+    border: 0;
+  }
+  .cw-overlay-panel :global(.rbq-multi-trigger:focus) {
+    outline: none;
+    border: 0;
+  }
+  /* Dropdown panel aligns to the right edge of the floating panel */
+  .cw-overlay-panel :global(.rbq-multi-panel) {
+    left: auto;
+    right: 0;
+    min-width: 9rem;
+  }
+
+  /* ── Hover popup (shared by historical and intraday) ─────── */
+  .cw-hover-popup {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(15, 25, 45, 0.95);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    border-radius: 4px;
+    padding: 0.3rem 0.45rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #c8d8f0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    z-index: 10;
+    min-width: 9rem;
+    max-width: 13rem;
+  }
+  .cw-hp-ts {
+    color: #fbbf24;
+    font-weight: 800;
+    font-size: 0.58rem;
+    margin-bottom: 0.2rem;
+    padding-bottom: 0.18rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+  }
+  .cw-hp-row {
+    display: flex;
+    gap: 0.35rem;
+    align-items: baseline;
+    margin-top: 0.12rem;
+  }
+  .cw-hp-label {
+    color: #7e97b8;
+    font-weight: 700;
+    min-width: 1.2rem;
+    flex-shrink: 0;
+  }
+  .cw-hp-val {
+    color: #c8d8f0;
+    font-variant-numeric: tabular-nums;
+  }
+  .cw-hp-val.up   { color: #4ade80; }
+  .cw-hp-val.down { color: #f87171; }
 
   .cw-reset-zoom {
     font-family: monospace;
@@ -1470,7 +1657,6 @@
     .cw-sym-input     { min-width: 7rem; }
     .cw-intraday-section { height: 30vh; }
     /* Let toolbar dropdowns go full-flex on phone so they wrap cleanly */
-    .cw-toolbar-select,
-    .cw-toolbar-multi { min-width: 0; flex: 1 1 auto; }
+    .cw-toolbar-select { min-width: 0; flex: 1 1 auto; }
   }
 </style>

@@ -1,5 +1,5 @@
 <script>
-  import { onMount, getContext } from 'svelte';
+  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { nowStamp } from '$lib/stores';
@@ -9,10 +9,6 @@
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
-
-  // ── Context ───────────────────────────────────────────────────────
-  const algoStatus = getContext('algoStatus');
-  const isDemo = $derived(algoStatus.isDemo);
 
   // ── URL params ────────────────────────────────────────────────────
   let _symbol       = $state('');
@@ -69,7 +65,6 @@
   <div class="page-header">
     <span class="algo-title-group">
       <h1 class="page-title-chip">Charts</h1>
-      {#if isDemo}<span class="demo-badge">DEMO</span>{/if}
       <InfoHint popup align="left"
         text="OHLCV historical chart (1D–1Y) + intraday tick overlay for any symbol. Switch between Line, Area, and Candle views. Toggle SMA20/SMA50/Vol overlays. Options show a Greeks strip below the chart. Wheel to zoom, drag to pan, Reset to restore the full range." />
     </span>
@@ -149,18 +144,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-  }
-
-  .demo-badge {
-    font-size: 0.5rem;
-    padding: 1px 5px;
-    border-radius: 2px;
-    border: 1px solid rgba(167, 139, 250, 0.45);
-    background: rgba(167, 139, 250, 0.12);
-    color: #a78bfa;
-    font-family: monospace;
-    font-weight: 700;
-    letter-spacing: 0.05em;
   }
 
   .page-order-btn {
