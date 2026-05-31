@@ -3,7 +3,6 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { nowStamp } from '$lib/stores';
-  import { fetchChartSymbols } from '$lib/api';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
@@ -21,21 +20,10 @@
   let _error   = $state('');
   let _bump    = $state(0);
 
-  // Kite returns underlying index names ("NIFTY 50", "NIFTY BANK") via
-  // the quote-key path; those are NOT tradingsymbols and won't fetch.
-  // Map them back to their tradeable underlying tickers before use.
-  const _KITE_INDEX_MAP = /** @type {Record<string, string>} */ ({
-    'NIFTY 50':           'NIFTY',
-    'NIFTY BANK':         'BANKNIFTY',
-    'NIFTY FIN SERVICE':  'FINNIFTY',
-    'NIFTY MID SELECT':   'MIDCPNIFTY',
-    'NIFTY NEXT 50':      'NIFTYNXT50',
-  });
-  function _normalizeSymbol(/** @type {string} */ raw) {
-    const s = String(raw || '').trim().toUpperCase();
-    if (!s) return '';
-    return _KITE_INDEX_MAP[s] ?? s;
-  }
+  // Default symbol when the page lands with no ?symbol= param. The
+  // operator can swap to any pinned chip or pick a fresh symbol via
+  // the type-filter + search box inside ChartWorkspace.
+  const DEFAULT_SYMBOL = 'NIFTY 50';
 
   // ── Order modal ───────────────────────────────────────────────────
   let _orderModalOpen = $state(false);
@@ -47,30 +35,14 @@
   function _initFromUrl() {
     const params = page.url.searchParams;
     const sym = params.get('symbol');
-    if (sym) _symbol = _normalizeSymbol(sym);
-  }
-
-  async function _loadDefaultSymbol() {
-    if (_symbol) return;
-    try {
-      const r = await fetchChartSymbols('live');
-      const syms = Array.isArray(r) ? r : (r?.symbols || []);
-      // Prefer captured symbols that look like real tradingsymbols
-      // (no embedded space). Skip Kite-style index names so we don't
-      // land on "NIFTY 50" as the chart's first impression.
-      const picked = syms
-        .map(/** @param {any} s */ (s) => String(s?.symbol || s || '').toUpperCase())
-        .find(/** @param {string} s */ (s) => s && !s.includes(' '));
-      if (picked) _symbol = picked;
-    } catch (_) { /* silent */ }
-    if (!_symbol) _symbol = 'NIFTY';
+    if (sym) _symbol = String(sym).toUpperCase();
   }
 
   async function _refresh() {
+    if (!_symbol) return;        // nothing to refresh until operator picks
     _loading = true;
     _error = '';
     try {
-      if (!_symbol) await _loadDefaultSymbol();
       _bump++;
     } catch (e) {
       _error = /** @type {any} */ (e)?.message || 'Refresh failed';
@@ -80,16 +52,16 @@
   }
 
   function _onSymbolChange(/** @type {string} */ sym) {
-    const norm = _normalizeSymbol(sym);
-    _symbol = norm;
+    const s = String(sym || '').toUpperCase();
+    _symbol = s;
     const url = new URL(page.url);
-    url.searchParams.set('symbol', norm);
+    url.searchParams.set('symbol', s);
     goto(url.toString(), { replaceState: true, noScroll: true, keepFocus: true });
   }
 
-  onMount(async () => {
+  onMount(() => {
     _initFromUrl();
-    if (!_symbol) await _loadDefaultSymbol();
+    if (!_symbol) _symbol = DEFAULT_SYMBOL;
   });
 </script>
 

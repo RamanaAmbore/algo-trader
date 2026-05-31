@@ -29,6 +29,22 @@
   import { nowStamp, visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
+  import Select from '$lib/Select.svelte';
+
+  // Minimum prefix length before the symbol search fires suggestions.
+  // 3-char gate keeps single-letter typos from dropping a ~50-row
+  // dropdown over the chart canvas while the operator is still typing.
+  const SYM_MIN_CHARS = 3;
+
+  // Pinned quick-pick symbols — clickable chips in the picker strip.
+  // Mirrors the "Markets" auto-seeded watchlist (CLAUDE.md: NIFTY 50,
+  // BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX + MCX commodities GOLD /
+  // SILVER / CRUDEOIL). One click swaps the chart's symbol without
+  // forcing the operator through the search box every time.
+  const DEFAULT_PINS = /** @type {const} */ ([
+    'NIFTY 50', 'BANKNIFTY', 'FINNIFTY', 'SENSEX',
+    'GOLD', 'SILVER', 'CRUDEOIL',
+  ]);
 
   let {
     symbol        = $bindable(''),
@@ -52,6 +68,16 @@
   let _symOpen        = $state(false);
   let _symSuggestions = $state(/** @type {any[]} */ ([]));
   let _symDebounce    = /** @type {any} */ (null);
+  // Type filter for the symbol dropdown. ALL = no filter (default).
+  // EQ = equities + indices; FUT = futures; OPT = CE+PE.
+  let _symType        = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */('ALL'));
+  /** @type {Array<{value:string,label:string}>} */
+  const _SYM_TYPE_OPTS = [
+    { value: 'ALL', label: 'All' },
+    { value: 'EQ',  label: 'Equity' },
+    { value: 'FUT', label: 'Futures' },
+    { value: 'OPT', label: 'Options' },
+  ];
 
   // Sync _symQuery when the symbol prop changes externally (initial mount
   // or parent-driven symbol swap).
@@ -61,22 +87,55 @@
     if (s && s !== _symQuery) _symQuery = s;
   });
 
+  // Re-run the search when the type filter changes (so flipping from
+  // ALL→OPT with an existing 3+ char query re-filters without forcing
+  // the operator to retype).
+  $effect(() => {
+    void _symType;
+    if (_symQuery.length >= SYM_MIN_CHARS) _onSymInput(_symQuery);
+  });
+
+  /** Filter a list of instrument-like rows by the active type filter. */
+  function _filterByType(/** @type {any[]} */ rows) {
+    if (_symType === 'ALL') return rows;
+    return rows.filter(r => {
+      const t = String(r?.t || '').toUpperCase();
+      if (_symType === 'EQ')  return t === 'EQ' || t === '';
+      if (_symType === 'FUT') return t === 'FUT';
+      if (_symType === 'OPT') return t === 'CE' || t === 'PE';
+      return true;
+    });
+  }
+
   async function _onSymInput(/** @type {string} */ v) {
     _symQuery = v;
     _symOpen = true;
-    if (!v) { _symSuggestions = []; return; }
-    try {
-      const sync = suggestUnderlyings(v, 16);
-      if (Array.isArray(sync) && sync.length) {
-        _symSuggestions = sync.map(s => ({ sym: s, e: '', t: 'EQ' }));
-      }
-    } catch (_) { /* sync path failed */ }
+    // Min-char gate — don't surface suggestions until the operator has
+    // typed enough to narrow the universe meaningfully.
+    if (v.length < SYM_MIN_CHARS) { _symSuggestions = []; return; }
+    // Sync fast-path — only meaningful for the All / EQ filters since
+    // suggestUnderlyings returns equity-style underlyings.
+    if (_symType === 'ALL' || _symType === 'EQ') {
+      try {
+        const sync = suggestUnderlyings(v, 24);
+        if (Array.isArray(sync) && sync.length) {
+          _symSuggestions = sync.map(s => ({ sym: s, e: '', t: 'EQ' }));
+        }
+      } catch (_) { /* sync path failed */ }
+    } else {
+      _symSuggestions = [];
+    }
     if (_symDebounce) clearTimeout(_symDebounce);
     _symDebounce = setTimeout(async () => {
       try {
         await loadInstruments();
-        const full = await searchByPrefix(v, 16);
-        if (Array.isArray(full) && full.length) _symSuggestions = full;
+        // Fetch wide then filter — searchByPrefix front-loads EQ rows,
+        // so a small `limit` would starve OPT/FUT picks. 80 gives the
+        // type filter teeth on heavy-volume names like NIFTY.
+        const full = await searchByPrefix(v, 80);
+        const filtered = _filterByType(Array.isArray(full) ? full : []);
+        if (filtered.length) _symSuggestions = filtered.slice(0, 24);
+        else if (_symType !== 'ALL') _symSuggestions = [];  // honour empty type-filter result
       } catch (_) { /* keep sync result */ }
     }, 60);
   }
@@ -595,17 +654,28 @@
 </script>
 
 <div class="cw-root">
-  <!-- Picker bar — symbol search (no mode pills) -->
+  <!-- Picker bar — type filter + symbol search (no mode pills) -->
   {#if !compact}
     <div class="cw-picker">
+      <div class="cw-type-wrap">
+        <Select
+          options={_SYM_TYPE_OPTS}
+          bind:value={_symType}
+          ariaLabel="Symbol type filter" />
+      </div>
       <div class="cw-sym-wrap">
         <input
           class="cw-sym-input"
           type="text"
-          placeholder="Symbol…"
+          placeholder="Type 3+ chars…"
           value={_symQuery}
           oninput={(e) => _onSymInput(/** @type {HTMLInputElement} */ (e.target).value)}
-          onfocus={() => { /* keep _symQuery as-is */ }}
+          onfocus={() => {
+            // Reopen the dropdown if the operator returns to the input
+            // with an existing 3+ char query — they likely want to
+            // pick again without retyping.
+            if (_symQuery.length >= SYM_MIN_CHARS) _symOpen = true;
+          }}
           onblur={() => {
             // Delay close so dropdown clicks register before the dropdown
             // disappears. Do NOT reset _symQuery — operator's clear is intentional.
@@ -616,7 +686,11 @@
           autocomplete="off"
           spellcheck="false"
         />
-        {#if _symOpen && _symSuggestions.length}
+        {#if _symOpen && _symQuery.length > 0 && _symQuery.length < SYM_MIN_CHARS}
+          <div class="cw-sym-hint">Type {SYM_MIN_CHARS - _symQuery.length} more char{SYM_MIN_CHARS - _symQuery.length === 1 ? '' : 's'}…</div>
+        {:else if _symOpen && _symQuery.length >= SYM_MIN_CHARS && !_symSuggestions.length}
+          <div class="cw-sym-hint">No match{_symType !== 'ALL' ? ` for ${_symType}` : ''}.</div>
+        {:else if _symOpen && _symSuggestions.length}
           <div class="cw-sym-dropdown" role="listbox">
             {#each _symSuggestions.slice(0, 14) as inst}
               <button type="button" class="cw-sym-opt" role="option" aria-selected="false"
@@ -630,11 +704,26 @@
         {/if}
       </div>
 
-      {#if _isDerivative}
-        <span class="cw-kind-pill cw-kind-deriv">F&O</span>
+      {#if _isOption}
+        <span class="cw-kind-pill cw-kind-deriv">OPT</span>
+      {:else if _isFuture}
+        <span class="cw-kind-pill cw-kind-deriv">FUT</span>
       {:else if symbol}
         <span class="cw-kind-pill cw-kind-equity">EQ</span>
       {/if}
+
+      <!-- Pinned quick-pick symbols — click to load that symbol -->
+      <div class="cw-pins" role="group" aria-label="Pinned symbols">
+        {#each DEFAULT_PINS as pin}
+          <button type="button"
+                  class="cw-pin"
+                  class:active={symbol === pin}
+                  title="Chart {pin}"
+                  onclick={() => _pickSym({ sym: pin, t: '' })}>
+            {pin}
+          </button>
+        {/each}
+      </div>
 
       <!-- Auto-detected mode chip — informational, not clickable -->
       {#if _simActive || _paperActive}
@@ -698,7 +787,9 @@
 
   <!-- Historical OHLCV chart — fills available height via flex -->
   <div class="cw-chart-container" bind:this={_chartContainerEl}>
-    {#if _histLoading && !_bars.length}
+    {#if !symbol}
+      <div class="cw-state cw-state-hint">Pick a symbol to chart — type 3+ chars in the box above.</div>
+    {:else if _histLoading && !_bars.length}
       <div class="cw-state">Loading…</div>
     {:else if _histError && !_bars.length}
       <div class="cw-state cw-err">{_histError}</div>
@@ -995,8 +1086,64 @@
     flex-shrink: 0;
   }
 
+  .cw-type-wrap {
+    /* Narrow Select pinned to the leading edge of the picker bar so
+       the type filter never visually dominates the symbol input. */
+    min-width: 7rem;
+    max-width: 8.5rem;
+    flex-shrink: 0;
+  }
+  .cw-pins {
+    /* Quick-pick chips — sits at the trailing edge of the picker bar,
+       wraps onto a second row on narrow viewports. */
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+    margin-left: 0.25rem;
+  }
+  .cw-pin {
+    border: 1px solid rgba(125, 211, 252, 0.32);
+    background: rgba(125, 211, 252, 0.08);
+    color: #c8d8f0;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-family: monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .cw-pin:hover {
+    background: rgba(125, 211, 252, 0.18);
+    border-color: rgba(125, 211, 252, 0.55);
+    color: #e6f5ff;
+  }
+  .cw-pin.active {
+    background: rgba(251, 191, 36, 0.18);
+    border-color: rgba(251, 191, 36, 0.65);
+    color: #fcd34d;
+  }
   .cw-sym-wrap {
     position: relative;
+  }
+  .cw-sym-hint {
+    /* Same drop affordance as the dropdown but for the empty-result
+       / pre-min-char states. Subtle slate text on the navy panel. */
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 50;
+    background: #1d2a44;
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    border-radius: 4px;
+    margin-top: 2px;
+    padding: 0.3rem 0.55rem;
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: #7e97b8;
+    white-space: nowrap;
   }
   .cw-sym-input {
     background: rgba(255,255,255,0.06);
