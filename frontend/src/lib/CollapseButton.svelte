@@ -39,8 +39,11 @@
   import { authStore } from '$lib/stores';
 
   let {
-    /** Unique identifier per card — used as the storage key. Required. */
-    cardId,
+    /** Unique identifier per card — used as the localStorage key for
+     *  per-user collapse-state persistence. Omit to skip persistence
+     *  entirely (the button still toggles in-session but the state
+     *  resets to `initialCollapsed` on every page load). */
+    cardId = '',
     /** bindable collapse state. */
     isCollapsed = $bindable(false),
     /** Initial state when no stored value exists (cold-start default). */

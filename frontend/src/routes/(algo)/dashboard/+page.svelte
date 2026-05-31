@@ -1590,14 +1590,21 @@
         {#if _fsCapital}
           <RefreshButton onClick={_refreshAll} loading={_refreshing} label="capital" />
         {/if}
-        <CollapseButton bind:isCollapsed={_colCapital} cardId="capital" label="Capital" />
+        <!-- No cardId → CollapseButton.onMount early-returns, so the
+             collapse state is NOT persisted to localStorage. Both
+             tabs always start expanded on every page load; operators
+             can still toggle in-session but the choice resets on
+             reload. Matches operator intent: this card is "always
+             show me capital + equity at-a-glance"; persistent
+             collapse hid data and caused stale-state confusion. -->
+        <CollapseButton bind:isCollapsed={_colCapital} label="Capital" />
         <DefaultSizeButton bind:isFullscreen={_fsCapital} bind:isCollapsed={_colCapital} label="Capital" />
         <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
       {:else}
         {#if _fsEquity}
           <RefreshButton onClick={_refreshAll} loading={_refreshing} label="equity" />
         {/if}
-        <CollapseButton bind:isCollapsed={_colEquity} cardId="equity" label="Equity" />
+        <CollapseButton bind:isCollapsed={_colEquity} label="Equity" />
         <DefaultSizeButton bind:isFullscreen={_fsEquity} bind:isCollapsed={_colEquity} label="Equity" />
         <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
       {/if}
