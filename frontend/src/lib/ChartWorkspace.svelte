@@ -98,13 +98,14 @@
 
   /** @type {Array<{value:string,label:string}>} */
   const _OVERLAY_OPTS = [
-    { value: 'sma20', label: 'SMA 20' },
-    { value: 'sma50', label: 'SMA 50' },
-    { value: 'ema20', label: 'EMA 20' },
-    { value: 'ema50', label: 'EMA 50' },
-    { value: 'bb',    label: 'Bollinger' },
-    { value: 'vol',   label: 'Volume' },
-    { value: 'rsi',   label: 'RSI 14' },
+    { value: 'sma20',    label: 'SMA 20' },
+    { value: 'sma50',    label: 'SMA 50' },
+    { value: 'ema20',    label: 'EMA 20' },
+    { value: 'ema50',    label: 'EMA 50' },
+    { value: 'bb',       label: 'Bollinger' },
+    { value: 'vol',      label: 'Volume' },
+    { value: 'rsi',      label: 'RSI 14' },
+    { value: 'intraday', label: 'Intraday' },
   ];
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
@@ -114,7 +115,7 @@
     _pinnedValue = '';       // search pick — clear active pin
     _resolvedExchange = '';  // clear stale MCX/CDS hint from prior pin
     _chartLoaded = false;
-    _intradayChoice = 'off';
+    _overlays = _overlays.filter(o => o !== 'intraday');
     onSymbolChange?.(upper);
     _loadHistorical(true);
   }
@@ -134,7 +135,7 @@
     _resolvedExchange = r.exchange || '';  // capture MCX/CDS/NSE so _loadHistorical can hint the backend
     symbol = r.tradingsymbol;
     _chartLoaded = false;
-    _intradayChoice = 'off';
+    _overlays = _overlays.filter(o => o !== 'intraday');
     onSymbolChange?.(r.tradingsymbol);
     _loadHistorical(true);
   }
@@ -234,8 +235,7 @@
   }
 
   // ── Intraday tick stream ──────────────────────────────────────────
-  let _intradayChoice  = $state(/** @type {'off'|'on'} */('off'));
-  const _intradayEnabled = $derived(_intradayChoice === 'on');
+  const _intradayEnabled = $derived(_overlays.includes('intraday'));
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
   let _ticks  = $state([]);
   /** @type {Array<{ts:string,kind:string,side:string,price:number|null}>} */
@@ -788,7 +788,7 @@
       _bars = [];
       _spotBars = [];
       _greeks = null;
-      _intradayChoice = 'off';
+      _overlays = _overlays.filter(o => o !== 'intraday');
       _loadHistorical(true);
       if (_isOption) _loadGreeks();
     }
@@ -868,19 +868,6 @@
           </button>
         {/each}
       </div>
-
-      <!-- Intraday toggle button -->
-      <button type="button"
-        class="cw-intraday-btn"
-        class:active={_intradayChoice === 'on'}
-        title={_intradayChoice === 'on' ? 'Hide intraday tick chart' : 'Show intraday tick chart'}
-        aria-pressed={_intradayChoice === 'on'}
-        onclick={() => _intradayChoice = (_intradayChoice === 'on' ? 'off' : 'on')}>
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M2 8h2.5L6 4l2 8 2-6 1.5 4H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        <span>Intraday{_intradayChoice === 'on' && (_simActive || _paperActive) ? ` (${_simActive ? 'SIM' : 'PAPER'})` : ''}</span>
-      </button>
 
       <!-- Reset zoom action button — trailing edge, only when zoomed -->
       {#if isZoomed}
@@ -1106,6 +1093,9 @@
       <div class="cw-intraday-label">
         <span>Intraday ticks</span>
         <span class="cw-intraday-mode cw-mode-{mode}">{mode.toUpperCase()}</span>
+        {#if _simActive || _paperActive}
+          <span class="cw-intraday-source">{_simActive ? 'SIM' : 'PAPER'}</span>
+        {/if}
         {#if _ticks.length}
           <span class="cw-meta-text">{_ticks.length} ticks · {_events.length} events</span>
         {/if}
@@ -1281,7 +1271,10 @@
     min-height: 0;
     box-sizing: border-box;
     background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border-radius: 4px;
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(251, 191, 36, 0.05) inset;
+    overflow: hidden;
   }
 
   /* ── Picker bar ─────────────────────────────────────────── */
@@ -1329,35 +1322,6 @@
     background: rgba(251, 191, 36, 0.18);
     color: #fbbf24;
     font-weight: 800;
-  }
-
-  /* ── Intraday toggle button ──────────────────────────────── */
-  .cw-intraday-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.18rem 0.55rem;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(125, 211, 252, 0.32);
-    border-radius: 3px;
-    color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-  .cw-intraday-btn:hover {
-    background: rgba(125, 211, 252, 0.14);
-    border-color: rgba(125, 211, 252, 0.55);
-    color: #e6f5ff;
-  }
-  .cw-intraday-btn.active {
-    background: rgba(74, 222, 128, 0.16);
-    border-color: rgba(74, 222, 128, 0.65);
-    color: #4ade80;
   }
 
   /* ── Toolbar Select wrappers ─────────────────────────────── */
@@ -1561,6 +1525,15 @@
   .cw-mode-live  { color: #4ade80; }
   .cw-mode-sim   { color: #fbbf24; }
   .cw-mode-paper { color: #7dd3fc; }
+  .cw-intraday-source {
+    font-weight: 700;
+    font-size: 0.5rem;
+    padding: 1px 5px;
+    border-radius: 2px;
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+    letter-spacing: 0.04em;
+  }
   .cw-intraday-svg {
     flex: 1 1 0;
     width: 100%;
