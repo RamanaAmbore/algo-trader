@@ -14,6 +14,7 @@
   //   onPick        — fires when a row is chosen (sym, meta?)
   //   ariaLabel     — accessible label for the input
 
+  import { untrack } from 'svelte';
   import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
 
   let {
@@ -35,10 +36,13 @@
   let _activePin      = $state('');
 
   // Sync _symQuery when the `value` prop changes externally (mount or
-  // parent-driven swap). Does NOT reset on blur — preserves deliberate clears.
+  // parent-driven swap). Reads _symQuery via `untrack` so the operator's
+  // own typing doesn't re-trigger the effect (which would revert the
+  // input back to `value` on every keystroke — the source of the
+  // "symbol not updatable" bug).
   $effect(() => {
     const v = value;
-    if (v && v !== _symQuery) _symQuery = v;
+    if (v && v !== untrack(() => _symQuery)) _symQuery = v;
   });
 
   // Re-run search when the type filter changes from the outside.

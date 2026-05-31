@@ -121,13 +121,29 @@
   function _onPickSymbol(/** @type {string} */ sym) {
     const upper = String(sym || '').toUpperCase();
     if (!upper) return;
-    // `symbol` is already updated by SymbolSearchInput's bind:value,
-    // but we reset chart state and trigger the historical load here
-    // (the $effect on symbol will fire, but _chartLoaded guard prevents
-    // double-load — set it false first).
+    _pinnedValue = '';   // search pick — clear active pin
     _chartLoaded = false;
     _intradayChoice = 'off';
     onSymbolChange?.(upper);
+    _loadHistorical(true);
+  }
+
+  // Pinned-symbols Select — dedicated dropdown so the operator can
+  // load NIFTY 50 / GOLD / SILVER / CRUDEOIL etc. without typing the
+  // 3-char threshold through the symbol search.
+  /** @type {Array<{value:string,label:string}>} */
+  const _PIN_OPTS = DEFAULT_PINS.map(p => ({ value: p, label: p }));
+  let _pinnedValue = $state('');
+
+  /** Pick from the Pinned dropdown — resolves to tradeable + loads. */
+  function _onPickPin(/** @type {string} */ pin) {
+    const resolved = _resolvePinForChart(pin);
+    if (!resolved) return;
+    _pinnedValue = pin;
+    symbol = resolved;
+    _chartLoaded = false;
+    _intradayChoice = 'off';
+    onSymbolChange?.(resolved);
     _loadHistorical(true);
   }
 
@@ -632,6 +648,16 @@
   <!-- Picker bar — type filter + symbol search + chart controls -->
   {#if !compact}
     <div class="cw-picker">
+      <!-- Pinned symbols Select — one-click load without typing -->
+      <div class="cw-toolbar-select">
+        <Select
+          options={_PIN_OPTS}
+          value={_pinnedValue}
+          onValueChange={(v) => _onPickPin(String(v))}
+          placeholder="Pinned"
+          ariaLabel="Pinned symbols" />
+      </div>
+
       <div class="cw-type-wrap">
         <Select
           options={_SYM_TYPE_OPTS}
@@ -640,20 +666,10 @@
       </div>
       <SymbolSearchInput
         bind:value={symbol}
-        pins={DEFAULT_PINS}
-        resolvePin={_resolvePinForChart}
         type={_symType}
-        placeholder="Pick or type 3+ chars…"
+        placeholder="Type 3+ chars…"
         onPick={(sym) => _onPickSymbol(sym)}
         ariaLabel="Symbol search" />
-
-      {#if _isOption}
-        <span class="cw-kind-pill cw-kind-deriv">OPT</span>
-      {:else if _isFuture}
-        <span class="cw-kind-pill cw-kind-deriv">FUT</span>
-      {:else if symbol}
-        <span class="cw-kind-pill cw-kind-equity">EQ</span>
-      {/if}
 
       <!-- Auto-detected mode chip — informational, not clickable -->
       {#if _simActive || _paperActive}
@@ -1013,17 +1029,6 @@
     max-width: 8.5rem;
     flex-shrink: 0;
   }
-  .cw-kind-pill {
-    font-family: monospace;
-    font-size: 0.5rem;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 2px;
-    letter-spacing: 0.05em;
-  }
-  .cw-kind-deriv  { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.35); }
-  .cw-kind-equity { background: rgba(125,211,252,0.08); color: #7dd3fc; border: 1px solid rgba(125,211,252,0.30); }
-
   /* Auto-detected mode chip — informational badge, not interactive */
   .cw-auto-mode-chip {
     font-family: monospace;
