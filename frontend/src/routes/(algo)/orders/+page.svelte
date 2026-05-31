@@ -34,8 +34,8 @@
   // read as one consistent vocabulary across the page. Each tab
   // carries its own colour for the active underline + text.
   const ACT_TABS = /** @type {const} */ ([
+    { id: 'log',  label: 'Agent Log',  activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
     { id: 'book', label: 'Order Book', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
-    { id: 'log',  label: 'Order Log',  activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
   ]);
 
   let orders        = $state([]);
@@ -112,11 +112,11 @@
   let _colActivity = $state(false);
   let _fsActivity  = $state(false);
 
-  // Activity-card tab state. Order Book (the order grid that used to
-  // be its own card below) is the default; Order Log (UnifiedLog of
-  // recent order / agent events) is the second tab. Order History
-  // was retired — it duplicated Order Book.
-  let _activityTab = $state(/** @type {'book'|'log'} */ ('book'));
+  // Activity-card tab state. Agent Log (UnifiedLog of recent agent
+  // / order events) is the first tab and the default — operators
+  // want the live event stream front-and-center. Order Book is the
+  // second tab, focused on filterable order grid.
+  let _activityTab = $state(/** @type {'log'|'book'} */ ('log'));
 
   // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
   // logic SymbolPanel uses internally; duplicated here so the tab

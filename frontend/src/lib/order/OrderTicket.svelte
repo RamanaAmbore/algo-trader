@@ -55,6 +55,7 @@
    *   onClose:   () => void,
    *   onAddToBasket?: ((payload: any) => void) | null,
    *   basketMode?: boolean,
+   *   accountHidden?: boolean,
    *   onAccountChange?: (account: string) => void,
    * }} */
   let {
@@ -112,6 +113,12 @@
     // instead of firing to the backend. The ticket stays open after
     // add so the operator can adjust the leg and add another.
     basketMode = false,
+    // When true, the ticket's internal Account picker is suppressed.
+    // Used by host pages that expose a shared account at the page /
+    // shell level (e.g. /orders Order Entry card header) so the
+    // operator only sees one Account chooser. `_account` still binds
+    // to the prop — only the picker chrome is hidden.
+    accountHidden = false,
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -758,7 +765,12 @@
          WHAT contract, HOW MUCH — then the side pill flips BUY/SELL.
          When _lotSize > 0, Qty becomes the Lots stepper. -->
     <div class="ot-row ot-row-quick">
-      {#if _accounts.length}
+      <!-- Account picker — hidden when the host page (e.g. /orders'
+           Order Entry card header) already exposes a shared account
+           picker, so the operator doesn't see two of them. _account
+           still binds to the prop, just the visible chooser is
+           suppressed. -->
+      {#if _accounts.length && !accountHidden}
         <div class="ot-quick-block">
           <span class="ot-label">Account</span>
           {#if _accounts.length === 1}
@@ -862,62 +874,53 @@
          Now: inline `Type:` / `Product:` labels next to compact
          pills, ot-pills nowrap, ot-row nowrap. Pills shrink slightly
          (font 0.6 → 0.55rem, padding tightened) to leave headroom. -->
-    <div class="ot-row ot-row-tight">
-      <div class="ot-label-inline">
-        <label class="ot-label">Type</label>
-        <div class="ot-pills ot-pills-nowrap">
-          {#each ['MARKET', 'LIMIT', 'SL', 'SL-M'] as t}
-            <button type="button" class="ot-pill" class:on={_type === t}
-                    onclick={() => _type = /** @type {any} */ (t)}>{t}</button>
-          {/each}
-        </div>
+    <!-- Type · Product · Variety · Validity — all four order-shape
+         knobs in a single row of compact Selects. Industry analogue:
+         Kite Web's order form puts these inline (not stacked); the
+         earlier pill-rows approach was visually noisy and wasted
+         vertical space (8 pills + 5 pills + 2 pills across 2 rows).
+         Selects keep the density tight on mobile and align cleanly
+         with the rest of the form. -->
+    <div class="ot-row ot-row-knobs">
+      <div class="ot-knob">
+        <label class="ot-label" for="ot-type-sel">Type</label>
+        <Select id="ot-type-sel"
+                bind:value={_type}
+                ariaLabel="Order type"
+                options={[
+                  { value: 'MARKET', label: 'MARKET' },
+                  { value: 'LIMIT',  label: 'LIMIT'  },
+                  { value: 'SL',     label: 'SL'     },
+                  { value: 'SL-M',   label: 'SL-M'   },
+                ]} />
       </div>
-      <div class="ot-label-inline">
-        <label class="ot-label">Product</label>
-        <div class="ot-pills ot-pills-nowrap">
-          {#each productOptions as p}
-            <button type="button" class="ot-pill" class:on={_product === p}
-                    onclick={() => _product = /** @type {any} */ (p)}>{p}</button>
-          {/each}
-        </div>
+      <div class="ot-knob">
+        <label class="ot-label" for="ot-product-sel">Product</label>
+        <Select id="ot-product-sel"
+                bind:value={_product}
+                ariaLabel="Product"
+                options={productOptions.map(p => ({ value: p, label: p }))} />
       </div>
-    </div>
-
-    <!-- Variety + Validity — REG / AMO / CO are backend-wired in
-         routes/orders.py (_VARIETIES = {regular, amo, co}). BO +
-         iceberg are surfaced disabled with an aria-disabled hint so
-         the operator can see them on the roadmap without being able
-         to submit something the backend will reject. Validity:
-         DAY (default) + IOC (Immediate-Or-Cancel) — both pass
-         through directly to Kite's `validity` field. -->
-    <div class="ot-row ot-row-tight">
-      <div class="ot-label-inline">
-        <label class="ot-label">Variety</label>
-        <div class="ot-pills ot-pills-nowrap">
-          <button type="button" class="ot-pill" class:on={_variety === 'regular'}
-            onclick={() => _variety = 'regular'}>REG</button>
-          <button type="button" class="ot-pill" class:on={_variety === 'amo'}
-            onclick={() => _variety = 'amo'}
-            title="After-Market Order — places at session start.">AMO</button>
-          <button type="button" class="ot-pill" class:on={_variety === 'co'}
-            onclick={() => _variety = 'co'}
-            title="Cover Order — built-in stop-loss leg.">CO</button>
-          <button type="button" class="ot-pill ot-pill-disabled" disabled aria-disabled="true"
-            title="Bracket Order — backend not wired yet.">BO</button>
-          <button type="button" class="ot-pill ot-pill-disabled" disabled aria-disabled="true"
-            title="Iceberg — backend not wired yet.">ICE</button>
-        </div>
+      <div class="ot-knob">
+        <label class="ot-label" for="ot-variety-sel">Variety</label>
+        <Select id="ot-variety-sel"
+                bind:value={_variety}
+                ariaLabel="Variety"
+                options={[
+                  { value: 'regular', label: 'REG' },
+                  { value: 'amo',     label: 'AMO' },
+                  { value: 'co',      label: 'CO'  },
+                ]} />
       </div>
-      <div class="ot-label-inline">
-        <label class="ot-label">Validity</label>
-        <div class="ot-pills ot-pills-nowrap">
-          <button type="button" class="ot-pill" class:on={_validity === 'DAY'}
-            onclick={() => _validity = 'DAY'}
-            title="Order rests in the book until end-of-day or fill.">DAY</button>
-          <button type="button" class="ot-pill" class:on={_validity === 'IOC'}
-            onclick={() => _validity = 'IOC'}
-            title="Immediate-Or-Cancel — fills what it can immediately, drops the remainder.">IOC</button>
-        </div>
+      <div class="ot-knob">
+        <label class="ot-label" for="ot-validity-sel">Validity</label>
+        <Select id="ot-validity-sel"
+                bind:value={_validity}
+                ariaLabel="Validity"
+                options={[
+                  { value: 'DAY', label: 'DAY' },
+                  { value: 'IOC', label: 'IOC' },
+                ]} />
       </div>
     </div>
 
@@ -1047,9 +1050,44 @@
     {/if}
 
     <div class="ot-footer">
-      <!-- Left side of the footer: margin preview BEFORE submit, placed-
-           order summary AFTER a successful submit. Same vertical slot;
-           replaces what used to be a separate row above the footer. -->
+      <!-- Buttons FIRST, margin preview BELOW per operator request.
+           Earlier the footer was horizontal: margin on the left,
+           buttons on the right. Operator wanted the action row at the
+           top + the trade economics chip immediately under it — same
+           layout IB TWS uses (action footer, then cost-impact strip
+           beneath). -->
+      <div class="ot-footer-actions">
+        {#if submitOk}
+          <button type="button" class="ot-exit"
+                  onclick={onClose}>Exit</button>
+        {:else}
+          <button type="button" class="ot-exit" onclick={onClose}>Exit</button>
+          {#if onAddToBasket && action === 'open'}
+            <button type="button" class="ot-basket"
+                    disabled={!!validationErr || submitting}
+                    title="Add this leg to the basket — place every leg together later"
+                    onclick={addToBasket}>+ Basket</button>
+          {/if}
+          {#if basketMode && action !== 'modify'}
+            <button type="button" class="ot-submit ot-submit-basket-mode"
+                    disabled={!!validationErr}
+                    onclick={addToBasket}>
+              + Add to basket
+            </button>
+          {:else}
+            <button type="button" class="ot-submit"
+                    class:ot-submit-buy={_side === 'BUY'}
+                    class:ot-submit-sell={_side === 'SELL'}
+                    disabled={!!validationErr || submitting}
+                    onclick={submit}>
+              {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
+            </button>
+          {/if}
+        {/if}
+      </div>
+      <!-- Margin / cost preview BELOW the action row. Placed-order
+           summary replaces the margin preview after a successful
+           submit; same vertical slot. -->
       <div class="ot-footer-info">
         {#if submitOk}
           <div class="ot-ok">✓ {submitOk}</div>
@@ -1108,43 +1146,6 @@
         {/if}
       </div>
 
-      <!-- Right side of the footer: buttons. After a successful submit
-           collapses to a single Exit button — modal stays open until
-           the operator dismisses it, so they can read the placed-order
-           line above. -->
-      {#if submitOk}
-        <button type="button" class="ot-exit"
-                onclick={onClose}>Exit</button>
-      {:else}
-        <button type="button" class="ot-exit" onclick={onClose}>Exit</button>
-        {#if onAddToBasket && action === 'open'}
-          <!-- "+ Basket" — stages the leg into the caller's basket
-               panel instead of placing now. Shown only when the
-               caller wired onAddToBasket (currently /admin/options
-               chain `(i)` flow); other callers see just Cancel +
-               Place. -->
-          <button type="button" class="ot-basket"
-                  disabled={!!validationErr || submitting}
-                  title="Add this leg to the basket — place every leg together later"
-                  onclick={addToBasket}>+ Basket</button>
-        {/if}
-        {#if basketMode && action !== 'modify'}
-          <!-- basketMode: primary action is "Add to basket" — no backend hit. -->
-          <button type="button" class="ot-submit ot-submit-basket-mode"
-                  disabled={!!validationErr}
-                  onclick={addToBasket}>
-            + Add to basket
-          </button>
-        {:else}
-          <button type="button" class="ot-submit"
-                  class:ot-submit-buy={_side === 'BUY'}
-                  class:ot-submit-sell={_side === 'SELL'}
-                  disabled={!!validationErr || submitting}
-                  onclick={submit}>
-            {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
-          </button>
-        {/if}
-      {/if}
     </div>
   </div>
 </div>
@@ -1524,6 +1525,26 @@
     overflow-x: auto;
   }
 
+  /* Knobs row — Type · Product · Variety · Validity rendered as
+     four compact Selects in one row. Each Select min-width: 4.5rem
+     so the dropdown triggers don't shrink past their label glyph
+     count. Wraps cleanly on narrow viewports (Select carries its
+     own internal width logic). */
+  .ot-row-knobs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: flex-end;
+    margin-bottom: 0.45rem;
+  }
+  .ot-knob {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    flex: 1 1 5rem;
+    min-width: 5rem;
+  }
+
   /* Mode row */
   .ot-mode-row {
     display: flex;
@@ -1748,23 +1769,35 @@
   }
   .ot-funds-low .ot-funds-v { color: #f87171; }
 
+  /* Footer is a column: action buttons on top, margin / cost preview
+     beneath. IB TWS, ToS, and Sensibull all stack the impact line
+     under the action row — the operator's eye reads top-to-bottom
+     "what will I do" → "what will it cost". */
   .ot-footer {
     display: flex;
-    gap: 0.75rem;
-    align-items: center;
+    flex-direction: column;
+    gap: 0.4rem;
     padding-top: 0.6rem;
     border-top: 1px solid rgba(255,255,255,0.08);
   }
-  /* Left side of the footer: flex-grows to occupy free space so the
-     buttons stay pinned to the right edge regardless of how long the
-     margin / placed-order text gets. Anchored-left content (margin
-     rows, ok line) reads naturally next to the right-aligned buttons. */
-  .ot-footer-info {
-    flex: 1;
-    min-width: 0;
+  .ot-footer-actions {
     display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: flex-end;
+  }
+  .ot-footer-info {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.85rem;
+    align-items: center;
+    /* Subtle background tint so the impact strip reads as its own
+       region distinct from the buttons + form above. */
+    padding: 0.35rem 0.5rem;
+    background: rgba(15, 23, 42, 0.40);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 3px;
   }
   .ot-footer-info:empty { display: none; }
   .ot-exit,

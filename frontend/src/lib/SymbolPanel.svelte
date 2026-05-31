@@ -1046,6 +1046,7 @@
             currentQty={_ticketProps.currentQty ?? currentQty}
             onAddToBasket={addToBasket}
             basketMode={basketMode}
+            accountHidden={headerless}
             {onSubmit}
             {onClose} />
         </div>
