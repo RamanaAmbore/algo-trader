@@ -217,6 +217,13 @@
   }
   let _type    = $state(orderType);
   let _variety = $state(variety);
+  // Validity (Time-in-Force): DAY by default. IOC (Immediate-Or-Cancel)
+  // for fast-trading scenarios where partial fills are acceptable but
+  // unfilled remainder should drop instead of resting. Kite supports
+  // DAY + IOC; TTL/GTT live on different code paths so they're not
+  // exposed here. Industry analogue: every order book (IB TWS, ToS,
+  // Kite Web) surfaces DAY/IOC as inline pills.
+  let _validity = $state('DAY');
   let _price   = $state(price ?? '');
   let _trigger = $state(trigger ?? '');
   let _product = $state(productVal);
@@ -522,6 +529,7 @@
           order_type: _type,
           product: _product,
           variety: _variety,
+          validity: _validity,
           price: showLimit ? Number(_price) || 0 : 0,
           trigger_price: showTrigger ? Number(_trigger) || 0 : 0,
         };
@@ -570,6 +578,7 @@
           trigger_price: showTrigger ? _roundToTick(_trigger) : null,
           order_type:    _type,
           variety:       _variety,
+          validity:      _validity,
         };
         await modifyOrder(orderId, payload);
         submitOk = `Order #${orderId} modified`;
@@ -602,6 +611,7 @@
       product:        _product,
       order_type:     _type,
       variety:        _variety,
+      validity:       _validity,
       price:          showLimit   ? _roundToTick(_price)   : null,
       trigger_price:  showTrigger ? _roundToTick(_trigger) : null,
       account:        _account,
@@ -627,6 +637,7 @@
           product:          _product,
           order_type:       _type,
           variety:          _variety,
+          validity:         _validity,
           price:            showLimit   ? _roundToTick(_price)   : null,
           trigger_price:    showTrigger ? _roundToTick(_trigger) : null,
           account:          _account,
@@ -866,6 +877,44 @@
             <button type="button" class="ot-pill" class:on={_product === p}
                     onclick={() => _product = /** @type {any} */ (p)}>{p}</button>
           {/each}
+        </div>
+      </div>
+    </div>
+
+    <!-- Variety + Validity — REG / AMO / CO are backend-wired in
+         routes/orders.py (_VARIETIES = {regular, amo, co}). BO +
+         iceberg are surfaced disabled with an aria-disabled hint so
+         the operator can see them on the roadmap without being able
+         to submit something the backend will reject. Validity:
+         DAY (default) + IOC (Immediate-Or-Cancel) — both pass
+         through directly to Kite's `validity` field. -->
+    <div class="ot-row ot-row-tight">
+      <div class="ot-label-inline">
+        <label class="ot-label">Variety</label>
+        <div class="ot-pills ot-pills-nowrap">
+          <button type="button" class="ot-pill" class:on={_variety === 'regular'}
+            onclick={() => _variety = 'regular'}>REG</button>
+          <button type="button" class="ot-pill" class:on={_variety === 'amo'}
+            onclick={() => _variety = 'amo'}
+            title="After-Market Order — places at session start.">AMO</button>
+          <button type="button" class="ot-pill" class:on={_variety === 'co'}
+            onclick={() => _variety = 'co'}
+            title="Cover Order — built-in stop-loss leg.">CO</button>
+          <button type="button" class="ot-pill ot-pill-disabled" disabled aria-disabled="true"
+            title="Bracket Order — backend not wired yet.">BO</button>
+          <button type="button" class="ot-pill ot-pill-disabled" disabled aria-disabled="true"
+            title="Iceberg — backend not wired yet.">ICE</button>
+        </div>
+      </div>
+      <div class="ot-label-inline">
+        <label class="ot-label">Validity</label>
+        <div class="ot-pills ot-pills-nowrap">
+          <button type="button" class="ot-pill" class:on={_validity === 'DAY'}
+            onclick={() => _validity = 'DAY'}
+            title="Order rests in the book until end-of-day or fill.">DAY</button>
+          <button type="button" class="ot-pill" class:on={_validity === 'IOC'}
+            onclick={() => _validity = 'IOC'}
+            title="Immediate-Or-Cancel — fills what it can immediately, drops the remainder.">IOC</button>
         </div>
       </div>
     </div>
@@ -1395,6 +1444,21 @@
     background: rgba(251,191,36,0.18);
     border-color: rgba(251,191,36,0.55);
     color: #fbbf24;
+  }
+  /* Disabled-pill — visible but unreachable. Used for Variety BO + ICE
+     where backend wiring isn't done yet; operator sees them on the
+     roadmap without being able to click. Tooltip explains why. */
+  .ot-pill-disabled,
+  .ot-pill[disabled] {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: auto; /* keep title tooltip reachable */
+  }
+  .ot-pill-disabled:hover,
+  .ot-pill[disabled]:hover {
+    background: rgba(255,255,255,0.04);
+    color: #a3b9d0;
+    border-color: rgba(255,255,255,0.12);
   }
   /* Inline label + pill row: labels sit next to pills (instead of
      stacking above), so Type and Product fit on the same line
