@@ -25,7 +25,10 @@
     fetchStrategyAnalytics,
     fetchChartSymbols,
   } from '$lib/api';
-  import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
+  import {
+    loadInstruments, searchByPrefix, suggestUnderlyings,
+    findEquity, findNearestFuture, getInstrument,
+  } from '$lib/data/instruments';
   import { nowStamp, visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -36,15 +39,46 @@
   // dropdown over the chart canvas while the operator is still typing.
   const SYM_MIN_CHARS = 3;
 
-  // Pinned quick-pick symbols — clickable chips in the picker strip.
-  // Mirrors the "Markets" auto-seeded watchlist (CLAUDE.md: NIFTY 50,
-  // BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX + MCX commodities GOLD /
-  // SILVER / CRUDEOIL). One click swaps the chart's symbol without
-  // forcing the operator through the search box every time.
-  const DEFAULT_PINS = /** @type {const} */ ([
+  // Pinned quick-pick symbols — surface at the TOP of the symbol
+  // dropdown so they're one click away whenever the operator opens
+  // the picker, without dominating the picker bar with chips.
+  // Mirrors the "Markets" auto-seeded watchlist (CLAUDE.md): indices
+  // first, then MCX commodities.
+  /** @type {ReadonlyArray<string>} */
+  const DEFAULT_PINS = [
     'NIFTY 50', 'BANKNIFTY', 'FINNIFTY', 'SENSEX',
     'GOLD', 'SILVER', 'CRUDEOIL',
-  ]);
+  ];
+
+  // Kite index-spot names → underlying root (so findNearestFuture can
+  // resolve the tradeable contract). Spots themselves don't appear in
+  // the instruments dump, so picking "NIFTY 50" needs to land on the
+  // nearest NIFTY future for the chart to fetch bars.
+  /** @type {Record<string, string>} */
+  const _PIN_TO_ROOT = {
+    'NIFTY 50':          'NIFTY',
+    'NIFTY BANK':        'BANKNIFTY',
+    'NIFTY FIN SERVICE': 'FINNIFTY',
+    'NIFTY MID SELECT':  'MIDCPNIFTY',
+  };
+
+  /**
+   * Resolve a pinned label to a tradeable tradingsymbol the historical
+   * endpoint can actually fetch. Tries: direct EQ → nearest FUT for the
+   * underlying root → pin verbatim. Returns {sym, t, e} so the dropdown
+   * + active-state logic can show the right hint chip.
+   * @param {string} pin
+   */
+  function _resolvePin(pin) {
+    const upper = String(pin || '').toUpperCase();
+    if (!upper) return null;
+    const eq = findEquity(upper);
+    if (eq) return { sym: eq.s, t: 'EQ', e: eq.e || '' };
+    const root = _PIN_TO_ROOT[upper] || upper;
+    const fut = findNearestFuture(root);
+    if (fut?.s) return { sym: fut.s, t: 'FUT', e: fut.e || '' };
+    return { sym: upper, t: '', e: '' };
+  }
 
   let {
     symbol        = $bindable(''),
@@ -142,16 +176,39 @@
 
   function _pickSym(/** @type {any} */ inst) {
     const sym = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
-    // Set _symQuery to the picked symbol so input stays populated after pick.
     _symQuery = sym;
     _symOpen = false;
     _symSuggestions = [];
+    _activePin = '';   // search-pick — clear any active pin highlight
     symbol = sym;
     onSymbolChange?.(sym);
     _chartLoaded = false;
     _intradayEnabled = false;
     _loadHistorical(true);
   }
+
+  /** Pin row pick — resolves the pin label to a tradeable tradingsymbol
+   *  (nearest future for commodities/index spots) and loads the chart
+   *  against that. Input shows the pin's display label so the operator
+   *  sees what they picked, not the resolved symbol. */
+  function _pickPin(/** @type {string} */ pin) {
+    const r = _resolvePin(pin);
+    if (!r) return;
+    _symQuery = pin;                  // input shows the friendly pin label
+    _symOpen = false;
+    _symSuggestions = [];
+    _activePin = pin;                 // active-chip highlight in dropdown
+    symbol = r.sym;                   // chart fetches the resolved symbol
+    onSymbolChange?.(r.sym);
+    _chartLoaded = false;
+    _intradayEnabled = false;
+    _loadHistorical(true);
+  }
+
+  // Tracks which pin (if any) the operator last clicked, so the row in
+  // the dropdown can show an "active" highlight. Cleared by any search-
+  // based pick.
+  let _activePin = $state('');
 
   function _handleSymKeydown(/** @type {KeyboardEvent} */ e) {
     if (e.key === 'Escape') { _symOpen = false; _symSuggestions = []; }
@@ -667,18 +724,13 @@
         <input
           class="cw-sym-input"
           type="text"
-          placeholder="Type 3+ chars…"
-          value={_symQuery}
-          oninput={(e) => _onSymInput(/** @type {HTMLInputElement} */ (e.target).value)}
-          onfocus={() => {
-            // Reopen the dropdown if the operator returns to the input
-            // with an existing 3+ char query — they likely want to
-            // pick again without retyping.
-            if (_symQuery.length >= SYM_MIN_CHARS) _symOpen = true;
-          }}
+          placeholder="Pick or type 3+ chars…"
+          bind:value={_symQuery}
+          oninput={() => _onSymInput(_symQuery)}
+          onfocus={() => { _symOpen = true; }}
           onblur={() => {
-            // Delay close so dropdown clicks register before the dropdown
-            // disappears. Do NOT reset _symQuery — operator's clear is intentional.
+            // Delay close so dropdown mousedown handlers register before
+            // the dropdown disappears. Operator's clear is preserved.
             setTimeout(() => { _symOpen = false; }, 180);
           }}
           onkeydown={_handleSymKeydown}
@@ -686,20 +738,43 @@
           autocomplete="off"
           spellcheck="false"
         />
-        {#if _symOpen && _symQuery.length > 0 && _symQuery.length < SYM_MIN_CHARS}
-          <div class="cw-sym-hint">Type {SYM_MIN_CHARS - _symQuery.length} more char{SYM_MIN_CHARS - _symQuery.length === 1 ? '' : 's'}…</div>
-        {:else if _symOpen && _symQuery.length >= SYM_MIN_CHARS && !_symSuggestions.length}
-          <div class="cw-sym-hint">No match{_symType !== 'ALL' ? ` for ${_symType}` : ''}.</div>
-        {:else if _symOpen && _symSuggestions.length}
+        {#if _symOpen}
           <div class="cw-sym-dropdown" role="listbox">
-            {#each _symSuggestions.slice(0, 14) as inst}
-              <button type="button" class="cw-sym-opt" role="option" aria-selected="false"
-                      onmousedown={(e) => { e.preventDefault(); _pickSym(inst); }}>
-                <span class="cw-sym-sym">{inst.sym || inst.tradingsymbol}</span>
-                {#if inst.e}<span class="cw-sym-exch">{inst.e}</span>{/if}
-                {#if inst.t}<span class="cw-sym-type">{inst.t}</span>{/if}
-              </button>
-            {/each}
+            {#if _symQuery.length < SYM_MIN_CHARS}
+              <!-- Below the typing threshold — surface pinned symbols.
+                   One click loads the resolved tradeable contract
+                   (nearest future for commodities + index spots). -->
+              <div class="cw-sym-section">Pinned</div>
+              {#each DEFAULT_PINS as pin}
+                {@const _res = _resolvePin(pin)}
+                <button type="button" class="cw-sym-opt"
+                        class:active={_activePin === pin}
+                        role="option" aria-selected={_activePin === pin}
+                        title="Chart {pin}{_res?.sym && _res.sym !== pin ? ` (loads ${_res.sym})` : ''}"
+                        onmousedown={(e) => { e.preventDefault(); _pickPin(pin); }}>
+                  <span class="cw-sym-sym">{pin}</span>
+                  {#if _res?.t}<span class="cw-sym-type">{_res.t}</span>{/if}
+                  {#if _res?.e}<span class="cw-sym-exch">{_res.e}</span>{/if}
+                </button>
+              {/each}
+              {#if _symQuery.length > 0}
+                <div class="cw-sym-hint">
+                  Type {SYM_MIN_CHARS - _symQuery.length} more char{SYM_MIN_CHARS - _symQuery.length === 1 ? '' : 's'} to search…
+                </div>
+              {/if}
+            {:else if !_symSuggestions.length}
+              <div class="cw-sym-hint">No match{_symType !== 'ALL' ? ` for ${_symType}` : ''}.</div>
+            {:else}
+              <div class="cw-sym-section">Results</div>
+              {#each _symSuggestions.slice(0, 14) as inst}
+                <button type="button" class="cw-sym-opt" role="option" aria-selected="false"
+                        onmousedown={(e) => { e.preventDefault(); _pickSym(inst); }}>
+                  <span class="cw-sym-sym">{inst.sym || inst.tradingsymbol}</span>
+                  {#if inst.e}<span class="cw-sym-exch">{inst.e}</span>{/if}
+                  {#if inst.t}<span class="cw-sym-type">{inst.t}</span>{/if}
+                </button>
+              {/each}
+            {/if}
           </div>
         {/if}
       </div>
@@ -711,19 +786,6 @@
       {:else if symbol}
         <span class="cw-kind-pill cw-kind-equity">EQ</span>
       {/if}
-
-      <!-- Pinned quick-pick symbols — click to load that symbol -->
-      <div class="cw-pins" role="group" aria-label="Pinned symbols">
-        {#each DEFAULT_PINS as pin}
-          <button type="button"
-                  class="cw-pin"
-                  class:active={symbol === pin}
-                  title="Chart {pin}"
-                  onclick={() => _pickSym({ sym: pin, t: '' })}>
-            {pin}
-          </button>
-        {/each}
-      </div>
 
       <!-- Auto-detected mode chip — informational, not clickable -->
       {#if _simActive || _paperActive}
@@ -1093,57 +1155,34 @@
     max-width: 8.5rem;
     flex-shrink: 0;
   }
-  .cw-pins {
-    /* Quick-pick chips — sits at the trailing edge of the picker bar,
-       wraps onto a second row on narrow viewports. */
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    flex-wrap: wrap;
-    margin-left: 0.25rem;
-  }
-  .cw-pin {
-    border: 1px solid rgba(125, 211, 252, 0.32);
-    background: rgba(125, 211, 252, 0.08);
-    color: #c8d8f0;
-    border-radius: 3px;
-    padding: 2px 7px;
-    font-family: monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-  .cw-pin:hover {
-    background: rgba(125, 211, 252, 0.18);
-    border-color: rgba(125, 211, 252, 0.55);
-    color: #e6f5ff;
-  }
-  .cw-pin.active {
-    background: rgba(251, 191, 36, 0.18);
-    border-color: rgba(251, 191, 36, 0.65);
-    color: #fcd34d;
-  }
   .cw-sym-wrap {
     position: relative;
   }
-  .cw-sym-hint {
-    /* Same drop affordance as the dropdown but for the empty-result
-       / pre-min-char states. Subtle slate text on the navy panel. */
-    position: absolute;
-    top: 100%;
-    left: 0;
-    z-index: 50;
-    background: #1d2a44;
-    border: 1px solid rgba(126, 151, 184, 0.25);
-    border-radius: 4px;
-    margin-top: 2px;
-    padding: 0.3rem 0.55rem;
+  .cw-sym-section {
+    /* Group header inside the dropdown — "Pinned" / "Results". */
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: 0.55rem;
+    font-weight: 800;
     color: #7e97b8;
-    white-space: nowrap;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.3rem 0.55rem 0.15rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .cw-sym-hint {
+    /* Below-dropdown hint — sits as a row inside the panel. */
+    padding: 0.3rem 0.55rem 0.4rem;
+    font-family: monospace;
+    font-size: 0.6rem;
+    color: #7e97b8;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .cw-sym-opt.active {
+    /* Active pin row — amber tint so the operator knows which pin
+       is loaded without scanning the labels. */
+    background: rgba(251, 191, 36, 0.12);
+    border-left: 2px solid rgba(251, 191, 36, 0.65);
+    padding-left: calc(0.55rem - 2px);
   }
   .cw-sym-input {
     background: rgba(255,255,255,0.06);
