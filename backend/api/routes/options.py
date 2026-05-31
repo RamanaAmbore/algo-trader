@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -60,6 +61,21 @@ logger = get_logger(__name__)
 
 
 _VALID_MODES = ("live", "sim", "hypothetical")
+
+# ── Historical OHLCV in-process cache ─────────────────────────────────
+# Keyed by (symbol, exchange_hint, days, interval) → (expires_at_unix, value).
+# Mirrors the (key → (expires_at, value)) shape used by backend/api/cache.py.
+# Threading.Lock (not asyncio.Lock) because the handler offloads broker
+# calls to asyncio.to_thread — the cache reads/writes happen in the async
+# frame which is fine with a sync lock on CPython (GIL protects the dict
+# mutation; the Lock guards the check-then-set pair).
+import threading as _threading
+
+_HIST_CACHE: dict[tuple, tuple[float, object]] = {}
+_HIST_CACHE_LOCK = _threading.Lock()
+
+_HIST_CACHE_TTL_OK  = 60   # seconds — fresh bars
+_HIST_CACHE_TTL_EMPTY = 10  # seconds — empty bars (transient rate-limit failure)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -1291,20 +1307,31 @@ class OptionsController(Controller):
             raise HTTPException(status_code=400,
                                 detail=f"interval must be one of {valid_intervals}")
 
-        # Instrument-token lookup. For an option/future we use NFO; for
-        # an underlying name (NIFTY) we'd have to map to NSE:NIFTY 50,
-        # which Kite returns under exchange='NSE' with tradingsymbol
-        # 'NIFTY 50'. Operators usually want the contract chart, not the
-        # spot — keep this simple: caller passes a tradingsymbol; we look
-        # it up on `exchange`. Stock options on BSE will land under BFO,
-        # so we also check that exchange when NFO misses.
+        # ── Cache lookup ───────────────────────────────────────────────
+        cache_key = (sym, (exchange or "").upper(), days, interval)
+        _now = time.monotonic()
+        with _HIST_CACHE_LOCK:
+            _cached = _HIST_CACHE.get(cache_key)
+        if _cached is not None and _cached[0] > _now:
+            return _cached[1]
+
+        # ── Instrument-token lookup ────────────────────────────────────
+        # When the caller passes an explicit exchange (e.g. "MCX" for
+        # commodity pins, "NSE" for underlying spot) we only try that
+        # one exchange — no need to walk 6 arms.  An empty exchange
+        # falls back to the full NFO → BFO → NSE → BSE → MCX → CDS
+        # walk for discovery.
         from backend.shared.brokers.registry import get_price_broker
         broker = get_price_broker()
         token: int | None = None
+
+        if exchange:
+            exchange_arms: tuple[str, ...] = (exchange,)
+        else:
+            exchange_arms = ("NFO", "BFO", "NSE", "BSE", "MCX", "CDS")
+
         try:
-            for ex in (exchange or "NFO", "BFO", "NSE", "BSE", "MCX", "CDS"):
-                if ex == exchange and token:
-                    break
+            for ex in exchange_arms:
                 insts = await asyncio.to_thread(broker.instruments, ex) or []
                 for inst in insts:
                     if str(inst.get("tradingsymbol") or "").upper() == sym:
@@ -1317,25 +1344,27 @@ class OptionsController(Controller):
             # the page renders an "unavailable" state without ripping
             # the whole panel.
             logger.warning(f"options historical instrument lookup failed: {e}")
-            return HistoricalResponse(symbol=sym, instrument_token=None,
-                                      interval=interval, bars=[])
-        if not token:
-            # Symbol not in any of the exchanges we tried (uncommon
-            # contract / typo / out-of-cycle expiry). Return empty
-            # bars + null token; the UI shows an "unavailable" message
-            # instead of a 404 ripping the whole panel.
-            logger.info(f"options historical: '{sym}' not found in NFO/BFO/NSE/BSE/MCX/CDS")
-            return HistoricalResponse(symbol=sym, instrument_token=None,
-                                      interval=interval, bars=[])
+            result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                        interval=interval, bars=[])
+            with _HIST_CACHE_LOCK:
+                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
+            return result
 
+        if not token:
+            # Symbol not found in the exchange(s) tried. Return empty bars
+            # rather than 404 so the UI shows an "unavailable" state.
+            _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"
+            logger.info(f"options historical: '{sym}' not found in {_tried}")
+            result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                        interval=interval, bars=[])
+            with _HIST_CACHE_LOCK:
+                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
+            return result
+
+        # ── Historical bars fetch ──────────────────────────────────────
         # broker.historical_data returns list[dict] with OHLCV via
         # the Broker ABC — works for every adapter (Kite + Dhan +
-        # Groww, with PriceBroker auto-failing-over). Earlier this
-        # call routed through `broker.kite.historical_data(...)`, but
-        # PriceBroker has no `.kite` escape hatch (that lives only on
-        # KiteBroker), so every chart fetch silently died in the
-        # except below and returned empty bars — the operator saw
-        # "No bars available" for every symbol they tried.
+        # Groww, with PriceBroker auto-failing-over).
         try:
             to_d   = datetime.now()
             from_d = to_d - timedelta(days=days)
@@ -1343,8 +1372,11 @@ class OptionsController(Controller):
                                               token, from_d, to_d, interval) or []
         except Exception as e:
             logger.warning(f"options historical_data failed for {sym}: {e}")
-            return HistoricalResponse(symbol=sym, instrument_token=token,
-                                      interval=interval, bars=[])
+            result = HistoricalResponse(symbol=sym, instrument_token=token,
+                                        interval=interval, bars=[])
+            with _HIST_CACHE_LOCK:
+                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
+            return result
 
         bars = [
             HistoricalBar(
@@ -1358,8 +1390,12 @@ class OptionsController(Controller):
             )
             for b in raw
         ]
-        return HistoricalResponse(symbol=sym, instrument_token=token,
-                                  interval=interval, bars=bars)
+        result = HistoricalResponse(symbol=sym, instrument_token=token,
+                                    interval=interval, bars=bars)
+        _ttl = _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY
+        with _HIST_CACHE_LOCK:
+            _HIST_CACHE[cache_key] = (_now + _ttl, result)
+        return result
 
     # ── Multi-leg strategy analytics (POST) ────────────────────────────
 

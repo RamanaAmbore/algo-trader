@@ -14,6 +14,8 @@ class + one entry in `_ADAPTERS`.
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 from backend.shared.brokers.base import Broker
@@ -24,6 +26,38 @@ from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# ── Per-broker rate-limit cool-off ────────────────────────────────────
+# When a broker call raises an exception containing "too many requests"
+# (case-insensitive — Kite's KiteException carries this verbatim), the
+# broker is marked rate-limited for _RATE_LIMIT_COOLOFF_SECONDS.
+# Subsequent _try() calls skip that broker immediately, letting the
+# PriceBroker fallback chain (or the error path) take over without
+# waiting for Kite's own retry timer.
+#
+# broker_id key format: "{broker_id}/{account}" (matches log lines and
+# PriceBroker._last_used so operators can correlate across surfaces).
+_RATE_LIMIT_COOLOFF: dict[str, float] = {}   # broker_id → expires_at (unix)
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_COOLOFF_SECONDS = 30             # tunable here; settings-backed later if needed
+
+
+def _is_rate_limited(broker_id: str) -> bool:
+    """Return True when `broker_id` is in active cool-off."""
+    with _RATE_LIMIT_LOCK:
+        expires = _RATE_LIMIT_COOLOFF.get(broker_id, 0.0)
+        if expires == 0.0:
+            return False
+        if time.time() >= expires:
+            _RATE_LIMIT_COOLOFF.pop(broker_id, None)
+            return False
+        return True
+
+
+def _mark_rate_limited(broker_id: str) -> None:
+    """Record a rate-limit hit; blocks this broker for _RATE_LIMIT_COOLOFF_SECONDS."""
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMIT_COOLOFF[broker_id] = time.time() + _RATE_LIMIT_COOLOFF_SECONDS
 
 
 # Broker id → adapter class. Both "zerodha_kite" (canonical, stored in
@@ -150,19 +184,40 @@ class PriceBroker(Broker):
     def _try(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Walk every underlying broker in preference order; return the
         first non-exception result. If every broker fails, re-raise the
-        last exception so the caller sees a real diagnostic."""
+        last exception so the caller sees a real diagnostic.
+
+        Rate-limited brokers are skipped immediately (no network call)
+        until their cool-off expires. When a broker returns a
+        "Too many requests" error it is marked rate-limited for
+        _RATE_LIMIT_COOLOFF_SECONDS so the next call falls through to the
+        next broker without amplifying the rate-limit storm.
+        """
         last_exc: Exception | None = None
         for broker in self._brokers:
+            broker_key = f"{broker.broker_id}/{broker.account}"
+            if _is_rate_limited(broker_key):
+                # Skip immediately — no network call, no log spam.
+                last_exc = RuntimeError(
+                    f"{broker_key} rate-limited (cool-off active)"
+                )
+                continue
             try:
                 result = getattr(broker, method_name)(*args, **kwargs)
-                self._last_used = f"{broker.broker_id}/{broker.account}"
+                self._last_used = broker_key
                 return result
             except Exception as e:
                 last_exc = e
-                logger.warning(
-                    f"PriceBroker fallback: {method_name} failed on "
-                    f"{broker.broker_id}/{broker.account}: {str(e)[:160]}"
-                )
+                if "too many requests" in str(e).lower():
+                    _mark_rate_limited(broker_key)
+                    logger.warning(
+                        f"PriceBroker: {broker_key} rate-limited, "
+                        f"cooling off {_RATE_LIMIT_COOLOFF_SECONDS}s"
+                    )
+                else:
+                    logger.warning(
+                        f"PriceBroker fallback: {method_name} failed on "
+                        f"{broker_key}: {str(e)[:160]}"
+                    )
                 continue
         # Every broker failed — surface the LAST exception so the
         # operator's log shows a real broker error, not a generic
