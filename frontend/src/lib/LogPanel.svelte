@@ -9,6 +9,7 @@
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import { chipsHtml, chipsFromJson } from '$lib/logChips';
+  import ChartModal from '$lib/ChartModal.svelte';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -132,6 +133,13 @@
     if (tabs.includes('terminal'))  _every(_loadOrders);  // Terminal tab embeds order rows
   });
   onDestroy(() => { for (const id of _intervals) clearInterval(id); });
+
+  // ── Chart modal state (Order tab) ────────────────────────────────────────
+  let _chartModalSym  = $state('');
+  let _chartModalExch = $state('');
+  /** Escape HTML attribute values from broker-supplied strings (defence-in-depth). */
+  const _escAttr = (/** @type {any} */ v) =>
+    String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
   const _ALL_TABS = [
     ['order',     'Order'],
@@ -365,7 +373,10 @@
       ? `<a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
     const chipsBlock = chips ? ' ' + chips : '';
-    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
+    const chartBtn = o.symbol
+      ? `<button class="row-chart-btn log-chart-btn" type="button" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange)}" title="Chart ${_escAttr(o.symbol)}" aria-label="Open chart for ${_escAttr(o.symbol)}"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
+      : '';
+    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol}${chartBtn} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -447,7 +458,16 @@
       heightClass="log-panel log-unified {heightClass}"
     />
   {:else}
-    <pre class="log-panel {heightClass}">{#if filteredOrderRows.length}{@html filteredOrderRows.map(_orderRowHtml).join('\n')}{:else}<span class="log-debug">No {orderModeFilter} orders.</span>{/if}</pre>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+    <pre class="log-panel {heightClass}"
+         role="log"
+         onclick={(e) => {
+           const btn = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-chart-btn'));
+           if (!btn) return;
+           e.stopPropagation();
+           _chartModalSym  = btn.dataset.sym  || '';
+           _chartModalExch = btn.dataset.exch || '';
+         }}>{#if filteredOrderRows.length}{@html filteredOrderRows.map(_orderRowHtml).join('\n')}{:else}<span class="log-debug">No {orderModeFilter} orders.</span>{/if}</pre>
   {/if}
 {:else}
 <pre class="log-panel {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
@@ -479,6 +499,13 @@
   const simPill = /\[SIM\]/.test(l) ? '<span class="log-sim-pill" title="Simulator log line">SIM</span> ' : '';
   return `<span class="${sysClass(l)}">${tHtml}${simPill}${rest}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No log entries.</span>{/if}{/if}</pre>
+{/if}
+
+{#if _chartModalSym}
+  <ChartModal
+    symbol={_chartModalSym}
+    exchange={_chartModalExch}
+    onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }} />
 {/if}
 
 <style>
@@ -630,5 +657,34 @@
   }
   :global(.log-pf-ok)  { color: #4ade80; background: rgba(74,222,128,0.10); }
   :global(.log-pf-bad) { color: #f87171; background: rgba(248,113,113,0.12); }
+
+  /* Chart icon inside the <pre> log rows — inline-flex so it sits flush
+     next to the monospace text without breaking the line. Overrides the
+     global .row-chart-btn margin-left with a tighter value for the dense
+     log context. SVG pointer-events: none ensures target.closest() always
+     lands on the <button>, not the inner <path>. */
+  :global(.log-chart-btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    width: 1rem;
+    height: 1rem;
+    margin: 0 0.18rem 0 0.08rem;
+    padding: 0;
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    background: rgba(34, 211, 238, 0.12);
+    color: #22d3ee;
+    border-radius: 2px;
+    cursor: pointer;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+  :global(.log-chart-btn:hover) {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: rgba(103, 232, 249, 0.65);
+    color: #67e8f9;
+  }
+  :global(.log-chart-btn svg) { pointer-events: none; }
 
 </style>

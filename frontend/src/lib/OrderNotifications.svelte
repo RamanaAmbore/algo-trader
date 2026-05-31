@@ -23,8 +23,15 @@
     orderEventsStore, orderUnreadCount, markOrderEventsSeen,
     startOrderEventsPoller, logTime,
   } from '$lib/stores';
+  import ChartModal from '$lib/ChartModal.svelte';
 
   let open = $state(false);
+  let _chartModalSym  = $state('');
+  let _chartModalExch = $state('');
+  function _openChart(/** @type {string} */ symbol, /** @type {string} */ exchange = '') {
+    _chartModalSym  = String(symbol  || '').toUpperCase();
+    _chartModalExch = String(exchange || '');
+  }
   /** @type {HTMLElement|null} */
   let panelEl = /** @type {HTMLElement|null} */ ($state(null));
   /** @type {HTMLElement|null} */
@@ -222,6 +229,17 @@
                   <span class="onb-side onb-side-{g.side.toLowerCase()}">{g.side}</span>
                   <span class="onb-qty">{g.qty}</span>
                   <span class="onb-sym">{g.symbol}</span>
+                  {#if g.symbol}
+                    <button type="button"
+                            class="row-chart-btn onb-chart-btn"
+                            title="Chart {g.symbol}"
+                            aria-label="Open chart for {g.symbol}"
+                            onclick={(e) => { e.stopPropagation(); _openChart(g.symbol); }}>
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  {/if}
                 {:else}
                   <span class="onb-summary">{g.header}</span>
                 {/if}
@@ -252,6 +270,13 @@
     </div>
   {/if}
 </span>
+
+{#if _chartModalSym}
+  <ChartModal
+    symbol={_chartModalSym}
+    exchange={_chartModalExch}
+    onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }} />
+{/if}
 
 <style>
   /* .page-header uses align-items: baseline; the bell's flex-button
@@ -517,4 +542,14 @@
     font-size: 0.55rem;
     white-space: nowrap;
   }
+  /* Chart button sits inside the flex group header — align with the
+     surrounding text; no extra margin-left so it doesn't push the
+     status pill too far right. */
+  .onb-chart-btn {
+    width: 1rem;
+    height: 1rem;
+    margin-left: 0.1rem;
+    flex-shrink: 0;
+  }
+  .onb-chart-btn :global(svg) { pointer-events: none; }
 </style>
