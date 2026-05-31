@@ -111,6 +111,7 @@
     account=""
     defaultMode="paper"
     availableModes={['draft', 'paper', 'live']}
+    showChartButton={false}
     onClose={() => { _orderModalOpen = false; }}
     onSubmit={(_payload) => { _orderModalOpen = false; }}
   />

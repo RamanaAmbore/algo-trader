@@ -62,6 +62,7 @@
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
    *   triggerBasket?:  number,
+   *   showChartButton?: boolean,
    * }} */
   let {
     defaultTab     = /** @type {'command'|'ticket'|'chain'} */ ('ticket'),
@@ -139,6 +140,12 @@
     // action on the currently-active tab. Forwarded to OrderTicket.
     triggerSubmit = 0,
     triggerBasket = 0,
+    // When false, suppresses the chart-icon button in the header.
+    // Callers that open SymbolPanel FROM a chart-aware page (e.g.
+    // /charts opens it via the order-icon for the symbol already on
+    // screen) pass false so we don't render an affordance that would
+    // open a duplicate ChartModal for the same symbol.
+    showChartButton = true,
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -539,6 +546,7 @@
       <!-- Chart-icon button — opens ChartModal for the current symbol.
            Cyan-400 palette matching the card-control trio. Disabled
            when no symbol is picked. -->
+      {#if showChartButton}
       <button type="button" class="oes-chart-btn"
               disabled={!_localSymbol}
               title={_localSymbol ? `Open chart for ${_localSymbol}` : 'Pick a symbol first'}
@@ -548,6 +556,7 @@
           <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
+      {/if}
       {#if onAddToWatchlist}
         <!-- +W (add to watchlist) — visible only when the caller
              wired the callback. Callers that already have the symbol
