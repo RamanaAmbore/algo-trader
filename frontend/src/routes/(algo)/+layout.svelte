@@ -99,8 +99,8 @@
     // more often than Agents config, so the chain entry sits one
     // click earlier in the navbar.
     { href: '/admin/options',    label: 'Derivatives', group: 'monitor' },
-    { href: '/agents',           label: 'Agents',    group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
+    { href: '/agents',           label: 'Agents',    group: 'monitor' },
     // /admin/alerts is reachable from the 🔔 History link in the
     // /agents page header. Dropped from the top nav to slim the
     // monitor cluster — alert history naturally lives under Agents

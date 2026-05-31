@@ -1,6 +1,5 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { goto } from '$app/navigation';
   import { nowStamp, logTimeIst } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
@@ -8,13 +7,11 @@
   import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
-  import CommandBar from '$lib/CommandBar.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
-  import { loadInstruments, getInstrument } from '$lib/data/instruments';
+  import { loadInstruments } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
-  import { orderGrammar, setQuoteLoadedCallback, previewSymbol, enrichOrderPairs, buildOrderPayload } from '$lib/command/grammars/orders';
   import { createPerformanceSocket } from '$lib/ws';
 
   let orders        = $state([]);
@@ -22,27 +19,18 @@
   let error         = $state('');
   let success       = $state('');
   let filterStatus  = $state('all');
-  let cmdVerb       = $state('');
-  let running       = $state(false);
   let logTab        = $state('order');
   let cmdHistory    = $state([]);
   let selectedOrder = $state(/** @type {any|null} */(null));
-  // OrderTicket props built when the operator types `buy …` / `sell …`
-  // — Phase 2 of the order-entry unification: every order surface
-  // routes through the same modal so CHASE + L/M/H + depth auto-fill +
-  // per-account picker apply uniformly. Cancel / modify stay direct
-  // API calls (no modal needed for those — they're targeted ops).
+  // OrderTicket props for the Modify path — opening an order row's
+  // "Modify" pre-fills a SymbolPanel modal at the page-bottom mount.
+  // The top-of-page inline SymbolPanel handles open/place flows; this
+  // separate modal handles single-target modify so the row context
+  // is preserved.
   let orderTicketProps = $state(/** @type {any|null} */(null));
-  let cmdBar;
   let unsub;
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
-
-  // context for CommandBar — keeps openOrderIds fresh so cancel/modify suggest them
-  const cmdContext = $derived({
-    openOrders: orders
-      .filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING'),
-  });
 
   async function loadOrders() {
     loading = true; error = '';
@@ -55,87 +43,6 @@
     const t = logTimeIst(new Date());
     cmdHistory = [{ status, message, fields, time: t }, ...cmdHistory].slice(0, 100);
     logTab = 'order';
-  }
-
-  async function runParsed(parsed) {
-    running = true;
-    try {
-      if (parsed.verb === 'buy' || parsed.verb === 'sell') {
-        // Phase 2 unification — instead of POSTing the parsed
-        // payload directly, open OrderTicket pre-filled. The ticket
-        // owns submit (PAPER / LIVE), depth ladder, account picker,
-        // CHASE + L/M/H. Same surface as /admin/options + the
-        // dashboard row-click. Cancel / modify keep their direct
-        // path below — they're single-target ops, no modal needed.
-        const payload = buildOrderPayload(parsed);
-        if (!payload) throw new Error(`couldn't build order payload`);
-        const sym  = String(payload.tradingsymbol || '').toUpperCase();
-        const inst = getInstrument(sym);
-        const lot  = Number(inst?.ls || 1);
-        orderTicketProps = {
-          symbol:    sym,
-          exchange:  payload.exchange || inst?.e || 'NFO',
-          side:      payload.transaction_type,
-          action:    'open',
-          qty:       Number(payload.quantity) || 0,
-          lotSize:   lot,
-          orderType: payload.order_type || 'LIMIT',
-          price:     payload.price > 0 ? payload.price : undefined,
-          trigger:   payload.trigger_price > 0 ? payload.trigger_price : undefined,
-          product:   payload.product,
-          accounts:  (await loadAccounts()).map(a => a.account_id || a).filter(Boolean),
-          account:   String(payload.account || ''),
-          // Orders page has no drafts panel — start on PAPER, allow
-          // LIVE escalation.
-          defaultMode:    'live',
-          availableModes: ['live'],
-        };
-        addResult('…', `Opening ticket`, {
-          verb: parsed.verb.toUpperCase(),
-          account: parsed.args.account,
-          symbol: payload.tradingsymbol, exchange: payload.exchange,
-          qty: String(payload.quantity), type: payload.order_type,
-          price: String(payload.price || ''), product: payload.product,
-        });
-        cmdBar?.clear();
-        // Short-circuit — the ticket's onSubmit handler will fire
-        // loadOrders() once the operator confirms. Skipping the
-        // loadOrders() at the bottom of this function avoids a
-        // wasted poll while the modal is still open.
-        running = false;
-        return;
-      } else if (parsed.verb === 'cancel') {
-        const id = parsed.args.order_id;
-        const ord = orders.find(o => o.order_id === id);
-        if (!ord) throw new Error(`order ${id} not found`);
-        await cancelOrder(id, ord.account);
-        addResult('✓', `Order cancelled`, { id, symbol: ord.tradingsymbol });
-      } else if (parsed.verb === 'modify') {
-        const id = parsed.args.order_id;
-        const ord = orders.find(o => o.order_id === id);
-        if (!ord) throw new Error(`order ${id} not found`);
-        const p = { account: ord.account };
-        if (parsed.kwargs.price != null) p.price = parsed.kwargs.price;
-        if (parsed.kwargs.qty != null) p.quantity = parsed.kwargs.qty;
-        await modifyOrder(id, p);
-        const mods = {};
-        if (parsed.kwargs.price != null) mods.price = String(parsed.kwargs.price);
-        if (parsed.kwargs.qty != null) mods.qty = String(parsed.kwargs.qty);
-        addResult('✓', `Order modified`, { id, ...mods });
-      }
-      await loadOrders();
-      cmdBar?.clear();
-    } catch (e) {
-      addResult('✗', e.message, {});
-    } finally {
-      running = false;
-    }
-  }
-
-
-  function orderEnrichPairs(pairs, ctx) {
-    cmdVerb = (ctx?._verb || '').toUpperCase();
-    return enrichOrderPairs(pairs, ctx);
   }
   const statusDataAttr = (/** @type {string} */ s) => {
     const c = s?.toUpperCase();
@@ -158,9 +65,6 @@
     loadOrders();
     loadAccounts().catch(() => {});
     loadInstruments().catch(() => {});
-    // When an async quote fetch completes, re-render the command bar so the
-    // price ladder popup appears without the user having to type another char.
-    setQuoteLoadedCallback(() => cmdBar?.refresh());
     unsub = createPerformanceSocket((msg) => {
       if (msg.event === 'order_update') {
         const fields = {
@@ -198,36 +102,32 @@
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
 {#if success}<div class="mb-1 p-1.5 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>{/if}
 
-<!-- Order Entry -->
-<div class="mt-1 mb-2 relative">
-  <CommandBar
-    bind:this={cmdBar}
-    grammar={orderGrammar}
-    context={cmdContext}
-    rows={2}
-    placeholder={cmdContext.openOrders?.length
-      ? "buy | sell | cancel | modify"
-      : "buy | sell"}
-    onsubmit={runParsed}
-    previewFn={previewSymbol}
-    enrichPairs={orderEnrichPairs}
-    disabled={running || isDemo}
-  />
-  <div class="absolute bottom-1 right-2 flex gap-1 z-10">
-    <!-- Submit / BUY / SELL — reuses the simulator button palette so
-         order entry reads like the rest of the algo console. BUY and
-         the generic Submit both use the shared light-green "go" tone
-         (sim-btn-primary) — matching Terminal Run and Simulator Start.
-         SELL keeps the red sim-btn-danger. -->
-    <button onclick={() => cmdBar?.submit()} disabled={running || isDemo}
-      class="sim-btn sim-btn-order
-        {cmdVerb === 'SELL' ? 'sim-btn-danger' : 'sim-btn-primary'}
-        disabled:opacity-40">
-       {cmdVerb === 'BUY' ? 'BUY' : cmdVerb === 'SELL' ? 'SELL' : 'Submit'}
-    </button>
-    <button onclick={() => { cmdBar?.clear(); cmdVerb = ''; }}
-      class="sim-btn sim-btn-order sim-btn-secondary">Clear</button>
-  </div>
+<!-- 3-tab order-entry shell (Command Line · Order Ticket · Chain).
+     Same inline SymbolPanel `/console` uses, with Command Line as
+     the default tab so the keyboard-first workflow stays unchanged.
+     Operators who prefer the form-based ticket or the option-chain
+     basket can flip tabs without leaving the page. -->
+<div class="oes-inline-wrap mt-1 mb-2">
+  <SymbolPanel
+    inline
+    defaultTab="command"
+    symbol=""
+    action="open"
+    side="BUY"
+    onSubmit={(payload) => {
+      // Drafts are page-local — no broker write, no log line.
+      if (payload?.mode === 'draft') return;
+      addResult('✓', `Order submitted (${(payload.mode || '').toUpperCase()})`, {
+        verb:    payload.side,
+        symbol:  payload.symbol,
+        qty:     String(payload.quantity),
+        type:    payload.order_type,
+        price:   String(payload.price || ''),
+        account: payload.account,
+      });
+      loadOrders();
+    }}
+    onClose={() => { /* inline mode — no close affordance */ }} />
 </div>
 {#if isDemo}
   <div class="mb-2 text-[0.62rem] text-[#7e97b8] font-mono">
