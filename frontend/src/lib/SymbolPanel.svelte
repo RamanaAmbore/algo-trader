@@ -59,6 +59,7 @@
    *   onSymbolChange?: ((sym: string) => void) | null,
    *   tabsExternal?:   boolean,
    *   activeTab?:      'chart' | 'command' | 'ticket' | 'chain',
+   *   hideBottomPanel?: boolean,
    * }} */
   let {
     defaultTab     = /** @type {'chart'|'command'|'ticket'|'chain'} */ ('ticket'),
@@ -123,6 +124,11 @@
     // tabsExternal is true the host MUST bind this prop or the body
     // won't update on tab clicks.
     activeTab      = $bindable(/** @type {'chart'|'command'|'ticket'|'chain'|undefined} */ (undefined)),
+    // When true the shell omits its own bottom panel (Order Log /
+    // Order History). The host renders these in a separate card.
+    // Used by /orders to split the entry shell from the activity
+    // panel for independent collapse / fullscreen control.
+    hideBottomPanel = false,
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -1128,7 +1134,9 @@
       </div>
     {/if}
 
-    <!-- Bottom panel — Log / Orders — always visible. -->
+    <!-- Bottom panel — Order Log / Order History. Suppressed when the
+         host renders these in a separate card via `hideBottomPanel`. -->
+    {#if !hideBottomPanel}
     <div class="oes-bottom-panel">
       <div class="oes-bottom-tabs" role="tablist">
         <button type="button" role="tab" class="oes-bottom-tab"
@@ -1202,6 +1210,7 @@
         {/if}
       </div>
     </div>
+    {/if}
 
   </div>
 </div>

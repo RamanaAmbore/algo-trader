@@ -427,6 +427,20 @@
   .clt-root { display: flex; flex-direction: column; }
   .clt-standalone { /* no extra styles needed — caller owns layout */ }
 
+  /* Drop CommandBar's amber 2px left-edge accent inside the
+     command-line tab body. The parent /orders Order Entry card
+     carries the accent at the card level — duplicating it inside
+     the tab body created nested visual hierarchy that the operator
+     flagged. Global override targets the .cmd-chips-area and
+     .cmd-container scoped CSS classes. */
+  :global(.clt-root .cmd-chips-area),
+  :global(.clt-root .cmd-container) {
+    border-left: 1px solid #334155 !important;
+  }
+  :global(.clt-root .cmd-container:focus-within) {
+    border-left: 1px solid rgba(251, 191, 36, 0.40) !important;
+  }
+
   /* Pre-submit info strip — LTP + margin / cash chips above the
      CommandBar. Operator reads "what does my book look like before
      and after this trade?" at a glance. Same chip vocabulary the

@@ -7,6 +7,7 @@
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
+  import UnifiedLog from '$lib/UnifiedLog.svelte';
   import { fetchOrders, cancelOrder } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
@@ -79,12 +80,25 @@
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
-  // on CollapseButton) so every page load opens both cards expanded
+  // on CollapseButton) so every page load opens all cards expanded
   // — matches the dashboard pattern.
-  let _colEntry = $state(false);
-  let _fsEntry  = $state(false);
-  let _colBook  = $state(false);
-  let _fsBook   = $state(false);
+  let _colEntry    = $state(false);
+  let _fsEntry     = $state(false);
+  let _colActivity = $state(false);
+  let _fsActivity  = $state(false);
+  let _colBook     = $state(false);
+  let _fsBook      = $state(false);
+
+  // Activity-card tab state. The card splits Order Log (UnifiedLog
+  // of recent order/agent events) from Order History (pending +
+  // completed orders for the operator's own placements).
+  let _activityTab = $state(/** @type {'log'|'history'} */ ('log'));
+
+  // Derived pending / completed lists for the Order History tab. Uses
+  // the page's existing `orders` snapshot — no separate fetch.
+  const _PENDING_STATUSES = new Set(['OPEN', 'TRIGGER PENDING', 'VALIDATION PENDING', 'PENDING']);
+  const _historyPending = $derived(orders.filter(o => _PENDING_STATUSES.has(o.status)));
+  const _historyDone    = $derived(orders.filter(o => !_PENDING_STATUSES.has(o.status)));
 
   // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
   // logic SymbolPanel uses internally; duplicated here so the tab
@@ -301,7 +315,7 @@
      request. Has its own [Collapse · DefaultSize · Fullscreen] trio
      on the right. Tabs strip stays in the header alongside the
      section label + Symbol + Account picker. -->
-<section class="bucket-card mt-1 mb-2"
+<section class="bucket-card bucket-card-entry mt-1 mb-2"
   class:fs-card-on={_fsEntry}
   class:is-collapsed={_colEntry}>
   <div class="bucket-header oc-entry-header">
@@ -398,6 +412,7 @@
       inline
       headerless
       tabsExternal
+      hideBottomPanel
       bind:activeTab={_entryActiveTab}
       defaultTab="command"
       symbol={_entrySymbol}
@@ -422,10 +437,88 @@
   </div>
 </section>
 
+<!-- Order Activity card — Order Log (UnifiedLog of agent / order
+     events) + Order History (pending + completed orders from the
+     page's existing snapshot). Was previously the SymbolPanel's
+     internal bottom panel; lifted out into its own bucket-card so
+     the operator can collapse / fullscreen it independently. -->
+<section class="bucket-card bucket-card-activity mb-2"
+  class:fs-card-on={_fsActivity}
+  class:is-collapsed={_colActivity}>
+  <div class="bucket-header">
+    <span class="mp-section-label">Order Activity</span>
+    <div class="oc-act-tabs" role="tablist">
+      <button type="button" role="tab" class="oc-act-tab"
+        class:on={_activityTab === 'log'}
+        aria-selected={_activityTab === 'log'}
+        onclick={() => _activityTab = 'log'}>Order Log</button>
+      <button type="button" role="tab" class="oc-act-tab"
+        class:on={_activityTab === 'history'}
+        aria-selected={_activityTab === 'history'}
+        onclick={() => _activityTab = 'history'}>
+        Order History
+        {#if _historyPending.length > 0}
+          <span class="oc-act-badge">{_historyPending.length}</span>
+        {/if}
+      </button>
+    </div>
+    <span class="oc-spacer"></span>
+    {#if _fsActivity}
+      <RefreshButton onClick={loadOrders} loading={loading} label="activity" />
+    {/if}
+    <CollapseButton bind:isCollapsed={_colActivity} label="Order Activity" />
+    <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Order Activity" />
+    <FullscreenButton bind:isFullscreen={_fsActivity} label="Order Activity" />
+  </div>
+  <div class="card-body" hidden={_colActivity}>
+    {#if _activityTab === 'log'}
+      <UnifiedLog
+        filter={{}}
+        pollMs={3000}
+        maxRows={30}
+        heightClass="oc-act-scroll"
+        cardMode={true} />
+    {:else}
+      <div class="oc-act-history">
+        {#if _historyPending.length === 0 && _historyDone.length === 0}
+          <div class="oc-act-empty">No orders yet.</div>
+        {:else}
+          {#if _historyPending.length > 0}
+            <header class="oc-act-head">PENDING <span class="oc-act-count">{_historyPending.length}</span></header>
+            {#each _historyPending as o (o.order_id)}
+              <article class="oc-act-row">
+                <span class="oc-act-status oc-act-status-pending">{o.status}</span>
+                <span class="oc-act-side" style="{txnColor(o.transaction_type)}">{o.transaction_type}</span>
+                <span class="oc-act-qty">{qtyFmt(o.quantity)}</span>
+                <span class="oc-act-sym">{o.tradingsymbol}</span>
+                <span class="oc-act-px">{priceFmt(o.price ?? 0)}</span>
+                <span class="oc-act-meta">acct={o.account} · #{o.order_id} · {o.order_timestamp ? logTimeIst(o.order_timestamp) : ''}</span>
+              </article>
+            {/each}
+          {/if}
+          {#if _historyDone.length > 0}
+            <header class="oc-act-head oc-act-head-done">COMPLETED <span class="oc-act-count">{_historyDone.length}</span></header>
+            {#each _historyDone as o (o.order_id)}
+              <article class="oc-act-row oc-act-row-done">
+                <span class="oc-act-status oc-act-status-{o.status?.toLowerCase()}">{o.status}</span>
+                <span class="oc-act-side" style="{txnColor(o.transaction_type)}">{o.transaction_type}</span>
+                <span class="oc-act-qty">{qtyFmt(o.quantity)}</span>
+                <span class="oc-act-sym">{o.tradingsymbol}</span>
+                <span class="oc-act-px">{priceFmt(o.average_price ?? o.price ?? 0)}</span>
+                <span class="oc-act-meta">acct={o.account} · #{o.order_id} · {o.order_timestamp ? logTimeIst(o.order_timestamp) : ''}</span>
+              </article>
+            {/each}
+          {/if}
+        {/if}
+      </div>
+    {/if}
+  </div>
+</section>
+
 <!-- Order Book card — bucket-card chrome re-added per operator
      request. Has its own [Collapse · DefaultSize · Fullscreen] trio
      on the right. Filter chips + Account picker stay in the header. -->
-<section class="bucket-card mb-2"
+<section class="bucket-card bucket-card-book mb-2"
   class:fs-card-on={_fsBook}
   class:is-collapsed={_colBook}>
   <div class="bucket-header">
@@ -606,16 +699,22 @@
 <style>
   .order-card-num { font-variant-numeric: tabular-nums; }
 
-  /* Card chrome — outer left-edge accent dropped per operator. Each
-     card now gets a full 1.5px white-10% box-border. Both Order
-     Entry + Order Book read as their own framed regions on the
-     page. Matches /dashboard + /pulse bucket-card chrome. */
+  /* Card chrome — full 1.5px white-10% box-border plus a 3px colored
+     left-edge accent stripe per card type. Each card has its own
+     identity colour so the operator can tell them apart at a glance
+     without reading the section label:
+       • Order Entry    → amber-400 (writing surface — operator action)
+       • Order Activity → cyan-400  (live data stream)
+       • Order Book     → green-400 (records / history)
+     Industry analogue: Splunk panel side-stripe, Datadog widget
+     accent, Bloomberg PRTU section identity bars. */
   .bucket-card {
     width: 100%;
     min-width: 0;
-    padding: 0.55rem 0.65rem 0.6rem;
+    padding: 0.55rem 0.65rem 0.6rem 0.8rem;
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-left: 3px solid rgba(251, 191, 36, 0.70);
     border-radius: 6px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
                 inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -623,6 +722,9 @@
     flex-direction: column;
     box-sizing: border-box;
   }
+  .bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); }
+  .bucket-card-book     { border-left-color: rgba(74, 222, 128, 0.70); }
+
   .bucket-header { margin-bottom: 0.35rem; }
   .mp-section-label {
     font-family: ui-monospace, monospace;
@@ -632,6 +734,110 @@
     text-transform: uppercase;
     color: rgba(251, 191, 36, 0.7);
   }
+  /* Match each card's section-label colour to its left-edge accent. */
+  .bucket-card-activity .mp-section-label { color: rgba(34, 211, 238, 0.85); }
+  .bucket-card-book     .mp-section-label { color: rgba(74, 222, 128, 0.85); }
+
+  /* Activity card — Order Log / Order History tab strip. Same shape
+     as the entry-card tabs above for visual consistency. */
+  .oc-act-tabs { display: inline-flex; gap: 0; align-items: center; }
+  .oc-act-tab {
+    padding: 0.32rem 0.65rem;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: #94a3b8;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .oc-act-tab:hover { color: #c8d8f0; }
+  .oc-act-tab.on {
+    color: #67e8f9;
+    border-bottom-color: rgba(34, 211, 238, 0.85);
+    font-weight: 800;
+  }
+  .oc-act-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.32rem;
+    margin-left: 0.3rem;
+    border-radius: 8px;
+    background: rgba(251, 191, 36, 0.18);
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    color: #fbbf24;
+    font-size: 0.5rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* History list — pending + completed orders in compact rows.
+     Operator scans a flat list (sym · qty · price · meta) without
+     the per-row cards from the Order Book grid above. */
+  .oc-act-history {
+    max-height: min(40vh, 22rem);
+    overflow-y: auto;
+    font-family: ui-monospace, monospace;
+  }
+  .oc-act-empty {
+    color: #7e97b8;
+    font-size: 0.65rem;
+    padding: 0.5rem 0.25rem;
+    text-align: center;
+  }
+  .oc-act-head {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7e97b8;
+    padding: 0.3rem 0.25rem 0.15rem;
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+  }
+  .oc-act-head-done { color: #4ade80; }
+  .oc-act-count {
+    background: rgba(126, 151, 184, 0.18);
+    border: 1px solid rgba(126, 151, 184, 0.30);
+    border-radius: 8px;
+    padding: 0.02rem 0.32rem;
+    color: #c8d8f0;
+    font-variant-numeric: tabular-nums;
+  }
+  .oc-act-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.25rem;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+    font-size: 0.62rem;
+    color: #c8d8f0;
+  }
+  .oc-act-row-done { opacity: 0.85; }
+  .oc-act-status {
+    padding: 0.05rem 0.32rem;
+    border-radius: 2px;
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-family: ui-monospace, monospace;
+  }
+  .oc-act-status-pending  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.40); }
+  .oc-act-status-complete { background: rgba(74, 222, 128, 0.18); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.40); }
+  .oc-act-status-rejected { background: rgba(248, 113, 113, 0.18); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.40); }
+  .oc-act-status-cancelled { background: rgba(251, 146, 60, 0.18); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.40); }
+  .oc-act-side { font-weight: 800; }
+  .oc-act-qty { font-variant-numeric: tabular-nums; color: #c8d8f0; }
+  .oc-act-sym { font-weight: 700; color: #f1f7ff; }
+  .oc-act-px  { color: #fbbf24; font-variant-numeric: tabular-nums; }
+  .oc-act-meta { color: #7e97b8; font-size: 0.55rem; margin-left: auto; }
 
   /* Flex spacer pushes the bucket-header's [Collapse · DefaultSize ·
      Fullscreen] trio to the card's right edge. Matches the
