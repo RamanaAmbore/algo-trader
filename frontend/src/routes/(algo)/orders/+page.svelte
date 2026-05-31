@@ -4,8 +4,7 @@
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import { fetchOrders, cancelOrder, modifyOrder } from '$lib/api';
-  import LogPanel from '$lib/LogPanel.svelte';
+  import { fetchOrders } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -17,10 +16,7 @@
   let orders        = $state([]);
   let loading       = $state(true);
   let error         = $state('');
-  let success       = $state('');
   let filterStatus  = $state('all');
-  let logTab        = $state('order');
-  let cmdHistory    = $state([]);
   let selectedOrder = $state(/** @type {any|null} */(null));
   // OrderTicket props for the Modify path — opening an order row's
   // "Modify" pre-fills a SymbolPanel modal at the page-bottom mount.
@@ -37,12 +33,6 @@
     try { const d = await fetchOrders(); orders = d.rows || []; }
     catch (e) { error = e.message; }
     finally { loading = false; }
-  }
-
-  function addResult(/** @type {string} */ status, /** @type {string} */ message, /** @type {Record<string,string>} */ fields = {}) {
-    const t = logTimeIst(new Date());
-    cmdHistory = [{ status, message, fields, time: t }, ...cmdHistory].slice(0, 100);
-    logTab = 'order';
   }
   const statusDataAttr = (/** @type {string} */ s) => {
     const c = s?.toUpperCase();
@@ -66,18 +56,10 @@
     loadAccounts().catch(() => {});
     loadInstruments().catch(() => {});
     unsub = createPerformanceSocket((msg) => {
-      if (msg.event === 'order_update') {
-        const fields = {
-          status: msg.status, verb: msg.transaction_type,
-          symbol: msg.tradingsymbol, qty: String(msg.quantity || ''),
-          ...(msg.price ? { price: String(msg.price) } : {}),
-          ...(msg.account ? { account: msg.account } : {}),
-          id: msg.order_id,
-        };
-        const statusIcon = msg.status === 'COMPLETE' ? '✓' : msg.status === 'REJECTED' ? '✗' : '⟳';
-        addResult(statusIcon, `Postback: ${msg.status}${msg.status_message ? ' — ' + msg.status_message : ''}`, fields);
-        loadOrders();
-      } else if (msg.event === 'performance_updated') {
+      // Either an order postback or a positions/holdings refresh — both
+      // mean "re-fetch the order book." The card grid auto-updates from
+      // the new `orders` state.
+      if (msg.event === 'order_update' || msg.event === 'performance_updated') {
         loadOrders();
       }
     });
@@ -87,7 +69,7 @@
 
 <svelte:head><title>Orders | RamboQuant Analytics</title></svelte:head>
 
-<div class="flex flex-col h-[calc(100vh-8rem)]">
+<div class="flex flex-col">
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Orders</h1>
@@ -100,42 +82,10 @@
 </div>
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
-{#if success}<div class="mb-1 p-1.5 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>{/if}
 
-<!-- 3-tab order-entry shell (Command Line · Order Ticket · Chain).
-     Same inline SymbolPanel `/console` uses, with Command Line as
-     the default tab so the keyboard-first workflow stays unchanged.
-     Operators who prefer the form-based ticket or the option-chain
-     basket can flip tabs without leaving the page. -->
-<div class="oes-inline-wrap mt-1 mb-2">
-  <SymbolPanel
-    inline
-    defaultTab="command"
-    symbol=""
-    action="open"
-    side="BUY"
-    onSubmit={(payload) => {
-      // Drafts are page-local — no broker write, no log line.
-      if (payload?.mode === 'draft') return;
-      addResult('✓', `Order submitted (${(payload.mode || '').toUpperCase()})`, {
-        verb:    payload.side,
-        symbol:  payload.symbol,
-        qty:     String(payload.quantity),
-        type:    payload.order_type,
-        price:   String(payload.price || ''),
-        account: payload.account,
-      });
-      loadOrders();
-    }}
-    onClose={() => { /* inline mode — no close affordance */ }} />
-</div>
-{#if isDemo}
-  <div class="mb-2 text-[0.62rem] text-[#7e97b8] font-mono">
-    Demo: read-only — sign in to place orders
-  </div>
-{/if}
-
-<!-- Status Dashboard -->
+<!-- Status Dashboard — moved to the top of the page under the strip
+     so the operator sees the order-state counters first, before
+     anything else. Click a card to filter the order grid below. -->
 <div class="grid grid-cols-5 gap-2 mt-1 mb-2">
   <button onclick={() => filterStatus = 'all'}
     class="algo-status-card p-2 text-center {filterStatus === 'all' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="inactive">
@@ -163,6 +113,33 @@
     <div class="text-[0.62rem] text-[#7e97b8] uppercase">Cancelled</div>
   </button>
 </div>
+
+<!-- 3-tab order-entry shell (Command Line · Order Ticket · Chain).
+     Same inline SymbolPanel `/console` uses, with Command Line as
+     the default tab so the keyboard-first workflow stays unchanged.
+     Operators who prefer the form-based ticket or the option-chain
+     basket can flip tabs without leaving the page. -->
+<div class="oes-inline-wrap mt-1 mb-2">
+  <SymbolPanel
+    inline
+    defaultTab="command"
+    symbol=""
+    action="open"
+    side="BUY"
+    onSubmit={(payload) => {
+      // Drafts are page-local — no broker write. PAPER / LIVE submits
+      // hit the backend; the order grid below picks them up via the
+      // WebSocket order_update postback (or this defensive refresh).
+      if (payload?.mode === 'draft') return;
+      loadOrders();
+    }}
+    onClose={() => { /* inline mode — no close affordance */ }} />
+</div>
+{#if isDemo}
+  <div class="mb-2 text-[0.62rem] text-[#7e97b8] font-mono">
+    Demo: read-only — sign in to place orders
+  </div>
+{/if}
 
 <!-- Order Cards -->
 {#if loading && !orders.length}
@@ -235,12 +212,6 @@
   }}
 />
 
-<LogPanel
-  heightClass="flex-1 min-h-0"
-  defaultTab={logTab}
-  {cmdHistory}
-  onTabChange={(id) => { logTab = id; }}
-/>
 </div>
 
 {#if orderTicketProps}
@@ -263,33 +234,11 @@
     availableModes={orderTicketProps.availableModes}
     currentQty={orderTicketProps.currentQty ?? 0}
     onSubmit={(payload) => {
-      // Modify path — payload carries `action: 'modify'` and the
-      // modified fields. Refresh the orders list so the operator
-      // sees the new price / qty in the row immediately.
-      if (payload?.action === 'modify') {
-        addResult('✓', `Order modified`, {
-          id:      String(payload.orderId || ''),
-          price:   String(payload.price ?? ''),
-          qty:     String(payload.quantity ?? ''),
-          account: payload.account,
-        });
-        loadOrders();
-        return;
-      }
-      // PAPER + LIVE submissions already hit the backend before
-      // onSubmit fires (the ticket awaits placeTicketOrder). Refresh
-      // the orders list so the new row appears immediately, and log
-      // the result alongside the operator's command echo so the
-      // history reads as a single coherent flow.
+      // Drafts are page-local — no broker write, no refresh needed.
+      // Modify and PAPER/LIVE submits hit the backend before this
+      // callback fires; loadOrders pulls the new state into the
+      // order grid.
       if (payload?.mode === 'draft') return;
-      addResult('✓', `Order submitted (${(payload.mode || '').toUpperCase()})`, {
-        verb:    payload.side,
-        symbol:  payload.symbol,
-        qty:     String(payload.quantity),
-        type:    payload.order_type,
-        price:   String(payload.price || ''),
-        account: payload.account,
-      });
       loadOrders();
     }}
     onClose={() => orderTicketProps = null}
