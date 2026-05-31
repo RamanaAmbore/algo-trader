@@ -4,6 +4,9 @@
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import CollapseButton from '$lib/CollapseButton.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import { fetchOrders, cancelOrder } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
@@ -74,6 +77,14 @@
   let _entryAccount = $state('');
   let _entryActiveTab = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ ('command'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
+
+  // Per-card collapse + fullscreen state. No persistence (no cardId
+  // on CollapseButton) so every page load opens both cards expanded
+  // — matches the dashboard pattern.
+  let _colEntry = $state(false);
+  let _fsEntry  = $state(false);
+  let _colBook  = $state(false);
+  let _fsBook   = $state(false);
 
   // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
   // logic SymbolPanel uses internally; duplicated here so the tab
@@ -286,12 +297,14 @@
   {/each}
 </div>
 
-<!-- Order Entry — flat section per operator revert request. The
-     bucket-card chrome (gradient + border + collapse/fullscreen
-     trio) was rolled back; this is now a simple inline header
-     followed by the SymbolPanel body. -->
-<section class="oc-entry-section mt-1 mb-2">
-  <div class="oc-entry-header">
+<!-- Order Entry card — bucket-card chrome re-added per operator
+     request. Has its own [Collapse · DefaultSize · Fullscreen] trio
+     on the right. Tabs strip stays in the header alongside the
+     section label + Symbol + Account picker. -->
+<section class="bucket-card mt-1 mb-2"
+  class:fs-card-on={_fsEntry}
+  class:is-collapsed={_colEntry}>
+  <div class="bucket-header oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
     <!-- Symbol picker — sits IMMEDIATELY after the section label per
          operator request. SymbolPanel below renders `headerless` so
@@ -366,8 +379,15 @@
         </button>
       {/each}
     </div>
+    <span class="oc-spacer"></span>
+    {#if _fsEntry}
+      <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
+    {/if}
+    <CollapseButton bind:isCollapsed={_colEntry} label="Order Entry" />
+    <DefaultSizeButton bind:isFullscreen={_fsEntry} bind:isCollapsed={_colEntry} label="Order Entry" />
+    <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
   </div>
-  <div class="oc-entry-body">
+  <div class="card-body" hidden={_colEntry}>
     <!-- 4-tab inline shell (Command Line default · Chart · Ticket ·
          Chain). `headerless={true}` suppresses the shell's own
          symbol picker — the bucket-header above carries it. The
@@ -402,11 +422,13 @@
   </div>
 </section>
 
-<!-- Order Book — flat section per operator revert request. The
-     bucket-card chrome was rolled back; this is now a simple inline
-     header followed by the order grid. -->
-<section class="oc-entry-section mb-2">
-  <div class="oc-entry-header">
+<!-- Order Book card — bucket-card chrome re-added per operator
+     request. Has its own [Collapse · DefaultSize · Fullscreen] trio
+     on the right. Filter chips + Account picker stay in the header. -->
+<section class="bucket-card mb-2"
+  class:fs-card-on={_fsBook}
+  class:is-collapsed={_colBook}>
+  <div class="bucket-header">
     <span class="mp-section-label">Order Book</span>
     <span class="oc-count">
       {#if _filteredOrders.length !== orders.length}
@@ -430,8 +452,15 @@
         {/each}
       </div>
     {/if}
+    <span class="oc-spacer"></span>
+    {#if _fsBook}
+      <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
+    {/if}
+    <CollapseButton bind:isCollapsed={_colBook} label="Order Book" />
+    <DefaultSizeButton bind:isFullscreen={_fsBook} bind:isCollapsed={_colBook} label="Order Book" />
+    <FullscreenButton bind:isFullscreen={_fsBook} label="Order Book" />
   </div>
-  <div class="oc-entry-body">
+  <div class="card-body" hidden={_colBook}>
     {#if loading && !orders.length}
       <div class="text-center text-muted text-xs animate-pulse py-2">Loading orders…</div>
     {:else if _filteredOrders.length}
@@ -577,16 +606,34 @@
 <style>
   .order-card-num { font-variant-numeric: tabular-nums; }
 
-  /* Flat section chrome — drops the bucket-card gradient + border +
-     collapse trio per operator request. Just a thin separator line
-     above each header so the eye can still parse sections, no chrome
-     beyond that. */
-  .oc-entry-section {
+  /* Card chrome — restored per operator request, but TUNED for
+     density: only a colored LEFT-edge accent (3px) instead of the
+     full 1.5px box border. Result: less horizontal-line clutter,
+     each card still legibly framed by its accent colour.
+       • Order Entry  → amber-400 left edge (writing surface)
+       • Order Book   → cyan-400 left edge   (reading surface)
+     Industry analogue: Splunk panel side-stripe, Datadog widget
+     accent. */
+  .bucket-card {
     width: 100%;
     min-width: 0;
+    padding: 0.5rem 0.65rem 0.55rem 0.75rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: none;
+    border-left: 3px solid rgba(251, 191, 36, 0.70);  /* default = amber */
+    border-radius: 0 6px 6px 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    display: flex;
+    flex-direction: column;
     box-sizing: border-box;
   }
-  .oc-entry-body { padding: 0.25rem 0 0; }
+  /* Second card — Order Book — uses cyan-400 to read as "live data"
+     (matches RefreshButton + CollapseButton palette). */
+  section.bucket-card + section.bucket-card {
+    border-left-color: rgba(34, 211, 238, 0.70);
+  }
+  .bucket-header { margin-bottom: 0.35rem; }
   .mp-section-label {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
@@ -594,6 +641,11 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(251, 191, 36, 0.7);
+  }
+  /* Match the section-label colour to the card's left-edge accent so
+     the eye reads "this strip belongs to this card" at a glance. */
+  section.bucket-card + section.bucket-card .mp-section-label {
+    color: rgba(34, 211, 238, 0.85);
   }
 
   /* Flex spacer pushes the bucket-header's [Collapse · DefaultSize ·

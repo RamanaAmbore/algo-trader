@@ -1985,7 +1985,10 @@
 
   /* ── Bottom panel (Log / Orders) ──────────────────────────────────── */
   .oes-bottom-panel {
-    border-top: 1px solid rgba(255,255,255,0.10);
+    /* Drop the heavy top-divider; the parent card's left-edge accent
+       already frames this region. Result: fewer horizontal lines
+       between the active-tab body and the bottom-panel tabs. */
+    margin-top: 0.4rem;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     flex-shrink: 0;
@@ -1993,8 +1996,9 @@
   .oes-bottom-tabs {
     display: flex;
     gap: 0;
-    padding: 0 0.75rem;
-    border-bottom: 1px solid rgba(255,255,255,0.07);
+    padding: 0;
+    /* Active-tab underline already encodes which tab is on. The
+       container's bottom divider was clutter — dropped. */
   }
   .oes-bottom-tab {
     display: inline-flex;
