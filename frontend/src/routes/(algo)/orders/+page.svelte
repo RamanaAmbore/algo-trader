@@ -13,7 +13,7 @@
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
-  import { loadInstruments, searchByPrefix } from '$lib/data/instruments';
+  import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
   import Select from '$lib/Select.svelte';
@@ -65,19 +65,32 @@
   async function _onSymInput(/** @type {string} */ v) {
     _symQuery = v;
     _symOpen = true;
-    // Show suggestions as soon as the operator types the first char —
-    // earlier debounce of 150ms made the dropdown feel laggy and never
-    // appeared on fast typists who'd cleared the field before the
-    // debounce fired. Awaiting loadInstruments ensures the IDB-backed
-    // cache is hydrated before searchByPrefix iterates the map.
+    if (!v) { _symSuggestions = []; return; }
+    // Sync fast-path — `suggestUnderlyings` is synchronous (just reads
+    // the in-memory sorted underlyings list) so the dropdown pops on
+    // the SAME tick the operator types. Async `searchByPrefix` runs
+    // after with full-instrument matches; whichever returns more
+    // results wins. Earlier the 60 ms debounce + async-only path made
+    // the dropdown feel like it wasn't showing up at all on the
+    // first few keystrokes.
+    try {
+      const sync = suggestUnderlyings(v, 16);
+      if (Array.isArray(sync) && sync.length) {
+        _symSuggestions = sync.map(s => /** @type {any} */ ({
+          sym: s,
+          e: '',
+          t: 'EQ',
+        }));
+      }
+    } catch (_) { /* sync path failed — async fallback below */ }
     if (_symDebounce) clearTimeout(_symDebounce);
     _symDebounce = setTimeout(async () => {
       try {
-        if (!v) { _symSuggestions = []; return; }
         await loadInstruments();
-        _symSuggestions = await searchByPrefix(v, 16);
-      } catch (_) { _symSuggestions = []; }
-    }, 60);
+        const full = await searchByPrefix(v, 16);
+        if (Array.isArray(full) && full.length) _symSuggestions = full;
+      } catch (_) { /* keep sync result */ }
+    }, 50);
   }
   function _pickEntrySymbol(/** @type {any} */ inst) {
     _entrySymbol = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
@@ -657,14 +670,19 @@
 {/if}
 
 <style>
-  .order-card-num { font-variant-numeric: tabular-nums; }
 
   /* Outer page wrap — fills the viewport between the navbar/strip
      above and the footer so the Activity card can grow to take all
      remaining vertical space. Status filter strip + Order Entry
-     card stay at their natural heights; Activity flexes. */
+     card stay at their natural heights; Activity flexes.
+     Hard `height` (not just min-height) is required so the inner
+     flex chain (`.oc-act-body` → `.oc-act-scroll` / `.oc-book-grid`)
+     resolves to a finite height. With only `min-height`, the chain
+     was unbounded and `overflow-y: auto` never triggered, so the
+     log tab silently overflowed off-screen. */
   .oc-page-wrap {
-    min-height: calc(100vh - 6.5rem);
+    height: calc(100vh - 6.5rem);
+    min-height: 28rem;
   }
   .oc-fill {
     flex: 1 1 0;
@@ -722,7 +740,7 @@
     box-sizing: border-box;
   }
   .bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); }
-  .bucket-card-book     { border-left-color: rgba(74, 222, 128, 0.70); }
+  /* bucket-card-book retired (Order Book merged into Activity card). */
 
   .bucket-header { margin-bottom: 0.35rem; }
   .mp-section-label {
@@ -735,7 +753,6 @@
   }
   /* Match each card's section-label colour to its left-edge accent. */
   .bucket-card-activity .mp-section-label { color: rgba(34, 211, 238, 0.85); }
-  .bucket-card-book     .mp-section-label { color: rgba(74, 222, 128, 0.85); }
 
   /* Activity-card tabs now use the same `.oc-tab` class as the
      Entry-card tabs above — single visual vocabulary for both
@@ -757,35 +774,41 @@
   /* History list — retired with the History tab. Style block kept
      empty for callsite stability but no element uses it. */
 
-  /* UnifiedLog rows inside the Activity card — restyled to look like
-     the Market News rows on /performance + /market (see app.css
-     .log-news-row). Drop the per-row left accent + box border, use
-     a single thin bottom divider, time on the left + content
-     flowing right. Operator scans the same shape across "log of
-     events" surfaces regardless of which page they're on. */
+  /* UnifiedLog rows inside the Activity card — flat news-row look.
+     Row is a `display: block` container with INLINE children so the
+     time chip, kind chip, refs, and message all flow as inline text.
+     When the message wraps on a narrow viewport, the second line
+     continues at the LEFT edge (no indent) — the previous flex-row
+     layout indented wrapped text by the gap, wasting horizontal
+     space on mobile. Operator request: "data should continue with
+     no indentation". */
   :global(.oc-activity-log .ul-list-cards) {
     gap: 0;
     padding: 0;
     background: transparent;
   }
   :global(.oc-activity-log .ul-card) {
+    display: block;
     background: transparent;
     border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     border-radius: 0;
     padding: 0.32rem 0.25rem;
-    flex-direction: row;
-    align-items: baseline;
-    gap: 0.55rem;
+    line-height: 1.4;
   }
   :global(.oc-activity-log .ul-card:last-child) { border-bottom: 0; }
   :global(.oc-activity-log .ul-card:hover) {
     background: rgba(255, 255, 255, 0.02);
   }
+  /* Head + msg become inline-block so they sit side-by-side when
+     space permits, but the msg wraps to the article's left edge —
+     not the head's right edge — when there's not enough width. */
   :global(.oc-activity-log .ul-card-head) {
-    flex: 0 0 auto;
-    gap: 0.35rem;
+    display: inline;
     font-size: 0.6rem;
+  }
+  :global(.oc-activity-log .ul-card-head > *) {
+    margin-right: 0.35rem;
   }
   :global(.oc-activity-log .ul-card-time) {
     color: #fde047;
@@ -793,71 +816,21 @@
     font-size: 0.6rem;
     letter-spacing: 0.02em;
     margin-left: 0;
-    order: -1;
+    margin-right: 0.4rem;
   }
   :global(.oc-activity-log .ul-card-msg) {
-    flex: 1 1 auto;
+    display: inline;
     color: #e2e8f0;
     font-weight: 500;
     font-size: 0.66rem;
-    line-height: 1.35;
     padding-left: 0;
+    margin-left: 0;
+    word-break: break-word;
   }
-  .oc-act-empty {
-    color: #7e97b8;
-    font-size: 0.65rem;
-    padding: 0.5rem 0.25rem;
-    text-align: center;
-  }
-  .oc-act-head {
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #7e97b8;
-    padding: 0.3rem 0.25rem 0.15rem;
-    display: flex;
-    gap: 0.3rem;
-    align-items: center;
-  }
-  .oc-act-head-done { color: #4ade80; }
-  .oc-act-count {
-    background: rgba(126, 151, 184, 0.18);
-    border: 1px solid rgba(126, 151, 184, 0.30);
-    border-radius: 8px;
-    padding: 0.02rem 0.32rem;
-    color: #c8d8f0;
-    font-variant-numeric: tabular-nums;
-  }
-  .oc-act-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.25rem 0.25rem;
-    border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
-    font-size: 0.62rem;
-    color: #c8d8f0;
-  }
-  .oc-act-row-done { opacity: 0.85; }
-  .oc-act-status {
-    padding: 0.05rem 0.32rem;
-    border-radius: 2px;
-    font-size: 0.5rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-family: ui-monospace, monospace;
-  }
-  .oc-act-status-pending  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.40); }
-  .oc-act-status-complete { background: rgba(74, 222, 128, 0.18); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.40); }
-  .oc-act-status-rejected { background: rgba(248, 113, 113, 0.18); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.40); }
-  .oc-act-status-cancelled { background: rgba(251, 146, 60, 0.18); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.40); }
-  .oc-act-side { font-weight: 800; }
-  .oc-act-qty { font-variant-numeric: tabular-nums; color: #c8d8f0; }
-  .oc-act-sym { font-weight: 700; color: #f1f7ff; }
-  .oc-act-px  { color: #fbbf24; font-variant-numeric: tabular-nums; }
-  .oc-act-meta { color: #7e97b8; font-size: 0.55rem; margin-left: auto; }
+  /* Order History tab dead CSS removed (~50 lines): oc-act-empty,
+     oc-act-head[-done], oc-act-count, oc-act-row[-done],
+     oc-act-status[-pending|-complete|-rejected|-cancelled],
+     oc-act-side, oc-act-qty, oc-act-sym, oc-act-px, oc-act-meta. */
 
   /* Flex spacer pushes the bucket-header's [Collapse · DefaultSize ·
      Fullscreen] trio to the card's right edge. Matches the
@@ -899,7 +872,7 @@
     position: absolute;
     top: 100%;
     left: 0;
-    z-index: 2000;
+    z-index: 10000;
     margin-top: 2px;
     min-width: 14rem;
     max-height: 16rem;
@@ -1125,26 +1098,8 @@
     color: #7e97b8;
   }
 
-  /* Inline count chip alongside the section label — at-a-glance
-     "how many today" without breaking the header's single-line
-     read. Same muted slate-blue tone as the Equity-tab count
-     chips on /dashboard. */
-  .oc-count {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.05rem 0.32rem;
-    margin-left: 0.35rem;
-    border-radius: 8px;
-    background: rgba(126, 151, 184, 0.18);
-    border: 1px solid rgba(126, 151, 184, 0.30);
-    color: #c8d8f0;
-    font-size: 0.55rem;
-    font-weight: 700;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-variant-numeric: tabular-nums;
-  }
+  /* oc-count retired with the standalone Order Book card header. */
+
 
   /* Exchange filter strip inside the Order Book card header.
      Compact pill cluster, same cyan-400 accent family as the

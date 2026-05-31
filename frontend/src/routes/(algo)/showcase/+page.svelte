@@ -183,9 +183,14 @@
           {/each}
         </ul>
         {#if s.link}
-          <button class="show-card-link" onclick={() => goto(s.link.href)}>
+          <!-- Use <a href> instead of <button onclick=goto> so screen
+               readers, right-click "open in new tab", and crawlers
+               all work. Aria-label includes the action verb so the
+               trailing "→" glyph isn't read out as text. -->
+          <a class="show-card-link" href={s.link.href}
+             aria-label={`Open ${s.link.label}`}>
             {s.link.label} →
-          </button>
+          </a>
         {/if}
       </article>
     {/each}

@@ -3880,24 +3880,24 @@
     class="ctx-menu"
     style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
     role="menu">
-    <button class="ctx-item" onclick={() => ctxOpenChart(ctxMenu.row)}>📈 Chart →</button>
-    <button class="ctx-item" onclick={() => ctxOpenOptions(ctxMenu.row)}>🧮 Open in Options →</button>
-    <button class="ctx-item" onclick={() => ctxOpenTicket(ctxMenu.row)}>📝 Open ticket →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenChart(ctxMenu.row)}>📈 Chart →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOptions(ctxMenu.row)}>🧮 Open in Options →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenTicket(ctxMenu.row)}>📝 Open ticket →</button>
     {#if !ctxMenu.row?.src?.w}
       <!-- ★ Add to watchlist — visible when the symbol is NOT already
            in the operator's watchlist. The other branch below shows
            the Remove counterpart. -->
-      <button class="ctx-item" onclick={() => ctxAddWatch(ctxMenu.row)}>★ Add to watchlist</button>
+      <button class="ctx-item" role="menuitem" onclick={() => ctxAddWatch(ctxMenu.row)}>★ Add to watchlist</button>
     {/if}
-    <button class="ctx-item" onclick={() => ctxCopySymbol(ctxMenu.row)}>Copy symbol</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxCopySymbol(ctxMenu.row)}>Copy symbol</button>
     <div class="ctx-sep"></div>
     {#if isDetached(ctxMenu.row?.tradingsymbol)}
-      <button class="ctx-item" onclick={() => { reattachSymbol(ctxMenu.row); closeContextMenu(); }}>↩ Re-attach to group</button>
+      <button class="ctx-item" role="menuitem" onclick={() => { reattachSymbol(ctxMenu.row); closeContextMenu(); }}>↩ Re-attach to group</button>
     {:else if ctxMenu.row?.underlying}
-      <button class="ctx-item" onclick={() => { detachSymbol(ctxMenu.row); closeContextMenu(); }}>↗ Detach from group</button>
+      <button class="ctx-item" role="menuitem" onclick={() => { detachSymbol(ctxMenu.row); closeContextMenu(); }}>↗ Detach from group</button>
     {/if}
     {#if hasOverrides}
-      <button class="ctx-item" onclick={() => { resetOverrides(); closeContextMenu(); }}>↻ Reset all overrides</button>
+      <button class="ctx-item" role="menuitem" onclick={() => { resetOverrides(); closeContextMenu(); }}>↻ Reset all overrides</button>
     {/if}
     {#if ctxMenu.row?.src?.w && ctxMenu.row?.watchlist_item_id != null}
       <div class="ctx-sep"></div>

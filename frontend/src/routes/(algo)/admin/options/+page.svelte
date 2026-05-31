@@ -1834,7 +1834,20 @@
   // `+` on positives anywhere (color carries direction; the rupee symbol
   // ate column width). `signed` retained as a flag for legacy callers
   // that wanted the +/- chip; both paths now omit the +.
+  /** Money formatter for plain values — null reads as '—' (data
+   *  unavailable). Use `fmtUnbounded` for max-profit / max-loss
+   *  callsites where null carries the "unlimited payoff" semantic
+   *  for long calls / short puts. Earlier this function returned
+   *  '∞' on null and was reused for EV — uncomputed EV showed as
+   *  '∞ EV' which was a false read of the data.
+   */
   function fmtMoney(/** @type {number|null|undefined} */ v, /** @type {boolean} */ _signed = true) {
+    if (v == null) return '—';
+    return aggCompact(v);
+  }
+  /** Max-profit / max-loss formatter — null reads as '∞' because the
+   *  backend nulls those fields on unbounded payoff legs. */
+  function fmtUnbounded(/** @type {number|null|undefined} */ v, /** @type {boolean} */ _signed = true) {
     if (v == null) return '∞';
     return aggCompact(v);
   }
@@ -1951,9 +1964,11 @@
 </div>
 
 {#if positionsLoadErr}
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">
-    Positions feed unavailable — <span class="font-mono">{positionsLoadErr}</span>.
-    Candidates show stale state until /api/positions/ recovers.
+  <!-- Short banner per ops convention (≤35 chars). Full error detail
+       logged to console by api.js. -->
+  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40"
+       title={positionsLoadErr}>
+    Positions feed unavailable — candidates may be stale.
   </div>
 {/if}
 {#if strategyErr}
@@ -2048,10 +2063,10 @@
           {fmtMoney(Math.abs(strategy.net_cost), false)}
         </span>
         <span class="opt-section-tag tag-long" title="Max profit">
-          MAX P {fmtMoney(strategy.risk.max_profit, false)}
+          MAX P {fmtUnbounded(strategy.risk.max_profit, false)}
         </span>
         <span class="opt-section-tag tag-short" title="Max loss">
-          MAX L {fmtMoney(strategy.risk.max_loss, false)}
+          MAX L {fmtUnbounded(strategy.risk.max_loss, false)}
         </span>
         <!-- Greeks chips — Δ Θ 𝒱 surfaced inline in the payoff header
              so the operator sees position-level direction / decay /
@@ -2535,6 +2550,30 @@
     flex-wrap: nowrap;
     gap: 0.4rem 0.4rem;
     align-items: flex-end;
+  }
+
+  /* SIMULATOR badge — sim-active context surfaces as a pink pill
+     matching the navbar's SIM pill colour family. Audit caught this
+     as critical: the classes were referenced but defined nowhere,
+     so the badge rendered as plain text and the sim-active context
+     was invisible. */
+  .opt-mode-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.55rem;
+    font-weight: 800;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.4;
+    flex-shrink: 0;
+  }
+  .opt-mode-sim {
+    color: #f9a8d4;
+    background: rgba(236, 72, 153, 0.18);
+    border: 1px solid rgba(236, 72, 153, 0.55);
   }
   .opt-field {
     display: flex;

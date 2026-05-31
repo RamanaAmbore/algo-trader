@@ -9,7 +9,8 @@
   // modal.
 
   import { onMount } from 'svelte';
-  import { authStore } from '$lib/stores';
+  import { authStore, executionMode } from '$lib/stores';
+  import { get as getStore } from 'svelte/store';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
   import { loadAccounts } from '$lib/data/accounts';
   import { interpretAgent, placeTicketOrder, previewOrderMargin } from '$lib/api';
@@ -281,8 +282,15 @@
         // The margin chip above the bar surfaces the impact BEFORE
         // submit so the operator isn't flying blind.
         try {
+          // Read the executionMode store so command-line submits
+          // route through the operator's active mode (paper / live /
+          // shadow / sim / replay) instead of a hardcoded 'live'.
+          // Defaults to 'paper' if the store hasn't been hydrated.
+          // Backend still enforces is_prod_branch() + paper_trading_
+          // mode gates even when the frontend asks for 'live'.
+          const _mode = /** @type {'paper'|'live'|'shadow'|'sim'|'replay'} */ (getStore(executionMode) || 'paper');
           const resp = await placeTicketOrder({
-            mode:             'live',
+            mode:             _mode,
             side:             payload.transaction_type,
             tradingsymbol:    sym,
             exchange:         payload.exchange || inst?.e || 'NFO',

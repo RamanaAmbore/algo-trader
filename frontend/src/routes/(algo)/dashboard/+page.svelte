@@ -1898,7 +1898,7 @@
   class:fs-card-on={_fsAgent}
   class:is-collapsed={_colAgent}>
   <div class="card-header-row dash-agent-summary">
-    <span class="mp-section-label">Agent activity</span>
+    <span class="mp-section-label">AGENT ACTIVITY</span>
     <span class="dash-agent-chip">
       <span class="dash-agent-count">{_firesToday}</span>
       <span class="dash-agent-label">fires today</span>
@@ -1983,15 +1983,8 @@
      Collapse / Fullscreen buttons off the right edge. Margin-left
      auto pins it after the label; the buttons that follow get a
      small left gap so they don't sit flush against the timestamp. */
-  .bucket-refresh-chip {
-    margin-left: auto;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.5rem;
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-  }
-  .bucket-refresh-chip + :global(button) { margin-left: 0.4rem; }
+  /* .bucket-refresh-chip retired (was an "updated Xs ago" chip on
+     /pulse buckets; replaced by the RefreshButton spinner state). */
 
   /* ── Row 1 (split): Capital/Equity tabbed card + Equity curve ───── */
   /* Earlier the equity curve filled a full-width hero row and Capital
@@ -2136,70 +2129,11 @@
     letter-spacing: 0.04em;
   }
 
-  /* Margin gauges */
-  .gauge-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100px;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    letter-spacing: 0.04em;
-  }
-  .gauge-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.2rem 1.5rem;
-    padding: 0.4rem 0 0.2rem;
-    justify-content: center;
-  }
-  .gauge-tile {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.25rem;
-  }
-  .gauge-svg {
-    display: block;
-    flex-shrink: 0;
-  }
-  .gauge-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    color: #7e97b8;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .gauge-detail {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    color: #7e97b8;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.03em;
-  }
+  /* .gauge-* family retired — SVG donut gauges replaced by ag-Grid
+     Margin Utilisation table on Capital tab.
+     .dash-buckets retired — Capital/Equity moved into the
+     `dash-row1-split` 2-col grid above. */
 
-  /* ── Capital + Equity buckets ───────────────────────────────────────
-     The page's main two-column row. Capital (margin gauges + Funds
-     table) and Equity (tabbed Positions / Holdings) are natural
-     siblings and read at equal weight. Stacks on mobile; equal
-     column widths on desktop so neither dominates. */
-  .dash-buckets {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 0.75rem;
-    margin-bottom: 0.75rem;
-  }
-  @media (min-width: 1024px) {
-    .dash-buckets {
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
-      /* align-items defaults to stretch — both cards match the
-         tallest sibling's height. Earlier `start` left the shorter
-         card with a visual height-mismatch on desktop. */
-    }
-  }
   .bucket-card {
     /* width: 100% keeps the card filling its grid track / flex parent
        even when the body is hidden via {hidden={_colXxx}}. Without
@@ -2278,65 +2212,10 @@
      Summary all share this treatment. Hairline column rules,
      right-aligned monospace numbers, muted TOTAL row at the
      bottom. ag-Grid is overkill for 2-4 rows. */
-  .cap-table-wrap {
-    overflow-x: auto;
-  }
-  .cap-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-  }
-  .cap-table th, .cap-table td {
-    padding: 0.28rem 0.5rem;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-  .cap-table th {
-    color: #7e97b8;
-    font-weight: 700;
-    font-size: 0.55rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.20);
-  }
-  .cap-table .cap-th-l { text-align: left; }
-  .cap-table td.cap-acct {
-    text-align: left;
-    color: #e2ecff;
-    font-weight: 700;
-  }
-  .cap-table td.cap-num { color: #c8d8f0; }
-  .cap-table tr.cap-total {
-    border-top: 1px solid rgba(126, 151, 184, 0.30);
-  }
-  .cap-table tr.cap-total td.cap-acct {
-    color: #fbbf24;
-    font-weight: 800;
-    font-size: 0.6rem;
-    letter-spacing: 0.06em;
-  }
-  .cap-table tr.cap-total td.cap-num { font-weight: 800; }
-  .cap-table tbody tr:hover {
-    background: rgba(255, 255, 255, 0.025);
-  }
-  .cap-up      { color: #4ade80; }
-  .cap-down    { color: #f87171; }
-  .cap-neutral { color: #c8d8f0; }
-  .cap-empty {
-    padding: 1rem 0.5rem;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    text-align: center;
-  }
-
-  /* Full-width P&L details (no longer in a 2-col grid). */
-  .dash-pnl-full {
-    display: block;
-    margin-bottom: 0.6rem;
-  }
+  /* .cap-table[-wrap|*] family retired — HTML tables replaced by
+     the Funds + Margin ag-Grid mini-grids on the Capital tab.
+     .dash-pnl-full retired — PnlAnalysis moved into the
+     Intraday / Performance tabbed card. */
 
   /* Agent log */
   .dash-agent {
@@ -2396,13 +2275,9 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
-  .dash-agent-toggle {
-    margin-left: auto;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    letter-spacing: 0.04em;
-  }
+  /* .dash-agent-toggle retired — toggleable "fires today" chip
+     replaced by the standalone Agent Activity card header. */
+
   /* Inline filter strip inside the expanded agent-activity log.
      The chip on the left is a toggleable pill; the hint on the
      right just describes what the operator is currently looking at. */
@@ -2518,43 +2393,19 @@
   .oo-price  { color: #c8d8f0; }
   .oo-attempts { color: #7e97b8; font-size: 0.58rem; }
 
-  /* ── Row 2: Winners / Losers ─────────────────────────────────────── */
-  .dash-row2 {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 0.75rem;
-    margin-bottom: 0.6rem;
-  }
-  @media (min-width: 1024px) {
-    .dash-row2 {
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
-    }
-  }
-  .wl-tile {
-    padding: 0.65rem 0.75rem 0.6rem;
-    border-radius: 6px;
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-top-width: 3px;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    min-width: 0;
-  }
-  /* Coloured top accent on each winner/loser tile — same idiom as
-     /showcase cards. Identity is in the border-top stripe, not in
-     the body tint, so the tiles still belong to the algo card family. */
-  .wl-tile-win  { border-top-color: rgba(74, 222, 128, 0.85); }
-  .wl-tile-loss { border-top-color: rgba(248, 113, 113, 0.85); }
-  .wl-tile-label {
-    margin-bottom: 0;
-  }
+  /* .dash-row2 + .wl-tile* family retired — Winners / Losers cards
+     moved to /pulse where they sit in the 6-grid layout alongside
+     the rest of the monitoring surfaces. */
   /* Card-header row used by every card carrying a FullscreenButton —
      section label on the left, expand toggle pushed to the right. */
+  /* Canonical card-header pattern — left content packed naturally,
+     trailing control trio pushed right via the first button's own
+     `margin-left: auto`. Earlier `justify-content: space-between`
+     spread items unevenly the moment a picker / count chip was
+     added in the middle. */
   .card-header-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.6rem;
     margin-bottom: 0.4rem;
   }
