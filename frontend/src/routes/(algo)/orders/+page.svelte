@@ -12,7 +12,7 @@
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
-  import { loadInstruments } from '$lib/data/instruments';
+  import { loadInstruments, searchByPrefix } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
   import { createPerformanceSocket } from '$lib/ws';
@@ -34,6 +34,32 @@
   let _fsEntry      = $state(false);
   let _colBook      = $state(false);
   let _fsBook       = $state(false);
+
+  // Page-level Symbol picker for the Order Entry card. Sits in the
+  // bucket-header right after the "Order Entry" label, and we pass
+  // its value down to the inline SymbolPanel via the `symbol` prop.
+  // SymbolPanel's `headerless={true}` flag skips the shell's own
+  // copy of this picker so the operator sees one chip, not two.
+  let _entrySymbol     = $state('');
+  let _symQuery        = $state('');
+  let _symOpen         = $state(false);
+  let _symSuggestions  = $state(/** @type {any[]} */ ([]));
+  let _symDebounce;
+  function _onSymInput(/** @type {string} */ v) {
+    _symQuery = v;
+    _symOpen = true;
+    if (_symDebounce) clearTimeout(_symDebounce);
+    _symDebounce = setTimeout(async () => {
+      try { _symSuggestions = await searchByPrefix(v, 12); }
+      catch (_) { _symSuggestions = []; }
+    }, 150);
+  }
+  function _pickEntrySymbol(/** @type {any} */ inst) {
+    _entrySymbol = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
+    _symQuery = '';
+    _symOpen = false;
+    _symSuggestions = [];
+  }
   // OrderTicket props — opens a SymbolPanel modal pre-filled from a
   // row click (Modify / Repeat path). The top-of-page inline shell
   // handles fresh placement; this separate modal handles single-target
@@ -249,6 +275,38 @@
   class:is-collapsed={_colEntry}>
   <div class="bucket-header">
     <span class="mp-section-label">Order Entry</span>
+    <!-- Symbol picker — sits IMMEDIATELY after the section label per
+         operator request. SymbolPanel below renders `headerless` so
+         its own copy of this picker is suppressed. Pick once, every
+         shell tab (Chart · Ticket · Chain · Command) re-renders
+         against the new symbol. -->
+    <div class="oc-sym-pick">
+      <input
+        type="text"
+        class="oc-sym-input"
+        value={_symOpen ? _symQuery : (_entrySymbol || '')}
+        placeholder="Symbol…"
+        spellcheck="false"
+        autocomplete="off"
+        oninput={(e) => _onSymInput(/** @type {HTMLInputElement} */ (e.currentTarget).value)}
+        onfocus={(e) => { _symQuery = ''; _symOpen = true; _onSymInput(/** @type {HTMLInputElement} */ (e.currentTarget).value); }}
+        onblur={() => setTimeout(() => { _symOpen = false; }, 150)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' && _symSuggestions.length) { e.preventDefault(); _pickEntrySymbol(_symSuggestions[0]); }
+          else if (e.key === 'Escape') { _symOpen = false; }
+        }} />
+      {#if _symOpen && _symSuggestions.length}
+        <div class="oc-sym-drop">
+          {#each _symSuggestions as inst (inst.sym)}
+            <button type="button" class="oc-sym-row"
+              onmousedown={(e) => { e.preventDefault(); _pickEntrySymbol(inst); }}>
+              <span class="oc-sym-row-sym">{inst.sym}</span>
+              <span class="oc-sym-row-meta">{inst.e}{inst.t ? ' · ' + inst.t : ''}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -258,13 +316,20 @@
     <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
   </div>
   <div class="card-body" hidden={_colEntry}>
-    <!-- 3-tab inline shell (Command Line default · Order Ticket · Chain). -->
+    <!-- 4-tab inline shell (Command Line default · Chart · Ticket ·
+         Chain). `headerless={true}` suppresses the shell's own
+         symbol picker — the bucket-header above carries it. The
+         `onSymbolChange` callback is unused here (the chain tab
+         doesn't surface a way to re-pick from inside the shell)
+         but reserved for future tab-internal picks. -->
     <SymbolPanel
       inline
+      headerless
       defaultTab="command"
-      symbol=""
+      symbol={_entrySymbol}
       action="open"
       side="BUY"
+      onSymbolChange={(sym) => { _entrySymbol = sym; }}
       onSubmit={(payload) => {
         // Drafts are page-local — no broker write. PAPER / LIVE submits
         // hit the backend; the Order Book card below picks them up via
@@ -497,6 +562,78 @@
      Fullscreen] trio to the card's right edge. Matches the
      `.cap-eq-spacer` pattern on /dashboard. */
   .oc-spacer { flex: 1 1 0; }
+
+  /* Symbol picker inline in the Order Entry bucket-header — moved
+     here from SymbolPanel's own `.oes-sym-pick`. Visual identity is
+     identical so operators see the same control whether on /orders
+     (bucket-header) or in a chain-pick modal (SymbolPanel header). */
+  .oc-sym-pick {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .oc-sym-input {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    padding: 0.18rem 0.45rem;
+    color: #fbbf24;
+    font-size: 0.7rem;
+    font-weight: 800;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+    width: 11rem;
+    text-transform: uppercase;
+  }
+  .oc-sym-input:focus {
+    outline: none;
+    border-color: rgba(251, 191, 36, 0.55);
+    background: rgba(251, 191, 36, 0.06);
+  }
+  .oc-sym-input::placeholder {
+    color: rgba(251, 191, 36, 0.40);
+    font-weight: 600;
+  }
+  .oc-sym-drop {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 60;
+    margin-top: 2px;
+    min-width: 14rem;
+    max-height: 14rem;
+    overflow-y: auto;
+    background: #1b2540;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+  }
+  .oc-sym-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.2rem 0.4rem;
+    background: transparent;
+    border: 0;
+    color: #c8d8f0;
+    font-size: 0.65rem;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+  .oc-sym-row:hover {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+  }
+  .oc-sym-row-sym { font-weight: 700; letter-spacing: 0.03em; }
+  .oc-sym-row-meta {
+    color: #7e97b8;
+    font-size: 0.55rem;
+    letter-spacing: 0.06em;
+  }
 
   /* Inline count chip alongside the section label — at-a-glance
      "how many today" without breaking the header's single-line

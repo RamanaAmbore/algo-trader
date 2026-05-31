@@ -55,6 +55,8 @@
    *   onAddToBasket?:  ((payload: any) => void) | null,
    *   onAddToWatchlist?: ((sym: string, exch?: string) => void | Promise<void>) | null,
    *   inline?:         boolean,
+   *   headerless?:     boolean,
+   *   onSymbolChange?: ((sym: string) => void) | null,
    * }} */
   let {
     defaultTab     = /** @type {'chart'|'command'|'ticket'|'chain'} */ ('ticket'),
@@ -93,6 +95,21 @@
     // no close button). Used by /console which hosts the shell as the
     // page's primary content rather than as a popup over another page.
     inline         = false,
+    // When true, omit the shell's own header strip (symbol picker +
+    // exchange chip + close + watchlist add). The host page renders
+    // its own symbol picker — typically inside a bucket-card header
+    // — and the operator picks symbol there, so duplicating it inside
+    // the shell would be redundant. Used by /orders. The shell still
+    // tracks `_localSymbol` and propagates to every tab; the host
+    // just needs to two-way bind it via the `symbol` prop and an
+    // `onSymbolChange` callback if it wants to mirror picks back.
+    headerless     = false,
+    // Fired whenever the operator picks a symbol inside the shell
+    // (currently only via the header picker, but reserved for future
+    // tab-level picks). Hosts that pass `headerless` typically wire
+    // this to their own state so a chain-tab pick still lands in the
+    // header chip.
+    onSymbolChange = /** @type {((sym: string) => void) | null} */ (null),
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -127,6 +144,7 @@
     _symbolQuery = '';
     _symbolOpen = false;
     _symbolSuggestions = [];
+    onSymbolChange?.(_localSymbol);
   }
 
   // Determine whether Chain tab applies.
@@ -679,7 +697,12 @@
          types a prefix, picks an instrument from the dropdown, and
          every tab (Chart, Ticket, Chain, Command) re-renders against
          the new symbol. Symbol is the only shell-level shared state;
-         per-tab values (qty, side, etc.) stay with their tabs. -->
+         per-tab values (qty, side, etc.) stay with their tabs.
+
+         When `headerless` is true, the host page renders its own
+         symbol picker (typically inside a parent card header) so we
+         skip the strip here entirely. -->
+    {#if !headerless}
     <div class="oes-header">
       <div class="oes-sym-pick">
         <input
@@ -739,6 +762,7 @@
         <button type="button" class="oes-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
       {/if}
     </div>
+    {/if}
 
     <!-- Tab strip -->
     <div class="oes-tabs" role="tablist">
@@ -1208,8 +1232,14 @@
   .oes-modal.oes-modal-inline {
     width: 100%;
     max-height: none;
-    border-radius: 6px;
+    border-radius: 0;
     box-shadow: none;
+    /* Drop the amber outline + gradient background — the host card
+       provides its own chrome, so a second nested border would
+       double-frame the content. Per operator request "remove the
+       current yellow border". */
+    border: none;
+    background: transparent;
   }
   /* Fullscreen — chart fills the viewport with minimal chrome around
      it. Click ⤡ in the toolbar or press Esc to exit. The chart SVG
