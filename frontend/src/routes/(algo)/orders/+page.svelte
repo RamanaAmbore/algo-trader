@@ -4,9 +4,6 @@
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import CollapseButton from '$lib/CollapseButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import { fetchOrders, cancelOrder } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
@@ -38,13 +35,6 @@
   let _accountFilter  = $state(/** @type {string[]} */ ([]));
   let _exchangeFilter = $state('all');
   let selectedOrder = $state(/** @type {any|null} */(null));
-  // Per-card collapse + fullscreen state. No persistence (no cardId on
-  // CollapseButton) so every page load opens both cards expanded —
-  // matches the dashboard pattern landed earlier today.
-  let _colEntry     = $state(false);
-  let _fsEntry      = $state(false);
-  let _colBook      = $state(false);
-  let _fsBook       = $state(false);
 
   // Page-level Symbol picker for the Order Entry card. Sits in the
   // bucket-header right after the "Order Entry" label, and we pass
@@ -56,14 +46,22 @@
   let _symOpen         = $state(false);
   let _symSuggestions  = $state(/** @type {any[]} */ ([]));
   let _symDebounce;
-  function _onSymInput(/** @type {string} */ v) {
+  async function _onSymInput(/** @type {string} */ v) {
     _symQuery = v;
     _symOpen = true;
+    // Show suggestions as soon as the operator types the first char —
+    // earlier debounce of 150ms made the dropdown feel laggy and never
+    // appeared on fast typists who'd cleared the field before the
+    // debounce fired. Awaiting loadInstruments ensures the IDB-backed
+    // cache is hydrated before searchByPrefix iterates the map.
     if (_symDebounce) clearTimeout(_symDebounce);
     _symDebounce = setTimeout(async () => {
-      try { _symSuggestions = await searchByPrefix(v, 12); }
-      catch (_) { _symSuggestions = []; }
-    }, 150);
+      try {
+        if (!v) { _symSuggestions = []; return; }
+        await loadInstruments();
+        _symSuggestions = await searchByPrefix(v, 16);
+      } catch (_) { _symSuggestions = []; }
+    }, 60);
   }
   function _pickEntrySymbol(/** @type {any} */ inst) {
     _entrySymbol = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
@@ -288,16 +286,12 @@
   {/each}
 </div>
 
-<!-- Order Entry card — canonical bucket-card chrome so the page sits
-     in the same visual family as /dashboard + /pulse + /admin/options.
-     The [Collapse · DefaultSize · Fullscreen] trio in the header
-     uses the shared cyan-400 palette and matches every other algo
-     card. No persistence on the collapse state (cardId omitted) —
-     matches the dashboard pattern landed earlier today. -->
-<section class="bucket-card mt-1 mb-2"
-  class:fs-card-on={_fsEntry}
-  class:is-collapsed={_colEntry}>
-  <div class="bucket-header oc-entry-header">
+<!-- Order Entry — flat section per operator revert request. The
+     bucket-card chrome (gradient + border + collapse/fullscreen
+     trio) was rolled back; this is now a simple inline header
+     followed by the SymbolPanel body. -->
+<section class="oc-entry-section mt-1 mb-2">
+  <div class="oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
     <!-- Symbol picker — sits IMMEDIATELY after the section label per
          operator request. SymbolPanel below renders `headerless` so
@@ -372,15 +366,8 @@
         </button>
       {/each}
     </div>
-    <span class="oc-spacer"></span>
-    {#if _fsEntry}
-      <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colEntry} label="Order Entry" />
-    <DefaultSizeButton bind:isFullscreen={_fsEntry} bind:isCollapsed={_colEntry} label="Order Entry" />
-    <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
   </div>
-  <div class="card-body" hidden={_colEntry}>
+  <div class="oc-entry-body">
     <!-- 4-tab inline shell (Command Line default · Chart · Ticket ·
          Chain). `headerless={true}` suppresses the shell's own
          symbol picker — the bucket-header above carries it. The
@@ -415,14 +402,11 @@
   </div>
 </section>
 
-<!-- Order Book card — same canonical bucket-card chrome. Header
-     surfaces a "N of M" count chip + Account + Exchange filters so
-     the operator can slice the book without losing the status filter
-     above. -->
-<section class="bucket-card mb-2"
-  class:fs-card-on={_fsBook}
-  class:is-collapsed={_colBook}>
-  <div class="bucket-header">
+<!-- Order Book — flat section per operator revert request. The
+     bucket-card chrome was rolled back; this is now a simple inline
+     header followed by the order grid. -->
+<section class="oc-entry-section mb-2">
+  <div class="oc-entry-header">
     <span class="mp-section-label">Order Book</span>
     <span class="oc-count">
       {#if _filteredOrders.length !== orders.length}
@@ -446,15 +430,8 @@
         {/each}
       </div>
     {/if}
-    <span class="oc-spacer"></span>
-    {#if _fsBook}
-      <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colBook} label="Order Book" />
-    <DefaultSizeButton bind:isFullscreen={_fsBook} bind:isCollapsed={_colBook} label="Order Book" />
-    <FullscreenButton bind:isFullscreen={_fsBook} label="Order Book" />
   </div>
-  <div class="card-body" hidden={_colBook}>
+  <div class="oc-entry-body">
     {#if loading && !orders.length}
       <div class="text-center text-muted text-xs animate-pulse py-2">Loading orders…</div>
     {:else if _filteredOrders.length}
@@ -600,24 +577,16 @@
 <style>
   .order-card-num { font-variant-numeric: tabular-nums; }
 
-  /* Canonical bucket-card chrome — same gradient + border + shadow
-     as /dashboard + /pulse + /admin/options so the orders page reads
-     as one of the family. Flex column so the body stretches with
-     content while the header stays at the top. */
-  .bucket-card {
+  /* Flat section chrome — drops the bucket-card gradient + border +
+     collapse trio per operator request. Just a thin separator line
+     above each header so the eye can still parse sections, no chrome
+     beyond that. */
+  .oc-entry-section {
     width: 100%;
     min-width: 0;
-    padding: 0.65rem 0.75rem 0.7rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    display: flex;
-    flex-direction: column;
     box-sizing: border-box;
   }
-  .bucket-header { margin-bottom: 0.5rem; }
+  .oc-entry-body { padding: 0.25rem 0 0; }
   .mp-section-label {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
@@ -667,10 +636,10 @@
     position: absolute;
     top: 100%;
     left: 0;
-    z-index: 60;
+    z-index: 2000;
     margin-top: 2px;
     min-width: 14rem;
-    max-height: 14rem;
+    max-height: 16rem;
     overflow-y: auto;
     background: #1b2540;
     border: 1px solid rgba(251, 191, 36, 0.35);
@@ -704,11 +673,15 @@
     letter-spacing: 0.06em;
   }
 
-  /* Bucket-header gap tightens on the Order Entry card so the
-     section label + symbol + account + tabs + trio all fit on one
-     row at desktop widths. Each child still gets visual breathing
-     room via the explicit spacer + the tab strip's internal gap. */
-  .oc-entry-header { gap: 0.6rem; }
+  /* Flat section header — section label + symbol + account + tabs.
+     Single horizontal line, gap between siblings. */
+  .oc-entry-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.4rem;
+  }
 
   /* Account picker chrome — when multiple brokers loaded use a Select,
      when only one the chip below renders the read-only code. */

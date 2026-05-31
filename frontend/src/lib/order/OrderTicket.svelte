@@ -475,12 +475,20 @@
 
   function addToBasket() {
     if (!onAddToBasket) return;
+    _submitTried = true;
     if (validationErr) return;
     onAddToBasket(_basketPayload());
     onClose();
   }
 
   let submitting = $state(false);
+  // Suppress the validation error banner until the operator actually
+  // tries to submit / add to basket. Prevents "Limit price required"
+  // (or any other "this field is empty" message) flashing on a fresh
+  // ticket form before the operator has had a chance to fill anything
+  // in. Submit / Add-to-basket flip this true; Clear flips it back.
+  let _submitTried = $state(false);
+  const _shownErr = $derived(_submitTried ? validationErr : '');
   /** @type {string} */ let submitErr = $state('');
 
   // ── Margin / cash preview ────────────────────────────────────────
@@ -556,6 +564,7 @@
   /** @type {string} */ let submitOk = $state('');
 
   async function submit() {
+    _submitTried = true;
     if (validationErr) return;
     // ── action='modify' branch ─────────────────────────────────
     // Modifying an existing working order — bypass the
@@ -1027,8 +1036,8 @@
     </div>
     {/if}
 
-    {#if validationErr}
-      <div class="ot-err">{validationErr}</div>
+    {#if _shownErr}
+      <div class="ot-err">{_shownErr}</div>
     {/if}
     {#if submitErr}
       <!-- Surface backend rejections (preflight 422, 503, broker errors)
