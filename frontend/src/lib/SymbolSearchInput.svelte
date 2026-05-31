@@ -14,7 +14,7 @@
   //   onPick        — fires when a row is chosen (sym, meta?)
   //   ariaLabel     — accessible label for the input
 
-  import { untrack } from 'svelte';
+  import { untrack, onMount } from 'svelte';
   import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
 
   let {
@@ -34,6 +34,17 @@
   let _symDebounce    = /** @type {any} */ (null);
   // Tracks the last pin the operator picked so the row gets an active highlight.
   let _activePin      = $state('');
+  // True while the async debounce + IDB-backed searchByPrefix is in flight
+  // and the sync fast-path (suggestUnderlyings) returned nothing. Drives
+  // a "Searching…" hint so the operator doesn't see an empty dropdown
+  // and assume the search broke.
+  let _searching      = $state(false);
+
+  // Warm the instruments cache as soon as the component mounts. Without
+  // this, the FIRST keystrokes hit suggestUnderlyings before the IDB
+  // dump is loaded, the sync path returns empty, and the dropdown
+  // looks broken until the 50 ms debounce fires.
+  onMount(() => { loadInstruments().catch(() => {}); });
 
   // Sync _symQuery when the `value` prop changes externally (mount or
   // parent-driven swap). Reads _symQuery via `untrack` so the operator's
@@ -65,6 +76,7 @@
 
   /** Core search — sync fast-path then debounced async full-instrument search. */
   async function _runSearch(/** @type {string} */ v) {
+    let syncHit = false;
     // Sync fast-path: suggestUnderlyings is synchronous, pops on the
     // same tick the operator types (no wait for IndexedDB).
     if (type === 'ALL' || type === 'EQ') {
@@ -72,11 +84,13 @@
         const sync = suggestUnderlyings(v, 16);
         if (Array.isArray(sync) && sync.length) {
           _symSuggestions = sync.map(s => ({ sym: s, e: '', t: 'EQ' }));
+          syncHit = true;
         }
       } catch (_) { /* sync path failed — async fallback below */ }
     } else {
       _symSuggestions = [];
     }
+    _searching = !syncHit;   // show "Searching…" only when sync produced nothing
     if (_symDebounce) clearTimeout(_symDebounce);
     _symDebounce = setTimeout(async () => {
       try {
@@ -88,12 +102,14 @@
         if (filtered.length) _symSuggestions = filtered.slice(0, 14);
         else if (type !== 'ALL') _symSuggestions = [];
       } catch (_) { /* keep sync result */ }
+      finally { _searching = false; }
     }, 50);
   }
 
   function _onInput(/** @type {string} */ v) {
     _symQuery = v;
     _symOpen = true;
+    _searching = false;
     if (!v) { _symSuggestions = []; return; }
     if (v.length < minChars) { _symSuggestions = []; return; }
     _runSearch(v);
@@ -144,7 +160,7 @@
     type="text"
     {placeholder}
     bind:value={_symQuery}
-    oninput={() => _onInput(_symQuery)}
+    oninput={(e) => _onInput(/** @type {HTMLInputElement} */ (e.currentTarget).value)}
     onfocus={() => { _symOpen = true; }}
     onblur={() => { setTimeout(() => { _symOpen = false; }, 180); }}
     onkeydown={_onKeydown}
@@ -169,9 +185,13 @@
             </button>
           {/each}
         {/if}
-        {#if _symQuery.length > 0 && _symQuery.length < minChars}
+        {#if _symQuery.length === 0 && !pins.length}
+          <div class="ssi-hint">Type {minChars}+ chars to search…</div>
+        {:else if _symQuery.length > 0 && _symQuery.length < minChars}
           <div class="ssi-hint">Type {minChars - _symQuery.length} more char{minChars - _symQuery.length === 1 ? '' : 's'}…</div>
         {/if}
+      {:else if _searching && !_symSuggestions.length}
+        <div class="ssi-hint">Searching…</div>
       {:else if !_symSuggestions.length}
         <div class="ssi-hint">No match{type !== 'ALL' ? ` for ${type}` : ''}.</div>
       {:else}

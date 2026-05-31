@@ -74,9 +74,6 @@
   <div class="page-header">
     <span class="algo-title-group">
       <h1 class="page-title-chip">Charts</h1>
-      {#if _symbol}
-        <span class="chart-page-sym">{_symbol}</span>
-      {/if}
       {#if isDemo}<span class="demo-badge">DEMO</span>{/if}
       <InfoHint popup align="left"
         text="OHLCV historical chart (1D–1Y) + intraday tick overlay for any symbol. Switch between Line, Area, and Candle views. Toggle SMA20/SMA50/Vol overlays. Options show a Greeks strip below the chart. Wheel to zoom, drag to pan, Reset to restore the full range." />
@@ -155,14 +152,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-  }
-
-  .chart-page-sym {
-    font-family: monospace;
-    font-size: 0.7rem;
-    font-weight: 800;
-    color: #fbbf24;
-    letter-spacing: 0.05em;
   }
 
   .demo-badge {
