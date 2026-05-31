@@ -1302,7 +1302,7 @@ class OptionsController(Controller):
         broker = get_price_broker()
         token: int | None = None
         try:
-            for ex in (exchange, "BFO", "NSE", "BSE"):
+            for ex in (exchange or "NFO", "BFO", "NSE", "BSE"):
                 if ex == exchange and token:
                     break
                 insts = await asyncio.to_thread(broker.instruments, ex) or []

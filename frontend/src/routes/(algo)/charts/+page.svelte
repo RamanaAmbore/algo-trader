@@ -15,10 +15,10 @@
   const isDemo = $derived(algoStatus.isDemo);
 
   // ── URL params ────────────────────────────────────────────────────
-  let _symbol  = $state('');
-  let _loading = $state(false);
-  let _error   = $state('');
-  let _bump    = $state(0);
+  let _symbol       = $state('');
+  let _chartLoading = $state(false);
+  let _error        = $state('');
+  let _bump         = $state(0);
 
   // Default symbol when the page lands with no ?symbol= param. The
   // operator can swap to any pinned chip or pick a fresh symbol via
@@ -38,17 +38,12 @@
     if (sym) _symbol = String(sym).toUpperCase();
   }
 
-  async function _refresh() {
-    if (!_symbol) return;        // nothing to refresh until operator picks
-    _loading = true;
+  function _refresh() {
+    if (!_symbol) return;   // nothing to refresh until operator picks
     _error = '';
-    try {
-      _bump++;
-    } catch (e) {
-      _error = /** @type {any} */ (e)?.message || 'Refresh failed';
-    } finally {
-      _loading = false;
-    }
+    _bump++;
+    // _chartLoading reflects ChartWorkspace's _histLoading via $bindable — no
+    // need to set it here; the bound prop updates as the chart loads.
   }
 
   function _onSymbolChange(/** @type {string} */ sym) {
@@ -86,7 +81,7 @@
         <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
       </svg>
     </button>
-    <RefreshButton onClick={_refresh} loading={_loading} label="charts" />
+    <RefreshButton onClick={_refresh} loading={_chartLoading} label="charts" />
     <OrderNotifications />
     <AgentNotifications />
   </div>
@@ -98,6 +93,7 @@
   <div class="chart-body">
     <ChartWorkspace
       bind:symbol={_symbol}
+      bind:loading={_chartLoading}
       compact={false}
       showHeader={false}
       bump={_bump}

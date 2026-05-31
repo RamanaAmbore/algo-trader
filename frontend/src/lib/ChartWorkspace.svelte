@@ -69,6 +69,7 @@
     compact       = false,
     showHeader    = true,
     bump          = 0,
+    loading       = $bindable(false),
     onSymbolChange = /** @type {((sym: string) => void) | undefined} */ (undefined),
   } = $props();
 
@@ -109,12 +110,6 @@
     { value: 'sma20', label: 'SMA20' },
     { value: 'sma50', label: 'SMA50' },
     { value: 'vol',   label: 'Volume' },
-  ];
-
-  /** @type {Array<{value:string,label:string}>} */
-  const _INTRADAY_OPTS = [
-    { value: 'off', label: 'Intraday Off' },
-    { value: 'on',  label: 'Intraday On' },
   ];
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
@@ -188,6 +183,9 @@
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   const _showVol   = $derived(_overlays.includes('vol'));
+
+  // Expose loading state to parent via $bindable prop.
+  $effect(() => { loading = _histLoading; });
 
   /** @type {Array<{ts:string,close:number}>} */
   let _spotBars = $state([]);
@@ -360,36 +358,40 @@
   }
 
   // ── Price paths ───────────────────────────────────────────────────
+  // All paths use _visibleBars so off-canvas bars are skipped when zoomed.
   const _linePath = $derived.by(() => {
-    if (!_bars.length) return '';
+    const src = _visibleBars.length ? _visibleBars : _bars;
+    if (!src.length) return '';
     let d = '';
-    for (let i = 0; i < _bars.length; i++) {
-      const t = Date.parse(_bars[i].ts);
+    for (let i = 0; i < src.length; i++) {
+      const t = Date.parse(src[i].ts);
       if (!Number.isFinite(t)) continue;
-      const x = _xOf(t), y = _yOf(Number(_bars[i].close));
+      const x = _xOf(t), y = _yOf(Number(src[i].close));
       d += (d === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
     }
     return d;
   });
 
   const _areaPath = $derived.by(() => {
-    if (!_bars.length) return '';
-    const last  = _bars[_bars.length - 1];
+    const src = _visibleBars.length ? _visibleBars : _bars;
+    if (!src.length) return '';
+    const last  = src[src.length - 1];
     const lastT = Date.parse(last.ts);
     if (!Number.isFinite(lastT)) return '';
-    const base  = (_chartH - CPAD_B).toFixed(2);
-    const firstT = Date.parse(_bars[0].ts);
+    const base   = (_chartH - CPAD_B).toFixed(2);
+    const firstT = Date.parse(src[0].ts);
     return `${_linePath} L${_xOf(lastT).toFixed(2)},${base} L${_xOf(firstT).toFixed(2)},${base} Z`;
   });
 
   const _candles = $derived.by(() => {
-    if (!_bars.length) return [];
-    const n    = _bars.length;
+    const src = _visibleBars.length ? _visibleBars : _bars;
+    if (!src.length) return [];
+    const n    = src.length;
     const slot = n > 1 ? _innerW / (n - 1) : _innerW;
     const w    = Math.max(2, Math.min(12, slot * 0.6));
     /** @type {Array<{x:number,bodyY:number,bodyH:number,w:number,wickTop:number,wickBot:number,up:boolean}>} */
     const out = [];
-    for (const b of _bars) {
+    for (const b of src) {
       const t = Date.parse(b.ts);
       if (!Number.isFinite(t)) continue;
       const x = _xOf(t);
@@ -426,17 +428,19 @@
 
   const VOL_H = 48;
   const _volBars = $derived.by(() => {
-    if (!_bars.length || !_showVol) return [];
+    const src = _visibleBars.length ? _visibleBars : _bars;
+    if (!src.length || !_showVol) return [];
+    // Scale vMax against all bars so the bar heights stay stable while panning.
     let vMax = 0;
     for (const b of _bars) { const v = Number(b.volume || 0); if (v > vMax) vMax = v; }
     if (vMax <= 0) return [];
-    const n        = _bars.length;
+    const n        = src.length;
     const slot     = n > 1 ? _innerW / (n - 1) : _innerW;
     const w        = Math.max(2, Math.min(10, slot * 0.55));
     const baseline = _chartH - CPAD_B;
     /** @type {Array<{x:number,y:number,h:number,w:number,up:boolean}>} */
     const out = [];
-    for (const b of _bars) {
+    for (const b of src) {
       const t = Date.parse(b.ts);
       if (!Number.isFinite(t)) continue;
       const v = Number(b.volume || 0);
@@ -506,13 +510,14 @@
   let _chartHover = $state(null);
 
   function _onChartPointerMove(/** @type {PointerEvent} */ e) {
-    if (!_bars.length) { _chartHover = null; return; }
+    const src = _visibleBars.length ? _visibleBars : _bars;
+    if (!src.length) { _chartHover = null; return; }
     const svg  = /** @type {SVGSVGElement} */ (e.currentTarget);
     const rect = svg.getBoundingClientRect();
     const xRel = ((e.clientX - rect.left) / rect.width) * _chartW;
     const tMs  = _xMin + ((xRel - CPAD_L) / _innerW) * _xSpan;
-    let best = _bars[0], bestD = Infinity;
-    for (const b of _bars) {
+    let best = src[0], bestD = Infinity;
+    for (const b of src) {
       const d = Math.abs(Date.parse(b.ts) - tMs);
       if (d < bestD) { bestD = d; best = b; }
     }
@@ -578,11 +583,7 @@
     (_firstClose && _lastClose) ? (_lastClose - _firstClose) : null
   );
   const _rangeLabel = $derived(
-    _chartDays === 7   ? '1W' :
-    _chartDays === 30  ? '1M' :
-    _chartDays === 90  ? '3M' :
-    _chartDays === 180 ? '6M' :
-    _chartDays === 365 ? '1Y' : `${_chartDays}D`
+    _RANGE_OPTS.find(o => o.value === _chartDays)?.label ?? `${_chartDays}D`
   );
 
   // ── Greeks formatting helpers ─────────────────────────────────────
@@ -671,14 +672,6 @@
         onPick={(sym) => _onPickSymbol(sym)}
         ariaLabel="Symbol search" />
 
-      <!-- Auto-detected mode chip — informational, not clickable -->
-      {#if _simActive || _paperActive}
-        <span class="cw-auto-mode-chip cw-auto-mode-{_simActive ? 'sim' : 'paper'}"
-              title="{_simActive ? 'Simulator active — intraday data from sim' : 'Paper orders in flight — intraday data from paper engine'}">
-          {_simActive ? 'SIM' : 'PAPER'}
-        </span>
-      {/if}
-
       <!-- Chart type -->
       <div class="cw-toolbar-select">
         <Select
@@ -687,13 +680,17 @@
           ariaLabel="Chart type" />
       </div>
 
-      <!-- Date range — onValueChange drives _setRange (zoom reset + reload) -->
-      <div class="cw-toolbar-select">
-        <Select
-          options={_RANGE_OPTS}
-          value={_chartDays}
-          onValueChange={(v) => _setRange(Number(v))}
-          ariaLabel="Date range" />
+      <!-- Date range — segmented pill row (1D/1W/1M/3M/6M/1Y) -->
+      <div class="cw-range-group" role="group" aria-label="Date range">
+        {#each _RANGE_OPTS as opt}
+          <button type="button"
+            class="cw-range-btn"
+            class:active={_chartDays === opt.value}
+            title="Past {opt.label}"
+            onclick={() => _setRange(Number(opt.value))}>
+            {opt.label}
+          </button>
+        {/each}
       </div>
 
       <!-- Overlays -->
@@ -705,13 +702,18 @@
           ariaLabel="Overlays" />
       </div>
 
-      <!-- Intraday -->
-      <div class="cw-toolbar-select">
-        <Select
-          options={_INTRADAY_OPTS}
-          bind:value={_intradayChoice}
-          ariaLabel="Intraday" />
-      </div>
+      <!-- Intraday toggle button -->
+      <button type="button"
+        class="cw-intraday-btn"
+        class:active={_intradayChoice === 'on'}
+        title={_intradayChoice === 'on' ? 'Hide intraday tick chart' : 'Show intraday tick chart'}
+        aria-pressed={_intradayChoice === 'on'}
+        onclick={() => _intradayChoice = (_intradayChoice === 'on' ? 'off' : 'on')}>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2 8h2.5L6 4l2 8 2-6 1.5 4H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span>Intraday{_intradayChoice === 'on' && (_simActive || _paperActive) ? ` (${_simActive ? 'SIM' : 'PAPER'})` : ''}</span>
+      </button>
 
       <!-- Reset zoom action button — trailing edge, only when zoomed -->
       {#if isZoomed}
@@ -1029,19 +1031,63 @@
     max-width: 8.5rem;
     flex-shrink: 0;
   }
-  /* Auto-detected mode chip — informational badge, not interactive */
-  .cw-auto-mode-chip {
-    font-family: monospace;
-    font-size: 0.5rem;
+  /* ── Range pill group ────────────────────────────────────── */
+  .cw-range-group {
+    display: inline-flex;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .cw-range-btn {
+    padding: 0.18rem 0.55rem;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
     font-weight: 700;
     letter-spacing: 0.04em;
-    padding: 2px 6px;
-    border-radius: 3px;
-    border: 1px solid transparent;
-    user-select: none;
+    cursor: pointer;
   }
-  .cw-auto-mode-sim   { color: #fbbf24; background: rgba(251,191,36,0.10); border-color: rgba(251,191,36,0.40); }
-  .cw-auto-mode-paper { color: #7dd3fc; background: rgba(125,211,252,0.10); border-color: rgba(125,211,252,0.40); }
+  .cw-range-btn:last-child { border-right: 0; }
+  .cw-range-btn:hover { background: rgba(125, 211, 252, 0.10); color: #c8d8f0; }
+  .cw-range-btn.active {
+    background: rgba(251, 191, 36, 0.18);
+    color: #fbbf24;
+    font-weight: 800;
+  }
+
+  /* ── Intraday toggle button ──────────────────────────────── */
+  .cw-intraday-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.18rem 0.55rem;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(125, 211, 252, 0.32);
+    border-radius: 3px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .cw-intraday-btn:hover {
+    background: rgba(125, 211, 252, 0.14);
+    border-color: rgba(125, 211, 252, 0.55);
+    color: #e6f5ff;
+  }
+  .cw-intraday-btn.active {
+    background: rgba(74, 222, 128, 0.16);
+    border-color: rgba(74, 222, 128, 0.65);
+    color: #4ade80;
+  }
 
   /* ── Toolbar Select / MultiSelect wrappers ───────────────── */
   .cw-toolbar-select {
@@ -1074,7 +1120,6 @@
   /* flex:1 makes this absorb all available vertical space */
   .cw-chart-container {
     flex: 1 1 0;
-    min-height: 0;      /* critical for flex children */
     min-height: 200px;  /* floor so chart is never invisible */
     width: 100%;
     position: relative;
