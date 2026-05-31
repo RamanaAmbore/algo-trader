@@ -22,7 +22,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { fetchUnifiedLog } from '$lib/api';
-  import { logTimeIst } from '$lib/stores';
+  import { logTimeIst, formatDualTz } from '$lib/stores';
 
   /** @type {{
    *   filter?:       { kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null },
@@ -32,6 +32,7 @@
    *   heightClass?:  string,
    *   excludeSim?:   boolean,
    *   cardMode?:     boolean,
+   *   tsFormat?:     'short' | 'dual',
    * }} */
   let {
     filter       = /** @type {{ kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null }} */ ({}),
@@ -47,6 +48,11 @@
     // activity column where the compressed two-line format keeps the
     // history dense.
     cardMode     = false,
+    // Timestamp format. `short` (default) = HH:MM:SS IST; `dual` =
+    // full dual-tz (`Sun 31 May · 08:01 IST · 22:31 EDT`) matching
+    // the page-header wall clock. /orders uses `dual` so row time
+    // and header time read in the same shape.
+    tsFormat     = /** @type {'short' | 'dual'} */ ('short'),
   } = $props();
 
   // Merge excludeSim into the filter — single source of truth for the
@@ -79,7 +85,12 @@
 
   function _fmtTs(/** @type {unknown} */ ts) {
     if (!ts || typeof ts !== 'string') return '—';
-    return logTimeIst(ts.endsWith('Z') ? ts : ts + 'Z') || '—';
+    const iso = ts.endsWith('Z') ? ts : ts + 'Z';
+    if (tsFormat === 'dual') {
+      try { return formatDualTz(new Date(iso)); }
+      catch { /* fall through to short */ }
+    }
+    return logTimeIst(iso) || '—';
   }
 
   function _startPoll() {

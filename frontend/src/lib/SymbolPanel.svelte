@@ -886,16 +886,10 @@
                       title="Volume bars in lower band"
                       onclick={() => _showVol = !_showVol}>Vol</button>
             </div>
-            <!-- Fullscreen toggle — sits at the end of the toolbar so
-                 it doesn't compete visually with the chart-type /
-                 range / indicator clusters. Esc also exits FS. -->
-            <button type="button" class="oes-chart-fs"
-                    class:active={_fullscreen}
-                    title={_fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen chart'}
-                    aria-label={_fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-                    onclick={_toggleFullscreen}>
-              {_fullscreen ? '⤡' : '⤢'}
-            </button>
+            <!-- Chart-local fullscreen toggle retired per operator —
+                 the host card (Order Entry) already carries a
+                 fullscreen button in its bucket-header trio, so a
+                 duplicate at the top of the chart was redundant. -->
           </div>
           {#if _chartLoading && !_chartBars.length}
             <div class="oes-chart-state">Loading bars…</div>

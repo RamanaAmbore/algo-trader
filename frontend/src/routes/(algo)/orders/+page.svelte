@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { nowStamp, logTimeIst } from '$lib/stores';
+  import { nowStamp, logTimeIst, formatDualTz } from '$lib/stores';
   import OrderNotifications from '$lib/OrderNotifications.svelte';
   import AgentNotifications from '$lib/AgentNotifications.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -27,6 +27,15 @@
     { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
     { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
+  ]);
+
+  // Activity-card tabs share the same shape + style as the Entry-
+  // card tabs above (single oc-tab class) so the two tab strips
+  // read as one consistent vocabulary across the page. Each tab
+  // carries its own colour for the active underline + text.
+  const ACT_TABS = /** @type {const} */ ([
+    { id: 'book', label: 'Order Book', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'log',  label: 'Order Log',  activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
   ]);
 
   let orders        = $state([]);
@@ -440,20 +449,25 @@
   class:is-collapsed={_colActivity}>
   <div class="bucket-header">
     <span class="mp-section-label">Order Activity</span>
-    <div class="oc-act-tabs" role="tablist">
-      <button type="button" role="tab" class="oc-act-tab"
-        class:on={_activityTab === 'book'}
-        aria-selected={_activityTab === 'book'}
-        onclick={() => _activityTab = 'book'}>
-        Order Book
-        {#if _filteredOrders.length > 0}
-          <span class="oc-act-badge">{_filteredOrders.length}</span>
-        {/if}
-      </button>
-      <button type="button" role="tab" class="oc-act-tab"
-        class:on={_activityTab === 'log'}
-        aria-selected={_activityTab === 'log'}
-        onclick={() => _activityTab = 'log'}>Order Log</button>
+    <div class="oc-tabs" role="tablist">
+      {#each ACT_TABS as tab}
+        {@const isActive = _activityTab === tab.id}
+        <button type="button" role="tab"
+          class="oc-tab"
+          aria-selected={isActive}
+          style="
+            color: {isActive ? tab.activeTxt : '#94a3b8'};
+            background: {isActive ? tab.activeBg : 'transparent'};
+            border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
+            font-weight: {isActive ? '800' : '600'};
+          "
+          onclick={() => _activityTab = /** @type {any} */ (tab.id)}>
+          {tab.label}
+          {#if tab.id === 'book' && _filteredOrders.length > 0}
+            <span class="oc-act-badge">{_filteredOrders.length}</span>
+          {/if}
+        </button>
+      {/each}
     </div>
     {#if _activityTab === 'book'}
       <!-- Book-only filters — Account multi-select + Exchange chips.
@@ -494,7 +508,8 @@
           pollMs={3000}
           maxRows={50}
           heightClass=""
-          cardMode={true} />
+          cardMode={true}
+          tsFormat="dual" />
       </div>
     {:else if loading && !orders.length}
       <div class="text-center text-muted text-xs animate-pulse py-2">Loading orders…</div>
@@ -532,7 +547,7 @@
               {#if o.validity}<span class="log-chip"><span class="log-chip-key">validity:</span>{o.validity}</span>{/if}
               <span class="log-chip"><span class="log-chip-key">product:</span>{o.product}</span>
               <span class="log-chip"><span class="log-chip-key">variety:</span>{o.variety}</span>
-              {#if o.order_timestamp}<span class="log-chip"><span class="log-chip-key">time:</span>{logTimeIst(o.order_timestamp)}</span>{/if}
+              {#if o.order_timestamp}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(o.order_timestamp))}</span>{/if}
               {#if o.tag}<span class="log-chip {tagClass(o.tag)}"><span class="log-chip-key">tag:</span>{o.tag}</span>{/if}
               {#if o.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{o.status_message}</span>{/if}
             </div>
@@ -719,29 +734,9 @@
   .bucket-card-activity .mp-section-label { color: rgba(34, 211, 238, 0.85); }
   .bucket-card-book     .mp-section-label { color: rgba(74, 222, 128, 0.85); }
 
-  /* Activity card — Order Log / Order History tab strip. Same shape
-     as the entry-card tabs above for visual consistency. */
-  .oc-act-tabs { display: inline-flex; gap: 0; align-items: center; }
-  .oc-act-tab {
-    padding: 0.32rem 0.65rem;
-    background: transparent;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    color: #94a3b8;
-    font-size: 0.58rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-family: ui-monospace, monospace;
-    cursor: pointer;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .oc-act-tab:hover { color: #c8d8f0; }
-  .oc-act-tab.on {
-    color: #67e8f9;
-    border-bottom-color: rgba(34, 211, 238, 0.85);
-    font-weight: 800;
-  }
+  /* Activity-card tabs now use the same `.oc-tab` class as the
+     Entry-card tabs above — single visual vocabulary for both
+     strips on the page. Only the badge style remains here. */
   .oc-act-badge {
     display: inline-flex;
     align-items: center;
