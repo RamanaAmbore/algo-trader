@@ -41,7 +41,10 @@
   let orders        = $state([]);
   let loading       = $state(true);
   let error         = $state('');
-  let filterStatus  = $state('all');
+  // Default the status filter to OPEN per operator — the active book
+  // (orders still in flight) is the operator's first concern on
+  // landing; ALL stays one click away.
+  let filterStatus  = $state('open');
   // Account + exchange filters on the Order Book card. AccountMultiSelect
   // is the same component pulse + dashboard use, so the filter UX is
   // identical across surfaces.
@@ -304,7 +307,7 @@
     { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
   ] as f}
     <button type="button"
-      onclick={() => filterStatus = f.id}
+      onclick={() => { filterStatus = f.id; _activityTab = 'book'; }}
       class="oc-filter-card {filterStatus === f.id ? 'oc-filter-card-on' : ''}"
       data-status={f.accent}>
       <span class="oc-filter-count">{f.count}</span>

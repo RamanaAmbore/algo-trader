@@ -93,6 +93,30 @@
     return logTimeIst(iso) || '—';
   }
 
+  /** Re-render JSON-shaped messages as bracketed `[k=v, k=v]` so the
+   *  row reads as compact key/value pairs instead of a JSON literal
+   *  with quotes + braces. Plain-string messages pass through
+   *  unchanged. Per operator: "show order key value pairs in square
+   *  brackets in order log". */
+  function _fmtMsg(/** @type {unknown} */ raw) {
+    if (raw == null) return '';
+    if (typeof raw !== 'string') return String(raw);
+    const s = raw.trim();
+    if (!s.startsWith('{') && !s.startsWith('[')) return raw;
+    try {
+      const obj = JSON.parse(s);
+      if (Array.isArray(obj)) {
+        return obj.map(v => typeof v === 'object' ? _fmtMsg(JSON.stringify(v)) : String(v)).join(', ');
+      }
+      if (obj && typeof obj === 'object') {
+        return '[' + Object.entries(obj)
+          .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+          .join(', ') + ']';
+      }
+    } catch { /* not JSON — pass through */ }
+    return raw;
+  }
+
   function _startPoll() {
     if (pollMs > 0 && typeof setInterval !== 'undefined') {
       _interval = setInterval(() => {
@@ -142,7 +166,7 @@
             <span class="ul-card-time">{_fmtTs(row.ts)}</span>
           </div>
           {#if row.message}
-            <div class="ul-card-msg">{row.message}</div>
+            <div class="ul-card-msg">{_fmtMsg(row.message)}</div>
           {/if}
         </article>
       {/each}
@@ -156,7 +180,7 @@
             {#if row.sim_mode}<span class="ul-sim" title="From a simulator run, not a real fire">SIM</span>{/if}
             <span class="ul-kind ul-kind-{row.kind}">{row.kind}</span>
             <span class="ul-msg">
-              {#if row.order_id}#{row.order_id} · {/if}{#if row.agent_slug}[{row.agent_slug}] · {/if}{row.message ?? ''}
+              {#if row.order_id}#{row.order_id} · {/if}{#if row.agent_slug}[{row.agent_slug}] · {/if}{_fmtMsg(row.message ?? '')}
             </span>
           </span>
         </div>
