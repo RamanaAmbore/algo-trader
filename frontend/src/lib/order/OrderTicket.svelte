@@ -56,6 +56,9 @@
    *   onAddToBasket?: ((payload: any) => void) | null,
    *   basketMode?: boolean,
    *   accountHidden?: boolean,
+   *   actionsHidden?: boolean,
+   *   triggerSubmit?: number,
+   *   triggerBasket?: number,
    *   onAccountChange?: (account: string) => void,
    * }} */
   let {
@@ -119,6 +122,16 @@
     // operator only sees one Account chooser. `_account` still binds
     // to the prop — only the picker chrome is hidden.
     accountHidden = false,
+    // When true, the ticket's internal action buttons (Exit /
+    // +Basket / Submit) are suppressed. Used when the host renders
+    // a common action footer at the page level; the host increments
+    // `triggerSubmit` / `triggerBasket` props to fire the actions.
+    actionsHidden = false,
+    // Counter props — each increment fires the corresponding
+    // internal handler. Pattern: host calls `count++`, the $effect
+    // here observes the delta and dispatches.
+    triggerSubmit = 0,
+    triggerBasket = 0,
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -480,6 +493,26 @@
     };
   }
 
+  // Counter-prop dispatch — host pages that render their own action
+  // footer (via `actionsHidden`) bump `triggerSubmit++` and
+  // `triggerBasket++` to fire the internal handlers without needing
+  // a function-ref binding. The last-seen counter is tracked so the
+  // initial render doesn't auto-fire on mount.
+  let _lastSubmitTrigger = $state(/** @type {number} */ (-1));
+  let _lastBasketTrigger = $state(/** @type {number} */ (-1));
+  $effect(() => {
+    if (triggerSubmit !== _lastSubmitTrigger && _lastSubmitTrigger >= 0) {
+      submit();
+    }
+    _lastSubmitTrigger = triggerSubmit;
+  });
+  $effect(() => {
+    if (triggerBasket !== _lastBasketTrigger && _lastBasketTrigger >= 0) {
+      addToBasket();
+    }
+    _lastBasketTrigger = triggerBasket;
+  });
+
   function addToBasket() {
     if (!onAddToBasket) return;
     _submitTried = true;
@@ -814,31 +847,9 @@
       </div>
     </div>
 
-    <!-- Side toggle on its own row — pill labels swap to ADD/CLOSE
-         when the ticket opens from a current position so the operator
-         thinks in "I want to add to / close this position" terms.
-         _side stays as BUY/SELL so the broker payload never changes;
-         only the visible glyph flips. Locked when action='modify'
-         (Kite doesn't support flipping side on a working order). -->
-    <div class="ot-row">
-      <div class="ot-side-block">
-        <span class="ot-label">Side</span>
-        <div class="ot-side-toggle" class:ot-locked={action === 'modify'}>
-          <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
-                  disabled={action === 'modify'}
-                  title={currentQty
-                    ? (sideLabels.BUY + ' (places a BUY order)')
-                    : 'BUY this contract'}
-                  onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
-          <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
-                  disabled={action === 'modify'}
-                  title={currentQty
-                    ? (sideLabels.SELL + ' (places a SELL order)')
-                    : 'SELL this contract'}
-                  onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
-        </div>
-      </div>
-    </div>
+    <!-- Side toggle moved into the knobs row below per operator
+         request ("type, product, variety and validity should be on
+         the same row as buy/sell side"). -->
 
     <!-- Per-account funds pill — sits ABOVE the Type/Product row so
          the operator always sees Avail margin + Cash before picking
@@ -882,6 +893,28 @@
          Selects keep the density tight on mobile and align cleanly
          with the rest of the form. -->
     <div class="ot-row ot-row-knobs">
+      <!-- Side toggle sits as the FIRST knob alongside Type / Product
+           / Variety / Validity. Operators pick "what I'm doing"
+           (side) and "how I'm doing it" (knobs) in one horizontal
+           sweep. Locked when action='modify' (Kite doesn't support
+           flipping side on a working order). -->
+      <div class="ot-knob ot-knob-side">
+        <label class="ot-label">Side</label>
+        <div class="ot-side-toggle ot-side-toggle-compact" class:ot-locked={action === 'modify'}>
+          <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
+                  disabled={action === 'modify'}
+                  title={currentQty
+                    ? (sideLabels.BUY + ' (places a BUY order)')
+                    : 'BUY this contract'}
+                  onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
+          <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
+                  disabled={action === 'modify'}
+                  title={currentQty
+                    ? (sideLabels.SELL + ' (places a SELL order)')
+                    : 'SELL this contract'}
+                  onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
+        </div>
+      </div>
       <div class="ot-knob">
         <label class="ot-label" for="ot-type-sel">Type</label>
         <Select id="ot-type-sel"
@@ -1055,7 +1088,9 @@
            buttons on the right. Operator wanted the action row at the
            top + the trade economics chip immediately under it — same
            layout IB TWS uses (action footer, then cost-impact strip
-           beneath). -->
+           beneath). Suppressed when `actionsHidden` is true so the
+           host can render its own page-level common action strip. -->
+      {#if !actionsHidden}
       <div class="ot-footer-actions">
         {#if submitOk}
           <button type="button" class="ot-exit"
@@ -1085,6 +1120,7 @@
           {/if}
         {/if}
       </div>
+      {/if}
       <!-- Margin / cost preview BELOW the action row. Placed-order
            summary replaces the margin preview after a successful
            submit; same vertical slot. -->
@@ -1544,6 +1580,31 @@
     flex: 1 1 5rem;
     min-width: 5rem;
   }
+  .ot-knob-side { flex: 1.4 1 7rem; min-width: 7rem; }
+  .ot-side-toggle-compact {
+    display: inline-flex;
+    width: 100%;
+    height: 1.7rem;
+    border-radius: 3px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .ot-side-toggle-compact .ot-side-btn {
+    flex: 1 1 0;
+    background: transparent;
+    border: 0;
+    color: #94a3b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: rgba(74, 222, 128, 0.22); color: #4ade80; }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: rgba(248, 113, 113, 0.22); color: #f87171; }
+  .ot-side-toggle-compact .ot-side-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* Mode row */
   .ot-mode-row {

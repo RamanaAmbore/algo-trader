@@ -60,6 +60,9 @@
    *   tabsExternal?:   boolean,
    *   activeTab?:      'chart' | 'command' | 'ticket' | 'chain',
    *   hideBottomPanel?: boolean,
+   *   actionsHidden?:  boolean,
+   *   triggerSubmit?:  number,
+   *   triggerBasket?:  number,
    * }} */
   let {
     defaultTab     = /** @type {'chart'|'command'|'ticket'|'chain'} */ ('ticket'),
@@ -129,6 +132,14 @@
     // Used by /orders to split the entry shell from the activity
     // panel for independent collapse / fullscreen control.
     hideBottomPanel = false,
+    // When true, the OrderTicket's internal action buttons are
+    // suppressed. Hosts that render a page-level common action
+    // strip pass this true + increment the counter props below.
+    actionsHidden = false,
+    // Counter props — bumping increments fires the corresponding
+    // action on the currently-active tab. Forwarded to OrderTicket.
+    triggerSubmit = 0,
+    triggerBasket = 0,
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -1047,6 +1058,9 @@
             onAddToBasket={addToBasket}
             basketMode={basketMode}
             accountHidden={headerless}
+            actionsHidden={actionsHidden}
+            triggerSubmit={triggerSubmit}
+            triggerBasket={triggerBasket}
             {onSubmit}
             {onClose} />
         </div>
