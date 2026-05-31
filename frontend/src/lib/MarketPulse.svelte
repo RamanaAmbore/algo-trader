@@ -4172,7 +4172,7 @@
     border-radius: 2px;
     font-variant-numeric: tabular-nums;
   }
-  :global(.badge-p) { color: #38bdf8; background: rgba(56,189,248,0.18); }
+  :global(.badge-p) { color: #7dd3fc; background: rgba(125,211,252,0.18); }
   :global(.badge-h) { color: #4ade80; background: rgba(74,222,128,0.18); }
   :global(.badge-w) { color: #fbbf24; background: rgba(251,191,36,0.18); }
   :global(.badge-u) { color: #c4b5fd; background: rgba(196,181,253,0.18); }
@@ -4703,41 +4703,10 @@
     margin-bottom: 0.25rem;
   }
 
-  /* Per-source subtotals strip (item 1) */
-  .subtotals-strip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.35rem;
-    margin-bottom: 0.35rem;
-    padding: 0.25rem 0.5rem;
-    background: rgba(251,191,36,0.04);
-    border: 1px solid rgba(251,191,36,0.12);
-    border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.2;
-  }
-  .st-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-  .st-src {
-    font-weight: 800;
-    color: rgba(251,191,36,0.85);
-    font-size: 0.6rem;
-    letter-spacing: 0.06em;
-  }
-  .st-chip {
-    color: rgba(200,216,240,0.65);
-  }
-  .st-val  { color: rgba(200,216,240,0.9); font-weight: 600; }
-  .st-pos  { color: #4ade80; font-weight: 600; }
-  .st-neg  { color: #f87171; font-weight: 600; }
-  .st-sym  { color: rgba(251,191,36,0.75); }
-  .st-sep  { color: rgba(200,216,240,0.2); padding: 0 0.15rem; }
+  /* Per-source subtotals strip retired — the block was commented
+     out in the template; CSS family (.subtotals-strip, .st-group,
+     .st-src, .st-chip, .st-val, .st-pos, .st-neg, .st-sym, .st-sep)
+     dropped per audit. */
 
   /* Context menu (item 2) */
   :global(.ctx-menu) {

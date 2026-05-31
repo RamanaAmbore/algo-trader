@@ -652,9 +652,6 @@
          onpointerup={onPointerUp}
          onpointermove={onPointerMove}
          onpointerleave={onPointerLeave}>
-      <!-- O4: defs retained but gradient unused — tooltip rect now uses
-           flat fill="#0f172a" to match the stat overlay. -->
-      <defs></defs>
       <!-- Profit / loss shading (under the curves so the lines pop) -->
       <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
       <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>
@@ -1069,7 +1066,7 @@
        (0.6 + 1.4 + 0.3 gap = 2.3 rem). */
     right: 2.3rem;
     font-family: monospace;
-    font-size: 0.5rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding: 1px 6px;
@@ -1151,8 +1148,8 @@
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(125,211,252,0.20);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.575rem;
-    line-height: 1.2;
+    font-size: 0.65rem;
+    line-height: 1.25;
     /* Sits BETWEEN the bg SVG (z=1, text labels) and the fg SVG
        (z=4, curves). Text labels behind the overlay are covered
        by the stats panel; the curve gets redrawn over the panel
@@ -1164,10 +1161,11 @@
     cursor: help;
   }
   .ps-k {
-    /* Amber label tier — labels at 9px, matching the tightened overlay. */
+    /* Amber label tier — bumped to 0.6rem (was 9px literal) so the
+       overlay text is at the ~10px legibility floor on default DPI. */
     color: #fbbf24;
     letter-spacing: 0.08em;
-    font-size: 9px;
+    font-size: 0.6rem;
     font-weight: 700;
     opacity: 0.85;
     align-self: center;
@@ -1207,6 +1205,9 @@
     font-size: 0.6rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-style: italic;
-    color: rgba(200,216,240,0.55);
+    /* Contrast raised 0.55 → 0.85 alpha — earlier rendered ~2.5:1
+       against the navy chart bg, below the 4.5:1 target for body
+       text. Operator's only multi-expiry context cue. */
+    color: rgba(200, 216, 240, 0.85);
   }
 </style>

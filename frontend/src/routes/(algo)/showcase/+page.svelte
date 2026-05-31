@@ -277,7 +277,7 @@
     font-variant-numeric: tabular-nums;
   }
   .show-fact-lbl {
-    font-size: 0.55rem;
+    font-size: 0.65rem;
     font-weight: 700;
     color: #7e97b8;
     text-transform: uppercase;
@@ -307,13 +307,17 @@
     margin-bottom: 0.5rem;
   }
   .show-card-tag {
-    font-size: 0.58rem;
+    font-size: 0.66rem;
     font-weight: 700;
     color: var(--accent);
     text-transform: uppercase;
     letter-spacing: 0.1em;
     padding: 0.15rem 0.5rem;
+    /* rgba fallback for Safari < 16.2 (color-mix support landed in
+       16.2). Recruiter audience may still be on older iOS. */
+    background: rgba(212, 146, 12, 0.12);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid rgba(212, 146, 12, 0.35);
     border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
     border-radius: 999px;
   }
@@ -366,6 +370,8 @@
   }
   .show-card-link {
     background: transparent;
+    /* rgba fallback first, color-mix on top for modern browsers. */
+    border: 1px solid rgba(212, 146, 12, 0.45);
     border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
     color: var(--accent);
     font-size: 0.72rem;
@@ -377,8 +383,10 @@
     align-self: flex-start;
     transition: background-color 0.1s, border-color 0.1s;
     font-family: inherit;
+    text-decoration: none;
   }
   .show-card-link:hover {
+    background: rgba(212, 146, 12, 0.14);
     background: color-mix(in srgb, var(--accent) 14%, transparent);
     border-color: var(--accent);
   }

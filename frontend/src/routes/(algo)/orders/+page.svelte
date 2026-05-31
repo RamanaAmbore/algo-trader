@@ -23,7 +23,7 @@
   // render the strip itself in the bucket-header (Phase A of the
   // orders-page redesign). Keep these in sync.
   const TABS = /** @type {const} */ ([
-    { id: 'chart',   label: 'Chart',        dot: '#f0d070', activeTxt: '#f0d070', activeBorder: '#f0d070', activeBg: 'rgba(240,208,112,0.14)' },
+    { id: 'chart',   label: 'Chart',        dot: '#facc15', activeTxt: '#facc15', activeBorder: '#facc15', activeBg: 'rgba(250,204,21,0.14)' },
     { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
     { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },

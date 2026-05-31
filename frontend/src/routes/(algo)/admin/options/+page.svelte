@@ -1851,6 +1851,20 @@
     if (v == null) return '∞';
     return aggCompact(v);
   }
+
+  /** Risk-of-ruin ratio (|max_loss| / |net_cost|). Hoisted out of an
+   *  `{#if true}` wrapper in the template — that was needed to
+   *  satisfy Svelte's "immediate-child-of-block" rule for `{@const}`.
+   *  Cleaner as a script-level $derived. Null when the divisor is
+   *  near zero or max_loss is unbounded; rendered as '—' in the UI. */
+  const _ror = $derived.by(() => {
+    if (!strategy) return null;
+    const ml = strategy.risk?.max_loss;
+    const nc = strategy.net_cost;
+    if (ml == null || !Number.isFinite(ml)) return null;
+    if (nc == null || Math.abs(nc) <= 1) return null;
+    return Math.abs(ml) / Math.abs(nc);
+  });
   function fmtPct(/** @type {number|null|undefined} */ v) {
     if (v == null) return '—';
     return `${pctFmt(v * 100)}%`;
@@ -2398,18 +2412,10 @@
                  when net cost is ~0 (free debit/credit) or max_loss is
                  unbounded. Wrapped in {#if} so the {@const} satisfies
                  Svelte's "immediate-child" rule. -->
-            {#if true}
-              {@const _ror = (strategy.risk.max_loss != null
-                              && Number.isFinite(strategy.risk.max_loss)
-                              && strategy.net_cost != null
-                              && Math.abs(strategy.net_cost) > 1)
-                ? Math.abs(strategy.risk.max_loss) / Math.abs(strategy.net_cost)
-                : null}
-              <div class="kv-pair">
-                <span class="kv-k">Risk-of-ruin <InfoHint popup text={'<b>Risk-of-ruin</b> = |max_loss| / |net_cost|. How many times the strategy\'s premium budget is consumed by a single max-loss event. <b>1.0×</b> means a single retest of max loss wipes the trade\'s cost basis exactly. <b>&gt;1×</b> means one max loss costs more than the premium paid — strategy is sized too aggressively. <b>—</b> when net cost is ~0 (free) or max loss is unbounded.'} /></span>
-                <span class="kv-v">{_ror == null ? '—' : `${_ror.toFixed(2)}×`}</span>
-              </div>
-            {/if}
+            <div class="kv-pair">
+              <span class="kv-k">Risk-of-ruin <InfoHint popup text={'<b>Risk-of-ruin</b> = |max_loss| / |net_cost|. How many times the strategy\'s premium budget is consumed by a single max-loss event. <b>1.0×</b> means a single retest of max loss wipes the trade\'s cost basis exactly. <b>&gt;1×</b> means one max loss costs more than the premium paid — strategy is sized too aggressively. <b>—</b> when net cost is ~0 (free) or max loss is unbounded.'} /></span>
+              <span class="kv-v">{_ror == null ? '—' : `${_ror.toFixed(2)}×`}</span>
+            </div>
             <div class="kv-pair">
               <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">
@@ -3101,19 +3107,7 @@
     background-color: rgba(251, 191, 36, 0.10) !important;
     box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
   }
-  .legs-chevron {
-    /* Bumped to match the Select / MultiSelect dropdown carets
-       (0.95rem amber + weight 700). Earlier 0.6rem read as a stray
-       glyph; now consistent with the other open/close affordances
-       across the algo theme. */
-    font-size: 0.95rem;
-    line-height: 1;
-    font-weight: 700;
-    color: #fbbf24;
-    width: 1rem;
-    text-align: center;
-    transition: transform 0.12s ease;
-  }
+  /* .legs-chevron retired — no callsites. */
 
   /* Parent grid — defines column tracks once. Children (`.cand-headrow`
      and each `.cand-row`) consume the same tracks via `subgrid` so
@@ -3362,43 +3356,9 @@
     opacity: 0.45;
   }
   .cand-disabled:hover { background: rgba(248,113,113,0.05); }
-  .cand-kind {
-    text-align: center;
-    font-weight: 700;
-    font-size: 0.65rem;
-    letter-spacing: 0.05em;
-  }
-  .cand-kind-fut { color: #c084fc; }
-  .cand-kind-opt { color: #7dd3fc; }
-
-  /* Click-to-pick row variant — used in live / sim mode where the
-     candidate is a single-select. Reset button defaults so the row
-     reads as plain text not a button, then layer the pick-state styling
-     on top (active row gets an amber border + bg). */
-  .cand-row-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    color: inherit;
-    text-align: left;
-    width: 100%;
-  }
-  .cand-row-btn:hover { background: rgba(251,191,36,0.08); }
-  .cand-row-active {
-    background: rgba(251,191,36,0.15) !important;
-    border-color: rgba(251,191,36,0.55);
-  }
-  .cand-row-disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-  .cand-row-disabled:hover { background: transparent; }
-  .cand-bullet {
-    color: #fbbf24;
-    font-size: 0.75rem;
-    text-align: center;
-    width: 0.9rem;
-    line-height: 1;
-  }
+  /* .cand-kind[-fut|-opt] + .cand-row-btn + .cand-row-active +
+     .cand-row-disabled + .cand-bullet retired — replaced by the
+     checkbox-driven multi-select Candidates panel. */
 
   .leg-type-CE {
     color: #4ade80;
