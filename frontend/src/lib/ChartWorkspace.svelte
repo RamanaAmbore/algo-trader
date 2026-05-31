@@ -199,6 +199,14 @@
     if (!symbol) return;
     if (!force && _chartLoaded) return;
     _histLoading = true; _histError = '';
+    // Hard timeout — if a broker call hangs (e.g. Kite rate-limit retry
+    // loop on backend), Promise.race ensures _histLoading clears within
+    // 25s instead of stranding the page-header RefreshButton spinner
+    // forever. The error surfaces in _histError as a short banner.
+    const TIMEOUT_MS = 25000;
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Slow response — try again.')), TIMEOUT_MS)
+    );
     try {
       // _resolvedExchange is set when picking a pinned symbol (e.g. MCX for GOLD futures).
       // exchange prop is the parent-supplied hint. Both take precedence over auto-detection.
@@ -212,7 +220,9 @@
             .catch(() => ({ bars: [] }))
         );
       }
-      const [hist, spotHist] = await Promise.all(promises);
+      const [hist, spotHist] = /** @type {any} */ (
+        await Promise.race([Promise.all(promises), timeout])
+      );
       _bars     = Array.isArray(hist?.bars) ? hist.bars : [];
       _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
       if (!_bars.length) _histError = 'No data available.';
