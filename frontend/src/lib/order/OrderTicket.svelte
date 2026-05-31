@@ -744,44 +744,34 @@
       <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
     </div>
 
-    <!-- Side toggle — locked when modifying an existing order
-         (Kite doesn't support flipping side on a working order;
-         the operator has to cancel + re-place). Click is a no-op
-         in that case + the button visibly reads as disabled. -->
-    <div class="ot-row">
-      <!-- When the operator opens this ticket from a current
-           position (currentQty != 0), the pills swap labels to ADD /
-           CLOSE — what they're actually thinking. The underlying
-           _side state stays as 'BUY' / 'SELL' so the broker payload
-           never changes; only the visible glyph flips. The bottom
-           submit button continues to show the resolved BUY/SELL so
-           the actual broker action is unambiguous. -->
-      <div class="ot-side-block">
-        <span class="ot-label">Side</span>
-        <div class="ot-side-toggle" class:ot-locked={action === 'modify'}>
-          <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
-                  disabled={action === 'modify'}
-                  title={currentQty
-                    ? (sideLabels.BUY + ' (places a BUY order)')
-                    : 'BUY this contract'}
-                  onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
-          <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
-                  disabled={action === 'modify'}
-                  title={currentQty
-                    ? (sideLabels.SELL + ' (places a SELL order)')
-                    : 'SELL this contract'}
-                  onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
+    <!-- Combined top row: Account · Symbol · Qty (and Side toggle).
+         Operator reads the entry strip left-to-right: WHO is placing,
+         WHAT contract, HOW MUCH — then the side pill flips BUY/SELL.
+         When _lotSize > 0, Qty becomes the Lots stepper. -->
+    <div class="ot-row ot-row-quick">
+      {#if _accounts.length}
+        <div class="ot-quick-block">
+          <span class="ot-label">Account</span>
+          {#if _accounts.length === 1}
+            <input id="ot-account" type="text" class="ot-input ot-account-readonly"
+                   value={_account} readonly />
+          {:else}
+            <Select id="ot-account"
+                    bind:value={_account}
+                    placeholder="Pick an account…"
+                    ariaLabel="Account"
+                    options={_accounts.map(a => ({ value: a, label: a }))} />
+          {/if}
         </div>
+      {/if}
+      <div class="ot-quick-block">
+        <span class="ot-label">Symbol</span>
+        <span class="ot-sym-chip" title={`${exchange || '?'} · ${kind}${_lotSize ? ' · lot ' + _lotSize : ''}`}>
+          {symbol || '—'}
+        </span>
       </div>
-      <div class="ot-qty-block">
+      <div class="ot-quick-block ot-quick-qty">
         {#if _lotSize > 0}
-          <!-- Lots-driven qty input — only +/− steppers, no dropdown.
-               Operator preference + the dropdown was spilling out of
-               the row on narrow viewports. Format mirrors the chain
-               picker exactly: [−] N [+] (× 50 = 50). The N is a tiny
-               read-only display; for big jumps, the operator can
-               click + repeatedly or open the underlying contract via
-               another path. -->
           <label class="ot-label" for="ot-lots">Lots</label>
           <div class="ot-lots-row">
             <button type="button" class="ot-lots-step"
@@ -803,28 +793,31 @@
       </div>
     </div>
 
-    <!-- Account selector — required for PAPER + LIVE so the operator
-         picks WHICH Kite handle the order routes to. Reads from the
-         derived `_accounts` list so a late-arriving caller account
-         list (or the self-fetch backstop) auto-populates without
-         remounting the ticket. -->
-    {#if _accounts.length}
-      <div class="ot-row">
-        <div class="ot-label-block">
-          <span class="ot-label">Account</span>
-          {#if _accounts.length === 1}
-            <input id="ot-account" type="text" class="ot-input ot-account-readonly"
-                   value={_account} readonly />
-          {:else}
-            <Select id="ot-account"
-                    bind:value={_account}
-                    placeholder="Pick an account…"
-                    ariaLabel="Account"
-                    options={_accounts.map(a => ({ value: a, label: a }))} />
-          {/if}
+    <!-- Side toggle on its own row — pill labels swap to ADD/CLOSE
+         when the ticket opens from a current position so the operator
+         thinks in "I want to add to / close this position" terms.
+         _side stays as BUY/SELL so the broker payload never changes;
+         only the visible glyph flips. Locked when action='modify'
+         (Kite doesn't support flipping side on a working order). -->
+    <div class="ot-row">
+      <div class="ot-side-block">
+        <span class="ot-label">Side</span>
+        <div class="ot-side-toggle" class:ot-locked={action === 'modify'}>
+          <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
+                  disabled={action === 'modify'}
+                  title={currentQty
+                    ? (sideLabels.BUY + ' (places a BUY order)')
+                    : 'BUY this contract'}
+                  onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
+          <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
+                  disabled={action === 'modify'}
+                  title={currentQty
+                    ? (sideLabels.SELL + ' (places a SELL order)')
+                    : 'SELL this contract'}
+                  onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
         </div>
       </div>
-    {/if}
+    </div>
 
     <!-- Per-account funds pill — sits ABOVE the Type/Product row so
          the operator always sees Avail margin + Cash before picking
@@ -1222,6 +1215,47 @@
     align-items: flex-start;
   }
   .ot-label-block { flex: 1 1 0; min-width: 0; }
+
+  /* Quick-row top strip: Account · Symbol · Qty side-by-side. Each
+     block stacks its label above the control like the rest of the
+     ticket, but they share the row so the operator reads WHO · WHAT
+     · HOW MUCH in one glance. Wraps cleanly on narrow viewports. */
+  .ot-row-quick {
+    gap: 0.5rem;
+    align-items: flex-end;
+  }
+  .ot-quick-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  /* Qty block grows a bit more than Account / Symbol — the lots
+     stepper carries multiple controls. */
+  .ot-quick-qty { flex: 1.4 1 0; }
+  /* Symbol display chip — read-only label showing the symbol from
+     SymbolPanel's shared picker. Operator picks the symbol once at
+     the shell level; this chip mirrors it inside the ticket form
+     so the operator can confirm what they're trading without
+     leaving the entry fields. */
+  .ot-sym-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.22rem 0.5rem;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 3px;
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .ot-label {
     /* Section-header treatment so labels read as form structure
        cues, distinct from values / pills / numeric inputs. Amber

@@ -95,9 +95,43 @@
     inline         = false,
   } = $props();
 
+  // Local mutable copy of the symbol prop — operator can edit it from
+  // the top search input so every tab (Chart / Ticket / Chain /
+  // Command) re-renders against the new symbol. Synced from the prop
+  // via $effect so an external pick (chain row + CE click, dashboard
+  // row click, MarketPulse symbol pick) still updates the shell.
+  let _localSymbol = $state(String(symbol || '').toUpperCase());
+  $effect(() => {
+    const next = String(symbol || '').toUpperCase();
+    if (next && next !== _localSymbol) _localSymbol = next;
+  });
+
+  // Symbol search dropdown state.
+  let _symbolQuery = $state('');
+  let _symbolSuggestions = $state(/** @type {any[]} */ ([]));
+  let _symbolOpen = $state(false);
+  let _symbolDebounce;
+  function _onSymbolInput(/** @type {string} */ v) {
+    _symbolQuery = v;
+    _symbolOpen = true;
+    if (_symbolDebounce) clearTimeout(_symbolDebounce);
+    _symbolDebounce = setTimeout(async () => {
+      try {
+        const { searchByPrefix } = await import('$lib/data/instruments');
+        _symbolSuggestions = await searchByPrefix(v, 12);
+      } catch (_) { _symbolSuggestions = []; }
+    }, 150);
+  }
+  function _pickSymbol(/** @type {any} */ inst) {
+    _localSymbol = String(inst?.sym || inst?.tradingsymbol || _symbolQuery).toUpperCase();
+    _symbolQuery = '';
+    _symbolOpen = false;
+    _symbolSuggestions = [];
+  }
+
   // Determine whether Chain tab applies.
   // Equity = no FUT/CE/PE suffix AND (kind=equity OR exchange is cash-equity).
-  const _sym = $derived(String(symbol || '').toUpperCase());
+  const _sym = $derived(_localSymbol);
   const _isDerivative = $derived(/(?:CE|PE|FUT)$/.test(_sym));
   const _isEquityExch = $derived(
     (!_isDerivative) &&
@@ -165,10 +199,10 @@
   }
 
   async function _addToWatchlist() {
-    if (!onAddToWatchlist || _wlInFlight || !symbol) return;
+    if (!onAddToWatchlist || _wlInFlight || !_localSymbol) return;
     _wlInFlight = true;
     try {
-      await onAddToWatchlist(symbol, exchange);
+      await onAddToWatchlist(_localSymbol, exchange);
       _wlFlash('✓ added to watchlist', true);
     } catch (e) {
       _wlFlash(`Watchlist: ${/** @type {any} */ (e)?.message || 'failed'}`, false);
@@ -178,11 +212,11 @@
   }
 
   async function _loadChart(/** @type {boolean} */ force = false) {
-    if (!symbol) return;
+    if (!_localSymbol) return;
     if (!force && _chartLoaded) return;
     _chartLoading = true; _chartError = '';
     try {
-      const r = await fetchOptionsHistorical(symbol, { days: _chartDays, exchange });
+      const r = await fetchOptionsHistorical(_localSymbol, { days: _chartDays, exchange });
       _chartBars = Array.isArray(r?.bars) ? r.bars : [];
       if (!_chartBars.length) _chartError = 'No bars available — broker may not list this contract.';
       _chartLoaded = true;
@@ -197,8 +231,16 @@
   // Auto-load when the Chart tab becomes active OR the range changes.
   // `_chartLoaded` resets to false on range switch so the force path
   // refetches; subsequent activations without a range change skip.
+  // Also resets when the operator picks a NEW symbol from the shell-
+  // level search so the chart re-fetches against the right symbol.
   $effect(() => {
     if (_activeTab === 'chart') _loadChart();
+  });
+  $effect(() => {
+    // Symbol change → invalidate cached chart so the next tab activation
+    // (or the current one) re-fetches. Reading _localSymbol here is what
+    // triggers the rerun.
+    if (_localSymbol) { _chartLoaded = false; if (_activeTab === 'chart') _loadChart(true); }
   });
 
   function _setChartRange(/** @type {number} */ days) {
@@ -632,9 +674,40 @@
        role="document"
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
 
-    <!-- Header (close button hidden in inline mode) -->
+    <!-- Header (close button hidden in inline mode). The plain title
+         placeholder was replaced with a live Symbol picker — operator
+         types a prefix, picks an instrument from the dropdown, and
+         every tab (Chart, Ticket, Chain, Command) re-renders against
+         the new symbol. Symbol is the only shell-level shared state;
+         per-tab values (qty, side, etc.) stay with their tabs. -->
     <div class="oes-header">
-      <span class="oes-title">{symbol || 'Symbol'}</span>
+      <div class="oes-sym-pick">
+        <input
+          type="text"
+          class="oes-sym-input"
+          value={_symbolOpen ? _symbolQuery : (_localSymbol || '')}
+          placeholder="Symbol…"
+          spellcheck="false"
+          autocomplete="off"
+          oninput={(e) => _onSymbolInput(/** @type {HTMLInputElement} */ (e.currentTarget).value)}
+          onfocus={(e) => { _symbolQuery = ''; _symbolOpen = true; _onSymbolInput(/** @type {HTMLInputElement} */ (e.currentTarget).value); }}
+          onblur={() => setTimeout(() => { _symbolOpen = false; }, 150)}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' && _symbolSuggestions.length) { e.preventDefault(); _pickSymbol(_symbolSuggestions[0]); }
+            else if (e.key === 'Escape') { _symbolOpen = false; }
+          }} />
+        {#if _symbolOpen && _symbolSuggestions.length}
+          <div class="oes-sym-drop">
+            {#each _symbolSuggestions as inst (inst.sym)}
+              <button type="button" class="oes-sym-row"
+                onmousedown={(e) => { e.preventDefault(); _pickSymbol(inst); }}>
+                <span class="oes-sym-row-sym">{inst.sym}</span>
+                <span class="oes-sym-row-meta">{inst.e}{inst.t ? ' · ' + inst.t : ''}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
       {#if exchange}<span class="oes-exch">{exchange}</span>{/if}
       {#if _chartLastClose != null}
         <span class="oes-last">₹{priceFmt(_chartLastClose)}</span>
@@ -888,7 +961,7 @@
           onAddToBasket={handleCmdAddToBasket}
           prefillSide={side}
           prefillAccount={account}
-          prefillSymbol={symbol}
+          prefillSymbol={_localSymbol}
           prefillQty={qty}
           prefillPrice={price ?? 0}
           prefillOrderType={orderType} />
@@ -901,7 +974,7 @@
              overlay by setting a container class that strips position:fixed. -->
         <div class="oes-ticket-body">
           <OrderTicket
-            symbol={_ticketProps.symbol || symbol}
+            symbol={_ticketProps.symbol || _localSymbol}
             exchange={_ticketProps.exchange ?? exchange}
             side={_ticketProps.side ?? side}
             action={_ticketProps.action ?? action}
@@ -931,7 +1004,7 @@
              into the shell to mutate it. Its own placeBasket is unused
              when routed through onSubmitBasket. -->
         <OptionChainTab
-          {symbol}
+          symbol={_localSymbol}
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
           {accounts}
@@ -1194,6 +1267,81 @@
     color: #fbbf24;
     letter-spacing: 0.04em;
     font-family: ui-monospace, monospace;
+  }
+  /* Shared Symbol picker — replaces the static `.oes-title` placeholder
+     ("Symbol") with a live search input. Operator can pick a new
+     symbol; every tab (Chart / Ticket / Chain / Command) re-renders
+     against the chosen instrument. Same amber typography as the old
+     title so the position reads identically. */
+  .oes-sym-pick {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .oes-sym-input {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    padding: 0.18rem 0.45rem;
+    color: #fbbf24;
+    font-size: 0.85rem;
+    font-weight: 800;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+    width: 11rem;
+    text-transform: uppercase;
+  }
+  .oes-sym-input:focus {
+    outline: none;
+    border-color: rgba(251, 191, 36, 0.55);
+    background: rgba(251, 191, 36, 0.06);
+  }
+  .oes-sym-input::placeholder {
+    color: rgba(251, 191, 36, 0.40);
+    font-weight: 600;
+  }
+  .oes-sym-drop {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 60;
+    margin-top: 2px;
+    min-width: 14rem;
+    max-height: 14rem;
+    overflow-y: auto;
+    background: #1b2540;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+  }
+  .oes-sym-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.2rem 0.4rem;
+    background: transparent;
+    border: 0;
+    color: #c8d8f0;
+    font-size: 0.65rem;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+  .oes-sym-row:hover {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+  }
+  .oes-sym-row-sym {
+    font-weight: 700;
+    letter-spacing: 0.03em;
+  }
+  .oes-sym-row-meta {
+    color: #7e97b8;
+    font-size: 0.55rem;
+    letter-spacing: 0.06em;
   }
   /* Exchange tag — small, muted, matches the LogPanel chip palette. */
   .oes-exch {
