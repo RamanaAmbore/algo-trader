@@ -285,7 +285,7 @@
     { id: 'open',      label: 'Open',      count: orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length, accent: 'running' },
     { id: 'complete',  label: 'Filled',    count: orders.filter(o => o.status === 'COMPLETE').length,  accent: 'active' },
     { id: 'rejected',  label: 'Rejected',  count: orders.filter(o => o.status === 'REJECTED').length,  accent: 'error' },
-    { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'error' },
+    { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
   ] as f}
     <button type="button"
       onclick={() => filterStatus = f.id}
@@ -606,32 +606,22 @@
 <style>
   .order-card-num { font-variant-numeric: tabular-nums; }
 
-  /* Card chrome — restored per operator request, but TUNED for
-     density: only a colored LEFT-edge accent (3px) instead of the
-     full 1.5px box border. Result: less horizontal-line clutter,
-     each card still legibly framed by its accent colour.
-       • Order Entry  → amber-400 left edge (writing surface)
-       • Order Book   → cyan-400 left edge   (reading surface)
-     Industry analogue: Splunk panel side-stripe, Datadog widget
-     accent. */
+  /* Card chrome — outer left-edge accent dropped per operator. Each
+     card now gets a full 1.5px white-10% box-border. Both Order
+     Entry + Order Book read as their own framed regions on the
+     page. Matches /dashboard + /pulse bucket-card chrome. */
   .bucket-card {
     width: 100%;
     min-width: 0;
-    padding: 0.5rem 0.65rem 0.55rem 0.75rem;
+    padding: 0.55rem 0.65rem 0.6rem;
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: none;
-    border-left: 3px solid rgba(251, 191, 36, 0.70);  /* default = amber */
-    border-radius: 0 6px 6px 0;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
                 inset 0 1px 0 rgba(255, 255, 255, 0.06);
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-  }
-  /* Second card — Order Book — uses cyan-400 to read as "live data"
-     (matches RefreshButton + CollapseButton palette). */
-  section.bucket-card + section.bucket-card {
-    border-left-color: rgba(34, 211, 238, 0.70);
   }
   .bucket-header { margin-bottom: 0.35rem; }
   .mp-section-label {
@@ -641,11 +631,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(251, 191, 36, 0.7);
-  }
-  /* Match the section-label colour to the card's left-edge accent so
-     the eye reads "this strip belongs to this card" at a glance. */
-  section.bucket-card + section.bucket-card .mp-section-label {
-    color: rgba(34, 211, 238, 0.85);
   }
 
   /* Flex spacer pushes the bucket-header's [Collapse · DefaultSize ·
@@ -790,42 +775,81 @@
      /admin/execution, /pulse). The colored bottom-border on the
      active tab already carries the identity colour. */
 
-  /* Compact status filter cards — one line, number + label side by
-     side. Each card's BORDER carries the status colour now (was the
-     count number); the number is uniformly slate so the colored rim
-     does the at-a-glance signalling. Industry analogue: Sensibull's
-     status pills + IB TWS account-status row. */
+  /* Status filter cards — taller + color-coded per operator. Each
+     card carries:
+       • status-tinted background gradient (subtle)
+       • status-colored border
+       • status-colored count number
+     The status's identity colour appears in three places so the
+     operator can spot a non-zero bucket at a glance. Same vocabulary
+     as Sensibull status pills, IB TWS account-status row, Streak
+     order-state strip. */
   .oc-filter-card {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.4rem;
-    padding: 0.32rem 0.6rem;
+    justify-content: center;
+    gap: 0.18rem;
+    padding: 0.55rem 0.5rem;
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 4px;
     color: #c8d8f0;
     font-family: ui-monospace, monospace;
     cursor: pointer;
-    transition: border-color 0.12s, background 0.12s;
+    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
   }
   .oc-filter-card:hover {
-    border-color: rgba(255, 255, 255, 0.25);
+    border-color: rgba(255, 255, 255, 0.30);
   }
-  .oc-filter-card[data-status="running"]   { border-color: rgba(251, 191, 36, 0.55); }
-  .oc-filter-card[data-status="active"]    { border-color: rgba(74, 222, 128, 0.55); }
-  .oc-filter-card[data-status="error"]     { border-color: rgba(248, 113, 113, 0.45); }
-  .oc-filter-card[data-status="inactive"]  { border-color: rgba(126, 151, 184, 0.40); }
+
+  /* Status-tinted backgrounds + borders. Border carries the
+     status colour at higher opacity for clarity at small sizes. */
+  .oc-filter-card[data-status="running"] {
+    background: linear-gradient(180deg, rgba(251, 191, 36, 0.10) 0%, rgba(251, 191, 36, 0.04) 100%);
+    border-color: rgba(251, 191, 36, 0.55);
+  }
+  .oc-filter-card[data-status="active"] {
+    background: linear-gradient(180deg, rgba(74, 222, 128, 0.10) 0%, rgba(74, 222, 128, 0.04) 100%);
+    border-color: rgba(74, 222, 128, 0.55);
+  }
+  .oc-filter-card[data-status="error"] {
+    background: linear-gradient(180deg, rgba(248, 113, 113, 0.10) 0%, rgba(248, 113, 113, 0.04) 100%);
+    border-color: rgba(248, 113, 113, 0.50);
+  }
+  /* Cancelled stays in the orange family — distinct from rejected
+     red so the operator can tell the two terminal-error buckets
+     apart. Industry convention: red = broker rejection (something
+     went wrong); orange = operator/system cancel (intent
+     withdrawal). */
+  .oc-filter-card[data-status="cancelled"] {
+    background: linear-gradient(180deg, rgba(251, 146, 60, 0.10) 0%, rgba(251, 146, 60, 0.04) 100%);
+    border-color: rgba(251, 146, 60, 0.50);
+  }
+  .oc-filter-card[data-status="inactive"] {
+    border-color: rgba(126, 151, 184, 0.45);
+  }
+
+  /* Selected state — bright amber inset ring so the operator's
+     active filter is unambiguous regardless of the card's status
+     colour. */
   .oc-filter-card-on {
-    background: linear-gradient(180deg, #2f4067 0%, #233358 100%);
-    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.40) inset;
+    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.55) inset;
   }
+
+  /* Count number — bigger + colour-coded by status. */
   .oc-filter-count {
     font-weight: 800;
-    font-size: 0.85rem;
+    font-size: 1.25rem;
+    line-height: 1;
     color: #c8d8f0;
     font-variant-numeric: tabular-nums;
   }
+  .oc-filter-card[data-status="running"]   .oc-filter-count { color: #fbbf24; }
+  .oc-filter-card[data-status="active"]    .oc-filter-count { color: #4ade80; }
+  .oc-filter-card[data-status="error"]     .oc-filter-count { color: #f87171; }
+  .oc-filter-card[data-status="cancelled"] .oc-filter-count { color: #fb923c; }
+
   .oc-filter-label {
     font-size: 0.55rem;
     font-weight: 700;
