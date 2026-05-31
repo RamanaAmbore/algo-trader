@@ -20,6 +20,7 @@
     previewSymbol,
     enrichOrderPairs,
     buildOrderPayload,
+    getLtpForContext,
   } from '$lib/command/grammars/orders';
 
   /** @type {{
@@ -75,6 +76,11 @@
   let cmdHistory = $state([]);
   let running    = $state(false);
   let cmdVerb    = $state('');
+  // Captures the latest parsed context — used to look up the LTP chip
+  // shown above the CommandBar. Refreshed by `orderEnrichPairs` on
+  // every keystroke that re-tokenises the input.
+  let _cmdCtx    = $state(/** @type {any} */ ({}));
+  let _ltp       = $state(/** @type {number|null} */ (null));
   // Intent set by the action button right before submit. 'place' fires
   // onParsedOrder (switches to Ticket tab); 'basket' fires onAddToBasket.
   /** @type {'place' | 'basket'} */
@@ -89,7 +95,13 @@
   onMount(() => {
     loadInstruments().catch(() => {});
     loadAccounts().catch(() => {});
-    setQuoteLoadedCallback(() => cmdBar?.refresh());
+    setQuoteLoadedCallback(() => {
+      // Re-render the CommandBar so the price popup picks up newly
+      // arrived quotes; ALSO refresh the LTP chip outside the popup
+      // by re-resolving the cache.
+      cmdBar?.refresh();
+      _ltp = getLtpForContext(_cmdCtx);
+    });
   });
 
   function authHeaders() {
@@ -112,6 +124,11 @@
 
   function orderEnrichPairs(pairs, ctx) {
     cmdVerb = (ctx?._verb || '').toUpperCase();
+    _cmdCtx = ctx || {};
+    // Look up LTP for the current parse context — re-fired by the
+    // quote-loaded callback when the cache fills, so the chip flips
+    // from "—" to the value without an extra keystroke.
+    _ltp = getLtpForContext(_cmdCtx);
     return enrichOrderPairs(pairs, ctx);
   }
 
@@ -235,6 +252,20 @@
 </script>
 
 <div class="clt-root" class:clt-standalone={standalone}>
+  {#if _cmdCtx?.symbol}
+    <!-- LTP chip — Surfaces the current instrument's last-traded
+         price OUTSIDE the price popup. Previously the popup row
+         matching LTP was annotated " ◀ LTP" inline, which competed
+         with the bid/ask depth annotations. Now the popup is a
+         clean candidate list; the chip carries the LTP value. -->
+    <div class="clt-ltp">
+      <span class="clt-ltp-label">LTP</span>
+      <span class="clt-ltp-val">{_ltp != null ? '₹' + _ltp.toFixed(2) : '—'}</span>
+      {#if _cmdCtx.symbol}
+        <span class="clt-ltp-sym">{_cmdCtx.symbol}{_cmdCtx.strike ? ' ' + _cmdCtx.strike : ''}{_cmdCtx.instType ? ' ' + _cmdCtx.instType : ''}</span>
+      {/if}
+    </div>
+  {/if}
   <div class="relative mb-2">
     <CommandBar
       bind:this={cmdBar}
@@ -291,6 +322,40 @@
 <style>
   .clt-root { display: flex; flex-direction: column; }
   .clt-standalone { /* no extra styles needed — caller owns layout */ }
+
+  /* LTP chip — read-only strip above the CommandBar showing the
+     current instrument's last-traded price. Surfaces what used to
+     be the " ◀ LTP" inline annotation on the popup row, now lifted
+     out so the popup stays a clean candidate list. */
+  .clt-ltp {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    align-self: flex-start;
+    padding: 0.15rem 0.5rem;
+    margin-bottom: 0.35rem;
+    background: rgba(125, 211, 252, 0.08);
+    border: 1px solid rgba(125, 211, 252, 0.30);
+    border-radius: 3px;
+    font-size: 0.62rem;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+  .clt-ltp-label {
+    color: #7dd3fc;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .clt-ltp-val {
+    color: #f1f7ff;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .clt-ltp-sym {
+    color: #7e97b8;
+    font-weight: 600;
+  }
 
   /* + Basket button — green outline matching the basket palette. */
   :global(.sim-btn-basket) {

@@ -45,6 +45,29 @@ export function getLtp(symbol) {
   } catch { return null; }
 }
 
+/** Get cached LTP for the instrument implied by a parsed command
+ *  context (symbol + optional strike + expiry + instType). Used by
+ *  CommandLineTab to render the LTP chip next to the price field —
+ *  the popup itself no longer suffixes the LTP row with " ◀ LTP"
+ *  per operator request. Kicks off a fetch on cache miss; returns
+ *  null until the quote lands so callers should re-render on
+ *  setQuoteLoadedCallback. */
+export function getLtpForContext(ctx) {
+  try {
+    const inst = resolveInstrument({
+      instType: ctx?.instType || 'EQ',
+      symbol:   ctx?.symbol,
+      strike:   ctx?.strike,
+      expiry:   ctx?.expiry,
+    });
+    if (!inst) return null;
+    const key = `${inst.e}:${inst.s}`;
+    const entry = _ltpCache.get(key);
+    if (!entry) { _fetchLtp(inst.e, inst.s); return null; }
+    return entry.ltp;
+  } catch { return null; }
+}
+
 async function _fetchLtp(exchange, tradingsymbol) {
   const key = `${exchange}:${tradingsymbol}`;
   const cached = _ltpCache.get(key);
@@ -259,7 +282,11 @@ function priceSuggest(prefix, ctx) {
       });
     }
 
-    // LIMIT: show ATM ± 10 ticks with depth annotations
+    // LIMIT: show ATM ± 10 ticks with depth annotations. LTP itself
+    // is surfaced as a separate chip OUTSIDE the popup (callers read
+    // it from the cache via `getLtpForCtx` below), so popup rows
+    // stay focused on "candidate prices to fill" without the triangle
+    // glyph + LTP suffix.
     const atm = Math.round(ltp / tick) * tick;
     const steps = [];
     for (let i = -10; i <= 10; i++) {
@@ -270,7 +297,6 @@ function priceSuggest(prefix, ctx) {
       let label = String(p);
       if (bid) label += ` (bid ${bid.quantity})`;
       else if (ask) label += ` (ask ${ask.quantity})`;
-      if (+p.toFixed(2) === +ltp.toFixed(2)) label += ' ◀ LTP';
       steps.push(label);
     }
     const atmStr = String(+atm.toFixed(2));

@@ -15,7 +15,18 @@
   import { loadInstruments, searchByPrefix } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
   import { loadAccounts } from '$lib/data/accounts';
+  import Select from '$lib/Select.svelte';
   import { createPerformanceSocket } from '$lib/ws';
+
+  // Tab strip metadata — duplicated from SymbolPanel so /orders can
+  // render the strip itself in the bucket-header (Phase A of the
+  // orders-page redesign). Keep these in sync.
+  const TABS = /** @type {const} */ ([
+    { id: 'chart',   label: 'Chart',        dot: '#f0d070', activeTxt: '#f0d070', activeBorder: '#f0d070', activeBg: 'rgba(240,208,112,0.14)' },
+    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
+    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
+  ]);
 
   let orders        = $state([]);
   let loading       = $state(true);
@@ -60,6 +71,20 @@
     _symOpen = false;
     _symSuggestions = [];
   }
+
+  // Page-level shared state for the Order Entry shell.
+  let _entryAccount = $state('');
+  let _entryActiveTab = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ ('command'));
+  let _entryAccounts  = $state(/** @type {string[]} */ ([]));
+
+  // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
+  // logic SymbolPanel uses internally; duplicated here so the tab
+  // strip in our bucket-header knows when to grey out the Chain pill.
+  const _chainDisabled = $derived.by(() => {
+    const s = String(_entrySymbol || '').toUpperCase();
+    if (!s) return false; // no symbol picked yet — leave Chain clickable
+    return !/(?:CE|PE|FUT)$/.test(s);
+  });
   // OrderTicket props — opens a SymbolPanel modal pre-filled from a
   // row click (Modify / Repeat path). The top-of-page inline shell
   // handles fresh placement; this separate modal handles single-target
@@ -203,7 +228,14 @@
 
   onMount(() => {
     loadOrders();
-    loadAccounts().catch(() => {});
+    loadAccounts()
+      .then((/** @type {any[]} */ list) => {
+        _entryAccounts = (list || [])
+          .map(a => String(a?.account_id || a?.account || a || ''))
+          .filter(Boolean);
+        if (!_entryAccount && _entryAccounts.length === 1) _entryAccount = _entryAccounts[0];
+      })
+      .catch(() => {});
     loadInstruments().catch(() => {});
     unsub = createPerformanceSocket((msg) => {
       // Either an order postback or a positions/holdings refresh — both
@@ -233,35 +265,27 @@
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
 
-<!-- Status Dashboard — moved to the top of the page under the strip
-     so the operator sees the order-state counters first, before
-     anything else. Click a card to filter the order grid below. -->
+<!-- Status filter strip — compact one-line counters. Number + label
+     sit inline (number left, label right) so each card collapses to
+     ~38 px tall instead of the previous ~80 px (Phase D of the
+     redesign). Card border carries the status colour now (Phase E)
+     so the number stays uniformly slate. -->
 <div class="grid grid-cols-5 gap-2 mt-1 mb-2">
-  <button onclick={() => filterStatus = 'all'}
-    class="algo-status-card p-2 text-center {filterStatus === 'all' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="inactive">
-    <div class="text-xs font-bold text-[#c8d8f0]">{orders.length}</div>
-    <div class="text-[0.62rem] text-[#7e97b8] uppercase">All</div>
-  </button>
-  <button onclick={() => filterStatus = 'open'}
-    class="algo-status-card p-2 text-center {filterStatus === 'open' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="running">
-    <div class="text-xs font-bold text-amber-400">{orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length}</div>
-    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Open</div>
-  </button>
-  <button onclick={() => filterStatus = 'complete'}
-    class="algo-status-card p-2 text-center {filterStatus === 'complete' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="active">
-    <div class="text-xs font-bold text-green-400">{orders.filter(o => o.status === 'COMPLETE').length}</div>
-    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Filled</div>
-  </button>
-  <button onclick={() => filterStatus = 'rejected'}
-    class="algo-status-card p-2 text-center {filterStatus === 'rejected' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="error">
-    <div class="text-xs font-bold text-red-400">{orders.filter(o => o.status === 'REJECTED').length}</div>
-    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Rejected</div>
-  </button>
-  <button onclick={() => filterStatus = 'cancelled'}
-    class="algo-status-card p-2 text-center {filterStatus === 'cancelled' ? 'ring-2 ring-[#fbbf24]/40' : ''}" data-status="error">
-    <div class="text-xs font-bold text-orange-400">{orders.filter(o => o.status === 'CANCELLED').length}</div>
-    <div class="text-[0.62rem] text-[#7e97b8] uppercase">Cancelled</div>
-  </button>
+  {#each [
+    { id: 'all',       label: 'All',       count: orders.length, accent: 'inactive' },
+    { id: 'open',      label: 'Open',      count: orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length, accent: 'running' },
+    { id: 'complete',  label: 'Filled',    count: orders.filter(o => o.status === 'COMPLETE').length,  accent: 'active' },
+    { id: 'rejected',  label: 'Rejected',  count: orders.filter(o => o.status === 'REJECTED').length,  accent: 'error' },
+    { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'error' },
+  ] as f}
+    <button type="button"
+      onclick={() => filterStatus = f.id}
+      class="oc-filter-card {filterStatus === f.id ? 'oc-filter-card-on' : ''}"
+      data-status={f.accent}>
+      <span class="oc-filter-count">{f.count}</span>
+      <span class="oc-filter-label">{f.label}</span>
+    </button>
+  {/each}
 </div>
 
 <!-- Order Entry card — canonical bucket-card chrome so the page sits
@@ -273,13 +297,11 @@
 <section class="bucket-card mt-1 mb-2"
   class:fs-card-on={_fsEntry}
   class:is-collapsed={_colEntry}>
-  <div class="bucket-header">
+  <div class="bucket-header oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
     <!-- Symbol picker — sits IMMEDIATELY after the section label per
          operator request. SymbolPanel below renders `headerless` so
-         its own copy of this picker is suppressed. Pick once, every
-         shell tab (Chart · Ticket · Chain · Command) re-renders
-         against the new symbol. -->
+         its own copy of this picker is suppressed. -->
     <div class="oc-sym-pick">
       <input
         type="text"
@@ -307,6 +329,50 @@
         </div>
       {/if}
     </div>
+    <!-- Page-level Account picker — every shell tab (Chart, Ticket,
+         Chain, Command) inherits this. Each tab can still override
+         locally (the Ticket form's Account select stays for per-
+         ticket flips; Command Line accepts an account token to
+         override for that one command). -->
+    {#if _entryAccounts.length > 1}
+      <div class="oc-entry-account">
+        <Select bind:value={_entryAccount}
+                placeholder="Account…"
+                ariaLabel="Order entry account"
+                options={_entryAccounts.map(a => ({ value: a, label: a }))} />
+      </div>
+    {:else if _entryAccounts.length === 1}
+      <span class="oc-entry-acct-chip" title="Single broker account">{_entryAccounts[0]}</span>
+    {/if}
+    <!-- Tab strip lifted out of SymbolPanel and into the bucket-header
+         per operator request "move the tabs to the row with text
+         order entry". Same colour palette and dot indicators as
+         SymbolPanel's internal strip. Active tab pushes through the
+         bound activeTab prop to flip the shell body below. -->
+    <div class="oc-tabs" role="tablist">
+      {#each TABS as tab}
+        {@const disabled = tab.id === 'chain' && _chainDisabled}
+        {@const isActive = _entryActiveTab === tab.id}
+        <button type="button" role="tab"
+          class="oc-tab"
+          class:oc-tab-disabled={disabled}
+          disabled={disabled}
+          title={disabled ? 'Chain tab applies to F&O instruments only' : undefined}
+          aria-selected={isActive}
+          aria-disabled={disabled}
+          style="
+            color: {isActive ? tab.activeTxt : '#94a3b8'};
+            background: {isActive ? tab.activeBg : 'transparent'};
+            border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
+            font-weight: {isActive ? '800' : '600'};
+            opacity: {disabled ? '0.5' : '1'};
+          "
+          onclick={() => { if (!disabled) _entryActiveTab = /** @type {any} */ (tab.id); }}>
+          <span class="oc-tab-dot" style="background:{tab.dot};"></span>
+          {tab.label}
+        </button>
+      {/each}
+    </div>
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -325,8 +391,12 @@
     <SymbolPanel
       inline
       headerless
+      tabsExternal
+      bind:activeTab={_entryActiveTab}
       defaultTab="command"
       symbol={_entrySymbol}
+      account={_entryAccount}
+      accounts={_entryAccounts}
       action="open"
       side="BUY"
       onSymbolChange={(sym) => { _entrySymbol = sym; }}
@@ -633,6 +703,113 @@
     color: #7e97b8;
     font-size: 0.55rem;
     letter-spacing: 0.06em;
+  }
+
+  /* Bucket-header gap tightens on the Order Entry card so the
+     section label + symbol + account + tabs + trio all fit on one
+     row at desktop widths. Each child still gets visual breathing
+     room via the explicit spacer + the tab strip's internal gap. */
+  .oc-entry-header { gap: 0.6rem; }
+
+  /* Account picker chrome — when multiple brokers loaded use a Select,
+     when only one the chip below renders the read-only code. */
+  .oc-entry-account { min-width: 9rem; max-width: 13rem; }
+  .oc-entry-acct-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.18rem 0.5rem;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 3px;
+    color: #67e8f9;
+    font-size: 0.65rem;
+    font-weight: 700;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+
+  /* Tab strip lifted into the bucket-header. Compact horizontal
+     scroller; each pill carries the same colour dot SymbolPanel
+     used internally so the operator's mental model carries
+     ("CHART = sky", "TICKET = amber", "CHAIN = green", "COMMAND =
+     sky-cyan"). */
+  .oc-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+  }
+  .oc-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.32rem 0.65rem;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: #94a3b8;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+  }
+  .oc-tab:hover:not(.oc-tab-disabled) {
+    color: #c8d8f0;
+  }
+  .oc-tab-disabled {
+    cursor: not-allowed;
+  }
+  .oc-tab-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Compact status filter cards — one line, number + label side by
+     side. Each card's BORDER carries the status colour now (was the
+     count number); the number is uniformly slate so the colored rim
+     does the at-a-glance signalling. Industry analogue: Sensibull's
+     status pills + IB TWS account-status row. */
+  .oc-filter-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+    padding: 0.32rem 0.6rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .oc-filter-card:hover {
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+  .oc-filter-card[data-status="running"]   { border-color: rgba(251, 191, 36, 0.55); }
+  .oc-filter-card[data-status="active"]    { border-color: rgba(74, 222, 128, 0.55); }
+  .oc-filter-card[data-status="error"]     { border-color: rgba(248, 113, 113, 0.45); }
+  .oc-filter-card[data-status="inactive"]  { border-color: rgba(126, 151, 184, 0.40); }
+  .oc-filter-card-on {
+    background: linear-gradient(180deg, #2f4067 0%, #233358 100%);
+    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.40) inset;
+  }
+  .oc-filter-count {
+    font-weight: 800;
+    font-size: 0.85rem;
+    color: #c8d8f0;
+    font-variant-numeric: tabular-nums;
+  }
+  .oc-filter-label {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7e97b8;
   }
 
   /* Inline count chip alongside the section label — at-a-glance

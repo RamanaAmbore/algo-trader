@@ -57,6 +57,8 @@
    *   inline?:         boolean,
    *   headerless?:     boolean,
    *   onSymbolChange?: ((sym: string) => void) | null,
+   *   tabsExternal?:   boolean,
+   *   activeTab?:      'chart' | 'command' | 'ticket' | 'chain',
    * }} */
   let {
     defaultTab     = /** @type {'chart'|'command'|'ticket'|'chain'} */ ('ticket'),
@@ -110,6 +112,17 @@
     // this to their own state so a chain-tab pick still lands in the
     // header chip.
     onSymbolChange = /** @type {((sym: string) => void) | null} */ (null),
+    // When true the shell omits its own tab strip. The host page is
+    // expected to render the strip itself (typically in a parent
+    // bucket-card header) and two-way bind `activeTab` so picks land
+    // in the right body. Used by /orders to consolidate the Order
+    // Entry header into a single row.
+    tabsExternal   = false,
+    // Bindable active tab. Defaults to undefined; resolved internally
+    // to the requested defaultTab if no host binding is wired. When
+    // tabsExternal is true the host MUST bind this prop or the body
+    // won't update on tab clicks.
+    activeTab      = $bindable(/** @type {'chart'|'command'|'ticket'|'chain'|undefined} */ (undefined)),
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -166,7 +179,18 @@
     if (req === 'chain' && chainDisabled) return 'ticket';
     return req;
   }
-  let _activeTab = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
+  // If the host wired `activeTab` we mirror it; otherwise own the
+  // state internally. Either way, downstream code reads `_activeTab`
+  // and tab-click handlers write to it — the two-way bind takes care
+  // of pushing the change back up to the host when applicable.
+  let _activeTabInternal = $state(/** @type {'chart'|'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
+  // Seed the host's binding from the resolved default on first render.
+  $effect(() => { if (activeTab === undefined) activeTab = _activeTabInternal; });
+  const _activeTab = $derived(activeTab || _activeTabInternal);
+  function _setActiveTab(/** @type {'chart'|'command'|'ticket'|'chain'} */ id) {
+    _activeTabInternal = id;
+    activeTab = id;
+  }
 
   // ── Chart tab state ───────────────────────────────────────────────
   // Mirrors the body of the retired SymbolChartModal — same fetch +
@@ -578,7 +602,7 @@
 
   function handleParsedOrder(/** @type {any} */ props) {
     _cmdOrderProps = props;
-    _activeTab = 'ticket';
+    _setActiveTab('ticket');
   }
 
   /** Called by CommandLineTab when basketMode is on. */
@@ -764,7 +788,10 @@
     </div>
     {/if}
 
-    <!-- Tab strip -->
+    <!-- Tab strip — suppressed when the host page renders its own
+         (tabsExternal). Operator clicks still flow back via the
+         two-way bound `activeTab` either way. -->
+    {#if !tabsExternal}
     <div class="oes-tabs" role="tablist">
       {#each TABS as tab}
         {@const disabled   = tab.id === 'chain' && chainDisabled}
@@ -787,7 +814,7 @@
             opacity: {disabled ? '0.5' : '1'};
             cursor: {disabled ? 'not-allowed' : 'pointer'};
           "
-          onclick={() => { if (!disabled) _activeTab = /** @type {any} */ (tab.id); }}
+          onclick={() => { if (!disabled) _setActiveTab(/** @type {any} */ (tab.id)); }}
         >
           <span class="oes-tab-dot" style="background:{tab.dot};"></span>
           {tab.label}
@@ -797,6 +824,7 @@
         </button>
       {/each}
     </div>
+    {/if}
 
     <!-- Tab content -->
     <div class="oes-body">
