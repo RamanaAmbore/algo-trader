@@ -5,8 +5,7 @@
   // command history + agent / order / system streams.
 
   import { authStore, nowStamp } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import InfoHint        from '$lib/InfoHint.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -29,7 +28,7 @@
     </span>
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
-    <OrderNotifications /><AgentNotifications />
+    <PageHeaderActions />
   </div>
 
   {#if isDemo}

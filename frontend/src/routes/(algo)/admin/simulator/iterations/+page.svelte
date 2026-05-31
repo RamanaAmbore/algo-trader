@@ -8,8 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIterations } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -108,7 +107,7 @@
   <span class="ml-auto"></span>
   <RefreshButton onClick={load} loading={loading} label="iterations" />
   <a href="/admin/simulator" class="back-link">← Simulator</a>
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}

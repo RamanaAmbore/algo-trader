@@ -1,8 +1,7 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
   import { nowStamp, logTimeIst, formatDualTz } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
@@ -311,7 +310,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions symbol={_entrySymbol} hideOrder={true} />
 </div>
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}

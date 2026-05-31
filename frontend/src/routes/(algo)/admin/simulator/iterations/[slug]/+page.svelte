@@ -9,8 +9,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { authStore, logTime, dualTsHtml, nowStamp } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -94,7 +93,7 @@
   <RefreshButton onClick={load} loading={loading} label="iteration" />
   <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
   <a href="/admin/simulator" class="back-link">Simulator</a>
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}

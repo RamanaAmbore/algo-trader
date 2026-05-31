@@ -19,8 +19,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore, nowStamp } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
@@ -78,7 +77,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <div class="exec-tabs" role="tablist" aria-label="Lab workspace">

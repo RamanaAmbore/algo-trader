@@ -8,8 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp, marketAwareInterval } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
   import {
@@ -1899,7 +1898,7 @@
   <span class="ml-auto"></span>
   <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
                  loading={loading} label="derivatives" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions symbol={selectedUnderlying} />
 </div>
 
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain

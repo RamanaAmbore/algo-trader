@@ -4,8 +4,7 @@
   // with different presets so the merge engine + symbol-cell renderer
   // + format helpers stay in one place.
   import MarketPulse from '$lib/MarketPulse.svelte';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { nowStamp } from '$lib/stores';
@@ -34,7 +33,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <RefreshButton onClick={refreshPage} loading={_refreshing} label="pulse" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <!-- accountPicker=true mounts a per-card Account MultiSelect inside

@@ -1058,45 +1058,10 @@
   }
 }
 
-/* When ANY card on the page is fullscreen, lift the OrderNotifications
-   + AgentNotifications bells out of the page-header (now buried under
-   the fullscreen modal at z-index 9999) and pin them at the viewport
-   top-right alongside the card-control trio. The operator stays aware
-   of order + agent activity without exiting fullscreen.
-
-   Right-to-left ordering (1.4rem card-control buttons + 1.5rem
-   notification buttons + 0.3rem gaps):
-
-     [Default]        rightmost                  right: base
-     [Refresh]        +1.7rem                    right: base + 1.7rem
-     [AgentNotif]     +3.4rem (1.4 + 0.3 + 1.4 + 0.3)
-     [OrderNotif]     +5.2rem (above + 1.5 + 0.3)
-
-   `body:has()` lets us scope the lift to pages with an active
-   fullscreen card; on normal pages the bells stay in the page header
-   exactly where they were. */
-body:has(.fs-card-on) .page-header .anb-wrap,
-body:has(.fs-card-on) .page-header .onb-wrap {
-  position: fixed !important;
-  top: calc(2rem + 0.45rem) !important;
-  z-index: 10000 !important;
-}
-body:has(.fs-card-on) .page-header .anb-wrap {
-  right: calc(2rem + 0.65rem + 3.4rem) !important;
-}
-body:has(.fs-card-on) .page-header .onb-wrap {
-  right: calc(2rem + 0.65rem + 5.2rem) !important;
-}
-@media (max-width: 600px) {
-  body:has(.fs-card-on) .page-header .anb-wrap {
-    top: calc(0.5rem + 0.4rem) !important;
-    right: calc(0.5rem + 0.55rem + 3.4rem) !important;
-  }
-  body:has(.fs-card-on) .page-header .onb-wrap {
-    top: calc(0.5rem + 0.4rem) !important;
-    right: calc(0.5rem + 0.55rem + 5.2rem) !important;
-  }
-}
+/* PageHeaderActions (.pha-wrap) open modals — they don't need
+   viewport-pinning during fullscreen. The modal overlay itself is
+   position: fixed at z-index 10000, so it surfaces above any
+   fullscreen card without additional CSS here. */
 
 /* ── Canonical card header layout ────────────────────────────────
    Single global rule that enforces the same header treatment on

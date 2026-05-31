@@ -16,8 +16,7 @@
 <script>
   import { onMount } from 'svelte';
   import { authStore, nowStamp } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     fetchAgentFragments, createAgentFragment,
@@ -173,7 +172,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <RefreshButton onClick={doReload} loading={busy} label="fragments" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <AgentWorkspaceTabs />

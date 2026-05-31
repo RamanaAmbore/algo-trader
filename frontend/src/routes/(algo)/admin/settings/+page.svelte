@@ -7,8 +7,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { fetchSettings, updateSetting, resetSetting } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
@@ -130,7 +129,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}

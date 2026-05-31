@@ -1,8 +1,7 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
   import { nowStamp, logTime, lifespanChip, visibleInterval } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
@@ -574,7 +573,7 @@
   <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
     {aiOpen ? '× Close AI' : '✦ Ask AI'}
   </button>
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <AgentWorkspaceTabs />

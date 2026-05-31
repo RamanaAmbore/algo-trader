@@ -21,8 +21,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp, visibleInterval } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     fetchBrokerAccounts, createBrokerAccount, updateBrokerAccount,
@@ -305,7 +304,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <RefreshButton onClick={load} loading={loading} label="brokers" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <StaleBanner {error} hasData={accounts.length > 0} label="Broker accounts" />

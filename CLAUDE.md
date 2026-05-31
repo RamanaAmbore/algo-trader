@@ -504,17 +504,13 @@ Conditionally rendered at each callsite (place the RefreshButton BEFORE the rest
 <FullscreenButton … />  <!-- self-hides via {#if !isFullscreen} -->
 ```
 
-- `OrderNotifications` + `AgentNotifications` are NOT placed inside the card — they're the global page-header instances pinned to the viewport via `body:has(.fs-card-on) .page-header .anb-wrap, .onb-wrap { position: fixed }` in `frontend/src/app.css`.
+- `PageHeaderActions` is NOT placed inside the card — it's the global page-header instance. In fullscreen mode the three buttons stay in the header (no viewport-pin needed since they open modals, not popovers).
 - DefaultSizeButton glyph is the Windows "Restore Down" two-overlapping-rectangles icon (visually distinct from FullscreenButton's outward arrows).
 - All four card-control icons share the same cyan-400 palette.
 
 ### Width on collapse
 
 Every card root carries `width: 100%; box-sizing: border-box;` so collapse never shrinks the card horizontally. Icons stay in their default location of the header regardless of body state.
-
-### Notification badge behaviour
-
-`OrderNotifications` + `AgentNotifications` mark events seen on CLOSE (not on OPEN). Badge stays visible while the panel is open so the operator can read items + still register the count.
 
 ### Page-header rule (every algo page)
 
@@ -530,13 +526,25 @@ The canonical page-header is:
   <span class="ml-auto"></span>
   <RefreshButton onClick={pageLoadFn} loading={loading} label="…" />
   [optional page-specific action chips]
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions symbol={contextSymbol} hideOrder={isOrdersPage} hideChart={isChartsPage} />
 </div>
 ```
 
+`PageHeaderActions` renders three vibrant gradient buttons:
+- **Order** — vivid amber (`#f59e0b → #d97706`). Opens `SymbolPanel` (order ticket). Hidden on `/orders` (`hideOrder={true}`).
+- **Chart** — vivid cyan (`#06b6d4 → #0891b2`). Opens `ChartModal`. Disabled (opacity 38%) when no `symbol` prop. Hidden on `/charts` (`hideChart={true}`).
+- **Log** — vivid violet (`#a855f7 → #7e22ce`). Opens `ActivityLogModal` (Order Book + Agent Log tabs). Always shown.
+
+Pass `symbol` when the page has a contextual symbol in scope:
+- `/admin/options` → `symbol={selectedUnderlying}`
+- `/orders` → `symbol={_entrySymbol}` (+ `hideOrder={true}`)
+- `/admin/research` → `symbol={selected?.symbol ?? ''}`
+- `/charts` → `hideOrder={true} hideChart={true}` (page has its own order button; chart is the page itself)
+- All others → no `symbol` prop (order modal opens with empty picker, chart button is disabled)
+
 - **Every page that fetches data dynamically MUST have a page-header RefreshButton** wired to its primary load function. If the page has multiple loaders, wrap them: `onClick={() => { loadA(); loadB(); }}`.
 - Exceptions: `console` (command surface, no data), `admin/settings` (form-only), `showcase` (static narrative).
-- The `RefreshButton` placement is between the `ml-auto` spacer and the notification bells. Page-specific action chips (back-links, ✦ Ask AI, Create User, etc.) sit between the RefreshButton and the notification bells in markup order.
+- The `RefreshButton` placement is between the `ml-auto` spacer and `PageHeaderActions`. Page-specific action chips (back-links, ✦ Ask AI, Create User, etc.) sit between the RefreshButton and `PageHeaderActions` in markup order.
 - Connection-status badge on the RefreshButton is automatic — every mounted `<RefreshButton />` subscribes to the global `connStatus` store; no per-callsite wiring needed. The badge keeps its size/color/number unchanged during a refresh (only the icon glyph swaps). It encodes THREE distinct states so the operator can diagnose without leaving the page:
 
   | State | Trigger | Badge |
@@ -610,7 +618,9 @@ Every page-level picker bar (e.g. /admin/options `.opt-picker`) follows this rul
 | RefreshButton (cyan-400, spin animation) | [`frontend/src/lib/RefreshButton.svelte`](frontend/src/lib/RefreshButton.svelte) |
 | Global fullscreen pinning, bell lift, collapse hide | [`frontend/src/app.css`](frontend/src/app.css) (search `.fs-card-on`) |
 | `.algo-title-group` global helper | [`frontend/src/routes/(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte) |
-| Notification close-mark semantics | [`OrderNotifications.svelte`](frontend/src/lib/OrderNotifications.svelte) + [`AgentNotifications.svelte`](frontend/src/lib/AgentNotifications.svelte) `_close()` helper |
+| Page-header action trio (Order + Chart + Log) | [`frontend/src/lib/PageHeaderActions.svelte`](frontend/src/lib/PageHeaderActions.svelte) |
+| Combined activity log modal (Order Book + Agent Log) | [`frontend/src/lib/ActivityLogModal.svelte`](frontend/src/lib/ActivityLogModal.svelte) |
+| Auto-fire agent toast (KEEP — separate from the log) | [`frontend/src/lib/AgentToast.svelte`](frontend/src/lib/AgentToast.svelte) |
 
 When adding a new card, copy the trio + AccountMultiSelect placement from MarketPulse Positions/Holdings or dashboard Capital/Equity. Do NOT invent a new variant.
 

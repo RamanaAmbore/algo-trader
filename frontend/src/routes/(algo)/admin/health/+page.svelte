@@ -7,8 +7,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSystemHealth } from '$lib/api';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -64,7 +63,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <RefreshButton onClick={load} loading={loading} label="health" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <StaleBanner {error} hasData={!!health} label="Health snapshot" />

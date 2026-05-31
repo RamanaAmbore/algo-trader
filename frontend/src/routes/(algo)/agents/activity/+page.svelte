@@ -8,8 +8,7 @@
 -->
 <script>
   import { nowStamp } from '$lib/stores';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
@@ -35,7 +34,7 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <AgentWorkspaceTabs />

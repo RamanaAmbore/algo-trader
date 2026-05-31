@@ -2,8 +2,7 @@
   import { onMount, onDestroy, getContext } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -1499,7 +1498,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
-  <OrderNotifications /><AgentNotifications />
+  <PageHeaderActions />
 </div>
 
 <!-- Hero strip retired. Its six chips lived elsewhere:

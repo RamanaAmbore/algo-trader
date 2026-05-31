@@ -5,8 +5,7 @@
   import { nowStamp } from '$lib/stores';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import OrderNotifications from '$lib/OrderNotifications.svelte';
-  import AgentNotifications from '$lib/AgentNotifications.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
 
@@ -77,8 +76,7 @@
       </svg>
     </button>
     <RefreshButton onClick={_refresh} loading={_chartLoading} label="charts" />
-    <OrderNotifications />
-    <AgentNotifications />
+    <PageHeaderActions hideOrder={true} hideChart={true} />
   </div>
 
   {#if _error}
