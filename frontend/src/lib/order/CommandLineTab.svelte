@@ -12,8 +12,9 @@
   import { authStore } from '$lib/stores';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
   import { loadAccounts } from '$lib/data/accounts';
-  import { interpretAgent } from '$lib/api';
+  import { interpretAgent, placeTicketOrder, previewOrderMargin } from '$lib/api';
   import CommandBar from '$lib/CommandBar.svelte';
+  import { aggFmt } from '$lib/format';
   import {
     orderGrammar,
     setQuoteLoadedCallback,
@@ -81,6 +82,14 @@
   // every keystroke that re-tokenises the input.
   let _cmdCtx    = $state(/** @type {any} */ ({}));
   let _ltp       = $state(/** @type {number|null} */ (null));
+  // Margin / cash impact preview — same shape PreviewOrderMargin
+  // surfaces inside OrderTicket. Auto-fetches when the parse has
+  // enough fields to build a valid payload (symbol + side + qty,
+  // and price when LIMIT). Cleared otherwise so the chip hides.
+  let _marginPreview = $state(/** @type {any} */ (null));
+  let _marginLoading = $state(false);
+  let _marginTimer;
+  let _lastMarginKey = '';
   // Intent set by the action button right before submit. 'place' fires
   // onParsedOrder (switches to Ticket tab); 'basket' fires onAddToBasket.
   /** @type {'place' | 'basket'} */
@@ -129,7 +138,58 @@
     // quote-loaded callback when the cache fills, so the chip flips
     // from "—" to the value without an extra keystroke.
     _ltp = getLtpForContext(_cmdCtx);
+    _scheduleMarginPreview();
     return enrichOrderPairs(pairs, ctx);
+  }
+
+  // Schedules a debounced previewOrderMargin call when the parse has
+  // enough info to build a payload. Same shape OrderTicket uses, so
+  // the operator sees the same MARGIN / Avail / After breakdown
+  // without flipping to the Ticket tab.
+  function _scheduleMarginPreview() {
+    if (_marginTimer) clearTimeout(_marginTimer);
+    _marginTimer = setTimeout(async () => {
+      try {
+        const ctx = _cmdCtx;
+        if (!ctx?.symbol || !ctx?._verb || !ctx?.qty) {
+          _marginPreview = null;
+          return;
+        }
+        // Resolve to a tradingsymbol via the same helper buildOrderPayload uses.
+        const payload = buildOrderPayload({ verb: ctx._verb, args: ctx, kwargs: ctx });
+        if (!payload) { _marginPreview = null; return; }
+        const orderType = payload.order_type || 'LIMIT';
+        if (orderType === 'LIMIT' && !(payload.price > 0)) {
+          // No usable limit yet → skip until the operator types a price.
+          _marginPreview = null;
+          return;
+        }
+        const key = JSON.stringify({
+          a: payload.account, s: payload.tradingsymbol, q: payload.quantity,
+          t: orderType, side: payload.transaction_type,
+          p: payload.price || 0, tp: payload.trigger_price || 0,
+        });
+        if (key === _lastMarginKey && _marginPreview) return;
+        _lastMarginKey = key;
+        _marginLoading = true;
+        _marginPreview = await previewOrderMargin({
+          account:       payload.account,
+          tradingsymbol: payload.tradingsymbol,
+          exchange:      payload.exchange,
+          quantity:      payload.quantity,
+          side:          payload.transaction_type,
+          order_type:    orderType,
+          product:       payload.product,
+          variety:       payload.variety || 'regular',
+          price:         payload.price || 0,
+          trigger_price: payload.trigger_price || 0,
+        });
+      } catch (e) {
+        _marginPreview = { error: (/** @type {any} */ (e)?.message || 'preview failed').slice(0, 60) };
+      } finally {
+        _marginLoading = false;
+      }
+    }, 400);
   }
 
   // onsubmitRaw fires for every submit (even when the grammar can't parse it),
@@ -214,30 +274,38 @@
           return;
         }
 
-        const props = {
-          symbol:         sym,
-          exchange:       payload.exchange || inst?.e || 'NFO',
-          side:           payload.transaction_type,
-          action:         'open',
-          qty:            Number(payload.quantity) || 0,
-          lotSize:        lot,
-          orderType:      payload.order_type || 'LIMIT',
-          price:          payload.price > 0 ? payload.price : undefined,
-          trigger:        payload.trigger_price > 0 ? payload.trigger_price : undefined,
-          product:        payload.product,
-          accounts:       [],
-          account:        String(payload.account || ''),
-          defaultMode:    'live',
-          availableModes: ['live'],
-          _origCommand:   raw,
-        };
-        addResult(
-          raw,
-          `Opening ticket: ${payload.transaction_type} ${payload.quantity} ${sym} on ${payload.exchange}`,
-        );
+        // Place intent (Enter / Submit button) — fires the order
+        // directly via placeTicketOrder instead of opening the Ticket
+        // tab for review. Operator already typed everything explicitly;
+        // forcing a second confirmation slows the keyboard-first flow.
+        // The margin chip above the bar surfaces the impact BEFORE
+        // submit so the operator isn't flying blind.
+        try {
+          const resp = await placeTicketOrder({
+            mode:             'live',
+            side:             payload.transaction_type,
+            tradingsymbol:    sym,
+            exchange:         payload.exchange || inst?.e || 'NFO',
+            quantity:         Number(payload.quantity) || 0,
+            product:          payload.product,
+            order_type:       payload.order_type || 'LIMIT',
+            variety:          payload.variety || 'regular',
+            validity:         'DAY',
+            price:            payload.price > 0 ? payload.price : null,
+            trigger_price:    payload.trigger_price > 0 ? payload.trigger_price : null,
+            account:          String(payload.account || ''),
+          });
+          const oid = resp?.order_id || resp?.id || '';
+          addResult(
+            raw,
+            `✓ ${payload.transaction_type} ${payload.quantity} ${sym} placed${oid ? ' · #' + oid : ''}`,
+          );
+        } catch (e) {
+          addResult(raw, `✗ ${/** @type {any} */ (e)?.message || 'place failed'}`);
+        }
         cmdBar?.clear(); cmdVerb = '';
+        _marginPreview = null;
         running = false;
-        if (onParsedOrder) onParsedOrder(props);
         return;
       }
     } catch (e) {
@@ -253,16 +321,50 @@
 
 <div class="clt-root" class:clt-standalone={standalone}>
   {#if _cmdCtx?.symbol}
-    <!-- LTP chip — Surfaces the current instrument's last-traded
-         price OUTSIDE the price popup. Previously the popup row
-         matching LTP was annotated " ◀ LTP" inline, which competed
-         with the bid/ask depth annotations. Now the popup is a
-         clean candidate list; the chip carries the LTP value. -->
-    <div class="clt-ltp">
-      <span class="clt-ltp-label">LTP</span>
-      <span class="clt-ltp-val">{_ltp != null ? '₹' + _ltp.toFixed(2) : '—'}</span>
-      {#if _cmdCtx.symbol}
-        <span class="clt-ltp-sym">{_cmdCtx.symbol}{_cmdCtx.strike ? ' ' + _cmdCtx.strike : ''}{_cmdCtx.instType ? ' ' + _cmdCtx.instType : ''}</span>
+    <!-- Pre-submit info strip — LTP + margin / cash impact for the
+         currently parsed command. Operator can read the trade
+         economics before pressing Enter or clicking Submit.
+         Previously LTP lived inline as " ◀ LTP" in the price popup;
+         lifted out here per operator request. The margin / cash
+         impact mirrors what OrderTicket shows, computed via the
+         same previewOrderMargin call. -->
+    <div class="clt-info-strip">
+      <span class="clt-chip clt-chip-ltp">
+        <span class="clt-chip-label">LTP</span>
+        <span class="clt-chip-val">{_ltp != null ? '₹' + _ltp.toFixed(2) : '—'}</span>
+        <span class="clt-chip-sym">{_cmdCtx.symbol}{_cmdCtx.strike ? ' ' + _cmdCtx.strike : ''}{_cmdCtx.instType ? ' ' + _cmdCtx.instType : ''}</span>
+      </span>
+      {#if _marginLoading}
+        <span class="clt-chip clt-chip-margin clt-chip-loading">
+          <span class="clt-chip-label">MARGIN</span>
+          <span class="clt-chip-val">…</span>
+        </span>
+      {:else if _marginPreview?.error}
+        <span class="clt-chip clt-chip-margin clt-chip-err">
+          <span class="clt-chip-label">MARGIN</span>
+          <span class="clt-chip-val">⚠ {_marginPreview.error}</span>
+        </span>
+      {:else if _marginPreview && _marginPreview.required_margin != null}
+        {@const _required  = Number(_marginPreview.required_margin)  || 0}
+        {@const _available = Number(_marginPreview.available_margin) || 0}
+        {@const _after     = _available - _required}
+        {@const _afterPct  = _available > 0 ? (_after / _available) * 100 : 0}
+        {@const _afterCls  = _after < 0     ? 'clt-chip-err'
+                            : _afterPct < 10 ? 'clt-chip-err'
+                            : _afterPct < 40 ? 'clt-chip-warn'
+                            : 'clt-chip-ok'}
+        <span class="clt-chip clt-chip-margin">
+          <span class="clt-chip-label">MARGIN</span>
+          <span class="clt-chip-val">₹{aggFmt(_required)}</span>
+        </span>
+        <span class="clt-chip clt-chip-margin">
+          <span class="clt-chip-label">AVAIL</span>
+          <span class="clt-chip-val">₹{aggFmt(_available)}</span>
+        </span>
+        <span class="clt-chip clt-chip-margin {_afterCls}">
+          <span class="clt-chip-label">AFTER</span>
+          <span class="clt-chip-val">{_after < 0 ? '−' : ''}₹{aggFmt(Math.abs(_after))}</span>
+        </span>
       {/if}
     </div>
   {/if}
@@ -281,20 +383,22 @@
       disabled={running}
     />
     <div class="absolute bottom-1 right-2 flex gap-1 z-10">
-      <button onclick={() => { _intent = 'place'; cmdBar?.submit(); }} disabled={running}
-        class="sim-btn sim-btn-order
-          {cmdVerb === 'SELL' ? 'sim-btn-danger' : 'sim-btn-primary'}
-          disabled:opacity-40">
-        {cmdVerb === 'BUY' ? 'BUY' : cmdVerb === 'SELL' ? 'SELL' : 'Run'}
-      </button>
       {#if onAddToBasket}
         <button onclick={() => { _intent = 'basket'; cmdBar?.submit(); }}
           disabled={running || !cmdVerb}
-          title="Add to basket — place every leg together later"
+          title="Add to basket — accumulate this order, fire all together via Submit below"
           class="sim-btn sim-btn-order sim-btn-basket disabled:opacity-40">+ Basket</button>
       {/if}
-      <button onclick={() => { cmdBar?.clear(); cmdVerb = ''; }}
-        class="sim-btn sim-btn-order sim-btn-secondary">Clear</button>
+      <button onclick={() => { _intent = 'place'; cmdBar?.submit(); }} disabled={running || !cmdVerb}
+        title="Submit — place this single order immediately (same as pressing Enter)"
+        class="sim-btn sim-btn-order
+          {cmdVerb === 'SELL' ? 'sim-btn-danger' : 'sim-btn-primary'}
+          disabled:opacity-40">
+        Submit
+      </button>
+      <button onclick={() => { cmdBar?.clear(); cmdVerb = ''; _marginPreview = null; }}
+        title="Clear the command bar" aria-label="Clear command bar"
+        class="clt-clear-btn">×</button>
     </div>
   </div>
   {#if standalone}
@@ -323,38 +427,85 @@
   .clt-root { display: flex; flex-direction: column; }
   .clt-standalone { /* no extra styles needed — caller owns layout */ }
 
-  /* LTP chip — read-only strip above the CommandBar showing the
-     current instrument's last-traded price. Surfaces what used to
-     be the " ◀ LTP" inline annotation on the popup row, now lifted
-     out so the popup stays a clean candidate list. */
-  .clt-ltp {
+  /* Pre-submit info strip — LTP + margin / cash chips above the
+     CommandBar. Operator reads "what does my book look like before
+     and after this trade?" at a glance. Same chip vocabulary the
+     OrderTicket form uses so the visual identity carries across
+     entry methods. */
+  .clt-info-strip {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    align-self: flex-start;
-    padding: 0.15rem 0.5rem;
+    flex-wrap: wrap;
+    gap: 0.35rem;
     margin-bottom: 0.35rem;
-    background: rgba(125, 211, 252, 0.08);
-    border: 1px solid rgba(125, 211, 252, 0.30);
+  }
+  .clt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.5rem;
     border-radius: 3px;
     font-size: 0.62rem;
     font-family: ui-monospace, monospace;
     letter-spacing: 0.04em;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
   }
-  .clt-ltp-label {
-    color: #7dd3fc;
+  .clt-chip-label {
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
+    color: #7e97b8;
   }
-  .clt-ltp-val {
+  .clt-chip-val {
     color: #f1f7ff;
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
-  .clt-ltp-sym {
+  .clt-chip-sym {
     color: #7e97b8;
     font-weight: 600;
+  }
+  .clt-chip-ltp {
+    background: rgba(125, 211, 252, 0.08);
+    border-color: rgba(125, 211, 252, 0.30);
+  }
+  .clt-chip-ltp .clt-chip-label { color: #7dd3fc; }
+  .clt-chip-margin {
+    background: rgba(251, 191, 36, 0.06);
+    border-color: rgba(251, 191, 36, 0.25);
+  }
+  .clt-chip-margin .clt-chip-label { color: #fbbf24; }
+  .clt-chip-ok      { border-color: rgba(74, 222, 128, 0.45); }
+  .clt-chip-ok .clt-chip-val      { color: #4ade80; }
+  .clt-chip-warn    { border-color: rgba(251, 191, 36, 0.55); }
+  .clt-chip-warn .clt-chip-val    { color: #fbbf24; }
+  .clt-chip-err     { border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.06); }
+  .clt-chip-err .clt-chip-val     { color: #f87171; }
+  .clt-chip-loading .clt-chip-val { color: #94a3b8; }
+
+  /* Compact clear button — replaces the wider "Clear" text button.
+     Same cyan-400 palette family as the card-control trio so the
+     three button shapes (×, +Basket, Submit) read as one cluster. */
+  .clt-clear-btn {
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0;
+    background: rgba(126, 151, 184, 0.10);
+    border: 1px solid rgba(126, 151, 184, 0.30);
+    border-radius: 3px;
+    color: #94a3b8;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .clt-clear-btn:hover {
+    background: rgba(126, 151, 184, 0.18);
+    color: #c8d8f0;
+    border-color: rgba(126, 151, 184, 0.55);
   }
 
   /* + Basket button — green outline matching the basket palette. */

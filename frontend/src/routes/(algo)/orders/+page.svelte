@@ -368,7 +368,6 @@
             opacity: {disabled ? '0.5' : '1'};
           "
           onclick={() => { if (!disabled) _entryActiveTab = /** @type {any} */ (tab.id); }}>
-          <span class="oc-tab-dot" style="background:{tab.dot};"></span>
           {tab.label}
         </button>
       {/each}
@@ -761,12 +760,10 @@
   .oc-tab-disabled {
     cursor: not-allowed;
   }
-  .oc-tab-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+  /* Tab dots dropped — none of the other tab strips on the platform
+     use them (Dashboard Cap|Eq, AgentWorkspaceTabs, /admin/tokens,
+     /admin/execution, /pulse). The colored bottom-border on the
+     active tab already carries the identity colour. */
 
   /* Compact status filter cards — one line, number + label side by
      side. Each card's BORDER carries the status colour now (was the

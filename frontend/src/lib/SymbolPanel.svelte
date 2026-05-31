@@ -1134,12 +1134,12 @@
         <button type="button" role="tab" class="oes-bottom-tab"
                 class:active={_bottomTab === 'log'}
                 aria-selected={_bottomTab === 'log'}
-                onclick={() => _bottomTab = 'log'}>Log</button>
+                onclick={() => _bottomTab = 'log'}>Order Log</button>
         <button type="button" role="tab" class="oes-bottom-tab"
                 class:active={_bottomTab === 'orders'}
                 aria-selected={_bottomTab === 'orders'}
                 onclick={() => _bottomTab = 'orders'}>
-          Orders
+          Order History
           {#if _ordersPending.length > 0}
             <span class="oes-bottom-badge">{_ordersPending.length}</span>
           {/if}
