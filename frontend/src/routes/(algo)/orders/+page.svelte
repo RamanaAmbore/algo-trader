@@ -472,12 +472,18 @@
   </div>
   <div class="card-body" hidden={_colActivity}>
     {#if _activityTab === 'log'}
-      <UnifiedLog
-        filter={{}}
-        pollMs={3000}
-        maxRows={30}
-        heightClass="oc-act-scroll"
-        cardMode={true} />
+      <!-- Wrap in .oc-activity-log so the :global overrides above
+           restyle UnifiedLog's card-mode rows to match /market's
+           news-row look (flat row, time on the left, thin bottom
+           divider, no left accent). -->
+      <div class="oc-activity-log">
+        <UnifiedLog
+          filter={{}}
+          pollMs={3000}
+          maxRows={30}
+          heightClass="oc-act-scroll"
+          cardMode={true} />
+      </div>
     {:else}
       <div class="oc-act-history">
         {#if _historyPending.length === 0 && _historyDone.length === 0}
@@ -777,11 +783,60 @@
 
   /* History list — pending + completed orders in compact rows.
      Operator scans a flat list (sym · qty · price · meta) without
-     the per-row cards from the Order Book grid above. */
+     the per-row cards from the Order Book grid above. Tightened
+     to ~14rem max so the Activity card stays compact between the
+     Order Entry header above and the Order Book grid below. */
   .oc-act-history {
-    max-height: min(40vh, 22rem);
+    max-height: min(28vh, 14rem);
     overflow-y: auto;
     font-family: ui-monospace, monospace;
+  }
+
+  /* UnifiedLog rows inside the Activity card — restyled to look like
+     the Market News rows on /performance + /market (see app.css
+     .log-news-row). Drop the per-row left accent + box border, use
+     a single thin bottom divider, time on the left + content
+     flowing right. Operator scans the same shape across "log of
+     events" surfaces regardless of which page they're on. */
+  :global(.oc-activity-log .ul-list-cards) {
+    gap: 0;
+    padding: 0;
+    background: transparent;
+  }
+  :global(.oc-activity-log .ul-card) {
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 0;
+    padding: 0.32rem 0.25rem;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.55rem;
+  }
+  :global(.oc-activity-log .ul-card:last-child) { border-bottom: 0; }
+  :global(.oc-activity-log .ul-card:hover) {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  :global(.oc-activity-log .ul-card-head) {
+    flex: 0 0 auto;
+    gap: 0.35rem;
+    font-size: 0.6rem;
+  }
+  :global(.oc-activity-log .ul-card-time) {
+    color: #fde047;
+    font-weight: 700;
+    font-size: 0.6rem;
+    letter-spacing: 0.02em;
+    margin-left: 0;
+    order: -1;
+  }
+  :global(.oc-activity-log .ul-card-msg) {
+    flex: 1 1 auto;
+    color: #e2e8f0;
+    font-weight: 500;
+    font-size: 0.66rem;
+    line-height: 1.35;
+    padding-left: 0;
   }
   .oc-act-empty {
     color: #7e97b8;
@@ -981,47 +1036,77 @@
      /admin/execution, /pulse). The colored bottom-border on the
      active tab already carries the identity colour. */
 
-  /* Status filter cards — taller + color-coded per operator. Each
-     card carries:
-       • status-tinted background gradient (subtle)
-       • status-colored border
-       • status-colored count number
-     The status's identity colour appears in three places so the
-     operator can spot a non-zero bucket at a glance. Same vocabulary
-     as Sensibull status pills, IB TWS account-status row, Streak
-     order-state strip. */
+  /* Status filter cards — polished chrome with richer gradients +
+     inner highlight + soft outer shadow. Each card carries:
+       • two-stop status-tinted gradient (richer than the previous
+         linear blend; goes from a brighter top edge to a darker
+         bottom edge for depth)
+       • status-colored border (~60% opacity)
+       • status-colored count number (1.25rem)
+       • inset highlight at the top edge (~1px white-8%) for the
+         "lit from above" feel every modern fintech UI carries
+         (IBKR, ToS, TradingView, Sensibull)
+     Hover bumps the border to 80% opacity + lifts the card 1px.
+     Selected adds a 2px amber inset ring on top of the card's own
+     status colour — unambiguous active-filter cue. */
   .oc-filter-card {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.18rem;
-    padding: 0.55rem 0.5rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    gap: 0.2rem;
+    padding: 0.6rem 0.5rem;
+    background:
+      linear-gradient(180deg,
+        rgba(255, 255, 255, 0.04) 0%,
+        rgba(255, 255, 255, 0.00) 30%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
     border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 4px;
+    border-radius: 5px;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 2px 4px rgba(0, 0, 0, 0.25);
     color: #c8d8f0;
     font-family: ui-monospace, monospace;
     cursor: pointer;
-    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+    transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
   }
   .oc-filter-card:hover {
     border-color: rgba(255, 255, 255, 0.30);
+    transform: translateY(-1px);
   }
 
-  /* Status-tinted backgrounds + borders. Border carries the
-     status colour at higher opacity for clarity at small sizes. */
+  /* Status-tinted backgrounds + borders. Two-stop gradient (status
+     hue at 14% top → 4% bottom) over the base navy. The 8% black
+     bottom-cap from .oc-filter-card layers on top so even tinted
+     cards keep the depth cue. */
   .oc-filter-card[data-status="running"] {
-    background: linear-gradient(180deg, rgba(251, 191, 36, 0.10) 0%, rgba(251, 191, 36, 0.04) 100%);
-    border-color: rgba(251, 191, 36, 0.55);
+    background:
+      linear-gradient(180deg,
+        rgba(251, 191, 36, 0.18) 0%,
+        rgba(251, 191, 36, 0.06) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(251, 191, 36, 0.60);
   }
   .oc-filter-card[data-status="active"] {
-    background: linear-gradient(180deg, rgba(74, 222, 128, 0.10) 0%, rgba(74, 222, 128, 0.04) 100%);
-    border-color: rgba(74, 222, 128, 0.55);
+    background:
+      linear-gradient(180deg,
+        rgba(74, 222, 128, 0.18) 0%,
+        rgba(74, 222, 128, 0.06) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(74, 222, 128, 0.60);
   }
   .oc-filter-card[data-status="error"] {
-    background: linear-gradient(180deg, rgba(248, 113, 113, 0.10) 0%, rgba(248, 113, 113, 0.04) 100%);
-    border-color: rgba(248, 113, 113, 0.50);
+    background:
+      linear-gradient(180deg,
+        rgba(248, 113, 113, 0.18) 0%,
+        rgba(248, 113, 113, 0.06) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(248, 113, 113, 0.55);
   }
   /* Cancelled stays in the orange family — distinct from rejected
      red so the operator can tell the two terminal-error buckets
@@ -1029,27 +1114,38 @@
      went wrong); orange = operator/system cancel (intent
      withdrawal). */
   .oc-filter-card[data-status="cancelled"] {
-    background: linear-gradient(180deg, rgba(251, 146, 60, 0.10) 0%, rgba(251, 146, 60, 0.04) 100%);
-    border-color: rgba(251, 146, 60, 0.50);
+    background:
+      linear-gradient(180deg,
+        rgba(251, 146, 60, 0.18) 0%,
+        rgba(251, 146, 60, 0.06) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(251, 146, 60, 0.55);
   }
   .oc-filter-card[data-status="inactive"] {
     border-color: rgba(126, 151, 184, 0.45);
   }
 
-  /* Selected state — bright amber inset ring so the operator's
-     active filter is unambiguous regardless of the card's status
-     colour. */
+  /* Selected state — bright amber inset ring stacked on top of the
+     status colour. Shadow stack: amber ring + the lit-from-above
+     highlight + a stronger outer drop so the active card visibly
+     lifts. */
   .oc-filter-card-on {
-    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.55) inset;
+    box-shadow:
+      0 0 0 2px rgba(251, 191, 36, 0.65) inset,
+      0 1px 0 rgba(255, 255, 255, 0.10) inset,
+      0 3px 6px rgba(0, 0, 0, 0.35);
+    transform: translateY(-1px);
   }
 
   /* Count number — bigger + colour-coded by status. */
   .oc-filter-count {
     font-weight: 800;
-    font-size: 1.25rem;
+    font-size: 1.3rem;
     line-height: 1;
     color: #c8d8f0;
     font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   }
   .oc-filter-card[data-status="running"]   .oc-filter-count { color: #fbbf24; }
   .oc-filter-card[data-status="active"]    .oc-filter-count { color: #4ade80; }
