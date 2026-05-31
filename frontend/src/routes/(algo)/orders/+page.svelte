@@ -307,7 +307,7 @@
     { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
   ] as f}
     <button type="button"
-      onclick={() => { filterStatus = f.id; _activityTab = 'book'; }}
+      onclick={() => { filterStatus = f.id; _activityTab = 'book'; _colActivity = false; }}
       class="oc-filter-card {filterStatus === f.id ? 'oc-filter-card-on' : ''}"
       data-status={f.accent}>
       <span class="oc-filter-count">{f.count}</span>
