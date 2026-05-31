@@ -243,7 +243,7 @@
   // Agent activity is a heavyweight card — start collapsed by default
   // so the dashboard's first paint stays light. CollapseButton overrides
   // from localStorage on mount if the user previously expanded it.
-  let _colAgent       = $state(true);
+  let _colAgent       = $state(false);
 
   // ── ag-Grid bindings for the dashboard cards ────────────────────
   // Each card mounts its own grid imperatively via bind:this + a
@@ -1695,7 +1695,11 @@
       {#if _fsEquityCurve}
         <RefreshButton onClick={_refreshAll} loading={_refreshing} label="chart" />
       {/if}
-      <CollapseButton bind:isCollapsed={_colEquityCurve} cardId="equityCurve" label="Chart" />
+      <!-- No cardId — collapse state resets to expanded on every page
+           load. Operator can still toggle in-session. Matches the
+           "no card collapsed if there's no data by default" rule
+           applied across the dashboard. -->
+      <CollapseButton bind:isCollapsed={_colEquityCurve} label="Chart" />
       <DefaultSizeButton bind:isFullscreen={_fsEquityCurve} bind:isCollapsed={_colEquityCurve} label="Chart" />
       <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Chart" />
     </div>
@@ -1861,7 +1865,7 @@
     {#if _fsNews}
       <RefreshButton onClick={_refreshAll} loading={_refreshing} label="news" />
     {/if}
-    <CollapseButton bind:isCollapsed={_colNews} cardId="news" label="Market News" />
+    <CollapseButton bind:isCollapsed={_colNews} label="Market News" />
     <DefaultSizeButton bind:isFullscreen={_fsNews} bind:isCollapsed={_colNews} label="Market News" />
     <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
   </div>
@@ -1902,8 +1906,10 @@
     {#if _fsAgent}
       <RefreshButton onClick={_refreshAll} loading={_refreshing} label="agent activity" />
     {/if}
-    <CollapseButton bind:isCollapsed={_colAgent} cardId="agent"
-      initialCollapsed={true} label="Agent activity" />
+    <!-- Default expanded — was previously `initialCollapsed=true` so
+         the empty-state "No agent fires yet today" was hidden behind
+         a collapse the operator had to click to discover. -->
+    <CollapseButton bind:isCollapsed={_colAgent} label="Agent activity" />
     <DefaultSizeButton bind:isFullscreen={_fsAgent} bind:isCollapsed={_colAgent} label="Agent activity" />
     <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
   </div>
