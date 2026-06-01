@@ -263,6 +263,20 @@ async def _purge_old_rows(today_utc: date, retention_days: int = 30) -> int:
 # Markdown report renderer
 # ---------------------------------------------------------------------------
 
+def _ts_dual(dt: datetime) -> str:
+    """Compact dual-TZ timestamp for table cells — `HH:MM IST · HH:MM EDT`.
+    Matches the convention used by the algo page-header nowStamp + alert
+    timestamps so operators see times in the two zones they actually work
+    in. The full weekday/date is omitted because each row already belongs
+    to a specific day (the report header carries the date)."""
+    from backend.shared.helpers.date_time_utils import INDIAN_TIMEZONE, EST_ZONE
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist = dt.astimezone(INDIAN_TIMEZONE)
+    est = dt.astimezone(EST_ZONE)
+    return f"{ist.strftime('%H:%M')} IST · {est.strftime('%H:%M %Z')}"
+
+
 def _ua_short(ua: str | None) -> str:
     """Extract browser name+major from UA string. Falls back gracefully."""
     if not ua:
@@ -357,8 +371,8 @@ def _render_report(
             remaining = len(rows) - cap
             lines.append(f"| … | | | | | | | | additional {remaining} IPs | |")
             break
-        first_s = first_dt.strftime("%H:%M")
-        last_s  = last_dt.strftime("%H:%M")
+        first_s = _ts_dual(first_dt)
+        last_s  = _ts_dual(last_dt)
         # Truncate path for table readability
         short_path = path[:40] if path else "-"
         lines.append(
