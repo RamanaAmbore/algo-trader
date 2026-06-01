@@ -46,8 +46,7 @@
 
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
-  let _chartSym  = $state('');
-  let _chartExch = $state('');
+  let _chartOpen = $state(false);
   let _logOpen   = $state(false);
 
   function _openOrder() {
@@ -55,9 +54,7 @@
   }
 
   function _openChart() {
-    if (!symbol) return;
-    _chartSym  = String(symbol  || '').toUpperCase();
-    _chartExch = String(exchange || '');
+    _chartOpen = true;
   }
 
   function _openLog() {
@@ -84,9 +81,8 @@
   {#if !hideChart}
     <button type="button" class="pha-btn pha-chart"
             onclick={_openChart}
-            disabled={!symbol}
-            title={symbol ? `Chart — ${symbol}` : 'Pick a symbol first'}
-            aria-label={symbol ? `Open chart for ${symbol}` : 'Open chart (no symbol)'}>
+            title={symbol ? `Chart — ${symbol}` : 'Chart'}
+            aria-label={symbol ? `Open chart for ${symbol}` : 'Open chart'}>
       <!-- Polyline chart glyph -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.9"
@@ -133,11 +129,11 @@
   />
 {/if}
 
-{#if _chartSym}
+{#if _chartOpen}
   <ChartModal
-    symbol={_chartSym}
-    exchange={_chartExch}
-    onClose={() => { _chartSym = ''; _chartExch = ''; }}
+    symbol={String(symbol || '').toUpperCase()}
+    exchange={String(exchange || '')}
+    onClose={() => { _chartOpen = false; }}
   />
 {/if}
 

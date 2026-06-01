@@ -170,8 +170,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
+    width: 1.6rem;
+    height: 1.6rem;
     padding: 0;
     margin: 0;
     background: rgba(34, 211, 238, 0.14);

@@ -147,8 +147,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
+    width: 1.6rem;
+    height: 1.6rem;
     padding: 0;
     border: 1px solid rgba(251, 191, 36, 0.55);
     background: rgba(251, 191, 36, 0.14);

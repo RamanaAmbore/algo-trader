@@ -13,6 +13,7 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import { fetchAlgoOrdersRecent } from '$lib/api';
   import { visibleInterval, logTime } from '$lib/stores';
+  import { portal } from '$lib/portal';
 
   let {
     /** @type {() => void} */
@@ -86,7 +87,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="alm-overlay" role="dialog" aria-modal="true" aria-label="Activity log"
+<div class="alm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Activity log"
      tabindex="-1"
      onclick={onClose}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->

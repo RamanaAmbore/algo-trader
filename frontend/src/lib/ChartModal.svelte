@@ -5,6 +5,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
+  import { portal } from '$lib/portal';
 
   let {
     /** @type {string} */ symbol = '',
@@ -30,7 +31,7 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_interactive_supports_focus -->
-<div class="cm-overlay" role="dialog" aria-modal="true" aria-label="Chart — {symbol}"
+<div class="cm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Chart — {symbol}"
      tabindex="-1"
      onclick={onClose}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
