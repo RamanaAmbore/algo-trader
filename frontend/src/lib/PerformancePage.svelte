@@ -1292,7 +1292,7 @@
   .perf-dark :global(.btn-secondary:hover:not(:disabled)) { background: rgba(255,255,255,0.06); }
 
   /* Dashboard timestamp — yellow to match log and algo-ts timestamps */
-  .perf-dark :global(.perf-ts) { color: #fde047 !important; }
+  .perf-dark :global(.perf-ts) { color: #fde68a !important; }
 
   /* Options deep-link pill — amber accent, scoped to .perf-dark so the
      algo-amber palette can't leak onto the public /performance grid

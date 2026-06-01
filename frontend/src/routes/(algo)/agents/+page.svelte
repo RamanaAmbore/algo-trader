@@ -1536,7 +1536,7 @@
   /* When ON, pill picks its severity colour. Match the algo palette
      (red/orange/amber/grey for crit/high/med/low). */
   .tier-pill-critical.on { background: rgba(248,113,113,0.18); color: #f87171; border-color: #f87171; }
-  .tier-pill-high.on     { background: rgba(251,146,60,0.18);  color: #fb923c; border-color: #fb923c; }
+  .tier-pill-high.on     { background: rgba(251,191,36,0.18);  color: #fbbf24; border-color: #fbbf24; }
   .tier-pill-medium.on   { background: rgba(251,191,36,0.18);  color: #fbbf24; border-color: #fbbf24; }
   .tier-pill-low.on      { background: rgba(125,211,252,0.16); color: #7dd3fc; border-color: #7dd3fc; }
 
@@ -1556,7 +1556,7 @@
     text-transform: lowercase;
   }
   .tier-badge-critical { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.55); }
-  .tier-badge-high     { background: rgba(251,146,60,0.15);  color: #fb923c; border-color: rgba(251,146,60,0.55); }
+  .tier-badge-high     { background: rgba(251,191,36,0.15);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
   .tier-badge-low      { background: rgba(125,211,252,0.15); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
 
   /* Topic badge — secondary identifier shown alongside the tier so the

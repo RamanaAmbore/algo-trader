@@ -922,7 +922,7 @@
     margin-right: 0.35rem;
   }
   :global(.oc-activity-log .ul-card-time) {
-    color: #fde047;
+    color: #fde68a;
     font-weight: 700;
     font-size: 0.6rem;
     letter-spacing: 0.02em;

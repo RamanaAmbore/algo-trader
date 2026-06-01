@@ -2354,7 +2354,7 @@
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
-              <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cand-pnl-pos' : 'cand-pnl-neg'}">
+              <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cell-pos' : 'cell-neg'}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
@@ -3405,14 +3405,10 @@
     padding: 0 0.25rem;
     font-weight: 700;
   }
-  .cand-pnl-pos {
-    color: #4ade80;
-    background-color: rgba(74,222,128,0.10);
-  }
-  .cand-pnl-neg {
-    color: #f87171;
-    background-color: rgba(248,113,113,0.10);
-  }
+  /* Background tint for P&L cells in the Candidates grid (colour comes
+     from the global cell-pos / cell-neg rules in MarketPulse). */
+  :global(.cand-pnl.cell-pos) { background-color: rgba(74,222,128,0.10); }
+  :global(.cand-pnl.cell-neg) { background-color: rgba(248,113,113,0.10); }
 
   .cand-row input[type="checkbox"] {
     accent-color: #fbbf24;

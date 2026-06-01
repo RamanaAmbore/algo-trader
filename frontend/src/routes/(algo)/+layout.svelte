@@ -1662,7 +1662,7 @@
     position: absolute;
     top: calc(100% + 4px);
     right: 0;
-    background: #1a0a0a;
+    background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248, 113, 113, 0.45);
     color: #f87171;
     font-family: ui-monospace, monospace;

@@ -95,7 +95,7 @@
 
   function _pnl(/** @type {number|null|undefined} */ v) {
     if (v == null) return { text: '—', cls: '' };
-    return { text: '₹' + aggFmt(v), cls: v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : '' };
+    return { text: '₹' + aggFmt(v), cls: v > 0 ? 'cell-pos' : v < 0 ? 'cell-neg' : '' };
   }
 
   function _pct(/** @type {number|null|undefined} */ v) {
@@ -331,8 +331,10 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .pnl-pos { color: #4ade80; font-weight: 700; }
-  .pnl-neg { color: #f87171; font-weight: 700; }
+  /* Bold weight for P&L cells inside this table (cell-pos/cell-neg
+     supply the colour globally via MarketPulse's :global rule). */
+  .pnl-table :global(.cell-pos),
+  .pnl-table :global(.cell-neg) { font-weight: 700; }
 
   .table-footer {
     margin-top: 0.4rem;
