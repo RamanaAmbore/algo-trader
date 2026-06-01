@@ -267,6 +267,10 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
       cmCloseCalls: window.__cmClose_calls || 0,
       lastSource: window.__cmClose_lastSource || null,
       onCloseType: window.__cmClose_onCloseType || null,
+      mpCloseCalls: window.__mpClose_calls || 0,
+      mpBefore: window.__mpClose_before,
+      mpAfter: window.__mpClose_after,
+      cmSymInDom: document.querySelector('.cm-sym')?.textContent || '<none>',
     }));
     log.timeline.push(`Telemetry after Esc: ${JSON.stringify(telemetry1)}`);
     if (afterEsc === 0) {

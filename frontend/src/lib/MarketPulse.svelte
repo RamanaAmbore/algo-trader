@@ -3529,13 +3529,15 @@
   let _chartModalSym  = $state('');
   let _chartModalExch = $state('');
   function _closeChartModal() {
-    // Named handler — inline `() => { _chartModalSym = '' }` arrow was
-    // unreliable in Svelte 5 when consumed by a portaled child component
-    // (Esc + X clicks fired onClose but the assignment didn't propagate
-    // through the closure / prop chain). A named function pinned in the
-    // component scope reads/writes the live $state directly.
+    if (typeof window !== 'undefined') {
+      window.__mpClose_calls = (window.__mpClose_calls || 0) + 1;
+      window.__mpClose_before = _chartModalSym;
+    }
     _chartModalSym = '';
     _chartModalExch = '';
+    if (typeof window !== 'undefined') {
+      window.__mpClose_after = _chartModalSym;
+    }
   }
 
   // Dismiss context menu on outside click.
