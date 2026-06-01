@@ -15,6 +15,7 @@ All three tasks are cancelled cleanly on Litestar shutdown.
 """
 
 import asyncio
+import time as _time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, time as dtime, timezone
@@ -1060,10 +1061,20 @@ async def _task_sparkline_warm(state: dict) -> None:
 # back automatically — the new account stays primary until ITS WebSocket
 # breaks. Operator can force a re-assign by adjusting the
 # connections.sparkline_account setting + restarting.
+# Per-incident alert state for _task_ticker_watchdog.  Lives in-memory only —
+# a process restart is itself a recovery event so resetting is correct.
+_ticker_alert_state: dict = {
+    "alert_active":    False,  # True while we are in a "no eligible account" incident
+    "last_alerted_at": 0.0,   # unix ts of the most recent Telegram ping
+    "incident_start":  0.0,   # unix ts when the current incident began
+}
+
+
 async def _task_ticker_watchdog(state: dict) -> None:
     CHECK_INTERVAL_S    = 30.0   # how often to poll ticker.status()
     FAILOVER_THRESHOLD_S = 60.0  # how long disconnected before we fail over
     FAILOVER_COOLOFF_S  = 300.0  # don't retry a failed account for 5 min
+    ALERT_REFIRE_S      = 1800.0  # re-alert after 30 min of sustained degradation
 
     from backend.shared.helpers.kite_ticker import get_ticker
     from backend.shared.brokers.registry import get_historical_brokers
@@ -1079,6 +1090,31 @@ async def _task_ticker_watchdog(state: dict) -> None:
             if not status.get("started"):
                 continue
             if status.get("connected"):
+                # Ticker is healthy — clear any outstanding degraded incident.
+                if _ticker_alert_state["alert_active"]:
+                    from backend.shared.helpers.alert_utils import _send_telegram
+                    from backend.shared.helpers.utils import is_enabled
+                    _ticker_alert_state["alert_active"] = False
+                    now_ts = _time.time()
+                    duration_min = int(
+                        (now_ts - _ticker_alert_state["incident_start"]) / 60
+                    )
+                    branch = config.get("deploy_branch", "main")
+                    branch_tag = f" [{branch}]" if branch != "main" else ""
+                    ts = timestamp_display()
+                    connected_acct = status.get("account", ticker.current_account() or "?")
+                    msg = (
+                        f"TickerWatchdog{branch_tag} — recovered\n"
+                        f"Ticker connected on {connected_acct}\n"
+                        f"Duration of incident: {duration_min} min\n"
+                        f"Time: {ts}"
+                    )
+                    logger.info(
+                        f"ticker watchdog: recovered on {connected_acct} "
+                        f"after {duration_min} min"
+                    )
+                    if is_enabled("telegram"):
+                        _send_telegram(msg)
                 continue  # healthy
             if ticker.seconds_since_disconnect() < FAILOVER_THRESHOLD_S:
                 continue  # within KiteTicker's own retry window
@@ -1114,12 +1150,47 @@ async def _task_ticker_watchdog(state: dict) -> None:
                     break
 
             if not next_kc:
-                logger.warning(
-                    f"ticker watchdog: no eligible failover account "
-                    f"(current={current or '?'}, disconnected_s="
-                    f"{ticker.seconds_since_disconnect():.0f}) — "
-                    f"continuing to wait for primary to recover"
+                # All accounts are in failover cool-off (or unavailable).
+                # Alert once on entry, then re-fire every 30 min while degraded.
+                from backend.shared.helpers.alert_utils import _send_telegram
+                from backend.shared.helpers.utils import is_enabled
+                now_ts = _time.time()
+                should_alert = (
+                    not _ticker_alert_state["alert_active"]
+                    or (now_ts - _ticker_alert_state["last_alerted_at"]) > ALERT_REFIRE_S
                 )
+                if should_alert:
+                    if not _ticker_alert_state["alert_active"]:
+                        # First entry into the incident.
+                        _ticker_alert_state["alert_active"] = True
+                        _ticker_alert_state["incident_start"] = now_ts
+                    _ticker_alert_state["last_alerted_at"] = now_ts
+
+                    branch = config.get("deploy_branch", "main")
+                    branch_tag = f" [{branch}]" if branch != "main" else ""
+                    ts = timestamp_display()
+                    disconnected_s = ticker.seconds_since_disconnect()
+                    acct_list = ", ".join(
+                        b_acct for b in eligible
+                        if (b_acct := getattr(b, "account", "") or "")
+                    ) or "?"
+                    is_refire = _ticker_alert_state["last_alerted_at"] != _ticker_alert_state["incident_start"]
+                    refire_note = " (re-alert)" if is_refire else ""
+                    msg = (
+                        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
+                        f"Both Kite accounts in failover cool-off.\n"
+                        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
+                        f"Sparkline degrading to broker.ltp() polling.\n"
+                        f"Disconnected for: {disconnected_s:.0f}s\n"
+                        f"Time: {ts}"
+                    )
+                    logger.warning(
+                        f"ticker watchdog: no eligible failover account "
+                        f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
+                        f"continuing to wait for primary to recover"
+                    )
+                    if is_enabled("telegram"):
+                        _send_telegram(msg)
                 continue
 
             acct, api_key, access_token = next_kc
