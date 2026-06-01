@@ -10,6 +10,7 @@
   // ticket needed for a one-target op).
 
   import { cancelOrder } from '$lib/api';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   /** @type {{
    *   order:     any|null,
@@ -28,6 +29,9 @@
   let error   = $state('');
   let success = $state('');
 
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _confirmRef = $state(null);
+
   $effect(() => {
     if (order) { error = ''; success = ''; }
   });
@@ -44,11 +48,12 @@
     // Hard-stop confirm — matches IBKR's Cancel Order pattern. No
     // full ticket modal for a one-click op; the operator sees the
     // order id + symbol + qty in the prompt and accepts / declines.
-    const ok = typeof window !== 'undefined' && window.confirm(
-      `Cancel order #${order.order_id}?\n\n` +
-      `  ${order.transaction_type} ${order.quantity} ${order.tradingsymbol}\n` +
-      `  Account: ${order.account}`
-    );
+    const ok = await _confirmRef?.ask({
+      title: 'Cancel order?',
+      message: `#${order.order_id} · ${order.transaction_type} ${order.quantity} ${order.tradingsymbol}<br>Account: ${order.account}`,
+      danger: true,
+      confirmLabel: 'Cancel Order',
+    });
     if (!ok) return;
     busy = true; error = ''; success = '';
     try {
@@ -67,6 +72,8 @@
     // alongside the modify modal.
   }
 </script>
+
+<ConfirmModal bind:this={_confirmRef} />
 
 {#if order}
   <div class="order-detail rounded-lg border border-gray-300 bg-white p-3 mb-3">

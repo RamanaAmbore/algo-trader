@@ -11,7 +11,8 @@
     fetchChartSymbols, fetchChartBatch,
     fetchAgents,
   } from '$lib/api';
-  import LogPanel    from '$lib/LogPanel.svelte';
+  import LogPanel       from '$lib/LogPanel.svelte';
+  import ConfirmModal   from '$lib/ConfirmModal.svelte';
   import PriceChart  from '$lib/PriceChart.svelte';
   import InfoHint    from '$lib/InfoHint.svelte';
   import Select      from '$lib/Select.svelte';
@@ -27,6 +28,9 @@
   let error        = $state('');
   let loading      = $state(true);
   let starting     = $state(false);
+
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _confirmRef  = $state(null);
   let refreshTeardown;
 
   // Form state — mirrors the Scenario form's structure for consistency.
@@ -163,7 +167,13 @@
   }
 
   async function handleClear() {
-    if (!confirm('Delete all replay orders and events?')) return;
+    const ok = await _confirmRef?.ask({
+      title: 'Delete replay data?',
+      message: 'Delete all replay orders and events? This cannot be undone.',
+      danger: true,
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     try {
       await clearReplayData();
       await load();
@@ -175,6 +185,8 @@
   const enabled = $derived(status?.enabled !== false);
   const branch  = $derived(branchLabel(status?.branch || ''));
 </script>
+
+<ConfirmModal bind:this={_confirmRef} />
 
 {#if !enabled}
   <div class="sim-banner sim-banner-warn">

@@ -13,6 +13,7 @@
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
   import AgentToast from '$lib/AgentToast.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   const { children } = $props();
 
@@ -238,7 +239,8 @@
   let modeError         = $state('');
   let allowedModes      = $state(/** @type {string[]} */ ([]));
   let modeBranch        = $state('');
-  let liveConfirmOpen   = $state(false);
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _liveConfirmRef   = $state(null);
 
   // Mode colors — keep aligned with the .mode-pill-* CSS in
   // LogPanel.svelte and the .algo-mode-* badges below. SIM uses
@@ -275,8 +277,16 @@
     modeError = '';
     if (mode === 'live') {
       // LIVE keeps the confirm modal — real broker calls deserve a
-      // dress-rehearsal click. confirmLive() commits the master toggle.
-      liveConfirmOpen = true;
+      // dress-rehearsal click. Confirmed via ConfirmModal (danger variant).
+      const ok = await _liveConfirmRef?.ask({
+        title: 'Switch to LIVE mode?',
+        message: 'Orders placed from this session will hit the real broker.',
+        danger: true,
+        confirmLabel: 'Switch to LIVE',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+      await _commitMode('live');
       return;
     }
     // PAPER / SHADOW: master-toggle only. Commit the flag, optimistically
@@ -295,11 +305,6 @@
       modeError = /** @type {any} */ (e)?.message ?? 'Mode change failed.';
       setTimeout(() => { modeError = ''; }, 3000);
     }
-  }
-
-  async function confirmLive() {
-    liveConfirmOpen = false;
-    await _commitMode('live');
   }
 
   // ── Chase chip + timeline drawer ───────────────────────────────────
@@ -464,6 +469,8 @@
     }
   });
 </script>
+
+<ConfirmModal bind:this={_liveConfirmRef} />
 
 <div class="algo-viewport">
   <div class="algo-card">
@@ -718,24 +725,6 @@
         </nav>
       {/if}
     </header>
-
-    {#if liveConfirmOpen}
-      <div class="live-confirm-overlay" role="presentation"
-           onclick={() => liveConfirmOpen = false}></div>
-      <div class="live-confirm-modal" role="dialog" aria-modal="true">
-        <div class="live-confirm-header">
-          <span class="live-confirm-pill">LIVE</span>
-          <h3>Switch to LIVE mode</h3>
-        </div>
-        <div class="live-confirm-body">
-          Orders placed from this session will hit the real broker.
-        </div>
-        <div class="live-confirm-actions">
-          <button class="live-cancel" onclick={() => liveConfirmOpen = false}>Cancel</button>
-          <button class="live-confirm" onclick={confirmLive}>Switch to LIVE</button>
-        </div>
-      </div>
-    {/if}
 
     {#if simStatus?.active || simStatus?.run_active}
       <div class="sim-banner" role="status" aria-live="polite">
@@ -1672,93 +1661,6 @@
     white-space: nowrap;
     z-index: 61;
   }
-
-  /* ── LIVE confirm modal — themed (algo dark navy + amber accents) ────── */
-  .live-confirm-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(2, 6, 18, 0.65);
-    backdrop-filter: blur(2px);
-    z-index: 200;
-  }
-  .live-confirm-modal {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: min(420px, 92vw);
-    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
-    border: 1px solid rgba(251, 191, 36, 0.35);
-    border-radius: 8px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
-    color: #c8d8f0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    z-index: 201;
-    overflow: hidden;
-  }
-  .live-confirm-header {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.85rem 1rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
-  }
-  .live-confirm-header h3 {
-    margin: 0;
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: #fbbf24;
-    letter-spacing: 0.05em;
-  }
-  .live-confirm-pill {
-    color: #f87171;
-    background: rgba(239, 68, 68, 0.12);
-    border: 1px solid #f87171;
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 0.6rem;
-    font-weight: 800;
-    letter-spacing: 0.1em;
-  }
-  .live-confirm-body {
-    padding: 1rem;
-    font-size: 0.72rem;
-    line-height: 1.5;
-    color: #c8d8f0;
-  }
-  .live-confirm-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-    padding: 0.7rem 1rem;
-    border-top: 1px solid rgba(251, 191, 36, 0.12);
-    background: rgba(0, 0, 0, 0.2);
-  }
-  .live-cancel,
-  .live-confirm {
-    height: 1.9rem;
-    padding: 0 0.85rem;
-    border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    cursor: pointer;
-    transition: filter 0.08s, transform 0.08s;
-  }
-  .live-cancel {
-    color: #c8d8f0;
-    background: transparent;
-    border: 1px solid rgba(200, 216, 240, 0.25);
-  }
-  .live-cancel:hover { background: rgba(255, 255, 255, 0.04); }
-  .live-confirm {
-    color: #ffffff;
-    background: linear-gradient(180deg, #f87171 0%, #f87171 100%);
-    border: 1px solid #f87171;
-  }
-  .live-confirm:hover { filter: brightness(1.1); }
-  .live-confirm:active { transform: translateY(1px); }
 
   /* ── Chase chip ──────────────────────────────────────────────────────── */
   .chase-chip {

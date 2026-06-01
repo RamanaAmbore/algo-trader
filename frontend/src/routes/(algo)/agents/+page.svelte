@@ -14,6 +14,7 @@
   import Select   from '$lib/Select.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   let agents      = $state([]);
   let agentEvents = $state([]);
@@ -114,7 +115,8 @@
     { value: 'low',      label: 'Low',      desc: 'Always-suppressible — logs only when a peer fires' },
   ];
   // ── Trade-mode confirm modal ──────────────────────────────────────────
-  let pendingLiveAgent = $state(/** @type {any} */ (null));
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _liveAgentConfirmRef = $state(null);
 
   let ws;
   let refreshTeardown;
@@ -188,11 +190,19 @@
   /** Flip the agent's trade mode between paper and live in-place.
    *  Paper → live shows a confirm modal; live → paper flips immediately.
    *  Optimistic update so the chip flips instantly on the slow link. */
-  function toggleTradeMode(/** @type {any} */ agent) {
+  async function toggleTradeMode(/** @type {any} */ agent) {
     const cur = agent.trade_mode || 'paper';
     const next = cur === 'live' ? 'paper' : 'live';
     if (next === 'live') {
-      pendingLiveAgent = agent;
+      const ok = await _liveAgentConfirmRef?.ask({
+        title: 'Set to LIVE mode?',
+        message: `<b>${agent.name}</b> — every action this agent fires will hit the real Kite broker (subject to the master <span class="font-mono">execution.paper_trading_mode</span> kill-switch).`,
+        danger: true,
+        confirmLabel: 'Set LIVE',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+      applyTradeMode(agent, next);
       return;
     }
     applyTradeMode(agent, next);
@@ -547,6 +557,8 @@
     simStatusTeardown?.();
   });
 </script>
+
+<ConfirmModal bind:this={_liveAgentConfirmRef} />
 
 <svelte:head>
   <title>Agents | RamboQuant Analytics</title>
@@ -1634,81 +1646,7 @@
   .action-add-log    { background: rgba(125,211,252,0.12); color: #7dd3fc; border-color: rgba(125,211,252,0.4); }
   .action-add-log:hover    { background: rgba(125,211,252,0.25); border-color: #7dd3fc; }
 
-  /* ── LIVE trade-mode confirm modal ──────────────────────────────── */
-  .lc-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.65);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 200;
-  }
-  .lc-modal {
-    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
-    border: 1px solid rgba(248,113,113,0.35);
-    border-radius: 6px;
-    padding: 1rem 1.1rem 0.85rem;
-    max-width: min(24rem, 92vw);
-    width: 100%;
-  }
-  .lc-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #f87171;
-    margin-bottom: 0.55rem;
-    font-family: ui-monospace, monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .lc-body {
-    font-size: 0.68rem;
-    color: #c8d8f0;
-    line-height: 1.55;
-    margin-bottom: 0.85rem;
-  }
-  .lc-body .font-mono { font-family: ui-monospace, monospace; color: #7dd3fc; }
-  .lc-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-  .lc-btn {
-    font-size: 0.65rem;
-    font-weight: 700;
-    font-family: ui-monospace, monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.28rem 0.85rem;
-    border-radius: 4px;
-    border: 1px solid;
-    cursor: pointer;
-  }
-  .lc-cancel  { background: rgba(125,151,184,0.10); color: #7e97b8; border-color: rgba(125,151,184,0.30); }
-  .lc-cancel:hover  { background: rgba(125,151,184,0.22); }
-  .lc-confirm { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.45); }
-  .lc-confirm:hover { background: rgba(248,113,113,0.28); }
 </style>
-
-{#if pendingLiveAgent}
-  <!-- LIVE trade-mode confirm modal — replaces window.confirm() which is
-       blocked / unstyled on iOS Safari standalone mode. -->
-  <div class="lc-overlay" role="presentation"
-       onclick={() => pendingLiveAgent = null}
-       onkeydown={(e) => { if (e.key === 'Escape') pendingLiveAgent = null; }}>
-    <div class="lc-modal" role="dialog" aria-modal="true"
-         onclick={(e) => e.stopPropagation()}
-         onkeydown={(e) => e.stopPropagation()}>
-      <div class="lc-title">Set to LIVE mode?</div>
-      <div class="lc-body">
-        <b>{pendingLiveAgent.name}</b> — every action this agent fires will
-        hit the real Kite broker (subject to the master
-        <span class="font-mono">execution.paper_trading_mode</span> kill-switch).
-      </div>
-      <div class="lc-actions">
-        <button type="button" class="lc-btn lc-cancel"
-                onclick={() => pendingLiveAgent = null}>Cancel</button>
-        <button type="button" class="lc-btn lc-confirm"
-                onclick={() => { const a = pendingLiveAgent; pendingLiveAgent = null; applyTradeMode(a, 'live'); }}>
-          Set LIVE
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 
 <LogPanel
   heightClass="h-[50vh]"

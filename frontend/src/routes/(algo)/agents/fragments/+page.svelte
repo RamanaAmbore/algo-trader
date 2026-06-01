@@ -23,8 +23,9 @@
     patchAgentFragment, deleteAgentFragment, reloadFragments,
   } from '$lib/api';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
-  import DisclosureChevron from '$lib/DisclosureChevron.svelte';
-  import Select   from '$lib/Select.svelte';
+  import DisclosureChevron  from '$lib/DisclosureChevron.svelte';
+  import ConfirmModal       from '$lib/ConfirmModal.svelte';
+  import Select             from '$lib/Select.svelte';
 
   let fragments = $state(/** @type {any[]} */ ([]));
   let filterKind = $state(/** @type {'all'|'notify'|'condition'} */ ('all'));
@@ -42,6 +43,9 @@
   let formBodyText = $state('[]');
   let formError = $state('');
   let busy = $state(false);
+
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _confirmRef = $state(null);
 
   const isDemo = $derived(!$authStore.user);
 
@@ -140,7 +144,13 @@
   }
 
   async function removeFragment(/** @type {any} */ f) {
-    if (!confirm(`Delete fragment '${f.name}'? This cannot be undone.`)) return;
+    const ok = await _confirmRef?.ask({
+      title: 'Delete fragment?',
+      message: `Delete <b>${f.name}</b>? This cannot be undone.`,
+      danger: true,
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     busy = true;
     try {
       await deleteAgentFragment(f.id);
@@ -160,6 +170,8 @@
     } finally { busy = false; }
   }
 </script>
+
+<ConfirmModal bind:this={_confirmRef} />
 
 <svelte:head><title>Agent Fragments | RamboQuant Analytics</title></svelte:head>
 

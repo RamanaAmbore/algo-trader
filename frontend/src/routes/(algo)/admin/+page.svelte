@@ -4,6 +4,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import {
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
@@ -641,7 +642,8 @@
     <button
       onclick={() => { showEmailHistory = !showEmailHistory; if (showEmailHistory) loadEmailEvents(); }}
       class="text-[0.62rem] text-[#7dd3fc] hover:text-[#bae6fd] font-mono flex items-center gap-1 transition-colors">
-      {showEmailHistory ? 'hide history ▴' : 'show history ▾'}
+      {showEmailHistory ? 'hide history' : 'show history'}
+      <DisclosureChevron open={showEmailHistory} />
     </button>
   </div>
   <div class="border-b border-[rgba(251,191,36,0.25)] mb-4"></div>

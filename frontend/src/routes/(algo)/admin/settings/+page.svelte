@@ -9,6 +9,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
   import { fetchSettings, updateSetting, resetSetting } from '$lib/api';
   import Select   from '$lib/Select.svelte';
 
@@ -21,12 +22,6 @@
   let note        = $state('');
   let dirty       = $state(/** @type {Record<string, string>} */({}));
   let filter      = $state('');
-  let expanded    = $state(/** @type {Record<string, boolean>} */({}));
-
-  function toggleInfo(/** @type {string} */ key) {
-    expanded[key] = !expanded[key];
-    expanded = { ...expanded };
-  }
 
   // Render order: high-touch operator knobs first, vendor/infra knobs last.
   // Anything not in this list falls through to 'misc' and is appended.
@@ -184,11 +179,13 @@
         {#each rows as s}
           <div class="settings-row">
             <div class="grid grid-cols-[auto_minmax(0,1fr)_110px_auto_auto] gap-2 items-center text-[0.65rem] py-1">
-              <button type="button"
-                      class="info-btn"
-                      class:open={expanded[s.key]}
-                      title={expanded[s.key] ? 'Hide details' : 'Show details'}
-                      onclick={() => toggleInfo(s.key)}>i</button>
+              <InfoHint text={[
+                s.description,
+                `<span class="font-mono text-[#c8d8f0]/80 text-[0.55rem]">default: ${s.default_value}</span>`,
+                s.schema?.min !== undefined || s.schema?.max !== undefined ? `range: ${s.schema.min ?? '−∞'} … ${s.schema.max ?? '+∞'}` : '',
+                s.schema?.enum ? `choices: ${s.schema.enum.join(' / ')}` : '',
+                s.units ? `units: <span class="font-mono">${s.units}</span>` : '',
+              ].filter(Boolean).join('<br>')} />
 
               <div class="flex items-baseline gap-2 flex-wrap">
                 <span class="font-mono text-[#7dd3fc] break-all">{s.key}</span>
@@ -241,23 +238,6 @@
                 class="btn-secondary text-[0.6rem] py-0.5 px-2 disabled:opacity-30 whitespace-nowrap">Reset</button>
             </div>
 
-            {#if expanded[s.key]}
-              <div class="info-popout">
-                <div class="text-[0.6rem] text-[#c8d8f0]/85">{s.description}</div>
-                <div class="text-[0.55rem] text-[#7e97b8] mt-1">
-                  default: <span class="font-mono text-[#c8d8f0]/80">{s.default_value}</span>
-                  {#if s.schema && (s.schema.min !== undefined || s.schema.max !== undefined)}
-                    <span class="mx-1">·</span>range: {s.schema.min ?? '−∞'} … {s.schema.max ?? '+∞'}
-                  {/if}
-                  {#if s.schema?.enum}
-                    <span class="mx-1">·</span>choices: {s.schema.enum.join(' / ')}
-                  {/if}
-                  {#if s.units}
-                    <span class="mx-1">·</span>units: <span class="font-mono">{s.units}</span>
-                  {/if}
-                </div>
-              </div>
-            {/if}
           </div>
         {/each}
       </div>
@@ -270,43 +250,4 @@
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }
   .settings-row:last-child { border-bottom: 0; }
-
-  /* Info toggle — mirrors the page's amber accent so it reads as part
-     of the algo palette, not a generic chrome control. */
-  .info-btn {
-    width: 1.1rem;
-    height: 1.1rem;
-    border-radius: 9999px;
-    border: 1px solid rgba(251,191,36,0.35);
-    background: rgba(251,191,36,0.08);
-    color: #fbbf24;
-    font-size: 0.6rem;
-    font-style: italic;
-    font-weight: 700;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s;
-  }
-  .info-btn:hover {
-    background: rgba(251,191,36,0.18);
-    border-color: rgba(251,191,36,0.6);
-  }
-  .info-btn.open {
-    background: #fbbf24;
-    color: #0c1830;
-    border-color: #fbbf24;
-  }
-
-  /* Expanded info — flat slate-blue surface, faint sky-blue border,
-     no left accent (matches canonical InfoHint styling). */
-  .info-popout {
-    margin: 0.15rem 0 0.4rem 1.6rem;
-    padding: 0.4rem 0.6rem;
-    border-radius: 0.25rem;
-    border: 1px solid rgba(125,211,252,0.25);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-  }
 </style>

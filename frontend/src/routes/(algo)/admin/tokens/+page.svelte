@@ -18,6 +18,7 @@
   } from '$lib/api';
   import Select   from '$lib/Select.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   // Agent Tokens page — read + is_active toggle for every token in the
   // grammar_tokens table. (The DB table and backend class keep the
@@ -33,6 +34,9 @@
   let tokens     = $state([]);
   let loading    = $state(true);
   let error      = $state('');
+
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _confirmRef = $state(null);
   let reloading  = $state(false);
   let activeTab  = $state(/** @type {'condition'|'notify'|'action'} */('condition'));
   let expandedId = $state(/** @type {number|null} */(null));
@@ -162,7 +166,13 @@
 
   async function doDelete(t) {
     if (t.is_system) return;  // backend blocks; UI too
-    if (!confirm(`Delete custom token "${t.token}"?`)) return;
+    const ok = await _confirmRef?.ask({
+      title: 'Delete token?',
+      message: `Delete custom token <b>${t.token}</b>?`,
+      danger: true,
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     try { await deleteGrammarToken(t.id); await load(); }
     catch (e) { error = e.message || 'Delete failed'; }
   }
@@ -179,6 +189,8 @@
     load();
   });
 </script>
+
+<ConfirmModal bind:this={_confirmRef} />
 
 <svelte:head><title>Tokens | RamboQuant Analytics</title></svelte:head>
 

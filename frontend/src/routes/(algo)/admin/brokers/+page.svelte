@@ -27,8 +27,9 @@
     fetchBrokerAccounts, createBrokerAccount, updateBrokerAccount,
     deleteBrokerAccount, testBrokerAccount,
   } from '$lib/api';
-  import StaleBanner from '$lib/StaleBanner.svelte';
-  import Select   from '$lib/Select.svelte';
+  import StaleBanner    from '$lib/StaleBanner.svelte';
+  import Select         from '$lib/Select.svelte';
+  import ConfirmModal   from '$lib/ConfirmModal.svelte';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
    *   source_ip:string|null,is_active:boolean,historical_data_enabled:boolean,
@@ -37,6 +38,9 @@
   let loading  = $state(true);
   let error    = $state('');
   let note     = $state('');
+
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _confirmRef = $state(null);
 
   // Supported broker vendors. Adding a new entry here makes it
   // selectable in the form; the adapter must be registered in
@@ -264,7 +268,13 @@
   }
 
   async function destroy(/** @type {any} */ row) {
-    if (!confirm(`Delete broker account ${row.account}? This is irreversible.`)) return;
+    const ok = await _confirmRef?.ask({
+      title: 'Delete broker account?',
+      message: `Delete <b>${row.account}</b>? This is irreversible.`,
+      danger: true,
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     try {
       await deleteBrokerAccount(row.account);
       note = `Deleted ${row.account}`;
@@ -301,6 +311,8 @@
   });
   onDestroy(() => { refreshTeardown?.(); });
 </script>
+
+<ConfirmModal bind:this={_confirmRef} />
 
 <svelte:head><title>Brokers | RamboQuant Analytics</title></svelte:head>
 

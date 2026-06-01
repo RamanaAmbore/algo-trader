@@ -23,6 +23,7 @@
   import EquityCurve from '$lib/EquityCurve.svelte';
   import ReplayScrubber from '$lib/ReplayScrubber.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
+  import ConfirmModal  from '$lib/ConfirmModal.svelte';
   import StaleBanner   from '$lib/StaleBanner.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
@@ -40,6 +41,9 @@
   let error     = $state('');
   let note      = $state('');
   let pickedSlug = $state('');
+
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _confirmRef = $state(null);
   let seedMode  = $state(/** @type {'scripted'|'live'|'live+scenario'} */ ('scripted'));
   let rateMs    = $state(2000);
   let positionsEveryN = $state(/** @type {number | ''} */ (''));
@@ -642,6 +646,8 @@
   onDestroy(() => { refreshTeardown?.(); });
 </script>
 
+<ConfirmModal bind:this={_confirmRef} />
+
 <StaleBanner {error} hasData={scenarios.length > 0} label="Simulator" />
 {#if note}
   <div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">
@@ -1023,7 +1029,12 @@
                       disabled={!it.ended_at || status?.active || status?.run_active}
                       title="Re-run this iteration with the same regime + seed + agent_ids. Deterministic — same fills."
                       onclick={async () => {
-                        if (!confirm(`Re-run ${it.slug} with seed ${it.seed ?? '(random)'}?`)) return;
+                        const ok = await _confirmRef?.ask({
+                          title: 'Re-run iteration?',
+                          message: `Re-run <b>${it.slug}</b> with seed ${it.seed ?? '(random)'}?`,
+                          confirmLabel: 'Re-run',
+                        });
+                        if (!ok) return;
                         try {
                           await replaySimIteration(it.slug);
                           note = `Re-running ${it.slug}…`;
