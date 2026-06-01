@@ -72,7 +72,11 @@
     border-radius: 6px;
     box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(251,191,36,0.08);
     width: min(96vw, 1200px);
-    max-height: 92vh;
+    /* height (not max-height) so the modal always gives the embedded
+       ChartWorkspace a real viewport-sized container to fill. With
+       max-height the modal collapsed to picker-bar height (~3rem)
+       whenever symbol was empty and the chart canvas had no rows. */
+    height: 92vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
