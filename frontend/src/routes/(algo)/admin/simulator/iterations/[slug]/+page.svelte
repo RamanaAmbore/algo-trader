@@ -12,7 +12,6 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
-  import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
   // aggCompact is used in the summary card below.
 
@@ -86,14 +85,15 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Iteration</h1>
     <span class="slug-chip">{slug || '—'}</span>
-    <InfoHint popup text="Snapshot of one simulator iteration. The Re-run button kicks off a new single-iteration sim with the same regime + seed + agent_ids — deterministic, same fills. This is <b>different</b> from <b>Replay mode</b> (mode 4) which is a historical-data backtest using real Kite candles." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={load} loading={loading} label="iteration" />
-  <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
-  <a href="/admin/simulator" class="back-link">Simulator</a>
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={load} loading={loading} label="iteration" />
+    <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
+    <a href="/admin/simulator" class="back-link">Simulator</a>
+    <PageHeaderActions />
+  </span>
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}

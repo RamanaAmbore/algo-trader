@@ -6,7 +6,6 @@
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
 
   // ── URL params ────────────────────────────────────────────────────
@@ -64,19 +63,19 @@
   <div class="page-header">
     <span class="algo-title-group">
       <h1 class="page-title-chip">Charts</h1>
-      <InfoHint popup align="left"
-        text="OHLCV historical chart (1D–1Y) + intraday tick overlay for any symbol. Switch between Line, Area, and Candle views. Toggle SMA20/SMA50/Vol overlays. Options show a Greeks strip below the chart. Wheel to zoom, drag to pan, Reset to restore the full range." />
     </span>
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
-    <button class="page-order-btn" disabled={!_symbol} title="Place order — {_symbol || '—'}"
-            onclick={_openOrderModal}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-      </svg>
-    </button>
-    <RefreshButton onClick={_refresh} loading={_chartLoading} label="charts" />
-    <PageHeaderActions hideOrder={true} hideChart={true} />
+    <span class="page-header-actions">
+      <button class="page-order-btn" disabled={!_symbol} title="Place order — {_symbol || '—'}"
+              onclick={_openOrderModal}>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <RefreshButton onClick={_refresh} loading={_chartLoading} label="charts" />
+      <PageHeaderActions hideOrder={true} hideChart={true} />
+    </span>
   </div>
 
   {#if _error}

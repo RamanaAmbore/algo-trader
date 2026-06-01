@@ -520,15 +520,18 @@ The canonical page-header is:
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">…</h1>
-    <InfoHint popup text="…" />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={pageLoadFn} loading={loading} label="…" />
-  [optional page-specific action chips]
-  <PageHeaderActions symbol={contextSymbol} hideOrder={isOrdersPage} hideChart={isChartsPage} />
+  <span class="page-header-actions">
+    <RefreshButton onClick={pageLoadFn} loading={loading} label="…" />
+    [optional page-specific action chips]
+    <PageHeaderActions symbol={contextSymbol} hideOrder={isOrdersPage} hideChart={isChartsPage} />
+  </span>
 </div>
 ```
+
+The `<span class="page-header-actions">` wrapper keeps all icons together as a single `inline-flex` unit — on narrow viewports the title + timestamp can wrap to the first row but the icon cluster never splits across lines.
 
 `PageHeaderActions` renders three vibrant gradient buttons:
 - **Order** — vivid amber (`#f59e0b → #d97706`). Opens `SymbolPanel` (order ticket). Hidden on `/orders` (`hideOrder={true}`).

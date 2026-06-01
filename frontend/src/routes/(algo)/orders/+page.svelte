@@ -8,7 +8,6 @@
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import { fetchOrders, cancelOrder } from '$lib/api';
-  import InfoHint from '$lib/InfoHint.svelte';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
@@ -305,12 +304,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Orders</h1>
-    <InfoHint popup text="Live order book across every loaded broker account. Click a row for the full status / fill timeline; Cancel and Modify hit the broker directly. Status pills: OPEN (in book), TRIGGER_PENDING (SL waiting), COMPLETE (filled), REJECTED (broker / margin failure)." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-  <PageHeaderActions symbol={_entrySymbol} hideOrder={true} />
+  <span class="page-header-actions">
+    <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
+    <PageHeaderActions symbol={_entrySymbol} hideOrder={true} />
+  </span>
 </div>
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}

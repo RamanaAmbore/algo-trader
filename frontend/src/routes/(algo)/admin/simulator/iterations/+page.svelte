@@ -11,7 +11,6 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIterations } from '$lib/api';
-  import InfoHint from '$lib/InfoHint.svelte';
   import { aggCompact } from '$lib/format';
 
   /** @type {any[]} */
@@ -101,13 +100,14 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Simulator iterations</h1>
-    <InfoHint popup text="Every iteration of every /start-run call lands here. Click a row to see the iteration's summary stats + replay it with the same seed." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={load} loading={loading} label="iterations" />
-  <a href="/admin/simulator" class="back-link">← Simulator</a>
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={load} loading={loading} label="iterations" />
+    <a href="/admin/simulator" class="back-link">← Simulator</a>
+    <PageHeaderActions />
+  </span>
 </div>
 
 {#if error}<div class="err-banner">{error}</div>{/if}

@@ -399,21 +399,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Research</h1>
-    <InfoHint popup text="
-      <b>Lab workspace</b> for chat-driven stock research.
-      <br><br>
-      The chat happens in Claude Code (your terminal); this page reads back
-      the persisted threads + the draft agents you've promoted out of them.
-      <br><br>
-      Open the <b>Settings</b> tab for the one-time .mcp.json bootstrap.
-      <br><br>
-      No paid GenAI in the loop — Claude Code subscription is the only LLM."
-    />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={() => { loadThreads(); loadDrafts(); }} loading={loading} label="research" />
-  <PageHeaderActions symbol={selected?.symbol ?? ''} />
+  <span class="page-header-actions">
+    <RefreshButton onClick={() => { loadThreads(); loadDrafts(); }} loading={loading} label="research" />
+    <PageHeaderActions symbol={selected?.symbol ?? ''} />
+  </span>
 </div>
 
 <AgentWorkspaceTabs />

@@ -1889,16 +1889,17 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Derivatives</h1>
-    <InfoHint popup text={'Pick an underlying to load every option / future on it from your ' + (simActive ? '<b>simulator</b> book' : '<b>live</b> book') + '. The payoff diagram below charts the aggregated position; uncheck a row in the Candidates panel to drop it from the payoff. Click <b>+ Add</b> to open the option chain and pick draft strikes (modelled as hypothetical positions). Stats below the chart explain themselves — click any <span class="font-mono">(i)</span> chip for a definition.'} />
     {#if simActive}
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-                 loading={loading} label="derivatives" />
-  <PageHeaderActions symbol={selectedUnderlying} />
+  <span class="page-header-actions">
+    <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+                   loading={loading} label="derivatives" />
+    <PageHeaderActions symbol={selectedUnderlying} />
+  </span>
 </div>
 
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain

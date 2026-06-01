@@ -6,7 +6,6 @@
 
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import InfoHint        from '$lib/InfoHint.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
 
@@ -24,11 +23,12 @@
   <div class="page-header">
     <span class="algo-title-group">
       <h1 class="page-title-chip">Console</h1>
-      <InfoHint popup text="Order workspace: type commands (<code>buy ZG#### NIFTY25APRFUT 50 limit 22000</code>), use the Ticket form, or build a basket. Tokenized autocomplete drives the Command tab." />
     </span>
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
-    <PageHeaderActions />
+    <span class="page-header-actions">
+      <PageHeaderActions />
+    </span>
   </div>
 
   {#if isDemo}

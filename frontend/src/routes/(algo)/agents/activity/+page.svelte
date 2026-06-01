@@ -10,7 +10,6 @@
   import { nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
 
   // Match the dashboard's default — fires only, with an opt-in to
@@ -30,11 +29,12 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Agent Activity</h1>
-    <InfoHint popup text="Recent agent fires (and optionally action successes/errors). Real-pipeline events only — sim runs filtered out. Click a row's slug to jump to that agent on the Agents tab." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <PageHeaderActions />
+  </span>
 </div>
 
 <AgentWorkspaceTabs />

@@ -10,7 +10,6 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSystemHealth } from '$lib/api';
-  import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
 
   /** @type {any} */
@@ -58,12 +57,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Health</h1>
-    <InfoHint popup text="System diagnostics snapshot. Use this at market open to confirm all broker accounts are loaded, DB is reachable, and the paper/sim engines are in the expected state. Refreshes every 15 s." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={load} loading={loading} label="health" />
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={load} loading={loading} label="health" />
+    <PageHeaderActions />
+  </span>
 </div>
 
 <StaleBanner {error} hasData={!!health} label="Health snapshot" />

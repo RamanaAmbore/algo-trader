@@ -12,7 +12,6 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
-  import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import Select   from '$lib/Select.svelte';
 
@@ -135,12 +134,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Alerts</h1>
-    <InfoHint popup text="History of agent fires (real and simulated). Each row shows when an agent's condition matched, what action ran, and which channels were notified. Use the filters to scope by agent, event type, or time window." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={load} loading={loading} label="alerts" />
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={load} loading={loading} label="alerts" />
+    <PageHeaderActions />
+  </span>
 </div>
 
 <StaleBanner {error} hasData={rows.length > 0} label="Alert history" />

@@ -4,7 +4,6 @@
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
@@ -1493,12 +1492,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Dashboard</h1>
-    <InfoHint popup text="Admin dashboard: P&amp;L analysis first, then funds + position/holdings summary grids, then recent agent activity." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
+    <PageHeaderActions />
+  </span>
 </div>
 
 <!-- Hero strip retired. Its six chips lived elsewhere:

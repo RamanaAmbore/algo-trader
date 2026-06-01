@@ -20,7 +20,6 @@
   import { page } from '$app/state';
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
   // ?mode= (backward-compat for old SIM/REPLAY dropdown deep-links).
@@ -73,11 +72,12 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Lab</h1>
-    <InfoHint popup text="Research workspace for the two non-execution surfaces: <b>Scenario</b> (fabricated price moves on real positions — formerly Simulator) and <b>Backtest</b> (historical Kite OHLCV candles fed through the agent engine — formerly Replay). Your persistent master mode (LIVE/PAPER) lives in the navbar dropdown, separate from this page." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <PageHeaderActions />
+  </span>
 </div>
 
 <div class="exec-tabs" role="tablist" aria-label="Lab workspace">

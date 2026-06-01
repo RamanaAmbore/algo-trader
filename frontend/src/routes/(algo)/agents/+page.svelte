@@ -562,18 +562,19 @@
         </span>
       {/if}
     </h1>
-    <InfoHint popup text="Agents fire on every 5-min tick during market hours. Each agent has a <b>condition tree</b>, <b>notify</b> channels, and <b>actions</b>. Slug is the stable identifier; schedule controls when it runs (<b>market_hours</b> skips outside session); cooldown_minutes throttles re-fires." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={() => { loadAgents(); loadAgentLog(); }} loading={loading} label="agents" />
-  <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
-    🔔 History
-  </a>
-  <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
-    {aiOpen ? '× Close AI' : '✦ Ask AI'}
-  </button>
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={() => { loadAgents(); loadAgentLog(); }} loading={loading} label="agents" />
+    <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
+      🔔 History
+    </a>
+    <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
+      {aiOpen ? '× Close AI' : '✦ Ask AI'}
+    </button>
+    <PageHeaderActions />
+  </span>
 </div>
 
 <AgentWorkspaceTabs />

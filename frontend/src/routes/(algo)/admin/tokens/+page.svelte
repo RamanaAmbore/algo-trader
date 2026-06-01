@@ -16,7 +16,6 @@
     fetchGrammarTokens, patchGrammarToken, createGrammarToken,
     deleteGrammarToken, reloadGrammarRegistry,
   } from '$lib/api';
-  import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
 
@@ -186,18 +185,19 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Agent Tokens</h1>
-    <InfoHint popup text="Grammar tokens: extend the agent language. <b>Condition</b> tokens (metric / scope / op), <b>notify</b> tokens (channel / template), and <b>action</b> tokens (place_order, set_flag…). System tokens toggle-only; custom tokens full CRUD." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  {#if !isDemo}
-    <RefreshButton onClick={doReload} loading={reloading} label="registry" />
-    <button onclick={openCreate}
-      class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
-      + New token
-    </button>
-  {/if}
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    {#if !isDemo}
+      <RefreshButton onClick={doReload} loading={reloading} label="registry" />
+      <button onclick={openCreate}
+        class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+        + New token
+      </button>
+    {/if}
+    <PageHeaderActions />
+  </span>
 </div>
 
 <AgentWorkspaceTabs />

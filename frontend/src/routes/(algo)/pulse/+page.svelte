@@ -5,7 +5,6 @@
   // + format helpers stay in one place.
   import MarketPulse from '$lib/MarketPulse.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { nowStamp } from '$lib/stores';
 
@@ -28,12 +27,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Pulse</h1>
-    <InfoHint popup text={'Live broker book — positions, holdings, watchlist quotes, movers and pinned indices in one grid. Tap any row to open the order ticket. Use <b>Show…</b> to toggle sources. Account multiselect scopes positions + holdings (watchlists stay visible). The toolbar carries an immediate-refresh button; auto-refresh cadence is driven by <span class="font-mono">pulse.tick_interval_ms</span> in /admin/settings.'} />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={refreshPage} loading={_refreshing} label="pulse" />
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={refreshPage} loading={_refreshing} label="pulse" />
+    <PageHeaderActions />
+  </span>
 </div>
 
 <!-- accountPicker=true mounts a per-card Account MultiSelect inside

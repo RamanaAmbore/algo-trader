@@ -23,7 +23,6 @@
     patchAgentFragment, deleteAgentFragment, reloadFragments,
   } from '$lib/api';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import Select   from '$lib/Select.svelte';
 
@@ -167,12 +166,13 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Fragments</h1>
-    <InfoHint popup text={'Reusable saved sub-trees an agent references via <b>{$ref: name}</b>. Two kinds: <b>notify</b> (channel lists for agent.events) and <b>condition</b> (sub-trees for agent.conditions). System fragments toggle-only; custom fragments full CRUD.'} />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <RefreshButton onClick={doReload} loading={busy} label="fragments" />
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <RefreshButton onClick={doReload} loading={busy} label="fragments" />
+    <PageHeaderActions />
+  </span>
 </div>
 
 <AgentWorkspaceTabs />

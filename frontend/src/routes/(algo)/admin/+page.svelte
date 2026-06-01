@@ -11,7 +11,6 @@
     impersonateUser,
   } from '$lib/api';
   import MultiSelect from '$lib/MultiSelect.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import Select   from '$lib/Select.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
 
@@ -332,15 +331,16 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Users</h1>
-    <InfoHint popup text="User management: approve / suspend / terminate partners. Admins and <b>designated</b> users can act; only admins can promote roles." />
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
-  <button onclick={() => showCreate = !showCreate}
-    class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
-    {showCreate ? 'Cancel' : '+ Create User'}
-  </button>
-  <PageHeaderActions />
+  <span class="page-header-actions">
+    <button onclick={() => showCreate = !showCreate}
+      class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+      {showCreate ? 'Cancel' : '+ Create User'}
+    </button>
+    <PageHeaderActions />
+  </span>
 </div>
 
 <div class="algo-status-card p-5 pt-4" data-status="inactive">

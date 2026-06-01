@@ -1423,7 +1423,7 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    /* Tight gap so title chip + InfoHint + timestamp + bells stay on
+    /* Tight gap so title chip + timestamp + action cluster stay on
        one row on mobile. flex-wrap still kicks in only when the row
        genuinely overflows. */
     gap: 0.15rem;
@@ -1437,14 +1437,26 @@
   :global(.page-header .algo-ts) {
     margin-right: 0.15rem;
   }
-  /* Title chip + InfoHint cluster on the LEFT of every algo page
-     header. Without this, flex-wrap separates them onto two lines
-     on narrow viewports. Shared so per-page declarations like
-     .pulse-title-group / .opt-title-group can be retired. */
+  /* Title chip cluster on the LEFT of every algo page header. Without
+     this, flex-wrap separates them onto two lines on narrow viewports.
+     Shared so per-page declarations like .pulse-title-group /
+     .opt-title-group can be retired. */
   :global(.page-header .algo-title-group) {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+  }
+  /* Action icon cluster on the RIGHT — RefreshButton + PageHeaderActions
+     (+ any page-specific buttons). Keeps all icons on the same flex line
+     even when the title + timestamp wrap to the first row on narrow
+     viewports. flex-shrink: 0 prevents the span from collapsing;
+     white-space: nowrap keeps the inner buttons together. */
+  :global(.page-header-actions) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   :global(.page-header .onb-wrap + .anb-wrap),
   :global(.page-header .algo-ts + .onb-wrap) {
