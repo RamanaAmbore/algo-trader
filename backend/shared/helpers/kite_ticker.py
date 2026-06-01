@@ -154,10 +154,18 @@ class TickerManager:
         self._connected: bool = False
         self._started: bool = False
         self._bus = BroadcastBus()                # fan-out to SSE clients
+        # Failover state — used by the watchdog task (background.py)
+        self._current_account: str = ""           # account this ticker is currently bound to
+        self._last_connected_at: float = 0.0      # unix ts, set in _on_connect
+        self._last_disconnected_at: float = 0.0   # unix ts, set in _on_close
+        # account → unix ts when last failover-aborted that account.
+        # The watchdog skips an account for 5 min after a failed attempt
+        # so we never bounce between two simultaneously-broken Kite accounts.
+        self._failover_cooloff: dict[str, float] = {}
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def start(self, api_key: str, access_token: str) -> None:
+    def start(self, api_key: str, access_token: str, account: str = "") -> None:
         """
         Connect to wss://ws.kite.trade for the given Kite credentials.
 
@@ -168,6 +176,7 @@ class TickerManager:
         if self._started:
             return
         self._started = True
+        self._current_account = account or self._current_account
         try:
             from kiteconnect import KiteTicker
             self._kws = KiteTicker(api_key, access_token)
@@ -179,7 +188,7 @@ class TickerManager:
             # threaded=True runs Twisted's reactor in a daemon thread so
             # the asyncio event loop is never blocked.
             self._kws.connect(threaded=True)
-            logger.info("KiteTicker: connect() initiated (threaded)")
+            logger.info(f"KiteTicker: connect() initiated (account={self._current_account or '?'})")
         except Exception:
             logger.exception("KiteTicker: connect() failed — ticker disabled")
             self._started = False
@@ -333,7 +342,7 @@ class TickerManager:
         self._kws       = None
         logger.info("KiteTicker: stopped (clean)")
 
-    def ensure_started(self, api_key: str, access_token: str) -> bool:
+    def ensure_started(self, api_key: str, access_token: str, account: str = "") -> bool:
         """Idempotent re-attempt of start() — safe to call from later
         startup phases (e.g. the sparkline-warm task) when the
         access_token wasn't yet available during on_startup. Returns
@@ -343,14 +352,78 @@ class TickerManager:
             return True
         if not api_key or not access_token:
             return False
-        self.start(api_key, access_token)
+        self.start(api_key, access_token, account=account)
+        return self._started
+
+    # ── Failover support ──────────────────────────────────────────────────
+
+    def current_account(self) -> str:
+        """Which Kite account this ticker is currently bound to."""
+        return self._current_account
+
+    def seconds_since_connect(self) -> float:
+        """0 if never connected; else elapsed since last connect."""
+        import time
+        with self._lock:
+            return (time.time() - self._last_connected_at) if self._last_connected_at else 0.0
+
+    def seconds_since_disconnect(self) -> float:
+        """0 if currently connected OR never disconnected; else elapsed since last close."""
+        import time
+        with self._lock:
+            if self._connected:
+                return 0.0
+            return (time.time() - self._last_disconnected_at) if self._last_disconnected_at else 0.0
+
+    def is_account_in_failover_cooloff(self, account: str, cool_seconds: float = 300.0) -> bool:
+        """True when this account failed over recently — watchdog will
+        skip it for `cool_seconds` so we don't bounce between two
+        simultaneously-broken Kite accounts."""
+        import time
+        with self._lock:
+            ts = self._failover_cooloff.get(account, 0.0)
+            return ts > 0 and (time.time() - ts) < cool_seconds
+
+    def restart_with_account(
+        self, api_key: str, access_token: str, account: str
+    ) -> bool:
+        """
+        Tear down the current ticker + start fresh against a different
+        Kite account. Previously-subscribed tokens are re-subscribed on
+        the new connection (queued in _pending until on_connect fires).
+
+        Used by the watchdog when the primary account's WebSocket has
+        been disconnected longer than the failover threshold.
+        """
+        import time
+        prev_account = self._current_account
+        prev_subs = set(self._subscribed) | set(self._pending)
+        # Mark the failing account so the watchdog doesn't try it again
+        # immediately (5-minute do-not-retry default).
+        if prev_account:
+            with self._lock:
+                self._failover_cooloff[prev_account] = time.time()
+        logger.warning(
+            f"KiteTicker: failover {prev_account or '?'} → {account} "
+            f"(re-subscribing {len(prev_subs)} token(s))"
+        )
+        # Clean shutdown of the old socket (idempotent if already closed).
+        self.stop()
+        # Re-init state (stop() resets _started; reuse __init__-style defaults).
+        self._subscribed = set()
+        self._pending = set(prev_subs)
+        # _tick_map intentionally preserved — operator's UI keeps showing
+        # the last known LTPs until fresh ticks roll in from the new account.
+        self.start(api_key, access_token, account=account)
         return self._started
 
     # ── Callbacks (fire on the Twisted reactor thread) ────────────────────
 
     def _on_connect(self, ws, _response) -> None:
+        import time
         with self._lock:
             self._connected = True
+            self._last_connected_at = time.time()
             pending = set(self._pending)
             self._pending.clear()
 
@@ -409,9 +482,14 @@ class TickerManager:
             self._bus.publish(payload)
 
     def _on_close(self, _ws, code, reason) -> None:
+        import time
         with self._lock:
             self._connected = False
-        logger.warning(f"KiteTicker: closed — code={code} reason={reason!r}")
+            self._last_disconnected_at = time.time()
+        logger.warning(
+            f"KiteTicker: closed — code={code} reason={reason!r} "
+            f"account={self._current_account or '?'}"
+        )
 
     def _on_error(self, _ws, code, reason) -> None:
         logger.error(f"KiteTicker: error — code={code} reason={reason!r}")

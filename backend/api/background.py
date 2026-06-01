@@ -1049,6 +1049,92 @@ async def _task_sparkline_warm(state: dict) -> None:
                 await _do_warm(f"{seg['name']}-open")
 
 
+# ── Ticker watchdog ──────────────────────────────────────────────────────
+#
+# Failover for the KiteTicker WebSocket. Runs every 30s. If the ticker is
+# started but has been disconnected for > FAILOVER_THRESHOLD seconds, picks
+# the next eligible Kite account (historical_data_enabled = True, not the
+# currently-bound account, not in a 5-min do-not-retry cool-off) and
+# restarts the ticker against it. Previously-subscribed tokens carry over.
+# When the failed account recovers + its cool-off expires, we don't bounce
+# back automatically — the new account stays primary until ITS WebSocket
+# breaks. Operator can force a re-assign by adjusting the
+# connections.sparkline_account setting + restarting.
+async def _task_ticker_watchdog(state: dict) -> None:
+    CHECK_INTERVAL_S    = 30.0   # how often to poll ticker.status()
+    FAILOVER_THRESHOLD_S = 60.0  # how long disconnected before we fail over
+    FAILOVER_COOLOFF_S  = 300.0  # don't retry a failed account for 5 min
+
+    from backend.shared.helpers.kite_ticker import get_ticker
+    from backend.shared.brokers.registry import get_historical_brokers
+
+    while True:
+        try:
+            await asyncio.sleep(CHECK_INTERVAL_S)
+            ticker = get_ticker()
+            status = ticker.status()
+            # Watchdog applies only to a ticker that's STARTED but has
+            # been disconnected longer than the threshold. A ticker that
+            # never started is the warm task's job to recover.
+            if not status.get("started"):
+                continue
+            if status.get("connected"):
+                continue  # healthy
+            if ticker.seconds_since_disconnect() < FAILOVER_THRESHOLD_S:
+                continue  # within KiteTicker's own retry window
+
+            # Disconnected for too long — find the next eligible account.
+            # get_historical_brokers() honours the historical_data_enabled
+            # flag in settings and the 30s rate-limit cool-off — exactly
+            # the gating the operator wanted ("if it is enabled for
+            # historical data in settings, we are good").
+            try:
+                eligible = get_historical_brokers()
+            except Exception as e:
+                logger.warning(f"ticker watchdog: eligible-broker lookup failed: {e}")
+                continue
+            current = ticker.current_account()
+            next_kc = None
+            for b in eligible:
+                acct = getattr(b, "account", "") or ""
+                if not acct or acct == current:
+                    continue
+                if ticker.is_account_in_failover_cooloff(acct, FAILOVER_COOLOFF_S):
+                    continue
+                # Extract live api_key + access_token from the broker's
+                # underlying KiteConnection (same pattern app.py uses).
+                kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
+                api_key = getattr(kc, "api_key", None)
+                access_token = (
+                    getattr(kc, "_access_token", None)
+                    or getattr(kc, "access_token", None)
+                )
+                if api_key and access_token:
+                    next_kc = (acct, api_key, access_token)
+                    break
+
+            if not next_kc:
+                logger.warning(
+                    f"ticker watchdog: no eligible failover account "
+                    f"(current={current or '?'}, disconnected_s="
+                    f"{ticker.seconds_since_disconnect():.0f}) — "
+                    f"continuing to wait for primary to recover"
+                )
+                continue
+
+            acct, api_key, access_token = next_kc
+            ok = ticker.restart_with_account(api_key, access_token, acct)
+            if ok:
+                logger.info(f"ticker watchdog: failover OK → {acct}")
+            else:
+                logger.warning(f"ticker watchdog: failover to {acct} did not start")
+
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("ticker watchdog: unexpected error")
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -1066,6 +1152,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_sim_cleanup(),         name="bg-sim-cleanup"),
         asyncio.create_task(_task_mcp_audit_cleanup(),   name="bg-mcp-audit-cleanup"),
         asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
+        asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes
