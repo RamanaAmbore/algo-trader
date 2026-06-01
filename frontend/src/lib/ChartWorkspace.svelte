@@ -211,13 +211,23 @@
     'NIFTY MID SELECT':   'MIDCPNIFTY',
     'NIFTY NEXT 50':      'NIFTYNXT50',
   };
-  function _resolveFetchSymbol(/** @type {string} */ sym) {
+  async function _resolveFetchSymbol(/** @type {string} */ sym) {
     const root = _KITE_INDEX_TO_ROOT[sym];
     if (!root) return { sym, exch: '' };
-    try {
-      const fut = findNearestFuture(root);
-      if (fut?.s) return { sym: String(fut.s), exch: String(fut.e || 'NFO') };
-    } catch (_) { /* instruments cache not ready — fall through */ }
+    // Sync first — instruments cache is usually warm by the time the
+    // operator clicks a chart icon. If null, force a load and retry.
+    // Without this the resolver silently falls through to the literal
+    // Kite index name and the backend walks every exchange for ~10s
+    // before returning empty bars.
+    let fut = null;
+    try { fut = findNearestFuture(root); } catch (_) {}
+    if (!fut?.s) {
+      try {
+        await loadInstruments();
+        fut = findNearestFuture(root);
+      } catch (_) { /* still no instruments — fall through to literal */ }
+    }
+    if (fut?.s) return { sym: String(fut.s), exch: String(fut.e || 'NFO') };
     return { sym, exch: '' };
   }
 
@@ -237,7 +247,9 @@
       // Map Kite index quote-keys to their tradeable future before any
       // backend call. NIFTY BANK / NIFTY 50 etc. would otherwise walk
       // every exchange arm and time out (~10s of broker calls).
-      const _resolved = _resolveFetchSymbol(symbol);
+      // Awaited because the resolver may need to hydrate the
+      // instruments cache before findNearestFuture can return.
+      const _resolved = await _resolveFetchSymbol(symbol);
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
       const promises = [
