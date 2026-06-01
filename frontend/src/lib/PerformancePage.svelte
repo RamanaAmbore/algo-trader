@@ -6,6 +6,8 @@
   import { createPerformanceSocket } from '$lib/ws';
   import { dataCache, authStore } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
+  import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
@@ -46,6 +48,14 @@
     _chartModalSym  = String(symbol  || '').toUpperCase();
     _chartModalExch = String(exchange || '');
   }
+
+  // Context menu state — right-click / long-press on any symbol cell.
+  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  let _ctxMenu = $state(null);
+  /** @type {'place-order' | 'chart' | 'log' | null} */
+  let _ctxAction = $state(null);
+  /** @type {string} */ let _ctxSym  = $state('');
+  /** @type {string} */ let _ctxExch = $state('');
   // Effective mask flag — admin/designated never see masked codes,
   // regardless of what the parent passed. The prop still wins for
   // partner / demo (the default `true`) and for any future caller
@@ -344,17 +354,13 @@
     wrap.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
     const txt = document.createElement('span');
     txt.textContent = sym;
-    wrap.appendChild(txt);
     if (sym && sym !== 'TOTAL') {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'row-chart-btn';
-      btn.title = `Chart ${sym}`;
-      btn.setAttribute('aria-label', `Open chart for ${sym}`);
-      btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-      btn.addEventListener('click', (e) => { e.stopPropagation(); _openChart(sym, exch); });
-      wrap.appendChild(btn);
+      // data attrs for context menu delegation
+      txt.setAttribute('data-sym',  sym);
+      txt.setAttribute('data-exch', exch);
+      txt.className = 'perf-sym-cell';
     }
+    wrap.appendChild(txt);
     return wrap;
   }
 
@@ -367,19 +373,15 @@
   function _posSymRenderer(params) {
     const sym  = String(params.value || '');
     const acct = params.data?.account || '';
+    const exch = String(params.data?.exchange || 'NFO');
     const span = document.createElement('span');
     span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
     span.textContent = sym;
     if (sym && sym !== 'TOTAL') {
-      // Chart button
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'row-chart-btn';
-      btn.title = `Chart ${sym}`;
-      btn.setAttribute('aria-label', `Open chart for ${sym}`);
-      btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-      btn.addEventListener('click', (e) => { e.stopPropagation(); _openChart(sym, params.data?.exchange || 'NFO'); });
-      span.appendChild(btn);
+      // data attrs for context menu delegation
+      span.setAttribute('data-sym',  sym);
+      span.setAttribute('data-exch', exch);
+      span.className = 'perf-sym-cell';
       // Options deep-link (admin dashboard only)
       if (enableOptionsLink && /(?:CE|PE|FUT)$/.test(sym)) {
         const href = `/admin/options?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;
@@ -475,6 +477,15 @@
       getRowClass,
       pinnedBottomRowData: [],
       ...(onRowClick ? { onRowClicked: (e) => onRowClick(e.data) } : {}),
+      onCellContextMenu: (ev) => {
+        if (!ev.data || !ev.event) return;
+        const sym  = String(ev.data.tradingsymbol || '');
+        const exch = String(ev.data.exchange || (ev.data.product === 'CNC' ? 'NSE' : 'NFO'));
+        if (!sym || sym === 'TOTAL') return;
+        ev.event.preventDefault();
+        const me = /** @type {MouseEvent} */ (ev.event);
+        _ctxMenu = { symbol: sym, exchange: exch, x: me.clientX, y: me.clientY };
+      },
     });
   }
 
@@ -957,6 +968,43 @@
     }}
     onClose={() => orderTicketProps = null}
   />
+{/if}
+
+{#if _ctxMenu}
+  <SymbolContextMenu
+    symbol={_ctxMenu.symbol}
+    exchange={_ctxMenu.exchange}
+    x={_ctxMenu.x}
+    y={_ctxMenu.y}
+    onClose={() => { _ctxMenu = null; }}
+    onAction={(action, sym, exch) => {
+      _ctxSym  = sym;
+      _ctxExch = exch;
+      _ctxAction = /** @type {any} */ (action);
+      _ctxMenu = null;
+    }}
+  />
+{/if}
+
+{#if _ctxAction === 'chart'}
+  <ChartModal
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'place-order'}
+  <SymbolPanel
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onSubmit={() => {}}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'log'}
+  <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
 </div><!-- /perf-dark -->

@@ -10,6 +10,9 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import { chipsHtml, chipsFromJson } from '$lib/logChips';
   import ChartModal from '$lib/ChartModal.svelte';
+  import SymbolPanel from '$lib/SymbolPanel.svelte';
+  import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -137,6 +140,16 @@
   // ── Chart modal state (Order tab) ────────────────────────────────────────
   let _chartModalSym  = $state('');
   let _chartModalExch = $state('');
+  // ── SymbolPanel + context menu state (Order tab delegation) ─────────────
+  /** @type {string} */
+  let _symPanelSym  = $state('');
+  /** @type {string} */
+  let _symPanelExch = $state('');
+  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  let _ctxMenu = $state(null);
+  /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
+  /** @type {string} */ let _ctxSym  = $state('');
+  /** @type {string} */ let _ctxExch = $state('');
   /** Escape HTML attribute values from broker-supplied strings (defence-in-depth). */
   const _escAttr = (/** @type {any} */ v) =>
     String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -373,10 +386,13 @@
       ? `<a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
     const chipsBlock = chips ? ' ' + chips : '';
-    const chartBtn = o.symbol
-      ? `<button class="row-chart-btn log-chart-btn" type="button" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange)}" title="Chart ${_escAttr(o.symbol)}" aria-label="Open chart for ${_escAttr(o.symbol)}"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
+    // Symbol as a clickable/right-clickable span. data-sym / data-exch drive
+    // event delegation in the <pre> click + contextmenu handlers below.
+    const symSpan = o.symbol
+      ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
       : '';
-    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${o.symbol}${chartBtn} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
+    const symBlock = o.symbol ? symSpan : '';
+    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${symBlock} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -462,11 +478,25 @@
     <pre class="log-panel {heightClass}"
          role="log"
          onclick={(e) => {
+           const sym = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-sym-cell'));
+           if (sym) {
+             e.stopPropagation();
+             _symPanelSym  = sym.dataset.sym  || '';
+             _symPanelExch = sym.dataset.exch || '';
+             return;
+           }
            const btn = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-chart-btn'));
            if (!btn) return;
            e.stopPropagation();
            _chartModalSym  = btn.dataset.sym  || '';
            _chartModalExch = btn.dataset.exch || '';
+         }}
+         oncontextmenu={(e) => {
+           const sym = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-sym-cell'));
+           if (!sym) return;
+           e.preventDefault();
+           e.stopPropagation();
+           _ctxMenu = { symbol: sym.dataset.sym || '', exchange: sym.dataset.exch || '', x: e.clientX, y: e.clientY };
          }}>{#if filteredOrderRows.length}{@html filteredOrderRows.map(_orderRowHtml).join('\n')}{:else}<span class="log-debug">No {orderModeFilter} orders.</span>{/if}</pre>
   {/if}
 {:else}
@@ -506,6 +536,52 @@
     symbol={_chartModalSym}
     exchange={_chartModalExch}
     onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }} />
+{/if}
+
+{#if _symPanelSym}
+  <SymbolPanel
+    symbol={_symPanelSym}
+    exchange={_symPanelExch}
+    onSubmit={() => {}}
+    onClose={() => { _symPanelSym = ''; _symPanelExch = ''; }}
+  />
+{/if}
+
+{#if _ctxMenu}
+  <SymbolContextMenu
+    symbol={_ctxMenu.symbol}
+    exchange={_ctxMenu.exchange}
+    x={_ctxMenu.x}
+    y={_ctxMenu.y}
+    onClose={() => { _ctxMenu = null; }}
+    onAction={(action, sym, exch) => {
+      _ctxSym  = sym;
+      _ctxExch = exch;
+      _ctxAction = /** @type {any} */ (action);
+      _ctxMenu = null;
+    }}
+  />
+{/if}
+
+{#if _ctxAction === 'chart'}
+  <ChartModal
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'place-order'}
+  <SymbolPanel
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onSubmit={() => {}}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'log'}
+  <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
 <style>
@@ -686,5 +762,17 @@
     color: #67e8f9;
   }
   :global(.log-chart-btn svg) { pointer-events: none; }
+
+  /* Symbol span inside log rows — acts as a clickable affordance.
+     Underline on hover keeps it scan-tight (no icon, just text). */
+  :global(.log-sym-cell) {
+    cursor: pointer;
+    border-radius: 2px;
+    transition: color 0.1s;
+  }
+  :global(.log-sym-cell:hover) {
+    color: #7dd3fc;
+    text-decoration: underline;
+  }
 
 </style>

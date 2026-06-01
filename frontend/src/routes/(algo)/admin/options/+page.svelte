@@ -35,6 +35,9 @@
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import ChartModal from '$lib/ChartModal.svelte';
+  import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import { longPress } from '$lib/actions/longPress.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -43,6 +46,13 @@
     _chartModalSym  = String(symbol  || '').toUpperCase();
     _chartModalExch = String(exchange || '');
   }
+
+  // Context menu state — right-click / long-press on any candidate symbol.
+  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  let _ctxMenu = $state(null);
+  /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
+  /** @type {string} */ let _ctxSym  = $state('');
+  /** @type {string} */ let _ctxExch = $state('');
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -2315,17 +2325,12 @@
                        next[enKey(c)] = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
                        enabledSymbols = next;
                      }} />
-              <span class="font-mono cand-sym">
+              <!-- svelte-ignore a11y_interactive_supports_focus -->
+              <span class="font-mono cand-sym"
+                use:longPress={(ev) => {
+                  _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
+                }}>
                 {c.symbol}
-                <button type="button"
-                  class="row-chart-btn"
-                  title="Chart {c.symbol}"
-                  aria-label="Open chart for {c.symbol}"
-                  onclick={(e) => { e.stopPropagation(); _openChart(c.symbol, c.exchange || 'NFO'); }}>
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </button>
                 {#if isDraft}
                   <!-- Draft remove button — page-local removal only,
                        NO order placed. Clicking the row body still
@@ -2561,6 +2566,43 @@
     symbol={_chartModalSym}
     exchange={_chartModalExch}
     onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }} />
+{/if}
+
+{#if _ctxMenu}
+  <SymbolContextMenu
+    symbol={_ctxMenu.symbol}
+    exchange={_ctxMenu.exchange}
+    x={_ctxMenu.x}
+    y={_ctxMenu.y}
+    onClose={() => { _ctxMenu = null; }}
+    onAction={(action, sym, exch) => {
+      _ctxSym  = sym;
+      _ctxExch = exch;
+      _ctxAction = /** @type {any} */ (action);
+      _ctxMenu = null;
+    }}
+  />
+{/if}
+
+{#if _ctxAction === 'chart'}
+  <ChartModal
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'place-order'}
+  <SymbolPanel
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onSubmit={() => {}}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'log'}
+  <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
 <style>

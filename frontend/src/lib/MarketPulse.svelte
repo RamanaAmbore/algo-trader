@@ -44,6 +44,7 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
+  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
 
   let {
     title              = 'Pulse',
@@ -3427,6 +3428,17 @@
     }
   }
 
+  function ctxOpenOrders(row) {
+    closeContextMenu();
+    const sym = encodeURIComponent(row.tradingsymbol || '');
+    window.location.href = `/orders?symbol=${sym}`;
+  }
+  let _activityLogOpen = $state(false);
+  function ctxOpenLog(/** @type {any} */ _row) {
+    closeContextMenu();
+    _activityLogOpen = true;
+  }
+
   // Dismiss context menu on outside click.
   function onDocClick(ev) {
     if (ctxMenu && ctxMenuEl && !ctxMenuEl.contains(/** @type {Node} */ (ev.target))) {
@@ -3810,9 +3822,12 @@
     class="ctx-menu"
     style="left:{ctxMenu.x}px;top:{ctxMenu.y}px"
     role="menu">
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenChart(ctxMenu.row)}>📈 Chart →</button>
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOptions(ctxMenu.row)}>🧮 Open in Options →</button>
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenTicket(ctxMenu.row)}>📝 Open ticket →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenChart(ctxMenu.row)}>Chart →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOptions(ctxMenu.row)}>Open in Options →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenTicket(ctxMenu.row)}>Place order →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOrders(ctxMenu.row)}>Orders →</button>
+    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenLog(ctxMenu.row)}>Log →</button>
+    <div class="ctx-sep"></div>
     {#if !ctxMenu.row?.src?.w}
       <!-- ★ Add to watchlist — visible when the symbol is NOT already
            in the operator's watchlist. The other branch below shows
@@ -3834,6 +3849,10 @@
       <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu.row)}>Remove from watchlist</button>
     {/if}
   </div>
+{/if}
+
+{#if _activityLogOpen}
+  <ActivityLogModal onClose={() => { _activityLogOpen = false; }} />
 {/if}
 
 <!-- Unified Add popup — opened by the `+` button in the chrome row (or

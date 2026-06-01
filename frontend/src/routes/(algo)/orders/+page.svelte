@@ -10,6 +10,8 @@
   import { fetchOrders, cancelOrder } from '$lib/api';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
+  import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { loadInstruments } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
@@ -19,6 +21,7 @@
   import { executionMode } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
+  import { longPress } from '$lib/actions/longPress.js';
 
   // Row-level chart modal — distinct from any header-level chart state.
   let _rowChartModalSym  = $state('');
@@ -140,6 +143,11 @@
   // modify / repeat so row context is preserved without losing the
   // operator's spot on the order book.
   let orderTicketProps = $state(/** @type {any|null} */(null));
+  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  let _ctxMenu = $state(null);
+  /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
+  /** @type {string} */ let _ctxSym  = $state('');
+  /** @type {string} */ let _ctxExch = $state('');
   let unsub;
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
@@ -584,15 +592,15 @@
             class="algo-status-card text-left p-2.5 transition order-card"
             data-status={statusDataAttr(o.status)}>
             <div class="flex items-center justify-between mb-0.5 gap-1">
-              <span class="font-semibold text-xs"><span style="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <span class="text-[#c8d8f0]">{o.tradingsymbol}</span><button type="button"
-                  class="row-chart-btn"
-                  title="Chart {o.tradingsymbol}"
-                  aria-label="Open chart for {o.tradingsymbol}"
-                  onclick={(e) => { e.stopPropagation(); _openRowChart(o.tradingsymbol, o.exchange); }}>
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </button></span>
+              <span class="font-semibold text-xs"><span style="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <!-- svelte-ignore a11y_interactive_supports_focus --><span
+                  class="text-[#c8d8f0] oc-sym-btn"
+                  role="button"
+                  tabindex="0"
+                  title="Open {o.tradingsymbol}"
+                  onclick={(e) => { e.stopPropagation(); orderTicketProps = { symbol: o.tradingsymbol, exchange: o.exchange || '' }; }}
+                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); orderTicketProps = { symbol: o.tradingsymbol, exchange: o.exchange || '' }; } }}
+                  use:longPress={(ev) => { _ctxMenu = { symbol: o.tradingsymbol, exchange: o.exchange || '', x: ev.clientX, y: ev.clientY }; }}
+                >{o.tradingsymbol}</span></span>
               <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
                 {o.status === 'COMPLETE' ? 'bg-green-500/15 text-green-400 border-green-500/40'
                 : o.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
@@ -731,6 +739,43 @@
     }}
     onClose={() => orderTicketProps = null}
   />
+{/if}
+
+{#if _ctxMenu}
+  <SymbolContextMenu
+    symbol={_ctxMenu.symbol}
+    exchange={_ctxMenu.exchange}
+    x={_ctxMenu.x}
+    y={_ctxMenu.y}
+    onClose={() => { _ctxMenu = null; }}
+    onAction={(action, sym, exch) => {
+      _ctxSym  = sym;
+      _ctxExch = exch;
+      _ctxAction = /** @type {any} */ (action);
+      _ctxMenu = null;
+    }}
+  />
+{/if}
+
+{#if _ctxAction === 'chart'}
+  <ChartModal
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'place-order'}
+  <SymbolPanel
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    onSubmit={() => {}}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+{#if _ctxAction === 'log'}
+  <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
 <style>
@@ -1256,6 +1301,21 @@
      palette + 1.2rem squares so the icons read as a smaller-scale
      family of the card-control trio above (which is 1.4rem). */
   .order-card { position: relative; }
+
+  /* Symbol text as a clickable affordance — underline on hover so
+     the operator knows it's interactive. Colour stays the same
+     sky-blue (#c8d8f0) as the surrounding text; underline is the
+     only extra cue so the row stays scan-tight. */
+  :global(.oc-sym-btn) {
+    cursor: pointer;
+    border-radius: 2px;
+    transition: color 0.1s, background 0.1s;
+  }
+  :global(.oc-sym-btn:hover) {
+    color: #7dd3fc !important;
+    text-decoration: underline;
+  }
+
   .oc-row-actions {
     position: absolute;
     top: 0.25rem;
