@@ -68,6 +68,11 @@ class PaperStatus(msgspec.Struct):
     open_order_count: int
 
 
+class SparklineWarmStatus(msgspec.Struct):
+    symbols_cached: int          # number of symbols in _spark_past_cache right now
+    last_warmed_at: Optional[str]  # ISO-8601 UTC of last successful warm, or None
+
+
 class HealthResponse(msgspec.Struct):
     branch: str
     git_hash: str       # short commit hash, "unknown" on failure
@@ -77,6 +82,7 @@ class HealthResponse(msgspec.Struct):
     cache: CacheStats
     sim: SimStatus
     paper: PaperStatus
+    sparkline_warm: SparklineWarmStatus
     ipv6: list[str]     # source_ip values configured across all accounts
 
 
@@ -203,6 +209,17 @@ def _sim_status() -> SimStatus:
         return SimStatus(active=False, scenario=None, tick_count=0)
 
 
+def _sparkline_warm_status() -> SparklineWarmStatus:
+    try:
+        from backend.api.routes.quote import _spark_past_cache, _spark_warm_symbols, _spark_warm_at
+        return SparklineWarmStatus(
+            symbols_cached=len(_spark_past_cache),
+            last_warmed_at=_spark_warm_at,
+        )
+    except Exception:
+        return SparklineWarmStatus(symbols_cached=0, last_warmed_at=None)
+
+
 def _paper_status() -> PaperStatus:
     branch = config.get("deploy_branch", "")
     enabled = branch == "main"
@@ -240,6 +257,7 @@ class HealthController(Controller):
             cache_stats = _cache_stats()
             sim = _sim_status()
             paper = _paper_status()
+            sparkline_warm = _sparkline_warm_status()
             git_hash = _git_hash()
             git_subject = _git_subject()
             branch = str(config.get("deploy_branch") or "?")
@@ -253,6 +271,7 @@ class HealthController(Controller):
                 cache=cache_stats,
                 sim=sim,
                 paper=paper,
+                sparkline_warm=sparkline_warm,
                 ipv6=ipv6_list,
             )
         except HTTPException:

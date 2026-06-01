@@ -265,8 +265,15 @@ Defined in `backend_config.yaml` under `market_segments`. Background thread hand
 | Close summary (per segment) | `close_summary_offset_minutes` (15) after segment close, once per day |
 | Loss alert check | Every performance fetch during market hours |
 | Agent engine `run_cycle()` | Every performance fetch; skips `schedule: market_hours` agents when no segment is open |
+| Sparkline past-close warm | Immediately at app startup; then once per market-segment open (NSE 09:15, MCX 09:00 IST) |
 
 **Holiday calendar caching** — `fetch_holidays(exchange)` in `broker_apis.py` is now cached per `(exchange, today's date)` to avoid hammering nseindia.com on every `_build_context()` call (once per 5 min on the real path, once per 2 s in sim). The daily cache refreshes naturally at midnight IST and caches the empty set on API failure to avoid retry-hammering when the upstream is down.
+
+**Sparkline cache** — two-tier split since the background warm:
+- `_spark_past_cache` (in `backend/api/routes/quote.py`) keyed `(tradingsymbol, exchange, days, ist_date_str)` stores **past `days-1` daily closes** (the last full day's bar is dropped since Kite returns it as an intraday-running value during the session). Populated lazily on cache miss via `historical_data` (3 req/sec budget); pre-filled at market open by `_task_sparkline_warm` so operator's first Pulse load pays no historical fetch cost.
+- Today's running price is appended at response time via a single batched `broker.ltp()` call (10 req/sec quota) — never stored. Final sparkline series = past + [today_ltp].
+- Symbol universe for warm: `watchlist_items` (DB) + live holdings + live positions, deduped, capped at 100.
+- Warm state (symbols cached, last_warmed_at) is surfaced in `GET /api/admin/health` as `sparkline_warm`.
 
 ---
 

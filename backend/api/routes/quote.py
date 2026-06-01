@@ -200,13 +200,31 @@ class QuoteController(Controller):
 
 
 # ── Sparkline cache ───────────────────────────────────────────────────────────
-# Keyed by (tradingsymbol, exchange, days, ist_date_str) → list[float].
-# TTL is end-of-trading-day: daily closes don't change intraday.
-# Simple dict + lock; no need for the heavier get_or_fetch machinery
-# (cache is keyed per-symbol, eviction is lazy on date change).
+# Split into two tiers:
+#
+#   _spark_past_cache  — keyed (tradingsymbol, exchange, days, ist_date_str)
+#                        stores the PAST (days-1) daily closes only.
+#                        Populated by historical_data calls (3 req/sec budget).
+#                        Only refreshed on a cache miss or date rollover.
+#
+#   LTP append        — today's running price fetched live via broker.ltp()
+#                        (10 req/sec quote budget) on every response.
+#                        Never stored; composed into the response on the fly.
+#
+# The split eliminates the cold-start cost on the critical path: after market
+# open the background warm task pre-fills _spark_past_cache for all watchlist
+# + held symbols so the operator's first Pulse load is free of historical_data
+# calls. Subsequent sparkline requests: past from cache + one batched ltp() —
+# no historical_data hit at all until midnight IST date rollover.
+#
+# _spark_warm_state tracks when the last warm completed (for /api/admin/health).
 
-_spark_cache: dict[tuple, list[float]] = {}
-_spark_lock  = threading.Lock()
+_spark_past_cache: dict[tuple, list[float]] = {}
+_spark_lock       = threading.Lock()
+
+# Warm-state for health endpoint.
+_spark_warm_symbols: int = 0
+_spark_warm_at: Optional[str] = None   # ISO-8601 UTC string
 
 def _ist_today() -> str:
     """Return today's date in IST as YYYY-MM-DD."""
@@ -219,10 +237,10 @@ def _ist_today() -> str:
 
 
 def _evict_stale(today: str) -> None:
-    """Drop cache entries whose date != today (lazy eviction on each batch call)."""
-    stale = [k for k in _spark_cache if k[3] != today]
+    """Drop past-cache entries whose date != today (lazy eviction on each batch call)."""
+    stale = [k for k in _spark_past_cache if k[3] != today]
     for k in stale:
-        del _spark_cache[k]
+        del _spark_past_cache[k]
 
 
 # ── Sparkline schemas ─────────────────────────────────────────────────────────
@@ -252,14 +270,15 @@ class SparklineController(Controller):
         POST /api/quotes/sparkline
 
         Returns the last N daily close prices (oldest first) for each
-        requested symbol. Used by the /pulse sparkline column.
+        requested symbol, with today's running LTP appended as the final
+        point. Used by the /pulse sparkline column.
 
-        Instrument-token lookup uses the broker's instruments dump (same
-        path as OptionsController.historical). kite.historical_data calls
-        are parallelised via asyncio.gather with a concurrency cap of 5
-        to respect Kite's rate limits. Daily closes are cached per
-        (symbol, exchange, days, IST date) until midnight IST so repeated
-        grid refreshes within the trading day are free.
+        Two-tier cache:
+        - Past (days-1) closes served from _spark_past_cache (populated by
+          historical_data on first miss; pre-warmed at market-open by
+          _task_sparkline_warm). historical_data budget: 3 req/sec.
+        - Today's running price appended per-response via a single batched
+          broker.ltp() call (10 req/sec quota). Never cached; always fresh.
 
         Missing / un-resolvable symbols are silently omitted (no 404).
         Broker unreachable → empty data dict instead of 502.
@@ -278,124 +297,281 @@ class SparklineController(Controller):
         days = max(1, min(int(data.days), 90))
         today = _ist_today()
 
-        # Lazy cache eviction.
+        # Lazy past-cache eviction.
         with _spark_lock:
             _evict_stale(today)
 
-        # Partition into cached vs. need-fetch.
-        result: dict[str, list[float]] = {}
+        # Normalise symbol list and partition into past-cached vs. need-fetch.
+        norm_syms: list[SparklineSymbol] = []
+        for sym_obj in syms:
+            sym  = sym_obj.tradingsymbol.upper().strip()
+            exch = (sym_obj.exchange or "NSE").upper().strip()
+            norm_syms.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
+
+        past_result: dict[str, list[float]] = {}
         to_fetch: list[SparklineSymbol] = []
 
-        for sym_obj in syms:
-            sym = sym_obj.tradingsymbol.upper().strip()
-            exch = (sym_obj.exchange or "NSE").upper().strip()
-            cache_key = (sym, exch, days, today)
+        for sym_obj in norm_syms:
+            cache_key = (sym_obj.tradingsymbol, sym_obj.exchange, days, today)
             with _spark_lock:
-                cached = _spark_cache.get(cache_key)
+                cached = _spark_past_cache.get(cache_key)
             if cached is not None:
-                result[sym] = cached
+                past_result[sym_obj.tradingsymbol] = cached
             else:
-                to_fetch.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
+                to_fetch.append(sym_obj)
 
-        if not to_fetch:
-            return SparklineResponse(
-                data=result,
-                refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            )
+        # ── Step 1: Historical fetch for cache-miss symbols ──────────────────
+        if to_fetch:
+            try:
+                broker = get_sparkline_broker()
+            except Exception as exc:
+                logger.warning(f"sparkline: broker unavailable: {exc}")
+                broker = None
 
-        # Resolve instrument tokens for all un-cached symbols.
-        try:
-            broker = get_sparkline_broker()
-        except Exception as exc:
-            logger.warning(f"sparkline: broker unavailable: {exc}")
-            return SparklineResponse(data=result, refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            if broker is not None:
+                # Build token map: tradingsymbol → instrument_token.
+                token_map: dict[str, int] = {}
+                exchange_order: dict[str, list[str]] = {}
+                for sym_obj in to_fetch:
+                    sym  = sym_obj.tradingsymbol
+                    exch = sym_obj.exchange
+                    order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
+                    exchange_order[sym] = order
 
-        # Build token map: tradingsymbol → instrument_token.
-        # Walk the preferred exchange first, then common fallbacks.
-        token_map: dict[str, int] = {}
-        exchange_order: dict[str, list[str]] = {}
-        for sym_obj in to_fetch:
-            sym = sym_obj.tradingsymbol
-            exch = sym_obj.exchange
-            # Walk: declared exchange → NFO → BFO → NSE → BSE
-            order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
-            exchange_order[sym] = order
-
-        try:
-            # Collect distinct exchanges to query instruments once per exchange.
-            needed_exchanges: set[str] = set()
-            for order in exchange_order.values():
-                needed_exchanges.update(order)
-
-            inst_by_exch: dict[str, list] = {}
-            for ex in needed_exchanges:
                 try:
-                    insts = await asyncio.to_thread(broker.instruments, ex) or []
-                    inst_by_exch[ex] = insts
-                except Exception:
-                    inst_by_exch[ex] = []
+                    needed_exchanges: set[str] = set()
+                    for order in exchange_order.values():
+                        needed_exchanges.update(order)
 
-            for sym_obj in to_fetch:
-                sym = sym_obj.tradingsymbol
-                for ex in exchange_order[sym]:
-                    for inst in inst_by_exch.get(ex, []):
-                        if str(inst.get("tradingsymbol") or "").upper() == sym:
-                            token_map[sym] = int(inst["instrument_token"])
-                            break
-                    if sym in token_map:
-                        break
-        except Exception as exc:
-            logger.warning(f"sparkline: instrument lookup failed: {exc}")
-            return SparklineResponse(data=result, refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                    inst_by_exch: dict[str, list] = {}
+                    for ex in needed_exchanges:
+                        try:
+                            insts = await asyncio.to_thread(broker.instruments, ex) or []
+                            inst_by_exch[ex] = insts
+                        except Exception:
+                            inst_by_exch[ex] = []
 
-        # Fetch historical data for all resolved tokens. Kite limits
-        # historical_data to 3 req/sec; the prior Semaphore(5) easily
-        # blew past that on cold-start (50+ symbols in Pulse → instant
-        # rate-limit storm + cool-off cascade). Now: Semaphore(2) +
-        # 350 ms pacing per completion → effective rate ≤ ~5 req/sec
-        # across the 2 in-flight slots, well inside Kite's headroom.
-        # broker-agnostic — `historical_data` is on the Broker ABC.
-        to_d   = datetime.now()
-        from_d = to_d - timedelta(days=days + 5)  # +5 buffer for weekends/holidays
-
-        sem = asyncio.Semaphore(2)
-        _KITE_PACE_S = 0.35  # sleep between completions inside each slot
-
-        async def _fetch_closes(sym: str, token: int) -> tuple[str, list[float]]:
-            async with sem:
-                try:
-                    raw = await asyncio.to_thread(
-                        broker.historical_data, token, from_d, to_d, "day"
-                    ) or []
-                    closes = [float(b["close"]) for b in raw if b.get("close") is not None]
-                    # Keep the last `days` closes (oldest first).
-                    result = closes[-days:] if len(closes) > days else closes
-                    await asyncio.sleep(_KITE_PACE_S)
-                    return sym, result
+                    for sym_obj in to_fetch:
+                        sym = sym_obj.tradingsymbol
+                        for ex in exchange_order[sym]:
+                            for inst in inst_by_exch.get(ex, []):
+                                if str(inst.get("tradingsymbol") or "").upper() == sym:
+                                    token_map[sym] = int(inst["instrument_token"])
+                                    break
+                            if sym in token_map:
+                                break
                 except Exception as exc:
-                    logger.warning(f"sparkline historical_data failed for {sym}: {exc}")
-                    await asyncio.sleep(_KITE_PACE_S)
-                    return sym, []
+                    logger.warning(f"sparkline: instrument lookup failed: {exc}")
+                    token_map = {}
 
-        tasks = [
-            _fetch_closes(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
-            for sym_obj in to_fetch
-            if sym_obj.tradingsymbol in token_map
-        ]
+                if token_map:
+                    # Fetch historical data (past days-1 closes only — drop
+                    # today's intraday-running bar which Kite returns as the
+                    # last entry; today's price comes from the LTP step below).
+                    to_d   = datetime.now()
+                    from_d = to_d - timedelta(days=days + 5)  # +5 buffer for weekends/holidays
 
-        if tasks:
-            fetched = await asyncio.gather(*tasks)
-            with _spark_lock:
-                for sym, closes in fetched:
-                    if closes:  # omit symbols that returned nothing
-                        exch = next(
-                            (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
-                        )
-                        cache_key = (sym, exch, days, today)
-                        _spark_cache[cache_key] = closes
-                        result[sym] = closes
+                    sem = asyncio.Semaphore(2)
+                    _KITE_PACE_S = 0.35  # sleep between completions inside each slot
+
+                    async def _fetch_closes(sym: str, token: int) -> tuple[str, list[float]]:
+                        async with sem:
+                            try:
+                                raw = await asyncio.to_thread(
+                                    broker.historical_data, token, from_d, to_d, "day"
+                                ) or []
+                                closes = [float(b["close"]) for b in raw if b.get("close") is not None]
+                                # Drop the last bar (today's running intraday value —
+                                # unreliable mid-session; we append live LTP below).
+                                # Keep the `days-1` bars before that.
+                                past_closes = closes[:-1] if closes else []
+                                past_closes = past_closes[-(days - 1):] if len(past_closes) > (days - 1) else past_closes
+                                await asyncio.sleep(_KITE_PACE_S)
+                                return sym, past_closes
+                            except Exception as exc:
+                                logger.warning(f"sparkline historical_data failed for {sym}: {exc}")
+                                await asyncio.sleep(_KITE_PACE_S)
+                                return sym, []
+
+                    tasks = [
+                        _fetch_closes(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
+                        for sym_obj in to_fetch
+                        if sym_obj.tradingsymbol in token_map
+                    ]
+
+                    if tasks:
+                        fetched = await asyncio.gather(*tasks)
+                        with _spark_lock:
+                            for sym, past_closes in fetched:
+                                if past_closes:
+                                    exch = next(
+                                        (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
+                                    )
+                                    cache_key = (sym, exch, days, today)
+                                    _spark_past_cache[cache_key] = past_closes
+                                    past_result[sym] = past_closes
+
+        # ── Step 2: Batch LTP fetch for ALL symbols (past-cached + freshly fetched)
+        # broker.ltp() uses the 10 req/sec quote budget — one call, fast.
+        # Compose final series: past + [today_ltp].
+        quote_keys = [f"{s.exchange}:{s.tradingsymbol}" for s in norm_syms]
+        ltp_map: dict[str, float] = {}
+        if quote_keys:
+            try:
+                from backend.shared.brokers.registry import get_sparkline_broker as _get_sp_broker
+                ltp_broker = _get_sp_broker()
+                raw_ltp = await asyncio.to_thread(ltp_broker.ltp, quote_keys) or {}
+                for key, val in raw_ltp.items():
+                    # broker.ltp returns {key: {"last_price": float, ...}}
+                    if isinstance(val, dict):
+                        lp = val.get("last_price")
+                    else:
+                        lp = val
+                    try:
+                        ltp_map[key] = float(lp) if lp is not None else 0.0
+                    except (TypeError, ValueError):
+                        pass
+            except Exception as exc:
+                logger.warning(f"sparkline: ltp batch failed: {exc}")
+
+        result: dict[str, list[float]] = {}
+        for sym_obj in norm_syms:
+            sym  = sym_obj.tradingsymbol
+            past = past_result.get(sym, [])
+            ltp_key = f"{sym_obj.exchange}:{sym}"
+            ltp_val = ltp_map.get(ltp_key)
+            if ltp_val and ltp_val > 0:
+                result[sym] = past + [ltp_val]
+            elif past:
+                # No LTP available (off-hours, delisted, broker down) —
+                # return past-only; sparkline still renders with N-1 points.
+                result[sym] = past
+            # If neither past nor ltp: omit silently (symbol unresolvable).
 
         return SparklineResponse(
             data=result,
             refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
+
+
+# ── Background warm helper ────────────────────────────────────────────────────
+
+async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) -> int:
+    """
+    Pre-populate _spark_past_cache for the given (tradingsymbol, exchange)
+    pairs. Called by _task_sparkline_warm in background.py at market open
+    and at app startup.
+
+    Returns the count of symbols successfully cached.
+
+    Uses the same Semaphore(2) + pacing logic as batch_sparkline. Symbols
+    already in the cache for today are skipped. Errors per-symbol are
+    swallowed silently (warn-level log) so one bad symbol never aborts the
+    whole warm run.
+    """
+    global _spark_warm_symbols, _spark_warm_at
+
+    if not symbols:
+        return 0
+
+    today = _ist_today()
+    with _spark_lock:
+        _evict_stale(today)
+
+    # Filter to symbols not already in past-cache for today.
+    to_fetch = [
+        SparklineSymbol(tradingsymbol=sym.upper().strip(), exchange=exch.upper().strip())
+        for sym, exch in symbols
+        if _spark_past_cache.get((sym.upper().strip(), exch.upper().strip(), days, today)) is None
+    ]
+    if not to_fetch:
+        logger.info(f"sparkline warm: all {len(symbols)} symbols already cached")
+        return 0
+
+    try:
+        from backend.shared.brokers.registry import get_sparkline_broker
+        broker = get_sparkline_broker()
+    except Exception as exc:
+        logger.warning(f"sparkline warm: broker unavailable, skipping: {exc}")
+        return 0
+
+    # Build instrument token map.
+    token_map: dict[str, int] = {}
+    exchange_order: dict[str, list[str]] = {}
+    for sym_obj in to_fetch:
+        sym  = sym_obj.tradingsymbol
+        exch = sym_obj.exchange
+        order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
+        exchange_order[sym] = order
+
+    try:
+        needed_exchanges: set[str] = set()
+        for order in exchange_order.values():
+            needed_exchanges.update(order)
+
+        inst_by_exch: dict[str, list] = {}
+        for ex in needed_exchanges:
+            try:
+                insts = await asyncio.to_thread(broker.instruments, ex) or []
+                inst_by_exch[ex] = insts
+            except Exception:
+                inst_by_exch[ex] = []
+
+        for sym_obj in to_fetch:
+            sym = sym_obj.tradingsymbol
+            for ex in exchange_order[sym]:
+                for inst in inst_by_exch.get(ex, []):
+                    if str(inst.get("tradingsymbol") or "").upper() == sym:
+                        token_map[sym] = int(inst["instrument_token"])
+                        break
+                if sym in token_map:
+                    break
+    except Exception as exc:
+        logger.warning(f"sparkline warm: instrument lookup failed: {exc}")
+        return 0
+
+    if not token_map:
+        return 0
+
+    to_d   = datetime.now()
+    from_d = to_d - timedelta(days=days + 5)
+
+    sem = asyncio.Semaphore(2)
+    _KITE_PACE_S = 0.35
+
+    async def _fetch_past(sym: str, token: int) -> tuple[str, list[float]]:
+        async with sem:
+            try:
+                raw = await asyncio.to_thread(broker.historical_data, token, from_d, to_d, "day") or []
+                closes = [float(b["close"]) for b in raw if b.get("close") is not None]
+                past_closes = closes[:-1] if closes else []
+                past_closes = past_closes[-(days - 1):] if len(past_closes) > (days - 1) else past_closes
+                await asyncio.sleep(_KITE_PACE_S)
+                return sym, past_closes
+            except Exception as exc:
+                logger.warning(f"sparkline warm: historical_data failed for {sym}: {exc}")
+                await asyncio.sleep(_KITE_PACE_S)
+                return sym, []
+
+    tasks = [
+        _fetch_past(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
+        for sym_obj in to_fetch
+        if sym_obj.tradingsymbol in token_map
+    ]
+
+    cached_count = 0
+    if tasks:
+        fetched = await asyncio.gather(*tasks)
+        with _spark_lock:
+            for sym, past_closes in fetched:
+                if past_closes:
+                    exch = next(
+                        (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
+                    )
+                    _spark_past_cache[(sym, exch, days, today)] = past_closes
+                    cached_count += 1
+
+    _spark_warm_symbols = cached_count
+    _spark_warm_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    logger.info(f"sparkline warm: cached {cached_count}/{len(to_fetch)} symbols for {today}")
+    return cached_count

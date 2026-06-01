@@ -17,7 +17,7 @@ All three tasks are cancelled cleanly on Litestar shutdown.
 import asyncio
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta, time as dtime
+from datetime import date, datetime, timedelta, time as dtime, timezone
 
 import pandas as pd
 
@@ -856,6 +856,156 @@ async def _task_mcp_audit_cleanup() -> None:
         await _purge_once()
 
 
+async def _task_sparkline_warm(state: dict) -> None:
+    """
+    Pre-populate the sparkline past-close cache at startup and at each
+    market segment open so the operator's first Pulse load is free of
+    historical_data calls.
+
+    Symbol universe (capped at 100, deduped):
+      1. All distinct tradingsymbols in watchlist_items (DB query).
+      2. Live holdings tradingsymbols (one broker fetch; equity symbols
+         for which sparklines are most commonly shown).
+      3. Live positions tradingsymbols (F&O + commodities in the open book).
+
+    Positions and holdings come from the same in-process broker call used
+    by _task_performance — no extra Kite session or rate-limit budget is
+    consumed. Errors (DB unavailable, broker unloaded) skip silently.
+
+    Schedule:
+      • Immediately at app startup (async, before sleeping).
+      • Once per market-segment open (NSE 09:15 IST, MCX 09:00 IST).
+        Waits for the earliest next-open boundary, fires, then waits for
+        the next one. One warm per open boundary per day.
+    """
+    from backend.api.routes.quote import warm_sparkline_cache
+
+    async def _collect_symbols() -> list[tuple[str, str]]:
+        """Return deduplicated (tradingsymbol, exchange) pairs from watchlist + book."""
+        pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        # 1. Watchlist items.
+        try:
+            from backend.api.database import async_session
+            from backend.api.models import WatchlistItem
+            from sqlalchemy import select as sa_select
+            async with async_session() as sess:
+                rows = (await sess.execute(
+                    sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
+                )).all()
+            for row in rows:
+                key = (row.tradingsymbol.upper().strip(), (row.exchange or "NSE").upper().strip())
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(key)
+        except Exception as e:
+            logger.warning(f"sparkline warm: watchlist query failed: {e}")
+
+        # 2. Holdings (equity — NSE).
+        try:
+            from backend.shared.helpers import broker_apis
+            dfs = broker_apis.fetch_holdings()
+            import pandas as pd
+            df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+            if not df_h.empty and "tradingsymbol" in df_h.columns:
+                exch_col = df_h.get("exchange") if hasattr(df_h, "get") else None
+                for _, row in df_h.iterrows():
+                    sym  = str(row.get("tradingsymbol") or "").upper().strip()
+                    exch = str(row.get("exchange") or "NSE").upper().strip()
+                    if sym:
+                        key = (sym, exch)
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append(key)
+        except Exception as e:
+            logger.warning(f"sparkline warm: holdings fetch failed: {e}")
+
+        # 3. Positions (F&O / commodities).
+        try:
+            from backend.shared.helpers import broker_apis
+            dfs = broker_apis.fetch_positions()
+            import pandas as pd
+            df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+            if not df_p.empty and "tradingsymbol" in df_p.columns:
+                for _, row in df_p.iterrows():
+                    sym  = str(row.get("tradingsymbol") or "").upper().strip()
+                    exch = str(row.get("exchange") or "NFO").upper().strip()
+                    if sym:
+                        key = (sym, exch)
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append(key)
+        except Exception as e:
+            logger.warning(f"sparkline warm: positions fetch failed: {e}")
+
+        return pairs[:100]  # hard cap
+
+    async def _do_warm(label: str) -> None:
+        logger.info(f"sparkline warm: starting ({label})")
+        try:
+            symbols = await _collect_symbols()
+            count = await warm_sparkline_cache(symbols, days=5)
+            logger.info(f"sparkline warm: {label} complete — {count} symbols cached")
+        except Exception as e:
+            logger.error(f"sparkline warm: {label} failed: {e}")
+
+    # ── Fire immediately at startup ──────────────────────────────────────────
+    await _do_warm("startup")
+
+    # ── Then at each market-segment open boundary ────────────────────────────
+    segments = _build_segments()
+    seg_warm_dates: dict[str, date | None] = {s['name']: None for s in segments}
+
+    while True:
+        # Re-read segments on every loop iteration so config changes land.
+        segments = _build_segments()
+        now  = timestamp_indian()
+        today = now.date()
+
+        # Find the soonest next-open boundary across all segments.
+        # A boundary fires once per day when the clock crosses it.
+        next_fire: datetime | None = None
+        for seg in segments:
+            open_dt = now.replace(
+                hour=seg['hours_start'].hour,
+                minute=seg['hours_start'].minute,
+                second=0, microsecond=0,
+            )
+            if now >= open_dt:
+                # Today's boundary is in the past — schedule for tomorrow.
+                open_dt = open_dt + timedelta(days=1)
+            if next_fire is None or open_dt < next_fire:
+                next_fire = open_dt
+
+        if next_fire is None:
+            # No segments configured — sleep and retry.
+            await asyncio.sleep(3600)
+            continue
+
+        sleep_s = (next_fire - now).total_seconds()
+        logger.info(
+            f"sparkline warm: sleeping {sleep_s / 3600:.1f}h until "
+            f"next market-open boundary at {next_fire.strftime('%H:%M')} IST"
+        )
+        await asyncio.sleep(max(sleep_s, 1))
+
+        # Identify which segment(s) just opened and warm once per segment per day.
+        now   = timestamp_indian()
+        today = now.date()
+        for seg in segments:
+            if seg_warm_dates[seg['name']] == today:
+                continue  # already warmed today for this segment
+            open_dt = now.replace(
+                hour=seg['hours_start'].hour,
+                minute=seg['hours_start'].minute,
+                second=0, microsecond=0,
+            )
+            if now >= open_dt:
+                seg_warm_dates[seg['name']] = today
+                await _do_warm(f"{seg['name']}-open")
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -864,14 +1014,15 @@ async def on_startup(app) -> None:
     from backend.api.routes.algo import start_persist_flush
     start_persist_flush()
     app.state.bg_tasks = [
-        asyncio.create_task(_task_market(state),        name="bg-market"),
-        asyncio.create_task(_task_performance(state),   name="bg-performance"),
-        asyncio.create_task(_task_close(state),         name="bg-close"),
-        asyncio.create_task(_task_expiry_check(),       name="bg-expiry"),
-        asyncio.create_task(_task_instruments(),        name="bg-instruments"),
-        asyncio.create_task(_task_daily_snapshot(),     name="bg-daily-snapshot"),
-        asyncio.create_task(_task_sim_cleanup(),        name="bg-sim-cleanup"),
-        asyncio.create_task(_task_mcp_audit_cleanup(),  name="bg-mcp-audit-cleanup"),
+        asyncio.create_task(_task_market(state),         name="bg-market"),
+        asyncio.create_task(_task_performance(state),    name="bg-performance"),
+        asyncio.create_task(_task_close(state),          name="bg-close"),
+        asyncio.create_task(_task_expiry_check(),        name="bg-expiry"),
+        asyncio.create_task(_task_instruments(),         name="bg-instruments"),
+        asyncio.create_task(_task_daily_snapshot(),      name="bg-daily-snapshot"),
+        asyncio.create_task(_task_sim_cleanup(),         name="bg-sim-cleanup"),
+        asyncio.create_task(_task_mcp_audit_cleanup(),   name="bg-mcp-audit-cleanup"),
+        asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes
@@ -898,10 +1049,11 @@ async def on_startup(app) -> None:
                                 name="bg-paper-chase")
         )
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, paper-chase)")
+                    "expiry, instruments, daily-snapshot, sparkline-warm, paper-chase)")
     else:
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot) — live agent engine + paper engine OFF on non-main")
+                    "expiry, instruments, daily-snapshot, sparkline-warm) "
+                    "— live agent engine + paper engine OFF on non-main")
 
 
 async def on_shutdown(app) -> None:
