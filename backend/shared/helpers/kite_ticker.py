@@ -288,15 +288,63 @@ class TickerManager:
             }
 
     def stop(self) -> None:
-        """Graceful shutdown — called from app on_shutdown."""
-        if self._kws is not None:
+        """Graceful shutdown — called from app on_shutdown.
+
+        Sequence is important so Kite sees a clean disconnect and
+        doesn't hold the previous session active when the new process
+        attempts to reconnect:
+          1. stop_retry() — kill the auto-reconnect loop FIRST. Without
+             this, the moment we close the socket the Twisted reactor
+             would immediately try to dial back in.
+          2. close() — send the WebSocket CLOSE frame to Kite so the
+             server-side session ends cleanly (rather than waiting on
+             its TCP keep-alive timeout to detect a dead client).
+          3. ticker.stop() — stop the Twisted reactor so the daemon
+             thread can exit. The library exposes this on the
+             KiteTicker instance itself (different from this wrapper's
+             .stop()).
+          4. Brief sleep so the close frame actually leaves the box
+             before the process exits.
+        """
+        import time
+        kws = self._kws
+        if kws is not None:
+            for step in ("stop_retry", "close"):
+                fn = getattr(kws, step, None)
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:
+                        logger.exception(f"KiteTicker: {step}() failed during shutdown")
+            # Stop the Twisted reactor (different from THIS wrapper's stop).
             try:
-                self._kws.close()
+                kws_stop = getattr(kws, "stop", None)
+                if kws_stop is not None:
+                    kws_stop()
+            except Exception:
+                logger.exception("KiteTicker: ticker.stop() failed during shutdown")
+            # Brief grace so the CLOSE frame actually leaves the box.
+            try:
+                time.sleep(0.5)
             except Exception:
                 pass
         self._started   = False
         self._connected = False
-        logger.info("KiteTicker: stopped")
+        self._kws       = None
+        logger.info("KiteTicker: stopped (clean)")
+
+    def ensure_started(self, api_key: str, access_token: str) -> bool:
+        """Idempotent re-attempt of start() — safe to call from later
+        startup phases (e.g. the sparkline-warm task) when the
+        access_token wasn't yet available during on_startup. Returns
+        True if the ticker is now started (either freshly or already).
+        """
+        if self._started:
+            return True
+        if not api_key or not access_token:
+            return False
+        self.start(api_key, access_token)
+        return self._started
 
     # ── Callbacks (fire on the Twisted reactor thread) ────────────────────
 

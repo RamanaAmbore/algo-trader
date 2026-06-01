@@ -771,7 +771,30 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     if token_map:
         try:
             from backend.shared.helpers.kite_ticker import get_ticker
-            get_ticker().subscribe(token_map.values())
+            ticker = get_ticker()
+            # Deferred-start safety: the on_startup _start_kite_ticker()
+            # hook may have run before Connections() finished restoring
+            # the cached access_token (race seen in prod restart log).
+            # By the time this warm task fires (~25s after boot) the
+            # token is guaranteed hydrated, so retry the start here.
+            if not ticker.status().get("started"):
+                try:
+                    from backend.shared.brokers.registry import get_sparkline_broker
+                    spark_bk = get_sparkline_broker()
+                    for b in getattr(spark_bk, "_brokers", []):
+                        kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
+                        api_key = getattr(kc, "api_key", None)
+                        access_token = getattr(kc, "_access_token", None) or getattr(kc, "access_token", None)
+                        if api_key and access_token:
+                            if ticker.ensure_started(api_key, access_token):
+                                logger.info(
+                                    f"sparkline warm: KiteTicker started "
+                                    f"(deferred retry, account={getattr(b, 'account', '?')})"
+                                )
+                            break
+                except Exception as exc:
+                    logger.warning(f"sparkline warm: deferred ticker start failed: {exc}")
+            ticker.subscribe(token_map.values())
             logger.info(
                 f"sparkline warm: pushed {len(token_map)} token(s) to TickerManager"
             )
