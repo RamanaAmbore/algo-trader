@@ -7,7 +7,6 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse, parse_qs
 
 import contextvars
 import socket

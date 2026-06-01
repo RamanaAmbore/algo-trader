@@ -30,7 +30,7 @@ from backend.api.background import on_startup as bg_startup, on_shutdown as bg_s
 from backend.api.database import init_db
 from backend.api.routes.admin import AdminController
 from backend.api.routes.agents import AgentController
-from backend.api.routes.algo import AlgoController, algo_ws_handler
+from backend.api.routes.algo import algo_ws_handler
 from backend.api.routes.auth import AuthController
 from backend.api.routes.config import ConfigController
 from backend.api.routes.contact import ContactController
@@ -174,7 +174,6 @@ _route_handlers = [
     AuthController,
     AdminController,
     AgentController,
-    AlgoController,
     HoldingsController,
     PositionsController,
     FundsController,

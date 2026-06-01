@@ -31,7 +31,7 @@ Message type prefixes
   Email    : RamboQuant Open: | RamboQuant Agent: | RamboQuant Close:
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from threading import Lock
 
 import requests
