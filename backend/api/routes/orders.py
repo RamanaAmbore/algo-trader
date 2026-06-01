@@ -332,15 +332,26 @@ def _row_from_dict(d: dict, account: str) -> OrderRow:
 
 
 def _fetch_orders() -> OrdersResponse:
+    from concurrent.futures import ThreadPoolExecutor
+
     from backend.shared.brokers.registry import all_brokers
-    rows: list[OrderRow] = []
-    for broker in all_brokers():
+
+    brokers = list(all_brokers())
+    if not brokers:
+        return OrdersResponse(rows=[], refreshed_at=timestamp_display())
+
+    def _one_account(broker) -> list[OrderRow]:  # type: ignore[no-untyped-def]
         account = broker.account
         try:
-            for o in reversed(broker.orders() or []):
-                rows.append(_row_from_dict(o, account))
+            return [_row_from_dict(o, account) for o in reversed(broker.orders() or [])]
         except Exception as e:
             logger.error(f"Orders list failed for {account}: {e}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=min(len(brokers), 4)) as pool:
+        results = list(pool.map(_one_account, brokers))
+
+    rows: list[OrderRow] = [row for chunk in results for row in chunk]
     return OrdersResponse(rows=rows, refreshed_at=timestamp_display())
 
 

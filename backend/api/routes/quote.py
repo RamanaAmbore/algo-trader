@@ -262,6 +262,49 @@ _spark_lock       = threading.Lock()
 _spark_warm_symbols: int = 0
 _spark_warm_at: Optional[str] = None   # ISO-8601 UTC string
 
+# ── Instrument token-map cache ────────────────────────────────────────────────
+# broker.instruments(exchange) returns ~500 kB per exchange; fetching all
+# exchanges on every sparkline request wasted 4-5 blocking HTTP round-trips
+# even when the entire past-cache was warm and no historical fetch was needed.
+# Cache the union map for the day; it only changes at midnight IST.
+# Key: IST date string.  Value: {(tradingsymbol, exchange) → instrument_token}.
+_TOKEN_MAP_CACHE: dict[str, dict[tuple[str, str], int]] = {}
+_TOKEN_MAP_LOCK   = threading.Lock()
+
+_SPARKLINE_EXCHANGES = ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS")
+
+
+def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[no-untyped-def]
+    """Return the day-cached {(tradingsymbol, exchange) → token} map.
+
+    First call per IST day: fetches all sparkline exchanges (blocking HTTP).
+    Subsequent calls: O(1) dict lookup under the lock.
+    """
+    today = _ist_today()
+    with _TOKEN_MAP_LOCK:
+        cached = _TOKEN_MAP_CACHE.get(today)
+        if cached is not None:
+            return cached
+    # Build outside the lock — broker.instruments calls are slow (~500 kB each).
+    new_map: dict[tuple[str, str], int] = {}
+    for exch in _SPARKLINE_EXCHANGES:
+        try:
+            for row in broker.instruments(exch) or []:
+                ts  = row.get("tradingsymbol")
+                tok = row.get("instrument_token")
+                if ts and tok:
+                    new_map[(str(ts).upper(), exch)] = int(tok)
+        except Exception:
+            continue
+    with _TOKEN_MAP_LOCK:
+        # Drop stale dates (only today's entry is valid).
+        for k in list(_TOKEN_MAP_CACHE):
+            if k != today:
+                _TOKEN_MAP_CACHE.pop(k, None)
+        _TOKEN_MAP_CACHE[today] = new_map
+    return new_map
+
+
 def _ist_today() -> str:
     """Return today's date in IST as YYYY-MM-DD."""
     try:
@@ -370,36 +413,19 @@ class SparklineController(Controller):
                 broker = None
 
             if broker is not None:
-                # Build token map: tradingsymbol → instrument_token.
-                token_map: dict[str, int] = {}
-                exchange_order: dict[str, list[str]] = {}
-                for sym_obj in to_fetch:
-                    sym  = sym_obj.tradingsymbol
-                    exch = sym_obj.exchange
-                    order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
-                    exchange_order[sym] = order
-
+                # Build token map from the day-cache (one fetch per IST day
+                # across all sparkline exchanges; subsequent calls are O(1)).
                 try:
-                    needed_exchanges: set[str] = set()
-                    for order in exchange_order.values():
-                        needed_exchanges.update(order)
-
-                    inst_by_exch: dict[str, list] = {}
-                    for ex in needed_exchanges:
-                        try:
-                            insts = await asyncio.to_thread(broker.instruments, ex) or []
-                            inst_by_exch[ex] = insts
-                        except Exception:
-                            inst_by_exch[ex] = []
-
+                    _full_map = await asyncio.to_thread(_get_today_token_map, broker)
+                    token_map = {}
                     for sym_obj in to_fetch:
-                        sym = sym_obj.tradingsymbol
-                        for ex in exchange_order[sym]:
-                            for inst in inst_by_exch.get(ex, []):
-                                if str(inst.get("tradingsymbol") or "").upper() == sym:
-                                    token_map[sym] = int(inst["instrument_token"])
-                                    break
-                            if sym in token_map:
+                        if sym_obj.tradingsymbol in token_map:
+                            continue
+                        pref = [sym_obj.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
+                        for ex in pref:
+                            tok = _full_map.get((sym_obj.tradingsymbol, ex))
+                            if tok is not None:
+                                token_map[sym_obj.tradingsymbol] = tok
                                 break
                 except Exception as exc:
                     logger.warning(f"sparkline: instrument lookup failed: {exc}")
@@ -484,29 +510,19 @@ class SparklineController(Controller):
         # here so they also get subscribed.
         if not token_map:
             # Historical step was skipped (all symbols past-cached). Build
-            # a minimal token_map for the ticker subscription + tick-map read.
+            # token_map from the day-cache for ticker subscription + tick-map read.
             try:
                 from backend.shared.brokers.registry import get_sparkline_broker as _sb
                 _bk = _sb()
-                _all_exchanges: set[str] = set()
-                for s in norm_syms:
-                    _all_exchanges.update([s.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != s.exchange])
-                _inst_by_ex: dict[str, list] = {}
-                for _ex in _all_exchanges:
-                    try:
-                        _inst_by_ex[_ex] = await asyncio.to_thread(_bk.instruments, _ex) or []
-                    except Exception:
-                        _inst_by_ex[_ex] = []
+                _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
                 for s in norm_syms:
                     if s.tradingsymbol in token_map:
                         continue
-                    _ord = [s.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != s.exchange]
-                    for _ex in _ord:
-                        for _inst in _inst_by_ex.get(_ex, []):
-                            if str(_inst.get("tradingsymbol") or "").upper() == s.tradingsymbol:
-                                token_map[s.tradingsymbol] = int(_inst["instrument_token"])
-                                break
-                        if s.tradingsymbol in token_map:
+                    pref = [s.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != s.exchange]
+                    for _ex in pref:
+                        tok = _full_map.get((s.tradingsymbol, _ex))
+                        if tok is not None:
+                            token_map[s.tradingsymbol] = tok
                             break
             except Exception as _exc:
                 logger.warning(f"sparkline: token lookup for ticker subs failed: {_exc}")
@@ -686,36 +702,18 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         logger.warning(f"sparkline warm: broker unavailable, skipping: {exc}")
         return 0
 
-    # Build instrument token map.
+    # Build instrument token map from the day-cache (shared with batch_sparkline).
     token_map: dict[str, int] = {}
-    exchange_order: dict[str, list[str]] = {}
-    for sym_obj in to_fetch:
-        sym  = sym_obj.tradingsymbol
-        exch = sym_obj.exchange
-        order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
-        exchange_order[sym] = order
-
     try:
-        needed_exchanges: set[str] = set()
-        for order in exchange_order.values():
-            needed_exchanges.update(order)
-
-        inst_by_exch: dict[str, list] = {}
-        for ex in needed_exchanges:
-            try:
-                insts = await asyncio.to_thread(broker.instruments, ex) or []
-                inst_by_exch[ex] = insts
-            except Exception:
-                inst_by_exch[ex] = []
-
+        _full_map = await asyncio.to_thread(_get_today_token_map, broker)
         for sym_obj in to_fetch:
-            sym = sym_obj.tradingsymbol
-            for ex in exchange_order[sym]:
-                for inst in inst_by_exch.get(ex, []):
-                    if str(inst.get("tradingsymbol") or "").upper() == sym:
-                        token_map[sym] = int(inst["instrument_token"])
-                        break
-                if sym in token_map:
+            if sym_obj.tradingsymbol in token_map:
+                continue
+            pref = [sym_obj.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
+            for ex in pref:
+                tok = _full_map.get((sym_obj.tradingsymbol, ex))
+                if tok is not None:
+                    token_map[sym_obj.tradingsymbol] = tok
                     break
     except Exception as exc:
         logger.warning(f"sparkline warm: instrument lookup failed: {exc}")

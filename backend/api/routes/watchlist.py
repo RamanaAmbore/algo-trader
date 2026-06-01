@@ -511,15 +511,14 @@ class WatchlistController(Controller):
                 .order_by(Watchlist.sort_order, Watchlist.id)
             )
             wls = result.scalars().all()
-            # One COUNT(*) per list — cheap at ~5 lists × 100 items.
+            # Single GROUP BY query replaces N per-list COUNT(*) round-trips.
             from sqlalchemy import func
-            counts: dict[int, int] = {}
-            for wl in wls:
-                r = await session.execute(
-                    select(func.count(WatchlistItem.id))
-                    .where(WatchlistItem.watchlist_id == wl.id)
-                )
-                counts[wl.id] = int(r.scalar() or 0)
+            count_q = await session.execute(
+                select(WatchlistItem.watchlist_id, func.count(WatchlistItem.id))
+                .where(WatchlistItem.watchlist_id.in_([wl.id for wl in wls]))
+                .group_by(WatchlistItem.watchlist_id)
+            )
+            counts: dict[int, int] = {wid: int(cnt) for wid, cnt in count_q.all()}
         return [_wl_info(wl, counts.get(wl.id, 0)) for wl in wls]
 
     @post("/", guards=[jwt_guard])
