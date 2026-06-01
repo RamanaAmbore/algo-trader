@@ -269,12 +269,9 @@ export function formatDualTz(/** @type {Date} */ date) {
   const estTz = now.toLocaleTimeString('en-US', {
     timeZoneName: 'short', timeZone: 'America/New_York',
   }).split(' ').pop();
-  const istHead  = `${ist.wd} ${ist.d} ${ist.m}`;
-  const istTime  = `${ist.h}:${ist.mn} IST`;
-  const sameDate = ist.d === est.d && ist.m === est.m;
-  const estHalf  = sameDate
-    ? `${est.h}:${est.mn} ${estTz}`
-    : `${est.wd} ${est.h}:${est.mn} ${estTz}`;
+  const istHead = `${ist.wd} ${ist.d} ${ist.m}`;
+  const istTime = `${ist.h}:${ist.mn} IST`;
+  const estHalf = `${est.h}:${est.mn} ${estTz}`;  // time-only — date carried by IST half
   return `${istHead} · ${istTime} · ${estHalf}`;
 }
 
@@ -305,15 +302,12 @@ export function clientTimestamp() {
   const estTz = now.toLocaleTimeString('en-US', {
     timeZoneName: 'short', timeZone: 'America/New_York',
   }).split(' ').pop();   // "EST" / "EDT" by season
-  const istHead  = `${ist.wd} ${ist.d} ${ist.m}`;
-  const istTime  = `${ist.h}:${ist.mn} IST`;
-  const sameDate = ist.d === est.d && ist.m === est.m;
-  // Same calendar day → elide weekday/date for EST half.
-  // Different day (EST trailing IST by a day) → keep the EST
-  // weekday only (short enough to signal the date delta).
-  const estHalf  = sameDate
-    ? `${est.h}:${est.mn} ${estTz}`
-    : `${est.wd} ${est.h}:${est.mn} ${estTz}`;
+  const istHead = `${ist.wd} ${ist.d} ${ist.m}`;
+  const istTime = `${ist.h}:${ist.mn} IST`;
+  // EDT half is time-only — weekday + date intentionally omitted
+  // (IST side already carries the calendar context; duplicating it
+  // on the EST side just bloats the page header).
+  const estHalf = `${est.h}:${est.mn} ${estTz}`;
   return `${istHead} · ${istTime} · ${estHalf}`;
 }
 
