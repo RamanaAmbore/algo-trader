@@ -24,13 +24,6 @@
   // Bind the X-button click natively via addEventListener instead.
   function _onCloseClick(/** @type {MouseEvent} */ e) {
     e.stopPropagation();
-    // Telemetry: log to window so Playwright can assert the handler ran
-    // even if Svelte reactivity downstream is silently failing.
-    if (typeof window !== 'undefined') {
-      window.__cmClose_calls = (window.__cmClose_calls || 0) + 1;
-      window.__cmClose_lastSource = 'x-button';
-      window.__cmClose_onCloseType = typeof onClose;
-    }
     onClose?.();
   }
 
@@ -46,11 +39,6 @@
       // capture-phase listener from also firing and closing it when
       // ChartModal is the top-of-stack modal.
       e.stopImmediatePropagation();
-      if (typeof window !== 'undefined') {
-        window.__cmClose_calls = (window.__cmClose_calls || 0) + 1;
-        window.__cmClose_lastSource = 'esc-key';
-        window.__cmClose_onCloseType = typeof onClose;
-      }
       onClose?.();
       return;
     }
@@ -67,17 +55,11 @@
   }
 
   onMount(() => {
-    if (typeof window !== 'undefined') {
-      window.__cmMount_calls = (window.__cmMount_calls || 0) + 1;
-    }
     window.addEventListener('keydown', _onKey, { capture: true });
     _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
   });
   onDestroy(() => {
-    if (typeof window !== 'undefined') {
-      window.__cmDestroy_calls = (window.__cmDestroy_calls || 0) + 1;
-    }
     window.removeEventListener('keydown', _onKey, { capture: true });
     _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });

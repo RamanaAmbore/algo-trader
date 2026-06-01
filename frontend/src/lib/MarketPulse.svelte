@@ -3539,15 +3539,8 @@
     _chartModalOpen = true;
   }
   function _closeChartModal() {
-    if (typeof window !== 'undefined') {
-      window.__mpClose_calls = (window.__mpClose_calls || 0) + 1;
-      window.__mpClose_before = _chartModalSym;
-    }
     _chartModalOpen = false;
     queueMicrotask(() => { _chartModalSym = ''; _chartModalExch = ''; });
-    if (typeof window !== 'undefined') {
-      window.__mpClose_after = '<scheduled>';
-    }
   }
 
   // Dismiss context menu on outside click.
