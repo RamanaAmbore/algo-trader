@@ -198,7 +198,7 @@
         {#if pins.length}
           <div class="ssi-section">Results</div>
         {/if}
-        {#each _symSuggestions as inst (inst.sym + ':' + (inst.e ?? '') + ':' + (inst.t ?? ''))}
+        {#each _symSuggestions as inst ((inst.s ?? inst.sym ?? inst.tradingsymbol ?? '') + ':' + (inst.e ?? '') + ':' + (inst.t ?? ''))}
           <button type="button"
                   class="ssi-row"
                   role="option"

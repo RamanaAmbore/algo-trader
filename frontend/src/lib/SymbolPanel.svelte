@@ -178,17 +178,12 @@
     _symbolDebounce = setTimeout(async () => {
       try {
         const { searchByPrefix } = await import('$lib/data/instruments');
-        const _ss = await searchByPrefix(v, 12);
-        if (typeof window !== 'undefined') {
-          window.__ssLast = _ss;
-          window.__ssLastQ = v;
-        }
-        _symbolSuggestions = _ss;
+        _symbolSuggestions = await searchByPrefix(v, 12);
       } catch (_) { _symbolSuggestions = []; }
     }, 150);
   }
   function _pickSymbol(/** @type {any} */ inst) {
-    _localSymbol = String(inst?.sym || inst?.tradingsymbol || _symbolQuery).toUpperCase();
+    _localSymbol = String(inst?.s ?? inst?.sym ?? inst?.tradingsymbol ?? _symbolQuery).toUpperCase();
     // Capture exchange from the instrument row (field `e` in the search
     // result shape) so _isEquityExch can correctly gate the Chain tab
     // even when no exchange prop was supplied by the caller.
@@ -634,10 +629,10 @@
           }} />
         {#if _symbolOpen && _symbolSuggestions.length}
           <div class="oes-sym-drop">
-            {#each _symbolSuggestions as inst (inst.sym + ':' + (inst.e ?? '') + ':' + (inst.t ?? ''))}
+            {#each _symbolSuggestions as inst ((inst.s ?? inst.sym ?? inst.tradingsymbol ?? '') + ':' + (inst.e ?? '') + ':' + (inst.t ?? ''))}
               <button type="button" class="oes-sym-row"
                 onmousedown={(e) => { e.preventDefault(); _pickSymbol(inst); }}>
-                <span class="oes-sym-row-sym">{inst.sym}</span>
+                <span class="oes-sym-row-sym">{inst.s ?? inst.sym ?? inst.tradingsymbol ?? ''}</span>
                 <span class="oes-sym-row-meta">{inst.e}{inst.t ? ' · ' + inst.t : ''}</span>
               </button>
             {/each}
