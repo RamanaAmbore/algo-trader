@@ -31,7 +31,23 @@ test('SymbolPanel → chart icon → ChartModal X close', async ({ page }) => {
   await login(page);
 
   const log = [];
-  page.on('pageerror', (e) => log.push(`[pageerror] ${e.message}\nSTACK:\n${(e.stack || '').slice(0, 3000)}`));
+  page.on('pageerror', async (e) => {
+    log.push(`[pageerror] ${e.message}`);
+    try {
+      const probe = await page.evaluate(() => ({
+        ssLastQ: window.__ssLast ? `query="${window.__ssLastQ}"` : '<not-fired>',
+        ssLastLen: window.__ssLast?.length ?? 0,
+        ssLastDups: (() => {
+          if (!window.__ssLast) return [];
+          const keys = window.__ssLast.map(i => `${i.sym}:${i.e ?? ''}:${i.t ?? ''}`);
+          const cnt = {};
+          keys.forEach(k => { cnt[k] = (cnt[k] || 0) + 1; });
+          return Object.entries(cnt).filter(([_, v]) => v > 1).slice(0, 5);
+        })(),
+      }));
+      log.push(`SS probe at error: ${JSON.stringify(probe)}`);
+    } catch (_) { /* page closed */ }
+  });
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') log.push(`[${m.type()}] ${m.text().slice(0, 600)}`);
   });

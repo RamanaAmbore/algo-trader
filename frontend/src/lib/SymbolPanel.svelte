@@ -178,7 +178,12 @@
     _symbolDebounce = setTimeout(async () => {
       try {
         const { searchByPrefix } = await import('$lib/data/instruments');
-        _symbolSuggestions = await searchByPrefix(v, 12);
+        const _ss = await searchByPrefix(v, 12);
+        if (typeof window !== 'undefined') {
+          window.__ssLast = _ss;
+          window.__ssLastQ = v;
+        }
+        _symbolSuggestions = _ss;
       } catch (_) { _symbolSuggestions = []; }
     }, 150);
   }
