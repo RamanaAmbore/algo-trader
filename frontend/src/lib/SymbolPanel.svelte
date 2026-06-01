@@ -1031,8 +1031,12 @@
     width: 11rem;
     text-transform: uppercase;
   }
-  .oes-sym-input:focus {
-    outline: none;
+  .oes-sym-input:focus,
+  .oes-sym-input:focus-visible {
+    /* Override the global :focus-visible amber ring (app.css) so the
+       input shows only its own amber border — was stacking as a
+       2 px outer outline + 1 px inner border. */
+    outline: none !important;
     border-color: rgba(251, 191, 36, 0.55);
     background: rgba(251, 191, 36, 0.06);
   }
