@@ -620,7 +620,7 @@
   <!-- Futures rows -->
   {#if chainKinds.includes('fut') && chainFutures.length}
     <div class="chain-futures">
-      {#each chainFutures as f (f.s)}
+      {#each chainFutures as f (f.s + ':' + (f.e ?? '') + ':' + (f.x ?? ''))}
         {@const futKey = _quickKeyFut(f.s)}
         <div class="chain-fut-row">
           <span class="chain-fut-sym">{f.s}<span class="chain-fut-meta">lot {f.ls}</span></span>

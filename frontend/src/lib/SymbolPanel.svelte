@@ -629,7 +629,7 @@
           }} />
         {#if _symbolOpen && _symbolSuggestions.length}
           <div class="oes-sym-drop">
-            {#each _symbolSuggestions as inst (inst.sym)}
+            {#each _symbolSuggestions as inst (inst.sym + ':' + (inst.e ?? '') + ':' + (inst.t ?? ''))}
               <button type="button" class="oes-sym-row"
                 onmousedown={(e) => { e.preventDefault(); _pickSymbol(inst); }}>
                 <span class="oes-sym-row-sym">{inst.sym}</span>

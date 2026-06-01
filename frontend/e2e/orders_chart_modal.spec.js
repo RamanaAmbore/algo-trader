@@ -31,7 +31,10 @@ test('SymbolPanel → chart icon → ChartModal X close', async ({ page }) => {
   await login(page);
 
   const log = [];
-  page.on('pageerror', (e) => log.push(`[pageerror] ${String(e).slice(0, 200)}`));
+  page.on('pageerror', (e) => log.push(`[pageerror] ${e.message}\nSTACK:\n${(e.stack || '').slice(0, 3000)}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') log.push(`[${m.type()}] ${m.text().slice(0, 600)}`);
+  });
 
   await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
   // Retry-wait for NIFTY row to render
