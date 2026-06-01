@@ -837,6 +837,10 @@ export const promoteResearchThread = (id, payload) =>
 /** POST /api/research/confirm-token — mint a 60s single-use token for one specific order. */
 export const mintConfirmToken = (payload) =>
   _post('/research/confirm-token', payload, { auth: true });
+/** GET /api/admin/visitors?days=N — visitor log rows (last N days, cap 30). */
+export const fetchVisitors = (days = 7) =>
+  _get(`/admin/visitors?days=${days}`, { auth: true });
+
 /** GET /api/research/audit — forensic trail of MCP-initiated mutations. */
 export const fetchResearchAudit = (filters = {}) => {
   const p = new URLSearchParams();
