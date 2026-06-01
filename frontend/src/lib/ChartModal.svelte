@@ -20,23 +20,21 @@
 
   onMount(() => {
     window.addEventListener('keydown', _onKey);
-    document.body.style.overflow = 'hidden';
+    // Body scroll-lock removed — the modal lets the page underneath
+    // stay interactive (overlay is pointer-events: none) so a slow
+    // chart load doesn't freeze the rest of the screen.
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey);
-    document.body.style.overflow = '';
   });
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_interactive_supports_focus -->
+<!-- overlay is pointer-events:none so click-outside-to-close is gone;
+     operator uses × button or Esc. tabindex retained for screen readers. -->
 <div class="cm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Chart — {symbol}"
-     tabindex="-1"
-     onclick={onClose}>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="cm-modal" onclick={(e) => e.stopPropagation()}>
+     tabindex="-1">
+  <div class="cm-modal">
     <div class="cm-header">
       <span class="cm-title">Chart — <span class="cm-sym">{symbol}</span></span>
       <button type="button" class="cm-close" onclick={onClose} aria-label="Close chart modal">×</button>
@@ -57,13 +55,22 @@
   .cm-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.72);
+    /* No background dim and pointer-events: none — the rest of the
+       page stays clickable while the chart loads. Operator can still
+       navigate, click the navbar, scroll. Close the modal via the ×
+       button or Esc when ready. */
+    pointer-events: none;
     z-index: 200;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 1rem;
     box-sizing: border-box;
+  }
+  .cm-modal {
+    /* Restore pointer-events so the modal panel itself is interactive
+       even though the overlay around it is not. */
+    pointer-events: auto;
   }
 
   .cm-modal {
