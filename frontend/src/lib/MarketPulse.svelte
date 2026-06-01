@@ -1426,14 +1426,28 @@
     return t ? [t] : [];
   });
 
-  // Effective collapse state per bucket — operator-driven only.
-  // Earlier we auto-collapsed any empty bucket so the page stayed
-  // tight; on desktop that left a grid of mismatched card heights
-  // (some full-bodied, some header-only stubs) which read as broken
-  // before market open or with no account picked. Cards now stay at
-  // their full height with the empty-state message rendered inside
-  // the grid body — keeps the dashboard visually aligned regardless
-  // of data availability. The operator can still manually collapse.
+  // Mobile breakpoint tracker — matches the Tailwind `lg:` 1024 px
+  // cutoff the rest of the app uses. Cards on desktop fill the
+  // available viewport height via flex; cards on mobile collapse
+  // when their bucket is empty so the operator's scroll length
+  // doesn't bloat with header-only stubs before market open.
+  let _isMobile = $state(false);
+  if (typeof window !== 'undefined') {
+    onMount(() => {
+      const mq = window.matchMedia('(max-width: 1023px)');
+      _isMobile = mq.matches;
+      const onChange = (/** @type {MediaQueryListEvent} */ e) => { _isMobile = e.matches; };
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    });
+  }
+
+  // Effective collapse state per bucket — operator-driven on desktop;
+  // auto-collapse on empty on mobile so empty cards don't add to the
+  // mobile scroll length. Desktop keeps every card expanded with the
+  // inline empty-state message rendered inside the grid body, then
+  // flex-grow distributes viewport height across the column so the
+  // dashboard stays visually aligned regardless of data availability.
   //
   // Winner/loser counts kept for the per-tab badge in the card header.
   const _winnersTotal = $derived(
@@ -1442,13 +1456,13 @@
   const _losersTotal = $derived(
     loserCounts.underlying + loserCounts.large_cap
     + loserCounts.midcap + loserCounts.smallcap);
-  const _effColPinned    = $derived(_colPinned);
-  const _effColWatch     = $derived(_colWatch);
-  const _effColPinWatch  = $derived(_colPinWatch);
-  const _effColWinners   = $derived(_colWinners);
-  const _effColLosers    = $derived(_colLosers);
-  const _effColPositions = $derived(_colPositions);
-  const _effColHoldings  = $derived(_colHoldings);
+  const _effColPinned    = $derived(_colPinned    || (_isMobile && pinnedRows.length === 0));
+  const _effColWatch     = $derived(_colWatch     || (_isMobile && _allWatchRows.length === 0));
+  const _effColPinWatch  = $derived(_colPinWatch  || (_isMobile && pinnedRows.length === 0 && _allWatchRows.length === 0));
+  const _effColWinners   = $derived(_colWinners   || (_isMobile && _winnersTotal === 0));
+  const _effColLosers    = $derived(_colLosers    || (_isMobile && _losersTotal === 0));
+  const _effColPositions = $derived(_colPositions || (_isMobile && positionsRows.length === 0));
+  const _effColHoldings  = $derived(_colHoldings  || (_isMobile && holdingsRows.length === 0));
 
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
@@ -4293,17 +4307,29 @@
        each row reads at roughly the same px-per-column. */
     .mp-col-left  { flex: 4 1 0; }
     .mp-col-right { flex: 6 1 0; }
-    /* Right col distributes its (left-col-matched) height:
-       Account picker auto, Positions = Pinned's height (fixed
-       via the .bucket-grid default), Holdings grows to fill the
-       remaining space. */
-    .mp-col-right .mp-bucket-holdings {
+    /* Cards on desktop distribute the column's stretched height
+       evenly — each .mp-bucket-wrap becomes a flex item with the
+       same grow weight, and the .bucket-grid inside flexes too so
+       the ag-Grid body absorbs the full card height. This keeps
+       every card visually aligned (matching footers, matching
+       widths) regardless of whether each bucket has data — empty
+       cards still occupy their column share with their inline
+       empty-state message centered inside the grid body. */
+    .mp-col > .mp-bucket-wrap {
       flex: 1 1 0;
       min-height: 200px;
     }
-    .mp-col-right .mp-bucket-holdings .bucket-grid {
+    .mp-col > .mp-bucket-wrap > .bucket-grid {
       height: auto;
       flex: 1 1 0;
+      min-height: 0;
+    }
+    /* Holdings keeps its slightly larger floor — operator's book
+       grids carry more rows than monitoring grids. */
+    .mp-col-right .mp-bucket-holdings {
+      min-height: 200px;
+    }
+    .mp-col-right .mp-bucket-holdings .bucket-grid {
       min-height: 200px;
     }
   }
