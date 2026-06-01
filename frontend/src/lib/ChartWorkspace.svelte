@@ -16,7 +16,7 @@
   //   showHeader?      — false when the parent renders its own page-header
   //   onSymbolChange?  — callback when the operator picks a new symbol
 
-  import { onMount, onDestroy, getContext } from 'svelte';
+  import { onMount, onDestroy, getContext, untrack } from 'svelte';
   import {
     fetchOptionsHistorical,
     fetchChartPriceHistory,
@@ -865,6 +865,10 @@
   });
 
   // Re-load historical when symbol changes externally.
+  // The intraday-overlay clear is wrapped in untrack() so reading
+  // _overlays here doesn't make this effect depend on _overlays —
+  // otherwise writing back a filtered array re-fires the effect
+  // endlessly (caught: 80+ /api/options/historical calls in 2s).
   $effect(() => {
     void symbol; void exchange;
     if (_mounted) {
@@ -874,7 +878,11 @@
       _bars = [];
       _spotBars = [];
       _greeks = null;
-      _overlays = _overlays.filter(o => o !== 'intraday');
+      untrack(() => {
+        if (_overlays.includes('intraday')) {
+          _overlays = _overlays.filter(o => o !== 'intraday');
+        }
+      });
       _loadHistorical(true);
       if (_isOption) _loadGreeks();
     }
