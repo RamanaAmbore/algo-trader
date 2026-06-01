@@ -387,12 +387,17 @@ class OrdersController(Controller):
         try:
             resp = await get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL)
             # Mask account codes for everyone who is NOT admin/designated.
-            # Partner-tier authenticated users see masked codes alongside
-            # demo (audit fix — was previously gated on
-            # is_authenticated_request which leaked raw codes to partners).
+            # Copy-not-mutate so the shared cache doesn't keep the masked
+            # codes (was the demo→signin lag bug — first masked caller
+            # poisoned the cached resp for subsequent admin requests).
             if not is_admin_request(request):
-                for r in resp.rows:
-                    r.account = mask_column(pd.Series([r.account]))[0]
+                import msgspec as _ms
+                return _ms.structs.replace(
+                    resp,
+                    rows=[_ms.structs.replace(
+                        r, account=mask_column(pd.Series([r.account]))[0]
+                    ) for r in resp.rows],
+                )
             return resp
         except Exception as e:
             logger.error(f"Orders API error: {e}")

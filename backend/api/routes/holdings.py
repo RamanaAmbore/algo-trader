@@ -96,12 +96,19 @@ class HoldingsController(Controller):
                 invalidate("holdings")
             resp = await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
             # Account-ID masking — admin/designated only see raw codes.
-            # Partner JWTs are masked alongside demo (audit fix).
+            # Copy-not-mutate so the shared cache doesn't end up holding
+            # masked codes (was the demo→signin lag bug).
             if not is_admin_request(request):
-                for r in resp.rows:
-                    r.account = mask_column(pd.Series([r.account]))[0]
-                for s in resp.summary:
-                    s.account = mask_column(pd.Series([s.account]))[0]
+                import msgspec
+                def _mask(row):
+                    return msgspec.structs.replace(
+                        row, account=mask_column(pd.Series([row.account]))[0]
+                    )
+                return msgspec.structs.replace(
+                    resp,
+                    rows=[_mask(r) for r in resp.rows],
+                    summary=[_mask(s) for s in resp.summary],
+                )
             return resp
         except Exception as e:
             logger.error(f"Holdings API error: {e}")

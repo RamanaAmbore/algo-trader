@@ -190,15 +190,23 @@ class PositionsController(Controller):
                 invalidate("positions")
             resp = await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
             # Mask account IDs for everyone who is NOT admin/designated.
-            # Partner-tier authenticated users see masked codes (ZG####)
-            # just like demo visitors — they have no need to see raw
-            # broker account codes. is_admin_request() returns True only
-            # for role ∈ {admin, designated}.
+            # CRITICAL — copy resp.rows / resp.summary BEFORE mutating;
+            # the cache returns the same object reference across every
+            # request, so an in-place mutation by a demo caller poisons
+            # the cached payload and subsequent admin requests see
+            # masked codes until the TTL expires (operator hit this
+            # when transitioning from demo to signed-in).
             if not is_admin_request(request):
-                for r in resp.rows:
-                    r.account = mask_column(pd.Series([r.account]))[0]
-                for s in resp.summary:
-                    s.account = mask_column(pd.Series([s.account]))[0]
+                import msgspec
+                def _mask(row):
+                    return msgspec.structs.replace(
+                        row, account=mask_column(pd.Series([row.account]))[0]
+                    )
+                return msgspec.structs.replace(
+                    resp,
+                    rows=[_mask(r) for r in resp.rows],
+                    summary=[_mask(s) for s in resp.summary],
+                )
             return resp
         except Exception as e:
             logger.error(f"Positions API error: {e}")
