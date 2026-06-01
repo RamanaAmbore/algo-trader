@@ -252,8 +252,32 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
       log.timeline.push(`elementFromPoint(X-center): ${JSON.stringify(topmost)}`);
     }
 
-    // Standard Playwright click
-    await closeBtn.click({ force: false }).catch((e) => {
+    // CONTROL: try Esc first (window.addEventListener path — should close
+    // independent of any DOM-delegation concerns). If Esc fails too, the
+    // bug is in onClose state propagation. If Esc succeeds, bug is X-only.
+    log.timeline.push('CONTROL: pressing Esc');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(900);
+    const afterEsc = await modal.count();
+    log.timeline.push(`After Esc — modal count: ${afterEsc}`);
+    if (afterEsc === 0) {
+      log.timeline.push('✓ Esc closed the modal — onClose plumbing works');
+      // Re-open modal to test X
+      await niftyRow.locator('.sym-actions').first().evaluate((el) => {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      });
+      await page.waitForTimeout(500);
+      const chartItem2 = page.locator('button.ctx-item:has-text("Chart")').first();
+      await chartItem2.click();
+      await page.waitForTimeout(2000);
+      log.timeline.push(`re-opened modal: ${await modal.count() > 0}`);
+    } else {
+      log.timeline.push('❌ Even Esc did not close — onClose state propagation broken');
+    }
+
+    // Now try standard click on the (re-opened) modal's X
+    const closeBtn2 = page.locator('.cm-close').first();
+    await closeBtn2.click({ force: false }).catch((e) => {
       log.timeline.push(`X .click() threw: ${e.message}`);
     });
     await page.waitForTimeout(900);

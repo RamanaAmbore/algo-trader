@@ -24,6 +24,13 @@
   // Bind the X-button click natively via addEventListener instead.
   function _onCloseClick(/** @type {MouseEvent} */ e) {
     e.stopPropagation();
+    // Telemetry: log to window so Playwright can assert the handler ran
+    // even if Svelte reactivity downstream is silently failing.
+    if (typeof window !== 'undefined') {
+      window.__cmClose_calls = (window.__cmClose_calls || 0) + 1;
+      window.__cmClose_lastSource = 'x-button';
+      window.__cmClose_onCloseType = typeof onClose;
+    }
     onClose?.();
   }
 
@@ -39,7 +46,12 @@
       // capture-phase listener from also firing and closing it when
       // ChartModal is the top-of-stack modal.
       e.stopImmediatePropagation();
-      onClose();
+      if (typeof window !== 'undefined') {
+        window.__cmClose_calls = (window.__cmClose_calls || 0) + 1;
+        window.__cmClose_lastSource = 'esc-key';
+        window.__cmClose_onCloseType = typeof onClose;
+      }
+      onClose?.();
       return;
     }
     if (e.key === 'Tab') {
