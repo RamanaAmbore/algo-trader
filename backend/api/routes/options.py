@@ -865,10 +865,8 @@ class OptionsController(Controller):
             parsed["underlying"], spot,
             fallback=parsed["strike"],
             expiry_hint=parsed["expiry"])
-        # TODO: pass close_time=(23,30) for MCX single-leg analytics.
-        # Single-leg mode doesn't always carry the segment context here;
-        # the strategy endpoint (which has _is_commodity) is the primary fix.
-        T_yrs = days_to_expiry(parsed["expiry"]) / 365.0
+        _close_time = (23, 30) if is_mcx_underlying(parsed["underlying"]) else (15, 30)
+        T_yrs = days_to_expiry(parsed["expiry"], close_time=_close_time) / 365.0
         # Pass avg_cost AND estimated-BS inputs as last-resort fallbacks
         # so a stale broker quote on an illiquid contract still produces
         # a usable payoff curve. ltp_source='estimated' tells the UI it
@@ -977,7 +975,7 @@ class OptionsController(Controller):
             opt_type=parsed["opt_type"],
             strike=parsed["strike"],
             expiry=parsed["expiry"].isoformat(),
-            days_to_expiry=days_to_expiry(parsed["expiry"]),  # TODO: MCX close_time
+            days_to_expiry=days_to_expiry(parsed["expiry"], close_time=_close_time),
             account=acct_resolved,
             qty=qty_resolved,
             avg_cost=entry,

@@ -461,6 +461,18 @@ def futures_symbol_for_expiry(underlying: str, expiry: date) -> str:
     return f"{(underlying or '').upper()}{yy:02d}{mon}FUT"
 
 
+def _close_time_for_row(row: dict) -> tuple[int, int]:
+    """Return the IST market-close time for a position row.
+
+    Reads `row['exchange']` which the sim driver populates on every
+    position row (driver.py sets it during seed). Live broker rows carry
+    the exchange column from Kite's positions response. Falls back to
+    NSE/NFO (15:30) when the exchange is absent or unrecognised.
+    """
+    exch = (row.get("exchange") or "").upper()
+    return (23, 30) if exch == "MCX" else (15, 30)
+
+
 def calibrate_iv_for_row(row: dict, spot: float,
                          *, risk_free: float = DEFAULT_RISK_FREE,
                          ref_now: Optional[datetime] = None) -> Optional[float]:
@@ -477,9 +489,8 @@ def calibrate_iv_for_row(row: dict, spot: float,
     if ltp is None or float(ltp) <= 0:
         return DEFAULT_IV
     expiry = parsed["expiry"]
-    # TODO: thread MCX close_time=(23,30) here when the sim driver exposes
-    # the segment for per-row context. Default 15:30 is correct for NSE/NFO.
-    T_yrs  = days_to_expiry(expiry, ref=ref_now) / 365.0
+    T_yrs  = days_to_expiry(expiry, ref=ref_now,
+                             close_time=_close_time_for_row(row)) / 365.0
     return implied_vol(float(ltp), float(spot), parsed["strike"],
                        T_yrs, risk_free, parsed["opt_type"])
 
@@ -502,9 +513,8 @@ def reprice_row(row: dict, *, spot: float, sigma: Optional[float],
         return float(spot)
     if parsed["kind"] == "opt":
         expiry = parsed["expiry"]
-        # TODO: thread MCX close_time=(23,30) here when the sim driver
-        # exposes the segment for per-row context. Default 15:30 for NSE/NFO.
-        T_yrs  = days_to_expiry(expiry, ref=ref_now) / 365.0
+        T_yrs  = days_to_expiry(expiry, ref=ref_now,
+                                close_time=_close_time_for_row(row)) / 365.0
         sig    = sigma if (sigma and sigma > 0) else DEFAULT_IV
         return black_scholes(float(spot), parsed["strike"],
                              T_yrs, risk_free, sig, parsed["opt_type"])
