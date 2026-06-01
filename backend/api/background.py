@@ -1206,6 +1206,58 @@ async def _task_ticker_watchdog(state: dict) -> None:
             logger.exception("ticker watchdog: unexpected error")
 
 
+async def _task_visitor_log_daily() -> None:
+    """
+    Parse yesterday's nginx access.log once per day at 03:30 IST.
+    Upserts visitor_log, writes a markdown report, and sends the
+    summary block to Telegram (gated by is_enabled('telegram')).
+
+    Runs 15 min after _task_mcp_audit_cleanup (03:15) to stagger the
+    overnight maintenance window. The task fires immediately on startup
+    with a 60-second delay to let DB init complete, then sleeps until
+    03:30 IST for all subsequent runs.
+    """
+    from backend.shared.helpers.utils import is_enabled
+
+    await asyncio.sleep(60)  # let DB init settle
+
+    async def _run_once() -> None:
+        try:
+            # Offload the synchronous file parsing + MaxMind lookups to
+            # the thread executor so the asyncio loop stays responsive.
+            from backend.scripts.visitor_report import run_daily, _summary_block
+            report_path = await _run(run_daily)
+            logger.info(f"Background: visitor log report → {report_path}")
+
+            if is_enabled("telegram"):
+                try:
+                    from backend.shared.helpers.alert_utils import _send_telegram
+                    branch = config.get("deploy_branch", "main")
+                    branch_tag = f" [{branch}]" if branch != "main" else ""
+                    summary = _summary_block(report_path)
+                    msg = f"Visitors{branch_tag}\n{summary}"
+                    _send_telegram(msg)
+                except Exception as tg_err:
+                    logger.warning(f"Background: visitor log telegram failed: {tg_err}")
+        except Exception as e:
+            logger.error(f"Background: visitor log daily run failed: {e}")
+
+    # First run immediately (startup catch-up — logs from the previous day
+    # may not have been processed if the service was restarted mid-day).
+    await _run_once()
+
+    while True:
+        # Daily at 03:30 IST — after sim cleanup (03:00) and mcp audit (03:15).
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=30, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: visitor log task sleeping {sleep_s/3600:.1f}h until 03:30 IST")
+        await asyncio.sleep(sleep_s)
+        await _run_once()
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -1222,6 +1274,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_daily_snapshot(),      name="bg-daily-snapshot"),
         asyncio.create_task(_task_sim_cleanup(),         name="bg-sim-cleanup"),
         asyncio.create_task(_task_mcp_audit_cleanup(),   name="bg-mcp-audit-cleanup"),
+        asyncio.create_task(_task_visitor_log_daily(),   name="bg-visitor-log"),
         asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
         asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
     ]
@@ -1250,11 +1303,11 @@ async def on_startup(app) -> None:
                                 name="bg-paper-chase")
         )
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, sparkline-warm, "
+                    "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
                     "ticker-watchdog, paper-chase)")
     else:
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, sparkline-warm, "
+                    "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
                     "ticker-watchdog) "
                     "— live agent engine + paper engine OFF on non-main")
 

@@ -6,7 +6,8 @@ import secrets as _secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -903,6 +904,40 @@ class McpAudit(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc), index=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Visitor log — one row per unique (ip, UTC-date). Updated in-place when
+# the same IP is seen again on the same day.  Populated nightly by
+# backend/scripts/visitor_report.py after parsing /var/log/nginx/access.log.
+# ---------------------------------------------------------------------------
+
+class VisitorLog(Base):
+    """One row per unique (ip, UTC-date). Updated in place if the IP is
+    seen again on the same day."""
+    __tablename__ = "visitor_log"
+
+    id:            Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    ip:            Mapped[str]            = mapped_column(String(45), nullable=False, index=True)   # IPv4 or IPv6
+    seen_date:     Mapped[datetime]       = mapped_column(Date, nullable=False, index=True)          # UTC date
+    country:       Mapped[Optional[str]]  = mapped_column(String(2),   nullable=True)                # ISO-2 e.g. "IN"
+    region:        Mapped[Optional[str]]  = mapped_column(String(8),   nullable=True)                # ISO subdivision e.g. "KA"
+    city:          Mapped[Optional[str]]  = mapped_column(String(80),  nullable=True)
+    asn:           Mapped[Optional[str]]  = mapped_column(String(32),  nullable=True)                # "AS9498" style
+    request_count: Mapped[int]            = mapped_column(Integer, nullable=False, default=0)
+    first_seen_at: Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False)
+    last_path:     Mapped[Optional[str]]  = mapped_column(String(200), nullable=True)
+    user_agent:    Mapped[Optional[str]]  = mapped_column(String(400), nullable=True)
+    created_at:    Mapped[datetime]       = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("ix_visitor_log_ip_date",   "ip", "seen_date", unique=True),
+        Index("ix_visitor_log_seen_date", "seen_date"),
     )
 
 

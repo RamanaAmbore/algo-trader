@@ -8,3 +8,4 @@ google-genai~=1.0
 babel~=2.17.0
 pandas~=2.3.1
 requests~=2.32.4
+maxminddb~=2.6
