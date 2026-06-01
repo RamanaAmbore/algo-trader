@@ -331,10 +331,8 @@
     display: grid;
     grid-template-columns: max-content 1fr max-content;
     align-items: baseline;
-    /* Tight column gap so the timestamp sits right next to the
-       headline — operator was reading the prior 0.6rem gap as a
-       sparse two-column layout. */
-    gap: 0.3rem;
+    /* Very tight gap — timestamp sits flush next to the headline. */
+    gap: 0.15rem;
     padding: 0.45rem 0;
     border-bottom: 1px solid #e7e0cf;
     font-size: 0.85rem;

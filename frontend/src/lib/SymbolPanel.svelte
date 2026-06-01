@@ -209,7 +209,32 @@
       ) && !_isDerivative)
     )
   );
-  const chainDisabled = $derived(_isEquityExch && !_isDerivative);
+  // Track whether the currently-picked symbol has tradeable options.
+  // Equity tickers like RELIANCE / INFY / TCS are cash-equity on NSE
+  // but ALSO have NFO option chains (CE / PE strikes per expiry); the
+  // operator wants the Chain tab open for those so they can browse
+  // strikes without retyping the underlying. _hasOptionsForSymbol
+  // re-runs whenever _localSymbol changes; instruments may load lazily,
+  // so it's wrapped in $derived so the gate flips the moment the
+  // instruments cache hydrates.
+  let _hasOptionsForSymbol = $state(false);
+  $effect(() => {
+    const s = _localSymbol;
+    if (!s) { _hasOptionsForSymbol = false; return; }
+    (async () => {
+      try {
+        const mod = await import('$lib/data/instruments');
+        await mod.loadInstruments?.();
+        _hasOptionsForSymbol = !!mod.hasOptions?.(s);
+      } catch (_) {
+        _hasOptionsForSymbol = false;
+      }
+    })();
+  });
+  // Chain stays available when the equity has an option chain (e.g.
+  // RELIANCE → NFO CE/PE strikes). Only pure cash-equities with no
+  // F&O coverage land on the disabled state.
+  const chainDisabled = $derived(_isEquityExch && !_isDerivative && !_hasOptionsForSymbol);
 
   // Resolve initial tab — fall through chain → ticket when equity.
   function _resolveInitialTab() {
