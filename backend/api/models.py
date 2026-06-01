@@ -853,6 +853,13 @@ class BrokerAccount(Base):
     access_token_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     priority: Mapped[int]            = mapped_column(Integer, nullable=False, default=100)
     extra_config: Mapped[dict]       = mapped_column(JSONB, nullable=False, default=dict)
+    # When True (default), this account is eligible for /api/options/historical
+    # fallback. The historical endpoint walks the ordered list returned by
+    # get_historical_brokers(); accounts with this flag False are skipped so
+    # operators can reserve low-rate-limit accounts for order-flow only.
+    historical_data_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

@@ -198,6 +198,11 @@ async def init_db() -> None:
             "NOT NULL DEFAULT 100",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS extra_config JSONB "
             "NOT NULL DEFAULT '{}'::jsonb",
+            # historical_data_enabled — controls per-account eligibility for the
+            # /api/options/historical fallback loop. TRUE for all existing rows
+            # preserves previous behaviour (every account participates).
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "historical_data_enabled BOOLEAN NOT NULL DEFAULT TRUE",
         ):
             await conn.execute(text(stmt))
         # User-management v2 — super-admin role, email verification,

@@ -312,6 +312,71 @@ def _account_priority(account: str) -> int:
     return int(pri_map.get(account, 100))
 
 
+def _is_hist_enabled(account: str) -> bool:
+    """Return True when `account` has historical_data_enabled=True.
+    Reads the Connections singleton cache populated by rebuild_from_db;
+    defaults to True for YAML-seeded accounts (conservative — include all
+    when the map hasn't been populated yet)."""
+    conns = Connections()
+    hist_map: dict[str, bool] = getattr(conns, "_hist_enabled_map", {})
+    # If the account is in the map, honour it. If not, default True so
+    # a freshly-loaded YAML account is never silently excluded.
+    return bool(hist_map.get(account, True))
+
+
+def get_historical_brokers() -> list[Broker]:
+    """
+    Return the prioritised list of Kite (and Kite-compatible) broker
+    adapters eligible for /api/options/historical OHLCV calls.
+
+    Ordering:
+      1. The configured `connections.price_account` (when set, enabled,
+         and not in active rate-limit cool-off) — tried first.
+      2. Remaining accounts with historical_data_enabled=True, sorted by
+         broker_accounts.priority ASC (lower = earlier), with
+         insertion-order tie-breaking.
+      3. Accounts currently in rate-limit cool-off are EXCLUDED so the
+         caller doesn't waste a network round-trip on a known-throttled
+         account.  The cool-off expires after _RATE_LIMIT_COOLOFF_SECONDS
+         (30 s by default); the account re-enters the list on the next
+         call automatically.
+
+    Returns an empty list when every eligible account is in cool-off or
+    no account has historical_data_enabled=True.  The historical handler
+    treats an empty list as "return graceful empty bars immediately."
+    """
+    from backend.shared.helpers.settings import get_string
+
+    accounts = list(Connections().conn.keys())
+    if not accounts:
+        return []
+
+    pinned = (get_string("connections.price_account", "") or "").strip()
+
+    ordered: list[Broker] = []
+    seen: set[str] = set()
+
+    # Pinned account first (if it exists, is eligible, and not rate-limited).
+    if pinned and pinned in accounts and _is_hist_enabled(pinned):
+        broker_key = f"{_broker_id_for(pinned)}/{pinned}"
+        if not _is_rate_limited(broker_key):
+            ordered.append(get_broker(pinned))
+            seen.add(pinned)
+
+    # Remaining eligible accounts, sorted by priority then insertion order.
+    remaining = [
+        a for a in accounts
+        if a not in seen and _is_hist_enabled(a)
+    ]
+    remaining.sort(key=lambda a: (_account_priority(a), accounts.index(a)))
+    for acct in remaining:
+        broker_key = f"{_broker_id_for(acct)}/{acct}"
+        if not _is_rate_limited(broker_key):
+            ordered.append(get_broker(acct))
+
+    return ordered
+
+
 def get_price_broker() -> Broker:
     """
     Auto-failover broker for shared market-data fetches (underlying

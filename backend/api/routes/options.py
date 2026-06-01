@@ -1315,86 +1315,115 @@ class OptionsController(Controller):
         if _cached is not None and _cached[0] > _now:
             return _cached[1]
 
-        # ── Instrument-token lookup ────────────────────────────────────
-        # When the caller passes an explicit exchange (e.g. "MCX" for
-        # commodity pins, "NSE" for underlying spot) we only try that
-        # one exchange — no need to walk 6 arms.  An empty exchange
-        # falls back to the full NFO → BFO → NSE → BSE → MCX → CDS
-        # walk for discovery.
-        from backend.shared.brokers.registry import get_price_broker
-        broker = get_price_broker()
-        token: int | None = None
+        # ── Account-fallback loop ─────────────────────────────────────
+        # get_historical_brokers() returns the prioritised list of eligible
+        # accounts (historical_data_enabled=True, not in rate-limit cool-off).
+        # When account A hits "Too many requests", _mark_rate_limited removes
+        # it from the list for _RATE_LIMIT_COOLOFF_SECONDS (30 s) and we
+        # try account B before giving up.
+        from backend.shared.brokers.registry import (
+            get_historical_brokers, _mark_rate_limited,
+        )
 
         if exchange:
             exchange_arms: tuple[str, ...] = (exchange,)
         else:
             exchange_arms = ("NFO", "BFO", "NSE", "BSE", "MCX", "CDS")
 
-        try:
-            for ex in exchange_arms:
-                insts = await asyncio.to_thread(broker.instruments, ex) or []
-                for inst in insts:
-                    if str(inst.get("tradingsymbol") or "").upper() == sym:
-                        token = int(inst.get("instrument_token"))
-                        break
-                if token:
-                    break
-        except Exception as e:
-            # Broker unreachable — return empty bars instead of 502 so
-            # the page renders an "unavailable" state without ripping
-            # the whole panel.
-            logger.warning(f"options historical instrument lookup failed: {e}")
-            result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                        interval=interval, bars=[])
-            with _HIST_CACHE_LOCK:
-                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
-            return result
-
-        if not token:
-            # Symbol not found in the exchange(s) tried. Return empty bars
-            # rather than 404 so the UI shows an "unavailable" state.
-            _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"
-            logger.info(f"options historical: '{sym}' not found in {_tried}")
-            result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                        interval=interval, bars=[])
-            with _HIST_CACHE_LOCK:
-                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
-            return result
-
-        # ── Historical bars fetch ──────────────────────────────────────
-        # broker.historical_data returns list[dict] with OHLCV via
-        # the Broker ABC — works for every adapter (Kite + Dhan +
-        # Groww, with PriceBroker auto-failing-over).
-        try:
-            to_d   = datetime.now()
-            from_d = to_d - timedelta(days=days)
-            raw    = await asyncio.to_thread(broker.historical_data,
-                                              token, from_d, to_d, interval) or []
-        except Exception as e:
-            logger.warning(f"options historical_data failed for {sym}: {e}")
-            result = HistoricalResponse(symbol=sym, instrument_token=token,
-                                        interval=interval, bars=[])
-            with _HIST_CACHE_LOCK:
-                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
-            return result
-
-        bars = [
-            HistoricalBar(
-                ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
-                                  else b["date"].isoformat(),
-                open=float(b.get("open") or 0),
-                high=float(b.get("high") or 0),
-                low=float(b.get("low") or 0),
-                close=float(b.get("close") or 0),
-                volume=int(b.get("volume") or 0),
+        brokers = get_historical_brokers()
+        if not brokers:
+            # No eligible account (all disabled or all in cool-off).
+            logger.warning(
+                f"options historical: no eligible brokers for {sym} "
+                f"(all historical_data_enabled=False or in rate-limit cool-off)"
             )
-            for b in raw
-        ]
-        result = HistoricalResponse(symbol=sym, instrument_token=token,
-                                    interval=interval, bars=bars)
-        _ttl = _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY
+            result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                        interval=interval, bars=[])
+            with _HIST_CACHE_LOCK:
+                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
+            return result
+
+        to_d   = datetime.now()
+        from_d = to_d - timedelta(days=days)
+
+        for broker in brokers:
+            broker_key = f"{broker.broker_id}/{broker.account}"
+            token: int | None = None
+            try:
+                # ── Instrument-token lookup ────────────────────────────
+                # When the caller passes an explicit exchange (e.g. "MCX"
+                # for commodity pins, "NSE" for underlying spot) we only
+                # try that one exchange — no need to walk 6 arms.  An
+                # empty exchange falls back to the full walk for discovery.
+                for ex in exchange_arms:
+                    insts = await asyncio.to_thread(broker.instruments, ex) or []
+                    for inst in insts:
+                        if str(inst.get("tradingsymbol") or "").upper() == sym:
+                            token = int(inst.get("instrument_token"))
+                            break
+                    if token:
+                        break
+
+                if not token:
+                    # This broker's instruments dump doesn't have the symbol.
+                    # Try the next broker (their dump may be fresher / different
+                    # exchange coverage). If every broker misses it we exit the
+                    # loop and return empty bars.
+                    continue
+
+                # ── Historical bars fetch ──────────────────────────────
+                raw = await asyncio.to_thread(
+                    broker.historical_data, token, from_d, to_d, interval
+                ) or []
+
+            except Exception as e:
+                msg = str(e).lower()
+                if "too many requests" in msg:
+                    _mark_rate_limited(broker_key)
+                    logger.warning(
+                        f"options historical: {broker.account} rate-limited, "
+                        f"falling through to next eligible account"
+                    )
+                else:
+                    logger.warning(
+                        f"options historical: {broker.account} error for "
+                        f"{sym}: {str(e)[:160]}"
+                    )
+                continue  # try the next broker
+
+            # ── Success — build response and cache it ──────────────────
+            bars = [
+                HistoricalBar(
+                    ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
+                                      else b["date"].isoformat(),
+                    open=float(b.get("open") or 0),
+                    high=float(b.get("high") or 0),
+                    low=float(b.get("low") or 0),
+                    close=float(b.get("close") or 0),
+                    volume=int(b.get("volume") or 0),
+                )
+                for b in raw
+            ]
+            result = HistoricalResponse(symbol=sym, instrument_token=token,
+                                        interval=interval, bars=bars)
+            _ttl = _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY
+            with _HIST_CACHE_LOCK:
+                _HIST_CACHE[cache_key] = (_now + _ttl, result)
+            return result
+
+        # All brokers tried and none succeeded. If every broker missed the
+        # symbol (no token found on any) vs all errored, the outcome is
+        # the same — return graceful empty bars with a short-TTL cache so
+        # the next request retries quickly once cool-offs expire.
+        _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"
+        logger.info(
+            f"options historical: '{sym}' not found or all brokers failed "
+            f"(exchanges={_tried}, brokers tried={[b.account for b in brokers]})"
+        )
+        result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                    interval=interval, bars=[])
         with _HIST_CACHE_LOCK:
-            _HIST_CACHE[cache_key] = (_now + _ttl, result)
+            _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
         return result
 
     # ── Multi-leg strategy analytics (POST) ────────────────────────────

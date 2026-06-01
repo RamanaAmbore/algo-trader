@@ -32,8 +32,8 @@
   import Select   from '$lib/Select.svelte';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
-   *   source_ip:string|null,is_active:boolean,notes:string|null,
-   *   created_at:string,updated_at:string,loaded:boolean}>} */
+   *   source_ip:string|null,is_active:boolean,historical_data_enabled:boolean,
+   *   notes:string|null,created_at:string,updated_at:string,loaded:boolean}>} */
   let accounts = $state([]);
   let loading  = $state(true);
   let error    = $state('');
@@ -94,6 +94,10 @@
     return CREDENTIAL_SCHEMA[brokerId] || CREDENTIAL_SCHEMA.zerodha_kite;
   }
 
+  // Historical-data toggle — separate from the main `form` object so it
+  // doesn't participate in the broker_id-keyed credential reset logic.
+  let _formHistEnabled = $state(true);
+
   // Form state — reused for Create + Edit. Three modes:
   //   editing = ''     · idle (form hidden when accounts exist)
   //   editing = '__new__' · create mode (form visible, account input editable)
@@ -147,6 +151,7 @@
       priority: 100,
       extra_config_text: '{}',
     };
+    _formHistEnabled = true;
     error = ''; note = '';
   }
 
@@ -167,6 +172,8 @@
       priority:   typeof row.priority === 'number' ? row.priority : 100,
       extra_config_text: JSON.stringify(row.extra_config || {}, null, 2),
     };
+    // Default true for rows pre-dating the column (undefined → ON).
+    _formHistEnabled = row.historical_data_enabled !== false;
     error = ''; note = '';
   }
 
@@ -206,6 +213,7 @@
           client_id: form.client_id || '',
           source_ip: form.source_ip,
           is_active: form.is_active,
+          historical_data_enabled: _formHistEnabled,
           notes: form.notes,
           priority: Number(form.priority) || 100,
           extra_config: parsedExtra,
@@ -241,6 +249,7 @@
           access_token: form.access_token || '',
           source_ip:   form.source_ip,
           is_active:   form.is_active,
+          historical_data_enabled: _formHistEnabled,
           notes:       form.notes,
           priority:    Number(form.priority) || 100,
           extra_config: parsedExtra,
@@ -338,6 +347,7 @@
           <th>API key</th>
           <th>Source IP</th>
           <th>Status</th>
+          <th>Historical</th>
           <th>Notes</th>
           <th>Test</th>
           <th></th>
@@ -358,6 +368,13 @@
               {:else}
                 <span class="status-pill status-pending" title="row exists but Connections hasn't picked it up yet — will refresh on the next 15 s poll">…</span>
               {/if}
+            </td>
+            <td class="brokers-hist-cell">
+              <span class="brokers-hist-pill"
+                    class:hist-on={row.historical_data_enabled !== false}
+                    class:hist-off={row.historical_data_enabled === false}>
+                {row.historical_data_enabled === false ? 'OFF' : 'ON'}
+              </span>
             </td>
             <td class="notes" title={row.notes}>{row.notes || ''}</td>
             <td class="test-cell">
@@ -455,6 +472,17 @@
           <span>active</span>
         </label>
       </div>
+      <div class="bf-field bf-field-toggle">
+        <label class="field-label">Historical data</label>
+        <button type="button"
+                class="brokers-form-toggle"
+                class:active={_formHistEnabled}
+                aria-pressed={_formHistEnabled}
+                onclick={() => _formHistEnabled = !_formHistEnabled}>
+          {_formHistEnabled ? 'Enabled' : 'Disabled'}
+        </button>
+        <span class="bf-hint bf-hint-block">Eligible to serve /api/options/historical when others are rate-limited.</span>
+      </div>
       <div class="bf-field bf-field-wide">
         <label class="field-label" for="bf-extra">
           Advanced settings (JSON)
@@ -517,9 +545,10 @@
     font-size: 0.62rem;
     table-layout: auto;
   }
-  .brokers-table td:nth-child(5) { width: 1%; white-space: nowrap; }   /* status */
-  .brokers-table td:nth-child(7),
-  .brokers-table td:nth-child(8) { width: 1%; white-space: nowrap; }   /* test, actions */
+  .brokers-table td:nth-child(5),
+  .brokers-table td:nth-child(6) { width: 1%; white-space: nowrap; }   /* status, historical */
+  .brokers-table td:nth-child(8),
+  .brokers-table td:nth-child(9) { width: 1%; white-space: nowrap; }   /* test, actions */
   .brokers-table th {
     text-align: left;
     color: #7e97b8;
@@ -569,6 +598,42 @@
   .status-loaded   { color: #4ade80; background: rgba(74,222,128,0.10); }
   .status-pending  { color: #fbbf24; background: rgba(251,191,36,0.10); }
   .status-inactive { color: #7e97b8; background: rgba(126,151,184,0.10); }
+
+  .brokers-hist-cell { text-align: center; }
+  .brokers-hist-pill {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.55rem;
+    font-weight: 800;
+    font-family: monospace;
+    letter-spacing: 0.06em;
+  }
+  .brokers-hist-pill.hist-on  { background: rgba(34,211,238,0.18); border: 1px solid rgba(103,232,249,0.55); color: #22d3ee; }
+  .brokers-hist-pill.hist-off { background: rgba(126,151,184,0.10); border: 1px solid rgba(126,151,184,0.30); color: #7e97b8; }
+
+  .brokers-form-toggle {
+    padding: 0.25rem 0.6rem;
+    background: rgba(34,211,238,0.10);
+    border: 1px solid rgba(34,211,238,0.45);
+    border-radius: 3px;
+    color: #22d3ee;
+    font-family: monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .brokers-form-toggle:hover  { background: rgba(34,211,238,0.20); }
+  .brokers-form-toggle.active { background: rgba(34,211,238,0.25); color: #67e8f9; border-color: rgba(103,232,249,0.75); }
+  .brokers-form-toggle:not(.active) { color: #7e97b8; border-color: rgba(126,151,184,0.30); background: rgba(126,151,184,0.08); }
+
+  .bf-hint-block {
+    display: block;
+    margin-left: 0;
+    margin-top: 0.1rem;
+    line-height: 1.3;
+  }
 
   .test-result {
     font-family: monospace;

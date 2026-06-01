@@ -295,8 +295,8 @@ Operators add / edit / delete broker accounts via `/admin/brokers` instead of ed
 |---|---|
 | `GET /api/admin/brokers` | List metadata for every account (no secrets ever returned). Each row includes a `loaded` boolean — true when the account is in the live `Connections` map. |
 | `GET /api/admin/brokers/{account}` | Single-account metadata. |
-| `POST /api/admin/brokers` | Create (full body: `account, broker_id, api_key, api_secret, password, totp_token, source_ip?, is_active?, notes?`). |
-| `PATCH /api/admin/brokers/{account}` | Partial update. Empty / missing secret fields → "leave unchanged" so a partial form doesn't accidentally clear a TOTP seed the operator didn't intend to rotate. |
+| `POST /api/admin/brokers` | Create (full body: `account, broker_id, api_key, api_secret, password, totp_token, source_ip?, is_active?, notes?, historical_data_enabled?`). |
+| `PATCH /api/admin/brokers/{account}` | Partial update. Empty / missing secret fields → "leave unchanged" so a partial form doesn't accidentally clear a TOTP seed the operator didn't intend to rotate. Includes `historical_data_enabled` toggle. |
 | `DELETE /api/admin/brokers/{account}` | Remove the row. |
 | `POST /api/admin/brokers/{account}/test` | Reload Connections, then call `broker.profile()` to verify the credential pipeline. Reports the authenticated `user_name` on success or the broker error verbatim on failure. |
 
@@ -1370,6 +1370,14 @@ Live vs sim is **auto-detected** from `/api/simulator/status`. When a sim is act
 **Historical-bars endpoint is graceful** — `GET /api/options/historical?symbol=…` no longer 404s when the instrument isn't in the cached dump for the first exchange tried. When the caller passes an explicit `exchange` (e.g. `MCX` for commodity pins, `NSE` for underlying spot) the handler tries **only that exchange** — no fallback walk. When `exchange` is blank it walks NFO → BFO → NSE → BSE → MCX → CDS in sequence. Returns an empty `bars: []` (200 OK) when nothing matches, rather than bubbling a 4xx that crashes the page's chart panel. Same pattern when the broker is unreachable — empty bars instead of 502.
 
 **Historical OHLCV in-process cache** — results are cached in `_HIST_CACHE` (module-level dict in `backend/api/routes/options.py`) keyed by `(symbol, exchange_hint, days, interval)`. TTL is 60 s for non-empty bars and 10 s for empty bars (transient rate-limit failures). This means a refresh or reconnect storm can only hit Kite once per minute per symbol. The cache uses a `threading.Lock` (not asyncio.Lock) because the hot path runs in the async frame but the broker calls are offloaded to `asyncio.to_thread`; a sync lock is sufficient and safe on CPython.
+
+**Historical OHLCV multi-account fallback** — when a Kite account returns "Too many requests", the endpoint automatically tries the next eligible account rather than returning empty bars immediately. The mechanism:
+
+- `BrokerAccount.historical_data_enabled` (boolean, DB default `true`) controls per-account eligibility. Set to `false` via `/admin/brokers` to reserve a low-rate-limit account for order-flow only; it will be skipped entirely for historical calls.
+- `get_historical_brokers()` in `backend/shared/brokers/registry.py` returns the prioritised list of eligible, non-rate-limited accounts (same preference ordering as `get_price_broker()`: pinned price_account first, then sorted by `priority` ASC). Accounts in the existing 30-second rate-limit cool-off are excluded from the list at build time so no wasted network round-trips.
+- The handler iterates the list; on "too many requests" the account is marked rate-limited via `_mark_rate_limited` and the loop continues to the next one. On any other exception the account is skipped with a WARNING log and the loop continues.
+- An empty broker list (all accounts disabled or all in cool-off) returns graceful empty bars with a 10-second cache TTL so the next request re-evaluates quickly after cool-offs expire.
+- Cache HIT short-circuits the entire loop — a warm cache entry is returned before `get_historical_brokers()` is even called.
 
 **Strategy 500 traps** — two separate bugs caused 500s on the strategy endpoint and were fixed together:
 1. `parse_tradingsymbol("…FUT")` returns a dict without a `strike` key. `sorted_strikes = sorted({parse_tradingsymbol(l.symbol)["strike"] for ...})` crashed with KeyError when a futures leg was in the basket. Guarded with `(p := parse_tradingsymbol(l.symbol)) and "strike" in p`.

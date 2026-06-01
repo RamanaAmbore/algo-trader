@@ -50,6 +50,9 @@ class BrokerAccountInfo(msgspec.Struct):
     notes:      str | None
     priority:   int            # PriceBroker fallback order; lower = tried first
     extra_config: dict         # free-form per-broker tuning knobs
+    # When True, this account participates in the /api/options/historical
+    # fallback loop. False reserves the account for order-flow only.
+    historical_data_enabled: bool
     created_at: str
     updated_at: str
     # Status — populated by enrichment (whether the account is currently
@@ -81,6 +84,7 @@ class BrokerAccountCreate(msgspec.Struct):
     notes:       str | None = None
     priority:    int = 100
     extra_config: dict = msgspec.field(default_factory=dict)
+    historical_data_enabled: bool = True
 
 
 class BrokerAccountUpdate(msgspec.Struct):
@@ -100,6 +104,7 @@ class BrokerAccountUpdate(msgspec.Struct):
     notes:       Optional[str]  = None
     priority:    Optional[int]  = None
     extra_config: Optional[dict] = None
+    historical_data_enabled: Optional[bool] = None
 
 
 class TestResult(msgspec.Struct):
@@ -124,6 +129,7 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
         notes=row.notes,
         priority=int(getattr(row, "priority", 100) or 100),
         extra_config=getattr(row, "extra_config", None) or {},
+        historical_data_enabled=bool(getattr(row, "historical_data_enabled", True)),
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
         loaded=loaded,
@@ -207,6 +213,7 @@ class BrokersController(Controller):
                 notes=data.notes,
                 priority=int(data.priority) if data.priority is not None else 100,
                 extra_config=dict(data.extra_config or {}),
+                historical_data_enabled=bool(data.historical_data_enabled),
             )
             s.add(row)
             await s.commit()
@@ -237,6 +244,8 @@ class BrokersController(Controller):
             if data.notes     is not None:  row.notes     = data.notes
             if data.priority  is not None:  row.priority  = int(data.priority)
             if data.extra_config is not None: row.extra_config = dict(data.extra_config or {})
+            if data.historical_data_enabled is not None:
+                row.historical_data_enabled = bool(data.historical_data_enabled)
 
             # Secret fields — only update when the operator passed a
             # NON-EMPTY string. Empty / None means "leave unchanged" so

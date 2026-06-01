@@ -971,6 +971,11 @@ class Connections(SingletonBase):
         self._priority_map: dict[str, int] = {
             account: 100 for account in accts.keys()
         }
+        # historical_data_enabled — all YAML-seeded accounts default True
+        # (same as the DB column default). Overridden by rebuild_from_db.
+        self._hist_enabled_map: dict[str, bool] = {
+            account: True for account in accts.keys()
+        }
 
     async def rebuild_from_db(self) -> None:
         """
@@ -1147,11 +1152,20 @@ class Connections(SingletonBase):
             for r in rows
             if r.account in new_conn
         }
+        # historical_data_enabled — per-account eligibility gate for the
+        # /api/options/historical fallback loop. True by default so
+        # all accounts participate unless the operator opts one out.
+        new_hist_enabled_map: dict[str, bool] = {
+            r.account: bool(getattr(r, "historical_data_enabled", True))
+            for r in rows
+            if r.account in new_conn
+        }
 
         with Connections._init_lock:
             self.conn = new_conn
-            self._broker_id_map = new_broker_id_map
-            self._priority_map  = new_priority_map
+            self._broker_id_map     = new_broker_id_map
+            self._priority_map      = new_priority_map
+            self._hist_enabled_map  = new_hist_enabled_map
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
     async def _seed_db_from_yaml(self) -> int:
