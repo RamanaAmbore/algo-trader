@@ -500,11 +500,23 @@ def run_daily(
         loop = _asyncio.new_event_loop()
         _asyncio.set_event_loop(loop)
 
+    # Read retention from settings (default 30); operator can change live
+    # via /admin/settings → visitors.retention_days. 0 disables auto-purge.
+    try:
+        from backend.shared.helpers.settings import get_int as _get_int
+        retention_days = _get_int("visitors.retention_days", 30)
+    except Exception:
+        retention_days = 30
+
     try:
         loop.run_until_complete(_upsert_records(records, target_date, geo_map))
-        deleted = loop.run_until_complete(_purge_old_rows(today_utc, retention_days=30))
-        if deleted:
-            logger.info(f"visitor_report: purged {deleted} rows older than 30 days")
+        today_utc = datetime.now(timezone.utc).date()
+        if retention_days > 0:
+            deleted = loop.run_until_complete(_purge_old_rows(today_utc, retention_days=retention_days))
+            if deleted:
+                logger.info(f"visitor_report: purged {deleted} rows older than {retention_days} days")
+        else:
+            logger.info("visitor_report: retention=0, auto-purge disabled")
     except Exception as e:
         logger.error(f"visitor_report: DB operations failed: {e}")
 

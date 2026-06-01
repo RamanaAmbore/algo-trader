@@ -180,6 +180,19 @@ SEEDS: list[tuple] = [
      "band cleanup. 0 disables auto-purge.",
      "days", {"min": 0, "max": 365, "step": 1}),
 
+    # ── Visitor log — daily batch report ───────────────────────────────
+    ("visitors", "visitors.report_time_ist", "string", "23:35",
+     "Time of day (HH:MM, 24h, IST) when the daily visitor-log batch "
+     "task fires. Default 23:35 — five minutes after MCX closes (23:30) "
+     "so the day's commodity-session traffic is fully captured. Change "
+     "to e.g. '17:00' for an evening report or '03:30' for an overnight "
+     "run. Takes effect on the next scheduling cycle (within 24 hours).",
+     "HH:MM IST", None),
+    ("visitors", "visitors.retention_days", "int", 30,
+     "visitor_log rows older than this are purged by the daily task. "
+     "0 disables auto-purge.",
+     "days", {"min": 0, "max": 365, "step": 1}),
+
     # ── MCP / Lab — Phase 6 ──────────────────────────────────────────
     ("mcp", "mcp.audit_retention_days", "int", 90,
      "mcp_audit rows (every MCP-initiated mutation) older than this are "

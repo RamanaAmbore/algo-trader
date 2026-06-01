@@ -1248,16 +1248,33 @@ async def _task_visitor_log_daily() -> None:
     await _run_once()
 
     while True:
-        # Daily at 23:35 IST — five minutes after MCX closes (23:30 IST)
-        # so the day's commodity-session traffic is fully in the rear-view
-        # mirror before we summarise. Calendar boundary aligned to the
-        # trading day, not UTC.
+        # Daily at visitors.report_time_ist (default 23:35 IST — five min
+        # after MCX closes at 23:30 IST so the day's commodity-session
+        # traffic is fully captured). Re-read the setting on every
+        # iteration so live edits via /admin/settings take effect on the
+        # next scheduling cycle.
+        from backend.shared.helpers.settings import get_string
+        time_str = get_string("visitors.report_time_ist", "23:35")
+        try:
+            hh_s, mm_s = time_str.split(":", 1)
+            hh, mm = int(hh_s), int(mm_s)
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise ValueError(f"out-of-range: {time_str}")
+        except (ValueError, AttributeError) as parse_err:
+            logger.warning(
+                f"Background: visitor log report_time_ist={time_str!r} is "
+                f"invalid ({parse_err}); falling back to 23:35"
+            )
+            hh, mm = 23, 35
         now = timestamp_indian()
-        next_run = now.replace(hour=23, minute=35, second=0, microsecond=0)
+        next_run = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if now >= next_run:
             next_run += timedelta(days=1)
         sleep_s = (next_run - now).total_seconds()
-        logger.info(f"Background: visitor log task sleeping {sleep_s/3600:.1f}h until 23:35 IST")
+        logger.info(
+            f"Background: visitor log task sleeping {sleep_s/3600:.1f}h "
+            f"until {hh:02d}:{mm:02d} IST"
+        )
         await asyncio.sleep(sleep_s)
         await _run_once()
 
