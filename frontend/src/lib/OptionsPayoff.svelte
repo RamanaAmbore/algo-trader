@@ -171,12 +171,12 @@
 
   // ── Geometry ──────────────────────────────────────────────────────
   const W = 720;
-  // PAD_B widened from 28 → 40 so rotated σ labels (-30°) and the
-  // breakeven labels stacked beneath them have the vertical room they
-  // need without colliding with the chart legend.
+  // PAD_L widened to 36 to accommodate horizontal left-edge Y-axis labels.
+  // PAD_B trimmed back to 28 — rotated σ/price labels removed, horizontal
+  // price labels at the bottom need ~14 px clearance below the plot baseline.
   // Tight top padding — BE chips overlap the top edge (level 0 above,
   // level 1 just inside) so the chart's data area uses the space.
-  const PAD_L = 14, PAD_R = 12, PAD_T = 14, PAD_B = 40;
+  const PAD_L = 36, PAD_R = 12, PAD_T = 14, PAD_B = 28;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -282,7 +282,15 @@
   });
 
   import { untrack } from 'svelte';
-  import { priceFmt, aggFmt } from '$lib/format';
+  import { priceFmt, aggFmt, aggCompact } from '$lib/format';
+
+  // Compact axis label for the Y axis — e.g. "+50K", "0", "-10K".
+  // Keeps left-edge labels short enough to fit in PAD_L budget.
+  function _axisFmt(/** @type {number} */ v) {
+    if (v === 0) return '0';
+    const sign = v > 0 ? '+' : '';
+    return sign + aggCompact(v);
+  }
 
   // Profit + loss zones — shade above and below zero on the today curve
   // up to the chart bounds. Two filled paths whose top/bottom rides the
@@ -667,59 +675,38 @@
               stroke-dasharray={Math.abs(t.v) < 0.5 ? '' : '2 3'}/>
       {/each}
 
-      <!-- X-axis grid + labels — sigma marks at every 0.5σ across
-           ±spanSigmas. Whole-sigma ticks (±1σ, ±2σ, …) get a
-           stronger dashed line + brighter labels; half-sigma ticks
-           subdued. Each tick gets BOTH the σ label (rotated -30°
-           at the bottom axis) AND the actual spot price rendered
-           vertically (rotated -90°) along the dashed line itself
-           — so the operator can read either dimension at a glance
-           without leaving the chart. -->
+      <!-- X-axis grid — sigma tick lines at every 0.5σ across ±spanSigmas.
+           Whole-σ ticks get a stronger dash; half-σ ticks are subtler.
+           Text labels (formerly rotated −30° σ labels and −90° price
+           labels) are replaced by horizontal price labels at the bottom,
+           one per whole-σ tick only (skip half-σ to avoid clutter).
+           The center tick (0σ = spot) still draws its vertical via the
+           spot-line block below; skip it here to avoid overdrawing. -->
       {#each xTicks as xt}
         {@const wholeSigma = xt.sigma != null && xt.sigma % 1 === 0}
         {@const isCenter   = xt.sigma === 0}
         {#if !isCenter}
-          <!-- σ-tick verticals: dotted pattern so they read as
-               reference markers rather than structural lines.
-               whole-σ: "2 3" dot pattern, half-σ: "1 4" sparser. -->
+          <!-- σ-tick vertical: dotted grid line — reference marker,
+               not a structural axis. whole-σ: "2 3"; half-σ: "1 4". -->
           <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
                 stroke={wholeSigma ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.10)'}
                 stroke-width="1"
                 stroke-dasharray={wholeSigma ? '2 3' : '1 4'}/>
         {/if}
-        {#if !isCenter}
-          <!-- σ tick label at the bottom (rotated -30°). -->
-          {@const ly = height - PAD_B + 10}
-          <text x={xt.x} y={ly}
-                text-anchor="end"
-                transform="rotate(-30 {xt.x} {ly})"
-                fill={wholeSigma ? '#fbbf24' : '#c8d8f0'}
-                stroke="#152033"
-                stroke-width="3"
-                paint-order="stroke fill"
-                font-size={wholeSigma ? 12 : 11}
-                font-weight={wholeSigma ? 700 : 500}
-                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
-            {xt.label}
-          </text>
-          <!-- Vertical price label on the σ tick. Uniform across whole +
-               half σ. No comma grouping (chart-specific exception to the
-               app-wide priceFmt rule — the rotated label reads cleaner
-               as a contiguous digit run, separators add visual clutter
-               in a 5-digit vertical strip). -->
-          {@const vx = xt.x + 5}
-          {@const vy = height - PAD_B - 10}
-          <text x={vx} y={vy}
-                text-anchor="start"
-                transform="rotate(-90 {vx} {vy})"
+        {#if wholeSigma && !isCenter}
+          <!-- Horizontal price label at the bottom — one per whole-σ tick.
+               Rounded to integer, formatted with en-IN grouping so "22,000"
+               reads naturally (TradingView / IBKR / Sensibull convention).
+               No stroke / paint-order — labels sit below the plot baseline
+               on a clean background and don't overlap chart content. -->
+          <text x={xt.x} y={height - PAD_B + 14}
+                text-anchor="middle"
                 fill="#c8d8f0"
-                stroke="#152033"
-                stroke-width="4"
-                paint-order="stroke fill"
-                font-size="13"
+                font-size="11"
                 font-weight="600"
-                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
-            {Math.round(xt.s)}
+                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                style="font-variant-numeric: tabular-nums">
+            {Math.round(xt.s).toLocaleString('en-IN')}
           </text>
         {/if}
       {/each}
@@ -796,36 +783,25 @@
               stroke="#22d3ee" stroke-width="1" stroke-opacity="0.3"/>
       {/if}
 
-      <!-- Z-layer 9: Y-label chips on the spot vertical (O2).
-           Each non-zero P&L tick gets an opaque navy rect + label
-           centered at spotX. Skip the zero line (chart frame does it).
-           Drawn after curves so labels float on top. -->
-      {#if spot > sMin && spot < sMax}
-        {#each yTicks as t}
-          {#if Math.abs(t.v) > 0.5 && t.y > PAD_T + 28}
-            {@const label = fmtMoney(t.v)}
-            {@const chipW = Math.max(56, label.length * 6.5 + 12)}
-            {@const chipH = 14}
-            <rect
-              x={spotX - chipW / 2}
-              y={t.y - chipH / 2}
-              width={chipW}
-              height={chipH}
-              rx="2"
-              fill="#0f172a"
-              stroke="rgba(125,211,252,0.30)"
-              stroke-width="0.75"/>
-            <text x={spotX} y={t.y + 4}
-                  text-anchor="middle"
-                  fill="#c8d8f0"
-                  font-size="10" font-weight="600"
-                  font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-                  style="font-variant-numeric: tabular-nums">
-              {label}
-            </text>
-          {/if}
-        {/each}
-      {/if}
+      <!-- Y-axis labels — left-edge, horizontal. One label per yTicks
+           entry (including the zero row). No navy-rect chip or border;
+           labels sit just outside the plot area on a clean background.
+           text-anchor="end" anchors the right edge of each label to
+           PAD_L-6 so labels hug the plot frame without overlapping it.
+           Convention: TradingView / IBKR / Sensibull all use horizontal
+           left-edge P&L axis labels. -->
+      {#each yTicks as t}
+        {#if t.y > PAD_T + 8 && t.y < height - PAD_B - 8}
+          <text x={PAD_L - 6} y={t.y + 4}
+                text-anchor="end"
+                fill="#c8d8f0"
+                font-size="11" font-weight="600"
+                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                style="font-variant-numeric: tabular-nums">
+            {_axisFmt(t.v)}
+          </text>
+        {/if}
+      {/each}
 
       <!-- Z-layer 11: Spot price label — centered on the spot vertical,
            just inside the plot area top (O3: font-size 13; O4: y=PAD_T+14).
