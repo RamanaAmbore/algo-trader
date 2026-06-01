@@ -1426,34 +1426,29 @@
     return t ? [t] : [];
   });
 
-  // Effective collapse state per bucket — `true` when EITHER the
-  // operator collapsed the card OR the card has no rows to show.
-  // Auto-collapse on empty keeps the page tight: an empty Movers
-  // section (after-hours) or Holdings section (no account picked)
-  // doesn't take up vertical real estate. When data appears, the
-  // card auto-expands (unless the operator manually collapsed).
+  // Effective collapse state per bucket — operator-driven only.
+  // Earlier we auto-collapsed any empty bucket so the page stayed
+  // tight; on desktop that left a grid of mismatched card heights
+  // (some full-bodied, some header-only stubs) which read as broken
+  // before market open or with no account picked. Cards now stay at
+  // their full height with the empty-state message rendered inside
+  // the grid body — keeps the dashboard visually aligned regardless
+  // of data availability. The operator can still manually collapse.
   //
-  // Winners + Losers check the FULL pool (sum across all tabs) so
-  // switching tabs to an empty universe doesn't auto-collapse the
-  // whole card.
+  // Winner/loser counts kept for the per-tab badge in the card header.
   const _winnersTotal = $derived(
     winnerCounts.underlying + winnerCounts.large_cap
     + winnerCounts.midcap + winnerCounts.smallcap);
   const _losersTotal = $derived(
     loserCounts.underlying + loserCounts.large_cap
     + loserCounts.midcap + loserCounts.smallcap);
-  const _effColPinned    = $derived(_colPinned    || pinnedRows.length === 0);
-  const _effColWatch     = $derived(_colWatch     || _allWatchRows.length === 0);
-  // Merged card collapses only when BOTH feeds are empty (or the
-  // operator manually collapsed it). When one feed has data, the
-  // card stays expanded; topTab decides which grid the operator
-  // sees inside.
-  const _effColPinWatch  = $derived(
-    _colPinWatch || (pinnedRows.length === 0 && _allWatchRows.length === 0));
-  const _effColWinners   = $derived(_colWinners   || _winnersTotal === 0);
-  const _effColLosers    = $derived(_colLosers    || _losersTotal === 0);
-  const _effColPositions = $derived(_colPositions || positionsRows.length === 0);
-  const _effColHoldings  = $derived(_colHoldings  || holdingsRows.length === 0);
+  const _effColPinned    = $derived(_colPinned);
+  const _effColWatch     = $derived(_colWatch);
+  const _effColPinWatch  = $derived(_colPinWatch);
+  const _effColWinners   = $derived(_colWinners);
+  const _effColLosers    = $derived(_colLosers);
+  const _effColPositions = $derived(_colPositions);
+  const _effColHoldings  = $derived(_colHoldings);
 
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
