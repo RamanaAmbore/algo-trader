@@ -1286,7 +1286,13 @@ class OptionsController(Controller):
     @get("/historical")
     async def historical(self, symbol: str = "", days: int = 30,
                          interval: str = "day",
-                         exchange: str = "NFO") -> HistoricalResponse:
+                         exchange: str = "") -> HistoricalResponse:
+        # Default exchange "" (not "NFO") so when the caller doesn't
+        # pass an explicit hint the loop walks every supported arm
+        # (NFO → BFO → NSE → BSE → MCX → CDS). MCX commodities (GOLD,
+        # SILVER, CRUDEOIL) + CDS currencies (USDINR) need this — they
+        # never resolve on the NFO-only fast path and the operator saw
+        # the chart hang on "Loading..." until the 25s frontend timeout.
         """
         Daily / hourly / minute candles from Kite. `interval` ∈ {day,
         60minute, 30minute, 15minute, 5minute, minute}. Underlyings get
