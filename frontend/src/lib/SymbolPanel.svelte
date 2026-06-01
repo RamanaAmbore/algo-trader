@@ -19,7 +19,7 @@
   // symbol-keyed panel, tabs for the different actions on that
   // symbol, no hidden context menus.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime } from '$lib/stores';
@@ -164,6 +164,11 @@
   let _symbolSuggestions = $state(/** @type {any[]} */ ([]));
   let _symbolOpen = $state(false);
   let _symbolDebounce;
+  // HIGH 3: track the exchange of the last symbol the operator picked
+  // from the search dropdown. Used by _isEquityExch to gate the Chain
+  // tab when the panel opens without an `instrument` or `exchange` prop
+  // (e.g. PageHeaderActions passes neither).
+  let _pickedExchange = $state('');
   function _onSymbolInput(/** @type {string} */ v) {
     _symbolQuery = v;
     _symbolOpen = true;
@@ -177,6 +182,10 @@
   }
   function _pickSymbol(/** @type {any} */ inst) {
     _localSymbol = String(inst?.sym || inst?.tradingsymbol || _symbolQuery).toUpperCase();
+    // Capture exchange from the instrument row (field `e` in the search
+    // result shape) so _isEquityExch can correctly gate the Chain tab
+    // even when no exchange prop was supplied by the caller.
+    _pickedExchange = String(inst?.e || inst?.exchange || '').toUpperCase();
     _symbolQuery = '';
     _symbolOpen = false;
     _symbolSuggestions = [];
@@ -191,7 +200,13 @@
     (!_isDerivative) &&
     (
       (instrument?.kind === 'equity') ||
-      (['NSE', 'BSE'].includes(String(instrument?.exchange || exchange || '').toUpperCase()) && !_isDerivative)
+      // HIGH 3: include _pickedExchange so the Chain tab is correctly
+      // disabled when the operator picks a cash-equity (NSE/BSE) via
+      // the header search input and no instrument/exchange prop is set
+      // (the PageHeaderActions case).
+      (['NSE', 'BSE'].includes(
+        String(instrument?.exchange || exchange || _pickedExchange || '').toUpperCase()
+      ) && !_isDerivative)
     )
   );
   const chainDisabled = $derived(_isEquityExch && !_isDerivative);
@@ -283,7 +298,11 @@
   // Re-sync from the prop when the caller updates it externally (e.g.
   // when /admin/options opens the modal with a new default after the
   // operator picks a different position).
-  $effect(() => { _sharedAccount = account || _sharedAccount; });
+  // CLEAN 3: only overwrite when the prop carries a real value — if the
+  // caller passes account='' we should not reset the operator's in-modal
+  // pick back to empty. `untrack` prevents the _sharedAccount read from
+  // registering as a dependency and causing a re-sync cycle.
+  $effect(() => { if (account) untrack(() => { _sharedAccount = account; }); });
   function _onAccountChange(/** @type {string} */ a) {
     _sharedAccount = a;
   }
@@ -450,7 +469,11 @@
     return out || '—';
   }
 
-  // Close on Escape + always-on order-data poll (bottom panel is always visible).
+  // Close on Escape + conditional order-data poll.
+  // CRIT 2: when hideBottomPanel=true (PageHeaderActions case) the order
+  // history section is never rendered — skip both the initial load and the
+  // 3-second interval to avoid firing two API calls per tick for the full
+  // modal lifetime.
   onMount(() => {
     const onKey = (/** @type {KeyboardEvent} */ e) => {
       if (e.key === 'Escape') {
@@ -459,12 +482,24 @@
       }
     };
     window.addEventListener('keydown', onKey);
-    _loadOrdersData();
-    _ordersPoll = setInterval(_loadOrdersData, 3000);
+    if (!hideBottomPanel) {
+      _loadOrdersData();
+      _ordersPoll = setInterval(_loadOrdersData, 3000);
+    }
+    // HIGH 1: prevent background page scroll while the modal is open.
+    // Only applies in overlay mode (not inline) — inline renders as a
+    // flat page element so scroll should remain enabled.
+    const wasInline = inline;
+    if (!wasInline) {
+      document.body.style.overflow = 'hidden';
+    }
     return () => {
       window.removeEventListener('keydown', onKey);
       if (_ordersPoll) { clearInterval(_ordersPoll); _ordersPoll = undefined; }
       if (_wlToastTimer) { clearTimeout(_wlToastTimer); _wlToastTimer = null; }
+      if (!wasInline) {
+        document.body.style.overflow = '';
+      }
     };
   });
 
@@ -667,6 +702,7 @@
             actionsHidden={actionsHidden}
             triggerSubmit={triggerSubmit}
             triggerBasket={triggerBasket}
+            hostManagesEsc={true}
             {onSubmit}
             {onClose} />
         </div>
@@ -911,13 +947,6 @@
     padding: 0.7rem 1rem 0.5rem;
     border-bottom: 1px solid rgba(251,191,36,0.15);
     flex-shrink: 0;
-  }
-  .oes-title {
-    font-size: 0.85rem;
-    font-weight: 800;
-    color: #fbbf24;
-    letter-spacing: 0.04em;
-    font-family: ui-monospace, monospace;
   }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new

@@ -10,9 +10,25 @@
    * AgentToast (auto-fire toast) is a separate concern and is NOT replaced here.
    */
 
+  import { getContext } from 'svelte';
+  import { executionMode } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+
+  // HIGH 2: derive the set of mode pills the order ticket should show.
+  // Restricts LIVE to authenticated prod sessions where the master toggle
+  // is already set to LIVE — everywhere else the ticket shows draft+paper only.
+  const _algoStatus = getContext('algoStatus');
+  const _effectiveModes = $derived.by(() => {
+    const ctx = _algoStatus;
+    if (!ctx) return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
+    if (ctx.isDemo) return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
+    if (ctx.branch !== 'main') return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
+    // On prod: surface LIVE only when the master execution mode is already live.
+    if ($executionMode === 'live') return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper', 'live']);
+    return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
+  });
 
   let {
     /** Default symbol to pre-fill the Order + Chart modals.
@@ -109,7 +125,7 @@
     accounts={[]}
     account=""
     defaultMode="paper"
-    availableModes={['draft', 'paper', 'live']}
+    availableModes={_effectiveModes}
     showChartButton={false}
     hideBottomPanel={true}
     onClose={() => { _orderOpen = false; }}

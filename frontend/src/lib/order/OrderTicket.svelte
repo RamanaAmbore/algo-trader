@@ -24,7 +24,7 @@
   // page's drafts array, the strategy state, the broker. Every
   // outcome routes through onSubmit(payload).
 
-  import { onMount, untrack } from 'svelte';
+  import { onMount, untrack, getContext } from 'svelte';
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
@@ -32,6 +32,11 @@
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
   import { getInstrument } from '$lib/data/instruments';
+
+  // Demo-mode detection — used to suppress margin preflight (403) and
+  // account self-fetch (401) for anonymous prod visitors.
+  const _algoStatus = getContext('algoStatus');
+  const _isDemo = $derived(_algoStatus?.isDemo ?? false);
 
   /** @type {{
    *   symbol:    string,
@@ -60,6 +65,7 @@
    *   triggerSubmit?: number,
    *   triggerBasket?: number,
    *   onAccountChange?: (account: string) => void,
+   *   hostManagesEsc?: boolean,
    * }} */
   let {
     symbol,
@@ -132,6 +138,11 @@
     // here observes the delta and dispatches.
     triggerSubmit = 0,
     triggerBasket = 0,
+    // When true, OrderTicket skips its own Escape keydown listener.
+    // SymbolPanel already attaches a window-level Esc → onClose handler;
+    // without this gate both fire when the ticket is embedded inside the
+    // panel, producing a latent double-close race.
+    hostManagesEsc = false,
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -557,10 +568,12 @@
       clearTimeout(_marginTimer);
       _marginTimer = null;
     }
+    // CRIT 3: demo sessions get a 403 from /api/orders/preflight — skip
+    // the preview entirely so the modal doesn't spam error entries.
     // Skip when the ticket is incomplete — no point hitting Kite with
     // a half-typed form. Also skip drafts (no broker; cost is the limit
     // × qty multiplication which the operator can already see).
-    if (!_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
+    if (_isDemo || !_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
       _marginPreview = null;
       _marginLoading = false;
       return;
@@ -725,6 +738,10 @@
     }
   }
 
+  // Cleanup handle for the conditional Esc listener (CRIT 1).
+  /** @type {(() => void) | null} */
+  let _escCleanup = null;
+
   // Esc to close + backstop /api/accounts/ self-fetch. Runs when
   // the caller didn't supply real accounts (the chain picker pre-
   // /accounts/ load, the per-row buttons before the page poll
@@ -733,10 +750,16 @@
   // real account_ids for any signed-in operator. 401 / 403 leaves
   // _selfAccounts empty and the picker collapses gracefully.
   onMount(() => {
-    const onKey = (/** @type {KeyboardEvent} */ e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
+    // CRIT 1: skip Esc listener when the host (SymbolPanel) already
+    // handles it — prevents a double-close race when the ticket is
+    // embedded inside a panel that has its own window keydown handler.
+    if (!hostManagesEsc) {
+      const onKey = (/** @type {KeyboardEvent} */ e) => {
+        if (e.key === 'Escape') onClose();
+      };
+      window.addEventListener('keydown', onKey);
+      _escCleanup = () => window.removeEventListener('keydown', onKey);
+    }
 
     // Lot-size auto-fill from instruments cache when the caller
     // didn't supply lotSize (= 0). Equity keeps qty=1 raw; F&O
@@ -752,8 +775,9 @@
         _lots = Math.max(1, qty > 0 ? Math.round(qty / ls) : 1);
       }
     }
+    // HIGH 4: skip account self-fetch for demo sessions (would 401-spam).
     const propRealCount = (accounts || []).filter(_isRealAcct).length;
-    if (!propRealCount) {
+    if (!propRealCount && !_isDemo) {
       fetchAccounts()
         .then(/** @param {any} r */ (r) => {
           const list = (r?.accounts || [])
@@ -774,7 +798,7 @@
         );
       })
       .catch(() => { /* silent — pill stays hidden */ });
-    return () => window.removeEventListener('keydown', onKey);
+    return () => _escCleanup?.();
   });
 </script>
 
