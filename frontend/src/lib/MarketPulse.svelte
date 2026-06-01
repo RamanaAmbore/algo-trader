@@ -3478,8 +3478,7 @@
     closeContextMenu();
     const sym = String(row.tradingsymbol || '').trim();
     if (!sym) return;
-    _chartModalSym  = sym;
-    _chartModalExch = String(row.exchange || '').trim();
+    _openChartModal(sym, String(row.exchange || '').trim());
   }
 
   async function ctxRemoveWatch(row) {
@@ -3528,15 +3527,26 @@
   // TABS; opening with defaultTab:'chart' produced a blank modal body).
   let _chartModalSym  = $state('');
   let _chartModalExch = $state('');
+  // Modal open flag — separate from the symbol so {#if} reactivity
+  // depends on a boolean, not the same string the modal also reads as
+  // its `symbol` prop. Closing the modal sets _chartModalOpen=false
+  // synchronously, then clears the symbol/exchange after a microtask
+  // so the unmount path doesn't see a transient empty-string symbol.
+  let _chartModalOpen = $state(false);
+  function _openChartModal(/** @type {string} */ sym, /** @type {string} */ exch) {
+    _chartModalSym  = String(sym  || '');
+    _chartModalExch = String(exch || '');
+    _chartModalOpen = true;
+  }
   function _closeChartModal() {
     if (typeof window !== 'undefined') {
       window.__mpClose_calls = (window.__mpClose_calls || 0) + 1;
       window.__mpClose_before = _chartModalSym;
     }
-    _chartModalSym = '';
-    _chartModalExch = '';
+    _chartModalOpen = false;
+    queueMicrotask(() => { _chartModalSym = ''; _chartModalExch = ''; });
     if (typeof window !== 'undefined') {
-      window.__mpClose_after = _chartModalSym;
+      window.__mpClose_after = '<scheduled>';
     }
   }
 
@@ -3956,7 +3966,7 @@
   <ActivityLogModal onClose={() => { _activityLogOpen = false; }} />
 {/if}
 
-{#if _chartModalSym}
+{#if _chartModalOpen}
   <ChartModal
     symbol={_chartModalSym}
     exchange={_chartModalExch}
