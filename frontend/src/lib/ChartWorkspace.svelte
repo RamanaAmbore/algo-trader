@@ -223,7 +223,15 @@
     try { fut = findNearestFuture(root); } catch (_) {}
     if (!fut?.s) {
       try {
-        await loadInstruments();
+        // 3-second timeout on the instruments load so a stalled IndexedDB
+        // hydration doesn't keep _loadHistorical in a pre-race hang
+        // (the 25s race timeout only starts AFTER this resolver returns).
+        await Promise.race([
+          loadInstruments(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('inst-timeout')), 3000)
+          ),
+        ]);
         fut = findNearestFuture(root);
       } catch (_) { /* still no instruments — fall through to literal */ }
     }

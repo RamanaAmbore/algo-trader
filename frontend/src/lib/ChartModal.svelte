@@ -23,7 +23,14 @@
   }
 
   function _onKey(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') { onClose(); return; }
+    if (e.key === 'Escape') {
+      // stopImmediatePropagation prevents the parent SymbolPanel's
+      // capture-phase listener from also firing and closing it when
+      // ChartModal is the top-of-stack modal.
+      e.stopImmediatePropagation();
+      onClose();
+      return;
+    }
     if (e.key === 'Tab') {
       const els = Array.from(_focusables());
       if (!els.length) return;
@@ -37,7 +44,10 @@
   }
 
   onMount(() => {
-    window.addEventListener('keydown', _onKey);
+    // capture: true — ChartModal runs before SymbolPanel's bubble-phase
+    // listener. Combined with stopImmediatePropagation on Esc, only
+    // ChartModal closes when the operator presses Esc (SymbolPanel stays).
+    window.addEventListener('keydown', _onKey, { capture: true });
     // Defer focus until portal has re-parented the DOM node.
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
     // Body scroll-lock removed — the modal lets the page underneath
@@ -45,7 +55,7 @@
     // chart load doesn't freeze the rest of the screen.
   });
   onDestroy(() => {
-    window.removeEventListener('keydown', _onKey);
+    window.removeEventListener('keydown', _onKey, { capture: true });
   });
 </script>
 

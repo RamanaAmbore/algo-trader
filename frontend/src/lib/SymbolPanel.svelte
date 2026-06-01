@@ -593,7 +593,7 @@
      role={inline ? undefined : 'dialog'}
      aria-modal={inline ? undefined : 'true'}
      aria-label={inline ? undefined : (symbol || 'Symbol panel')}
-     onclick={inline ? undefined : onClose}
+     onclick={inline ? undefined : (_chartModalOpen ? undefined : onClose)}
      use:portal={!inline}>
   <div class="oes-modal" class:oes-modal-inline={inline}
        role="document"
