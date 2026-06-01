@@ -33,9 +33,10 @@
   // render the strip itself in the bucket-header (Phase A of the
   // orders-page redesign). Keep these in sync. Chart tab removed —
   // chart now lives in ChartModal (icon button next to symbol picker).
+  // Chain first — basket builder is the most-used surface per operator.
   const TABS = /** @type {const} */ ([
-    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
   ]);
 
@@ -71,10 +72,9 @@
 
   // Page-level shared state for the Order Entry shell.
   let _entryAccount = $state('');
-  // Default to 'ticket' — most common write action on the orders page.
-  // 'command' was the previous default; ticket is the Bloomberg / Kite
-  // convention (lands on the Buy/Sell form).
-  let _entryActiveTab = $state(/** @type {'command'|'ticket'|'chain'} */ ('ticket'));
+  // Default to 'chain' — basket-building option chain is the most-used
+  // surface per operator. Ticket / Command are one click away.
+  let _entryActiveTab = $state(/** @type {'chain'|'ticket'|'command'} */ ('chain'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
 
   // Page-level chart modal state — opened by the chart-icon button next

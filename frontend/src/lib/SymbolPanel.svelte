@@ -65,7 +65,7 @@
    *   showChartButton?: boolean,
    * }} */
   let {
-    defaultTab     = /** @type {'command'|'ticket'|'chain'} */ ('ticket'),
+    defaultTab     = /** @type {'chain'|'ticket'|'command'} */ ('chain'),
     symbol         = '',
     exchange       = '',
     instrument     = /** @type {{kind?:string,exchange?:string}} */ ({}),
@@ -198,8 +198,8 @@
 
   // Resolve initial tab — fall through chain → ticket when equity.
   function _resolveInitialTab() {
-    const req = defaultTab || 'ticket';
-    if (req === 'chain' && chainDisabled) return 'ticket';
+    const req = defaultTab || 'chain';
+    if (req === 'chain' && chainDisabled) return 'ticket';   // fall through for cash equity
     return req;
   }
   // If the host wired `activeTab` we mirror it; otherwise own the
@@ -471,11 +471,14 @@
   // Tab order — Ticket first (most common trade action), Chain
   // (specialised F&O), Command (power-user). Chart moved to
   // ChartModal (header icon button) and /charts page.
+  // Chain first — basket builder is the most-used surface per operator,
+  // it lands the operator straight on the strike/expiry chooser; Ticket
+  // is the single-leg fast path; Command is the power-user terminal.
   const TABS = /** @type {const} */ ([
-    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24',
-      activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80',
       activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24',
+      activeBg: 'rgba(251,191,36,0.14)' },
     { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc',
       activeBg: 'rgba(125,211,252,0.14)' },
   ]);

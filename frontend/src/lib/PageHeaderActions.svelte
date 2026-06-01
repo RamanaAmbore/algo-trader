@@ -105,7 +105,7 @@
   <SymbolPanel
     symbol={String(symbol || '').toUpperCase()}
     exchange={String(exchange || '')}
-    defaultTab="ticket"
+    defaultTab="chain"
     accounts={[]}
     account=""
     defaultMode="paper"
