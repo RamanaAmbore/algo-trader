@@ -232,6 +232,23 @@
       _bars = [];
     } finally {
       _histLoading = false;
+      // Force a dimension re-measure after load. The ResizeObserver may
+      // have fired while the modal/portal was still laying out (container
+      // at zero width), leaving _chartW/_chartH stale and all SVG paths
+      // computed against a degenerate viewBox. One rAF after the bars
+      // land ensures the container has its final CSS dimensions.
+      requestAnimationFrame(() => {
+        const el = _chartContainerEl;
+        if (el) {
+          const r = el.getBoundingClientRect();
+          const w = Math.max(360, Math.round(r.width));
+          const h = Math.max(200, Math.round(r.height));
+          if (w !== _chartW || h !== _chartH) {
+            _chartW = w;
+            _chartH = h;
+          }
+        }
+      });
     }
   }
 
@@ -345,6 +362,16 @@
   let pan  = $state(null);
 
   const _barXs    = $derived(_bars.map(b => Date.parse(b.ts)).filter(Number.isFinite));
+
+  // Defensive: if bars arrived but every timestamp failed to parse,
+  // surface an error instead of rendering a blank chart silently.
+  $effect(() => {
+    if (_bars.length > 0 && _barXs.length === 0) {
+      console.warn('[ChartWorkspace] bars present but timestamps unparseable — sample:', _bars[0]?.ts);
+      _histError = 'Timestamps unparseable.';
+    }
+  });
+
   const _dataXMin = $derived(_barXs.length ? Math.min(..._barXs) : 0);
   const _dataXMax = $derived(_barXs.length ? Math.max(..._barXs) : 1);
   const _xMin     = $derived(zoom ? zoom.xMin : _dataXMin);

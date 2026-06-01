@@ -135,7 +135,7 @@
   }
 
   .cm-body {
-    overflow-y: auto;
+    overflow: hidden;
     flex: 1 1 0;
     min-height: 0;
   }
