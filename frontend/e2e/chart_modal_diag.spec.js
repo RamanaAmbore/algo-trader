@@ -139,7 +139,11 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
 
     log.timeline.push('navigate to /pulse');
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(6000);
+    // Longer wait + retry pattern — Pinned grid populates after sparkline
+    // warm + watchlist fetch + ag-grid mount, each is async.
+    for (let i = 0; i < 6 && (await page.locator('.ag-row').filter({ hasText: 'NIFTY' }).count()) === 0; i++) {
+      await page.waitForTimeout(2500);
+    }
 
     // Verify we're on PINNED tab
     const pinnedTab = page.locator('button:has-text("PINNED"), [class*="toptab"]:has-text("PINNED")').first();
@@ -252,14 +256,19 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
       log.timeline.push(`elementFromPoint(X-center): ${JSON.stringify(topmost)}`);
     }
 
-    // CONTROL: try Esc first (window.addEventListener path — should close
-    // independent of any DOM-delegation concerns). If Esc fails too, the
-    // bug is in onClose state propagation. If Esc succeeds, bug is X-only.
+    // CONTROL: try Esc first
     log.timeline.push('CONTROL: pressing Esc');
     await page.keyboard.press('Escape');
     await page.waitForTimeout(900);
     const afterEsc = await modal.count();
     log.timeline.push(`After Esc — modal count: ${afterEsc}`);
+    // Read telemetry from window
+    const telemetry1 = await page.evaluate(() => ({
+      cmCloseCalls: window.__cmClose_calls || 0,
+      lastSource: window.__cmClose_lastSource || null,
+      onCloseType: window.__cmClose_onCloseType || null,
+    }));
+    log.timeline.push(`Telemetry after Esc: ${JSON.stringify(telemetry1)}`);
     if (afterEsc === 0) {
       log.timeline.push('✓ Esc closed the modal — onClose plumbing works');
       // Re-open modal to test X
@@ -283,6 +292,12 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
     await page.waitForTimeout(900);
     const afterStdClick = await modal.count();
     log.timeline.push(`After standard .click() — modal count: ${afterStdClick}`);
+    const telemetry2 = await page.evaluate(() => ({
+      cmCloseCalls: window.__cmClose_calls || 0,
+      lastSource: window.__cmClose_lastSource || null,
+      onCloseType: window.__cmClose_onCloseType || null,
+    }));
+    log.timeline.push(`Telemetry after X click: ${JSON.stringify(telemetry2)}`);
 
     if (afterStdClick > 0) {
       // Walk parent chain to find where portal put the modal + look for Svelte 5
