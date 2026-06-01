@@ -1,0 +1,262 @@
+"""
+TickerManager — single WebSocket connection per Kite account that
+streams live LTP ticks into an in-memory map. Read by
+/api/quotes/sparkline and any future endpoint that needs tick freshness
+without polling broker.ltp() on every request.
+
+Threading model
+---------------
+KiteTicker.connect(threaded=True) spawns Twisted's reactor in a daemon
+thread. All KiteTicker callbacks (_on_connect, _on_ticks, _on_close,
+_on_error, _on_reconnect) fire on that reactor thread. Writes to
+_tick_map and _subscribed are guarded by a threading.Lock. Reads from
+asyncio handlers go through get_ltp() / get_ltp_batch() which take the
+lock briefly — no async deadlock risk because the lock is non-reentrant
+and the hold time is O(1) dict-read/write.
+
+Lifecycle
+---------
+  start(api_key, access_token)
+      Instantiate KiteTicker, register callbacks, call
+      kws.connect(threaded=True). Idempotent — subsequent calls are
+      no-ops.
+
+  subscribe(tokens)
+      Add instrument tokens to the live subscription. If the socket is
+      already connected, subscribes immediately and sets MODE_LTP.
+      If called before on_connect fires, queues tokens in _pending so
+      the on_connect handler flushes them.
+
+  get_ltp(token) → float | None
+      Return the latest streamed last_price for a single token, or None
+      when the token has never been seen (ticker not connected, not yet
+      subscribed, or market closed).
+
+  get_ltp_batch(tokens) → dict[int, float]
+      Same for a collection; silently omits missing tokens so callers
+      never receive None values in the result dict.
+
+  status() → dict
+      Snapshot for /api/admin/health: started, connected,
+      subscribed_count, ticks_held.
+
+  stop()
+      Graceful close. Called from app on_shutdown.
+
+IPv6 note
+---------
+KiteTicker uses Twisted's WebSocket transport, NOT requests/urllib3, so
+the _IPv6SourceAdapter from connections.py does not apply. On the server
+each Kite account has a specific whitelisted IPv6. If the ticker socket
+fails with "Insufficient permission" in production, we would need to
+bind the Twisted TCP factory's source address — but that requires
+monkey-patching Twisted's endpoint creation, which is non-trivial.
+
+For Phase 1 we defer that concern: if the WebSocket cannot connect due
+to IP restrictions, get_ltp() returns None and the sparkline endpoint
+falls back to broker.ltp() transparently. The design is safe to deploy
+now and the deeper Twisted patch can follow if the connectivity issue
+actually manifests on prod.
+"""
+
+from __future__ import annotations
+
+import threading
+from typing import Iterable
+
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class TickerManager:
+    """
+    Singleton-safe wrapper around KiteTicker. Owns the WebSocket
+    lifecycle and exposes a lock-guarded in-memory tick map that
+    asyncio route handlers can read without blocking the event loop.
+    """
+
+    def __init__(self) -> None:
+        self._kws = None                          # KiteTicker instance
+        self._tick_map: dict[int, float] = {}     # token → last_price
+        self._lock = threading.Lock()
+        self._subscribed: set[int] = set()        # tokens live on the socket
+        self._pending: set[int] = set()           # tokens queued pre-connect
+        self._connected: bool = False
+        self._started: bool = False
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def start(self, api_key: str, access_token: str) -> None:
+        """
+        Connect to wss://ws.kite.trade for the given Kite credentials.
+
+        Idempotent — if already started (even after a reconnect cycle)
+        this is a no-op. The Twisted reactor's built-in reconnect logic
+        handles drops; we only ever call connect() once.
+        """
+        if self._started:
+            return
+        self._started = True
+        try:
+            from kiteconnect import KiteTicker
+            self._kws = KiteTicker(api_key, access_token)
+            self._kws.on_connect   = self._on_connect
+            self._kws.on_ticks     = self._on_ticks
+            self._kws.on_close     = self._on_close
+            self._kws.on_error     = self._on_error
+            self._kws.on_reconnect = self._on_reconnect
+            # threaded=True runs Twisted's reactor in a daemon thread so
+            # the asyncio event loop is never blocked.
+            self._kws.connect(threaded=True)
+            logger.info("KiteTicker: connect() initiated (threaded)")
+        except Exception:
+            logger.exception("KiteTicker: connect() failed — ticker disabled")
+            self._started = False
+
+    def subscribe(self, tokens: Iterable[int]) -> None:
+        """
+        Register instrument tokens for MODE_LTP streaming.
+
+        Tokens already subscribed are skipped (idempotent). New tokens
+        are either sent to the live socket immediately (when connected)
+        or queued in _pending for the on_connect flush.
+        """
+        new = {int(t) for t in tokens} - self._subscribed
+        if not new:
+            return
+        with self._lock:
+            if self._connected and self._kws is not None:
+                try:
+                    token_list = list(new)
+                    self._kws.subscribe(token_list)
+                    self._kws.set_mode(self._kws.MODE_LTP, token_list)
+                    self._subscribed |= new
+                    logger.info(
+                        f"KiteTicker: subscribed +{len(new)} tokens "
+                        f"(total={len(self._subscribed)})"
+                    )
+                except Exception:
+                    logger.exception("KiteTicker: subscribe() failed")
+            else:
+                self._pending |= new
+
+    def unsubscribe(self, tokens: Iterable[int]) -> None:
+        """Remove tokens from the live subscription."""
+        drop = {int(t) for t in tokens} & self._subscribed
+        if not drop:
+            return
+        with self._lock:
+            if self._connected and self._kws is not None:
+                try:
+                    self._kws.unsubscribe(list(drop))
+                    self._subscribed -= drop
+                except Exception:
+                    logger.exception("KiteTicker: unsubscribe() failed")
+
+    def get_ltp(self, token: int) -> float | None:
+        """
+        Return the latest streamed last_price for one token, or None
+        when the token has not yet been seen (not subscribed, or market
+        closed, or ticker not connected).
+        """
+        with self._lock:
+            return self._tick_map.get(int(token))
+
+    def get_ltp_batch(self, tokens: Iterable[int]) -> dict[int, float]:
+        """
+        Return {token: ltp} for each token that has a live tick.
+        Missing tokens are omitted silently — callers must handle that
+        by falling back to broker.ltp().
+        """
+        with self._lock:
+            return {int(t): self._tick_map[int(t)]
+                    for t in tokens if int(t) in self._tick_map}
+
+    def status(self) -> dict:
+        """
+        Snapshot for /api/admin/health — non-blocking, always returns.
+        """
+        with self._lock:
+            return {
+                "started":          self._started,
+                "connected":        self._connected,
+                "subscribed_count": len(self._subscribed),
+                "ticks_held":       len(self._tick_map),
+            }
+
+    def stop(self) -> None:
+        """Graceful shutdown — called from app on_shutdown."""
+        if self._kws is not None:
+            try:
+                self._kws.close()
+            except Exception:
+                pass
+        self._started   = False
+        self._connected = False
+        logger.info("KiteTicker: stopped")
+
+    # ── Callbacks (fire on the Twisted reactor thread) ────────────────────
+
+    def _on_connect(self, ws, _response) -> None:
+        with self._lock:
+            self._connected = True
+            pending = set(self._pending)
+            self._pending.clear()
+
+        logger.info(
+            f"KiteTicker: connected — flushing {len(pending)} pending "
+            f"subscription(s)"
+        )
+        if pending:
+            try:
+                token_list = list(pending)
+                ws.subscribe(token_list)
+                ws.set_mode(ws.MODE_LTP, token_list)
+                with self._lock:
+                    self._subscribed |= pending
+                logger.info(
+                    f"KiteTicker: flushed {len(pending)} pending tokens "
+                    f"(total={len(self._subscribed)})"
+                )
+            except Exception:
+                logger.exception("KiteTicker: pending flush failed")
+
+    def _on_ticks(self, _ws, ticks) -> None:
+        """
+        Hot path — fires on every WebSocket tick frame.
+
+        Merges the incoming last_price values into _tick_map under the
+        lock. The lock hold-time is proportional to len(ticks), which
+        for MODE_LTP frames is a flat list of {instrument_token,
+        last_price} dicts — typically 20-200 entries per frame at
+        5 req/sec cadence. This is fast enough to never back-pressure
+        the Twisted reactor.
+        """
+        with self._lock:
+            for t in ticks:
+                tok = t.get("instrument_token")
+                lp  = t.get("last_price")
+                if tok is not None and lp is not None:
+                    self._tick_map[int(tok)] = float(lp)
+
+    def _on_close(self, _ws, code, reason) -> None:
+        with self._lock:
+            self._connected = False
+        logger.warning(f"KiteTicker: closed — code={code} reason={reason!r}")
+
+    def _on_error(self, _ws, code, reason) -> None:
+        logger.error(f"KiteTicker: error — code={code} reason={reason!r}")
+
+    def _on_reconnect(self, _ws, attempts_count) -> None:
+        logger.warning(f"KiteTicker: reconnecting — attempt {attempts_count}")
+
+
+# ── Module-level singleton ────────────────────────────────────────────────────
+
+_ticker = TickerManager()
+
+
+def get_ticker() -> TickerManager:
+    """Return the process-wide TickerManager singleton."""
+    return _ticker

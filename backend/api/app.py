@@ -222,6 +222,90 @@ async def _rebuild_broker_connections() -> None:
         logger.warning(f"broker rebuild_from_db failed (sticking with YAML view): {e}")
 
 
+async def _start_kite_ticker() -> None:
+    """
+    Start the KiteTicker WebSocket for the sparkline-broker account.
+
+    Must run after _rebuild_broker_connections() so the Connections
+    singleton holds a valid access_token. Uses the sparkline-dedicated
+    account (get_sparkline_broker()) to avoid contending with the
+    chart-historical 3 req/sec budget.
+
+    Resolution of api_key + access_token:
+      get_sparkline_broker() returns a PriceBroker wrapper whose
+      _brokers[0] is a KiteBroker adapter. KiteBroker wraps a
+      KiteConnection which exposes .api_key and .get_access_token().
+      We walk the PriceBroker._brokers list to find the first Kite
+      account that has a live access_token.
+
+    Deferred gracefully if:
+      - No broker accounts are configured.
+      - The sparkline broker's access_token is None (not yet
+        authenticated — token restore from disk may still be in progress,
+        or the account hasn't logged in yet). The sparkline endpoint
+        falls back to broker.ltp() via TickerManager.get_ltp() → None
+        until the ticker eventually connects (e.g. after the first
+        background performance tick logs in).
+    """
+    try:
+        from backend.shared.brokers.registry import get_sparkline_broker
+        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.shared.helpers.connections import Connections
+        from backend.shared.brokers.kite import KiteBroker
+
+        spark_broker = get_sparkline_broker()
+        # PriceBroker wraps a list of underlying Broker adapters. Walk
+        # them to find the first KiteBroker whose KiteConnection has a
+        # live access_token. Non-Kite adapters (Dhan, Groww) don't
+        # support KiteTicker and are skipped silently.
+        brokers = getattr(spark_broker, "_brokers", [spark_broker])
+
+        api_key: str | None = None
+        access_token: str | None = None
+
+        for broker in brokers:
+            if not isinstance(broker, KiteBroker):
+                continue
+            conn = getattr(broker, "_conn", None)
+            if conn is None:
+                # KiteBroker stores the connection at construction time;
+                # fall back to looking it up directly from Connections.
+                account = broker.account
+                conn = Connections().conn.get(account)
+            if conn is None:
+                continue
+            tok = getattr(conn, "_access_token", None) or (
+                conn.get_access_token() if hasattr(conn, "get_access_token") else None
+            )
+            if tok:
+                api_key = getattr(conn, "api_key", None)
+                access_token = tok
+                logger.info(
+                    f"KiteTicker: using account {getattr(conn, 'account', '?')} "
+                    f"(api_key=…{(api_key or '')[-4:]})"
+                )
+                break
+
+        if not api_key or not access_token:
+            logger.warning(
+                "KiteTicker: no live access_token found at startup — "
+                "ticker not started; sparkline will fall back to broker.ltp()"
+            )
+            return
+
+        get_ticker().start(api_key, access_token)
+
+    except KeyError:
+        logger.warning(
+            "KiteTicker: no broker accounts configured — ticker skipped"
+        )
+    except Exception:
+        logger.exception(
+            "KiteTicker: failed to start at app boot — sparkline will "
+            "fall back to broker.ltp()"
+        )
+
+
 # ── Visitor IP / location logger ─────────────────────────────────────────
 #
 # Logs the approximate origin of every page open so the operator can see
@@ -358,11 +442,20 @@ async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
         pass
 
 
+async def _stop_kite_ticker(app) -> None:  # noqa: ARG001
+    """Gracefully close the KiteTicker WebSocket on Litestar shutdown."""
+    try:
+        from backend.shared.helpers.kite_ticker import get_ticker
+        get_ticker().stop()
+    except Exception:
+        pass
+
+
 app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, bg_startup],
-    on_shutdown=[bg_shutdown],
+    on_startup=[init_db, _rebuild_broker_connections, _start_kite_ticker, bg_startup],
+    on_shutdown=[bg_shutdown, _stop_kite_ticker],
     before_request=_log_visitor,
 )

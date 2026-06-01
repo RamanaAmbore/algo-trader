@@ -310,6 +310,11 @@ class SparklineController(Controller):
 
         past_result: dict[str, list[float]] = {}
         to_fetch: list[SparklineSymbol] = []
+        # token_map is populated during the historical-fetch step when
+        # to_fetch is non-empty. Initialise here so Step 2 (ticker
+        # subscription + tick-map read) can reference it regardless of
+        # whether the historical step ran.
+        token_map: dict[str, int] = {}
 
         for sym_obj in norm_syms:
             cache_key = (sym_obj.tradingsymbol, sym_obj.exchange, days, today)
@@ -411,18 +416,107 @@ class SparklineController(Controller):
                                     _spark_past_cache[cache_key] = past_closes
                                     past_result[sym] = past_closes
 
-        # ── Step 2: Batch LTP fetch for ALL symbols (past-cached + freshly fetched)
-        # broker.ltp() uses the 10 req/sec quote budget — one call, fast.
-        # Compose final series: past + [today_ltp].
+        # ── Step 2: LTP for ALL symbols — tick map first, broker.ltp() fallback
+        #
+        # Resolution order (per symbol):
+        #   1. TickerManager._tick_map  — live WebSocket stream; zero Kite quota.
+        #   2. broker.ltp() batch      — covers symbols not yet in the tick map
+        #      (ticker not connected, subscription not yet active, market closed).
+        #
+        # After the token_map is built from the instrument lookup above, push all
+        # newly-discovered tokens to the ticker so the NEXT request reads from the
+        # stream instead of hitting broker.ltp().
+        #
+        # The ticker's subscribe() is idempotent and cheap — calling it on every
+        # sparkline request is safe and ensures the subscription list grows
+        # automatically as new symbols enter the pulse view.
+        from backend.shared.helpers.kite_ticker import get_ticker
+
+        ticker = get_ticker()
+
+        # Push every resolved token to the ticker (deduped inside subscribe()).
+        # token_map is the symbol→token dict built during the historical-fetch
+        # step above; it may be empty if that step was skipped (all past-cached).
+        # Also collect tokens for symbols that were already past-cached but whose
+        # token we need for the ticker subscription and tick-map read.
+        #
+        # We rebuild a token_map covering ALL norm_syms (not just to_fetch) so
+        # both the subscription push and the tick-map lookup are comprehensive.
+        # If token_map was populated above, reuse it; otherwise fall through.
+        # Note: token_map may only cover to_fetch symbols if the historical step
+        # ran. For already-cached symbols we do a lightweight instrument lookup
+        # here so they also get subscribed.
+        if not token_map:
+            # Historical step was skipped (all symbols past-cached). Build
+            # a minimal token_map for the ticker subscription + tick-map read.
+            try:
+                from backend.shared.brokers.registry import get_sparkline_broker as _sb
+                _bk = _sb()
+                _all_exchanges: set[str] = set()
+                for s in norm_syms:
+                    _all_exchanges.update([s.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != s.exchange])
+                _inst_by_ex: dict[str, list] = {}
+                for _ex in _all_exchanges:
+                    try:
+                        _inst_by_ex[_ex] = await asyncio.to_thread(_bk.instruments, _ex) or []
+                    except Exception:
+                        _inst_by_ex[_ex] = []
+                for s in norm_syms:
+                    if s.tradingsymbol in token_map:
+                        continue
+                    _ord = [s.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != s.exchange]
+                    for _ex in _ord:
+                        for _inst in _inst_by_ex.get(_ex, []):
+                            if str(_inst.get("tradingsymbol") or "").upper() == s.tradingsymbol:
+                                token_map[s.tradingsymbol] = int(_inst["instrument_token"])
+                                break
+                        if s.tradingsymbol in token_map:
+                            break
+            except Exception as _exc:
+                logger.warning(f"sparkline: token lookup for ticker subs failed: {_exc}")
+
+        # Push all resolved tokens to the ticker (idempotent, non-blocking).
+        if token_map:
+            ticker.subscribe(token_map.values())
+
+        # Build reverse map: quote_key (EXCHANGE:SYMBOL) → instrument_token.
+        key_to_token: dict[str, int] = {
+            f"{s.exchange}:{s.tradingsymbol}": token_map[s.tradingsymbol]
+            for s in norm_syms
+            if s.tradingsymbol in token_map
+        }
+
         quote_keys = [f"{s.exchange}:{s.tradingsymbol}" for s in norm_syms]
         ltp_map: dict[str, float] = {}
-        if quote_keys:
+
+        # Pass 1 — tick map (zero Kite quota).
+        ticker_hits: list[str] = []
+        miss_keys: list[str] = []
+        for qk in quote_keys:
+            tok = key_to_token.get(qk)
+            if tok is not None:
+                ltp_val = ticker.get_ltp(tok)
+                if ltp_val is not None:
+                    ltp_map[qk] = ltp_val
+                    ticker_hits.append(qk)
+                else:
+                    miss_keys.append(qk)
+            else:
+                miss_keys.append(qk)
+
+        if ticker_hits:
+            logger.debug(
+                f"sparkline: {len(ticker_hits)} LTP(s) from tick_map, "
+                f"{len(miss_keys)} fallback to broker.ltp()"
+            )
+
+        # Pass 2 — broker.ltp() for misses only.
+        if miss_keys:
             try:
                 from backend.shared.brokers.registry import get_sparkline_broker as _get_sp_broker
                 ltp_broker = _get_sp_broker()
-                raw_ltp = await asyncio.to_thread(ltp_broker.ltp, quote_keys) or {}
+                raw_ltp = await asyncio.to_thread(ltp_broker.ltp, miss_keys) or {}
                 for key, val in raw_ltp.items():
-                    # broker.ltp returns {key: {"last_price": float, ...}}
                     if isinstance(val, dict):
                         lp = val.get("last_price")
                     else:
@@ -432,7 +526,7 @@ class SparklineController(Controller):
                     except (TypeError, ValueError):
                         pass
             except Exception as exc:
-                logger.warning(f"sparkline: ltp batch failed: {exc}")
+                logger.warning(f"sparkline: ltp fallback batch failed: {exc}")
 
         result: dict[str, list[float]] = {}
         for sym_obj in norm_syms:
@@ -570,6 +664,22 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
                     )
                     _spark_past_cache[(sym, exch, days, today)] = past_closes
                     cached_count += 1
+
+    # Push all resolved instrument tokens to the TickerManager so the
+    # WebSocket stream is seeded with every watchlist + book symbol at
+    # market open, before any user requests arrive. Subsequent sparkline
+    # requests will read from the tick_map instead of issuing broker.ltp()
+    # calls. subscribe() is idempotent — calling it here and again in
+    # batch_sparkline is safe.
+    if token_map:
+        try:
+            from backend.shared.helpers.kite_ticker import get_ticker
+            get_ticker().subscribe(token_map.values())
+            logger.info(
+                f"sparkline warm: pushed {len(token_map)} token(s) to TickerManager"
+            )
+        except Exception as exc:
+            logger.warning(f"sparkline warm: ticker subscribe failed: {exc}")
 
     _spark_warm_symbols = cached_count
     _spark_warm_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

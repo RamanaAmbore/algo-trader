@@ -73,6 +73,13 @@ class SparklineWarmStatus(msgspec.Struct):
     last_warmed_at: Optional[str]  # ISO-8601 UTC of last successful warm, or None
 
 
+class TickerStatus(msgspec.Struct):
+    started: bool            # connect() was called
+    connected: bool          # on_connect has fired and socket is live
+    subscribed_count: int    # number of instrument tokens subscribed
+    ticks_held: int          # number of tokens with at least one live tick
+
+
 class HealthResponse(msgspec.Struct):
     branch: str
     git_hash: str       # short commit hash, "unknown" on failure
@@ -83,6 +90,7 @@ class HealthResponse(msgspec.Struct):
     sim: SimStatus
     paper: PaperStatus
     sparkline_warm: SparklineWarmStatus
+    ticker: TickerStatus
     ipv6: list[str]     # source_ip values configured across all accounts
 
 
@@ -220,6 +228,22 @@ def _sparkline_warm_status() -> SparklineWarmStatus:
         return SparklineWarmStatus(symbols_cached=0, last_warmed_at=None)
 
 
+def _ticker_status() -> TickerStatus:
+    """Return a snapshot of the KiteTicker WebSocket state."""
+    try:
+        from backend.shared.helpers.kite_ticker import get_ticker
+        snap = get_ticker().status()
+        return TickerStatus(
+            started=bool(snap.get("started", False)),
+            connected=bool(snap.get("connected", False)),
+            subscribed_count=int(snap.get("subscribed_count", 0)),
+            ticks_held=int(snap.get("ticks_held", 0)),
+        )
+    except Exception:
+        return TickerStatus(started=False, connected=False,
+                            subscribed_count=0, ticks_held=0)
+
+
 def _paper_status() -> PaperStatus:
     branch = config.get("deploy_branch", "")
     enabled = branch == "main"
@@ -258,6 +282,7 @@ class HealthController(Controller):
             sim = _sim_status()
             paper = _paper_status()
             sparkline_warm = _sparkline_warm_status()
+            ticker = _ticker_status()
             git_hash = _git_hash()
             git_subject = _git_subject()
             branch = str(config.get("deploy_branch") or "?")
@@ -272,6 +297,7 @@ class HealthController(Controller):
                 sim=sim,
                 paper=paper,
                 sparkline_warm=sparkline_warm,
+                ticker=ticker,
                 ipv6=ipv6_list,
             )
         except HTTPException:
