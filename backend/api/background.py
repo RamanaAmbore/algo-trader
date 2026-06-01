@@ -1179,10 +1179,12 @@ async def on_startup(app) -> None:
                                 name="bg-paper-chase")
         )
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, sparkline-warm, paper-chase)")
+                    "expiry, instruments, daily-snapshot, sparkline-warm, "
+                    "ticker-watchdog, paper-chase)")
     else:
         logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, sparkline-warm) "
+                    "expiry, instruments, daily-snapshot, sparkline-warm, "
+                    "ticker-watchdog) "
                     "— live agent engine + paper engine OFF on non-main")
 
 

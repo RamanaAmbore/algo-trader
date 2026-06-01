@@ -280,8 +280,9 @@ async def _start_kite_ticker() -> None:
             if tok:
                 api_key = getattr(conn, "api_key", None)
                 access_token = tok
+                _ticker_account = getattr(conn, "account", "") or ""
                 logger.info(
-                    f"KiteTicker: using account {getattr(conn, 'account', '?')} "
+                    f"KiteTicker: using account {_ticker_account or '?'} "
                     f"(api_key=…{(api_key or '')[-4:]})"
                 )
                 break
@@ -300,7 +301,7 @@ async def _start_kite_ticker() -> None:
         # is called from an on_startup coroutine which runs on the main loop.
         import asyncio as _asyncio
         get_ticker().set_loop(_asyncio.get_event_loop())
-        get_ticker().start(api_key, access_token)
+        get_ticker().start(api_key, access_token, account=_ticker_account)
 
     except KeyError:
         logger.warning(
