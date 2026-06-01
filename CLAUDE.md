@@ -277,6 +277,114 @@ Defined in `backend_config.yaml` under `market_segments`. Background thread hand
 
 ---
 
+## KiteTicker / SSE live-LTP pipeline
+
+Real-time per-symbol LTP feed via a persistent Kite WebSocket + Server-Sent Events broadcast to frontend clients. Replaces historical per-symbol polling so the operator sees live tick updates in `/pulse` and other MarketPulse surfaces without any broker-API polling overhead.
+
+### Architecture
+
+```
+KiteTicker (Twisted reactor thread)
+    │ on_ticks() callback
+    ▼ _tick_map: dict[token → ltp]        (lock-guarded)
+    │
+    ├─ Direct read: get_ltp(token) → float | None
+    │
+└─ BroadcastBus.publish(payload)
+    │
+    ▼ asyncio.Queue per SSE client        (maxsize=1000)
+    │
+    ▼ GET /api/quote/stream              (Litestar ServerSentEvent)
+    │
+    ▼ EventSource('/api/quote/stream')    (browser auto-reconnect)
+    │
+    ▼ liveLtp writable store              (sym → ltp)
+    │
+    ▼ Svelte $effect (250ms throttle)
+    │
+    ▼ ag-Grid refreshCells (visible rows only)
+```
+
+### Backend pipeline
+
+**TickerManager singleton** ([`backend/shared/helpers/kite_ticker.py`](backend/shared/helpers/kite_ticker.py)):
+- One Kite WebSocket connection per process. Uvicorn runs with `--workers 1` in prod so the singleton lifetime is process-scoped.
+- Account selection via `get_sparkline_broker()` — if two Kite accounts are loaded, sparkline ticker uses the account that is NOT pinned to `connections.price_account` (reserved for chart-historical calls). Operator can override via `connections.sparkline_account` setting.
+- **Startup flow**: `TickerManager.start(api_key, access_token)` (idempotent) spawns Twisted reactor in a daemon thread. Callbacks fire on that reactor thread; asyncio handlers read via `get_ltp()` / `get_ltp_batch()` with a brief lock hold — no deadlock risk because the lock is non-reentrant and hold-time is O(1).
+- **Deferred-start safety**: access token may not be available at `app.on_startup` (async Connections reload races startup hooks). `_task_sparkline_warm` calls `ticker.ensure_started()` ~25s after boot when credentials are hydrated; redundant `start()` calls are idempotent no-ops.
+
+**Subscription lifecycle**:
+- Pre-mass-subscribe at boot + on every `_task_sparkline_warm` cycle (watchlist symbols + holdings + positions) via `warm_sparkline_cache()`.
+- Dynamic subscribe on watchlist add (`watchlist.py` POST hook calls `_resolve_token_for_sym()` → `ticker.subscribe_with_sym()`).
+- Auto-subscribe in `batch_sparkline` for any symbols not yet in the tick stream; `_task_performance` background task seeds the ticker with intraday-discovered book symbols (new positions, new holdings).
+- `subscribe()` is idempotent (tokens already subscribed are skipped) so re-subscribing is cheap.
+
+**Threading model**:
+- KiteTicker callbacks (`_on_connect`, `_on_ticks`, `_on_close`, `_on_error`, `_on_reconnect`) all fire on Twisted reactor thread.
+- `_on_ticks` merges incoming `{instrument_token, last_price}` dicts into `_tick_map` under a lock, then publishes each tick to `BroadcastBus` outside the lock (so reactor doesn't stall while the bus iterates its queue set).
+- Asyncio route handlers call `get_ltp(token)` / `get_ltp_batch(tokens)` which take the lock briefly — guaranteed no async deadlock because the lock is non-reentrant and the critical section is a dict read/write.
+
+**Clean shutdown** ([`TickerManager.stop()`](backend/shared/helpers/kite_ticker.py#L299)):
+- Sequence is critical so Kite doesn't hold a stale session when the process restarts:
+  1. `stop_retry()` — kill the auto-reconnect loop FIRST so the moment we close, Twisted doesn't dial back in.
+  2. `close()` — send WebSocket CLOSE frame to Kite so the server-side session ends cleanly.
+  3. `kws.stop()` — halt the Twisted reactor so the daemon thread exits.
+  4. 500ms grace sleep so the CLOSE frame leaves before the process exits.
+
+### Failover — ticker watchdog
+
+`_task_ticker_watchdog` in `backend/api/background.py` (runs every 30s) monitors KiteTicker health. If the ticker is started but disconnected for >60s:
+
+1. Query `get_historical_brokers()` for the next eligible account (honours `historical_data_enabled` flag + 30s rate-limit cool-off).
+2. Call `ticker.restart_with_account(api_key, access_token, new_account)` which:
+   - Marks the failing account in a 5-minute do-not-retry cool-off so we never bounce between two simultaneously-broken accounts.
+   - Preserves `_tick_map` (operator's UI shows last-known LTPs during failover).
+   - Re-queues previously-subscribed tokens in `_pending` for the new connection.
+   - Starts fresh WebSocket against the new account.
+3. Log WARNING + broadcast `_broadcast_event("ticker_failed", {...})` to the agent engine.
+4. Send Telegram alert if degradation persists >30min. Send recovery notice when ticker reconnects.
+
+When the failing account's cool-off expires, we don't auto-failback — the new account stays primary until ITS WebSocket breaks. Operator can force re-assignment by changing `connections.sparkline_account` + restarting.
+
+**IPv6 note**: KiteTicker uses Twisted WebSocket (not requests/urllib3), so the `_IPv6SourceAdapter` from `connections.py` doesn't apply. Each Kite account has a whitelisted IPv6 on the server. If the WebSocket fails with "Insufficient permission" in prod, we'd need to monkey-patch Twisted endpoint creation — non-trivial. Phase 1 defers that: when the socket can't connect, `get_ltp()` returns None and `batch_sparkline` falls back to `broker.ltp()` transparently. Design is safe to deploy now; Twisted IP-binding can follow if connectivity issues manifest.
+
+### Frontend consumer
+
+**quoteStream.js** ([`frontend/src/lib/data/quoteStream.js`](frontend/src/lib/data/quoteStream.js)):
+- Exports `liveLtp` (sym → ltp) + `streamOpen` (bool) writable stores + `startQuoteStream() / stopQuoteStream()`.
+- EventSource auto-reconnects natively; `streamOpen` flips false on persistent error so callers can widen polling cadence gracefully.
+- SSE events: `snapshot` (sent once on connect; JSON object mapping token → `{ltp, sym}`), `tick` (per symbol per Kite tick frame; `{tok, sym, ltp, ts}`), `heartbeat` (every 30s when idle; keeps proxies from closing).
+
+**MarketPulse integration** ([`frontend/src/lib/MarketPulse.svelte`](frontend/src/lib/MarketPulse.svelte)):
+- Mounts SSE on init via `startQuoteStream()`.
+- LTP cell renderer reads `liveLtp[sym] ?? row.ltp` — always shows live tick when available, falls back to last-known quote.
+- Sparkline cellRenderer splices `liveLtp[sym]` as the final point of the closes array so the sparkline's last candle updates in real time.
+- 250ms throttle + diff-gate on a rAF effect so steady-state burst (90+ ticks/sec) becomes ≤4 paints/sec.
+- Polling fallback: `_TICK_QUOTES_SSE = 6` — when stream is healthy, `loadQuotes` runs every 6th tick (~30s); when down, every tick (5s).
+
+**Backpressure handling**: each SSE client owns a private `asyncio.Queue(maxsize=1000)`. If the client reads slower than tick rate, `put_nowait` silently drops ticks (QueueFull is swallowed in `BroadcastBus._put_nowait`). Client reconnects via EventSource retry; it receives a fresh snapshot on reconnect and resumes from current state.
+
+### API endpoints
+
+| Route | Purpose |
+|---|---|
+| `GET /api/quote/stream` | SSE stream of LTP ticks. Returns `event: snapshot` (once), then `event: tick` (per tick), `event: heartbeat` (every 30s idle). Protected by `auth_or_demo_guard`. |
+| `POST /api/quote/sparkline` | Bulk past-closes lookup; appends today's LTP from tick_map (zero Kite quota) or broker.ltp() fallback. Pre-fills `_spark_past_cache` on miss via `historical_data`. Subscribers are auto-registered with the ticker. |
+| `GET /api/quote` (single) | One-off LTP + depth for a symbol. Used by order-entry command bar. |
+| `POST /api/quote/batch` | Bulk quote (LTP + day change + OI). Used by MarketPulse grid for non-stream symbols. |
+
+### Steady-state cost (market hours)
+
+| Workload | Kite REST calls |
+|---|---|
+| LTP for any Pulse cell | 0 — read from in-memory tick_map via SSE |
+| Sparkline for watchlist symbol | 0 during hours (all from WS). 1 historical_data on cache miss (3 req/sec budget, pre-warmed at open) |
+| Watchlist add | 1 instruments() lookup per add |
+| Chart historical | 1 per (symbol, range) on miss (separate from sparkline; uses `price_account`) |
+| Total during trading hour | ~0 REST calls + 1 persistent WS |
+
+---
+
 ## Broker accounts (DB-backed CRUD)
 
 Operators add / edit / delete broker accounts via `/admin/brokers` instead of editing `secrets.yaml` on the server. Credentials live in the `broker_accounts` table; the three secret columns (`api_secret_enc`, `password_enc`, `totp_token_enc`) are Fernet-encrypted at rest.

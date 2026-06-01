@@ -23,13 +23,13 @@
     deleteWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
-    fetchSparklines, fetchBrokerAccounts,
+    fetchSparklines,
   } from '$lib/api';
   import {
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
     INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
-  import { visibleInterval } from '$lib/stores';
+  import { visibleInterval, connStatus } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
@@ -522,12 +522,13 @@
     if (prunedH.length !== holdingsAccounts.length) holdingsAccounts = prunedH;
   });
   // Broker-registry-loaded accounts — surfaced via /api/admin/brokers
-  // on mount. Unioned into availableAccounts so the Account picker
-  // lists EVERY broker account the operator added via /admin/brokers,
-  // even ones with 0 positions / 0 holdings (so the operator can
-  // confirm the row exists and is loaded). Empty fallback when the
-  // endpoint is admin-gated for the current session.
-  let _knownBrokerAccounts = $state(/** @type {string[]} */ ([]));
+  // Broker account list sourced from the connStatus store which is
+  // polled every 15 s by startConnStatusPoller (runs from the layout).
+  // Eliminates the separate fetchBrokerAccounts() call on mount.
+  // Empty fallback when the endpoint is admin-gated for the current session.
+  let _connStatusSnap = $state($connStatus);
+  $effect(() => { _connStatusSnap = $connStatus; });
+  const _knownBrokerAccounts = $derived(_connStatusSnap.accounts ?? []);
   // Latches when the Account seed has firmed up after the broker
   // fetch resolved — prevents re-seeding from clobbering operator
   // toggles on later loadPulse polls.
@@ -951,25 +952,13 @@
     const pulseP  = loadPulse();
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
     const moversP = enableMovers ? loadMovers() : Promise.resolve();
-    // Broker-accounts fan-out — admin-only endpoint. Fire-and-forget;
-    // if it 403s for non-admin users the picker simply falls back to
-    // rows-based account discovery. When it succeeds, every loaded
-    // broker account lands in _knownBrokerAccounts and the next
-    // loadPulse() unions them into availableAccounts.
-    const brokersP = accountPicker
-      ? fetchBrokerAccounts().then((arr) => {
-          if (Array.isArray(arr)) {
-            _knownBrokerAccounts = arr
-              .filter((a) => a?.account)
-              .map((a) => String(a.account));
-          }
-        }).catch(() => { _knownBrokerAccounts = []; })
-      : Promise.resolve();
 
     // Block onMount only on the data the first paint actually needs.
     // Sparklines run fire-and-forget (cosmetic; missing them shows the
     // grid without the inline trend column for ≤1 s).
-    await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP, brokersP]);
+    // Broker accounts are sourced from connStatus (polled every 15 s by
+    // the layout's startConnStatusPoller) — no separate fetch needed here.
+    await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
     loadSparklines();
 
     // Unified pulse tick — one visibleInterval drives every refresh.
@@ -1527,13 +1516,13 @@
   // refreshes the sparkline column via _liveLtpSnap → sparkRenderer).
   $effect(() => {
     sparklines;
-    // Refresh the Curve column on every grid that's mounted.
-    if (gridPinnedReady     && gridPinned)     gridPinned.refreshCells({ columns: ['sparkline'], force: true });
-    if (gridWatchReady      && gridWatch)      gridWatch.refreshCells({ columns: ['sparkline'], force: true });
-    if (gridPositionsReady  && gridPositions)  gridPositions.refreshCells({ columns: ['sparkline'], force: true });
-    if (gridHoldingsReady   && gridHoldings)   gridHoldings.refreshCells({ columns: ['sparkline'], force: true });
-    if (gridWinReady        && gridWin)        gridWin.refreshCells({ columns: ['sparkline'], force: true });
-    if (gridLoseReady       && gridLose)       gridLose.refreshCells({ columns: ['sparkline'], force: true });
+    // Refresh the Curve column only on grids that are currently visible.
+    if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridWatchReady     && gridWatch     && topTab === 'watchlist') gridWatch.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridLoseReady      && gridLose      && showLosers)             gridLose.refreshCells({ columns: ['sparkline'], force: true });
   });
 
   // Refresh both the LTP column and sparkline tail whenever the SSE
@@ -1574,12 +1563,12 @@
       // Capture the current snapshot at paint time (may have advanced
       // further than when the timer was scheduled).
       _lastPaintedSnap = { ..._liveLtpSnap };
-      if (gridPinnedReady     && gridPinned)     gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridWatchReady      && gridWatch)      gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridPositionsReady  && gridPositions)  gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridHoldingsReady   && gridHoldings)   gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridWinReady        && gridWin)        gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridLoseReady       && gridLose)       gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridWatchReady     && gridWatch     && topTab === 'watchlist') gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridLoseReady      && gridLose      && showLosers)             gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
     }, _LTP_PAINT_MS);
   });
 

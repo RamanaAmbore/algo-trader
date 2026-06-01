@@ -30,7 +30,7 @@
     findEquity, findNearestFuture, getInstrument,
   } from '$lib/data/instruments';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
-  import { nowStamp, visibleInterval } from '$lib/stores';
+  import { visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';

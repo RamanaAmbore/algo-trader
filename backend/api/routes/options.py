@@ -70,12 +70,50 @@ _VALID_MODES = ("live", "sim", "hypothetical")
 # frame which is fine with a sync lock on CPython (GIL protects the dict
 # mutation; the Lock guards the check-then-set pair).
 import threading as _threading
+from collections import OrderedDict as _OrderedDict
 
-_HIST_CACHE: dict[tuple, tuple[float, object]] = {}
+_HIST_CACHE: "_OrderedDict[tuple, tuple[float, object]]" = _OrderedDict()
 _HIST_CACHE_LOCK = _threading.Lock()
 
-_HIST_CACHE_TTL_OK  = 60   # seconds — fresh bars
-_HIST_CACHE_TTL_EMPTY = 10  # seconds — empty bars (transient rate-limit failure)
+_HIST_CACHE_TTL_OK    = 60    # seconds — fresh bars
+_HIST_CACHE_TTL_EMPTY = 10    # seconds — empty bars (transient rate-limit failure)
+_HIST_CACHE_MAX_SIZE  = 200   # LRU cap — prevent unbounded growth from chain-picker
+
+
+def _hist_cache_get(key: tuple) -> object | None:
+    """Return cached value for *key* if present and unexpired, else None.
+    Moves the key to the end (most-recently-used position) on a hit."""
+    with _HIST_CACHE_LOCK:
+        entry = _HIST_CACHE.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            _HIST_CACHE.pop(key, None)
+            return None
+        _HIST_CACHE.move_to_end(key)
+        return value
+
+
+def _hist_cache_put(key: tuple, value: object, ttl_seconds: float) -> None:
+    """Store *value* under *key* with the given TTL.
+
+    Evicts the oldest entry when the cache exceeds _HIST_CACHE_MAX_SIZE.
+    Also does an opportunistic sweep of expired entries so the dict stays
+    small even when _MAX_SIZE is never hit (e.g. many unique keys each
+    requested only once).
+    """
+    now = time.monotonic()
+    with _HIST_CACHE_LOCK:
+        _HIST_CACHE[key] = (now + ttl_seconds, value)
+        _HIST_CACHE.move_to_end(key)
+        # Evict oldest until under cap
+        while len(_HIST_CACHE) > _HIST_CACHE_MAX_SIZE:
+            _HIST_CACHE.popitem(last=False)
+        # Opportunistic expired-entry sweep (cheap — cache stays ≤ MAX_SIZE)
+        stale = [k for k, (exp, _) in _HIST_CACHE.items() if exp <= now]
+        for k in stale:
+            _HIST_CACHE.pop(k, None)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -1315,11 +1353,9 @@ class OptionsController(Controller):
 
         # ── Cache lookup ───────────────────────────────────────────────
         cache_key = (sym, (exchange or "").upper(), days, interval)
-        _now = time.monotonic()
-        with _HIST_CACHE_LOCK:
-            _cached = _HIST_CACHE.get(cache_key)
-        if _cached is not None and _cached[0] > _now:
-            return _cached[1]
+        _cached = _hist_cache_get(cache_key)
+        if _cached is not None:
+            return _cached
 
         # ── Account-fallback loop ─────────────────────────────────────
         # get_historical_brokers() returns the prioritised list of eligible
@@ -1345,8 +1381,7 @@ class OptionsController(Controller):
             )
             result = HistoricalResponse(symbol=sym, instrument_token=None,
                                         interval=interval, bars=[])
-            with _HIST_CACHE_LOCK:
-                _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
+            _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
             return result
 
         to_d   = datetime.now()
@@ -1412,9 +1447,8 @@ class OptionsController(Controller):
             ]
             result = HistoricalResponse(symbol=sym, instrument_token=token,
                                         interval=interval, bars=bars)
-            _ttl = _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY
-            with _HIST_CACHE_LOCK:
-                _HIST_CACHE[cache_key] = (_now + _ttl, result)
+            _hist_cache_put(cache_key, result,
+                            _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY)
             return result
 
         # All brokers tried and none succeeded. If every broker missed the
@@ -1428,8 +1462,7 @@ class OptionsController(Controller):
         )
         result = HistoricalResponse(symbol=sym, instrument_token=None,
                                     interval=interval, bars=[])
-        with _HIST_CACHE_LOCK:
-            _HIST_CACHE[cache_key] = (_now + _HIST_CACHE_TTL_EMPTY, result)
+        _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
         return result
 
     # ── Multi-leg strategy analytics (POST) ────────────────────────────

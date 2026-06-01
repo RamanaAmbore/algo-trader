@@ -11,7 +11,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
-  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt } from '$lib/stores';
+  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
@@ -147,12 +147,13 @@
   let _winAccounts = $state(/** @type {string[]} */ ([]));   // Top Winners
   let _losAccounts = $state(/** @type {string[]} */ ([]));   // Top Losers
 
-  // Broker-registry-loaded accounts — populated by _fetchConn() (the
-  // same /admin/brokers fan-out the connection-health chip uses).
-  // Unioned into _availableAccounts so the per-card Account
-  // MultiSelects list every loaded account including ones with no
-  // positions / holdings yet (e.g. freshly-added Dhan / Groww rows).
-  let _knownBrokerAccounts = $state(/** @type {string[]} */ ([]));
+  // Broker-registry-loaded accounts — sourced from the connStatus store
+  // (polled every 15 s by the layout's startConnStatusPoller). Eliminates
+  // the separate fetchBrokerAccounts() call inside _fetchConn.
+  // Bridged via $state because connStatus is a Svelte 4 writable store.
+  let _connStatusSnap = $state($connStatus);
+  $effect(() => { _connStatusSnap = $connStatus; });
+  const _knownBrokerAccounts = $derived(_connStatusSnap.accounts ?? []);
 
   // Derived list of distinct accounts seen in current positions +
   // holdings + broker registry. Sorted ascending. Empty fallback when
@@ -926,13 +927,7 @@
         total:  accounts.length,
         loaded: accounts.filter(a => a.loaded).length,
       };
-      // Capture the broker-registry account codes so the per-card
-      // Account MultiSelects can list accounts that have no positions
-      // / holdings yet (e.g., a freshly-added Dhan or Groww row before
-      // any trades land). Same union logic /pulse uses.
-      _knownBrokerAccounts = accounts
-        .filter((a) => a?.account)
-        .map((a) => String(a.account));
+      // _knownBrokerAccounts is now derived from connStatus — no assignment needed here.
     } catch (_) { /* leave stale */ }
   }
 

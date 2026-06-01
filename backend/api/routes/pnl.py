@@ -50,14 +50,15 @@ class AgentPnL(msgspec.Struct):
     Note: gross_pnl is a rough chase-slippage proxy, not realised P&L from
     position pairing. See module docstring for the exact formula.
     """
-    agent_id: Optional[int]   # None for operator-ticket orders (no agent binding)
-    agent_name: str           # "(Operator ticket)" when agent_id is None
+    agent_id: Optional[int]    # None for operator-ticket orders (no agent binding)
+    agent_slug: Optional[str]  # Agent.slug; None for operator-ticket orders
+    agent_name: str            # Agent.name, or "(Operator ticket)" when agent_id is None
     order_count: int
     filled_count: int
-    gross_pnl: float          # chase-slippage proxy; 0 for unfilled/open orders
-    win_count: int            # fills where PnL contribution > 0
-    win_rate: float           # win_count / filled_count, 0.0 when no fills
-    avg_slippage: float       # mean of AlgoOrder.slippage for filled rows, 0.0 otherwise
+    gross_pnl: float           # chase-slippage proxy; 0 for unfilled/open orders
+    win_count: int             # fills where PnL contribution > 0
+    win_rate: float            # win_count / filled_count, 0.0 when no fills
+    avg_slippage: float        # mean of AlgoOrder.slippage for filled rows, 0.0 otherwise
 
 
 # ---------------------------------------------------------------------------
@@ -156,49 +157,43 @@ class PnLController(Controller):
         try:
             async with async_session() as session:
                 # Fetch algo_orders within the window, optionally mode-filtered.
-                # TODO: AlgoOrder does not carry an agent_id FK — it has an
-                # `engine` and a `detail` column. Agent association can be
-                # inferred from the detail string (which contains the agent slug
-                # when fired by the engine) but there is no typed FK. For now
-                # we group by `engine` as a proxy: engine='sim'/'paper'/'live'
-                # identifies the execution path. A future schema migration that
-                # adds `agent_id` to algo_orders would let us do a proper JOIN.
-                #
-                # Current approach: load all orders in the window, group by
-                # engine (not agent_id). The AgentPnL rows returned will use
-                # engine as the identifier until the FK is added.
-                #
-                # TODO: add `agent_id` FK column to AlgoOrder so this can be a
-                # real JOIN against the agents table.
+                # AlgoOrder.agent_id is a nullable FK to agents.id; NULL rows
+                # are operator-ticket orders with no agent binding.
                 stmt = select(AlgoOrder)
                 if window is not None:
                     stmt = stmt.where(AlgoOrder.created_at >= window)
                 if mode in ("live", "paper", "sim"):
                     stmt = stmt.where(AlgoOrder.mode == mode)
-                elif mode == "all":
-                    pass  # no filter
+                # mode == "all" — no additional filter
                 orders = (await session.execute(stmt)).scalars().all()
 
-                # Fetch all agents for name lookup — small table, full load is fine.
+                # Fetch all agents for id → (slug, name) lookup.
                 agents_rows = (await session.execute(select(Agent))).scalars().all()
         except Exception as exc:
             logger.error(f"PnLController.pnl_by_agent DB error: {exc}")
             raise HTTPException(status_code=500, detail="Failed to query P&L data")
 
-        agent_name_map: dict[int, str] = {a.id: a.name for a in agents_rows}
+        # id → (slug, name) — small table, full load is fine.
+        agent_meta: dict[int, tuple[str, str]] = {
+            a.id: (a.slug, a.name) for a in agents_rows
+        }
 
-        # Group orders by engine (proxy for agent until agent_id FK exists).
+        # Group orders by agent_id (None = operator ticket).
         # Each group accumulates: order_count, filled_count, pnl_sum,
         # win_count, slippage_sum, slippage_count.
-        groups: dict[str, dict] = {}
+        groups: dict[Optional[int], dict] = {}
 
         for order in orders:
-            # Use engine field as the grouping key.
-            key = order.engine or "unknown"
+            key: Optional[int] = order.agent_id  # None for operator-ticket orders
             if key not in groups:
+                if key is not None and key in agent_meta:
+                    slug, name = agent_meta[key]
+                else:
+                    slug, name = None, _OPERATOR_TICKET_NAME
                 groups[key] = {
-                    "agent_id": None,
-                    "agent_name": key,
+                    "agent_id": key,
+                    "agent_slug": slug,
+                    "agent_name": name,
                     "order_count": 0,
                     "filled_count": 0,
                     "pnl_sum": 0.0,
@@ -235,12 +230,19 @@ class PnLController(Controller):
                 g["slippage_sum"] += float(order.slippage)
                 g["slippage_count"] += 1
 
+        # Sort: named agents (by slug) first, operator-ticket group last.
+        def _sort_key(item: tuple[Optional[int], dict]) -> tuple[int, str]:
+            _, g = item
+            slug = g["agent_slug"] or ""
+            return (0 if slug else 1, slug)
+
         result: list[AgentPnL] = []
-        for key, g in sorted(groups.items()):
+        for _, g in sorted(groups.items(), key=_sort_key):
             filled = g["filled_count"]
             slippage_count = g["slippage_count"]
             result.append(AgentPnL(
                 agent_id=g["agent_id"],
+                agent_slug=g["agent_slug"],
                 agent_name=g["agent_name"],
                 order_count=g["order_count"],
                 filled_count=filled,

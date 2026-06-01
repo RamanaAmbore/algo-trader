@@ -754,7 +754,8 @@ export const connStatus = writable(/** @type {{
   total: number,
   backendOk: boolean,
   failingAccounts: string[],
-}} */ ({ loaded: 0, total: 0, backendOk: true, failingAccounts: [] }));
+  accounts: string[],
+}} */ ({ loaded: 0, total: 0, backendOk: true, failingAccounts: [], accounts: [] }));
 
 let _connPollerStarted = false;
 let _connPollerTeardown = null;
@@ -775,11 +776,15 @@ export function startConnStatusPoller() {
         .filter((a) => a && !a.loaded)
         .map((a) => String(a.account || ''))
         .filter(Boolean);
+      const allCodes = accounts
+        .filter((a) => a?.account)
+        .map((a) => String(a.account));
       connStatus.set({
         total:  accounts.length,
         loaded: accounts.filter((a) => a?.loaded).length,
         backendOk: true,
         failingAccounts: failing,
+        accounts: allCodes,
       });
     } catch {
       // Fetch rejected → API unreachable. Mark backendOk=false but
