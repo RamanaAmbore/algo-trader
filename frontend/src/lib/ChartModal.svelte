@@ -67,19 +67,17 @@
   }
 
   onMount(() => {
-    // capture: true — ChartModal runs before SymbolPanel's bubble-phase
-    // listener. Combined with stopImmediatePropagation on Esc, only
-    // ChartModal closes when the operator presses Esc (SymbolPanel stays).
+    if (typeof window !== 'undefined') {
+      window.__cmMount_calls = (window.__cmMount_calls || 0) + 1;
+    }
     window.addEventListener('keydown', _onKey, { capture: true });
-    // Native click binding for the X button — see _onCloseClick comment.
     _closeBtnEl?.addEventListener('click', _onCloseClick);
-    // Defer focus until portal has re-parented the DOM node.
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
-    // Body scroll-lock removed — the modal lets the page underneath
-    // stay interactive (overlay is pointer-events: none) so a slow
-    // chart load doesn't freeze the rest of the screen.
   });
   onDestroy(() => {
+    if (typeof window !== 'undefined') {
+      window.__cmDestroy_calls = (window.__cmDestroy_calls || 0) + 1;
+    }
     window.removeEventListener('keydown', _onKey, { capture: true });
     _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });

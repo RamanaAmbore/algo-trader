@@ -265,12 +265,13 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
     // Read telemetry from window
     const telemetry1 = await page.evaluate(() => ({
       cmCloseCalls: window.__cmClose_calls || 0,
-      lastSource: window.__cmClose_lastSource || null,
-      onCloseType: window.__cmClose_onCloseType || null,
       mpCloseCalls: window.__mpClose_calls || 0,
       mpBefore: window.__mpClose_before,
       mpAfter: window.__mpClose_after,
+      cmMountCalls: window.__cmMount_calls || 0,
+      cmDestroyCalls: window.__cmDestroy_calls || 0,
       cmSymInDom: document.querySelector('.cm-sym')?.textContent || '<none>',
+      overlaysInDom: document.querySelectorAll('.cm-overlay').length,
     }));
     log.timeline.push(`Telemetry after Esc: ${JSON.stringify(telemetry1)}`);
     if (afterEsc === 0) {
