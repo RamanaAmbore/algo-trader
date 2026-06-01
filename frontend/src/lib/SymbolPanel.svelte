@@ -20,6 +20,8 @@
   // symbol, no hidden context menus.
 
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { portal } from '$lib/portal';
+  import { ORDER_TABS } from '$lib/order/tabs.js';
   import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime } from '$lib/stores';
@@ -450,6 +452,8 @@
   let _algoRejected = $state(/** @type {any[]} */ ([]));
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let _ordersPoll;
+  // Focus-trap anchor — bound to .oes-modal so Tab cycles stay inside.
+  let _modalEl      = $state(/** @type {HTMLElement|null} */ (null));
 
   // Kite statuses: OPEN / TRIGGER PENDING / VALIDATION PENDING are
   // pending; COMPLETE / REJECTED / CANCELLED / UNFILLED are terminal.
@@ -499,11 +503,36 @@
   // history section is never rendered — skip both the initial load and the
   // 3-second interval to avoid firing two API calls per tick for the full
   // modal lifetime.
+  function _oesFocusables() {
+    return /** @type {HTMLElement[]} */ (
+      Array.from(_modalEl?.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      ) ?? [])
+    );
+  }
+
   onMount(() => {
+    // Defer initial focus until portal re-parenting settles (overlay
+    // mode only — inline renders in-flow so no re-parenting occurs).
+    if (!inline) {
+      setTimeout(() => { _oesFocusables()[0]?.focus(); }, 0);
+    }
+
     const onKey = (/** @type {KeyboardEvent} */ e) => {
       if (e.key === 'Escape') {
         // Fullscreen exits first; second Esc closes the panel.
         onClose();
+        return;
+      }
+      if (e.key === 'Tab' && !inline) {
+        const els = _oesFocusables();
+        if (!els.length) return;
+        const first = els[0], last = els[els.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault(); first.focus();
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -534,14 +563,14 @@
   // Chain first — basket builder is the most-used surface per operator,
   // it lands the operator straight on the strike/expiry chooser; Ticket
   // is the single-leg fast path; Command is the power-user terminal.
-  const TABS = /** @type {const} */ ([
-    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80',
-      activeBg: 'rgba(74,222,128,0.14)' },
-    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24',
-      activeBg: 'rgba(251,191,36,0.14)' },
-    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc',
-      activeBg: 'rgba(125,211,252,0.14)' },
-  ]);
+  // TABS is ORDER_TABS augmented with visual metadata (dot / active palette).
+  // ORDER_TABS is the shared id/label source of truth from $lib/order/tabs.js.
+  const TABS = ORDER_TABS.map(t => ({
+    ...t,
+    ...(t.id === 'chain'   ? { dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)'  } :
+        t.id === 'ticket'  ? { dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)'  } :
+                             { dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' }),
+  }));
 
   // Effective OrderTicket props — merge _cmdOrderProps (from Command tab
   // parse) on top of the shell's own props, so a typed command wins.
@@ -556,14 +585,19 @@
 </script>
 
 <!-- Modal overlay (omitted in inline mode — renders as flat page content). -->
+<!-- use:portal={!inline} — portals to document.body when NOT inline so
+     the fixed overlay clears any parent stacking-context clipping.
+     portal() is a no-op when the argument is false (inline mode). -->
 <div class="oes-overlay"
      class:oes-inline={inline}
      role={inline ? undefined : 'dialog'}
      aria-modal={inline ? undefined : 'true'}
      aria-label={inline ? undefined : (symbol || 'Symbol panel')}
-     onclick={inline ? undefined : onClose}>
+     onclick={inline ? undefined : onClose}
+     use:portal={!inline}>
   <div class="oes-modal" class:oes-modal-inline={inline}
        role="document"
+       bind:this={_modalEl}
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
 
     <!-- Header (close button hidden in inline mode). The plain title

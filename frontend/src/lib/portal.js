@@ -8,8 +8,15 @@
  *
  * Usage:
  *   <div class="alm-overlay" use:portal>...</div>
+ *
+ * Conditional (no-op when false):
+ *   <div use:portal={!inline}>...</div>
+ *   When the parameter is explicitly false, the node is NOT moved —
+ *   useful when the same element must conditionally portal (overlay
+ *   mode) or stay in-flow (inline mode) based on a prop.
  */
-export function portal(node) {
+export function portal(node, enabled = true) {
+  if (!enabled) return {};
   const originalParent = node.parentNode;
   document.body.appendChild(node);
   return {

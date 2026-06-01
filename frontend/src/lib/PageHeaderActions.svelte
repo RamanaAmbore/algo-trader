@@ -50,15 +50,22 @@
   let _logOpen   = $state(false);
 
   function _openOrder() {
+    _chartOpen = false;
+    _logOpen   = false;
     _orderOpen = true;
   }
 
   function _openChart() {
+    if (!symbol) return;
+    _orderOpen = false;
+    _logOpen   = false;
     _chartOpen = true;
   }
 
   function _openLog() {
-    _logOpen = true;
+    _orderOpen = false;
+    _chartOpen = false;
+    _logOpen   = true;
   }
 </script>
 
@@ -81,6 +88,7 @@
   {#if !hideChart}
     <button type="button" class="pha-btn pha-chart"
             onclick={_openChart}
+            disabled={!symbol}
             title={symbol ? `Chart — ${symbol}` : 'Chart'}
             aria-label={symbol ? `Open chart for ${symbol}` : 'Open chart'}>
       <!-- Polyline chart glyph -->

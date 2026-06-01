@@ -46,6 +46,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import ChartModal from '$lib/ChartModal.svelte';
 
   let {
     title              = 'Pulse',
@@ -1536,23 +1537,50 @@
   });
 
   // Refresh both the LTP column and sparkline tail whenever the SSE
-  // stream delivers a new tick. RAF-debounced: multiple ticks arriving
-  // in the same JS event-loop turn are coalesced into one grid refresh
-  // per animation frame (~60 fps cap) to avoid flooding the renderer.
-  let _ltpRafPending = false;
+  // stream delivers new tick values. Throttled to 4 Hz (250 ms minimum
+  // gap) and diff-gated: if all LTP values are identical to the last
+  // paint we skip the refreshCells call entirely.
+  //
+  // Prior approach: rAF-debounce (~60 Hz cap) fired on every $state
+  // change regardless of whether any price actually changed. At ~93
+  // SSE ticks/sec that was 60 × 6 = 360 refreshCells calls/sec even
+  // during a flat market. The 250 ms floor caps it at 4 × 6 = 24
+  // calls/sec; the diff-gate cuts it to 0 when the stream is idle.
+  let _lastPaintedSnap = /** @type {Record<string, number>} */ ({});
+  let _ltpPaintTimer   = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  const _LTP_PAINT_MS  = 250; // 4 Hz
+
   $effect(() => {
-    _liveLtpSnap; // subscribe — re-runs on every tick map update
-    if (_ltpRafPending) return;
-    _ltpRafPending = true;
-    requestAnimationFrame(() => {
-      _ltpRafPending = false;
+    const snap = _liveLtpSnap; // reactive subscribe — re-runs on every update
+
+    // Diff: skip paint when no value changed since the last paint.
+    let changed = false;
+    const snapKeys = Object.keys(snap);
+    for (const k of snapKeys) {
+      if (snap[k] !== _lastPaintedSnap[k]) { changed = true; break; }
+    }
+    if (!changed) {
+      // Also catch keys that were removed from the snap.
+      for (const k of Object.keys(_lastPaintedSnap)) {
+        if (!(k in snap)) { changed = true; break; }
+      }
+    }
+    if (!changed) return;
+
+    // Throttle: schedule one paint at most every _LTP_PAINT_MS.
+    if (_ltpPaintTimer) return;
+    _ltpPaintTimer = setTimeout(() => {
+      _ltpPaintTimer = null;
+      // Capture the current snapshot at paint time (may have advanced
+      // further than when the timer was scheduled).
+      _lastPaintedSnap = { ..._liveLtpSnap };
       if (gridPinnedReady     && gridPinned)     gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridWatchReady      && gridWatch)      gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridPositionsReady  && gridPositions)  gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridHoldingsReady   && gridHoldings)   gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridWinReady        && gridWin)        gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridLoseReady       && gridLose)       gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-    });
+    }, _LTP_PAINT_MS);
   });
 
   // Per-source summary derivations for the two separate summary grids.
@@ -3452,20 +3480,17 @@
     closeContextMenu();
     try { await navigator.clipboard.writeText(row.tradingsymbol || ''); } catch (_) {}
   }
-/** 📈 Chart action — opens SymbolPanel on the Chart tab for the
-   *  row's symbol. Historical bars fetched lazily inside the panel
-   *  when the Chart tab activates. Earlier this opened a separate
-   *  SymbolChartModal; folded into the unified panel so chart +
-   *  ticket + chain all live in one symbol-keyed surface. */
+/** 📈 Chart action — opens ChartModal directly for the row's symbol.
+   *  SymbolPanel's TABS no longer includes 'chart' (it was retired when
+   *  ChartModal became the dedicated chart surface), so opening via
+   *  openTicket({defaultTab:'chart'}) produced a blank modal body.
+   *  We now open ChartModal independently using _chartModalSym/_chartModalExch. */
   function ctxOpenChart(row) {
     closeContextMenu();
     const sym = String(row.tradingsymbol || '').trim();
     if (!sym) return;
-    openTicket({
-      symbol:    sym,
-      exchange:  String(row.exchange || '').trim(),
-      defaultTab: 'chart',
-    });
+    _chartModalSym  = sym;
+    _chartModalExch = String(row.exchange || '').trim();
   }
 
   async function ctxRemoveWatch(row) {
@@ -3508,6 +3533,12 @@
     closeContextMenu();
     _activityLogOpen = true;
   }
+
+  // Chart modal state — opened by the "Chart →" context-menu item.
+  // Does NOT go through SymbolPanel (the chart tab was retired from
+  // TABS; opening with defaultTab:'chart' produced a blank modal body).
+  let _chartModalSym  = $state('');
+  let _chartModalExch = $state('');
 
   // Dismiss context menu on outside click.
   function onDocClick(ev) {
@@ -3923,6 +3954,14 @@
 
 {#if _activityLogOpen}
   <ActivityLogModal onClose={() => { _activityLogOpen = false; }} />
+{/if}
+
+{#if _chartModalSym}
+  <ChartModal
+    symbol={_chartModalSym}
+    exchange={_chartModalExch}
+    onClose={() => { _chartModalSym = ''; _chartModalExch = ''; }}
+  />
 {/if}
 
 <!-- Unified Add popup — opened by the `+` button in the chrome row (or

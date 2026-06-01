@@ -14,12 +14,32 @@
     /** @type {() => void} */ onClose,
   } = $props();
 
+  let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
+
+  function _focusables() {
+    return /** @type {NodeListOf<HTMLElement>} */ (
+      _modalEl?.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? []
+    );
+  }
+
   function _onKey(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape') { onClose(); return; }
+    if (e.key === 'Tab') {
+      const els = Array.from(_focusables());
+      if (!els.length) return;
+      const first = els[0], last = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    }
   }
 
   onMount(() => {
     window.addEventListener('keydown', _onKey);
+    // Defer focus until portal has re-parented the DOM node.
+    setTimeout(() => { _focusables()[0]?.focus(); }, 0);
     // Body scroll-lock removed — the modal lets the page underneath
     // stay interactive (overlay is pointer-events: none) so a slow
     // chart load doesn't freeze the rest of the screen.
@@ -34,7 +54,7 @@
      operator uses × button or Esc. tabindex retained for screen readers. -->
 <div class="cm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Chart — {symbol}"
      tabindex="-1">
-  <div class="cm-modal">
+  <div class="cm-modal" bind:this={_modalEl}>
     <div class="cm-header">
       <span class="cm-title">Chart — <span class="cm-sym">{symbol}</span></span>
       <button type="button" class="cm-close"

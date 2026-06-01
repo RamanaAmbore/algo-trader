@@ -22,6 +22,7 @@
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
   import { longPress } from '$lib/actions/longPress.js';
+  import { ORDER_TABS } from '$lib/order/tabs.js';
 
   // Row-level chart modal — distinct from any header-level chart state.
   let _rowChartModalSym  = $state('');
@@ -31,16 +32,16 @@
     _rowChartModalExch = String(exchange || '');
   }
 
-  // Tab strip metadata — duplicated from SymbolPanel so /orders can
-  // render the strip itself in the bucket-header (Phase A of the
-  // orders-page redesign). Keep these in sync. Chart tab removed —
-  // chart now lives in ChartModal (icon button next to symbol picker).
+  // Tab strip metadata — sourced from ORDER_TABS ($lib/order/tabs.js)
+  // with visual palette layered on. Chart tab removed — chart now lives
+  // in ChartModal (icon button next to symbol picker).
   // Chain first — basket builder is the most-used surface per operator.
-  const TABS = /** @type {const} */ ([
-    { id: 'chain',   label: 'Chain',        dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
-    { id: 'ticket',  label: 'Order ticket', dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)' },
-    { id: 'command', label: 'Command line', dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
-  ]);
+  const TABS = ORDER_TABS.map(t => ({
+    ...t,
+    ...(t.id === 'chain'   ? { dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)'  } :
+        t.id === 'ticket'  ? { dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)'  } :
+                             { dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' }),
+  }));
 
   // Activity-card tabs share the same shape + style as the Entry-
   // card tabs above (single oc-tab class) so the two tab strips
@@ -599,6 +600,7 @@
                   title="Open {o.tradingsymbol}"
                   onclick={(e) => { e.stopPropagation(); orderTicketProps = { symbol: o.tradingsymbol, exchange: o.exchange || '' }; }}
                   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); orderTicketProps = { symbol: o.tradingsymbol, exchange: o.exchange || '' }; } }}
+                  oncontextmenu={(ev) => { ev.preventDefault(); _ctxMenu = { symbol: o.tradingsymbol, exchange: o.exchange || '', x: ev.clientX, y: ev.clientY }; }}
                   use:longPress={(ev) => { _ctxMenu = { symbol: o.tradingsymbol, exchange: o.exchange || '', x: ev.clientX, y: ev.clientY }; }}
                 >{o.tradingsymbol}</span></span>
               <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border

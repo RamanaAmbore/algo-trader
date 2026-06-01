@@ -44,8 +44,17 @@
   }
 
   // ── Keyboard + scroll-lock ────────────────────────────────────────────
+  let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   /** @type {(() => void) | null} */
   let _stopPoll = null;
+
+  function _focusables() {
+    return /** @type {HTMLElement[]} */ (
+      Array.from(_modalEl?.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      ) ?? [])
+    );
+  }
 
   onMount(() => {
     document.body.style.overflow = 'hidden';
@@ -53,6 +62,8 @@
     loadOrders();
     // Poll every 5 s while the modal is open.
     _stopPoll = visibleInterval(loadOrders, 5000);
+    // Defer focus until portal re-parenting settles.
+    setTimeout(() => { _focusables()[0]?.focus(); }, 0);
   });
 
   onDestroy(() => {
@@ -62,7 +73,17 @@
   });
 
   function _onKey(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape') { onClose(); return; }
+    if (e.key === 'Tab') {
+      const els = _focusables();
+      if (!els.length) return;
+      const first = els[0], last = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    }
   }
 
   // ── Order helpers ─────────────────────────────────────────────────────
@@ -89,7 +110,7 @@
      X button + Esc are the close affordances. -->
 <div class="alm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Activity log"
      tabindex="-1">
-  <div class="alm-modal">
+  <div class="alm-modal" bind:this={_modalEl}>
 
     <!-- Header ────────────────────────────────────────────────────── -->
     <div class="alm-header">

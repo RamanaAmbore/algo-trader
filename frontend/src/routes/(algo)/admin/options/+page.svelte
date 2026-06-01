@@ -2327,6 +2327,7 @@
                      }} />
               <!-- svelte-ignore a11y_interactive_supports_focus -->
               <span class="font-mono cand-sym"
+                oncontextmenu={(ev) => { ev.preventDefault(); _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY }; }}
                 use:longPress={(ev) => {
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
