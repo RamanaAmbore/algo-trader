@@ -195,6 +195,32 @@
   /** @type {Array<{ts:string,close:number}>} */
   let _spotBars = $state([]);
 
+  // Kite returns the index spot under its quote-key name (e.g.
+  // "NIFTY BANK", "NIFTY 50", "NIFTY FIN SERVICE") via /quote, but
+  // those strings are NOT tradeable tradingsymbols — the historical
+  // endpoint walks every exchange trying to find them and returns
+  // empty bars after ~10s of broker calls. Any incoming symbol that
+  // matches one of those keys gets routed to the underlying root's
+  // nearest future on NFO instead. The chart still LABELS the chart
+  // with the original symbol so the operator sees what they clicked.
+  /** @type {Record<string, string>} */
+  const _KITE_INDEX_TO_ROOT = {
+    'NIFTY 50':           'NIFTY',
+    'NIFTY BANK':         'BANKNIFTY',
+    'NIFTY FIN SERVICE':  'FINNIFTY',
+    'NIFTY MID SELECT':   'MIDCPNIFTY',
+    'NIFTY NEXT 50':      'NIFTYNXT50',
+  };
+  function _resolveFetchSymbol(/** @type {string} */ sym) {
+    const root = _KITE_INDEX_TO_ROOT[sym];
+    if (!root) return { sym, exch: '' };
+    try {
+      const fut = findNearestFuture(root);
+      if (fut?.s) return { sym: String(fut.s), exch: String(fut.e || 'NFO') };
+    } catch (_) { /* instruments cache not ready — fall through */ }
+    return { sym, exch: '' };
+  }
+
   async function _loadHistorical(/** @type {boolean} */ force = false) {
     if (!symbol) return;
     if (!force && _chartLoaded) return;
@@ -208,11 +234,14 @@
       setTimeout(() => reject(new Error('Slow response — try again.')), TIMEOUT_MS)
     );
     try {
-      // _resolvedExchange is set when picking a pinned symbol (e.g. MCX for GOLD futures).
-      // exchange prop is the parent-supplied hint. Both take precedence over auto-detection.
-      const exchHint = _resolvedExchange || exchange || undefined;
+      // Map Kite index quote-keys to their tradeable future before any
+      // backend call. NIFTY BANK / NIFTY 50 etc. would otherwise walk
+      // every exchange arm and time out (~10s of broker calls).
+      const _resolved = _resolveFetchSymbol(symbol);
+      const fetchSym  = _resolved.sym;
+      const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
       const promises = [
-        fetchOptionsHistorical(symbol, { days: _chartDays, exchange: exchHint }),
+        fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch }),
       ];
       if (_isDerivative && _underlying) {
         promises.push(
