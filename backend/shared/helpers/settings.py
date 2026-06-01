@@ -98,6 +98,14 @@ SEEDS: list[tuple] = [
      "weekends — Muhurat Diwali sessions, special expiry Saturdays, etc. "
      "Example: '2026-11-08,2026-11-09'. Empty = standard calendar.",
      None, None),
+    ("market", "market.bellwether_symbols", "string", "",
+     "Optional CSV of EXCHANGE:SYMBOL pairs used by market_probe to "
+     "detect whether an exchange is currently active. Overrides the "
+     "built-in defaults (NSE:NIFTY 50, BSE:SENSEX, etc.). Useful for "
+     "keeping the MCX commodity bellwether current when the front-month "
+     "contract rolls over. Empty = auto-discover from instruments dump. "
+     "Example: 'MCX:CRUDEOIL26JUNFUT,NSE:NIFTY 50'.",
+     None, None),
 
     # ── Performance refresh ─────────────────────────────────────────────
     ("performance", "performance.refresh_interval",        "int", 5,
@@ -224,6 +232,12 @@ SEEDS: list[tuple] = [
      "auto-pick the first account in secrets.yaml. Doesn't affect "
      "per-account holdings / positions / orders calls; those still "
      "hit each account directly.", None, None),
+    ("connections", "connections.sparkline_account", "string", "",
+     "Account code (e.g. ZG0790) to use for the KiteTicker WebSocket "
+     "sparkline/LTP feed. Blank = auto-pick the first eligible account "
+     "that is NOT pinned to connections.price_account (the reserved "
+     "chart-historical account). Set explicitly to override the auto "
+     "selection or force-assign after a ticker failover.", None, None),
 
     # ── GenAI ────────────────────────────────────────────────────────────
     ("genai",       "genai.thinking_budget",        "int", 512,
@@ -299,6 +313,26 @@ SEEDS: list[tuple] = [
     ("replay",      "replay.auto_stop_minutes",  "int",  30,
      "Auto-stop a replay after this many wall-clock minutes.",
      "min", {"min": 1, "max": 120, "step": 1}),
+
+    # ── Logging ──────────────────────────────────────────────────────────
+    # Values must be a Python logging level name (DEBUG, INFO, WARNING,
+    # ERROR, CRITICAL) or an integer. Applied live via _apply_log_level
+    # in settings.py — no restart required to change verbosity.
+    ("logging", "logging.file_log_level",    "enum", "INFO",
+     "Log level for the main rotating app log file "
+     "(api_log_file). Change to DEBUG for verbose tracing "
+     "or WARNING/ERROR to reduce noise on busy prod boxes.",
+     None, {"enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]}),
+    ("logging", "logging.console_log_level", "enum", "INFO",
+     "Log level written to stdout / the service journal "
+     "(api_error_file tee). Raise to WARNING on prod to keep "
+     "systemctl status output readable.",
+     None, {"enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]}),
+    ("logging", "logging.error_log_level",   "enum", "ERROR",
+     "Log level for the dedicated error log file "
+     "(api_error_file). Lowering to WARNING surfaces non-fatal "
+     "issues without touching the main log verbosity.",
+     None, {"enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]}),
 ]
 
 
