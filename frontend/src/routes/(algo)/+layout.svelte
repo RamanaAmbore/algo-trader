@@ -1482,6 +1482,17 @@
     color: #7dd3fc;
     font-family: ui-monospace, monospace;
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Mobile — squeeze the dual-TZ timestamp so the title chip + timestamp
+     + RefreshButton + PageHeaderActions trio all fit on the same flex row.
+     Smaller font-size + slight negative letter-spacing trims ~20 % width
+     without sacrificing legibility on a 360 px viewport. */
+  @media (max-width: 640px) {
+    :global(.algo-ts) {
+      font-size: 0.55rem;
+      letter-spacing: -0.015em;
+    }
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */
