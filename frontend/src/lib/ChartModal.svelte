@@ -15,6 +15,17 @@
   } = $props();
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
+  let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
+
+  // The cm-overlay is portaled to document.body, OUTSIDE the SvelteKit
+  // mount root (<div id="svelte">). Svelte 5 delegates onclick handlers
+  // at the mount root, so any onclick={...} on nodes inside the portal
+  // never fires — the click bubbles up to <body> and stops there.
+  // Bind the X-button click natively via addEventListener instead.
+  function _onCloseClick(/** @type {MouseEvent} */ e) {
+    e.stopPropagation();
+    onClose?.();
+  }
 
   function _focusables() {
     return /** @type {NodeListOf<HTMLElement>} */ (
@@ -48,6 +59,8 @@
     // listener. Combined with stopImmediatePropagation on Esc, only
     // ChartModal closes when the operator presses Esc (SymbolPanel stays).
     window.addEventListener('keydown', _onKey, { capture: true });
+    // Native click binding for the X button — see _onCloseClick comment.
+    _closeBtnEl?.addEventListener('click', _onCloseClick);
     // Defer focus until portal has re-parented the DOM node.
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
     // Body scroll-lock removed — the modal lets the page underneath
@@ -56,6 +69,7 @@
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey, { capture: true });
+    _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });
 </script>
 
@@ -67,8 +81,7 @@
   <div class="cm-modal" bind:this={_modalEl}>
     <div class="cm-header">
       <span class="cm-title">Chart — <span class="cm-sym">{symbol}</span></span>
-      <button type="button" class="cm-close"
-              onclick={(e) => { e.stopPropagation(); onClose(); }}
+      <button type="button" class="cm-close" bind:this={_closeBtnEl}
               aria-label="Close chart modal">×</button>
     </div>
     <div class="cm-body">

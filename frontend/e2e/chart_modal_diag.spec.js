@@ -176,8 +176,13 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
       return;
     }
 
-    log.timeline.push('clicking sym-actions ⋯ button');
-    await symActions.click();
+    log.timeline.push('dispatching click via evaluate (CSS :hover opacity bypass)');
+    const dispatched = await symActions.evaluate((el) => {
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+      el.dispatchEvent(ev);
+      return true;
+    });
+    log.timeline.push(`dispatched=${dispatched}`);
     await page.waitForTimeout(800);
 
     // Context menu should appear with "Chart →" item
@@ -247,10 +252,36 @@ test.describe('Chart modal + refresh + pulse diagnosis', () => {
       log.timeline.push(`elementFromPoint(X-center): ${JSON.stringify(topmost)}`);
     }
 
+    // Standard Playwright click
     await closeBtn.click({ force: false }).catch((e) => {
-      log.timeline.push(`X click threw: ${e.message}`);
+      log.timeline.push(`X .click() threw: ${e.message}`);
     });
     await page.waitForTimeout(900);
+    const afterStdClick = await modal.count();
+    log.timeline.push(`After standard .click() — modal count: ${afterStdClick}`);
+
+    if (afterStdClick > 0) {
+      // Walk parent chain to find where portal put the modal + look for Svelte 5
+      // delegated handler properties (__click etc.)
+      const probe = await closeBtn.evaluate((el) => {
+        const chain = [];
+        let cur = el;
+        while (cur && cur !== document) {
+          const ownProps = [];
+          for (const k of Object.getOwnPropertyNames(cur)) {
+            if (k.startsWith('__') || k === '$$d') ownProps.push(k);
+          }
+          chain.push({
+            tag: cur.tagName,
+            cls: typeof cur.className === 'string' ? cur.className.slice(0, 60) : '<svg>',
+            svelteOwnProps: ownProps,
+          });
+          cur = cur.parentNode;
+        }
+        return { chain };
+      });
+      log.timeline.push(`Parent chain (X button → root): ${JSON.stringify(probe.chain, null, 2)}`);
+    }
 
     const stillInDom = await modal.count();
     const stillVisible = stillInDom > 0 ? await modal.isVisible() : false;
