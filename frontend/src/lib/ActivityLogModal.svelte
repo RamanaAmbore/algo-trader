@@ -85,14 +85,11 @@
   function modeClass(m) { return MODE_CLASS[m] ?? 'alm-m-paper'; }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- overlay is pointer-events:none so the page underneath stays clickable;
+     X button + Esc are the close affordances. -->
 <div class="alm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Activity log"
-     tabindex="-1"
-     onclick={onClose}>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="alm-modal" onclick={(e) => e.stopPropagation()}>
+     tabindex="-1">
+  <div class="alm-modal">
 
     <!-- Header ────────────────────────────────────────────────────── -->
     <div class="alm-header">
@@ -176,7 +173,11 @@
     position: fixed;
     inset: 0;
     z-index: 10000;
-    background: rgba(5, 10, 22, 0.72);
+    /* No background dim and pointer-events: none — the page underneath
+       stays clickable while the modal is open. Operator closes via the
+       × button at the top-right or Esc. Same non-blocking pattern the
+       ChartModal uses. */
+    pointer-events: none;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -190,6 +191,9 @@
     border: 1px solid rgba(168, 85, 247, 0.38);
     border-radius: 0.55rem;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(168, 85, 247, 0.12);
+    /* Restore pointer-events so the panel itself stays interactive
+       even though the overlay around it is not. */
+    pointer-events: auto;
     width: min(56rem, 96vw);
     max-height: 86vh;
     display: flex;
@@ -241,13 +245,21 @@
   }
   .alm-close {
     margin-left: auto;
-    width: 1.35rem;
-    height: 1.35rem;
+    /* Bigger touch target — was 1.35rem (~22px) which fell short of
+       the 44px mobile tap-target floor. Operator reported the X not
+       firing reliably on phone. Also bumped z-index so nothing inside
+       the header can overlay it. */
+    width: 1.8rem;
+    height: 1.8rem;
     background: transparent;
-    border: 0;
-    color: rgba(200, 216, 240, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    color: rgba(200, 216, 240, 0.85);
     cursor: pointer;
-    font-size: 1rem;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
     line-height: 1;
     border-radius: 0.2rem;
     display: inline-flex;
