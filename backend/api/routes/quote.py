@@ -345,12 +345,18 @@ class SparklineController(Controller):
             logger.warning(f"sparkline: instrument lookup failed: {exc}")
             return SparklineResponse(data=result, refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
-        # Fetch historical data for all resolved tokens, concurrency cap = 5.
-        # `historical_data` is on the Broker ABC — broker-agnostic path.
+        # Fetch historical data for all resolved tokens. Kite limits
+        # historical_data to 3 req/sec; the prior Semaphore(5) easily
+        # blew past that on cold-start (50+ symbols in Pulse → instant
+        # rate-limit storm + cool-off cascade). Now: Semaphore(2) +
+        # 350 ms pacing per completion → effective rate ≤ ~5 req/sec
+        # across the 2 in-flight slots, well inside Kite's headroom.
+        # broker-agnostic — `historical_data` is on the Broker ABC.
         to_d   = datetime.now()
         from_d = to_d - timedelta(days=days + 5)  # +5 buffer for weekends/holidays
 
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(2)
+        _KITE_PACE_S = 0.35  # sleep between completions inside each slot
 
         async def _fetch_closes(sym: str, token: int) -> tuple[str, list[float]]:
             async with sem:
@@ -360,9 +366,12 @@ class SparklineController(Controller):
                     ) or []
                     closes = [float(b["close"]) for b in raw if b.get("close") is not None]
                     # Keep the last `days` closes (oldest first).
-                    return sym, closes[-days:] if len(closes) > days else closes
+                    result = closes[-days:] if len(closes) > days else closes
+                    await asyncio.sleep(_KITE_PACE_S)
+                    return sym, result
                 except Exception as exc:
                     logger.warning(f"sparkline historical_data failed for {sym}: {exc}")
+                    await asyncio.sleep(_KITE_PACE_S)
                     return sym, []
 
         tasks = [
