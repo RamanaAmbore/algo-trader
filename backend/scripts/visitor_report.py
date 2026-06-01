@@ -388,10 +388,14 @@ def run_daily(
     if target_date is None:
         target_date = today_utc - timedelta(days=1)
 
-    # Collect lines from both the live log and the rotated gz
+    # ramboq.com is configured (via /etc/nginx/conf.d/00-cloudflare-real-ip.conf
+    # + per-server access_log overrides) to write to a dedicated log file in
+    # the ramboq_visitor format. Reading this file directly avoids having to
+    # disambiguate the prod box's other sites (marathakalyanam, ramanaambore,
+    # webhook etc) from the visitor-traffic stream.
     log_dir = Path("/var/log/nginx")
     all_lines: list[str] = []
-    for fname in ("access.log", "access.log.1.gz"):
+    for fname in ("ramboq-access.log", "ramboq-access.log.1", "ramboq-access.log.1.gz"):
         all_lines.extend(_read_log_file(log_dir / fname))
 
     logger.info(
