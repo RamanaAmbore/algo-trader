@@ -31,6 +31,7 @@
   } from '$lib/data/indexConstituents';
   import { visibleInterval } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
+  import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
@@ -564,6 +565,15 @@
   let funds = $state(/** @type {any[]} */ ([]));
 
   let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
+  // Local $state mirror of the liveLtp store — keeps the sparkline
+  // cellRenderer and the LTP override logic inside buildUnified readable
+  // without importing a store subscription into every call-site. Updated
+  // by a single $effect below so Svelte 5's reactivity chain stays intact.
+  let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
+  $effect(() => {
+    const unsub = liveLtp.subscribe(v => { _liveLtpSnap = v; });
+    return unsub;
+  });
   let stopWS;
 
   // ── Manual group order + symbol detachment (per-browser overrides) ──
@@ -692,7 +702,9 @@
   let _tickMs = 5000;
   let _tickCount = 0;
   // Multipliers (relative to the base tick):
-  //   quotes    — every tick   (fast, lightweight quote/batch call)
+  //   quotes    — every tick when SSE is down; every 6 ticks when SSE is live
+  //               (30s — OHLC / volume / watchlist fields still need polling,
+  //               but LTP is served by the stream so the 5s poll is redundant)
   //   pulse+funds — every 2 ticks (positions + holdings + funds)
   //   movers    — every 6 ticks
   //   sparklines — every 12 ticks (daily-closes don't change intraday;
@@ -700,11 +712,27 @@
   const _TICK_PULSE = 2;
   const _TICK_MOVERS = 6;
   const _TICK_SPARK = 12;
+  // When the SSE stream is healthy, loadQuotes only runs every N ticks
+  // (5s × 6 = 30s). When the stream is down it runs every tick (5s)
+  // so LTP freshness is maintained through the polling fallback.
+  const _TICK_QUOTES_SSE = 6;
+  // Bridge $store.streamOpen into a local $state variable so $derived
+  // and regular JS reads work without the store subscription wrapping.
+  let _liveStreamUp = $state(false);
+  $effect(() => {
+    const unsub = streamOpen.subscribe(v => { _liveStreamUp = v; });
+    return unsub;
+  });
   let _refreshing = $state(false);
   async function _runTick() {
     _tickCount++;
-    // Always: refresh live quotes for visible symbols.
-    await loadQuotes();
+    // When the SSE stream is live, LTP ticks arrive in real time so we
+    // only poll the /watchlist/{id}/quotes endpoints at a reduced cadence
+    // (every 6 ticks ≈ 30 s) to refresh OHLC, volume, and other non-LTP
+    // fields. When the stream is down every tick triggers the full poll
+    // so LTP freshness degrades gracefully to the 5 s polling baseline.
+    const quotesDue = !_liveStreamUp || (_tickCount % _TICK_QUOTES_SSE === 0);
+    if (quotesDue) await loadQuotes();
     if (_tickCount % _TICK_PULSE === 0) {
       await loadPulse();
       if (showFunds) await loadFunds();
@@ -977,6 +1005,11 @@
     // Keyboard shortcuts — scoped to this wrapper only.
     document.addEventListener('keydown', handleKeydown);
     document.addEventListener('click', onDocClick);
+
+    // SSE quote stream — live LTP pushed from the server's KiteTicker
+    // WebSocket. startQuoteStream() is idempotent so multiple Pulse
+    // instances on the same page share one connection.
+    startQuoteStream();
   });
 
   async function loadFunds() {
@@ -1488,7 +1521,9 @@
   // ag-Grid doesn't observe $state reads inside cell renderers, so
   // sparkline updates after the row data has stabilised won't trigger
   // a re-render on their own. Explicitly refresh the Curve column
-  // whenever the sparklines map changes.
+  // whenever the sparklines map changes. Live LTP tail updates are
+  // handled by the separate RAF-debounced effect below (it also
+  // refreshes the sparkline column via _liveLtpSnap → sparkRenderer).
   $effect(() => {
     sparklines;
     // Refresh the Curve column on every grid that's mounted.
@@ -1498,6 +1533,26 @@
     if (gridHoldingsReady   && gridHoldings)   gridHoldings.refreshCells({ columns: ['sparkline'], force: true });
     if (gridWinReady        && gridWin)        gridWin.refreshCells({ columns: ['sparkline'], force: true });
     if (gridLoseReady       && gridLose)       gridLose.refreshCells({ columns: ['sparkline'], force: true });
+  });
+
+  // Refresh both the LTP column and sparkline tail whenever the SSE
+  // stream delivers a new tick. RAF-debounced: multiple ticks arriving
+  // in the same JS event-loop turn are coalesced into one grid refresh
+  // per animation frame (~60 fps cap) to avoid flooding the renderer.
+  let _ltpRafPending = false;
+  $effect(() => {
+    _liveLtpSnap; // subscribe — re-runs on every tick map update
+    if (_ltpRafPending) return;
+    _ltpRafPending = true;
+    requestAnimationFrame(() => {
+      _ltpRafPending = false;
+      if (gridPinnedReady     && gridPinned)     gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridWatchReady      && gridWatch)      gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridPositionsReady  && gridPositions)  gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridHoldingsReady   && gridHoldings)   gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridWinReady        && gridWin)        gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridLoseReady       && gridLose)       gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+    });
   });
 
   // Per-source summary derivations for the two separate summary grids.
@@ -1634,6 +1689,7 @@
 
   onDestroy(() => {
     stopPulseTick?.(); stopWS?.();
+    stopQuoteStream();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     gridPinned?.destroy?.();
@@ -2760,10 +2816,16 @@
    */
   function sparkRenderer(params) {
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
-    const closes = sparklines[sym];
-    if (!closes || closes.length < 2) {
+    const base   = sparklines[sym];
+    if (!base || base.length < 2) {
       return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:#7e97b8;font-size:0.6rem">—</span>';
     }
+    // Override the last (today's) point with the live SSE LTP when
+    // available — sparkline tail tracks the real-time price.
+    const liveTail = _liveLtpSnap[sym] ?? null;
+    const closes = liveTail != null
+      ? [...base.slice(0, -1), liveTail]
+      : base;
     // SVG centered inside a flex wrapper that fills the cell, so left
     // and right whitespace are equal regardless of column width. An
     // inline-block + symmetric padding earlier sat against the cell's
@@ -2933,9 +2995,17 @@
       headerClass: 'ag-header-cell-spark',
     };
     const _ltpCol = {
-      field: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
+      // valueGetter reads _liveLtpSnap first (real-time SSE tick) and
+      // falls back to the polled row.ltp from buildUnified. ag-Grid
+      // re-evaluates the getter when refreshCells is called on 'ltp'.
+      colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: RA,
+      valueGetter: (p) => {
+        if (!p.data) return null;
+        const sym = String(p.data.tradingsymbol || '').toUpperCase();
+        return _liveLtpSnap[sym] ?? p.data.ltp ?? null;
+      },
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
     };
     const _prevCol = {

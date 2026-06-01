@@ -293,6 +293,13 @@ async def _start_kite_ticker() -> None:
             )
             return
 
+        # Wire the running asyncio event loop into the BroadcastBus before
+        # starting the ticker. This must happen before kws.connect() so that
+        # any early ticks from _on_ticks can be published to SSE clients.
+        # asyncio.get_event_loop() is safe here because _start_kite_ticker
+        # is called from an on_startup coroutine which runs on the main loop.
+        import asyncio as _asyncio
+        get_ticker().set_loop(_asyncio.get_event_loop())
         get_ticker().start(api_key, access_token)
 
     except KeyError:

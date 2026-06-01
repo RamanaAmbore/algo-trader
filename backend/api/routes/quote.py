@@ -4,25 +4,61 @@ Used by the frontend command bar to suggest LIMIT prices around current price.
 
 GET  /api/quote/?exchange=NSE&tradingsymbol=RELIANCE  → { ltp, tick_size }
 POST /api/quotes/sparkline                            → { data, refreshed_at }
+GET  /api/quotes/stream                               → SSE LTP tick stream
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import msgspec
-from litestar import Controller, get, post
+from litestar import Controller, Request, get, post
 from litestar.exceptions import HTTPException
 from litestar.params import Parameter
+from litestar.response import ServerSentEvent
 
 from backend.api.auth_guard import auth_or_demo_guard
 from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Instrument-token helper (shared by sparkline + watchlist Phase 2 hook) ───
+
+async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | None:
+    """
+    Resolve a single (tradingsymbol, exchange) pair to its Kite
+    instrument_token. Used by the watchlist add-item hook to subscribe the
+    new symbol to the TickerManager immediately after DB insert.
+
+    Walks exchange → NFO → BFO → NSE → BSE in order, same as the sparkline
+    instrument-lookup. Returns None on any failure so callers can treat the
+    subscription as best-effort.
+    """
+    try:
+        from backend.shared.brokers.registry import get_sparkline_broker
+        broker = get_sparkline_broker()
+    except Exception:
+        return None
+
+    sym  = tradingsymbol.upper().strip()
+    exch = exchange.upper().strip()
+    order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
+
+    for ex in order:
+        try:
+            insts = await asyncio.to_thread(broker.instruments, ex) or []
+        except Exception:
+            continue
+        for inst in insts:
+            if str(inst.get("tradingsymbol") or "").upper() == sym:
+                return int(inst["instrument_token"])
+    return None
 
 
 class DepthLevel(msgspec.Struct):
@@ -546,6 +582,67 @@ class SparklineController(Controller):
             data=result,
             refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
+
+    @get("/stream")
+    async def quote_stream(self, request: Request) -> ServerSentEvent:
+        """
+        GET /api/quotes/stream
+
+        Server-Sent Events stream of LTP ticks from the KiteTicker
+        WebSocket. Clients open this via the browser's EventSource API
+        and receive per-tick deltas without polling.
+
+        Protocol:
+          event: snapshot   — sent once on connect; data is a JSON object
+                              mapping token (string) → {ltp, sym}. Lets the
+                              client populate its LTP map immediately.
+          event: tick       — one per instrument per Kite tick frame; data
+                              is {"tok":<int>, "sym":<str>, "ltp":<float>,
+                              "ts":<unix-seconds>}.
+          event: heartbeat  — sent every 30 s when no tick arrives, so
+                              load-balancers / proxies don't kill the idle
+                              connection. data is "1".
+
+        Backpressure:
+          Each SSE client owns a private asyncio.Queue(maxsize=1000).
+          If the client reads slower than the tick rate, put_nowait silently
+          drops ticks (QueueFull is swallowed in BroadcastBus._put_nowait).
+          The client reconnects via EventSource retry — it will receive a
+          fresh snapshot on reconnect and resume from current state.
+
+        Security:
+          Protected by auth_or_demo_guard at the controller level.
+          Demo sessions receive the same tick stream as authenticated
+          users — ticks carry no personally-identifiable information,
+          only public market prices.
+        """
+        from backend.shared.helpers.kite_ticker import get_ticker
+
+        ticker = get_ticker()
+
+        async def _event_gen() -> AsyncGenerator:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+            ticker.bus.register(queue)
+            try:
+                # Initial snapshot so the client has a starting LTP map
+                # without waiting for the first tick.
+                snap = ticker.snapshot()
+                yield {"event": "snapshot", "data": json.dumps(snap)}
+
+                while True:
+                    # 30-second heartbeat timeout — keeps the connection
+                    # alive through proxies / load-balancers that drop
+                    # idle connections. Kite ticks every ~1 s during market
+                    # hours so in practice heartbeats only fire off-hours.
+                    try:
+                        payload = await asyncio.wait_for(queue.get(), timeout=30.0)
+                        yield {"event": "tick", "data": json.dumps(payload)}
+                    except asyncio.TimeoutError:
+                        yield {"event": "heartbeat", "data": "1"}
+            finally:
+                ticker.bus.unregister(queue)
+
+        return ServerSentEvent(_event_gen())
 
 
 # ── Background warm helper ────────────────────────────────────────────────────

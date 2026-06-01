@@ -61,12 +61,80 @@ actually manifests on prod.
 
 from __future__ import annotations
 
+import asyncio
 import threading
+import time
 from typing import Iterable
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── BroadcastBus ──────────────────────────────────────────────────────────────
+
+class BroadcastBus:
+    """
+    Thread-safe fan-out from the Twisted reactor thread to N asyncio Queues.
+
+    Pattern:
+      • One BroadcastBus is shared by the TickerManager singleton.
+      • set_loop() is called once at app startup with the running event loop.
+      • SSE route handlers call register() on connect, unregister() on
+        disconnect.
+      • _on_ticks calls bus.publish() for each tick frame. publish() uses
+        loop.call_soon_threadsafe() to schedule a put_nowait on every
+        registered queue without blocking the Twisted reactor.
+
+    Backpressure: slow consumers whose queue is full silently drop the tick
+    (put_nowait raises QueueFull which is caught and discarded). One missed
+    tick does not break the SSE stream — the client was just reading too
+    slowly and will catch up on the next tick.
+    """
+
+    def __init__(self) -> None:
+        self._queues: set[asyncio.Queue] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Call once at startup from the asyncio event loop thread."""
+        self._loop = loop
+
+    def register(self, queue: asyncio.Queue) -> None:
+        with self._lock:
+            self._queues.add(queue)
+
+    def unregister(self, queue: asyncio.Queue) -> None:
+        with self._lock:
+            self._queues.discard(queue)
+
+    def publish(self, payload: dict) -> None:
+        """
+        Called from the Twisted reactor thread.
+
+        Schedules a put_nowait on every registered asyncio.Queue via the
+        main event loop. Uses call_soon_threadsafe so the call is safe to
+        invoke from any thread. QueueFull and closed-loop errors are
+        swallowed silently to never block the Twisted hot path.
+        """
+        if not self._loop:
+            return
+        with self._lock:
+            queues = list(self._queues)
+        for q in queues:
+            try:
+                self._loop.call_soon_threadsafe(self._put_nowait, q, payload)
+            except RuntimeError:
+                # Event loop is closed — app shutting down; ignore.
+                pass
+
+    @staticmethod
+    def _put_nowait(q: asyncio.Queue, payload: dict) -> None:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            pass  # slow consumer — drop tick, stream will catch up
 
 
 class TickerManager:
@@ -79,11 +147,13 @@ class TickerManager:
     def __init__(self) -> None:
         self._kws = None                          # KiteTicker instance
         self._tick_map: dict[int, float] = {}     # token → last_price
+        self._token_to_sym: dict[int, str] = {}   # token → tradingsymbol (for SSE payload)
         self._lock = threading.Lock()
         self._subscribed: set[int] = set()        # tokens live on the socket
         self._pending: set[int] = set()           # tokens queued pre-connect
         self._connected: bool = False
         self._started: bool = False
+        self._bus = BroadcastBus()                # fan-out to SSE clients
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -113,6 +183,38 @@ class TickerManager:
         except Exception:
             logger.exception("KiteTicker: connect() failed — ticker disabled")
             self._started = False
+
+    @property
+    def bus(self) -> BroadcastBus:
+        """The SSE broadcast bus — SSE route handlers register their queues here."""
+        return self._bus
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Wire the asyncio event loop so the bus can use call_soon_threadsafe."""
+        self._bus.set_loop(loop)
+
+    def subscribe_with_sym(self, token_sym_pairs: Iterable[tuple[int, str]]) -> None:
+        """
+        Like subscribe() but also records the tradingsymbol for each token so
+        the SSE tick payload can include `sym` without a reverse-lookup table
+        on the client side.
+        """
+        pairs = [(int(t), sym) for t, sym in token_sym_pairs]
+        with self._lock:
+            for tok, sym in pairs:
+                self._token_to_sym[tok] = sym
+        self.subscribe(tok for tok, _ in pairs)
+
+    def snapshot(self) -> dict[int, dict]:
+        """
+        Return a snapshot of all currently-held ticks as
+        {token: {ltp, sym}} for the SSE initial-snapshot event.
+        """
+        with self._lock:
+            return {
+                tok: {"ltp": lp, "sym": self._token_to_sym.get(tok, "")}
+                for tok, lp in self._tick_map.items()
+            }
 
     def subscribe(self, tokens: Iterable[int]) -> None:
         """
@@ -227,18 +329,36 @@ class TickerManager:
         Hot path — fires on every WebSocket tick frame.
 
         Merges the incoming last_price values into _tick_map under the
-        lock. The lock hold-time is proportional to len(ticks), which
-        for MODE_LTP frames is a flat list of {instrument_token,
-        last_price} dicts — typically 20-200 entries per frame at
-        5 req/sec cadence. This is fast enough to never back-pressure
-        the Twisted reactor.
+        lock, then publishes each tick to the BroadcastBus so SSE
+        clients receive near-real-time updates.
+
+        The lock hold-time is proportional to len(ticks), which for
+        MODE_LTP frames is a flat list of {instrument_token, last_price}
+        dicts — typically 20-200 entries per frame at 5 req/sec cadence.
+        Bus.publish() is called outside the lock to minimise hold time —
+        it acquires its own internal lock briefly to snapshot the queue
+        set.
         """
+        to_publish: list[dict] = []
+        ts = int(time.time())
         with self._lock:
             for t in ticks:
                 tok = t.get("instrument_token")
                 lp  = t.get("last_price")
                 if tok is not None and lp is not None:
-                    self._tick_map[int(tok)] = float(lp)
+                    tok = int(tok)
+                    lp  = float(lp)
+                    self._tick_map[tok] = lp
+                    to_publish.append({
+                        "tok": tok,
+                        "sym": self._token_to_sym.get(tok, ""),
+                        "ltp": lp,
+                        "ts":  ts,
+                    })
+        # Publish outside the lock so the Twisted reactor is not held
+        # while the bus iterates its queue set.
+        for payload in to_publish:
+            self._bus.publish(payload)
 
     def _on_close(self, _ws, code, reason) -> None:
         with self._lock:

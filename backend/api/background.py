@@ -520,6 +520,49 @@ async def _task_performance(state: dict) -> None:
                 except Exception as ae:
                     logger.error(f"Background: agent engine failed: {ae}")
 
+            # Phase 2 — seed KiteTicker with any newly-discovered symbols
+            # from the live positions + holdings book. The sparkline warm
+            # task handles watchlist symbols; this covers the trading book
+            # (F&O positions, held equities) which changes intraday.
+            # subscribe() is idempotent — re-subscribing known tokens is a
+            # no-op. We never unsubscribe stale symbols (Phase 2 simplicity).
+            try:
+                from backend.shared.helpers.kite_ticker import get_ticker as _get_ticker
+                from backend.api.routes.quote import _resolve_token_for_sym as _rts
+                _ticker = _get_ticker()
+                # Collect tradingsymbol+exchange pairs from both DataFrames.
+                _book_pairs: list[tuple[str, str]] = []
+                for _df, _default_exch in (
+                    (df_holdings, "NSE"),
+                    (df_positions, "NFO"),
+                ):
+                    if _df is not None and not _df.empty:
+                        for _, _row in _df.iterrows():
+                            _sym  = str(_row.get("tradingsymbol") or "").strip().upper()
+                            _exch = str(_row.get("exchange") or _default_exch).strip().upper()
+                            if _sym:
+                                _book_pairs.append((_sym, _exch))
+                # Resolve tokens for symbols not yet in the ticker.
+                # Batch into one exchange→instruments call per unique exchange.
+                _need_resolve = [
+                    (sym, exch) for sym, exch in _book_pairs
+                    # A token is already subscribed if get_ltp() returns
+                    # non-None — proxy check without exposing _subscribed.
+                    # We use a simple "not in _token_to_sym by sym" proxy: if
+                    # we don't have a sym mapping we haven't subscribed it.
+                    if sym not in {v for v in _ticker._token_to_sym.values()}
+                ]
+                if _need_resolve:
+                    for _sym, _exch in _need_resolve[:50]:  # cap 50 per cycle
+                        try:
+                            _tok = await _rts(_sym, _exch)
+                            if _tok is not None:
+                                _ticker.subscribe_with_sym([(_tok, _sym)])
+                        except Exception:
+                            pass
+            except Exception as _tke:
+                logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
+
             # Invalidate only the caches this refresh actually renewed.
             # News / market / instruments have their own longer TTLs (days)
             # and don't change per tick — evicting them here used to force

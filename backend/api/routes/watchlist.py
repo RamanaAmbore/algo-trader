@@ -895,6 +895,25 @@ class WatchlistController(Controller):
             session.add(it)
             wl.updated_at = now
             await session.commit()
+        # Phase 2 — dynamic subscription: push the new symbol to the
+        # KiteTicker so live ticks start flowing immediately. Never
+        # unsubscribes (Phase 2 simplicity): Kite supports ~3000 tokens
+        # per connection and leftover subs from removed items are cheap.
+        # Revisit if subscribed_count approaches 2500.
+        try:
+            from backend.api.routes.quote import _resolve_token_for_sym
+            from backend.shared.helpers.kite_ticker import get_ticker
+            tok = await _resolve_token_for_sym(tradingsymbol, exchange)
+            if tok is not None:
+                get_ticker().subscribe_with_sym([(tok, tradingsymbol)])
+                logger.debug(
+                    f"Watchlist: subscribed ticker token={tok} for "
+                    f"{exchange}:{tradingsymbol}"
+                )
+        except Exception as _te:
+            # Non-fatal — ticker subscription failing never blocks the add.
+            logger.debug(f"Watchlist: ticker subscribe skipped for "
+                         f"{exchange}:{tradingsymbol}: {_te}")
         return _item_info(it)
 
     @patch("/{wl_id:int}/items/{item_id:int}", guards=[jwt_guard])
