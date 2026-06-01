@@ -491,6 +491,15 @@ export async function fetchPaperStatus() {
   return _get('/charts/paper-status', { auth: true });
 }
 
+/** GET /api/instruments/ — Kite master instrument dump.
+ *  Returns { cycle_date, count, items }. Called by instruments.js on a
+ *  cache miss; result is persisted to IndexedDB so this fires at most
+ *  once per trading day per browser. Token is optional — the endpoint
+ *  is accessible to anonymous demo sessions. */
+export async function fetchInstruments() {
+  return _get('/instruments/', { auth: _hasToken() });
+}
+
 /** GET /api/quote — single-symbol quote with top-5 depth. Used by
  *  OrderTicket / OrderDepth to render the bid/ask ladder while the
  *  ticket is open. Polls every ~1 s for live depth. */

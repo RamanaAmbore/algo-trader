@@ -75,17 +75,8 @@ async function _fetchLtp(exchange, tradingsymbol) {
   if (_pendingLtp.has(key)) return null;
   _pendingLtp.add(key);
   try {
-    // TODO(FIX-26): migrate to fetchQuote from api.js once it can be
-    // imported without risking SSR issues. This file is used outside the
-    // Svelte component lifecycle; dynamic import of stores is required, and
-    // a static api.js import would pull authStore at module level.
-    const { authStore } = await import('$lib/stores');
-    const token = authStore.getToken();
-    const res = await fetch(`/api/quote/?exchange=${encodeURIComponent(exchange)}&tradingsymbol=${encodeURIComponent(tradingsymbol)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const { fetchQuote } = await import('$lib/api');
+    const data = await fetchQuote(exchange, tradingsymbol);
     const entry = {
       ltp: data.ltp, bid: data.bid, ask: data.ask,
       depth_buy: data.depth_buy || [], depth_sell: data.depth_sell || [],
