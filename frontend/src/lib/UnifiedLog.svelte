@@ -31,6 +31,7 @@
    *   emptyMessage?: string,
    *   heightClass?:  string,
    *   excludeSim?:   boolean,
+   *   bump?:         number,
    *   cardMode?:     boolean,
    *   tsFormat?:     'short' | 'dual',
    * }} */
@@ -41,6 +42,11 @@
     emptyMessage = 'No recent events.',
     heightClass  = 'max-h-48',
     excludeSim   = false,
+    /** Increment to trigger an immediate on-demand reload (e.g. from a
+     *  parent page's RefreshButton). The effect fires whenever this
+     *  value changes, then the regular poll continues as before.
+     *  @type {number} */
+    bump         = /** @type {number} */ (0),
     // cardMode renders each row as a structured card (header line with
     // timestamp + kind chip + order/agent refs; message on its own
     // line) matching the .oes-order-card layout in SymbolPanel. The
@@ -64,6 +70,11 @@
   let rows    = $state(/** @type {any[]} */ ([]));
   let loading = $state(true);
   let error   = $state('');
+
+  // On-demand refresh triggered by parent incrementing `bump`.
+  $effect(() => {
+    if (bump > 0) _fetch();
+  });
 
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let _interval;

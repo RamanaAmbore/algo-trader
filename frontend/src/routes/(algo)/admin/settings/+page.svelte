@@ -8,6 +8,7 @@
   import { goto } from '$app/navigation';
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSettings, updateSetting, resetSetting } from '$lib/api';
   import Select   from '$lib/Select.svelte';
 
@@ -128,6 +129,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
+    <RefreshButton onClick={load} {loading} label="settings" />
     <PageHeaderActions />
   </span>
 </div>

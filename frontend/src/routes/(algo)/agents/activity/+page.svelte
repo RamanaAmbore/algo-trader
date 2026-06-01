@@ -9,12 +9,14 @@
 <script>
   import { nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
 
   // Match the dashboard's default — fires only, with an opt-in to
   // surface action successes / errors.
   let showActions = $state(false);
+  let _bump       = $state(0);
   const kinds = $derived(
     showActions
       ? ['agent_fire', 'agent_action_success', 'agent_action_error']
@@ -33,6 +35,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
+    <RefreshButton onClick={() => _bump++} label="activity" />
     <PageHeaderActions />
   </span>
 </div>
@@ -58,6 +61,7 @@
     filter={{ kinds }}
     excludeSim={true}
     maxRows={100}
+    bump={_bump}
     emptyMessage="No agent fires yet today." />
 </section>
 

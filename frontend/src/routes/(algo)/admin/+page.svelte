@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
@@ -335,6 +336,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
+    <RefreshButton onClick={load} {loading} label="users" />
     <button onclick={() => showCreate = !showCreate}
       class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
       {showCreate ? 'Cancel' : '+ Create User'}
