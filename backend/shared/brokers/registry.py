@@ -377,6 +377,63 @@ def get_historical_brokers() -> list[Broker]:
     return ordered
 
 
+def get_sparkline_broker() -> Broker:
+    """
+    Sister of `get_price_broker()` — picks a Kite account distinct from
+    the chart-historical pinned account so the two read workloads don't
+    fight over the same 3 req/sec historical_data budget.
+
+    Selection order:
+      1. `connections.sparkline_account` setting (operator pin) — if set
+         and the account is loaded + historical_data_enabled.
+      2. The FIRST eligible Kite account that is NOT
+         `connections.price_account` (the chart-historical pin).
+      3. Fallback to `get_price_broker()` when only one Kite account is
+         loaded — single-broker setups behave exactly as before.
+
+    Returns a PriceBroker (auto-failover wrapper) so a single account in
+    cool-off doesn't break sparklines. Just rotates the *primary* pick.
+    """
+    from backend.shared.helpers.settings import get_string
+
+    accounts = list(Connections().conn.keys())
+    if not accounts:
+        raise KeyError("No broker accounts configured.")
+
+    kite_accounts = [a for a in accounts if _broker_id_for(a) == "zerodha_kite"
+                                       and _is_hist_enabled(a)]
+    chart_pinned = (get_string("connections.price_account", "") or "").strip()
+    spark_pinned = (get_string("connections.sparkline_account", "") or "").strip()
+
+    ordered: list[Broker] = []
+    seen: set[str] = set()
+
+    # 1. Explicit sparkline pin wins when set + valid.
+    if spark_pinned and spark_pinned in accounts and spark_pinned in kite_accounts:
+        ordered.append(get_broker(spark_pinned))
+        seen.add(spark_pinned)
+    else:
+        # 2. First Kite account that's NOT the chart-historical pin.
+        for a in kite_accounts:
+            if a != chart_pinned:
+                ordered.append(get_broker(a))
+                seen.add(a)
+                break
+
+    # 3. Pad with everything else (sorted by priority) so failover still
+    # works if the primary pick stutters. Mirrors get_price_broker shape.
+    remaining = [a for a in accounts if a not in seen]
+    remaining.sort(key=lambda a: (_account_priority(a), accounts.index(a)))
+    for acct in remaining:
+        ordered.append(get_broker(acct))
+
+    # If we couldn't find a distinct Kite account (only one Kite loaded),
+    # fall back to the standard price-broker chain — behaviour-preserving.
+    if not ordered:
+        return get_price_broker()
+    return PriceBroker(ordered)
+
+
 def get_price_broker() -> Broker:
     """
     Auto-failover broker for shared market-data fetches (underlying

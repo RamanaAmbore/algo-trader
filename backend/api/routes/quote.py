@@ -264,7 +264,10 @@ class SparklineController(Controller):
         Missing / un-resolvable symbols are silently omitted (no 404).
         Broker unreachable → empty data dict instead of 502.
         """
-        from backend.shared.brokers.registry import get_price_broker
+        # Sparkline uses get_sparkline_broker (different Kite account
+        # than chart-historical when two are loaded) so the two read
+        # workloads don't contend for the same 3 req/sec budget.
+        from backend.shared.brokers.registry import get_sparkline_broker
 
         syms = data.symbols or []
         if not syms:
@@ -302,7 +305,7 @@ class SparklineController(Controller):
 
         # Resolve instrument tokens for all un-cached symbols.
         try:
-            broker = get_price_broker()
+            broker = get_sparkline_broker()
         except Exception as exc:
             logger.warning(f"sparkline: broker unavailable: {exc}")
             return SparklineResponse(data=result, refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
