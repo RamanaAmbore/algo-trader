@@ -919,8 +919,8 @@ class VisitorLog(Base):
     __tablename__ = "visitor_log"
 
     id:            Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
-    ip:            Mapped[str]            = mapped_column(String(45), nullable=False, index=True)   # IPv4 or IPv6
-    seen_date:     Mapped[datetime]       = mapped_column(Date, nullable=False, index=True)          # UTC date
+    ip:            Mapped[str]            = mapped_column(String(45), nullable=False)               # IPv4 or IPv6
+    seen_date:     Mapped[datetime]       = mapped_column(Date, nullable=False)                      # UTC date
     country:       Mapped[Optional[str]]  = mapped_column(String(2),   nullable=True)                # ISO-2 e.g. "IN"
     region:        Mapped[Optional[str]]  = mapped_column(String(8),   nullable=True)                # ISO subdivision e.g. "KA"
     city:          Mapped[Optional[str]]  = mapped_column(String(80),  nullable=True)

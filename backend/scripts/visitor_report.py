@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.date_time_utils import INDIAN_TIMEZONE as _IST
 
 logger = get_logger(__name__)
 
@@ -106,12 +107,15 @@ def _parse_lines(lines: list[str], target: date) -> dict[str, _IPRecord]:
         ip, cf_country, time_str, request_line, _status, ua = (
             m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6),
         )
-        # Filter by date
+        # Filter by IST date — the report cadence is tied to MCX closure
+        # (23:35 IST), so each report covers a calendar IST day that
+        # straddles two UTC dates. `target` is the IST date the report
+        # represents.
         try:
             dt = datetime.strptime(time_str, _TIME_FMT).astimezone(timezone.utc)
         except ValueError:
             continue
-        if dt.date() != target:
+        if dt.astimezone(_IST).date() != target:
             continue
         # Filter static assets / infra paths
         path = _extract_path(request_line)
@@ -167,11 +171,15 @@ def _geo_lookup(ip: str, city_db, asn_db) -> dict:
             asn_num = asn_record.get("autonomous_system_number")
             asn_org = asn_record.get("autonomous_system_organization") or ""
             if asn_num:
-                # Truncate org to fit the column ("AS9498-AIRTEL" style)
-                short_org = asn_org[:18].replace(" ", "-").upper() if asn_org else ""
-                result["asn"] = f"AS{asn_num}-{short_org}" if short_org else f"AS{asn_num}"
-                # Cap at 32 chars (column width)
-                result["asn"] = result["asn"][:32]
+                # `asn` is the short "AS9498" handle; `company` carries the
+                # full network owner ("Google LLC", "Amazon.com Inc.", etc.)
+                # so the report row identifies the corporate visitor when
+                # one is hitting from their office network. WFH visitors
+                # show the ISP (Comcast / AT&T / Jio) — there's no way to
+                # identify the employer from a residential IP.
+                result["asn"] = f"AS{asn_num}"
+                if asn_org:
+                    result["company"] = asn_org.strip()
         except Exception:
             pass
     return result
@@ -315,6 +323,7 @@ def _render_report(
     country_counts: dict[str, int] = defaultdict(int)
     city_counts: dict[str, int] = defaultdict(int)
     path_counts: dict[str, int] = defaultdict(int)
+    company_counts: dict[str, int] = defaultdict(int)
 
     rows: list[tuple] = []
     for ip, rec in records.items():
@@ -323,15 +332,18 @@ def _render_report(
         region  = geo.get("region") or ""
         city    = geo.get("city") or ""
         asn     = geo.get("asn") or ""
+        company = geo.get("company") or ""
         country_counts[country] += rec.count
         if city:
             city_counts[city] += rec.count
+        if company:
+            company_counts[company] += rec.count
         if rec.last_path:
             base = rec.last_path.split("?")[0]
             path_counts[base] += rec.count
         rows.append((
             ip, rec.first_dt, rec.last_dt, rec.count,
-            country, region, city, asn,
+            country, region, city, asn, company,
             rec.last_path or "-", _ua_short(rec.user_agent),
         ))
 
@@ -349,35 +361,60 @@ def _render_report(
         f"{p} {n}"
         for p, n in sorted(path_counts.items(), key=lambda kv: -kv[1])[:8]
     )
+    # Company top-list — surfaces corporate visitors hitting from office
+    # networks at a glance. Residential ISPs (Jio, Comcast, Airtel, BSNL,
+    # AT&T) are filtered out so the list reads as "who's hitting the site
+    # from a known corporate network"; WFH visitors fall through to the
+    # detail table where the ISP name appears in full.
+    _RESIDENTIAL_HINTS = (
+        "JIO", "AIRTEL", "BSNL", "VODAFONE", "BHARTI",
+        "COMCAST", "AT&T", "VERIZON", "SPECTRUM", "CHARTER", "COX", "T-MOBILE",
+        "BT GROUP", "VIRGIN", "SKY UK",
+        "DEUTSCHE TELEKOM", "VODAFONE GMBH", "TELEFONICA", "ORANGE",
+    )
+    def _is_residential(name: str) -> bool:
+        up = name.upper()
+        return any(h in up for h in _RESIDENTIAL_HINTS)
+    _non_residential = [
+        (c, n) for c, n in sorted(company_counts.items(), key=lambda kv: -kv[1])
+        if not _is_residential(c)
+    ][:8]
+    top_companies = (
+        " · ".join(f"{c} {n}" for c, n in _non_residential) if _non_residential else "—"
+    )
 
     lines = [
-        f"# Visitors — {date_str} UTC",
+        f"# Visitors — {date_str} (IST trading day, post-MCX close)",
         "",
         "## Summary",
         f"- **Unique IPs**: {len(records):,}",
         f"- **Total requests**: {total_requests:,}",
         f"- **Top countries**: {top_countries or '—'}",
         f"- **Top cities**: {top_cities or '—'}",
+        f"- **Top companies (corp networks)**: {top_companies or '—'}",
         f"- **Top paths**: {top_paths or '—'}",
         "",
         "## Detail (one row per unique IP)",
-        "| IP | First | Last | Reqs | Country | Region | City | ASN | Last path | UA |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| IP | First | Last | Reqs | Country | Region | City | ASN | Company | Last path | UA |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
 
     cap = 200
-    for i, (ip, first_dt, last_dt, count, country, region, city, asn, path, ua) in enumerate(rows):
+    for i, (ip, first_dt, last_dt, count, country, region, city, asn, company, path, ua) in enumerate(rows):
         if i >= cap:
             remaining = len(rows) - cap
-            lines.append(f"| … | | | | | | | | additional {remaining} IPs | |")
+            lines.append(f"| … | | | | | | | | | additional {remaining} IPs | |")
             break
         first_s = _ts_dual(first_dt)
         last_s  = _ts_dual(last_dt)
         # Truncate path for table readability
         short_path = path[:40] if path else "-"
+        # Company can be quite long ("Google LLC", "Amazon.com, Inc."); cap
+        # at 40 chars but keep full text — common corporate names fit cleanly.
+        company_s = (company[:40] + "…") if len(company) > 40 else company
         lines.append(
             f"| {ip} | {first_s} | {last_s} | {count} "
-            f"| {country} | {region} | {city} | {asn} "
+            f"| {country} | {region} | {city} | {asn} | {company_s} "
             f"| {short_path} | {ua} |"
         )
 
@@ -392,14 +429,15 @@ def run_daily(
     target_date: Optional[date] = None,
     report_dir: str = "/opt/ramboq/.log",
 ) -> Path:
-    """Parse nginx logs for `target_date` (default: yesterday UTC),
-    upsert visitor_log, write markdown report, purge old rows.
+    """Parse nginx logs for `target_date` (default: today IST — the
+    IST trading day that's just closed at MCX, 23:30 IST). Upserts
+    visitor_log, writes markdown report, purges rows older than 30 days.
     Returns the report Path."""
     import asyncio as _asyncio
 
-    today_utc = datetime.now(timezone.utc).date()
+    today_ist = datetime.now(_IST).date()
     if target_date is None:
-        target_date = today_utc - timedelta(days=1)
+        target_date = today_ist
 
     # ramboq.com is configured (via /etc/nginx/conf.d/00-cloudflare-real-ip.conf
     # + per-server access_log overrides) to write to a dedicated log file in

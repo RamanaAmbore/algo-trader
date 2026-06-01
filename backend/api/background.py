@@ -1208,14 +1208,15 @@ async def _task_ticker_watchdog(state: dict) -> None:
 
 async def _task_visitor_log_daily() -> None:
     """
-    Parse yesterday's nginx access.log once per day at 03:30 IST.
+    Parse the day's nginx access.log once per day at 23:35 IST — five
+    minutes after MCX closure (23:30 IST). Reporting at end-of-trading-day
+    aligns the visitor digest with the operator's mental model of a
+    trading session rather than the UTC calendar day.
+
     Upserts visitor_log, writes a markdown report, and sends the
     summary block to Telegram (gated by is_enabled('telegram')).
-
-    Runs 15 min after _task_mcp_audit_cleanup (03:15) to stagger the
-    overnight maintenance window. The task fires immediately on startup
-    with a 60-second delay to let DB init complete, then sleeps until
-    03:30 IST for all subsequent runs.
+    The task fires immediately on startup with a 60-second delay to let
+    DB init complete, then sleeps until the next 23:35 IST.
     """
     from backend.shared.helpers.utils import is_enabled
 
@@ -1247,13 +1248,16 @@ async def _task_visitor_log_daily() -> None:
     await _run_once()
 
     while True:
-        # Daily at 03:30 IST — after sim cleanup (03:00) and mcp audit (03:15).
+        # Daily at 23:35 IST — five minutes after MCX closes (23:30 IST)
+        # so the day's commodity-session traffic is fully in the rear-view
+        # mirror before we summarise. Calendar boundary aligned to the
+        # trading day, not UTC.
         now = timestamp_indian()
-        next_run = now.replace(hour=3, minute=30, second=0, microsecond=0)
+        next_run = now.replace(hour=23, minute=35, second=0, microsecond=0)
         if now >= next_run:
             next_run += timedelta(days=1)
         sleep_s = (next_run - now).total_seconds()
-        logger.info(f"Background: visitor log task sleeping {sleep_s/3600:.1f}h until 03:30 IST")
+        logger.info(f"Background: visitor log task sleeping {sleep_s/3600:.1f}h until 23:35 IST")
         await asyncio.sleep(sleep_s)
         await _run_once()
 
