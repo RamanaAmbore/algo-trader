@@ -31,9 +31,8 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _LOG_RE = re.compile(
-    r'^(\S+)'           # 1: remote_addr
+    r'^(\S+)'           # 1: remote_addr (real visitor IP via CF real-IP)
     r'\s+(\S+)'         # 2: cf_ipcountry (ISO-2 or "-")
-    r'\s+-'             # literal "-"
     r'\s+\[([^\]]+)\]'  # 3: time_local
     r'\s+"([^"]*)"'     # 4: request line  e.g. "GET /pulse HTTP/1.1"
     r'\s+(\d+)'         # 5: status

@@ -24,21 +24,21 @@ import pytest
 # fmt: off
 FIXTURE_LINES = [
     # Normal page hit — should be counted
-    '49.207.222.16 IN - [02/Jun/2026:09:14:32 +0000] "GET /pulse HTTP/1.1" 200 12345 "https://www.google.com/" "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36"',
+    '49.207.222.16 IN [02/Jun/2026:09:14:32 +0000] "GET /pulse HTTP/1.1" 200 12345 "https://www.google.com/" "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36"',
     # Same IP, different path, same day
-    '49.207.222.16 IN - [02/Jun/2026:09:25:10 +0000] "GET /dashboard HTTP/1.1" 200 5432 "-" "Mozilla/5.0 Chrome/137"',
+    '49.207.222.16 IN [02/Jun/2026:09:25:10 +0000] "GET /dashboard HTTP/1.1" 200 5432 "-" "Mozilla/5.0 Chrome/137"',
     # Different IP, same day
-    '1.2.3.4 US - [02/Jun/2026:11:00:00 +0000] "GET / HTTP/1.1" 200 1000 "-" "curl/7.88.1"',
+    '1.2.3.4 US [02/Jun/2026:11:00:00 +0000] "GET / HTTP/1.1" 200 1000 "-" "curl/7.88.1"',
     # Static asset — should be filtered
-    '5.6.7.8 DE - [02/Jun/2026:10:00:00 +0000] "GET /assets/app.css HTTP/1.1" 200 800 "-" "Chrome"',
+    '5.6.7.8 DE [02/Jun/2026:10:00:00 +0000] "GET /assets/app.css HTTP/1.1" 200 800 "-" "Chrome"',
     # JS bundle — should be filtered
-    '5.6.7.8 DE - [02/Jun/2026:10:01:00 +0000] "GET /_app/immutable/entry/start.js HTTP/1.1" 200 400 "-" "Chrome"',
+    '5.6.7.8 DE [02/Jun/2026:10:01:00 +0000] "GET /_app/immutable/entry/start.js HTTP/1.1" 200 400 "-" "Chrome"',
     # Different date — should be excluded
-    '9.9.9.9 SG - [01/Jun/2026:23:59:59 +0000] "GET /orders HTTP/1.1" 200 3000 "-" "Firefox/113"',
+    '9.9.9.9 SG [01/Jun/2026:23:59:59 +0000] "GET /orders HTTP/1.1" 200 3000 "-" "Firefox/113"',
     # Admin path — should be counted
-    '200.100.50.25 BR - [02/Jun/2026:15:30:00 +0000] "GET /admin/settings HTTP/1.1" 200 2000 "-" "Mozilla/5.0 Firefox/113.0"',
+    '200.100.50.25 BR [02/Jun/2026:15:30:00 +0000] "GET /admin/settings HTTP/1.1" 200 2000 "-" "Mozilla/5.0 Firefox/113.0"',
     # CDN probe — should be filtered
-    '10.0.0.1 - - [02/Jun/2026:12:00:00 +0000] "GET /cdn-cgi/rum HTTP/1.1" 200 0 "-" "Cloudflare"',
+    '10.0.0.1 - [02/Jun/2026:12:00:00 +0000] "GET /cdn-cgi/rum HTTP/1.1" 200 0 "-" "Cloudflare"',
     # Malformed line — should be silently skipped
     'NOT A VALID LOG LINE',
 ]
