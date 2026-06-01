@@ -37,7 +37,9 @@
   <div class="cm-modal">
     <div class="cm-header">
       <span class="cm-title">Chart — <span class="cm-sym">{symbol}</span></span>
-      <button type="button" class="cm-close" onclick={onClose} aria-label="Close chart modal">×</button>
+      <button type="button" class="cm-close"
+              onclick={(e) => { e.stopPropagation(); onClose(); }}
+              aria-label="Close chart modal">×</button>
     </div>
     <div class="cm-body">
       <ChartWorkspace
@@ -119,16 +121,28 @@
 
   .cm-close {
     margin-left: auto;
+    width: 1.8rem;
+    height: 1.8rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: none;
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: #f87171;
-    font-size: 0.9rem;
+    font-size: 1.1rem;
     line-height: 1;
-    padding: 1px 7px;
+    padding: 0;
     cursor: pointer;
     font-family: monospace;
     transition: background 0.1s;
+    /* Defensive: ensure the button always receives clicks regardless
+       of any ancestor's pointer-events setting and that nothing inside
+       the chart workspace can paint over it. */
+    pointer-events: auto;
+    position: relative;
+    z-index: 2;
+    flex-shrink: 0;
   }
   .cm-close:hover {
     background: rgba(248, 113, 113, 0.15);

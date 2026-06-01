@@ -106,7 +106,9 @@
           Agent Log
         </button>
       </div>
-      <button class="alm-close" onclick={onClose} aria-label="Close activity log">×</button>
+      <button class="alm-close"
+              onclick={(e) => { e.stopPropagation(); onClose(); }}
+              aria-label="Close activity log">×</button>
     </div>
 
     <!-- Body ──────────────────────────────────────────────────────── -->

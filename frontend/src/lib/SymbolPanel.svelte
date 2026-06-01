@@ -639,7 +639,8 @@
         </span>
       {/if}
       {#if !inline}
-        <button type="button" class="oes-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
+        <button type="button" class="oes-close" title="Close" aria-label="Close"
+                onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
       {/if}
     </div>
     {/if}
@@ -1132,9 +1133,14 @@
     background: transparent;
     border: 1px solid rgba(255,255,255,0.15);
     color: #c8d8f0;
-    width: 1.55rem;
-    height: 1.55rem;
+    width: 1.8rem;
+    height: 1.8rem;
     border-radius: 3px;
+    /* Defensive: button always receives clicks + sits above panel content */
+    pointer-events: auto;
+    position: relative;
+    z-index: 2;
+    flex-shrink: 0;
     cursor: pointer;
     font-size: 1rem;
     line-height: 1;
