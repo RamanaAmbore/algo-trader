@@ -164,56 +164,52 @@
     border-radius: 4px;
     cursor: pointer;
     flex-shrink: 0;
-    transition: transform 0.12s, filter 0.12s, box-shadow 0.12s;
-  }
-  .pha-btn:hover:not(:disabled) {
-    transform: translateY(-1px);
-    filter: brightness(1.18);
-  }
-  .pha-btn:active:not(:disabled) {
-    transform: translateY(0);
-    filter: brightness(0.95);
+    /* Mellow base — soft tinted background, no gradient, no shadow.
+       The per-button accent colour lives on the border + icon stroke
+       so the buttons read as a quiet trio rather than three saturated
+       pills competing with the page-title chip. */
+    background: rgba(255, 255, 255, 0.03);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   .pha-btn:disabled {
-    opacity: 0.38;
+    opacity: 0.35;
     cursor: not-allowed;
   }
-  /* Remove default focus ring; provide a tasteful custom one. */
   .pha-btn:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.45);
+    outline: 1px solid rgba(255, 255, 255, 0.40);
     outline-offset: 2px;
   }
 
-  /* ── Order button — vivid amber ──────────────────────────────── */
+  /* ── Order button — muted amber ──────────────────────────────── */
   .pha-order {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-    border: 1px solid rgba(252, 211, 77, 0.85);
-    color: #1a1410;
-    box-shadow: 0 2px 6px rgba(245, 158, 11, 0.38);
+    border: 1px solid rgba(251, 191, 36, 0.40);
+    color: #fbbf24;
   }
   .pha-order:hover:not(:disabled) {
-    box-shadow: 0 4px 10px rgba(245, 158, 11, 0.52);
+    background: rgba(251, 191, 36, 0.12);
+    border-color: rgba(252, 211, 77, 0.65);
+    color: #fcd34d;
   }
 
-  /* ── Chart button — vivid cyan ───────────────────────────────── */
+  /* ── Chart button — muted cyan ───────────────────────────────── */
   .pha-chart {
-    background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
-    border: 1px solid rgba(103, 232, 249, 0.85);
-    color: #0a1a1f;
-    box-shadow: 0 2px 6px rgba(6, 182, 212, 0.38);
+    border: 1px solid rgba(34, 211, 238, 0.40);
+    color: #22d3ee;
   }
   .pha-chart:hover:not(:disabled) {
-    box-shadow: 0 4px 10px rgba(6, 182, 212, 0.52);
+    background: rgba(34, 211, 238, 0.12);
+    border-color: rgba(103, 232, 249, 0.65);
+    color: #67e8f9;
   }
 
-  /* ── Log button — vivid violet ───────────────────────────────── */
+  /* ── Log button — muted violet ───────────────────────────────── */
   .pha-log {
-    background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);
-    border: 1px solid rgba(216, 180, 254, 0.85);
-    color: #1a0f24;
-    box-shadow: 0 2px 6px rgba(168, 85, 247, 0.38);
+    border: 1px solid rgba(168, 85, 247, 0.40);
+    color: #a855f7;
   }
   .pha-log:hover:not(:disabled) {
-    box-shadow: 0 4px 10px rgba(168, 85, 247, 0.52);
+    background: rgba(168, 85, 247, 0.12);
+    border-color: rgba(216, 180, 254, 0.65);
+    color: #c084fc;
   }
 </style>
