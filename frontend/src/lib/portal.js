@@ -17,16 +17,18 @@
  */
 export function portal(node, enabled = true) {
   if (!enabled) return {};
-  const originalParent = node.parentNode;
   document.body.appendChild(node);
   return {
     destroy() {
-      // Re-adopt the node to its original parent so Svelte's normal
-      // DOM teardown can find and remove it. If the original parent
-      // is already gone (e.g. during a full page tear-down), skip.
-      if (originalParent && originalParent !== node.parentNode) {
-        try { originalParent.appendChild(node); } catch (_) { /* parent gone */ }
-      }
+      // Svelte's reconciler tries to remove this node from its anchored
+      // slot in the source tree — but the node was moved to <body> on
+      // mount, so Svelte's targeted remove can't find it and silently
+      // no-ops, leaving the node orphaned in <body>. Remove the node
+      // explicitly here so closing the modal actually unmounts the DOM.
+      // (Restoring to originalParent — the previous behaviour — caused
+      // the X / Esc close path to fail: cmDestroyCalls=1 fired but
+      // overlaysInDom stayed at 1, the modal visually stayed open.)
+      try { node.parentNode?.removeChild(node); } catch (_) { /* already removed */ }
     },
   };
 }
