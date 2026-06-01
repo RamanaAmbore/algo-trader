@@ -1430,11 +1430,12 @@
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
   }
-  /* Page-header timestamp leaves only a hair of space before the
-     notification bells — operator feedback: the gap was pushing the
-     agent icon to a second line on mobile. The bells then sit flush
-     against each other. */
+  /* Page-header timestamp — leaves only a hair before the bells (operator
+     feedback: gap was pushing the agent icon to a second line on mobile)
+     but takes a small left-margin so the title chip and timestamp aren't
+     crowded against each other. */
   :global(.page-header .algo-ts) {
+    margin-left: 0.5rem;
     margin-right: 0.15rem;
   }
   /* Title chip cluster on the LEFT of every algo page header. Without
