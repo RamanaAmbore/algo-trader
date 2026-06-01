@@ -650,7 +650,7 @@ The `<span class="page-header-actions">` wrapper keeps all icons together as a s
 
 `PageHeaderActions` renders three vibrant gradient buttons:
 - **Order** — vivid amber (`#f59e0b → #d97706`). Opens `SymbolPanel` (order ticket). Hidden on `/orders` (`hideOrder={true}`).
-- **Chart** — vivid cyan (`#06b6d4 → #0891b2`). Opens `ChartModal`. Disabled (opacity 38%) when no `symbol` prop. Hidden on `/charts` (`hideChart={true}`).
+- **Chart** — vivid cyan (`#06b6d4 → #0891b2`). With a `symbol` prop in scope, opens `ChartModal` inline. Without one (Pulse / Dashboard / Agents / etc.) the icon navigates to the `/charts` workspace where the operator picks a symbol — was previously disabled. Hidden on `/charts` (`hideChart={true}`).
 - **Log** — vivid violet (`#a855f7 → #7e22ce`). Opens `ActivityLogModal` (Order Book + Agent Log tabs). Always shown.
 
 Pass `symbol` when the page has a contextual symbol in scope:
@@ -658,7 +658,7 @@ Pass `symbol` when the page has a contextual symbol in scope:
 - `/orders` → `symbol={_entrySymbol}` (+ `hideOrder={true}`)
 - `/admin/research` → `symbol={selected?.symbol ?? ''}`
 - `/charts` → `hideOrder={true} hideChart={true}` (page has its own order button; chart is the page itself)
-- All others → no `symbol` prop (order modal opens with empty picker, chart button is disabled)
+- All others → no `symbol` prop (order modal opens with empty picker; chart icon navigates to `/charts`)
 
 - **Every page that fetches data dynamically MUST have a page-header RefreshButton** wired to its primary load function. If the page has multiple loaders, wrap them: `onClick={() => { loadA(); loadB(); }}`.
 - Exceptions: `console` (command surface, no data), `admin/settings` (form-only), `showcase` (static narrative).

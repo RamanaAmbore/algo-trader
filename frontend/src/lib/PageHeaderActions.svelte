@@ -11,6 +11,7 @@
    */
 
   import { getContext } from 'svelte';
+  import { goto } from '$app/navigation';
   import { executionMode } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -32,7 +33,8 @@
 
   let {
     /** Default symbol to pre-fill the Order + Chart modals.
-     *  When empty the order modal opens with no symbol; chart button is disabled. */
+     *  When empty the order modal opens with no symbol; the chart icon
+     *  navigates to the /charts workspace (no symbol pre-selected). */
     symbol    = /** @type {string} */ (''),
     /** Default exchange hint for the modals. */
     exchange  = /** @type {string} */ (''),
@@ -56,7 +58,13 @@
   }
 
   function _openChart() {
-    if (!symbol) return;
+    // No symbol in scope (Pulse / Dashboard / Agents etc.) → navigate to
+    // the /charts workspace where the operator picks one. With a symbol
+    // in scope (Options / Orders / Research) open ChartModal inline.
+    if (!symbol) {
+      goto('/charts');
+      return;
+    }
     _orderOpen = false;
     _logOpen   = false;
     _chartOpen = true;
@@ -88,9 +96,8 @@
   {#if !hideChart}
     <button type="button" class="pha-btn pha-chart"
             onclick={_openChart}
-            disabled={!symbol}
-            title={symbol ? `Chart — ${symbol}` : 'Chart'}
-            aria-label={symbol ? `Open chart for ${symbol}` : 'Open chart'}>
+            title={symbol ? `Chart — ${symbol}` : 'Open Charts workspace'}
+            aria-label={symbol ? `Open chart for ${symbol}` : 'Open Charts workspace'}>
       <!-- Polyline chart glyph -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.9"
