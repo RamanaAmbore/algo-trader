@@ -610,7 +610,10 @@
 .log-news-panel .log-news-row {
   display: flex;
   align-items: baseline;
-  gap: 0.55rem;
+  /* Tight gap between [HH:MM] and the headline link — the wider
+     0.55rem read as a sparse two-column table on the public News
+     feed, same shape this panel uses. */
+  gap: 0.3rem;
   padding: 0.32rem 0;
   border-bottom: 1px solid rgba(255,255,255,0.05);
   line-height: 1.35;

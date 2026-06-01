@@ -331,7 +331,10 @@
     display: grid;
     grid-template-columns: max-content 1fr max-content;
     align-items: baseline;
-    gap: 0.6rem;
+    /* Tight column gap so the timestamp sits right next to the
+       headline — operator was reading the prior 0.6rem gap as a
+       sparse two-column layout. */
+    gap: 0.3rem;
     padding: 0.45rem 0;
     border-bottom: 1px solid #e7e0cf;
     font-size: 0.85rem;
@@ -343,7 +346,8 @@
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
     color: #6b7894;
-    min-width: 3rem;
+    /* min-width removed — let the timestamp size to its content
+       so a 5-char "HH:MM" doesn't reserve 3rem of empty space. */
   }
   .news-title {
     color: #1a2744;
