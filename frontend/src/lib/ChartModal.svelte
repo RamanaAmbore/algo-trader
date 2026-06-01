@@ -78,15 +78,22 @@
     border: 1px solid rgba(251, 191, 36, 0.40);
     border-radius: 6px;
     box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(251,191,36,0.08);
-    width: min(96vw, 1200px);
-    /* height (not max-height) so the modal always gives the embedded
-       ChartWorkspace a real viewport-sized container to fill. With
-       max-height the modal collapsed to picker-bar height (~3rem)
-       whenever symbol was empty and the chart canvas had no rows. */
-    height: 92vh;
+    /* Sized so the page behind stays visible + clickable while the
+       chart loads — modal floats as a window rather than blanketing
+       the viewport. Prior 96vw × 92vh covered everything (clicks
+       passed through invisible slivers but the operator couldn't see
+       what they were aiming at). */
+    width: min(78vw, 980px);
+    height: min(82vh, 760px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+  @media (max-width: 760px) {
+    .cm-modal {
+      width: 96vw;
+      height: 90vh;
+    }
   }
 
   .cm-header {
