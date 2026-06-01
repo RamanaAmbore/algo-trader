@@ -354,16 +354,22 @@
   .alm-side-sell { color: #f87171; }
 
   /* ── Mobile ──────────────────────────────────────────────────── */
+  /* Full-bleed modal, top-anchored, so the tab strip sits at the
+     top of the screen where the operator expects it. Earlier the
+     panel was align-self: flex-end inside an align-items: flex-end
+     overlay (bottom-sheet pattern) — tabs landed in the middle-
+     lower band of the screen which read as broken. */
   @media (max-width: 600px) {
+    .alm-overlay {
+      align-items: flex-start;
+      padding: 0;
+    }
     .alm-modal {
       width: 100vw;
-      max-height: 92vh;
-      border-radius: 0.4rem 0.4rem 0 0;
-      align-self: flex-end;
-    }
-    .alm-overlay {
-      align-items: flex-end;
-      padding: 0;
+      height: 100vh;
+      max-height: 100vh;
+      border-radius: 0;
+      align-self: stretch;
     }
   }
 </style>
