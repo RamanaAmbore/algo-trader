@@ -462,15 +462,17 @@
 </script>
 
 <div class="flex items-stretch mb-2 log-tab-row">
-  <!-- Activity-pulse icon at the leading edge — replaces the previous
-       rotated "log" text label. Same column reservation + amber accent
-       at low saturation; the pulse shape reads as "activity" at a
-       glance without needing to rotate-and-read a 3-letter word. -->
+  <!-- Log icon at the leading edge — matches the page-header Log
+       button glyph in PageHeaderActions so both "log" surfaces read
+       as the same affordance. Three horizontal lines = list / log
+       (industry-standard convention; same shape Sentry / Datadog /
+       Splunk use). Same column reservation + amber accent at low
+       saturation as the retired rotated "log" text. -->
   <span class="log-section-wrap" aria-hidden="true">
     <svg class="log-section-icon" width="14" height="14" viewBox="0 0 16 16"
-         fill="none" stroke="currentColor" stroke-width="1.6"
-         stroke-linecap="round" stroke-linejoin="round">
-      <path d="M1 8 L4 8 L5.5 4 L8 13 L10 6 L11.5 8 L15 8" />
+         fill="none" stroke="currentColor" stroke-width="1.9"
+         stroke-linecap="round">
+      <path d="M3 4h10M3 8h10M3 12h6" />
     </svg>
   </span>
   {#each VISIBLE_TABS as [id, label]}

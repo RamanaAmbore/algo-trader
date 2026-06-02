@@ -128,8 +128,20 @@
   // every Markets / Default symbol the operator has curated reaches
   // this picker — DEFAULT_PINS only seeds the list when the watchlist
   // API hasn't responded yet or the operator has no pinned lists.
+  // Pin option: { value: anchor (NIFTY 50 / CRUDEOIL / …),
+  //               label: resolved tradeable contract when available
+  //                      (NIFTY26JUNFUT / CRUDEOIL26JUNFUT / …),
+  //                      falls back to the anchor when the instruments
+  //                      cache is cold or no future matches }.
+  // Operator picks by intent ("the NIFTY chart") but sees the actual
+  // contract they're about to load — matches the symbol-input + chart
+  // header which already show the resolved tradingsymbol after pick.
+  function _pinLabel(/** @type {string} */ anchor) {
+    const r = resolveUnderlying(String(anchor || '').toUpperCase(), findNearestFuture);
+    return r?.tradingsymbol && r.tradingsymbol !== anchor ? r.tradingsymbol : anchor;
+  }
   /** @type {Array<{value:string,label:string}>} */
-  let _PIN_OPTS = $state(DEFAULT_PINS.map(p => ({ value: p, label: p })));
+  let _PIN_OPTS = $state(DEFAULT_PINS.map(p => ({ value: p, label: _pinLabel(p) })));
   let _pinnedValue = $state('');
 
   async function _hydratePins() {
@@ -152,20 +164,18 @@
       }
       // Keep DEFAULT_PINS at the top (preserves the curated index +
       // commodity order from the seed list), then append every other
-      // pinned symbol the operator has added.
+      // pinned symbol the operator has added. Labels surface the
+      // resolved tradeable contract when available.
       const out = [];
       const seen = new Set();
       for (const p of DEFAULT_PINS) {
-        if (symbols.has(p)) { out.push({ value: p, label: p }); seen.add(p); }
+        if (symbols.has(p)) { out.push({ value: p, label: _pinLabel(p) }); seen.add(p); }
       }
       for (const s of symbols) {
-        if (!seen.has(s)) { out.push({ value: s, label: s }); seen.add(s); }
+        if (!seen.has(s)) { out.push({ value: s, label: _pinLabel(s) }); seen.add(s); }
       }
-      // Always include DEFAULT_PINS at the top even if the pinned list
-      // doesn't have them — keeps NIFTY / SENSEX / GOLD reachable for
-      // every operator, even before they've populated Markets.
       const missing = DEFAULT_PINS.filter(p => !seen.has(p));
-      _PIN_OPTS = [...missing.map(p => ({ value: p, label: p })), ...out];
+      _PIN_OPTS = [...missing.map(p => ({ value: p, label: _pinLabel(p) })), ...out];
     } catch (_) { /* leave seeded DEFAULT_PINS in place */ }
   }
 
