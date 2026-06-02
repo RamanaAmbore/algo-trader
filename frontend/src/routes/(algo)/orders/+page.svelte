@@ -55,10 +55,12 @@
   let orders        = $state([]);
   let loading       = $state(true);
   let error         = $state('');
-  // Default the status filter to OPEN per operator — the active book
-  // (orders still in flight) is the operator's first concern on
-  // landing; ALL stays one click away.
-  let filterStatus  = $state('open');
+  // Default the status filter to ALL — matches every other LogPanel
+  // mount (Activity modal, Order modal bottom panel, /console, /agents)
+  // where the Orders tab opens un-filtered ("All" chip clicked). Earlier
+  // /orders defaulted to OPEN, which made it the only surface where
+  // landing on the Orders tab hid every non-open row.
+  let filterStatus  = $state('all');
   // Account + exchange filters on the Order Book card. AccountMultiSelect
   // is the same component pulse + dashboard use, so the filter UX is
   // identical across surfaces.
