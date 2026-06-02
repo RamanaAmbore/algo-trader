@@ -1230,16 +1230,37 @@ async def _task_visitor_log_daily() -> None:
             report_path = await _run(run_daily)
             logger.info(f"Background: visitor log report → {report_path}")
 
+            branch = config.get("deploy_branch", "main")
+            branch_tag = f" [{branch}]" if branch != "main" else ""
+
             if is_enabled("telegram"):
                 try:
                     from backend.shared.helpers.alert_utils import _send_telegram
-                    branch = config.get("deploy_branch", "main")
-                    branch_tag = f" [{branch}]" if branch != "main" else ""
-                    summary = _summary_block(report_path)
-                    msg = f"Visitors{branch_tag}\n{summary}"
+                    from backend.scripts.visitor_report import summary_for_telegram
+                    tg_body = summary_for_telegram(report_path)
+                    msg = f"<b>Visitors{branch_tag}</b>\n{tg_body}"
                     _send_telegram(msg)
                 except Exception as tg_err:
                     logger.warning(f"Background: visitor log telegram failed: {tg_err}")
+
+            if is_enabled("mail"):
+                try:
+                    from backend.shared.helpers.mail_utils import send_email
+                    from backend.shared.helpers.alert_utils import get_alert_recipients
+                    from backend.scripts.visitor_report import summary_for_email
+                    recipients = get_alert_recipients()
+                    if recipients:
+                        html_body = summary_for_email(report_path)
+                        subject = f"RamboQuant Visitors{branch_tag}"
+                        for email in recipients:
+                            try:
+                                send_email(email, email, subject, html_body)
+                            except Exception as mail_err:
+                                logger.warning(
+                                    f"Background: visitor log mail to {email} failed: {mail_err}"
+                                )
+                except Exception as mail_err:
+                    logger.warning(f"Background: visitor log mail failed: {mail_err}")
         except Exception as e:
             logger.error(f"Background: visitor log daily run failed: {e}")
 

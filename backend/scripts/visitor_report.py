@@ -533,16 +533,93 @@ def run_daily(
     return report_path
 
 
-def _summary_block(report_path: Path) -> str:
-    """Extract the Summary section (lines 1-8) from the report file."""
+def _parse_summary(report_path: Path) -> dict:
+    """Parse the report's Summary section into a dict so each delivery
+    channel can format it idiomatically.
+
+    Returns: {title: str, fields: [(label, value), …]} where `fields`
+    preserves the order written by _render_report.
+    """
+    out = {"title": "Visitors", "fields": []}
     try:
         lines = report_path.read_text(encoding="utf-8").splitlines()
-        # Return title + summary block (up to "## Detail")
-        out = []
-        for line in lines:
-            if line.startswith("## Detail"):
-                break
-            out.append(line)
-        return "\n".join(out)
     except Exception:
-        return f"Visitor report ready: {report_path}"
+        return out
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("## Detail"):
+            break
+        if line.startswith("# "):
+            out["title"] = line.lstrip("# ").strip()
+            continue
+        # Bullet rows look like '- **Label**: value'. Parse defensively
+        # so a future change to the renderer doesn't silently blank the
+        # summary channels.
+        m = re.match(r"^[-*]\s+\*\*([^*]+)\*\*\s*:\s*(.*)$", line)
+        if m:
+            out["fields"].append((m.group(1).strip(), m.group(2).strip()))
+            continue
+    return out
+
+
+def _summary_text(report_path: Path) -> str:
+    """Plain-text summary — used for logging + telegram fallback when the
+    HTML build fails. One line per field, no markdown."""
+    data = _parse_summary(report_path)
+    lines = [data["title"]] if data["title"] else []
+    for label, value in data["fields"]:
+        lines.append(f"{label}: {value}")
+    return "\n".join(lines) if lines else f"Visitor report ready: {report_path}"
+
+
+def summary_for_telegram(report_path: Path) -> str:
+    """Telegram HTML — bold labels, plain values, one bullet per line.
+    Telegram's HTML parser accepts <b>, <i>, <u>, <s>, <code>, <pre>.
+    No markdown markers — those render as literal `#` and `**` text on
+    mobile clients, which was the original noise we got rid of."""
+    data = _parse_summary(report_path)
+    title = data["title"] or "Visitors"
+    lines = [f"<b>{_html_escape(title)}</b>"]
+    if data["fields"]:
+        lines.append("")
+        for label, value in data["fields"]:
+            lines.append(f"• <b>{_html_escape(label)}</b>: {_html_escape(value)}")
+    return "\n".join(lines)
+
+
+def summary_for_email(report_path: Path) -> str:
+    """HTML email body — same data as the Telegram summary, rendered as
+    a tight <dl> definition list."""
+    data = _parse_summary(report_path)
+    title = data["title"] or "Visitors"
+    items = "".join(
+        f"<dt style='font-weight:600;color:#7e97b8;font-family:sans-serif;font-size:13px'>{_html_escape(label)}</dt>"
+        f"<dd style='margin:0 0 .4rem 0;color:#1a1e35;font-family:sans-serif;font-size:13px'>{_html_escape(value)}</dd>"
+        for label, value in data["fields"]
+    )
+    return (
+        f"<html><body style='font-family:sans-serif;background:#f0ece3;padding:14px'>"
+        f"<h2 style='font-size:15px;color:#1a1e35;margin:0 0 .6rem 0'>{_html_escape(title)}</h2>"
+        f"<dl style='margin:0'>{items}</dl>"
+        f"<p style='font-size:11px;color:#7e97b8;margin-top:1rem'>"
+        f"Full IP + city + ASN detail in {_html_escape(str(report_path))} on the prod box."
+        f"</p>"
+        f"</body></html>"
+    )
+
+
+def _html_escape(s: str) -> str:
+    if not s:
+        return ""
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+# Backwards-compat alias — kept so the bg task survives a partial deploy
+# where the route has rolled out but the script hasn't.
+def _summary_block(report_path: Path) -> str:
+    return summary_for_telegram(report_path)
