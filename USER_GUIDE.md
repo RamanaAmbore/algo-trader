@@ -107,7 +107,7 @@ Easiest path: copy an existing rule that's close to what you want, change the th
 
 ## Simulator — the safe-test space
 
-The Simulator (`/admin/simulator`) is where you ask: *"if the market did X, what would my agents do?"*
+The Simulator (`/admin/execution?mode=sim`) is where you ask: *"if the market did X, what would my agents do?"*
 
 You pick:
 - A **scenario** — pre-canned price moves like `nifty-down-3pct` (NIFTY drops 1% / 2% / 3% over three ticks, every option re-prices via Black-Scholes)
@@ -165,9 +165,9 @@ Two chart types, both with the same zoom + pan behaviour:
 
 Live tick streams of last-traded price + bid/ask spread + order-event markers. Find them on:
 
-- `/admin/simulator` — one chart per symbol with captured ticks while a sim runs
-- `/admin/paper` — same but for the prod paper engine
-- `/agents` and `/orders` — same charts surface in the Log panel's "Chart" tab
+- `/admin/execution?mode=sim` — one chart per symbol with captured ticks while a sim runs
+- `/admin/execution?mode=paper` — same but for the prod paper engine
+- `/agents` and `/orders` — inline charts on the page; from any page the Chart icon in the header opens the canonical Chart modal for any symbol
 
 Symbols are classified as:
 - **SPOT** (sky-blue tag) — an underlying like NIFTY itself
@@ -215,14 +215,14 @@ You see this as a yellow `stale: <source>` chip on the pricing block, and a `·s
 
 ---
 
-## Paper trading dashboard — `/admin/paper`
+## Paper trading dashboard — `/admin/execution?mode=paper`
 
 The visual surface for what mode 2 is doing on prod. Same layout as the simulator but reading from the live paper engine. You'll see:
 
 - **Status banner** — green when there are open paper chases, amber when idle, grey on dev (paper only runs on `main`)
 - **Open chase pills** — one per in-flight order with side / qty / current limit / attempt count
 - **Mini charts** — per symbol with markers
-- **Log panel** with a Charts tab + Orders tab
+- **Activity log panel** with the canonical 6-tab strip (Orders · Agents · Terminal · Ticks · System · News) — same component every other surface mounts so muscle memory carries
 
 The most useful page during the soak phase: when you've flipped one `execution.live.<action>` to true and want to watch the chase against the live market without an order touching the broker.
 
@@ -304,10 +304,10 @@ A typical session for an active operator:
 
 ## Demo mode — for visitors / recruiters / investors
 
-If you're not logged in and you visit `ramboq.com`, the algo console opens in **demo mode** — a synthetic but plausible book on two demo accounts (DEMO1 / DEMO2). Everything you click is real product, just running on hand-curated data:
+If you're not logged in and you visit `ramboq.com`, the algo console opens in **demo mode** — the operator's *real* broker data with accounts masked (`ZG####` / `ZJ####` in place of the real IDs). Everything you click is real product reading from the live system; no synthetic fixture file is maintained.
 
-- Positions, holdings, funds — all synthetic. You're seeing the same screens an operator sees, but no real account is ever touched.
-- The order ticket works. Place a paper order — it'll register, the chase engine will track bid/ask, you can watch it fill or cancel. Never reaches a broker.
+- Positions, holdings, funds — real broker rows with account IDs masked. If the operator is busy, demo looks busy; if the operator is idle, demo is idle.
+- The order ticket works. Place a paper order — it'll register, the chase engine will track bid/ask, you can watch it fill or cancel. Never reaches a broker. Live-mode submits are silently downgraded to paper for demo.
 - Settings / Brokers / Users are hidden. Those are operator surfaces; visitors don't need them.
 - Mode badge **DEMO** (purple) sits in the navbar so the context is unmistakable.
 
@@ -366,7 +366,7 @@ once (~3 minutes of one-time setup) then come back to the
 
 - **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — extensive walkthrough for authoring + testing agents. The four-stage validation ladder (validate → dry-run → simulator → activate), every metric / scope / op, fragments, lifespan, and copy-paste patterns.
 - **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — hands-on Lab workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets, troubleshooting.
-- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 26 MCP tools.
+- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 24 MCP tools.
 - **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** — exact button labels, JSON conditions, API endpoints. The operations reference.
 - **[CLAUDE.md](CLAUDE.md)** — architectural notes for engineers + AI assistants. Covers the code structure, data flow, and design decisions.
 - **`/admin/tokens`** — explore the agent grammar (every metric / scope / operator the platform knows about).

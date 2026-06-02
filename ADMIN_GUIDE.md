@@ -238,7 +238,7 @@ The easiest way to build your first custom agent is to click into any `loss-*` r
 
 ## The Simulator — try it before you trust it
 
-The Simulator (`/admin/simulator`) answers the question:
+The Simulator (`/admin/execution?mode=sim`) answers the question:
 
 > "If the market did X, what would my agents do?"
 
@@ -300,7 +300,7 @@ For Live / Live+scenario: you can press **Load live book** to snapshot now, or j
 
 ### Running it
 
-1. Go to `/admin/simulator`.
+1. Go to `/admin/execution?mode=sim`.
 2. Pick a scenario. All five (`generic-crash`, `generic-euphoria`, `extreme-crash`, `extreme-euphoria`, `random-walk`) are positions-only and work with Live or Live+scenario. Start with a generic one; move to extreme variants when you want to trip every threshold at once.
 3. Pick seed mode and (optionally) press **Load live book** — the driver auto-snapshots if you pick Live / Live+scenario and haven't already.
 4. Set **Rate (ms)** — how fast to advance ticks. 2000 ms = 1 tick every 2 seconds is fine.
@@ -340,7 +340,7 @@ For options + futures books, the simulator can move the **underlying spot** (NIF
 | `nifty-up-3pct`   | NIFTY spot +1% / +2% / +3% over three ticks. ITM calls inflate, OTM puts collapse — squeezes short-call writers. |
 
 **Use it like this**:
-1. `/admin/simulator` → press **Load live book** → switch Seed to **Live** or **Live + scenario**.
+1. `/admin/execution?mode=sim` → press **Load live book** → switch Seed to **Live** or **Live + scenario**.
 2. Pick `nifty-down-3pct`.
 3. Press **Start**.
 4. Watch the chart panel — the NIFTY chart (sky-blue `SPOT` tag) shows the 3 % drop; each option chart (amber `F&O` tag) shows the derived premium move with the underlying overlaid as a dashed sky-blue line.
@@ -354,7 +354,7 @@ For options + futures books, the simulator can move the **underlying spot** (NIF
 
 Don't have the position you want to test in your live book? Add it inline:
 
-1. `/admin/simulator` → scroll to the **Custom positions** panel below the controls.
+1. `/admin/execution?mode=sim` → scroll to the **Custom positions** panel below the controls.
 2. Click **+ Add row** → fill in the row:
 
    | Field | Example | Notes |
@@ -371,9 +371,9 @@ This is the right move for "what-if" testing before you take a real trade — yo
 
 ---
 
-## Paper trading dashboard (`/admin/paper`)
+## Paper trading dashboard (`/admin/execution?mode=paper`)
 
-`/admin/paper` is the visual surface for what's actually happening in **mode 2** on prod — real Kite quotes feeding the paper trade engine. Same layout as the simulator page, but reading from the live engine instead of a sim driver.
+`/admin/execution?mode=paper` is the visual surface for what's actually happening in **mode 2** on prod — real Kite quotes feeding the paper trade engine. Same layout as the simulator page, but reading from the live engine instead of a sim driver.
 
 You'll see:
 
@@ -383,7 +383,7 @@ You'll see:
   - Grey **`DEV`** when you're on a non-main branch (engine exists but no background tick — paper trading is prod-only by design).
 - **Chase pills** — one per in-flight paper order, showing side / qty / symbol / current limit / attempt count. Same shape as the simulator page so it reads as a sibling surface.
 - **Chart grid** — one mini chart per symbol with captured ticks. Underlyings come first (sky-blue `SPOT` tag), derivatives below grouped by underlying with the spot overlaid as a dashed line.
-- **LogPanel** at the bottom — Order tab shows recent `mode='paper'` `AlgoOrder` rows; the Chart tab mirrors the same chart grid so you can keep watching while you scroll the order log.
+- **LogPanel** at the bottom — canonical 6-tab strip (Orders · Agents · Terminal · Ticks · System · News) inherited from LogPanel's default. The Orders tab shows recent `mode='paper'` `AlgoOrder` rows; charts render inline in the page above (the standalone Chart tab inside LogPanel was retired since the page already mounts the chart grid).
 
 **When the page is most useful**: during the soak phase, after you've toggled into PAPER mode from the navbar and want to watch the chase against the live market without any order touching the broker. Every paper fire shows up here, and you can compare it to what the agent's `[PAPER]` Telegram alert said would happen. The seeded default on a fresh install is LIVE — flip to PAPER from the navbar (or `/admin/execution`) when you want to soak-test, then flip back to LIVE when you're ready for the real broker to take orders.
 
@@ -506,7 +506,7 @@ While a sim is running, the page renders one **mini chart per active symbol** di
 
 Hover any marker to see the side, fill price, and order id. The chart polls every 3 s and persists across fills, so once a position closes you can still see the full trajectory that led to it.
 
-The same panel is on `/agents` as a **Chart tab** in the bottom log panel — that's how you watch the live chase engine in **paper mode** (mode 2) on prod. While a sim is active the tab shows sim symbols; otherwise it shows symbols with active paper / live orders.
+The same chart grid renders inline on `/admin/execution?mode=paper` so you can watch the live chase engine in **paper mode** (mode 2) on prod. The Activity LogPanel below carries the canonical 6-tab strip but no standalone Chart tab — every page that needs charts mounts them as first-class page content rather than buried inside a log tab.
 
 History is in-memory only (no DB writes). The buffer holds ~20 minutes of per-symbol history at the default tick rates; older points fall off automatically. A service restart resets the chart — that's by design (the chart is for live monitoring, not post-mortem).
 
@@ -639,7 +639,7 @@ You don't have to memorise this — the **(i)** info chip on each row tells you 
 4. Your metric is now usable in any agent's condition leaf.
 
 **C) "Find out what would happen if the market drops 6% right now"**
-1. `/admin/simulator` → Scenario `generic-crash` → Load live book → Seed `Live + scenario` → Start.
+1. `/admin/execution?mode=sim` → Scenario `generic-crash` → Load live book → Seed `Live + scenario` → Start.
 2. Watch the Simulator log tab for price moves; watch the events table for which agents would fire.
 3. Stop when you've seen enough. Hit **Clear sim** to wipe the test rows.
 
@@ -742,13 +742,13 @@ Three submit modes:
   2. `execution.paper_trading_mode` must be `False` (set from the navbar mode dropdown).
   Then `kite.place_order()` with the operator's payload, tagged `ramboq-ticket`. UI fires a `window.confirm()` with the exact order line before any broker call.
 
-Today the ticket opens from `/admin/options` chain clicks. Future migration: `/orders` row Edit / Cancel / Repeat, `/agents` fire-confirm, `/performance` row "Square off" / "Sell", `/console` `place …` command.
+Today the ticket opens from `/admin/options` chain clicks and from the **page-header Order icon** (amber `+` glyph) present on every algo page — alongside the **Chart icon** (cyan line glyph) and **Activity icon** (violet 3-line glyph). The three icons open canonical modals at a consistent viewport position (.canonical-modal-overlay/-panel) so muscle memory carries across pages. Symbol anchors are auto-resolved to the tradeable contract before the modals open — `NIFTY 50` → `NIFTY26JUNFUT`, `CRUDEOIL` → `CRUDEOILM26JUNFUT`. Future migration of click-targets: `/orders` row Edit / Cancel / Repeat, `/agents` fire-confirm, `/performance` row "Square off" / "Sell", `/console` `place …` command.
 
 ---
 
 ## Demo mode — public algo console for visitors
 
-Anonymous visitors on the prod (`ramboq.com`) site can browse the algo pages without a login. The demo session sees synthetic data on two `DEMO1` / `DEMO2` accounts, can place paper orders that go through the real chase loop (against real bid/ask), but never touches a broker.
+Anonymous visitors on the prod (`ramboq.com`) site can browse the algo pages without a login. The demo session sees the operator's **real broker data with accounts masked** (`ZG####` / `ZJ####`), can place paper orders that go through the real chase loop (against real bid/ask), but never touches a broker. Zero fixture maintenance — no synthetic fixture file, no nightly cron, no data drift.
 
 **How a visitor reaches it**: the public navbar's "Algo Site" cross-link is now visible to everyone (renamed to "Algo Demo" when not logged in). Clicking lands on `/dashboard` → demo mode kicks in.
 
@@ -778,7 +778,7 @@ The day-to-day operator finds it here. For extended walkthroughs:
 
 - **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — agent authoring + the four-stage validation ladder (validate → dry-run → simulator → activate). Every metric / scope / op, fragments, lifespan, troubleshooting.
 - **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — Lab page workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets.
-- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — Claude Code MCP integration. The 26 tools, confirm-token gate, audit trail.
+- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — Claude Code MCP integration. The 24 tools, confirm-token gate, audit trail.
 
 ---
 
