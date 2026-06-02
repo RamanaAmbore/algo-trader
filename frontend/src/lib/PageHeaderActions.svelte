@@ -11,7 +11,6 @@
    */
 
   import { getContext } from 'svelte';
-  import { goto } from '$app/navigation';
   import { executionMode } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -33,8 +32,10 @@
 
   let {
     /** Default symbol to pre-fill the Order + Chart modals.
-     *  When empty the order modal opens with no symbol; the chart icon
-     *  navigates to the /charts workspace (no symbol pre-selected). */
+     *  When empty the trio falls back to NIFTY 50 so the chart / order
+     *  modal still opens with something pre-selected. Pages that have a
+     *  contextual symbol (Options selectedUnderlying, Orders entry
+     *  symbol, Research selected.symbol) override this via the prop. */
     symbol    = /** @type {string} */ (''),
     /** Default exchange hint for the modals. */
     exchange  = /** @type {string} */ (''),
@@ -45,6 +46,15 @@
     /** When false, the Log icon is hidden. Defaults to shown. */
     showLog   = /** @type {boolean} */ (true),
   } = $props();
+
+  // Universal default — NIFTY 50 is the canonical Indian market index
+  // and the first entry in the Markets watchlist, so an operator opening
+  // the chart icon from a context-less page (Pulse / Dashboard / Agents
+  // / Settings etc.) gets the broad-market chart immediately. The
+  // operator can change it via the modal's symbol input or pinned
+  // dropdown. NSE is the right exchange when none was passed.
+  const _effectiveSymbol   = $derived(String(symbol   || 'NIFTY 50').toUpperCase());
+  const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
@@ -58,13 +68,10 @@
   }
 
   function _openChart() {
-    // No symbol in scope (Pulse / Dashboard / Agents etc.) → navigate to
-    // the /charts workspace where the operator picks one. With a symbol
-    // in scope (Options / Orders / Research) open ChartModal inline.
-    if (!symbol) {
-      goto('/charts');
-      return;
-    }
+    // Always open the ChartModal inline — the modal carries its own
+    // symbol search + pinned-dropdown so the operator can pick any
+    // symbol from inside. Falls back to NIFTY 50 (see
+    // _effectiveSymbol) when no caller-supplied symbol is in scope.
     _orderOpen = false;
     _logOpen   = false;
     _chartOpen = true;
@@ -131,8 +138,8 @@
        own header; chart icon hidden since every page already has one
        in its own header. -->
   <SymbolPanel
-    symbol={String(symbol || '').toUpperCase()}
-    exchange={String(exchange || '')}
+    symbol={_effectiveSymbol}
+    exchange={_effectiveExchange}
     defaultTab="chain"
     accounts={[]}
     account=""
@@ -146,8 +153,8 @@
 
 {#if _chartOpen}
   <ChartModal
-    symbol={String(symbol || '').toUpperCase()}
-    exchange={String(exchange || '')}
+    symbol={_effectiveSymbol}
+    exchange={_effectiveExchange}
     onClose={() => { _chartOpen = false; }}
   />
 {/if}

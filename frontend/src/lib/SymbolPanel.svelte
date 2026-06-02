@@ -599,15 +599,19 @@
 <!-- Modal overlay (omitted in inline mode — renders as flat page content). -->
 <!-- use:portal={!inline} — portals to document.body when NOT inline so
      the fixed overlay clears any parent stacking-context clipping.
-     portal() is a no-op when the argument is false (inline mode). -->
-<div class="oes-overlay"
-     class:oes-inline={inline}
+     portal() is a no-op when the argument is false (inline mode).
+     In modal mode the wrapper uses .canonical-modal-overlay /
+     .canonical-modal-panel (defined in app.css) so SymbolPanel,
+     ChartModal, and ActivityLogModal all land at the same viewport
+     position + size. Inline mode keeps the legacy .oes-overlay /
+     .oes-modal classes (which strip all chrome via .oes-inline). -->
+<div class={inline ? 'oes-overlay oes-inline' : 'canonical-modal-overlay oes-overlay'}
      role={inline ? undefined : 'dialog'}
      aria-modal={inline ? undefined : 'true'}
      aria-label={inline ? undefined : (symbol || 'Symbol panel')}
      onclick={inline ? undefined : (_chartModalOpen ? undefined : onClose)}
      use:portal={!inline}>
-  <div class="oes-modal" class:oes-modal-inline={inline}
+  <div class={inline ? 'oes-modal oes-modal-inline' : 'canonical-modal-panel oes-modal'}
        role="document"
        bind:this={_modalEl}
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
@@ -892,27 +896,17 @@
 {/if}
 
 <style>
+  /* In MODAL mode the outer overlay + panel sizing is supplied by
+     canonical-modal-overlay / canonical-modal-panel (app.css) so this
+     modal lands at the same viewport position + size as ChartModal /
+     ActivityLogModal. The local .oes-overlay / .oes-modal rules are
+     scoped to chrome-only adjustments (text color, font family) and
+     the inline-mode override below. */
   .oes-overlay {
-    position: fixed;
-    inset: 0;
-    /* Light wash — earlier 0.55 alpha blacked out the entire viewport
-       behind the modal, which on /pulse felt like 'symbols disappear'
-       when the operator clicked a row. 0.25 dims the background
-       enough to focus the eye on the modal while keeping the grid
-       legible behind. Click-outside still closes the modal so the
-       UX contract is preserved. */
-    background: rgba(0,0,0,0.25);
-    display: flex;
-    /* Anchor modal to a fixed Y from the top instead of vertically
-       centering — earlier `align-items: center` caused the modal to
-       re-center every time the body grew (chart bars arriving,
-       margin preview rendering, etc.), producing a visible "open
-       then resize" jump. With flex-start the modal opens at the
-       same Y position and grows downward without moving. */
-    align-items: flex-start;
-    justify-content: center;
-    z-index: 100;
-    padding: 3rem 1rem 1rem;
+    /* Modal-mode-only: scrollable body inside the fixed-height
+       canonical-modal-panel. */
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
   }
   /* Inline mode strips the modal chrome — used by /console which hosts
      the shell as the page's primary content. */
@@ -925,20 +919,10 @@
     padding: 0;
   }
   .oes-modal {
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1px solid rgba(251,191,36,0.35);
-    border-radius: 8px;
-    /* 38 rem fits the order ticket and chain tab comfortably on
-       desktop; chart is now in ChartModal so no 720 px SVG to
-       accommodate. */
-    width: min(38rem, calc(100vw - 2rem));
-    max-height: calc(100vh - 4rem);
+    /* Modal-mode allows the body to scroll inside the fixed panel
+       height — operator's order ticket + chain + bottom log panel
+       together can exceed 760 px on small viewports. */
     overflow-y: auto;
-    color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.6);
-    display: flex;
-    flex-direction: column;
   }
   .oes-modal.oes-modal-inline {
     width: 100%;

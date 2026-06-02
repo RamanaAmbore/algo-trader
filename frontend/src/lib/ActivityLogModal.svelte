@@ -2,8 +2,8 @@
   /**
    * ActivityLogModal — modal wrapper around <LogPanel>.
    *
-   * Renders the canonical 5-tab activity surface (Order Book · Agent Log ·
-   * Terminal · System · News) — same component the orders page and console
+   * Renders the canonical 6-tab activity surface (Order Book · Agent Log ·
+   * Terminal · Simulator · System · News) — same component the orders page and console
    * surface inline. Reusing LogPanel means the tab strip, rotated "log"
    * vertical label, kind-coloured row accents, and 4Hz polling all
    * behave identically wherever the operator opens the activity surface.
@@ -86,7 +86,7 @@
       <LogPanel
         heightClass="flex-1 min-h-0"
         defaultTab="order"
-        tabs={['order','agent','terminal','system','news']}
+        tabs={['order','agent','terminal','simulator','system','news']}
       />
     </div>
   </div>
