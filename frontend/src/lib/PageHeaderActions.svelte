@@ -113,11 +113,17 @@
 <!-- The three action icons — inline-flex so they sit flush in the
      page-header's row layout without extra wrapper margin. -->
 <span class="pha-wrap">
+  <!-- Tooltips + aria-labels mirror the modal titles ("Orders" /
+       "Charts" / "Activity"), which in turn mirror the page-route
+       names (/orders, /charts, /agents/activity). Earlier the order
+       button said "Place order" and the chart button said "Chart —
+       …", which read as a different surface from the modal that
+       actually opens. -->
   {#if !hideOrder}
     <button type="button" class="pha-btn pha-order"
             onclick={_openOrder}
-            title="Place order{symbol ? ` — ${symbol}` : ''}"
-            aria-label="Place order">
+            title="Orders{symbol ? ` — ${symbol}` : ''}"
+            aria-label="Open Orders">
       <!-- Plus / Add glyph -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2.2"
@@ -129,8 +135,8 @@
   {#if !hideChart}
     <button type="button" class="pha-btn pha-chart"
             onclick={_openChart}
-            title={symbol ? `Chart — ${symbol}` : 'Open Charts workspace'}
-            aria-label={symbol ? `Open chart for ${symbol}` : 'Open Charts workspace'}>
+            title="Charts{symbol ? ` — ${symbol}` : ''}"
+            aria-label="Open Charts">
       <!-- Polyline chart glyph -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.9"
@@ -142,8 +148,8 @@
   {#if showLog !== false}
     <button type="button" class="pha-btn pha-log"
             onclick={_openLog}
-            title="Activity log — orders &amp; agent events"
-            aria-label="Open activity log">
+            title="Activity"
+            aria-label="Open Activity">
       <!-- Lines / list glyph -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" stroke-width="1.9"

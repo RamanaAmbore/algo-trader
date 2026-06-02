@@ -18,8 +18,9 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
   // ?mode= (backward-compat for old SIM/REPLAY dropdown deep-links).
@@ -76,6 +77,11 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
+    <!-- Page-header trio: Refresh + Order + Chart + Activity. The active
+         panel (SimulatorPanel / ReplayPanel) reloads its own /api/sim/*
+         status on its internal cadence; the page-level refresh bumps
+         lastRefreshAt so the tooltip + connection badge stay in sync. -->
+    <RefreshButton onClick={() => { lastRefreshAt.set(Date.now()); loadPanel(tab); }} loading={false} label="lab" />
     <PageHeaderActions />
   </span>
 </div>
