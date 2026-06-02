@@ -562,15 +562,25 @@ def run_daily(
     if target_date is None:
         target_date = today_ist
 
-    # Hydrate the in-process settings cache from DB before any get_string
-    # call. The cache is normally populated at app startup; this script
-    # runs outside the app lifecycle, so without this every get_string
-    # call sees an empty dict and returns the default (= empty filter).
+    # Single shared event loop for this run — used for settings cache
+    # hydration AND the later DB upsert/purge. Using separate loops
+    # produces 'Future attached to a different loop' errors because
+    # asyncpg ties the connection pool to the loop that opened it.
     try:
-        loop_pre = _asyncio.new_event_loop()
+        loop = _asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("loop closed")
+    except RuntimeError:
+        loop = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop)
+
+    # Hydrate the in-process settings cache from DB. The cache is normally
+    # populated at app startup; this script runs outside the app lifecycle,
+    # so without this every get_string call sees an empty dict and returns
+    # the default (= empty filter).
+    try:
         from backend.shared.helpers.settings import reload_cache
-        loop_pre.run_until_complete(reload_cache())
-        loop_pre.close()
+        loop.run_until_complete(reload_cache())
     except Exception as e:
         logger.warning(f"visitor_report: settings cache reload failed: {e}")
 
@@ -658,12 +668,9 @@ def run_daily(
             f"visitors.ignore_companies ({len(ignore_companies)} patterns)"
         )
 
-    # Upsert into DB
-    try:
-        loop = _asyncio.get_event_loop()
-    except RuntimeError:
-        loop = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop)
+    # Upsert into DB — re-use the shared `loop` created at function entry
+    # for settings cache hydration so asyncpg's connection pool stays on
+    # one loop.
 
     # Read retention from settings (default 30); operator can change live
     # via /admin/settings → visitors.retention_days. 0 disables auto-purge.
