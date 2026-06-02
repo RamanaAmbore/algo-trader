@@ -462,12 +462,16 @@
 </script>
 
 <div class="flex items-stretch mb-2 log-tab-row">
-  <!-- "log" label rotated 90°. Two-layer split so the flex parent
-       (wrap) reserves the column width and the child carries the
-       rotation via writing-mode: vertical-lr (text flows top-to-bottom
-       naturally, no transform needed). -->
+  <!-- Activity-pulse icon at the leading edge — replaces the previous
+       rotated "log" text label. Same column reservation + amber accent
+       at low saturation; the pulse shape reads as "activity" at a
+       glance without needing to rotate-and-read a 3-letter word. -->
   <span class="log-section-wrap" aria-hidden="true">
-    <span class="log-section-text">Log</span>
+    <svg class="log-section-icon" width="14" height="14" viewBox="0 0 16 16"
+         fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1 8 L4 8 L5.5 4 L8 13 L10 6 L11.5 8 L15 8" />
+    </svg>
   </span>
   {#each VISIBLE_TABS as [id, label]}
     <button onclick={() => setTab(id)}
@@ -645,19 +649,13 @@
     margin-right: 0.2rem;
     align-self: stretch;
   }
-  .log-section-text {
-    writing-mode: vertical-lr;
-    transform: rotate(180deg);
-    font-family: ui-monospace, monospace;
-    font-size: 0.48rem;
-    font-weight: 500;
-    line-height: 1;
+  .log-section-icon {
     /* Subtle gold — same amber hue as the navbar accents but at low
-       saturation so it reads as a quiet section stamp, not a UI control. */
-    color: rgba(251, 191, 36, 0.45);
-    text-transform: lowercase;
-    letter-spacing: 0.08em;
-    user-select: none;
+       saturation so the activity-pulse glyph reads as a quiet section
+       stamp, not a UI control. Matches the typography retired from the
+       former rotated "log" text. */
+    color: rgba(251, 191, 36, 0.55);
+    flex-shrink: 0;
   }
 
   /* Unified-log container inside the LogPanel — matches the <pre>
