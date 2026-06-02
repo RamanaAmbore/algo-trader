@@ -562,6 +562,18 @@ def run_daily(
     if target_date is None:
         target_date = today_ist
 
+    # Hydrate the in-process settings cache from DB before any get_string
+    # call. The cache is normally populated at app startup; this script
+    # runs outside the app lifecycle, so without this every get_string
+    # call sees an empty dict and returns the default (= empty filter).
+    try:
+        loop_pre = _asyncio.new_event_loop()
+        from backend.shared.helpers.settings import reload_cache
+        loop_pre.run_until_complete(reload_cache())
+        loop_pre.close()
+    except Exception as e:
+        logger.warning(f"visitor_report: settings cache reload failed: {e}")
+
     # ramboq.com is configured (via /etc/nginx/conf.d/00-cloudflare-real-ip.conf
     # + per-server access_log overrides) to write to a dedicated log file in
     # the ramboq_visitor format. Reading this file directly avoids having to
