@@ -48,8 +48,8 @@
   // read as one consistent vocabulary across the page. Each tab
   // carries its own colour for the active underline + text.
   const ACT_TABS = /** @type {const} */ ([
-    { id: 'log',  label: 'Agent Log',  activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
-    { id: 'book', label: 'Order Book', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'log',  label: 'Agents', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
+    { id: 'book', label: 'Orders', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
   ]);
 
   let orders        = $state([]);
