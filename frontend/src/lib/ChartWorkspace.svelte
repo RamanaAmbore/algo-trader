@@ -989,18 +989,37 @@
 </script>
 
 <div class="cw-root">
-  <!-- Picker bar — type filter + symbol search + chart controls -->
+  <!-- Picker bar — combined pinned+search combo box (first element),
+       then type filter, then chart controls. The pinned dropdown
+       used to be a separate Select; folding it into SymbolSearchInput
+       lets the operator either click a pin OR type to search from a
+       single field. -->
   {#if !compact}
     <div class="cw-picker">
-      <!-- Pinned symbols Select — one-click load without typing -->
-      <div class="cw-toolbar-select">
-        <Select
-          options={_PIN_OPTS}
-          value={_pinnedValue}
-          onValueChange={(v) => _onPickPin(String(v))}
-          placeholder="Pinned"
-          ariaLabel="Pinned symbols" />
-      </div>
+      <!-- Symbol combo — leading element. Pinned section shows the
+           resolved tradeable contract per anchor (NIFTY 50 →
+           NIFTY26JUNFUT, CRUDEOIL → CRUDEOILM26JUNFUT). Picking a pin
+           routes through _onPickPin so the exchange hint is captured;
+           typing falls through to the regular search path. -->
+      <SymbolSearchInput
+        bind:value={symbol}
+        pins={_PIN_OPTS.map(o => o.label)}
+        resolvePin={(label) => label}
+        type={_symType}
+        placeholder="Pick or type 3+ chars…"
+        onPick={(sym, meta) => {
+          if (meta?.pinLabel) {
+            // Reverse-look up the anchor (NIFTY 50) from the resolved
+            // label (NIFTY26JUNFUT) so _onPickPin can grab the right
+            // exchange via resolveUnderlying.
+            const opt = _PIN_OPTS.find(o => o.label === meta.pinLabel);
+            _onPickPin(opt?.value ?? meta.pinLabel);
+          } else {
+            if (meta?.exchange) _resolvedExchange = meta.exchange;
+            _onPickSymbol(sym);
+          }
+        }}
+        ariaLabel="Symbol — pinned or search" />
 
       <div class="cw-type-wrap">
         <Select
@@ -1008,12 +1027,6 @@
           bind:value={_symType}
           ariaLabel="Symbol type filter" />
       </div>
-      <SymbolSearchInput
-        bind:value={symbol}
-        type={_symType}
-        placeholder="Type 3+ chars…"
-        onPick={(sym) => _onPickSymbol(sym)}
-        ariaLabel="Symbol search" />
 
       <!-- Chart type -->
       <div class="cw-toolbar-select">
