@@ -66,15 +66,18 @@
      only to host the title= tooltip so disabled-state hover still
      shows the explanation (disabled <button> elements don't fire
      hover events reliably across browsers). */
+  /* Account codes are max 6 chars (ZG####) — earlier 7.5rem/14rem
+     min/max reserved space the trigger never used. Tightened so the
+     picker bar can fit more siblings on one row before wrapping. */
   .ams {
-    min-width: 7.5rem;
-    max-width: 14rem;
+    min-width: 5rem;
+    max-width: 9rem;
     flex-shrink: 1;
   }
   @media (max-width: 600px) {
     .ams {
-      min-width: 5.5rem;
-      max-width: 9rem;
+      min-width: 4rem;
+      max-width: 6.5rem;
     }
   }
 </style>
