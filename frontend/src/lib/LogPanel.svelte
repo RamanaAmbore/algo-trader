@@ -154,11 +154,16 @@
   const _escAttr = (/** @type {any} */ v) =>
     String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
+  // Tab labels are noun-style content descriptors (Orders / Agents / etc.).
+  // The simulator tab carries the per-tick event stream from the sim
+  // driver (price changes, sim-tick-generated orders), so it's labelled
+  // 'Ticks' — the SIM pill on each row already conveys the mode. Earlier
+  // 'Simulator' overlapped with the same SIM pill on filtered Orders rows.
   const _ALL_TABS = [
     ['order',     'Orders'],
     ['agent',     'Agents'],
     ['terminal',  'Terminal'],
-    ['simulator', 'Simulator'],
+    ['simulator', 'Ticks'],
     ['system',    'System'],
     ['news',      'News'],
   ];
