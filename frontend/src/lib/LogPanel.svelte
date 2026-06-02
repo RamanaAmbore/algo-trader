@@ -322,7 +322,10 @@
       const o = entry.order || {};
       const sideCls = o.side === 'BUY' ? 'log-agent-success' : 'log-info';
       const price   = (o.price != null) ? '@' + priceFmt(o.price) : '';
-      return `<span class="${sideCls}">${ts} ${SIM_PILL}◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}</span>`;
+      // Ticks tab is sim-only by definition (entries come from the sim
+      // driver's tick log) — drop the SIM mode pill since every row
+      // already implies that mode. Earlier pill was redundant noise.
+      return `<span class="${sideCls}">${ts} ◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}</span>`;
     }
     const cls = _classifySimLine(entry);
     const diffs = (entry.changes || []).map(c => {
@@ -333,7 +336,8 @@
       return `<span class="log-chip"><span class="log-chip-key">${field}:</span>${arrow}${delta}</span>`;
     }).join(' ');
     const head = `tick ${entry.tick_index} · ${scen}`;
-    return `<span class="${cls}">${ts} ${SIM_PILL}${head} ${diffs || '(no changes)'}</span>`;
+    // Ticks tab is sim-only — no SIM pill needed on the tick line.
+    return `<span class="${cls}">${ts} ${head} ${diffs || '(no changes)'}</span>`;
   }
 
   function stripTs(l) {
