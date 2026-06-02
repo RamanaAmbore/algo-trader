@@ -123,12 +123,13 @@
 <!-- ── Modals ──────────────────────────────────────────────────────── -->
 {#if _orderOpen}
   <!-- Order modal mirrors the /orders entry shell — same SymbolPanel
-       tab content (Order ticket / Chain / Command line), but stripped
-       of header chrome that doesn't make sense in a quick-entry modal:
-       chart icon (operator already has one click away on the page),
-       watchlist add (no onAddToWatchlist wired), bottom Order Book +
-       Order Log panel (noise inside a transient modal). The × close
-       stays at the top-right of SymbolPanel's own header. -->
+       tab content (Order ticket / Chain / Command line). The bottom
+       Order Book + Agent Log panel is rendered so the operator can
+       see live order/agent activity from inside the modal (operator
+       feedback: "Orders modal should always show the logs tab at the
+       bottom"). The × close stays at the top-right of SymbolPanel's
+       own header; chart icon hidden since every page already has one
+       in its own header. -->
   <SymbolPanel
     symbol={String(symbol || '').toUpperCase()}
     exchange={String(exchange || '')}
@@ -138,7 +139,6 @@
     defaultMode="paper"
     availableModes={_effectiveModes}
     showChartButton={false}
-    hideBottomPanel={true}
     onClose={() => { _orderOpen = false; }}
     onSubmit={() => { _orderOpen = false; }}
   />

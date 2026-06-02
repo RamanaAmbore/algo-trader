@@ -517,8 +517,17 @@
   onMount(() => {
     // Defer initial focus until portal re-parenting settles (overlay
     // mode only — inline renders in-flow so no re-parenting occurs).
+    // Skip the symbol input as the auto-focus target: its onfocus
+    // opens the search dropdown, which the operator hasn't asked for
+    // yet on a fresh modal open. Picking the first NON-input focusable
+    // (typically the × close button) lets the dropdown stay closed
+    // until the operator explicitly clicks the symbol input.
     if (!inline) {
-      setTimeout(() => { _oesFocusables()[0]?.focus(); }, 0);
+      setTimeout(() => {
+        const els = _oesFocusables();
+        const target = els.find(el => el.tagName !== 'INPUT') ?? els[0];
+        target?.focus();
+      }, 0);
     }
 
     const onKey = (/** @type {KeyboardEvent} */ e) => {
