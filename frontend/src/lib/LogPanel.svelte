@@ -29,7 +29,11 @@
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
-    tabs        = ['order','terminal','agent','simulator','system','news'],
+    // Canonical order: Orders → Agents → Terminal → Ticks → System → News.
+    // Every LogPanel mount inherits this — drop the explicit `tabs=`
+    // prop at callsites unless a page genuinely needs a subset
+    // (e.g. /console hiding Order in a future iteration).
+    tabs        = ['order','agent','terminal','simulator','system','news'],
     defaultTab  = 'order',
     simScope    = false,
     pollMs      = 3000,

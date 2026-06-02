@@ -71,10 +71,13 @@
        System · News). Terminal is the default since this page is the
        Terminal. -->
   <div class="flex flex-col flex-1 min-h-0 mt-2">
+    <!-- Tab list inherited from LogPanel's default — keeps every
+         surface (Activity modal, Order modal bottom panel, this
+         /console mount, /agents) in sync without duplicating the
+         array per callsite. -->
     <LogPanel
       heightClass="flex-1 min-h-0"
       defaultTab={logTab}
-      tabs={['order','agent','terminal','system','news']}
       onTabChange={(id) => { logTab = id; }}
     />
   </div>

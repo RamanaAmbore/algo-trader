@@ -83,10 +83,12 @@
     </div>
 
     <div class="alm-body">
+      <!-- Tab list inherited from LogPanel's default — keeps every
+           surface (this modal, the Order modal bottom panel, /console,
+           /agents) in sync without duplicating the array per callsite. -->
       <LogPanel
         heightClass="flex-1 min-h-0"
         defaultTab="order"
-        tabs={['order','agent','terminal','simulator','system','news']}
       />
     </div>
   </div>

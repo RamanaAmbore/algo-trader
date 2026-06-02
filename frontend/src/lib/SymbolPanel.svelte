@@ -876,10 +876,14 @@
     {#if !hideBottomPanel}
     <div class="oes-bottom-panel">
       <div class="oes-bottom-body">
+        <!-- Tab list inherited from LogPanel's default — keeps every
+             surface (Activity modal, this Order modal bottom panel,
+             /console, /agents) in sync without duplicating the array
+             per callsite. Earlier this mount skipped Ticks; the
+             activity surfaces now all show the canonical 6 tabs. -->
         <LogPanel
           heightClass="oes-bottom-scroll"
           defaultTab="order"
-          tabs={['order','agent','terminal','system','news']}
         />
       </div>
     </div>
