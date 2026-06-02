@@ -126,11 +126,14 @@
   let _colActivity = $state(false);
   let _fsActivity  = $state(false);
 
-  // Activity-card tab state. Agent Log (UnifiedLog of recent agent
-  // / order events) is the first tab and the default — operators
-  // want the live event stream front-and-center. Order Book is the
-  // second tab, focused on filterable order grid.
-  let _activityTab = $state(/** @type {'log'|'book'} */ ('log'));
+  // Activity-card tab state. Order Book (card grid) is the default —
+  // matches the LogPanel Orders tab format shown in every other
+  // surface (Activity modal, Order modal bottom panel, /console,
+  // /agents). Agent Log (UnifiedLog of recent events) is one click
+  // away. Earlier 'log' was the default but that left the operator
+  // landing on a different visual format than every other Orders
+  // surface uses.
+  let _activityTab = $state(/** @type {'log'|'book'} */ ('book'));
 
   // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
   // logic SymbolPanel uses internally; duplicated here so the tab
