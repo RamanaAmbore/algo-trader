@@ -135,7 +135,6 @@
     { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
     { href: '/admin',            label: 'Users',     adminOnly: true, group: 'config' },
     { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
-    { href: '/admin/visitors',   label: 'Visitors',  adminOnly: true, group: 'config' },
   ];
   // Branch-aware + demo-aware + mode-aware filter.
   // `modes: [...]` on a link entry means "show only when the current

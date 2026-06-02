@@ -60,7 +60,6 @@ from backend.api.routes.live import LiveController
 from backend.api.routes.execution import ExecutionController
 from backend.api.routes.logs import LogsController
 from backend.api.routes.watchlist import WatchlistController
-from backend.api.routes.visitors import VisitorLogController
 from backend.api.routes.ws import performance_ws_handler
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -204,7 +203,6 @@ _route_handlers = [
     ResearchController,
     EconomicController,
     WatchlistController,
-    VisitorLogController,
     performance_ws_handler,
     algo_ws_handler,
 ]
@@ -328,19 +326,41 @@ async def _start_kite_ticker() -> None:
 #                       IAD = Ashburn VA, …) — coarse geographic hint
 #                       about which CF edge served the request.
 #
-# Country + colo gets us "approx location" without an external service.
-# For city-level resolution we additionally hit ip-api.com — free, no
-# auth, 45 req/min. With our 1-hour-per-IP dedup that's plenty of
-# headroom. The HTTP call is fire-and-forget (asyncio.create_task) so
-# it never blocks the actual request; the city info appears on a
-# follow-up `[visitor-loc]` log line once the lookup returns.
+# City + company resolution now uses the local MaxMind GeoLite2 databases
+# (/usr/share/GeoIP/GeoLite2-City.mmdb + GeoLite2-ASN.mmdb) — same files
+# the daily visitor_report.py batch reads. Lookups are memory-mapped,
+# ~1 ms, no network round-trip, no rate limit. The IP digest is logged
+# inline on the [visitor] line (no follow-up [visitor-loc] line) so the
+# operator sees the full "who" in one row of the System log tab.
+# Honours visitors.ignore_ips and visitors.ignore_companies from
+# /admin/settings so the server's own outbound + operator's laptop +
+# any noisy hosting providers don't spam the System log.
 from time import monotonic
-import asyncio
 _visitor_log_cache: dict[tuple[str, str], float] = {}
-_visitor_loc_cache: dict[str, str] = {}        # ip → "City, Region, Country (ISP)"
-_visitor_loc_inflight: set[str] = set()        # IPs currently being looked up
 _VISITOR_LOG_TTL_SEC    = 60 * 60       # re-log a known IP after 1 hour
 _VISITOR_LOG_EVICT_SEC  = 60 * 60 * 24  # drop entries older than 24 h
+# MaxMind reader handles — opened once at process start (memory-mapped).
+_mmdb_city = None
+_mmdb_asn  = None
+
+def _mmdb_open() -> None:
+    """Open the GeoLite2 databases on first use. Re-tried on every
+    cache-miss request so a restart with the .mmdb files in place
+    starts working without a service bounce."""
+    global _mmdb_city, _mmdb_asn
+    if _mmdb_city is not None and _mmdb_asn is not None:
+        return
+    try:
+        import maxminddb
+        from pathlib import Path as _P
+        city = _P("/usr/share/GeoIP/GeoLite2-City.mmdb")
+        asn  = _P("/usr/share/GeoIP/GeoLite2-ASN.mmdb")
+        if _mmdb_city is None and city.exists():
+            _mmdb_city = maxminddb.open_database(str(city))
+        if _mmdb_asn is None and asn.exists():
+            _mmdb_asn = maxminddb.open_database(str(asn))
+    except Exception:
+        pass
 
 
 def _is_private_ip(ip: str) -> bool:
@@ -356,49 +376,82 @@ def _is_private_ip(ip: str) -> bool:
     return False
 
 
-async def _resolve_location(ip: str) -> None:
-    """Fire-and-forget GeoIP lookup against ip-api.com. Caches the
-    result so each IP is only queried once. Logs the resolved
-    location on a `[visitor-loc]` line so the operator sees the
-    enriched info alongside the original `[visitor]` line.
-    Network failures and odd responses are swallowed silently —
-    the visitor logger keeps working with country + colo only."""
-    if ip in _visitor_loc_cache or ip in _visitor_loc_inflight:
-        return
-    _visitor_loc_inflight.add(ip)
+def _mmdb_lookup(ip: str) -> tuple[str, str, str]:
+    """Return (city_region, company_short, asn) via local MaxMind. Empty
+    strings on miss — the hook still logs country + colo from CF headers
+    so a missing .mmdb file degrades gracefully."""
+    _mmdb_open()
+    city_region = ""
+    company = ""
+    asn = ""
+    if _mmdb_city is not None:
+        try:
+            rec = _mmdb_city.get(ip) or {}
+            city_obj = (rec.get("city") or {}).get("names") or {}
+            city = city_obj.get("en") or ""
+            subdivisions = rec.get("subdivisions") or [{}]
+            region = subdivisions[0].get("iso_code") or ""
+            if city and region:
+                city_region = f"{city}, {region}"
+            elif city:
+                city_region = city
+        except Exception:
+            pass
+    if _mmdb_asn is not None:
+        try:
+            asn_rec = _mmdb_asn.get(ip) or {}
+            asn_num = asn_rec.get("autonomous_system_number")
+            asn_org = asn_rec.get("autonomous_system_organization") or ""
+            if asn_num:
+                asn = f"AS{asn_num}"
+            if asn_org:
+                # Reuse the same shortener the daily report uses so
+                # log lines and the digest read the same names.
+                try:
+                    from backend.scripts.visitor_report import _shorten_company
+                    company = _shorten_company(asn_org)
+                except Exception:
+                    company = asn_org[:40]
+        except Exception:
+            pass
+    return city_region, company, asn
+
+
+def _visitor_ignored(ip: str, company: str) -> bool:
+    """Honour visitors.ignore_ips + visitors.ignore_companies from
+    /admin/settings. Operators add their laptop IP + hosting providers
+    so those visitors don't spam the System log."""
     try:
-        import httpx
-        url = f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp"
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            r = await client.get(url)
-            data = r.json()
-        if data.get("status") != "success":
-            return
-        loc = ", ".join(filter(None, [
-            data.get("city"), data.get("regionName"), data.get("country"),
-        ])) or "?"
-        isp = data.get("isp") or ""
-        line = f"{loc}" + (f" ({isp})" if isp else "")
-        _visitor_loc_cache[ip] = line
-        logger.info(f"[visitor-loc] {ip} → {line}")
+        from backend.shared.helpers.settings import get_string as _get_string
+        ips_raw = _get_string("visitors.ignore_ips", "")
+        companies_raw = _get_string("visitors.ignore_companies", "")
     except Exception:
-        pass
-    finally:
-        _visitor_loc_inflight.discard(ip)
+        return False
+    for pat in (p.strip() for p in ips_raw.split(",") if p.strip()):
+        if ip == pat or ip.startswith(pat):
+            return True
+    if company:
+        cl = company.lower()
+        for pat in (p.strip().lower() for p in companies_raw.split(",") if p.strip()):
+            if pat and pat in cl:
+                return True
+    return False
 
 
 async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
-    """Litestar before_request hook — logs the visitor's IP +
-    country + CF colo on first sight per hour, kicks off a
-    background GeoIP lookup for city-level enrichment. Skips
-    static asset paths so the log isn't drowned in
-    /assets/*.js fetches."""
+    """Litestar before_request hook — logs every first-sight-per-hour
+    visitor to the operator-facing System log with country / city /
+    region / company / ASN resolved inline via local MaxMind. Skips
+    static asset paths and IPs matched by visitors.ignore_ips /
+    visitors.ignore_companies so the System tab reads as real
+    third-party visitor traffic."""
     try:
         path = request.scope.get("path") or ""
-        # Skip static + asset traffic — the operator wants to see
-        # "someone opened the site," not every chunk fetch.
+        # Skip static + asset + infra traffic — operator wants 'someone
+        # opened the site', not every chunk / heartbeat.
         if (path.startswith("/assets/")
                 or path.startswith("/_app/")
+                or path.startswith("/cdn-cgi/")
                 or path == "/favicon.ico"
                 or path.endswith(".png") or path.endswith(".jpg")
                 or path.endswith(".svg") or path.endswith(".css")
@@ -406,10 +459,6 @@ async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
                 or path.endswith(".woff2") or path.endswith(".map")):
             return
         headers = request.headers
-        # Cloudflare-supplied real client IP. Fallback chain for
-        # local / dev (no Cloudflare) so the hook still produces
-        # something useful: X-Forwarded-For (first hop) → request
-        # client tuple → "?".
         ip = (
             headers.get("CF-Connecting-IP")
             or (headers.get("X-Forwarded-For") or "").split(",")[0].strip()
@@ -417,37 +466,47 @@ async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
             or "?"
         )
         country = headers.get("CF-IPCountry") or "??"
-        # CF-Ray format: <id>-<colo>. Last hyphen-separated chunk is
-        # the 3-letter CF datacenter code that served the request.
         cf_ray = headers.get("CF-Ray") or ""
         colo = cf_ray.rsplit("-", 1)[-1] if "-" in cf_ray else "?"
         ua = (headers.get("User-Agent") or "")[:80]
 
         now = monotonic()
         key = (ip, country)
-        # Evict stale entries lazily so the dict doesn't grow forever.
         for k in [k for k, t in _visitor_log_cache.items()
                   if (now - t) > _VISITOR_LOG_EVICT_SEC]:
             _visitor_log_cache.pop(k, None)
         last = _visitor_log_cache.get(key)
         if last is not None and (now - last) < _VISITOR_LOG_TTL_SEC:
             return
+
+        # MaxMind enrichment — fast (~1 ms, memory-mapped). Skip for
+        # private IPs since MaxMind would just return None and we'd
+        # waste the dict-walk.
+        city_region = ""
+        company = ""
+        asn = ""
+        if not _is_private_ip(ip):
+            city_region, company, asn = _mmdb_lookup(ip)
+
+        # Operator-managed ignore filters — applies AFTER MaxMind so the
+        # company check has a value to compare against.
+        if _visitor_ignored(ip, company):
+            # Still mark as seen so a flapping ignore-rule doesn't open
+            # the flood gates retroactively for the rest of the hour.
+            _visitor_log_cache[key] = now
+            return
+
         _visitor_log_cache[key] = now
         method = request.scope.get("method") or "GET"
-        # Inline the cached city/region if we already resolved this IP
-        # — saves the operator from cross-referencing the follow-up
-        # `[visitor-loc]` line.
-        loc_inline = _visitor_loc_cache.get(ip)
-        loc_part = f" — {loc_inline}" if loc_inline else ""
+        # Build a clean inline digest:  [visitor] IP (country,CF:colo) — city, region · Company · ASN GET /path UA="…"
+        loc_parts = []
+        if city_region: loc_parts.append(city_region)
+        if company:     loc_parts.append(company)
+        if asn:         loc_parts.append(asn)
+        loc_part = (" — " + " · ".join(loc_parts)) if loc_parts else ""
         logger.info(f"[visitor] {ip} ({country}, CF:{colo}){loc_part} {method} {path} UA=\"{ua}\"")
-        # Fire off background lookup for city-level info on first
-        # sight. Real-IP only — RFC1918 / loopback / dev IPs are
-        # skipped (ip-api would error on them and we'd waste a hit).
-        if not _is_private_ip(ip):
-            asyncio.create_task(_resolve_location(ip))
     except Exception:
-        # The hook must NEVER break a real request — geolog is
-        # best-effort.
+        # Hook must NEVER break a real request — geolog is best-effort.
         pass
 
 
