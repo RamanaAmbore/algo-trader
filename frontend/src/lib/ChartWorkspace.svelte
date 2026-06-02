@@ -107,7 +107,15 @@
     { value: 'bb',       label: 'Bollinger' },
     { value: 'vol',      label: 'Volume' },
     { value: 'rsi',      label: 'RSI 14' },
-    { value: 'intraday', label: 'Intraday' },
+  ];
+
+  // Intraday tick stream — separate from the technical-overlay multi-
+  // select because it's a different display mode (live tick polling),
+  // not a price overlay. Explicit On/Off so the state reads at a glance.
+  /** @type {Array<{value:string,label:string}>} */
+  const _INTRADAY_OPTS = [
+    { value: 'off', label: 'Intraday Off' },
+    { value: 'on',  label: 'Intraday On'  },
   ];
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
@@ -117,7 +125,7 @@
     _pinnedValue = '';       // search pick — clear active pin
     _resolvedExchange = '';  // clear stale MCX/CDS hint from prior pin
     _chartLoaded = false;
-    _overlays = _overlays.filter(o => o !== 'intraday');
+    _intradayMode = 'off';
     onSymbolChange?.(upper);
     _loadHistorical(true);
   }
@@ -178,7 +186,7 @@
     _resolvedExchange = r.exchange || '';  // capture MCX/CDS/NSE so _loadHistorical can hint the backend
     symbol = r.tradingsymbol;
     _chartLoaded = false;
-    _overlays = _overlays.filter(o => o !== 'intraday');
+    _intradayMode = 'off';
     onSymbolChange?.(r.tradingsymbol);
     _loadHistorical(true);
   }
@@ -224,6 +232,8 @@
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
+  // Intraday tick stream — explicit two-value state (separate from overlays).
+  let _intradayMode = $state(/** @type {'on'|'off'} */('off'));
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   const _showVol   = $derived(_overlays.includes('vol'));
@@ -354,7 +364,7 @@
   }
 
   // ── Intraday tick stream ──────────────────────────────────────────
-  const _intradayEnabled = $derived(_overlays.includes('intraday'));
+  const _intradayEnabled = $derived(_intradayMode === 'on');
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
   let _ticks  = $state([]);
   /** @type {Array<{ts:string,kind:string,side:string,price:number|null}>} */
@@ -912,10 +922,10 @@
   });
 
   // Re-load historical when symbol changes externally.
-  // The intraday-overlay clear is wrapped in untrack() so reading
-  // _overlays here doesn't make this effect depend on _overlays —
-  // otherwise writing back a filtered array re-fires the effect
-  // endlessly (caught: 80+ /api/options/historical calls in 2s).
+  // The intraday-mode reset is wrapped in untrack() so reading
+  // _intradayMode here doesn't make this effect depend on it —
+  // otherwise writing back 'off' re-fires the effect endlessly
+  // (caught: 80+ /api/options/historical calls in 2s).
   $effect(() => {
     void symbol; void exchange;
     if (_mounted) {
@@ -926,9 +936,7 @@
       _spotBars = [];
       _greeks = null;
       untrack(() => {
-        if (_overlays.includes('intraday')) {
-          _overlays = _overlays.filter(o => o !== 'intraday');
-        }
+        if (_intradayMode !== 'off') _intradayMode = 'off';
       });
       _loadHistorical(true);
       if (_isOption) _loadGreeks();
@@ -995,6 +1003,14 @@
           options={_CHART_TYPE_OPTS}
           bind:value={_chartType}
           ariaLabel="Chart type" />
+      </div>
+
+      <!-- Intraday tick stream — explicit two-value On/Off -->
+      <div class="cw-toolbar-select">
+        <Select
+          options={_INTRADAY_OPTS}
+          bind:value={_intradayMode}
+          ariaLabel="Intraday tick stream" />
       </div>
 
       <!-- Date range — segmented pill row (1D/1W/1M/3M/6M/1Y) -->
