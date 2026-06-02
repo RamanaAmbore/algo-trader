@@ -31,7 +31,7 @@
     loadInstruments, searchByPrefix, suggestUnderlyings,
     findEquity, findNearestFuture, getInstrument,
   } from '$lib/data/instruments';
-  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import { visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -256,13 +256,24 @@
     'NIFTY NEXT 50':      'NIFTYNXT50',
   };
   async function _resolveFetchSymbol(/** @type {string} */ sym) {
-    const root = _KITE_INDEX_TO_ROOT[sym];
+    // Resolve any non-tradeable anchor (Kite index quote-key, MCX
+    // commodity root, CDS currency root) to its nearest-month future.
+    // Without this, "CRUDEOIL" / "GOLD" / "USDINR" hit the historical
+    // endpoint literally — the backend walks every exchange and
+    // returns empty bars (the "No data available" first-load bug).
+    // The pinned-dropdown picker already goes through this resolver
+    // via _loadPin, so a second click on the same pin renders the
+    // chart correctly — the fix is making the initial render do the
+    // same translation.
+    const upper = String(sym || '').toUpperCase();
+    const indexRoot = _KITE_INDEX_TO_ROOT[upper];        // 'NIFTY 50' → 'NIFTY'
+    const isMcx     = MCX_COMMODITIES.has(upper);        // 'CRUDEOIL', 'GOLD', …
+    const isCds     = CDS_CURRENCIES.has(upper);         // 'USDINR'
+    const root      = indexRoot || (isMcx || isCds ? upper : null);
     if (!root) return { sym, exch: '' };
+
     // Sync first — instruments cache is usually warm by the time the
     // operator clicks a chart icon. If null, force a load and retry.
-    // Without this the resolver silently falls through to the literal
-    // Kite index name and the backend walks every exchange for ~10s
-    // before returning empty bars.
     let fut = null;
     try { fut = findNearestFuture(root); } catch (_) {}
     if (!fut?.s) {
@@ -279,7 +290,13 @@
         fut = findNearestFuture(root);
       } catch (_) { /* still no instruments — fall through to literal */ }
     }
-    if (fut?.s) return { sym: String(fut.s), exch: String(fut.e || 'NFO') };
+    if (fut?.s) {
+      // Default exchange: MCX for commodities, CDS for currencies, NFO
+      // for indices. The instruments row's `e` field is the source of
+      // truth when present (handles edge cases like FUT-on-BFO).
+      const defaultExch = isMcx ? 'MCX' : (isCds ? 'CDS' : 'NFO');
+      return { sym: String(fut.s), exch: String(fut.e || defaultExch) };
+    }
     return { sym, exch: '' };
   }
 
