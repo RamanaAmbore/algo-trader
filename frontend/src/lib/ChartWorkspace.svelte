@@ -74,8 +74,11 @@
   // EQ = equities + indices; FUT = futures; OPT = CE+PE; ALL = no filter.
   let _symType        = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */('ALL'));
   /** @type {Array<{value:string,label:string}>} */
+  // Label "EQ · FUT · OPT" spells out what the ALL filter actually
+  // includes — earlier "All" alone gave no indication of which
+  // instrument types were on the menu.
   const _SYM_TYPE_OPTS = [
-    { value: 'ALL', label: 'All' },
+    { value: 'ALL', label: 'EQ · FUT · OPT' },
     { value: 'EQ',  label: 'Equity' },
     { value: 'FUT', label: 'Futures' },
     { value: 'OPT', label: 'Options' },
@@ -989,14 +992,23 @@
 </script>
 
 <div class="cw-root">
-  <!-- Picker bar — combined pinned+search combo box (first element),
-       then type filter, then chart controls. The pinned dropdown
-       used to be a separate Select; folding it into SymbolSearchInput
-       lets the operator either click a pin OR type to search from a
-       single field. -->
+  <!-- Picker bar — type filter (1st) sets the instrument-kind scope,
+       then the combined pinned+search combo box (2nd) lets the
+       operator either click a pin OR type to search from a single
+       field. -->
   {#if !compact}
     <div class="cw-picker">
-      <!-- Symbol combo — leading element. Pinned section shows the
+      <!-- Type filter — leading element so the operator scopes the
+           instrument family FIRST. "EQ · FUT · OPT" label spells out
+           what the unfiltered ALL value actually contains. -->
+      <div class="cw-type-wrap">
+        <Select
+          options={_SYM_TYPE_OPTS}
+          bind:value={_symType}
+          ariaLabel="Symbol type filter" />
+      </div>
+
+      <!-- Symbol combo — 2nd element. Pinned section shows the
            resolved tradeable contract per anchor (NIFTY 50 →
            NIFTY26JUNFUT, CRUDEOIL → CRUDEOILM26JUNFUT). Picking a pin
            routes through _onPickPin so the exchange hint is captured;
@@ -1020,13 +1032,6 @@
           }
         }}
         ariaLabel="Symbol — pinned or search" />
-
-      <div class="cw-type-wrap">
-        <Select
-          options={_SYM_TYPE_OPTS}
-          bind:value={_symType}
-          ariaLabel="Symbol type filter" />
-      </div>
 
       <!-- Chart type -->
       <div class="cw-toolbar-select">
