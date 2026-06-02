@@ -8,6 +8,7 @@
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
+  import OrderCard from '$lib/order/OrderCard.svelte';
   import { chipsHtml, chipsFromJson } from '$lib/logChips';
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -494,10 +495,14 @@
     />
   </div>
 {:else if logTab === 'order'}
-  <!-- Order tab — [All] uses the unified merged feed (orders + agent
-       fires). Paper / Live / Sim filter to mode-specific algo_orders
-       rows so operators can isolate "did my paper test order land?"
-       or "what did live place?" without agent-fire interleaving. -->
+  <!-- Order tab — orders render as bordered cards via <OrderCard>, the
+       same component the /orders Order Activity book uses, so the
+       Activity-modal Orders tab and the dedicated /orders page format
+       are visually identical. The mode filter strip below selects which
+       AlgoOrder rows are shown (All shows everything — matching the
+       "All status" card on /orders); previously this branch routed
+       through UnifiedLog (which merged agent fires in) and the
+       mode-specific branches rendered text spans inside a <pre>. -->
   <div class="om-bar">
     {#each _ORDER_MODE_TABS as [val, label]}
       <button class="om-chip {orderModeFilter === val ? 'om-on' : ''} om-chip-{val}"
@@ -506,39 +511,19 @@
       </button>
     {/each}
   </div>
-  {#if orderModeFilter === 'all'}
-    <UnifiedLog
-      filter={{}}
-      pollMs={pollMs}
-      maxRows={50}
-      heightClass="log-panel log-unified {heightClass}"
-    />
-  {:else}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
-    <pre class="log-panel {heightClass}"
-         role="log"
-         onclick={(e) => {
-           const sym = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-sym-cell'));
-           if (sym) {
-             e.stopPropagation();
-             _symPanelSym  = sym.dataset.sym  || '';
-             _symPanelExch = sym.dataset.exch || '';
-             return;
-           }
-           const btn = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-chart-btn'));
-           if (!btn) return;
-           e.stopPropagation();
-           _chartModalSym  = btn.dataset.sym  || '';
-           _chartModalExch = btn.dataset.exch || '';
-         }}
-         oncontextmenu={(e) => {
-           const sym = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest?.('.log-sym-cell'));
-           if (!sym) return;
-           e.preventDefault();
-           e.stopPropagation();
-           _ctxMenu = { symbol: sym.dataset.sym || '', exchange: sym.dataset.exch || '', x: e.clientX, y: e.clientY };
-         }}>{#if filteredOrderRows.length}{@html filteredOrderRows.map(_orderRowHtml).join('\n')}{:else}<span class="log-debug">No {orderModeFilter} orders.</span>{/if}</pre>
-  {/if}
+  <div class="lp-order-scroll {heightClass}">
+    {#if filteredOrderRows.length}
+      <div class="oc-book-grid">
+        {#each filteredOrderRows as o (o.order_id ?? o.id)}
+          <OrderCard order={o}
+            onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ''; _symPanelExch = ord.exchange || ''; }}
+            onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }} />
+        {/each}
+      </div>
+    {:else}
+      <div class="log-debug py-2 text-center">No {orderModeFilter} orders.</div>
+    {/if}
+  </div>
 {:else}
 <pre class="log-panel {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
   const t = _dualTsHtml(e.timestamp);
@@ -629,6 +614,27 @@
   /* Tab row — another +30% on the previous 0.48rem → 0.62rem. Padding
      scaled proportionally. Still no inter-tab gap so mobile fit holds. */
   .log-tab-row { gap: 0; }
+
+  /* Orders-tab card grid — mirrors /orders' .oc-book-grid so the
+     Activity-modal Orders tab and the dedicated /orders page lay out
+     identically. One column on phone; two on tablet; three on desktop. */
+  .lp-order-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.4rem 0.2rem;
+  }
+  .lp-order-scroll .oc-book-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+  @media (min-width: 640px) {
+    .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (min-width: 1024px) {
+    .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
   :global(.log-tab-btn) {
     font-size: 0.62rem;
     font-weight: 600;
