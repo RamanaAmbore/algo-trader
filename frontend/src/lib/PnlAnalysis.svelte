@@ -13,7 +13,10 @@
 
   // ── State ──────────────────────────────────────────────────────────────────
   /** @type {'today'|'5d'|'1m'|'3m'|'1y'|'ytd'|'custom'} */
-  let preset = $state('today');
+  // Default 5d — the operator's natural 'show me my P&L' expectation is
+  // a multi-day curve, not a single-point flat line. Today is one click
+  // away on the preset strip when they want the intraday snapshot.
+  let preset = $state('5d');
   /** @type {string} */
   let fromDate   = $state('');
   /** @type {string} */
@@ -199,8 +202,12 @@
   let _mounted = $state(false);
   onMount(() => {
     const today = todayIST();
-    fromDate = today;
-    toDate   = today;
+    // Hydrate the default range from the active preset (5d) so the first
+    // fetch covers a multi-day window. The CSV upload modal still defaults
+    // to today since the operator is uploading a single trading day.
+    const r = presetRange(preset);
+    fromDate = r.from;
+    toDate   = r.to;
     csvDate  = today;
     load();
     loadBenchmarks();

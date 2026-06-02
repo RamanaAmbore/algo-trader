@@ -739,12 +739,12 @@
   // gives the cleanest scan; the breakdowns (ΔH, ΔP) and the lifetime
   // combined live behind one click in the legend strip.
   const _EQ_SERIES = [
-    { id: 'H',     label: 'H',      field: 'h_pnl',  color: '#7dd3fc', dash: '',    width: 1.5, dflt: true  },
-    { id: 'dH',    label: 'ΔH',     field: 'h_day',  color: '#7dd3fc', dash: '4 3', width: 1.5, dflt: false },
-    { id: 'P',     label: 'P',      field: 'p_pnl',  color: '#fbbf24', dash: '',    width: 1.5, dflt: true  },
-    { id: 'dP',    label: 'ΔP',     field: 'p_day',  color: '#fbbf24', dash: '4 3', width: 1.5, dflt: false },
-    { id: 'comb',  label: 'H+P',    field: 'cum_pnl',color: '#4ade80', dash: '',    width: 2.0, dflt: false },
-    { id: 'dComb', label: 'ΔH+ΔP',  field: 'day_pnl',color: '#4ade80', dash: '4 3', width: 2.0, dflt: true  },
+    { id: 'H',     label: 'H',      title: 'Holdings — lifetime P&L',           field: 'h_pnl',  color: '#7dd3fc', dash: '',    width: 1.5, dflt: true  },
+    { id: 'dH',    label: 'ΔH',     title: 'Holdings — today’s change',    field: 'h_day',  color: '#7dd3fc', dash: '4 3', width: 1.5, dflt: false },
+    { id: 'P',     label: 'P',      title: 'Positions — lifetime P&L',          field: 'p_pnl',  color: '#fbbf24', dash: '',    width: 1.5, dflt: true  },
+    { id: 'dP',    label: 'ΔP',     title: 'Positions — today’s change',   field: 'p_day',  color: '#fbbf24', dash: '4 3', width: 1.5, dflt: false },
+    { id: 'comb',  label: 'H+P',    title: 'Combined — lifetime P&L',           field: 'cum_pnl',color: '#4ade80', dash: '',    width: 2.0, dflt: false },
+    { id: 'dComb', label: 'ΔH+ΔP',  title: 'Combined — today’s change',    field: 'day_pnl',color: '#4ade80', dash: '4 3', width: 2.0, dflt: true  },
   ];
   let _eqSeriesOn = $state(/** @type {Record<string,boolean>} */ (
     Object.fromEntries(_EQ_SERIES.map(s => [s.id, s.dflt]))
@@ -1746,6 +1746,32 @@
         No data yet — markets open at 09:15 IST
       </div>
     {:else}
+      <!-- Series legend / toggle strip — sits ABOVE the chart so it
+           doesn't fight the stat overlay. Each chip carries the
+           matching series colour as background tint + border so the
+           chip → curve mapping reads at a glance. -->
+      <div class="eq-legend" role="group" aria-label="Equity chart series">
+        {#each _EQ_SERIES as s (s.id)}
+          <button
+            type="button"
+            class="eq-chip eq-chip-{s.id}"
+            class:eq-chip-on={_eqSeriesOn[s.id]}
+            aria-pressed={_eqSeriesOn[s.id]}
+            title="{s.title} — click to {_eqSeriesOn[s.id] ? 'hide' : 'show'}"
+            onclick={() => _eqSeriesOn[s.id] = !_eqSeriesOn[s.id]}>
+            <svg class="eq-chip-swatch" width="18" height="6" aria-hidden="true">
+              <line x1="0" y1="3" x2="18" y2="3"
+                stroke={s.color} stroke-width={s.width}
+                stroke-dasharray={s.dash || ''} stroke-linecap="round" />
+            </svg>
+            <span class="eq-chip-label">{s.label}</span>
+          </button>
+        {/each}
+      </div>
+      <!-- Chart frame — wraps SVG + stat overlay so .eq-stats anchors
+           to the chart area (not the card-body); the legend strip above
+           stays clear of any stat-overlay overlap. -->
+      <div class="eq-chart-frame">
       <!-- Stat overlay — at-a-glance P&L numerics so the operator
            doesn't need a separate hero strip. Pointer-events: none
            so SVG hover / zoom never blocks. Same pattern OptionsPayoff
@@ -1769,28 +1795,6 @@
             {#if _vsNifty == null}—{:else}{_vsNifty >= 0 ? '+' : ''}{pctFmt(_vsNifty)}%{/if}
           </span>
         </div>
-      </div>
-      <!-- Series legend / toggle strip — click any chip to show or hide
-           the corresponding curve. Default state shows H · P · ΔH+ΔP
-           (3 lines, clean scan); ΔH, ΔP, H+P (lifetime) open in one
-           click when the operator wants to drill into the breakdown. -->
-      <div class="eq-legend" role="group" aria-label="Equity chart series">
-        {#each _EQ_SERIES as s (s.id)}
-          <button
-            type="button"
-            class="eq-chip"
-            class:eq-chip-on={_eqSeriesOn[s.id]}
-            aria-pressed={_eqSeriesOn[s.id]}
-            title="{s.label} — click to {_eqSeriesOn[s.id] ? 'hide' : 'show'}"
-            onclick={() => _eqSeriesOn[s.id] = !_eqSeriesOn[s.id]}>
-            <svg width="14" height="6" aria-hidden="true">
-              <line x1="0" y1="3" x2="14" y2="3"
-                stroke={s.color} stroke-width={s.width}
-                stroke-dasharray={s.dash || ''} stroke-linecap="round" />
-            </svg>
-            <span>{s.label}</span>
-          </button>
-        {/each}
       </div>
       <svg
         class="eq-svg"
@@ -1897,6 +1901,7 @@
           {/if}
         {/if}
       </svg>
+      </div><!-- /eq-chart-frame -->
     {/if}
     </div>
 
@@ -2108,35 +2113,79 @@
   /* Equity curve */
   /* Series-toggle legend — sits above the SVG, narrow row of chips with
      a colored stroke swatch + label. Click toggles the matching curve
-     on the chart. Wraps onto a second row on mobile so 6 chips fit. */
+     on the chart. Each chip carries its series colour as background
+     tint + border so the chip ↔ curve mapping reads at a glance.
+     Wraps onto a second row on mobile so 6 chips fit. */
   .eq-legend {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem;
-    padding: 0.2rem 0.1rem 0.45rem;
+    gap: 0.35rem;
+    padding: 0.25rem 0.1rem 0.5rem;
     align-items: center;
   }
   .eq-chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.32rem;
+    gap: 0.42rem;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 3px;
-    padding: 0.14rem 0.4rem;
+    padding: 0.22rem 0.55rem;
     font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-size: 0.66rem;
+    font-weight: 600;
     color: rgba(200, 216, 240, 0.55);
     cursor: pointer;
+    line-height: 1;
+    white-space: nowrap;
     transition: background 0.1s, border-color 0.1s, color 0.1s;
   }
+  .eq-chip-swatch { display: block; flex-shrink: 0; }
+  .eq-chip-label  { display: inline-block; }
   .eq-chip:hover { background: rgba(255, 255, 255, 0.06); color: #c8d8f0; }
-  .eq-chip-on   { background: rgba(34, 211, 238, 0.10); border-color: rgba(34, 211, 238, 0.40); color: #c8d8f0; }
-  .eq-chip-on:hover { background: rgba(34, 211, 238, 0.18); }
-  .eq-chip svg { display: block; flex-shrink: 0; }
-  /* When the chip is off the swatch fades so the operator scans
-     "what's currently drawn" by chip brightness alone. */
-  .eq-chip:not(.eq-chip-on) svg { opacity: 0.35; }
+  /* Off state — swatch fades so the operator scans 'what's drawn' by
+     chip brightness alone. */
+  .eq-chip:not(.eq-chip-on) .eq-chip-swatch { opacity: 0.35; }
+
+  /* Per-series ON-state palette — chip's background + border + text
+     all pick up the matching curve colour at low alpha so toggling a
+     chip on visually highlights it among its siblings. Holdings family
+     in sky-blue, positions in amber, combined in green. */
+  .eq-chip-H.eq-chip-on,
+  .eq-chip-dH.eq-chip-on {
+    background: rgba(125, 211, 252, 0.14);
+    border-color: rgba(125, 211, 252, 0.55);
+    color: #7dd3fc;
+  }
+  .eq-chip-H.eq-chip-on:hover,
+  .eq-chip-dH.eq-chip-on:hover { background: rgba(125, 211, 252, 0.22); }
+
+  .eq-chip-P.eq-chip-on,
+  .eq-chip-dP.eq-chip-on {
+    background: rgba(251, 191, 36, 0.14);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+  }
+  .eq-chip-P.eq-chip-on:hover,
+  .eq-chip-dP.eq-chip-on:hover { background: rgba(251, 191, 36, 0.22); }
+
+  .eq-chip-comb.eq-chip-on,
+  .eq-chip-dComb.eq-chip-on {
+    background: rgba(74, 222, 128, 0.14);
+    border-color: rgba(74, 222, 128, 0.55);
+    color: #4ade80;
+  }
+  .eq-chip-comb.eq-chip-on:hover,
+  .eq-chip-dComb.eq-chip-on:hover { background: rgba(74, 222, 128, 0.22); }
+
+  /* Chart frame — positioned wrapper around the SVG so the
+     `.eq-stats` absolute overlay anchors to the chart area, not the
+     card-body. Without this the stats floated up over the legend
+     strip when the SVG was pushed down. */
+  .eq-chart-frame {
+    position: relative;
+    width: 100%;
+  }
 
   .eq-svg {
     display: block;
