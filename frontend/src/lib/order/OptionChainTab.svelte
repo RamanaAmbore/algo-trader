@@ -941,9 +941,13 @@
     color: #a3b9d0;
     font-weight: 500;
   }
+  /* Strike-grid height tightened so the basket + chart panels below
+     stay visible without forcing a second scroll on the modal body.
+     Earlier 22rem felt cramped on tablet viewports and pushed the
+     LogPanel bottom panel out of view. */
   .chain-grid-wrap {
     overflow-y: auto;
-    max-height: 22rem;
+    max-height: 14rem;
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 3px;
   }

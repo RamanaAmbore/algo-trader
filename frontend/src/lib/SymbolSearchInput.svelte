@@ -117,7 +117,12 @@
 
   /** Pick a result-row instrument. */
   function _pickInst(/** @type {any} */ inst) {
-    const sym = String(inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
+    // Kite instrument-cache rows expose the symbol as `s` (compact);
+    // older shapes used `sym`/`tradingsymbol`. Without the `inst.s`
+    // fallback the bound `value` got the typed query (e.g. "REL")
+    // instead of the picked symbol (e.g. "RELIANCE") and the chart
+    // returned "no data available".
+    const sym = String(inst?.s || inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
     value = sym;
     _symQuery = sym;
     _symOpen = false;

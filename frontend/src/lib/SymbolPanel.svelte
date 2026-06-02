@@ -816,6 +816,23 @@
           }} />
 
       {/if}
+
+      <!-- Bottom panel — the canonical 6-tab activity surface (Orders ·
+           Agents · Terminal · Ticks · System · News). Lives INSIDE
+           .oes-body so it scrolls with the active tab content
+           (attached to the orders area) rather than floating below the
+           shell-level basket footer. Suppressed when the host renders
+           the activity in a separate surface via `hideBottomPanel`. -->
+      {#if !hideBottomPanel}
+      <div class="oes-bottom-panel">
+        <div class="oes-bottom-body">
+          <LogPanel
+            heightClass="oes-bottom-scroll"
+            defaultTab="order"
+          />
+        </div>
+      </div>
+      {/if}
     </div>
 
     <!-- Shell-level basket bar — visible from any tab when legs exist.
@@ -864,29 +881,6 @@
           </div>
         </div>
       </div>
-    {/if}
-
-    <!-- Bottom panel — the canonical 5-tab activity surface (Order Book ·
-         Agent Log · Terminal · System · News), same component the
-         page-header Log icon and the embedded /console card both use.
-         Bespoke pending/completed card layout retired in favour of
-         LogPanel's terse row format so the activity surface reads the
-         same wherever it appears. Suppressed when the host renders the
-         activity in a separate surface via `hideBottomPanel`. -->
-    {#if !hideBottomPanel}
-    <div class="oes-bottom-panel">
-      <div class="oes-bottom-body">
-        <!-- Tab list inherited from LogPanel's default — keeps every
-             surface (Activity modal, this Order modal bottom panel,
-             /console, /agents) in sync without duplicating the array
-             per callsite. Earlier this mount skipped Ticks; the
-             activity surfaces now all show the canonical 6 tabs. -->
-        <LogPanel
-          heightClass="oes-bottom-scroll"
-          defaultTab="order"
-        />
-      </div>
-    </div>
     {/if}
 
   </div>
