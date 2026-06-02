@@ -675,16 +675,13 @@
     if (r.kind === 'market') {
       return { symbol: r.symbol, ltp: r.ltp || null, pct: r.pnl, pnl_abs: null };
     }
-    // user row: prefer the broker-supplied day_change_percentage (the
-    // canonical (last - close) / close × 100). The legacy fallback
-    // (pnl / inv_val × 100) was wrong on multiple axes:
-    //   - it mixed up "today's % move" with "today's rupee move as a
-    //     fraction of cost basis" → IFCI's 4.98 % real day move
-    //     reported as 13.58 %
-    //   - it broke entirely for positions where inv_val=0 (always)
-    const pct = r.day_pct != null
-      ? r.day_pct
-      : (r.inv_val > 0 ? (r.pnl / r.inv_val) * 100 : null);
+    // user row: broker-supplied day_change_percentage is the canonical
+    // (last - close) / close × 100. The legacy fallback (pnl / inv_val)
+    // mixed up "today's % move" with "lifetime ₹ move as a fraction of
+    // cost basis" — IFCI's real 4.98 % day move read as 13.58 %. When
+    // the broker didn't supply day_change_percentage we now render '—'
+    // instead of a wrong number.
+    const pct = r.day_pct != null ? r.day_pct : null;
     return { symbol: r.symbol, ltp: r.ltp || null, pct, pnl_abs: r.pnl };
   }
 
