@@ -1411,7 +1411,10 @@
   // array when there's nothing to sum).
   function _totalsRowFor(rows, major, label) {
     if (!rows.length) return null;
-    let day_pnl = 0, pnl = 0, cost = 0, prevMktVal = 0, qty_pos = 0, qty_hold = 0;
+    let day_pnl = 0, pnl = 0, cost = 0, prevMktVal = 0;
+    let invSum = 0, curSum = 0;
+    let anyInv = false, anyCur = false;
+    let qty_pos = 0, qty_hold = 0;
     let anyDayPnl = false, anyPnl = false;
     for (const r of rows) {
       // Prefer the BROKER raw values (`_broker_pnl`, `_broker_day_pnl`
@@ -1428,6 +1431,8 @@
       if (rowPnl    != null) { pnl     += Number(rowPnl)    || 0; anyPnl    = true; }
       cost       += Math.abs(Number(r._cost_basis)        || 0);
       prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
+      if (r.inv_val != null) { invSum += Number(r.inv_val) || 0; anyInv = true; }
+      if (r.cur_val != null) { curSum += Number(r.cur_val) || 0; anyCur = true; }
       qty_pos += Number(r.qty_pos)  || 0;
       qty_hold += Number(r.qty_hold) || 0;
     }
@@ -1440,6 +1445,8 @@
       pnl:      anyPnl    ? pnl     : null,
       _cost_basis: cost,
       _prev_market_value: prevMktVal,
+      inv_val:  anyInv ? invSum : null,
+      cur_val:  anyCur ? curSum : null,
       qty_pos, qty_hold,
     };
   }
@@ -2542,6 +2549,16 @@
       const denom    = Math.abs(row.qty_pos) + Math.abs(row.qty_hold);
       row.avg_combined = denom > 0 ? (posCost + holdCost) / denom : null;
       row._cost_basis  = posCost + holdCost;   // for P&L% column (lifetime return)
+      // Holdings-specific Investment + Current Value columns. The user
+      // is investing CASH against avg cost on holdings; positions are
+      // intraday and don't carry a meaningful "invested" number — so
+      // these stay null on pure-position rows and render as '—'.
+      const heldAbs = Math.abs(row.qty_hold);
+      const ltpNum  = Number(row.ltp);
+      row.inv_val = heldAbs > 0 ? holdCost : null;
+      row.cur_val = (heldAbs > 0 && Number.isFinite(ltpNum) && ltpNum > 0)
+        ? ltpNum * heldAbs
+        : null;
       delete row._avg_num;
       delete row._avg_hold_num;
       const netQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
@@ -3141,6 +3158,19 @@
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: aggFmtGrid },
+      // Investment + Current value — holdings only. The user wants both
+      // values per row plus a TOTAL footer; aggregator sums them when
+      // present (positions rows carry null inv/cur and skip the sum).
+      { field: 'inv_val', headerName: 'Invested', colId: 'inv_val',
+        width: 78, type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: aggFmtGrid,
+        headerTooltip: 'Avg cost × held qty — your invested rupees on this holding.' },
+      { field: 'cur_val', headerName: 'Value', colId: 'cur_val',
+        width: 78, type: 'numericColumn', headerClass: numericHdr,
+        cellClass: RA,
+        valueFormatter: aggFmtGrid,
+        headerTooltip: 'Live LTP × held qty — current market value of this holding.' },
       { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
         width: 60, type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
