@@ -45,7 +45,7 @@ _LOG_RE = re.compile(
 # Time format inside [] in nginx logs
 _TIME_FMT = "%d/%b/%Y:%H:%M:%S %z"
 
-# Static-asset path filter — lines whose path matches are skipped
+# Static-asset path filter — lines whose path matches are skipped entirely
 _STATIC_RE = re.compile(
     r'\.(?:js|mjs|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp|map)(?:\?.*)?$'
     r'|^/\.well-known/'
@@ -55,6 +55,30 @@ _STATIC_RE = re.compile(
     r'|^/assets-root/'
     r'|^/sitemap'
     r'|^/robots\.txt',
+    re.IGNORECASE,
+)
+
+# Bot-probe / vuln-scan paths — these still appear in the per-IP detail
+# table (so the operator can see WHO is probing) but are suppressed from
+# the Top Paths summary so they don't drown out real visitor traffic.
+# Anchored to obvious patterns we've seen in the wild:
+#   - recursive %25 encoded payloads (AhrefsBot SQL injection probes)
+#   - WordPress / phpMyAdmin / .env / Drupal / sql-backup probes
+#   - common .git / .svn / .DS_Store fishing
+_BOT_PROBE_RE = re.compile(
+    r'(?:%25){3,}'                        # recursive percent-encoding (3+ rounds)
+    r'|\.sql(?:\.gz)?(?:\?|$)'            # /something.sql or .sql.gz
+    r'|^/wp-(?:admin|login|content|includes|json)'   # WordPress
+    r'|^/phpmyadmin|^/pma/|^/PMA/'        # phpMyAdmin
+    r'|^/\.env(?:\.|$)'                   # .env exfiltration
+    r'|^/\.git/|^/\.svn/'                 # git/svn dir leaks
+    r'|^/wlwmanifest\.xml'                # Windows Live Writer probe
+    r'|^/xmlrpc\.php'                     # WordPress xmlrpc probe
+    r'|^/CHANGELOG\.(?:txt|md)$'          # Drupal / CMS version probes
+    r'|^/(?:admin|administrator|user)\.(?:php|asp|aspx)$'  # CMS admin probes
+    r'|/eval-stdin\.php'                  # ThinkPHP RCE probe
+    r'|^/HNAP1|^/boaform'                 # IoT router probes
+    ,
     re.IGNORECASE,
 )
 
@@ -340,7 +364,12 @@ def _render_report(
             company_counts[company] += rec.count
         if rec.last_path:
             base = rec.last_path.split("?")[0]
-            path_counts[base] += rec.count
+            # Vuln-scan / probe paths shouldn't dominate "Top paths" —
+            # filter them so the operator sees real visitor traffic.
+            # Same paths still show in the per-IP detail rows below so
+            # the forensic trail is preserved.
+            if not _BOT_PROBE_RE.search(base):
+                path_counts[base] += rec.count
         rows.append((
             ip, rec.first_dt, rec.last_dt, rec.count,
             country, region, city, asn, company,
@@ -408,7 +437,16 @@ def _render_report(
         first_s = _ts_dual(first_dt)
         last_s  = _ts_dual(last_dt)
         # Truncate path for table readability
-        short_path = path[:40] if path else "-"
+        # Truncate long paths so a recursive-%25-encoded vuln probe (often
+        # 1-2 kB long) doesn't blow the table row width. Keep the leading
+        # 30 chars + trailing 12 chars + '…' between so the operator still
+        # sees enough to recognise the probe family.
+        if not path:
+            short_path = "-"
+        elif len(path) > 60:
+            short_path = f"{path[:30]}…{path[-12:]}"
+        else:
+            short_path = path
         # Company can be quite long ("Google LLC", "Amazon.com, Inc."); cap
         # at 40 chars but keep full text — common corporate names fit cleanly.
         company_s = (company[:40] + "…") if len(company) > 40 else company
