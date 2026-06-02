@@ -171,7 +171,6 @@
         <article class="ul-card">
           <div class="ul-card-head">
             <span class="ul-card-kind ul-kind-{row.kind}">{row.kind}</span>
-            {#if row.sim_mode}<span class="ul-card-sim" title="From a simulator run, not a real fire">SIM</span>{/if}
             {#if row.order_id}<span class="ul-card-ref">#{row.order_id}</span>{/if}
             {#if row.agent_slug}<span class="ul-card-ref">[{row.agent_slug}]</span>{/if}
             <span class="ul-card-time">{_fmtTs(row.ts)}</span>
@@ -188,7 +187,6 @@
         <div class="ul-row">
           <span class="ul-time">{_fmtTs(row.ts)}</span>
           <span class="ul-line">
-            {#if row.sim_mode}<span class="ul-sim" title="From a simulator run, not a real fire">SIM</span>{/if}
             <span class="ul-kind ul-kind-{row.kind}">{row.kind}</span>
             <span class="ul-msg">
               {#if row.order_id}#{row.order_id} · {/if}{#if row.agent_slug}[{row.agent_slug}] · {/if}{_fmtMsg(row.message ?? '')}

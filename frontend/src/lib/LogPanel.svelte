@@ -442,8 +442,10 @@
     }));
     const agentLines = (agentLog || []).map(e => {
       const t = _dualTsHtml(e.timestamp);
-      const simPill = e.sim_mode ? '<span class="log-sim-pill" title="Simulator entry — not live activity">SIM</span> ' : '';
-      return { ts: _shortTime(e.timestamp), html: `<span class="log-agent-default">${t} ${simPill}${e.event_type||''} ${e.trigger_condition||''}</span>` };
+      // Pills scoped to Orders tab only (operator feedback) — Terminal
+      // tab interleaves command + order + agent activity; agent rows
+      // here render with no mode pill.
+      return { ts: _shortTime(e.timestamp), html: `<span class="log-agent-default">${t} ${e.event_type||''} ${e.trigger_condition||''}</span>` };
     });
     const all = [...cmdLines, ...orderLines, ...agentLines];
     return all.length ? all.map(x => x.html).join('\n') : '<span class="log-debug">No events.</span>';
@@ -534,17 +536,16 @@
             : e.event_type === 'action_success' ? 'log-agent-success'
             : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
             : 'log-agent-default';
-  // SIM indicator — sim_mode=true rows interleave with live rows on
-  // this tab; the pill makes them impossible to confuse with real
-  // agent activity. Amber matches the SIMULATOR banner palette.
-  const simPill = e.sim_mode ? '<span class="log-sim-pill" title="Simulator entry — not live activity">SIM</span> ' : '';
+  // Pills scoped to Orders tab only (operator feedback) — agents tab
+  // rows render without the SIM mode pill. The sim/live distinction
+  // is still visible from the Orders tab's mode filter.
   // trigger_condition is usually a JSON object like
   //   {metric:'pnl', scope:'positions.total', op:'<=', value:-50000}
   // — render as the same key:value chip pattern the order rows use
   // (chipsFromJson silently falls through for plain-text triggers).
   const cond = chipsFromJson(e.trigger_condition);
   const condBlock = cond ? ' ' + cond : '';
-  return `<span class="${cls}">${t} ${simPill}${e.event_type||''}${condBlock}</span>`;
+  return `<span class="${cls}">${t} ${e.event_type||''}${condBlock}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
   // System log lines carry a leading 'YYYY-MM-DD HH:MM:SS' timestamp
   // (UTC — the prod box runs in UTC). We pass the parsed Date through
@@ -554,10 +555,10 @@
   const d = parseLogLineDate(l);
   const tHtml = _dualTsHtml(d);
   const rest = d ? stripTs(l) : l;
-  // [SIM] marker surface as a pill so sim-source entries are visually
-  // distinct from live system entries on the same tab.
-  const simPill = /\[SIM\]/.test(l) ? '<span class="log-sim-pill" title="Simulator log line">SIM</span> ' : '';
-  return `<span class="${sysClass(l)}">${tHtml} ${simPill}${rest}</span>`;
+  // Pills scoped to Orders tab only (operator feedback) — System tab
+  // rows render without the SIM mode pill. The [SIM] token in the
+  // raw log line still surfaces in `rest` so the source is visible.
+  return `<span class="${sysClass(l)}">${tHtml} ${rest}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No log entries.</span>{/if}{/if}</pre>
 {/if}
 
