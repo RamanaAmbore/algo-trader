@@ -631,8 +631,17 @@
       <!-- Modal-name chip — matches the "Charts" / "Activity" headings
            on the sibling modals so the operator reads "Orders" at the
            same position regardless of which icon they opened. Plural
-           matches the /orders page route name. -->
-      <span class="oes-modal-name">Orders</span>
+           matches the /orders page route name. Leading icon mirrors
+           the page-header Order button glyph (+) so the title reads
+           as the same surface the operator clicked to open it. -->
+      <span class="oes-modal-name">
+        <svg class="oes-modal-name-icon" width="12" height="12" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" />
+        </svg>
+        Orders
+      </span>
       <div class="oes-sym-pick">
         <input
           type="text"
@@ -956,7 +965,13 @@
     color: #7e97b8;
     font-weight: 600;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
   }
+  /* Amber matches the page-header Order button so the modal title
+     reads as the same surface the operator clicked to open it. */
+  .oes-modal-name-icon { color: #fbbf24; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new
      symbol; every tab (Ticket / Chain / Command) re-renders against

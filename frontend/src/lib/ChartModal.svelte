@@ -74,8 +74,17 @@
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
            and showing the symbol up here too would duplicate it.
-           Plural matches the /charts page route name. -->
-      <span class="cm-title">Charts</span>
+           Plural matches the /charts page route name. The leading icon
+           mirrors the page-header Chart button glyph so the operator
+           reads "I'm in Charts" at a glance. -->
+      <span class="cm-title">
+        <svg class="cm-title-icon" width="12" height="12" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 13h12M3 11l3-4 3 2 4-6" />
+        </svg>
+        Charts
+      </span>
       <button type="button" class="cm-close" bind:this={_closeBtnEl}
               aria-label="Close chart modal">×</button>
     </div>
@@ -111,7 +120,13 @@
     font-size: 0.65rem;
     color: #7e97b8;
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
   }
+  /* Cyan-400 matches the page-header Chart button so the modal title
+     reads as the same surface the operator clicked to open it. */
+  .cm-title-icon { color: #67e8f9; flex-shrink: 0; }
 
   .cm-sym {
     color: #7dd3fc;

@@ -77,7 +77,17 @@
     <!-- Modal chrome — title + close button. Tabs live inside LogPanel
          so the tab strip is consistent with every other LogPanel mount. -->
     <div class="alm-header">
-      <span class="alm-title">Activity</span>
+      <!-- Leading icon mirrors the page-header Activity button glyph
+           (three horizontal lines) so the operator recognises which
+           surface they opened. Violet matches the bell palette. -->
+      <span class="alm-title">
+        <svg class="alm-title-icon" width="12" height="12" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" aria-hidden="true">
+          <path d="M3 4h10M3 8h10M3 12h6" />
+        </svg>
+        Activity
+      </span>
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
     </div>
@@ -112,7 +122,13 @@
     font-size: 0.65rem;
     color: #7e97b8;
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
   }
+  /* Violet-300 matches the page-header Activity button so the modal
+     title reads as the same surface the operator clicked to open it. */
+  .alm-title-icon { color: #c4b5fd; flex-shrink: 0; }
   .alm-close {
     margin-left: auto;
     width: 1.8rem;
