@@ -221,12 +221,24 @@
         ? new Date(input.includes('T') || input.includes('Z') ? input : input + 'Z')
         : null;
     if (d && !isNaN(d.getTime())) {
-      // Page-header format — same `formatDualTz()` the .algo-ts span in
-      // the page header renders, so log rows and the header wall clock
-      // read identically:  Sun 30 May · 21:42 IST · 12:12 EDT
-      const formatted = formatDualTz(d);
-      const full = logTime(d);
-      return `<span class="log-ts" title="${full}">${formatted}</span>`;
+      // Short dual-zone format for log rows — just the times, no date
+      // prefix, since hundreds of rows on the same page don't need the
+      // date repeated. Same monospace + cyan-200 + tabular-nums as the
+      // .algo-ts page-header wall clock. Hover tooltip carries the full
+      // dual-tz date + time (page-header format) for forensic context.
+      const ist = d.toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', hour12: false,
+        timeZone: 'Asia/Kolkata',
+      });
+      const est = d.toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', hour12: false,
+        timeZone: 'America/New_York',
+      });
+      const estTz = d.toLocaleTimeString('en-US', {
+        timeZoneName: 'short', timeZone: 'America/New_York',
+      }).split(' ').pop();
+      const full = formatDualTz(d);
+      return `<span class="log-ts" title="${full}">${ist} IST · ${est} ${estTz}</span>`;
     }
     // Non-ISO string we couldn't parse — render as a fallback chip but
     // still keep the column position aligned with sibling rows.

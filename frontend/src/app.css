@@ -598,8 +598,15 @@
 .log-ts:not(:has(.log-ts-ist, .log-ts-edt)) {
   display: inline;
   flex-direction: initial;
+  /* Tight version of the page-header .algo-ts — same monospace +
+     tabular-nums + cyan-200 but at log-row density so the timestamp
+     column reads as a sub-header glyph, not the row's loudest chunk. */
   color: #7dd3fc;
-  font-size: 0.62rem;
+  font-size: 0.55rem;
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  margin-right: 0.45rem;
 }
 .log-ts-empty {
   color: #7e97b8;

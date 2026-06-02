@@ -29,7 +29,7 @@
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
-  import UnifiedLog       from '$lib/UnifiedLog.svelte';
+  import LogPanel        from '$lib/LogPanel.svelte';
 
   /** @type {{
    *   defaultTab?:     'command' | 'ticket' | 'chain',
@@ -848,82 +848,21 @@
       </div>
     {/if}
 
-    <!-- Bottom panel — Order Book / Agent Log. Suppressed when the
-         host renders these in a separate card via `hideBottomPanel`.
-         Names + ordering match ActivityLogModal so the operator's mental
-         model is the same wherever the activity surface appears. -->
+    <!-- Bottom panel — the canonical 5-tab activity surface (Order Book ·
+         Agent Log · Terminal · System · News), same component the
+         page-header Log icon and the embedded /console card both use.
+         Bespoke pending/completed card layout retired in favour of
+         LogPanel's terse row format so the activity surface reads the
+         same wherever it appears. Suppressed when the host renders the
+         activity in a separate surface via `hideBottomPanel`. -->
     {#if !hideBottomPanel}
     <div class="oes-bottom-panel">
-      <div class="oes-bottom-tabs" role="tablist">
-        <button type="button" role="tab" class="oes-bottom-tab"
-                class:active={_bottomTab === 'orders'}
-                aria-selected={_bottomTab === 'orders'}
-                onclick={() => _bottomTab = 'orders'}>
-          Order Book
-          {#if _ordersPending.length > 0}
-            <span class="oes-bottom-badge">{_ordersPending.length}</span>
-          {/if}
-        </button>
-        <button type="button" role="tab" class="oes-bottom-tab"
-                class:active={_bottomTab === 'log'}
-                aria-selected={_bottomTab === 'log'}
-                onclick={() => _bottomTab = 'log'}>Agent Log</button>
-      </div>
-
       <div class="oes-bottom-body">
-        {#if _bottomTab === 'log'}
-          <UnifiedLog
-            filter={{}}
-            pollMs={3000}
-            maxRows={30}
-            heightClass="oes-bottom-scroll"
-            cardMode={true}
-          />
-
-        {:else}
-          <!-- PENDING orders -->
-          {#if _ordersPending.length === 0 && _ordersCompleted.length === 0}
-            <div class="oes-orders-empty">No orders yet.</div>
-          {:else}
-            {#if _ordersPending.length > 0}
-              <header class="oes-orders-head">PENDING <span class="oes-orders-count">{_ordersPending.length}</span></header>
-              {#each _ordersPending as o (o.order_id ?? o.id)}
-                <article class="oes-order-card">
-                  <div class="oes-card-head">
-                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase().replace(/\s+/g, '-')}">{o.status}</span>
-                    <span class="oes-side oes-side-{(o.transaction_type ?? '').toLowerCase()}">{o.transaction_type}</span>
-                    <span class="oes-card-qty">{o.quantity}</span>
-                    <span class="oes-card-sym">{o.tradingsymbol}</span>
-                    <span class="oes-card-px">{priceFmt(o.price ?? o.initial_price ?? 0)}</span>
-                  </div>
-                  <div class="oes-card-meta">
-                    acct={o.account ?? '—'} · #{o.order_id ?? o.id} ·
-                    {_fmtEventTime(o.order_timestamp ?? o.created_at)}
-                  </div>
-                </article>
-              {/each}
-            {/if}
-            {#if _ordersCompleted.length > 0}
-              <header class="oes-orders-head" style="margin-top: 0.3rem;">COMPLETED <span class="oes-orders-count">{_ordersCompleted.length}</span></header>
-              {#each _ordersCompleted as o (o.order_id ?? o.id)}
-                <article class="oes-order-card oes-order-card-done">
-                  <div class="oes-card-head">
-                    <span class="oes-status oes-status-{(o.status ?? '').toLowerCase().replace(/\s+/g, '-')}">{o.status}</span>
-                    {#if o._local}<span class="oes-local-chip">LOCAL</span>{/if}
-                    <span class="oes-side oes-side-{(o.transaction_type ?? o.side ?? '').toLowerCase()}">{o.transaction_type ?? o.side}</span>
-                    <span class="oes-card-qty">{o.quantity}</span>
-                    <span class="oes-card-sym">{o.tradingsymbol}</span>
-                    <span class="oes-card-px">{priceFmt(o.average_price ?? o.fill_price ?? o.price ?? o.initial_price ?? 0)}</span>
-                  </div>
-                  <div class="oes-card-meta">
-                    acct={o.account ?? '—'} · #{o.order_id ?? o.id} ·
-                    {_fmtEventTime(o.exchange_update_timestamp ?? o.order_timestamp ?? o.filled_at ?? o.created_at)}
-                  </div>
-                </article>
-              {/each}
-            {/if}
-          {/if}
-        {/if}
+        <LogPanel
+          heightClass="oes-bottom-scroll"
+          defaultTab="order"
+          tabs={['order','agent','terminal','system','news']}
+        />
       </div>
     </div>
     {/if}
