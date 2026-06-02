@@ -114,7 +114,13 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
         try:
             month  = _MONTH_BY_CODE_LONG[mon]
             year   = 2000 + int(yy)
-            expiry = _monthly_expiry(und, year, month)
+            # Futures expiry varies per commodity (GOLDM ≈ 5th, CRUDEOIL
+            # ≈ 19th, NATURALGAS ≈ 25th, base metals ≈ last day). No
+            # single rule fits; the Kite instruments cache is the only
+            # reliable source. Parser keeps the equity last-Thursday
+            # fallback so callers that don't pass `leg.expiry` get a
+            # consistent (if approximate) date.
+            expiry = _last_thursday(year, month)
             return {"kind": "fut", "underlying": und, "expiry": expiry}
         except Exception:
             pass

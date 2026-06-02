@@ -714,12 +714,15 @@ def _leg_expiry_iso(leg, parsed: dict) -> str:
     frontend ships Kite's actual `expiry` field from its instruments
     cache (per-contract), which is correct for every exchange. When the
     frontend hasn't supplied an override, fall back to the parsed
-    symbol's expiry — the parser uses last-Thursday-of-month for NSE/NFO
-    equity options and last-Friday-of-month for MCX commodity options
-    (GOLDM, GOLD, SILVER, CRUDEOIL, etc.). The Kite override stays the
-    authoritative source whenever it's present so the small parser
-    fallback set doesn't have to track every per-commodity MCX rule
-    revision."""
+    symbol's expiry — the parser uses last-Thursday for NSE/NFO equity
+    options and last-Friday for MCX commodity options (GOLDM, GOLD,
+    SILVER, CRUDEOIL, etc.). MCX futures follow per-commodity rules that
+    don't fit a single fallback (GOLDM ≈ 5th, CRUDEOIL ≈ 19th,
+    NATURALGAS ≈ 25th, base metals ≈ last day), so the parser uses
+    last-Thursday for them too — strategy callers ALWAYS pass
+    leg.expiry from the Kite cache, so the fallback only matters for
+    callers that don't (e.g. analytics endpoints invoked with a bare
+    tradingsymbol)."""
     if leg.expiry:
         try:
             # Validate ISO format; raises on garbage so the parser
@@ -1895,8 +1898,18 @@ class OptionsController(Controller):
 
         # Near expiry — the payoff curve evaluates at eval_T (the earliest
         # leg's expiry). Report that date as the strategy's primary expiry.
-        # For single-expiry baskets this is the only element in `expiries`.
-        shared_expiry_iso = min(expiries)
+        # Options drive "time to expiry" (futures track spot 1:1 with no
+        # time decay), so prefer min(option expiries) when any option leg
+        # is present. MCX futures + options on the same contract month
+        # have DIFFERENT expiries (e.g. GOLDM26JUNFUT = 2026-06-05, but
+        # GOLDM26JUN*CE = 2026-06-26) — without this guard a covered-call
+        # basket reports the futures DTE instead of the option's.
+        option_expiries = {
+            _leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))
+            for leg in data.legs
+            if (p := parse_tradingsymbol(leg.symbol.upper().strip())) and p.get("kind") == "opt"
+        }
+        shared_expiry_iso = min(option_expiries) if option_expiries else min(expiries)
         shared_expiry     = date.fromisoformat(shared_expiry_iso)
         return StrategyResponse(
             underlying=underlying,
