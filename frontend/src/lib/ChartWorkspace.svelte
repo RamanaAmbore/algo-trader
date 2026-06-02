@@ -109,18 +109,6 @@
     { value: 'rsi',      label: 'RSI 14' },
   ];
 
-  // Intraday tick stream — separate from the technical-overlay multi-
-  // select because it's a different display mode (live tick polling),
-  // not a price overlay. Explicit On/Off so the state reads at a glance.
-  // Labels are bare On / Off — the trigger's placeholder ("Intraday")
-  // supplies the context when nothing is selected; once the operator
-  // ticks a box they remember which control they just toggled.
-  /** @type {Array<{value:string,label:string}>} */
-  const _INTRADAY_OPTS = [
-    { value: 'off', label: 'Off' },
-    { value: 'on',  label: 'On'  },
-  ];
-
   /** Called by SymbolSearchInput when the operator picks a symbol. */
   function _onPickSymbol(/** @type {string} */ sym) {
     const upper = String(sym || '').toUpperCase();
@@ -128,7 +116,7 @@
     _pinnedValue = '';       // search pick — clear active pin
     _resolvedExchange = '';  // clear stale MCX/CDS hint from prior pin
     _chartLoaded = false;
-    _intradaySel = [];
+    _intradayOn = false;
     onSymbolChange?.(upper);
     _loadHistorical(true);
   }
@@ -189,7 +177,7 @@
     _resolvedExchange = r.exchange || '';  // capture MCX/CDS/NSE so _loadHistorical can hint the backend
     symbol = r.tradingsymbol;
     _chartLoaded = false;
-    _intradaySel = [];
+    _intradayOn = false;
     onSymbolChange?.(r.tradingsymbol);
     _loadHistorical(true);
   }
@@ -235,9 +223,8 @@
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
-  // Intraday tick stream — multi-select array (operator can pick On,
-  // Off, both, or neither). Intraday is enabled iff 'on' is checked.
-  let _intradaySel = $state(/** @type {string[]} */([]));
+  // Intraday tick stream — single boolean, toggled by a chip in the toolbar.
+  let _intradayOn = $state(false);
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   const _showVol   = $derived(_overlays.includes('vol'));
@@ -368,7 +355,7 @@
   }
 
   // ── Intraday tick stream ──────────────────────────────────────────
-  const _intradayEnabled = $derived(_intradaySel.includes('on'));
+  const _intradayEnabled = $derived(_intradayOn);
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
   let _ticks  = $state([]);
   /** @type {Array<{ts:string,kind:string,side:string,price:number|null}>} */
@@ -926,9 +913,9 @@
   });
 
   // Re-load historical when symbol changes externally.
-  // The intraday-selection reset is wrapped in untrack() so reading
-  // _intradaySel here doesn't make this effect depend on it —
-  // otherwise writing back [] re-fires the effect endlessly
+  // The intraday-toggle reset is wrapped in untrack() so reading
+  // _intradayOn here doesn't make this effect depend on it —
+  // otherwise writing back false re-fires the effect endlessly
   // (caught: 80+ /api/options/historical calls in 2s).
   $effect(() => {
     void symbol; void exchange;
@@ -940,7 +927,7 @@
       _spotBars = [];
       _greeks = null;
       untrack(() => {
-        if (_intradaySel.length) _intradaySel = [];
+        if (_intradayOn) _intradayOn = false;
       });
       _loadHistorical(true);
       if (_isOption) _loadGreeks();
@@ -1009,14 +996,15 @@
           ariaLabel="Chart type" />
       </div>
 
-      <!-- Intraday tick stream — multi-select (On/Off checkboxes) -->
-      <div class="cw-toolbar-select">
-        <MultiSelect
-          options={_INTRADAY_OPTS}
-          bind:value={_intradaySel}
-          placeholder="Intraday"
-          ariaLabel="Intraday tick stream" />
-      </div>
+      <!-- Intraday tick stream — single toggle chip -->
+      <button type="button"
+        class="cw-range-btn cw-intraday-btn"
+        class:active={_intradayOn}
+        title={_intradayOn ? 'Intraday tick stream ON — click to turn off' : 'Intraday tick stream OFF — click to turn on'}
+        aria-pressed={_intradayOn}
+        onclick={() => _intradayOn = !_intradayOn}>
+        Intraday
+      </button>
 
       <!-- Date range — segmented pill row (1D/1W/1M/3M/6M/1Y) -->
       <div class="cw-range-group" role="group" aria-label="Date range">
@@ -1484,6 +1472,18 @@
     background: rgba(251, 191, 36, 0.18);
     color: #fbbf24;
     font-weight: 800;
+  }
+  /* Standalone intraday chip — same shape as a range pill, but
+     rounded on both ends (not in the segmented .cw-range-group). */
+  .cw-intraday-btn {
+    border: 1px solid rgba(125, 211, 252, 0.32);
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .cw-intraday-btn.active {
+    background: rgba(125, 211, 252, 0.18);
+    border-color: rgba(125, 211, 252, 0.55);
+    color: #7dd3fc;
   }
 
   /* ── Toolbar Select wrappers ─────────────────────────────── */
