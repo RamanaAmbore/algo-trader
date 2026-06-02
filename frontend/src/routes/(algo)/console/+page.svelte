@@ -1,20 +1,30 @@
 <script>
-  // Terminal page — hosts the same 3-tab OrderEntryShell as the order
-  // modal but inline, so the operator can place orders by command,
-  // ticket, or basket from a dedicated workspace. LogPanel below shows
-  // command history + agent / order / system streams.
+  // Console — plain command-line terminal + the canonical 5-tab activity
+  // log. The page's primary input is CommandLineTab (typed grammar
+  // commands); the Log icon in the page-header trio is suppressed
+  // because the same 5-tab surface lives inline below the entry.
+  //
+  // A parsed command opens SymbolPanel as a modal (defaultTab='ticket')
+  // pre-filled with the parsed values, so the operator can review +
+  // Submit. Keeps the safety net while making plain-text the primary UI.
 
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import LogPanel        from '$lib/LogPanel.svelte';
+  import LogPanel from '$lib/LogPanel.svelte';
+  import CommandLineTab from '$lib/order/CommandLineTab.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
 
-  // Demo gate — anonymous-on-prod (dev anon gets redirected to /signin
-  // by the algo layout before this page loads). Order writes already
-  // 401 server-side via admin_guard; the banner sets expectations.
   const isDemo = $derived(!$authStore.user);
 
   let logTab = $state('terminal');
+
+  // SymbolPanel-as-modal state — opened when CommandLineTab fires a
+  // parsed order. Operator confirms / edits / submits from the modal.
+  let _ticketProps = $state(/** @type {any} */ (null));
+  function _onParsedOrder(/** @type {any} */ props) {
+    _ticketProps = { ...props, defaultTab: 'ticket' };
+  }
+  function _closeTicket() { _ticketProps = null; }
 </script>
 
 <svelte:head><title>Console | RamboQuant Analytics</title></svelte:head>
@@ -27,15 +37,13 @@
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
-      <PageHeaderActions />
+      <!-- Log icon removed on /console — the same 5-tab activity surface
+           is rendered inline below as a card. -->
+      <PageHeaderActions showLog={false} />
     </span>
   </div>
 
   {#if isDemo}
-    <!-- Demo banner — the command grammar + ticket form render fine
-         for demo (autocomplete works), but every submit path 401s
-         server-side. Sets the expectation so the operator doesn't
-         hammer a dead Submit. -->
     <div class="mb-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
       <strong class="text-purple-100">Demo view.</strong>
       Browse the command grammar + autocomplete. Submit + write paths are
@@ -44,31 +52,52 @@
     </div>
   {/if}
 
-  <!-- 3-tab order-entry shell rendered inline (no modal chrome). -->
-  <div class="terminal-shell-wrap">
-    <SymbolPanel
-      inline
-      defaultTab="command"
-      symbol=""
-      action="open"
-      side="BUY"
-      onSubmit={() => { /* successes are surfaced via the shell's own UI */ }}
-      onClose={() => { /* no close affordance in inline mode */ }} />
+  <!-- Plain command-line entry — was the 3-tab SymbolPanel shell; reduced
+       to just the grammar-driven command bar. Parsed commands fan out
+       to the SymbolPanel ticket modal for confirmation. -->
+  <div class="console-cmd-wrap">
+    <CommandLineTab
+      onParsedOrder={_onParsedOrder}
+      prefillSide=""
+      prefillAccount=""
+      prefillSymbol=""
+      prefillQty={0}
+      prefillPrice={0}
+      prefillOrderType="LIMIT" />
   </div>
 
-  <!-- Log Tabs fill remaining space -->
+  <!-- Activity log — same 5 tabs as the modal you'd get from the Log
+       icon on every other page (Order Book · Agent Log · Terminal ·
+       System · News). Terminal is the default since this page is the
+       Terminal. -->
   <div class="flex flex-col flex-1 min-h-0 mt-2">
     <LogPanel
       heightClass="flex-1 min-h-0"
       defaultTab={logTab}
-      tabs={['terminal','system','news']}
+      tabs={['order','agent','terminal','system','news']}
       onTabChange={(id) => { logTab = id; }}
     />
   </div>
 </div>
 
+{#if _ticketProps}
+  <SymbolPanel
+    symbol={_ticketProps.symbol || ''}
+    exchange={_ticketProps.exchange || ''}
+    defaultTab="ticket"
+    side={_ticketProps.side || 'BUY'}
+    qty={_ticketProps.qty || 0}
+    price={_ticketProps.price || 0}
+    orderType={_ticketProps.orderType || 'LIMIT'}
+    account={_ticketProps.account || ''}
+    accounts={[]}
+    onSubmit={_closeTicket}
+    onClose={_closeTicket}
+  />
+{/if}
+
 <style>
-  .terminal-shell-wrap {
+  .console-cmd-wrap {
     flex-shrink: 0;
     margin-bottom: 0.4rem;
   }
