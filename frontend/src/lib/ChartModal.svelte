@@ -73,8 +73,9 @@
   <div class="canonical-modal-panel cm-modal" bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
-           and showing the symbol up here too would duplicate it. -->
-      <span class="cm-title">Chart</span>
+           and showing the symbol up here too would duplicate it.
+           Plural matches the /charts page route name. -->
+      <span class="cm-title">Charts</span>
       <button type="button" class="cm-close" bind:this={_closeBtnEl}
               aria-label="Close chart modal">×</button>
     </div>

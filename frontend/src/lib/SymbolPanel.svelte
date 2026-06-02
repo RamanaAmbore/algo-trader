@@ -628,10 +628,11 @@
          skip the strip here entirely. -->
     {#if !headerless}
     <div class="oes-header">
-      <!-- Modal-name chip — matches the "Chart" / "Log" headings on the
-           sibling modals so the operator reads "Order" at the same
-           position regardless of which icon they opened. -->
-      <span class="oes-modal-name">Order</span>
+      <!-- Modal-name chip — matches the "Charts" / "Activity" headings
+           on the sibling modals so the operator reads "Orders" at the
+           same position regardless of which icon they opened. Plural
+           matches the /orders page route name. -->
+      <span class="oes-modal-name">Orders</span>
       <div class="oes-sym-pick">
         <input
           type="text"
