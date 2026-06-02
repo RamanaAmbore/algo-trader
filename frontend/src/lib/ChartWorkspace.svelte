@@ -112,10 +112,13 @@
   // Intraday tick stream — separate from the technical-overlay multi-
   // select because it's a different display mode (live tick polling),
   // not a price overlay. Explicit On/Off so the state reads at a glance.
+  // Labels are bare On / Off — the trigger's placeholder ("Intraday")
+  // supplies the context when nothing is selected; once the operator
+  // ticks a box they remember which control they just toggled.
   /** @type {Array<{value:string,label:string}>} */
   const _INTRADAY_OPTS = [
-    { value: 'off', label: 'Intraday Off' },
-    { value: 'on',  label: 'Intraday On'  },
+    { value: 'off', label: 'Off' },
+    { value: 'on',  label: 'On'  },
   ];
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
