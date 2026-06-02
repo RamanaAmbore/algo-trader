@@ -516,8 +516,8 @@
       <div class="oc-book-grid">
         {#each filteredOrderRows as o (o.order_id ?? o.id)}
           <OrderCard order={o}
-            onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ''; _symPanelExch = ord.exchange || ''; }}
-            onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }} />
+            onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ord.symbol || ''; _symPanelExch = ord.exchange || ''; }}
+            onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }} />
         {/each}
       </div>
     {:else}

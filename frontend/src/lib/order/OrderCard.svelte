@@ -65,13 +65,32 @@
     return _ACCT_COLORS[idx % _ACCT_COLORS.length];
   }
 
+  // Field-fallback helpers — broker `OrderRow` uses `tradingsymbol` /
+  // `price` / `average_price` / `order_timestamp`; the platform's
+  // `AlgoOrderInfo` (paper / sim / shadow / live-tracked) uses `symbol`
+  // / `initial_price` / `fill_price` / `created_at`. The same OrderCard
+  // renders both shapes so the /orders Order Activity book and every
+  // LogPanel Orders-tab surface look identical.
+  const _sym       = $derived(order?.tradingsymbol || order?.symbol || '');
+  const _limit     = $derived(order?.price ?? order?.initial_price ?? null);
+  const _filled    = $derived(order?.average_price ?? order?.fill_price ?? null);
+  const _ts        = $derived(order?.order_timestamp || order?.created_at || null);
+  const _qtyFilled = $derived(order?.filled_quantity ?? (order?.fill_price != null ? order?.quantity : 0));
+
   /** @param {any} o */
   function _slippage(o) {
-    if (o.status !== 'COMPLETE') return null;
-    if (o.average_price == null || o.price == null) return null;
-    const p = Number(o.price);
+    // Slippage = fill − limit, only when both are present + numeric.
+    // Works for broker (status=COMPLETE → avg vs price) AND for algo
+    // (status=FILLED → fill_price vs initial_price).
+    const status = (o.status || '').toUpperCase();
+    const isTerminalFilled = status === 'COMPLETE' || status === 'FILLED';
+    if (!isTerminalFilled) return null;
+    const lim = (o.price ?? o.initial_price);
+    const fil = (o.average_price ?? o.fill_price);
+    if (lim == null || fil == null) return null;
+    const p = Number(lim);
     if (!(p > 0)) return null;
-    const d = Number(o.average_price) - p;
+    const d = Number(fil) - p;
     return Number.isFinite(d) ? d : null;
   }
 
@@ -103,14 +122,14 @@
       <span class="text-[#c8d8f0] oc-sym-btn"
         role="button"
         tabindex="0"
-        title="Open {order.tradingsymbol}"
+        title="Open {_sym}"
         onclick={(e) => { e.stopPropagation(); onSymbolClick?.(order, e); }}
         onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSymbolClick?.(order, e); } }}
-        oncontextmenu={(e) => { e.preventDefault(); onSymbolContext?.(order, e); }}>{order.tradingsymbol}</span>
+        oncontextmenu={(e) => { e.preventDefault(); onSymbolContext?.(order, e); }}>{_sym}</span>
     </span>
     <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
-      {order.status === 'COMPLETE' ? 'bg-green-500/15 text-green-400 border-green-500/40'
-      : order.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
+      {order.status === 'COMPLETE' || order.status === 'FILLED' ? 'bg-green-500/15 text-green-400 border-green-500/40'
+      : order.status === 'REJECTED' || order.status === 'UNFILLED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
       : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{order.status}</span>
   </div>
   <!-- Chip row — same .log-chip / .log-chip-key family the LogPanel
@@ -119,15 +138,18 @@
        and the Activity-modal Orders tab. -->
   <div class="flex flex-wrap items-center gap-y-1">
     {#if order.exchange}<span class="log-chip"><span class="log-chip-key">ex:</span>{order.exchange}</span>{/if}
-    <span class="log-chip"><span class="log-chip-key">qty:</span>{qtyFmt(order.filled_quantity)}/{qtyFmt(order.quantity)}</span>
-    <span class="log-chip"><span class="log-chip-key">type:</span>{order.order_type}</span>
-    <span class="log-chip"><span class="log-chip-key">price:</span>{order.average_price != null ? priceFmt(order.average_price) : order.price != null ? priceFmt(order.price) : '—'}</span>
+    <span class="log-chip"><span class="log-chip-key">qty:</span>{qtyFmt(_qtyFilled)}/{qtyFmt(order.quantity)}</span>
+    {#if order.order_type}<span class="log-chip"><span class="log-chip-key">type:</span>{order.order_type}</span>{/if}
+    <span class="log-chip"><span class="log-chip-key">price:</span>{_filled != null ? priceFmt(_filled) : _limit != null ? priceFmt(_limit) : '—'}</span>
     {#if _slip != null}<span class="log-chip log-chip-slip" class:slip-up={_slip > 0} class:slip-down={_slip < 0}><span class="log-chip-key">slip:</span>{_slip > 0 ? '+' : ''}{priceFmt(_slip)}</span>{/if}
+    {#if order.attempts != null && order.attempts > 0}<span class="log-chip"><span class="log-chip-key">chase:</span>#{order.attempts}</span>{/if}
     {#if order.trigger_price}<span class="log-chip"><span class="log-chip-key">trigger:</span>{priceFmt(order.trigger_price)}</span>{/if}
     {#if order.validity}<span class="log-chip"><span class="log-chip-key">validity:</span>{order.validity}</span>{/if}
     {#if order.product}<span class="log-chip"><span class="log-chip-key">product:</span>{order.product}</span>{/if}
     {#if order.variety}<span class="log-chip"><span class="log-chip-key">variety:</span>{order.variety}</span>{/if}
-    {#if order.order_timestamp}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(order.order_timestamp))}</span>{/if}
+    {#if order.mode}<span class="log-chip"><span class="log-chip-key">mode:</span>{order.mode}</span>{/if}
+    {#if order.engine}<span class="log-chip"><span class="log-chip-key">engine:</span>{order.engine}</span>{/if}
+    {#if _ts}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(_ts))}</span>{/if}
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{order.status_message}</span>{/if}
     {#if order.detail}<span class="log-chip"><span class="log-chip-key">note:</span>{order.detail}</span>{/if}
