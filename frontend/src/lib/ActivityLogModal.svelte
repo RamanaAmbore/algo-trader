@@ -77,7 +77,7 @@
     <!-- Modal chrome — title + close button. Tabs live inside LogPanel
          so the tab strip is consistent with every other LogPanel mount. -->
     <div class="alm-header">
-      <span class="alm-title">Log</span>
+      <span class="alm-title">Activity</span>
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
     </div>
@@ -101,13 +101,15 @@
     border-bottom: 1px solid rgba(168, 85, 247, 0.22);
     flex-shrink: 0;
   }
+  /* Matches .cm-title / .oes-modal-name typography on the sibling
+     modals — natural-case, weight 600, no uppercase / letter-spacing.
+     Earlier styling rendered the label as "LOG" caps which was out
+     of sync with the rest of the modal trio. */
   .alm-title {
-    font-family: ui-monospace, monospace;
+    font-family: monospace;
     font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: #c4b5fd;
+    color: #7e97b8;
+    font-weight: 600;
   }
   .alm-close {
     margin-left: auto;
