@@ -204,7 +204,12 @@
                   role="option"
                   aria-selected="false"
                   onmousedown={(e) => { e.preventDefault(); _pickInst(inst); }}>
-            <span class="ssi-row-sym">{inst.sym || inst.tradingsymbol}</span>
+            <!-- Kite instrument cache uses the compact `s` field
+                 (matches the key fallback above); older shapes used
+                 `sym`/`tradingsymbol`. Without the `inst.s` fallback
+                 the row rendered as empty + only the exchange/type
+                 meta line was visible. -->
+            <span class="ssi-row-sym">{inst.s || inst.sym || inst.tradingsymbol || ''}</span>
             <span class="ssi-row-meta">{inst.e || ''}{inst.t ? ' · ' + inst.t : ''}</span>
           </button>
         {/each}

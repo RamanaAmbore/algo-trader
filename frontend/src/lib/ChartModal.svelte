@@ -72,7 +72,9 @@
      aria-label="Chart — {symbol}" tabindex="-1">
   <div class="canonical-modal-panel cm-modal" bind:this={_modalEl}>
     <div class="cm-header">
-      <span class="cm-title">Chart — <span class="cm-sym">{symbol}</span></span>
+      <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
+           and showing the symbol up here too would duplicate it. -->
+      <span class="cm-title">Chart</span>
       <button type="button" class="cm-close" bind:this={_closeBtnEl}
               aria-label="Close chart modal">×</button>
     </div>

@@ -77,7 +77,7 @@
     <!-- Modal chrome — title + close button. Tabs live inside LogPanel
          so the tab strip is consistent with every other LogPanel mount. -->
     <div class="alm-header">
-      <span class="alm-title">Activity</span>
+      <span class="alm-title">Log</span>
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
     </div>

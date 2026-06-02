@@ -628,6 +628,10 @@
          skip the strip here entirely. -->
     {#if !headerless}
     <div class="oes-header">
+      <!-- Modal-name chip — matches the "Chart" / "Log" headings on the
+           sibling modals so the operator reads "Order" at the same
+           position regardless of which icon they opened. -->
+      <span class="oes-modal-name">Order</span>
       <div class="oes-sym-pick">
         <input
           type="text"
@@ -943,6 +947,15 @@
     gap: 0.55rem;
     padding: 0.7rem 1rem 0.5rem;
     border-bottom: 1px solid rgba(251,191,36,0.15);
+    flex-shrink: 0;
+  }
+  /* Modal-name chip — matches .cm-title / .alm-title typography on the
+     sibling modals so all three read the same at the top-left. */
+  .oes-modal-name {
+    font-family: monospace;
+    font-size: 0.65rem;
+    color: #7e97b8;
+    font-weight: 600;
     flex-shrink: 0;
   }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder

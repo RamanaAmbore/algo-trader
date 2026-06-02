@@ -100,3 +100,47 @@ export const MCX_COMMODITIES = new Set([
 ]);
 
 export const CDS_CURRENCIES = new Set(['USDINR']);
+
+// Kite spot-index quote-keys → tradeable F&O underlying root. The chart
+// + order modals use the same translation so e.g. "NIFTY 50" → "NIFTY"
+// → NIFTY*FUT instead of trying to place an index spot order / fetch a
+// chart by the non-tradeable spot key.
+export const KITE_INDEX_QUOTE_KEY_TO_ROOT = {
+  'NIFTY 50':           'NIFTY',
+  'NIFTY BANK':         'BANKNIFTY',
+  'NIFTY FIN SERVICE':  'FINNIFTY',
+  'NIFTY MID SELECT':   'MIDCPNIFTY',
+  'NIFTY NEXT 50':      'NIFTYNXT50',
+};
+
+/**
+ * Translate any anchor (Kite spot-index quote-key, MCX commodity root,
+ * CDS currency root, or already-tradeable tradingsymbol) into the
+ * nearest-month tradeable contract. Returns the original string when
+ * the anchor doesn't need translation (e.g. RELIANCE, NIFTY26JUNFUT).
+ *
+ *   "NIFTY 50"      → "NIFTY26JUNFUT"
+ *   "CRUDEOIL"      → "CRUDEOILM26JUNFUT"
+ *   "GOLD"          → "GOLD26JUNFUT"
+ *   "USDINR"        → "USDINR26JUNFUT"
+ *   "RELIANCE"      → "RELIANCE"
+ *   "NIFTY26JUNFUT" → "NIFTY26JUNFUT"
+ *
+ * Returns null when the instruments cache is cold AND the anchor needs
+ * translation — caller falls back to the anchor itself.
+ *
+ * @param {string} anchor
+ * @param {((root:string) => any) | null | undefined} findNearestFut
+ * @returns {string | null}
+ */
+export function resolveAnchorToTradeable(anchor, findNearestFut) {
+  const upper = String(anchor || '').toUpperCase();
+  if (!upper) return null;
+  const indexRoot = KITE_INDEX_QUOTE_KEY_TO_ROOT[upper];
+  const isMcx     = MCX_COMMODITIES.has(upper);
+  const isCds     = CDS_CURRENCIES.has(upper);
+  const root      = indexRoot || (isMcx || isCds ? upper : null);
+  if (!root) return upper;  // already tradeable (equity or specific contract)
+  const fut = findNearestFut?.(root);
+  return fut?.s ? String(fut.s) : null;
+}
