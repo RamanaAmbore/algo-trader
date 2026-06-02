@@ -38,7 +38,16 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ramboq-bg")
 # tick (~5 min during market hours). maxlen=200 covers a full 6.5-hour
 # Indian trading day at 5-min cadence (~78 points) plus generous headroom.
 # Wiped on IST date rollover so the buffer always reflects the current day.
-_intraday_equity: deque[tuple[str, float, float]] = deque(maxlen=200)
+# Each point is (ts, day_pnl, cum_pnl, h_pnl, h_day, p_pnl, p_day) where
+# the trailing 4 numbers break down the aggregates the chart used to show:
+#   H  = holdings lifetime P&L          (h_pnl)
+#   ΔH = holdings today's change        (h_day)
+#   P  = positions lifetime P&L         (p_pnl)
+#   ΔP = positions today's change       (p_day)  — derived from positions'
+#                                                  day_change_val; equals P for
+#                                                  pure-intraday (MIS) books,
+#                                                  differs for NRML carry-forward
+_intraday_equity: deque[tuple[str, float, float, float, float, float, float]] = deque(maxlen=200)
 _intraday_equity_date: date | None = None
 
 
@@ -430,13 +439,24 @@ async def _task_performance(state: dict) -> None:
                         not p_total.empty and 'pnl' in p_total.columns
                         and pd.notna(p_total['pnl'].iloc[0])
                     ) else 0.0
+                    # Positions today's-delta — falls back to p_pnl when
+                    # day_change_val isn't populated (pure-MIS book where
+                    # the lifetime and today's deltas are the same number).
+                    p_day  = float(p_total['day_change_val'].iloc[0]) if (
+                        not p_total.empty and 'day_change_val' in p_total.columns
+                        and pd.notna(p_total['day_change_val'].iloc[0])
+                    ) else p_pnl
 
-                    day_pnl = h_day + p_pnl
+                    day_pnl = h_day + p_day
                     cum_pnl = h_pnl + p_pnl
-                    _intraday_equity.append((now.isoformat(), day_pnl, cum_pnl))
+                    _intraday_equity.append((
+                        now.isoformat(), day_pnl, cum_pnl,
+                        h_pnl, h_day, p_pnl, p_day,
+                    ))
                     logger.info(
                         f"Equity-curve point: day=₹{day_pnl:.0f} "
-                        f"cum=₹{cum_pnl:.0f} (n={len(_intraday_equity)})"
+                        f"cum=₹{cum_pnl:.0f} (H=₹{h_pnl:.0f} ΔH=₹{h_day:.0f} "
+                        f"P=₹{p_pnl:.0f} ΔP=₹{p_day:.0f}, n={len(_intraday_equity)})"
                     )
                 except Exception as _eq_err:
                     logger.warning(f"Background: equity-curve append skipped: {_eq_err}")

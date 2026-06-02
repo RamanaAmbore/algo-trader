@@ -349,12 +349,30 @@ class ChartsController(Controller):
     @get("/intraday-equity")
     async def get_intraday_equity(self, n: int = 200) -> dict:
         """Recent intraday-equity buffer points — feeds the dashboard's
-        P&L-over-the-day chart. Each point is (timestamp, day_pnl, cum_pnl).
-        Wiped on IST date rollover so the buffer always reflects the
-        current trading day. Skips sim ticks."""
+        P&L-over-the-day chart. Each point carries the two aggregates
+        (day_pnl, cum_pnl) plus the four breakdowns the chart now
+        renders as separate toggle-able series:
+          H  = holdings lifetime         (h_pnl)
+          ΔH = holdings today            (h_day)
+          P  = positions lifetime        (p_pnl)
+          ΔP = positions today           (p_day)
+        Wiped on IST date rollover. Skips sim ticks."""
         from backend.api.background import _intraday_equity
         pts = list(_intraday_equity)[-max(1, min(n, 200)):]
-        return {"points": [
-            {"ts": ts, "day_pnl": day, "cum_pnl": cum}
-            for (ts, day, cum) in pts
-        ]}
+        out = []
+        for pt in pts:
+            # Tolerate legacy 3-tuple entries that might be in flight during
+            # a rolling deploy — pad with zeros so a partial buffer doesn't
+            # break the API contract.
+            if len(pt) == 3:
+                ts, day, cum = pt
+                h_pnl = h_day = p_pnl = p_day = 0.0
+            else:
+                ts, day, cum, h_pnl, h_day, p_pnl, p_day = pt
+            out.append({
+                "ts": ts,
+                "day_pnl": day, "cum_pnl": cum,
+                "h_pnl": h_pnl, "h_day": h_day,
+                "p_pnl": p_pnl, "p_day": p_day,
+            })
+        return {"points": out}

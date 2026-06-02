@@ -734,18 +734,39 @@
   const INNER_W = CHART_W - PAD_L - PAD_R;
   const INNER_H = CHART_H - PAD_T - PAD_B;
 
+  // ── Equity chart series + toggle state ────────────────────────────
+  // 6 series — operator picks which to show. Default 3 (H, P, ΔH+ΔP)
+  // gives the cleanest scan; the breakdowns (ΔH, ΔP) and the lifetime
+  // combined live behind one click in the legend strip.
+  const _EQ_SERIES = [
+    { id: 'H',     label: 'H',      field: 'h_pnl',  color: '#7dd3fc', dash: '',    width: 1.5, dflt: true  },
+    { id: 'dH',    label: 'ΔH',     field: 'h_day',  color: '#7dd3fc', dash: '4 3', width: 1.5, dflt: false },
+    { id: 'P',     label: 'P',      field: 'p_pnl',  color: '#fbbf24', dash: '',    width: 1.5, dflt: true  },
+    { id: 'dP',    label: 'ΔP',     field: 'p_day',  color: '#fbbf24', dash: '4 3', width: 1.5, dflt: false },
+    { id: 'comb',  label: 'H+P',    field: 'cum_pnl',color: '#4ade80', dash: '',    width: 2.0, dflt: false },
+    { id: 'dComb', label: 'ΔH+ΔP',  field: 'day_pnl',color: '#4ade80', dash: '4 3', width: 2.0, dflt: true  },
+  ];
+  let _eqSeriesOn = $state(/** @type {Record<string,boolean>} */ (
+    Object.fromEntries(_EQ_SERIES.map(s => [s.id, s.dflt]))
+  ));
+
   // ── Equity chart derived state ─────────────────────────────────────
   const _equityDomain = $derived.by(() => {
     if (!_equityPoints.length) return null;
-    // Use `day_pnl` (today's P&L) — NOT `cum_pnl` (lifetime P&L). The
-    // lifetime number is ₹4-5M and dwarfs the ₹40k of intraday
-    // movement; forcing zero into a 4.5M-scale chart visually flattens
-    // the entire intraday curve into a horizontal line.
-    //
-    // day_pnl is centred near zero with small absolute swings — the
-    // chart actually animates per-tick. Hover tooltip still shows
-    // both day and cum so the operator can read the bigger context.
-    const vals = _equityPoints.map(p => p.day_pnl);
+    // Y-scale spans every value across every ENABLED series so the
+    // chart re-frames automatically when the operator toggles a series
+    // on or off. Falls back to day_pnl-only when no series is enabled
+    // (shouldn't happen but keeps the chart from collapsing).
+    const enabledFields = _EQ_SERIES.filter(s => _eqSeriesOn[s.id]).map(s => s.field);
+    const fields = enabledFields.length ? enabledFields : ['day_pnl'];
+    const vals = [];
+    for (const f of fields) {
+      for (const p of _equityPoints) {
+        const v = Number(p[f]);
+        if (Number.isFinite(v)) vals.push(v);
+      }
+    }
+    if (!vals.length) return null;
     let yMin = Math.min(...vals);
     let yMax = Math.max(...vals);
     // ensure zero is always visible; add 10% padding
@@ -769,25 +790,48 @@
     return PAD_T + (1 - (val - d.yMin) / (d.yMax - d.yMin)) * INNER_H;
   }
 
-  const _eqPolyline = $derived.by(() => {
+  /** Polyline string for any series field. */
+  function _eqPolylineFor(field) {
     if (!_equityPoints.length || !_equityDomain) return '';
-    return _equityPoints.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.day_pnl).toFixed(1)}`).join(' ');
+    return _equityPoints
+      .map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(Number(p[field]) || 0).toFixed(1)}`)
+      .join(' ');
+  }
+  /** Area-under-curve string for the dominant series (operator-picked) —
+   *  filled only when a SINGLE series is enabled, so the chart still
+   *  reads as a clean shape. Multi-series mode skips the fill. */
+  const _eqDominantField = $derived.by(() => {
+    const on = _EQ_SERIES.filter(s => _eqSeriesOn[s.id]);
+    return on.length === 1 ? on[0].field : null;
   });
-
   const _eqAreaPath = $derived.by(() => {
-    if (!_equityPoints.length || !_equityDomain) return '';
+    if (!_eqDominantField || !_equityPoints.length || !_equityDomain) return '';
     const pts = _equityPoints;
     const zero = _eqY(0);
+    const f = _eqDominantField;
     const first = `${_eqX(pts[0].ts).toFixed(1)},${zero}`;
     const last  = `${_eqX(pts[pts.length - 1].ts).toFixed(1)},${zero}`;
-    const line  = pts.map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(p.day_pnl).toFixed(1)}`).join(' L ');
+    const line  = pts
+      .map(p => `${_eqX(p.ts).toFixed(1)},${_eqY(Number(p[f]) || 0).toFixed(1)}`)
+      .join(' L ');
     return `M ${first} L ${line} L ${last} Z`;
   });
+  /** Active series for the per-series render loop. */
+  const _eqActiveSeries = $derived(
+    _EQ_SERIES
+      .filter(s => _eqSeriesOn[s.id])
+      .map(s => ({ ...s, points: _eqPolylineFor(s.field) }))
+  );
 
   const _eqZeroY = $derived(_equityDomain ? _eqY(0) : null);
 
+  /** Field used to pick the hover-dot colour + tooltip headline value.
+   *  Prefers the dominant (single-series) field; falls back to day_pnl. */
+  const _eqHoverField = $derived(_eqDominantField || 'day_pnl');
   const _eqPositive = $derived(
-    _equityPoints.length ? _equityPoints[_equityPoints.length - 1].day_pnl >= 0 : true
+    _equityPoints.length
+      ? (Number(_equityPoints[_equityPoints.length - 1][_eqHoverField]) || 0) >= 0
+      : true
   );
 
   const _eqLineColor  = $derived(_eqPositive ? '#4ade80' : '#f87171');
@@ -1726,6 +1770,28 @@
           </span>
         </div>
       </div>
+      <!-- Series legend / toggle strip — click any chip to show or hide
+           the corresponding curve. Default state shows H · P · ΔH+ΔP
+           (3 lines, clean scan); ΔH, ΔP, H+P (lifetime) open in one
+           click when the operator wants to drill into the breakdown. -->
+      <div class="eq-legend" role="group" aria-label="Equity chart series">
+        {#each _EQ_SERIES as s (s.id)}
+          <button
+            type="button"
+            class="eq-chip"
+            class:eq-chip-on={_eqSeriesOn[s.id]}
+            aria-pressed={_eqSeriesOn[s.id]}
+            title="{s.label} — click to {_eqSeriesOn[s.id] ? 'hide' : 'show'}"
+            onclick={() => _eqSeriesOn[s.id] = !_eqSeriesOn[s.id]}>
+            <svg width="14" height="6" aria-hidden="true">
+              <line x1="0" y1="3" x2="14" y2="3"
+                stroke={s.color} stroke-width={s.width}
+                stroke-dasharray={s.dash || ''} stroke-linecap="round" />
+            </svg>
+            <span>{s.label}</span>
+          </button>
+        {/each}
+      </div>
       <svg
         class="eq-svg"
         viewBox="0 0 {CHART_W} {CHART_H}"
@@ -1760,21 +1826,26 @@
             stroke-dasharray="4 3" />
         {/if}
 
-        <!-- Filled area -->
+        <!-- Filled area — only when a single series is enabled. Multi-
+             series mode skips the fill so the lines stay readable. -->
         {#if _eqAreaPath}
           <path d={_eqAreaPath} fill={_eqFillColor} />
         {/if}
 
-        <!-- Line -->
-        {#if _eqPolyline}
-          <polyline
-            points={_eqPolyline}
-            fill="none"
-            stroke={_eqLineColor}
-            stroke-width="1.5"
-            stroke-linejoin="round"
-            stroke-linecap="round" />
-        {/if}
+        <!-- Lines — one polyline per active series. Order in the SVG
+             matches _EQ_SERIES order so the legend layers visually. -->
+        {#each _eqActiveSeries as s (s.id)}
+          {#if s.points}
+            <polyline
+              points={s.points}
+              fill="none"
+              stroke={s.color}
+              stroke-width={s.width}
+              stroke-dasharray={s.dash || ''}
+              stroke-linejoin="round"
+              stroke-linecap="round" />
+          {/if}
+        {/each}
 
         <!-- Y-axis labels (right) -->
         {#each _eqYLabels as lbl}
@@ -2035,6 +2106,38 @@
   }
 
   /* Equity curve */
+  /* Series-toggle legend — sits above the SVG, narrow row of chips with
+     a colored stroke swatch + label. Click toggles the matching curve
+     on the chart. Wraps onto a second row on mobile so 6 chips fit. */
+  .eq-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0.2rem 0.1rem 0.45rem;
+    align-items: center;
+  }
+  .eq-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    padding: 0.14rem 0.4rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: rgba(200, 216, 240, 0.55);
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+  }
+  .eq-chip:hover { background: rgba(255, 255, 255, 0.06); color: #c8d8f0; }
+  .eq-chip-on   { background: rgba(34, 211, 238, 0.10); border-color: rgba(34, 211, 238, 0.40); color: #c8d8f0; }
+  .eq-chip-on:hover { background: rgba(34, 211, 238, 0.18); }
+  .eq-chip svg { display: block; flex-shrink: 0; }
+  /* When the chip is off the swatch fades so the operator scans
+     "what's currently drawn" by chip brightness alone. */
+  .eq-chip:not(.eq-chip-on) svg { opacity: 0.35; }
+
   .eq-svg {
     display: block;
     width: 100%;

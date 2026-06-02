@@ -413,8 +413,12 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
             pos_pnl = float(total_p['pnl'].iloc[0] or 0)
 
         # Prefer the deque for P&L (already running totals) when alive.
+        # Buffer carries (ts, day, cum, h_pnl, h_day, p_pnl, p_day) per tick
+        # — destructure the two aggregates the showcase needs; ignore the
+        # 4 breakdowns. Tolerate legacy 3-tuples during rolling deploys.
         if _intraday_equity:
-            ts, day_pnl, cum_pnl = _intraday_equity[-1]
+            _last = _intraday_equity[-1]
+            ts, day_pnl, cum_pnl = _last[0], _last[1], _last[2]
             as_of_iso    = ts
             firm_day_pnl = float(day_pnl)
             firm_cum_pnl = float(cum_pnl)
