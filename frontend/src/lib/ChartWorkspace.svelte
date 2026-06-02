@@ -89,6 +89,7 @@
     { value: 'line',   label: 'Line' },
     { value: 'area',   label: 'Area' },
     { value: 'candle', label: 'Candle' },
+    { value: 'plot',   label: 'Plot' },
   ];
 
   /** @type {Array<{value:number,label:string}>} */
@@ -108,12 +109,9 @@
     { value: 'ema20',    label: 'EMA 20' },
     { value: 'ema50',    label: 'EMA 50' },
     { value: 'bb',       label: 'Bollinger' },
+    { value: 'vol',      label: 'Volume' },
     { value: 'rsi',      label: 'RSI 14' },
   ];
-  // Volume sits in its own toggle chip on the toolbar (next to
-  // Intraday + Date range) — it's a different display mode than the
-  // technical-analysis overlays above and operators wanted to flip it
-  // on/off without opening the Overlays dropdown.
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
   function _onPickSymbol(/** @type {string} */ sym) {
@@ -233,23 +231,17 @@
   let _histError   = $state('');
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
-  let _chartType   = $state(/** @type {'line'|'area'|'candle'} */('line'));
-  // Overlays MultiSelect — drives derived booleans below.
-  let _overlays    = $state(/** @type {string[]} */([]));
+  let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('line'));
+  // Overlays MultiSelect — drives derived booleans below. Volume on by default.
+  let _overlays    = $state(/** @type {string[]} */(['vol']));
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
   // Intraday tick stream — single boolean, toggled by a chip in the toolbar.
   let _intradayOn = $state(false);
-  // Volume — single boolean, toggled by its own toolbar chip (sits on
-  // the date-range row, before the range pills before it). Was previously
-  // an entry inside the Overlays MultiSelect; promoted so the operator
-  // can flip it on/off in one click. Default ON to preserve the prior
-  // visual contract.
-  let _volumeOn = $state(true);
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
-  const _showVol   = $derived(_volumeOn);
+  const _showVol   = $derived(_overlays.includes('vol'));
   const _showEma20 = $derived(_overlays.includes('ema20'));
   const _showEma50 = $derived(_overlays.includes('ema50'));
   const _showBb    = $derived(_overlays.includes('bb'));
@@ -552,6 +544,22 @@
       d += (d === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
     }
     return d;
+  });
+
+  // Scatter-plot points — same source data as _linePath but rendered
+  // as dots (no connecting lines) when chartType === 'plot'. Useful
+  // for seeing the data density and any sparse/gappy bars at a glance.
+  const _plotPoints = $derived.by(() => {
+    const src = _visibleBars.length ? _visibleBars : _bars;
+    if (!src.length) return [];
+    /** @type {Array<{x:number,y:number}>} */
+    const pts = [];
+    for (let i = 0; i < src.length; i++) {
+      const t = Date.parse(src[i].ts);
+      if (!Number.isFinite(t)) continue;
+      pts.push({ x: _xOf(t), y: _yOf(Number(src[i].close)) });
+    }
+    return pts;
   });
 
   const _areaPath = $derived.by(() => {
@@ -1073,19 +1081,6 @@
         {/each}
       </div>
 
-      <!-- Volume toggle chip — sits on the same row as Date range, AFTER
-           the pills, so the operator's eye reads "1D 1W 1M 3M 6M 1Y →
-           Volume" left-to-right. Promoted out of the Overlays
-           MultiSelect because operators wanted one-click on/off. -->
-      <button type="button"
-        class="cw-range-btn cw-volume-btn"
-        class:active={_volumeOn}
-        title={_volumeOn ? 'Volume bars ON — click to hide' : 'Volume bars OFF — click to show'}
-        aria-pressed={_volumeOn}
-        onclick={() => _volumeOn = !_volumeOn}>
-        Volume
-      </button>
-
       <!-- Reset zoom action button — trailing edge, only when zoomed -->
       {#if isZoomed}
         <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
@@ -1214,7 +1209,7 @@
           <path d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
         {/if}
 
-        <!-- Price layer — line / area / candle -->
+        <!-- Price layer — line / area / candle / plot -->
         {#if _chartType === 'area'}
           <path d={_areaPath} fill="rgba(251,191,36,0.14)" stroke="none"/>
           <path d={_linePath} fill="none" stroke="#fbbf24" stroke-width="1.8"
@@ -1225,6 +1220,10 @@
                   stroke={c.up ? '#4ade80' : '#f87171'} stroke-width="1"/>
             <rect x={c.x - c.w / 2} y={c.bodyY} width={c.w} height={c.bodyH}
                   fill={c.up ? '#4ade80' : '#f87171'}/>
+          {/each}
+        {:else if _chartType === 'plot'}
+          {#each _plotPoints as p}
+            <circle cx={p.x} cy={p.y} r="1.8" fill="#fbbf24"/>
           {/each}
         {:else}
           <path d={_linePath} fill="none" stroke="#fbbf24" stroke-width="1.8"
@@ -1555,19 +1554,6 @@
     background: rgba(125, 211, 252, 0.18);
     border-color: rgba(125, 211, 252, 0.55);
     color: #7dd3fc;
-  }
-  /* Volume chip — same standalone-pill shape as Intraday. Amber
-     palette to set it apart visually (volume = market activity,
-     amber matches the historical OHLC line family). */
-  .cw-volume-btn {
-    border: 1px solid rgba(251, 191, 36, 0.32);
-    border-radius: 4px;
-    flex-shrink: 0;
-  }
-  .cw-volume-btn.active {
-    background: rgba(251, 191, 36, 0.18);
-    border-color: rgba(251, 191, 36, 0.55);
-    color: #fbbf24;
   }
 
   /* ── Toolbar Select wrappers ─────────────────────────────── */
