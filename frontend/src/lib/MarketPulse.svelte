@@ -1411,7 +1411,7 @@
   // array when there's nothing to sum).
   function _totalsRowFor(rows, major, label) {
     if (!rows.length) return null;
-    let day_pnl = 0, pnl = 0, cost = 0, qty_pos = 0, qty_hold = 0;
+    let day_pnl = 0, pnl = 0, cost = 0, prevMktVal = 0, qty_pos = 0, qty_hold = 0;
     let anyDayPnl = false, anyPnl = false;
     for (const r of rows) {
       // Prefer the BROKER raw values (`_broker_pnl`, `_broker_day_pnl`
@@ -1426,7 +1426,8 @@
       const rowDayPnl  = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
       if (rowDayPnl != null) { day_pnl += Number(rowDayPnl) || 0; anyDayPnl = true; }
       if (rowPnl    != null) { pnl     += Number(rowPnl)    || 0; anyPnl    = true; }
-      cost    += Math.abs(Number(r._cost_basis) || 0);
+      cost       += Math.abs(Number(r._cost_basis)        || 0);
+      prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
       qty_pos += Number(r.qty_pos)  || 0;
       qty_hold += Number(r.qty_hold) || 0;
     }
@@ -1438,6 +1439,7 @@
       day_pnl:  anyDayPnl ? day_pnl : null,
       pnl:      anyPnl    ? pnl     : null,
       _cost_basis: cost,
+      _prev_market_value: prevMktVal,
       qty_pos, qty_hold,
     };
   }
@@ -2539,11 +2541,21 @@
       const holdCost = Math.abs(row._avg_hold_num);
       const denom    = Math.abs(row.qty_pos) + Math.abs(row.qty_hold);
       row.avg_combined = denom > 0 ? (posCost + holdCost) / denom : null;
-      row._cost_basis  = posCost + holdCost;   // for P&L% column below
+      row._cost_basis  = posCost + holdCost;   // for P&L% column (lifetime return)
       delete row._avg_num;
       delete row._avg_hold_num;
       const netQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
       row.day_pct = directional(row.change_pct, netQty);
+      // Day P&L % column needs yesterday's market value as denominator,
+      // NOT cost basis. For a long-held stock with strong capital
+      // appreciation, dividing day_pnl by cost over-states the day %:
+      // an INFY held 10 yrs at ₹100 cost / ₹2000 today gets day_pnl ~₹20
+      // (1% day) but day_pnl/cost = 20%. Using close × |qty| gives the
+      // honest one-day return.
+      const closeVal = Number(row.close) || 0;
+      row._prev_market_value = closeVal > 0
+        ? closeVal * (Math.abs(row.qty_pos) + Math.abs(row.qty_hold))
+        : 0;
     }
 
     // Sort: index groups first, then positions/holdings, watchlist,
@@ -3084,18 +3096,27 @@
       _symColRight,
       _sparkCol,
       _ltpCol,
-      // Day P&L % — qty-weighted day return on cost basis.
+      // Day P&L % — one-day return on yesterday's market value (close × qty).
+      // NOT cost basis: dividing by cost over-states day % for a long-held
+      // stock — INFY held 10 yrs at ₹100 cost / ₹2000 today posts a real
+      // 1 % day move as 20 % when normalised against cost. close × qty is
+      // the honest denominator: per-symbol this collapses to change_pct;
+      // TOTAL gets a market-value-weighted day return.
       { field: 'day_pnl_pct', headerName: 'Day P&L %', colId: 'day_pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
-          const cost = Number(p.data?._cost_basis);
-          if (!Number.isFinite(dpnl) || !(cost > 0)) return null;
-          return (dpnl / cost) * 100;
+          const prev = Number(p.data?._prev_market_value);
+          if (!Number.isFinite(dpnl)) return null;
+          if (prev > 0) return (dpnl / prev) * 100;
+          // Fallback: per-symbol row with no close × qty (e.g. just-listed
+          // contract, watchlist-only) — use change_pct directly.
+          const cp = Number(p.data?.change_pct);
+          return Number.isFinite(cp) ? cp : null;
         },
         valueFormatter: pctFmtGrid,
-        headerTooltip: 'Day P&L as % of cost basis.' },
+        headerTooltip: 'Day P&L as % of yesterday’s market value (close × qty).' },
       { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
         width: 68, minWidth: 60, maxWidth: 90,
         type: 'numericColumn', headerClass: numericHdr,
