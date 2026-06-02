@@ -590,6 +590,22 @@
   font-size: 0.5rem;
   opacity: 0.75;
 }
+/* `.log-ts` containing direct text (no .log-ts-ist / .log-ts-edt) renders
+   the page-header dual-zone format inline: 'Sun 30 May · 21:42 IST ·
+   12:12 EDT'. Same monospace + cyan-200 + tabular-nums as the
+   .algo-ts wall clock so the wall clock and every log row read in
+   one mental rhythm. */
+.log-ts:not(:has(.log-ts-ist, .log-ts-edt)) {
+  display: inline;
+  flex-direction: initial;
+  color: #7dd3fc;
+  font-size: 0.62rem;
+}
+.log-ts-empty {
+  color: #7e97b8;
+  opacity: 0.6;
+  font-style: italic;
+}
 /* Inline (single-line) variant — when the surface has horizontal room
    to spare. Pipe-separated, IST first. */
 .log-ts-inline {

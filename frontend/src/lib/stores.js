@@ -486,6 +486,15 @@ export function parseLogLineTime(line) {
   return logTime(`${m[1]}T${m[2]}Z`);
 }
 
+/** Same as parseLogLineTime but returns a Date instead of a formatted string.
+ *  Used when callers want to apply a different render (e.g. formatDualTz). */
+export function parseLogLineDate(line) {
+  const m = line?.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}T${m[2]}Z`);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 /* ── Global order-events store ────────────────────────────────────────
    One poller, one shared state, used by the OrderNotifications bell on
    every algo page. Polls /api/orders/events/recent every 8 s for

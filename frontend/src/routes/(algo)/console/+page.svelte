@@ -81,9 +81,9 @@
 </div>
 
 {#if _ticketProps}
-  <!-- hideBottomPanel: /console already renders the 5-tab activity surface
-       inline below the command bar. The modal's own Order Book / Agent
-       Log card would be a duplicate affordance. -->
+  <!-- Order modal carries its own Order Book + Agent Log bottom tabs as
+       a self-contained surface — modal is its own world, distinct from
+       the page-level LogPanel below the command bar. -->
   <SymbolPanel
     symbol={_ticketProps.symbol || ''}
     exchange={_ticketProps.exchange || ''}
@@ -94,7 +94,6 @@
     orderType={_ticketProps.orderType || 'LIMIT'}
     account={_ticketProps.account || ''}
     accounts={[]}
-    hideBottomPanel={true}
     onSubmit={_closeTicket}
     onClose={_closeTicket}
   />

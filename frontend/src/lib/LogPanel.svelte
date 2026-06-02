@@ -1,6 +1,6 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
-  import { parseLogLineTime, logTime, logTimeIst, logTimeEdt } from '$lib/stores';
+  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
@@ -209,22 +209,29 @@
    * raw HH:MM:SS strings from upstream payloads.
    */
   function _dualTsHtml(input) {
-    if (!input) return '';
-    const s = typeof input === 'string' ? input : input.toISOString?.() || '';
-    let d = null;
-    if (s && (s.includes('T') || s.includes('Z') || /^\d{4}-\d{2}-\d{2}/.test(s))) {
-      const tmp = new Date(s);
-      if (!isNaN(tmp.getTime())) d = tmp;
+    if (!input) {
+      // Never silently swallow a timestamp slot — show a muted dash so
+      // the column position is preserved and the row scans the same
+      // way as its neighbours.
+      return `<span class="log-ts log-ts-empty">—</span>`;
     }
-    if (!d) {
-      // Non-ISO (e.g. already-HH:MM:SS) — single-zone fallback.
-      const t = _shortTime(s);
-      return `<span class="log-ts log-ts-fallback">${t}</span>`;
+    const d = input instanceof Date
+      ? input
+      : (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}/.test(input))
+        ? new Date(input.includes('T') || input.includes('Z') ? input : input + 'Z')
+        : null;
+    if (d && !isNaN(d.getTime())) {
+      // Page-header format — same `formatDualTz()` the .algo-ts span in
+      // the page header renders, so log rows and the header wall clock
+      // read identically:  Sun 30 May · 21:42 IST · 12:12 EDT
+      const formatted = formatDualTz(d);
+      const full = logTime(d);
+      return `<span class="log-ts" title="${full}">${formatted}</span>`;
     }
-    const ist = logTimeIst(d);
-    const edt = logTimeEdt(d);
-    const full = logTime(d);
-    return `<span class="log-ts" title="${full}"><span class="log-ts-ist">${ist}</span><span class="log-ts-edt">${edt}</span></span>`;
+    // Non-ISO string we couldn't parse — render as a fallback chip but
+    // still keep the column position aligned with sibling rows.
+    const raw = typeof input === 'string' ? _shortTime(input) : '—';
+    return `<span class="log-ts log-ts-fallback">${raw || '—'}</span>`;
   }
 
   // News-specific time slicer — the /api/news payload's `timestamp`
@@ -518,16 +525,18 @@
   const condBlock = cond ? ' ' + cond : '';
   return `<span class="${cls}">${t} ${simPill}${e.event_type||''}${condBlock}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
-  // System log lines carry a leading ISO timestamp (parsed by
-  // parseLogLineTime → dual-zone). When parse fails, render the raw
-  // line unchanged. Lines emitted by the sim driver / sim alert
-  // dispatch carry a "[SIM]" marker — surface as a pill so they're
-  // visually distinct from live entries on this tab.
-  const t = parseLogLineTime(l);
-  const rest = t ? stripTs(l) : l;
-  const tHtml = t ? `<span class="log-ts log-ts-fallback">${t}</span> ` : '';
+  // System log lines carry a leading 'YYYY-MM-DD HH:MM:SS' timestamp
+  // (UTC — the prod box runs in UTC). We pass the parsed Date through
+  // _dualTsHtml so the row gets the same page-header timestamp format
+  // every other tab uses. If parse fails (unexpected) the helper still
+  // renders a muted '—' chip so the column position stays aligned.
+  const d = parseLogLineDate(l);
+  const tHtml = _dualTsHtml(d);
+  const rest = d ? stripTs(l) : l;
+  // [SIM] marker surface as a pill so sim-source entries are visually
+  // distinct from live system entries on the same tab.
   const simPill = /\[SIM\]/.test(l) ? '<span class="log-sim-pill" title="Simulator log line">SIM</span> ' : '';
-  return `<span class="${sysClass(l)}">${tHtml}${simPill}${rest}</span>`;
+  return `<span class="${sysClass(l)}">${tHtml} ${simPill}${rest}</span>`;
 }).join('\n')}{:else}<span class="log-debug">No log entries.</span>{/if}{/if}</pre>
 {/if}
 
