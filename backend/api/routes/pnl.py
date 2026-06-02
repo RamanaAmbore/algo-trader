@@ -18,17 +18,17 @@ entry/exit pair. Orders without fill_price (OPEN / UNFILLED) contribute 0
 to the PnL sum.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 from typing import Optional
 
 import msgspec
 from litestar import Controller, get
 from litestar.exceptions import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func as sa_func
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session
-from backend.api.models import Agent, AlgoOrder
+from backend.api.models import Agent, AlgoOrder, DailyBook
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -255,3 +255,167 @@ class PnLController(Controller):
             ))
 
         return result
+
+    # -----------------------------------------------------------------
+    # GET /api/admin/pnl/range
+    # -----------------------------------------------------------------
+
+    @get("/range", guards=[admin_guard])
+    async def pnl_range(
+        self,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        segment: str = "all",
+        kind: str = "all",
+    ) -> dict:
+        """Aggregate the daily_book EOD snapshots over the requested window.
+
+        Powers the Performance chart on /dashboard?tab=pnl + the /admin/pnl
+        page. Returns 5 parallel rollups so the frontend can switch between
+        Segment / Account / Symbol / Daily views without re-fetching:
+
+        - summary       : window-wide totals (day_pnl, total_pnl, rows)
+        - by_segment    : per-segment rollup
+        - by_account    : per-account rollup
+        - by_symbol     : per-symbol rollup (top 50, sorted by |day_pnl|)
+        - daily_series  : per-day series — day_pnl, cum_pnl, and a
+                          pct_change_from_start anchor (cumulative return
+                          since the first day of the window)
+
+        Dates use ISO-8601 (YYYY-MM-DD). Default from = 7 days ago IST,
+        default to = today IST.  `segment` ∈ {all|equity|commodity|
+        currency|derivatives}.  `kind` ∈ {all|holdings|positions|trades}.
+        """
+        # Defaults — last 7 IST days through today.
+        try:
+            today = datetime.now(timezone.utc).date()
+            to_d = _date.fromisoformat(to_date) if to_date else today
+            from_d = _date.fromisoformat(from_date) if from_date else (to_d - timedelta(days=7))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Bad date: {e}")
+        if from_d > to_d:
+            raise HTTPException(status_code=400, detail="from_date > to_date")
+
+        # Build the WHERE base — applied to every rollup query so the five
+        # passes return mutually consistent numbers.
+        def _base_filter(q):
+            q = q.where(DailyBook.date >= from_d, DailyBook.date <= to_d)
+            if segment and segment != "all":
+                q = q.where(DailyBook.segment == segment)
+            if kind and kind != "all":
+                q = q.where(DailyBook.kind == kind)
+            return q
+
+        try:
+            async with async_session() as session:
+                # 1) summary — single-row totals.
+                summary_row = (await session.execute(_base_filter(
+                    select(
+                        sa_func.coalesce(sa_func.sum(DailyBook.day_pnl), 0),
+                        sa_func.coalesce(sa_func.sum(DailyBook.total_pnl), 0),
+                        sa_func.count(DailyBook.id),
+                    )
+                ))).first()
+                summary = {
+                    "total_day_pnl":   float(summary_row[0] or 0),
+                    "total_total_pnl": float(summary_row[1] or 0),
+                    "row_count":       int(summary_row[2] or 0),
+                }
+
+                # 2) by_segment
+                rows = (await session.execute(_base_filter(
+                    select(
+                        DailyBook.segment,
+                        sa_func.coalesce(sa_func.sum(DailyBook.day_pnl), 0),
+                        sa_func.coalesce(sa_func.sum(DailyBook.total_pnl), 0),
+                        sa_func.count(DailyBook.id),
+                    ).group_by(DailyBook.segment).order_by(DailyBook.segment)
+                ))).all()
+                by_segment = [
+                    {"segment": r[0], "day_pnl": float(r[1] or 0),
+                     "total_pnl": float(r[2] or 0), "rows": int(r[3] or 0)}
+                    for r in rows
+                ]
+
+                # 3) by_account
+                rows = (await session.execute(_base_filter(
+                    select(
+                        DailyBook.account,
+                        sa_func.coalesce(sa_func.sum(DailyBook.day_pnl), 0),
+                        sa_func.coalesce(sa_func.sum(DailyBook.total_pnl), 0),
+                        sa_func.count(DailyBook.id),
+                    ).group_by(DailyBook.account).order_by(DailyBook.account)
+                ))).all()
+                by_account = [
+                    {"account": r[0], "day_pnl": float(r[1] or 0),
+                     "total_pnl": float(r[2] or 0), "rows": int(r[3] or 0)}
+                    for r in rows
+                ]
+
+                # 4) by_symbol — top 50 by absolute day_pnl so the table
+                # focuses on what moved the book most.
+                rows = (await session.execute(_base_filter(
+                    select(
+                        DailyBook.symbol,
+                        sa_func.coalesce(sa_func.sum(DailyBook.day_pnl), 0),
+                        sa_func.coalesce(sa_func.sum(DailyBook.total_pnl), 0),
+                        sa_func.count(DailyBook.id),
+                    ).group_by(DailyBook.symbol)
+                     .order_by(sa_func.abs(sa_func.coalesce(sa_func.sum(DailyBook.day_pnl), 0)).desc())
+                     .limit(50)
+                ))).all()
+                by_symbol = [
+                    {"symbol": r[0], "day_pnl": float(r[1] or 0),
+                     "total_pnl": float(r[2] or 0), "rows": int(r[3] or 0)}
+                    for r in rows
+                ]
+
+                # 5) daily_series — chronological series for the
+                # Performance chart. pct_change_from_start anchors at 0 %
+                # on the first day with non-zero total_pnl, then is the
+                # cumulative day_pnl as a fraction of the starting capital
+                # proxy (sum |avg_cost × qty| on the anchor day).
+                rows = (await session.execute(_base_filter(
+                    select(
+                        DailyBook.date,
+                        sa_func.coalesce(sa_func.sum(DailyBook.day_pnl), 0),
+                        sa_func.coalesce(sa_func.sum(DailyBook.total_pnl), 0),
+                    ).group_by(DailyBook.date).order_by(DailyBook.date)
+                ))).all()
+
+                # Anchor — the starting capital proxy. We use the FIRST
+                # day's total_pnl as the cumulative baseline so subsequent
+                # days' day_pnl translates to "% change since window start"
+                # against the same denominator. Falls back to a flat 1 so
+                # the percent column doesn't blow up for new accounts.
+                anchor = abs(float(rows[0][2] or 0)) if rows else 0.0
+                if anchor < 1:
+                    anchor = 1.0
+                cum = 0.0
+                daily_series = []
+                for r in rows:
+                    day = float(r[1] or 0)
+                    cum += day
+                    daily_series.append({
+                        "date":  r[0].isoformat(),
+                        "day_pnl": day,
+                        "cum_pnl": cum,
+                        "pct_change_from_start": round(cum / anchor * 100.0, 4),
+                    })
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"PnLController.pnl_range DB error: {e}")
+            raise HTTPException(status_code=500, detail="Failed to query daily_book")
+
+        return {
+            "from_date": from_d.isoformat(),
+            "to_date":   to_d.isoformat(),
+            "segment":   segment,
+            "kind":      kind,
+            "summary":      summary,
+            "by_segment":   by_segment,
+            "by_account":   by_account,
+            "by_symbol":    by_symbol,
+            "daily_series": daily_series,
+        }
