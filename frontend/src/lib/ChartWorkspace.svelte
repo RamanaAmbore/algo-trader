@@ -108,9 +108,12 @@
     { value: 'ema20',    label: 'EMA 20' },
     { value: 'ema50',    label: 'EMA 50' },
     { value: 'bb',       label: 'Bollinger' },
-    { value: 'vol',      label: 'Volume' },
     { value: 'rsi',      label: 'RSI 14' },
   ];
+  // Volume sits in its own toggle chip on the toolbar (next to
+  // Intraday + Date range) — it's a different display mode than the
+  // technical-analysis overlays above and operators wanted to flip it
+  // on/off without opening the Overlays dropdown.
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
   function _onPickSymbol(/** @type {string} */ sym) {
@@ -231,16 +234,22 @@
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
   let _chartType   = $state(/** @type {'line'|'area'|'candle'} */('line'));
-  // Overlays MultiSelect — drives derived booleans below. Volume on by default.
-  let _overlays    = $state(/** @type {string[]} */(['vol']));
+  // Overlays MultiSelect — drives derived booleans below.
+  let _overlays    = $state(/** @type {string[]} */([]));
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
   // Intraday tick stream — single boolean, toggled by a chip in the toolbar.
   let _intradayOn = $state(false);
+  // Volume — single boolean, toggled by its own toolbar chip (sits on
+  // the date-range row, before the range pills before it). Was previously
+  // an entry inside the Overlays MultiSelect; promoted so the operator
+  // can flip it on/off in one click. Default ON to preserve the prior
+  // visual contract.
+  let _volumeOn = $state(true);
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
-  const _showVol   = $derived(_overlays.includes('vol'));
+  const _showVol   = $derived(_volumeOn);
   const _showEma20 = $derived(_overlays.includes('ema20'));
   const _showEma50 = $derived(_overlays.includes('ema50'));
   const _showBb    = $derived(_overlays.includes('bb'));
@@ -1064,6 +1073,19 @@
         {/each}
       </div>
 
+      <!-- Volume toggle chip — sits on the same row as Date range, AFTER
+           the pills, so the operator's eye reads "1D 1W 1M 3M 6M 1Y →
+           Volume" left-to-right. Promoted out of the Overlays
+           MultiSelect because operators wanted one-click on/off. -->
+      <button type="button"
+        class="cw-range-btn cw-volume-btn"
+        class:active={_volumeOn}
+        title={_volumeOn ? 'Volume bars ON — click to hide' : 'Volume bars OFF — click to show'}
+        aria-pressed={_volumeOn}
+        onclick={() => _volumeOn = !_volumeOn}>
+        Volume
+      </button>
+
       <!-- Reset zoom action button — trailing edge, only when zoomed -->
       {#if isZoomed}
         <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
@@ -1484,11 +1506,15 @@
   }
 
   .cw-type-wrap {
-    /* Narrow Select pinned to the leading edge of the picker bar so
-       the type filter never visually dominates the symbol input. */
-    min-width: 7rem;
-    max-width: 8.5rem;
+    /* Fixed width — sized to fit the widest label ("EQ · FUT · OPT")
+       so the trigger doesn't reflow when the operator picks a
+       narrower value (Equity / Futures / Options). Earlier min/max
+       range let the trigger grow / shrink with the selection. */
+    width: 8.5rem;
     flex-shrink: 0;
+  }
+  .cw-type-wrap :global(.rbq-select-trigger) {
+    width: 100%;
   }
   /* ── Range pill group ────────────────────────────────────── */
   .cw-range-group {
@@ -1529,6 +1555,19 @@
     background: rgba(125, 211, 252, 0.18);
     border-color: rgba(125, 211, 252, 0.55);
     color: #7dd3fc;
+  }
+  /* Volume chip — same standalone-pill shape as Intraday. Amber
+     palette to set it apart visually (volume = market activity,
+     amber matches the historical OHLC line family). */
+  .cw-volume-btn {
+    border: 1px solid rgba(251, 191, 36, 0.32);
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .cw-volume-btn.active {
+    background: rgba(251, 191, 36, 0.18);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
   }
 
   /* ── Toolbar Select wrappers ─────────────────────────────── */
