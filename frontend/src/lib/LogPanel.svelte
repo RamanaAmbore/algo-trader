@@ -4,6 +4,7 @@
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
+    fetchOrders,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
@@ -128,17 +129,51 @@
     } catch (_) {}
   }
   async function _loadOrders() {
+    // Merge broker orders + algo orders so the Orders tab carries the
+    // same data the /orders page renders PLUS the platform's paper /
+    // sim / shadow rows that never reach the broker. Broker rows win
+    // on duplicate order_id (most complete fields); algo-only rows
+    // (paper / sim / shadow) keep their AlgoOrderInfo shape and are
+    // distinguished by .mode chip on the OrderCard.
     try {
-      const data = await fetchAlgoOrdersRecent(100, 'all');
-      orderRows = Array.isArray(data) ? data : [];
-    } catch (_) {}
+      const [brokerResp, algoResp] = await Promise.allSettled([
+        fetchOrders(),
+        fetchAlgoOrdersRecent(100, 'all'),
+      ]);
+      const brokerRows = (brokerResp.status === 'fulfilled' && Array.isArray(brokerResp.value?.rows))
+        ? brokerResp.value.rows
+        : [];
+      const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
+        ? algoResp.value
+        : [];
+      // Dedup: keep every broker row by order_id; only include algo
+      // rows whose order_id isn't already in the broker set.
+      const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
+      const algoOnly  = algoRows.filter(o => {
+        const oid = String(o?.order_id || o?.id || '');
+        return !brokerIds.has(oid);
+      });
+      // Newest first — broker orders carry order_timestamp; algo rows
+      // carry created_at. Date.parse falls back to 0 on bad strings so
+      // empty/null timestamps land at the bottom.
+      const merged = [...brokerRows, ...algoOnly];
+      merged.sort((a, b) => {
+        const ta = Date.parse(a.order_timestamp || a.created_at || '') || 0;
+        const tb = Date.parse(b.order_timestamp || b.created_at || '') || 0;
+        return tb - ta;
+      });
+      orderRows = merged;
+    } catch (_) { /* keep last-good */ }
   }
 
   onMount(() => {
     if (tabs.includes('agent'))     _every(_loadAgents);
     if (tabs.includes('system'))    _every(_loadSystem);
     if (tabs.includes('simulator')) _every(_loadSim);
-    if (tabs.includes('terminal'))  _every(_loadOrders);  // Terminal tab embeds order rows
+    // Orders + Terminal tabs both consume orderRows; load whenever
+    // either one is in the visible set.
+    if (tabs.includes('order') || tabs.includes('terminal'))
+      _every(_loadOrders);
   });
   onDestroy(() => { for (const id of _intervals) clearInterval(id); });
 
