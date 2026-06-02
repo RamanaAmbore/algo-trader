@@ -125,7 +125,7 @@
     _pinnedValue = '';       // search pick — clear active pin
     _resolvedExchange = '';  // clear stale MCX/CDS hint from prior pin
     _chartLoaded = false;
-    _intradayMode = 'off';
+    _intradaySel = [];
     onSymbolChange?.(upper);
     _loadHistorical(true);
   }
@@ -186,7 +186,7 @@
     _resolvedExchange = r.exchange || '';  // capture MCX/CDS/NSE so _loadHistorical can hint the backend
     symbol = r.tradingsymbol;
     _chartLoaded = false;
-    _intradayMode = 'off';
+    _intradaySel = [];
     onSymbolChange?.(r.tradingsymbol);
     _loadHistorical(true);
   }
@@ -232,8 +232,9 @@
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
-  // Intraday tick stream — explicit two-value state (separate from overlays).
-  let _intradayMode = $state(/** @type {'on'|'off'} */('off'));
+  // Intraday tick stream — multi-select array (operator can pick On,
+  // Off, both, or neither). Intraday is enabled iff 'on' is checked.
+  let _intradaySel = $state(/** @type {string[]} */([]));
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   const _showVol   = $derived(_overlays.includes('vol'));
@@ -364,7 +365,7 @@
   }
 
   // ── Intraday tick stream ──────────────────────────────────────────
-  const _intradayEnabled = $derived(_intradayMode === 'on');
+  const _intradayEnabled = $derived(_intradaySel.includes('on'));
   /** @type {Array<{ts:string,ltp:number,bid:number|null,ask:number|null}>} */
   let _ticks  = $state([]);
   /** @type {Array<{ts:string,kind:string,side:string,price:number|null}>} */
@@ -922,9 +923,9 @@
   });
 
   // Re-load historical when symbol changes externally.
-  // The intraday-mode reset is wrapped in untrack() so reading
-  // _intradayMode here doesn't make this effect depend on it —
-  // otherwise writing back 'off' re-fires the effect endlessly
+  // The intraday-selection reset is wrapped in untrack() so reading
+  // _intradaySel here doesn't make this effect depend on it —
+  // otherwise writing back [] re-fires the effect endlessly
   // (caught: 80+ /api/options/historical calls in 2s).
   $effect(() => {
     void symbol; void exchange;
@@ -936,7 +937,7 @@
       _spotBars = [];
       _greeks = null;
       untrack(() => {
-        if (_intradayMode !== 'off') _intradayMode = 'off';
+        if (_intradaySel.length) _intradaySel = [];
       });
       _loadHistorical(true);
       if (_isOption) _loadGreeks();
@@ -1005,11 +1006,12 @@
           ariaLabel="Chart type" />
       </div>
 
-      <!-- Intraday tick stream — explicit two-value On/Off -->
+      <!-- Intraday tick stream — multi-select (On/Off checkboxes) -->
       <div class="cw-toolbar-select">
-        <Select
+        <MultiSelect
           options={_INTRADAY_OPTS}
-          bind:value={_intradayMode}
+          bind:value={_intradaySel}
+          placeholder="Intraday"
           ariaLabel="Intraday tick stream" />
       </div>
 
