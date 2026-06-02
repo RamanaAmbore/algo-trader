@@ -3192,8 +3192,8 @@
       // Account at trailing edge — shows the lead account (or "Mixed"
       // when a position spans 2 accounts). Tinted to match the
       // symbol cell's left-edge stripe via the same hash palette.
-      { field: '_acct_display', headerName: 'Acc', colId: 'acct_trailing',
-        width: 56, minWidth: 44, maxWidth: 80,
+      { field: '_acct_display', headerName: 'Account', colId: 'acct_trailing',
+        width: 96, minWidth: 78, maxWidth: 124,
         cellClass: 'mp-acct-cell',
         cellStyle: (p) => {
           if (p.data?._isTotal) return {};
@@ -3283,7 +3283,7 @@
     // 78 px fits every rupee value plus the standard cell padding.
     if (showSummary && positionsSummaryEl) {
       const posSummaryCols = [
-        { field: 'account',               headerName: 'Acc', width: 36,
+        { field: 'account',               headerName: 'Account', width: 76,
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
@@ -3315,7 +3315,7 @@
     // Compact widths matching the Positions Summary above.
     if (showSummary && holdingsSummaryEl) {
       const holdSummaryCols = [
-        { field: 'account',               headerName: 'Acc', width: 36,
+        { field: 'account',               headerName: 'Account', width: 76,
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
@@ -3358,7 +3358,7 @@
     // headers don't truncate at 78 px column width.
     if (showFunds && fundsEl) {
       const fundsCols = [
-        { field: 'account',        headerName: 'Acc',   width: 36,
+        { field: 'account',        headerName: 'Account',   width: 76,
           cellClass: 'ag-col-fill' },
         { field: 'cash_total',     headerName: 'Cash',      width: 78,
           type: 'numericColumn', headerClass: numericHdr,

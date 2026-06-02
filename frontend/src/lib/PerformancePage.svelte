@@ -296,7 +296,7 @@
     // follows, current/inv totals trail. Widths fixed (not flex) so the
     // big aggregate numbers (₹X,XX,XXX or crore-level) stop getting
     // truncated on the summary row.
-    { field: 'account',               headerName: 'Acc',  width: 36,  minWidth: 36,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',               headerName: 'Account',  width: 76,  minWidth: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -311,7 +311,7 @@
   // where it came in (Avg) → today's move → lifetime change" in a
   // single uninterrupted run.
   const holdingsCols = [
-    { field: 'account',               headerName: 'Acc',  width: 36, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',               headerName: 'Account',  width: 76, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _symWithChartRenderer },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'close_price',           headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
@@ -336,7 +336,7 @@
 
   // Positions summary — same Day-leading order as holdings summary.
   const positionsSummaryCols = [
-    { field: 'account',               headerName: 'Acc', width: 36,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',               headerName: 'Account', width: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L', width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',   width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -407,7 +407,7 @@
   // Δ pos + Θ/day land AFTER the cluster so the contiguous run isn't
   // broken by the position-Greeks columns. Qty remains trailing.
   const positionsCols = $derived([
-    { field: 'account',       headerName: 'Acc',   width: 36, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',       headerName: 'Account',   width: 76, pinned: 'left', cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
@@ -437,7 +437,7 @@
   // "can I deploy more" off Net + Utilisation %; the components
   // follow. Kite + IBKR both lead with the summary number, not Cash.
   const fundsCols = [
-    { field: 'account',      headerName: 'Acc',      width: 36, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'account',      headerName: 'Account',      width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { headerName: 'Net', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
       valueGetter: (p) => (Number(p.data?.cash) || 0) + (Number(p.data?.collateral) || 0) - (Number(p.data?.used_margin) || 0) },
     { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
