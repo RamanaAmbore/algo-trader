@@ -155,9 +155,9 @@
     String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
   const _ALL_TABS = [
-    ['order',     'Order'],
+    ['order',     'Order Book'],
+    ['agent',     'Agent Log'],
     ['terminal',  'Terminal'],
-    ['agent',     'Agent'],
     ['simulator', 'Simulator'],
     ['system',    'System'],
     ['news',      'News'],

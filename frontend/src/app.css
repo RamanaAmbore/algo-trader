@@ -29,6 +29,48 @@
   img { -webkit-user-drag: none; }
 }
 
+/* ── Canonical modal frame ──────────────────────────────────────────────── */
+/* Shared positioning + size envelope for every floating modal on the algo
+   side (ChartModal · ActivityLogModal · SymbolPanel modal-mode). Each modal
+   keeps its own border-accent colour, header chrome, and body content, but
+   the OUTER frame (where on screen it lands + how big it is) is identical
+   so opening Order / Chart / Log from the page-header trio doesn't make
+   the panel jump around. Use as:
+     <div class="canonical-modal-overlay" use:portal>
+       <div class="canonical-modal-panel">…</div>
+     </div>
+   The overlay is pointer-events:none so the page underneath stays
+   clickable while the modal is open (operator closes via × button or Esc). */
+.canonical-modal-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+.canonical-modal-panel {
+  pointer-events: auto;
+  background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+  border: 1px solid rgba(251, 191, 36, 0.40);
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(251, 191, 36, 0.08);
+  width: min(78vw, 980px);
+  height: min(82vh, 760px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+@media (max-width: 760px) {
+  .canonical-modal-panel {
+    width: 96vw;
+    height: 90vh;
+  }
+}
+
 /* ── AG Grid — RamboQuant theme ──────────────────────────────────────────── */
 /* Outside @layer so these override AG Grid's imported quartz styles            */
 .ag-theme-ramboq {

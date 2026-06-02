@@ -68,9 +68,9 @@
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <!-- overlay is pointer-events:none so click-outside-to-close is gone;
      operator uses × button or Esc. tabindex retained for screen readers. -->
-<div class="cm-overlay" use:portal role="dialog" aria-modal="true" aria-label="Chart — {symbol}"
-     tabindex="-1">
-  <div class="cm-modal" bind:this={_modalEl}>
+<div class="canonical-modal-overlay cm-overlay" use:portal role="dialog" aria-modal="true"
+     aria-label="Chart — {symbol}" tabindex="-1">
+  <div class="canonical-modal-panel cm-modal" bind:this={_modalEl}>
     <div class="cm-header">
       <span class="cm-title">Chart — <span class="cm-sym">{symbol}</span></span>
       <button type="button" class="cm-close" bind:this={_closeBtnEl}
@@ -89,49 +89,10 @@
 </div>
 
 <style>
-  .cm-overlay {
-    position: fixed;
-    inset: 0;
-    /* No background dim and pointer-events: none — the rest of the
-       page stays clickable while the chart loads. Operator can still
-       navigate, click the navbar, scroll. Close the modal via the ×
-       button or Esc when ready. */
-    pointer-events: none;
-    z-index: 200;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1rem;
-    box-sizing: border-box;
-  }
-  .cm-modal {
-    /* Restore pointer-events so the modal panel itself is interactive
-       even though the overlay around it is not. */
-    pointer-events: auto;
-  }
-
-  .cm-modal {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border: 1px solid rgba(251, 191, 36, 0.40);
-    border-radius: 6px;
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(251,191,36,0.08);
-    /* Sized so the page behind stays visible + clickable while the
-       chart loads — modal floats as a window rather than blanketing
-       the viewport. Prior 96vw × 92vh covered everything (clicks
-       passed through invisible slivers but the operator couldn't see
-       what they were aiming at). */
-    width: min(78vw, 980px);
-    height: min(82vh, 760px);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  @media (max-width: 760px) {
-    .cm-modal {
-      width: 96vw;
-      height: 90vh;
-    }
-  }
+  /* Frame (overlay + panel positioning, size, border, gradient) lives in
+     app.css under .canonical-modal-overlay / .canonical-modal-panel.
+     Local styles only carry the chart-specific header + close-button
+     chrome below. */
 
   .cm-header {
     display: flex;

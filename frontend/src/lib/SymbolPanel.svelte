@@ -294,7 +294,10 @@
 
 
   // ── Bottom-panel tab state ───────────────────────────────────────────
-  let _bottomTab = $state(/** @type {'log'|'orders'} */ ('log'));
+  // Default to Order Book — same as ActivityLogModal so the operator
+  // sees the same first surface whether the activity appears as a card
+  // tab inside SymbolPanel or as a modal from the page-header Log icon.
+  let _bottomTab = $state(/** @type {'orders'|'log'} */ ('orders'));
 
   // ── Basket state (shared across all tabs) ───────────────────────────
   // When basketMode is active (Chain tab is selected), submissions from
@@ -845,24 +848,26 @@
       </div>
     {/if}
 
-    <!-- Bottom panel — Order Log / Order History. Suppressed when the
-         host renders these in a separate card via `hideBottomPanel`. -->
+    <!-- Bottom panel — Order Book / Agent Log. Suppressed when the
+         host renders these in a separate card via `hideBottomPanel`.
+         Names + ordering match ActivityLogModal so the operator's mental
+         model is the same wherever the activity surface appears. -->
     {#if !hideBottomPanel}
     <div class="oes-bottom-panel">
       <div class="oes-bottom-tabs" role="tablist">
         <button type="button" role="tab" class="oes-bottom-tab"
-                class:active={_bottomTab === 'log'}
-                aria-selected={_bottomTab === 'log'}
-                onclick={() => _bottomTab = 'log'}>Order Log</button>
-        <button type="button" role="tab" class="oes-bottom-tab"
                 class:active={_bottomTab === 'orders'}
                 aria-selected={_bottomTab === 'orders'}
                 onclick={() => _bottomTab = 'orders'}>
-          Order History
+          Order Book
           {#if _ordersPending.length > 0}
             <span class="oes-bottom-badge">{_ordersPending.length}</span>
           {/if}
         </button>
+        <button type="button" role="tab" class="oes-bottom-tab"
+                class:active={_bottomTab === 'log'}
+                aria-selected={_bottomTab === 'log'}
+                onclick={() => _bottomTab = 'log'}>Agent Log</button>
       </div>
 
       <div class="oes-bottom-body">
