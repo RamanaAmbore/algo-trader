@@ -200,6 +200,22 @@ SEEDS: list[tuple] = [
      "visitor_log rows older than this are purged by the daily task. "
      "0 disables auto-purge.",
      "days", {"min": 0, "max": 365, "step": 1}),
+    ("visitors", "visitors.ignore_ips", "string",
+     "69.62.78.136,2a02:4780:12:9e1d:",
+     "Comma-separated list of IPs (exact match) or IP prefixes (any IP "
+     "starting with the value) that should be SKIPPED from the daily "
+     "report — these visitors won't appear in any count or table. Default "
+     "lists the prod server's own IPv4 + IPv6 prefix (Hostinger India) so "
+     "the server's outbound calls don't pollute the visitor digest. Add "
+     "your laptop's IP / IPv6 prefix here to exclude personal traffic.",
+     None, None),
+    ("visitors", "visitors.ignore_companies", "string", "Hostinger",
+     "Comma-separated list of company-name substrings (case-insensitive). "
+     "Visitors whose ASN org matches any substring are SKIPPED from the "
+     "daily report entirely. Default 'Hostinger' filters the prod box's "
+     "own ASN. Add other hosting providers if you see them dominating "
+     "your Top Companies list with no real corporate visitors there.",
+     None, None),
 
     # ── MCP / Lab — Phase 6 ──────────────────────────────────────────
     ("mcp", "mcp.audit_retention_days", "int", 90,

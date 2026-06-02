@@ -58,6 +58,47 @@ _STATIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Ignore filters (operator-managed via /admin/settings) ───────────────
+# visitors.ignore_ips        — exact IP or IP prefix; matched literally
+# visitors.ignore_companies  — substring match (case-insensitive) against
+#                              the shortened company name (post _shorten_company)
+def _parse_ignore_ips_setting() -> list[str]:
+    try:
+        from backend.shared.helpers.settings import get_string as _get_string
+        raw = _get_string("visitors.ignore_ips", "")
+    except Exception:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _parse_ignore_companies_setting() -> list[str]:
+    try:
+        from backend.shared.helpers.settings import get_string as _get_string
+        raw = _get_string("visitors.ignore_companies", "")
+    except Exception:
+        return []
+    return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+
+def _ip_should_ignore(ip: str, patterns: list[str]) -> bool:
+    """A pattern matches if it's an exact IP match OR the IP starts with
+    the pattern. Operators can list a /64 prefix as '2601:18c:8500:bd70:'
+    (trailing colon) or '69.62.78.' (trailing dot) for a /24 IPv4 range."""
+    if not ip:
+        return False
+    for p in patterns:
+        if ip == p or ip.startswith(p):
+            return True
+    return False
+
+
+def _company_should_ignore(company: str, patterns_lower: list[str]) -> bool:
+    if not company or not patterns_lower:
+        return False
+    name_lower = company.lower()
+    return any(p in name_lower for p in patterns_lower)
+
+
 # Bot-probe / vuln-scan paths — these still appear in the per-IP detail
 # table (so the operator can see WHO is probing) but are suppressed from
 # the Top Paths summary so they don't drown out real visitor traffic.
@@ -203,10 +244,54 @@ def _geo_lookup(ip: str, city_db, asn_db) -> dict:
                 # identify the employer from a residential IP.
                 result["asn"] = f"AS{asn_num}"
                 if asn_org:
-                    result["company"] = asn_org.strip()
+                    result["company"] = _shorten_company(asn_org)
         except Exception:
             pass
     return result
+
+
+# Corporate-suffix endings that don't add identification value once the
+# company name is recognisable. Stripped from the tail; case-insensitive.
+_CORP_SUFFIXES = (
+    " LLC", " L.L.C.", " Inc.", " Inc", " Corporation", " Corp.", " Corp",
+    " Limited", " Ltd.", " Ltd", " Pvt. Ltd.", " Pvt Ltd", " Pte. Ltd.",
+    " Pte Ltd", " S.A.", " SA", " SAS", " S.A.S.", " GmbH", " mbH",
+    " AG", " KG", " B.V.", " BV", " N.V.", " NV", " AB", " Oy",
+    " Co.", " Co", " Company", " International", " Holdings",
+)
+
+
+def _shorten_company(name: str) -> str:
+    """Strip corporate suffixes + truncate at the first separator so a
+    long ASN org like 'Atria Convergence Technologies Pvt. Ltd. Broadband
+    Internet Service Provider INDIA' collapses to 'Atria Convergence' —
+    readable on a phone screen, still identifies the parent network.
+    """
+    if not name:
+        return ""
+    s = str(name).strip()
+    # Truncate at the first hard separator — these usually signal
+    # postal-address fragments or marketing taglines appended to the
+    # legal name in MaxMind's autonomous_system_organization field.
+    for sep in (",", ";", " - ", " — ", " · ", " | "):
+        idx = s.find(sep)
+        if idx > 0:
+            s = s[:idx].strip()
+    # Strip recognisable corporate-form suffixes from the end (looped so
+    # 'Foo Pvt. Ltd. International Limited' collapses cleanly).
+    changed = True
+    while changed:
+        changed = False
+        for suf in _CORP_SUFFIXES:
+            if s.lower().endswith(suf.lower()):
+                s = s[: -len(suf)].rstrip(" .,")
+                changed = True
+                break
+    # Last-resort length cap so a no-suffix Chinese / Russian / multi-word
+    # name doesn't blow the column.
+    if len(s) > 28:
+        s = s[:27].rstrip() + "…"
+    return s or str(name).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -493,8 +578,21 @@ def run_daily(
 
     records = _parse_lines(all_lines, target_date)
     logger.info(
-        f"visitor_report: {len(records)} unique IPs after filtering"
+        f"visitor_report: {len(records)} unique IPs after path/date filtering"
     )
+
+    # IP-level ignore filter (operator-configurable via /admin/settings).
+    # Skip the server's own outbound IPs + any operator-added laptop /
+    # office IPs before geo lookup so the digest reflects only third-party
+    # visitor traffic.
+    ignore_ips = _parse_ignore_ips_setting()
+    if ignore_ips:
+        before = len(records)
+        records = {ip: r for ip, r in records.items() if not _ip_should_ignore(ip, ignore_ips)}
+        logger.info(
+            f"visitor_report: dropped {before - len(records)} records by "
+            f"visitors.ignore_ips ({len(ignore_ips)} patterns)"
+        )
 
     # MaxMind GeoIP
     city_db = None
@@ -530,6 +628,23 @@ def run_daily(
             asn_db.close()
         except Exception:
             pass
+
+    # Company-level ignore filter — drop visitors whose ASN org matches
+    # any substring in visitors.ignore_companies. Applied AFTER geo so
+    # 'Hostinger' (the prod box's own ASN) catches any IP in their range
+    # without having to enumerate every prefix.
+    ignore_companies = _parse_ignore_companies_setting()
+    if ignore_companies:
+        before = len(records)
+        dropped = {ip for ip, r in records.items()
+                   if _company_should_ignore(geo_map.get(ip, {}).get("company", ""), ignore_companies)}
+        for ip in dropped:
+            records.pop(ip, None)
+            geo_map.pop(ip, None)
+        logger.info(
+            f"visitor_report: dropped {before - len(records)} records by "
+            f"visitors.ignore_companies ({len(ignore_companies)} patterns)"
+        )
 
     # Upsert into DB
     try:
