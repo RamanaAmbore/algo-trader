@@ -55,11 +55,13 @@ def test_days_until_expiry_none_for_equity():
 def test_days_until_expiry_mcx_uses_2330_close():
     # CRUDEOILM expiry — MCX trades till 23:30 so an option expiring
     # today has more time-to-expiry than an NFO option at the same
-    # wall-clock time.
+    # wall-clock time. MCX commodity monthlies expire on the last
+    # FRIDAY of the contract month (per MCX rule revision), not the
+    # equity 'last Thursday' convention.
     row = {"tradingsymbol": "CRUDEOILM25MAY5500CE", "exchange": "MCX"}
-    # 29 May 2025 — last Thursday of May 2025. At 12:00 UTC = 17:30 IST,
+    # 30 May 2025 — last Friday of May 2025. At 12:00 UTC = 17:30 IST,
     # 6 hours to the 23:30 IST MCX close → days_to_expiry ≈ 0.25.
-    ctx = _ctx(now=datetime(2025, 5, 29, 12, 0, tzinfo=timezone.utc))
+    ctx = _ctx(now=datetime(2025, 5, 30, 12, 0, tzinfo=timezone.utc))
     d = grammar._metric_days_until_expiry(ctx, row)
     assert d is not None and 0.2 < d < 0.3
 

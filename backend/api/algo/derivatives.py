@@ -87,7 +87,7 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
         try:
             month  = _MONTH_BY_CODE_LONG[mon]
             year   = 2000 + int(yy)
-            expiry = _last_thursday(year, month)
+            expiry = _monthly_expiry(und, year, month)
             return {"kind": "opt", "underlying": und,
                     "opt_type": opt, "strike": float(strike),
                     "expiry": expiry}
@@ -114,7 +114,7 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
         try:
             month  = _MONTH_BY_CODE_LONG[mon]
             year   = 2000 + int(yy)
-            expiry = _last_thursday(year, month)
+            expiry = _monthly_expiry(und, year, month)
             return {"kind": "fut", "underlying": und, "expiry": expiry}
         except Exception:
             pass
@@ -122,19 +122,40 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
     return None
 
 
-def _last_thursday(year: int, month: int) -> date:
-    """Last Thursday of the given month — Kite's monthly expiry day."""
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Last date in (year, month) whose weekday() == `weekday`."""
     if month == 12:
         first_next = date(year + 1, 1, 1)
     else:
         first_next = date(year, month + 1, 1)
-    # Walk back from the first of next month
+    from datetime import timedelta
     d = first_next
     while True:
-        from datetime import timedelta
         d = d - timedelta(days=1)
-        if d.weekday() == 3:   # Thursday
+        if d.weekday() == weekday:
             return d
+
+
+def _last_thursday(year: int, month: int) -> date:
+    """Last Thursday of the given month — NSE/NFO equity options monthly expiry."""
+    return _last_weekday(year, month, 3)
+
+
+def _last_friday(year: int, month: int) -> date:
+    """Last Friday of the given month — MCX commodity options monthly expiry.
+    Used by GOLDM / GOLD / SILVER / CRUDEOIL / etc — the exchange shifted off
+    the equity 'last Thursday' convention some time back so equity-style fallback
+    over-estimated MCX DTE by ~1-3 weeks."""
+    return _last_weekday(year, month, 4)
+
+
+def _monthly_expiry(underlying: str, year: int, month: int) -> date:
+    """Pick the monthly-expiry day appropriate for the underlying's exchange.
+    MCX commodities (GOLDM, CRUDEOIL, SILVER, etc.) → last Friday.
+    Everything else (NSE/NFO equity) → last Thursday."""
+    return (_last_friday(year, month)
+            if is_mcx_underlying(underlying)
+            else _last_thursday(year, month))
 
 
 def days_to_expiry(expiry: date, *, ref: Optional[datetime] = None,
@@ -266,12 +287,17 @@ _INDEX_LTP_KEY = {
 # the matching monthly futures contract on MCX, so we re-route the spot
 # lookup to the futures quote.
 _MCX_COMMODITIES = frozenset({
-    "CRUDEOIL", "CRUDEOILM", "NATURALGAS", "NATGASMINI",
+    # Energy
+    "CRUDEOIL", "CRUDEOILM", "NATURALGAS", "NATGASMINI", "NATURALGASM",
+    # Bullion
     "GOLD", "GOLDM", "GOLDMINI", "GOLDPETAL", "GOLDGUINEA",
-    "SILVER", "SILVERM", "SILVERMINI", "SILVERMIC",
-    "COPPER", "ZINC", "ZINCMINI", "LEAD", "LEADMINI",
-    "ALUMINIUM", "ALUMINI", "NICKEL",
+    "SILVER", "SILVERM", "SILVERMINI", "SILVERMIC", "SILVERMICRO",
+    # Base metals
+    "COPPER", "COPPERM", "ZINC", "ZINCMINI", "LEAD", "LEADMINI",
+    "ALUMINIUM", "ALUMINI", "ALUMINIUMMINI", "NICKEL",
+    # Agri
     "MENTHAOIL", "COTTON", "CASTORSEED", "KAPAS", "CARDAMOM",
+    "CPO", "RBDPMOLEIN",
 })
 
 

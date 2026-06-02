@@ -712,12 +712,14 @@ async def _resolve_spot(underlying: str, override: Optional[float],
 def _leg_expiry_iso(leg, parsed: dict) -> str:
     """Pick the most authoritative expiry for a strategy leg. The
     frontend ships Kite's actual `expiry` field from its instruments
-    cache (per-contract), which is correct for every exchange — most
-    importantly MCX commodities, where the symbol parser's "last
-    Thursday" inference is wrong (GOLDM expires on the 5th of the
-    contract month, CRUDEOIL on the 19th-20th, etc.). When the
+    cache (per-contract), which is correct for every exchange. When the
     frontend hasn't supplied an override, fall back to the parsed
-    symbol's expiry."""
+    symbol's expiry — the parser uses last-Thursday-of-month for NSE/NFO
+    equity options and last-Friday-of-month for MCX commodity options
+    (GOLDM, GOLD, SILVER, CRUDEOIL, etc.). The Kite override stays the
+    authoritative source whenever it's present so the small parser
+    fallback set doesn't have to track every per-commodity MCX rule
+    revision."""
     if leg.expiry:
         try:
             # Validate ISO format; raises on garbage so the parser
