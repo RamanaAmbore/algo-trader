@@ -1178,6 +1178,16 @@
     border-top: 1px solid rgba(251,191,36,0.2);
     border-bottom: 1px solid rgba(251,191,36,0.2);
     box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+    /* Cap the drawer height so a many-item nav (Monitor + Analyze +
+       Modes + Build + Config + 30+ entries) doesn't extend past the
+       viewport with the last items unreachable. The trailing
+       padding-bottom adds a safe area inset so the last item clears
+       the iOS home indicator. */
+    max-height: calc(100dvh - 3rem - 1rem);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding-bottom: calc(env(safe-area-inset-bottom, 0.5rem) + 0.5rem);
   }
   .algo-mobile-item {
     display: block;

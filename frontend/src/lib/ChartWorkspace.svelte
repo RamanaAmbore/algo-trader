@@ -24,6 +24,8 @@
     fetchPaperStatus,
     fetchStrategyAnalytics,
     fetchChartSymbols,
+    fetchWatchlists,
+    fetchWatchlist,
   } from '$lib/api';
   import {
     loadInstruments, searchByPrefix, suggestUnderlyings,
@@ -122,10 +124,51 @@
 
   // Pinned-symbols Select — dedicated dropdown so the operator can
   // load NIFTY 50 / GOLD / SILVER / CRUDEOIL etc. without typing the
-  // 3-char threshold through the symbol search.
+  // 3-char threshold through the symbol search. Hydrated from the
+  // operator's actual pinned watchlists (is_pinned=true) on /pulse so
+  // every Markets / Default symbol the operator has curated reaches
+  // this picker — DEFAULT_PINS only seeds the list when the watchlist
+  // API hasn't responded yet or the operator has no pinned lists.
   /** @type {Array<{value:string,label:string}>} */
-  const _PIN_OPTS = DEFAULT_PINS.map(p => ({ value: p, label: p }));
+  let _PIN_OPTS = $state(DEFAULT_PINS.map(p => ({ value: p, label: p })));
   let _pinnedValue = $state('');
+
+  async function _hydratePins() {
+    try {
+      const lists = await fetchWatchlists();
+      const rows  = Array.isArray(lists) ? lists : (lists?.watchlists ?? []);
+      const pinned = rows.filter(w => w?.is_pinned);
+      if (!pinned.length) return;
+      // Fetch each pinned list in parallel; merge + dedupe symbols.
+      const details = await Promise.all(pinned.map(w =>
+        fetchWatchlist(w.id).catch(() => null)
+      ));
+      const symbols = new Set();
+      for (const d of details) {
+        const items = d?.items || [];
+        for (const it of items) {
+          const sym = String(it?.tradingsymbol || '').trim();
+          if (sym) symbols.add(sym);
+        }
+      }
+      // Keep DEFAULT_PINS at the top (preserves the curated index +
+      // commodity order from the seed list), then append every other
+      // pinned symbol the operator has added.
+      const out = [];
+      const seen = new Set();
+      for (const p of DEFAULT_PINS) {
+        if (symbols.has(p)) { out.push({ value: p, label: p }); seen.add(p); }
+      }
+      for (const s of symbols) {
+        if (!seen.has(s)) { out.push({ value: s, label: s }); seen.add(s); }
+      }
+      // Always include DEFAULT_PINS at the top even if the pinned list
+      // doesn't have them — keeps NIFTY / SENSEX / GOLD reachable for
+      // every operator, even before they've populated Markets.
+      const missing = DEFAULT_PINS.filter(p => !seen.has(p));
+      _PIN_OPTS = [...missing.map(p => ({ value: p, label: p })), ...out];
+    } catch (_) { /* leave seeded DEFAULT_PINS in place */ }
+  }
 
   /** Pick from the Pinned dropdown — resolves to tradeable + loads. */
   function _onPickPin(/** @type {string} */ pin) {
@@ -850,6 +893,10 @@
 
   onMount(async () => {
     await loadInstruments().catch(() => {});
+    // Pin hydration runs in the background — don't block the historical
+    // load. Operator can use DEFAULT_PINS immediately; the full list
+    // swaps in once the watchlist API responds (typically <300ms).
+    _hydratePins();
     await _loadHistorical();
     if (!_isDemo) {
       await _pollStatus();
