@@ -95,13 +95,16 @@
       link: { href: '/orders', label: 'Open Orders' },
     },
     {
-      title: 'Unified card UX + connection health on every Refresh',
+      title: 'Unified card UX + page-header modal trio + connection health',
       tag: 'Operator UX',
       color: '#22d3ee',
-      body: 'Every card across every page speaks one UX language — Collapse / Default / Fullscreen sit top-right in the same cyan-400 trio, refresh affordances bake into the same icon family, and a connection-status badge on every Refresh button shows broker-account health at-a-glance from any page. One mental model, twelve cards, four pages.',
+      body: 'Every card across every page speaks one UX language — Collapse / Default / Fullscreen sit top-right in the same cyan-400 trio, refresh affordances bake into the same icon family, a connection-status badge on every Refresh button shows broker-account health at-a-glance, and a page-header trio (Orders / Charts / Activity) opens canonical modals at the same viewport position regardless of which page launched them. One mental model, every surface.',
       bullets: [
         'Default-mode trio: Collapse → Default → Fullscreen (DefaultSize hidden when not maximized)',
         'Fullscreen mode reverses to Refresh + Default — Collapse is hidden, OrderNotif + AgentNotif bells lift to viewport top-right',
+        'Page-header Orders / Charts / Activity modals share one frame (.canonical-modal-overlay/-panel) — same position, same close affordance, same Esc behaviour',
+        'Activity modal reuses the same 6-tab log surface (Orders / Agents / Terminal / Ticks / System / News) the Order-modal bottom panel and /console + /agents pages mount — single LogPanel, every callsite',
+        'Symbol anchors auto-resolve to the tradeable contract (NIFTY 50 → NIFTY26JUNFUT, CRUDEOIL → CRUDEOILM26JUNFUT) so chart + order modals open with the real future / option, not the spot key',
         'Connection badge on Refresh: green (all broker accounts loaded), amber (partial), red (none) — single 15 s global poll, every Refresh icon subscribes',
         'Charts scale to viewport in fullscreen mode (OptionsPayoff, PriceChart, dashboard equity curve)',
       ],
