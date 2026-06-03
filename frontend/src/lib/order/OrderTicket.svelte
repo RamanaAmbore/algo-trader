@@ -326,6 +326,20 @@
     return symbol;
   });
 
+  // Resolve the exchange via the instruments cache. The order modal's
+  // OrderDepth poll needs `?exchange=…` to hit the right Kite quote
+  // endpoint — MCX commodities need exchange=MCX, NSE F&O needs NFO,
+  // etc. Caller-supplied exchange wins; otherwise read the resolved
+  // tradingsymbol's exchange from the instruments cache. Falls back to
+  // NFO (existing OrderDepth default) when no resolution is possible.
+  const _resolvedExchange = $derived.by(() => {
+    if (exchange) return exchange;
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    if (!sym) return '';
+    const inst = getInstrument(sym);
+    return inst?.e || '';
+  });
+
   // Default product based on instrument when caller didn't specify.
   const productVal = $derived(product ?? (isEquity ? 'CNC' : 'NRML'));
   const productOptions = $derived(isEquity
@@ -1328,8 +1342,17 @@
          ticket can keep the limit price aligned with the marketable
          side (BUY → top ask, SELL → top bid). Operator edits to the
          price field freeze the auto-fill until they hit the ↺ button
-         next to the field label. -->
-    <OrderDepth {symbol} {exchange} {refreshKey} onQuote={onDepthQuote} />
+         next to the field label.
+         Passes the RESOLVED tradeable symbol (e.g. CRUDEOILM26JUNFUT)
+         + RESOLVED exchange (e.g. MCX) so the /api/quote poll lands on
+         the right broker endpoint. Without this, the depth ladder
+         would stay frozen for any bare-underlying pre-fill (CRUDEOIL,
+         NIFTY, etc.) since the raw root isn't a quotable contract. -->
+    <OrderDepth
+      symbol={_resolvedSymbol || symbol}
+      exchange={_resolvedExchange || exchange || 'NFO'}
+      {refreshKey}
+      onQuote={onDepthQuote} />
 
     <!-- Mode selector + chase — only relevant when *placing* a new
          order. action='modify' bypasses the place-pipeline entirely
