@@ -161,10 +161,13 @@
 </button>
 
 <style>
-  /* Sky-blue (sky-400 #38bdf8) palette — distinct from the chart-icon
-     cyan-400 (#22d3ee) the operator clicks next to Refresh in every
-     page header. Same "blue family" semantically (live-data accent)
-     but visually separable so the operator never confuses the two.
+  /* Emerald (emerald-400 #34d399) palette — clearly distinct from the
+     chart-icon cyan-400 (#22d3ee) and the rest of the page-header
+     trio (Order amber, Chart cyan, Log violet). Green semantically
+     reads as "refresh / fetch / go" — the same convention IBKR TWS
+     and NinjaTrader use for their reload affordance. Earlier sky-blue
+     attempt was still too close to cyan; emerald sits in its own hue
+     family so the operator never confuses the two icons.
      Card-control trio (Collapse / Fullscreen / DefaultSize) keeps cyan
      since they're scoped to card headers, not the page-header strip. */
   .rf-btn {
@@ -176,22 +179,22 @@
     height: 1.6rem;
     padding: 0;
     margin: 0;
-    background: rgba(56, 189, 248, 0.14);
-    border: 1px solid rgba(56, 189, 248, 0.55);
+    background: rgba(52, 211, 153, 0.14);
+    border: 1px solid rgba(52, 211, 153, 0.55);
     border-radius: 3px;
-    color: #38bdf8;
+    color: #34d399;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     overflow: visible;
   }
   .rf-btn:hover:not(:disabled) {
-    background: rgba(56, 189, 248, 0.26);
-    border-color: rgba(56, 189, 248, 0.85);
-    color: #7dd3fc;
+    background: rgba(52, 211, 153, 0.26);
+    border-color: rgba(52, 211, 153, 0.85);
+    color: #6ee7b7;
   }
   .rf-btn:focus-visible {
-    outline: 2px solid rgba(56, 189, 248, 0.65);
+    outline: 2px solid rgba(52, 211, 153, 0.65);
     outline-offset: 1px;
   }
   .rf-btn:disabled {
