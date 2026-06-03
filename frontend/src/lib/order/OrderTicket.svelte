@@ -197,6 +197,16 @@
     if (/CE$/.test(s)) return 'CE';
     if (/PE$/.test(s)) return 'PE';
     if (/FUT$/.test(s)) return 'FUT';
+    // Check the instruments cache: if the symbol is a known equity
+    // row (RELIANCE / INFY / TCS etc.), force EQ regardless of the
+    // picker row's Type filter intent. Operator who scoped Type=OPT
+    // and then picked an equity by accident gets EQ behaviour, not
+    // option-mode with a missing strike. (Operator: "lots does not
+    // get updated as qty as it was a stock".)
+    if (s) {
+      const inst = getInstrument(s);
+      if (inst?.t === 'EQ') return 'EQ';
+    }
     if (symType === 'OPT') return _pickedOptType || 'CE';
     if (symType === 'FUT') return 'FUT';
     return 'EQ';
@@ -362,13 +372,17 @@
   // strike + CE → resolved = NIFTY26JUN22000CE — but _lotSize stays
   // at whatever was passed in via the prop (often 0 because the
   // caller didn't know the lot yet). Pulls from the instruments cache.
-  // Skips equity: equity rows often carry ls=1 in the cache which
-  // would force the ticket into the lots-stepper layout — equity
-  // wants the bare Qty input.
   $effect(() => {
     const r = _resolvedSymbol;
     if (!r || typeof r !== 'string') return;
-    if (isEquity) return;
+    // Equity: force lot=0 so the template renders the bare Qty input.
+    // Without this, _lotSize would retain whatever the previous F&O
+    // pick set it to (e.g. 75 from NIFTY → 1500 from BANKNIFTY) and
+    // the operator would see Lots even after picking an equity.
+    if (isEquity) {
+      if (_lotSize !== 0) untrack(() => { _lotSize = 0; });
+      return;
+    }
     const inst = getInstrument(r.toUpperCase());
     const ls = Number(inst?.ls) || 0;
     if (ls > 0 && ls !== _lotSize) {

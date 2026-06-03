@@ -875,16 +875,16 @@
          duplicated the modal header's. /console keeps its own
          command-line surface for shell-style usage. -->
     <div class="oes-body">
-      {#if _activeTab === 'ticket'}
-        <!-- OrderTicket renders its own overlay/modal chrome; inside
-             the shell we only want the body. We render it without the
-             outer overlay by mounting it directly — the shell provides
-             the modal chrome above, so we suppress OrderTicket's own
-             overlay by setting a container class that strips position:fixed. -->
-        <div class="oes-ticket-body">
+      <!-- OrderTicket is ALWAYS MOUNTED so its margin-preflight $effect
+           keeps computing in the background. When the Chain tab is
+           active, we hide the ticket body via CSS rather than
+           {#if}-unmounting it — otherwise the margin strip in the
+           common action footer goes stale on tab switch (operator:
+           "margin details are not common for both tabs"). -->
+      <div class="oes-ticket-body" hidden={_activeTab !== 'ticket'}>
           <OrderTicket
             symbol={_ticketProps.symbol || _localSymbol}
-            exchange={_ticketProps.exchange ?? exchange}
+            exchange={_ticketProps.exchange ?? _pickedExchange ?? exchange}
             side={_ticketProps.side ?? (showCommonActions && !inline ? _modalSide : side)}
             action={_ticketProps.action ?? action}
             qty={_ticketProps.qty ?? qty}
@@ -913,9 +913,9 @@
             onMarginUpdate={showCommonActions && !inline ? _onMarginUpdate : null}
             {onSubmit}
             {onClose} />
-        </div>
+      </div>
 
-      {:else if _activeTab === 'chain'}
+      {#if _activeTab === 'chain'}
         <!-- OptionChainTab's own basket state is migrated to the shell.
              The tab receives the shared basket as props and calls back
              into the shell to mutate it. Its own placeBasket is unused

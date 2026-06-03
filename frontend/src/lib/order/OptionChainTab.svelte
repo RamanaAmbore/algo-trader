@@ -186,7 +186,19 @@
     return all.filter(f => String(f.x || '').slice(0, 7) === ym);
   });
 
-  // Auto-default underlying + expiry once instruments are ready.
+  // Sync chainUnderlying from the symbol prop. When the operator
+  // picks a new symbol via the modal's picker row, seedUnderlying
+  // updates — without this effect, chainUnderlying stays on whatever
+  // it last defaulted to and the chain shows the wrong instrument.
+  // untrack on chainUnderlying so this isn't a self-firing loop.
+  $effect(() => {
+    const seed = seedUnderlying;
+    if (!seed) return;
+    if (seed !== untrack(() => chainUnderlying)) chainUnderlying = seed;
+  });
+
+  // Auto-default underlying once instruments are ready (when the
+  // operator hasn't supplied one via the symbol prop).
   $effect(() => {
     const list = underlyingChoices;
     untrack(() => {
