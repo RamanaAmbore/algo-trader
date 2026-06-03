@@ -735,19 +735,11 @@
         </svg>
       </button>
       {/if}
-      {#if onAddToWatchlist}
-        <!-- +W (add to watchlist) — visible only when the caller
-             wired the callback. Callers that already have the symbol
-             on a tracked surface (Performance row click, etc.) omit
-             this prop so the button hides automatically. -->
-        <button type="button" class="oes-wl-add"
-                disabled={_wlInFlight}
-                title={`Add ${symbol} to watchlist`}
-                aria-label={`Add ${symbol} to watchlist`}
-                onclick={_addToWatchlist}>
-          ★ +W
-        </button>
-      {/if}
+      <!-- ★ +W (add to watchlist) button removed per operator request.
+           The onAddToWatchlist prop is kept for back-compat — callers
+           still pass it (MarketPulse, /admin/options) but it no
+           longer surfaces a visible button in the modal header.
+           Operators add to watchlist directly from /pulse. -->
       {#if _wlToast}
         <span class="oes-wl-toast" class:ok={_wlToast.ok} class:err={!_wlToast.ok}>
           {_wlToast.msg}
@@ -1176,7 +1168,8 @@
   }
   /* Push the close button to the right edge regardless of how many
      header chips render. */
-  .oes-close { margin-left: auto; }
+  /* .oes-close margin handled by its main rule below — auto-pushed to
+     the right edge of the header by chart-button's flex parent. */
 
   /* +W (add to watchlist) — outlined champagne button, sits between
      the price chips and the close button. Visible only when the
@@ -1202,7 +1195,7 @@
   .oes-wl-add:disabled { opacity: 0.55; cursor: wait; }
   /* When +W is rendered, the close button no longer needs to push
      itself; +W has margin-left:auto and close sits next to it. */
-  .oes-wl-add ~ .oes-close { margin-left: 0.35rem; }
+  /* .oes-wl-add ~ .oes-close adjacency rule retired with the +W button. */
   /* Brief success/error flash next to the +W button after a click. */
   .oes-wl-toast {
     padding: 0.18rem 0.45rem;
@@ -1243,10 +1236,17 @@
     opacity: 0.38;
     cursor: not-allowed;
   }
+  /* Close button — matches ChartModal's .cm-close palette (red border
+     + red text) so the operator sees the same close affordance across
+     every modal. Top-right of the header, 1.8rem square, font-size
+     1.1rem so the × glyph reads from a quick glance. */
   .oes-close {
-    background: transparent;
-    border: 1px solid rgba(255,255,255,0.15);
-    color: #c8d8f0;
+    /* Push to the right edge of the header. The wl-toast (if shown)
+       gets squeezed against the close button — same as before. */
+    margin-left: auto;
+    background: none;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    color: #f87171;
     width: 1.8rem;
     height: 1.8rem;
     border-radius: 3px;
@@ -1256,13 +1256,16 @@
     z-index: 2;
     flex-shrink: 0;
     cursor: pointer;
-    font-size: 1rem;
+    font-family: monospace;
+    font-size: 1.1rem;
     line-height: 1;
+    padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    transition: background 0.1s;
   }
-  .oes-close:hover { border-color: #f87171; color: #f87171; }
+  .oes-close:hover { background: rgba(248, 113, 113, 0.15); }
 
   /* Tab strip — bottom-border underline active tab; each tab has its own
      accent colour via inline style (applied from the TABS metadata).     */

@@ -177,7 +177,6 @@
     account=""
     defaultMode="paper"
     availableModes={_effectiveModes}
-    showChartButton={false}
     onClose={() => { _orderOpen = false; }}
     onSubmit={() => { _orderOpen = false; }}
   />
