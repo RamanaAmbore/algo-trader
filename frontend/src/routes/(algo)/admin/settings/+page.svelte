@@ -10,8 +10,38 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
-  import { fetchSettings, updateSetting, resetSetting } from '$lib/api';
+  import { fetchSettings, updateSetting, resetSetting, fetchWatchlists } from '$lib/api';
   import Select   from '$lib/Select.svelte';
+
+  // Pinned-watchlist symbols feed the orders.default_symbol dropdown
+  // (operator request: "When you update in settings it should show the
+  // drop down from pinned symbols"). Loaded lazily on mount; falls back
+  // to a free-text input when the fetch fails (anonymous demo, network).
+  /** @type {Array<{value:string, label:string}>} */
+  let _pinnedOptions = $state([]);
+  async function _loadPinnedSymbols() {
+    try {
+      const lists = await fetchWatchlists();
+      const arr = Array.isArray(lists) ? lists : (lists?.watchlists || []);
+      /** @type {Set<string>} */
+      const seen = new Set();
+      /** @type {Array<{value:string, label:string}>} */
+      const out = [];
+      for (const wl of arr) {
+        // Only pinned lists (Default + Markets) — operator-created
+        // lists are excluded since they aren't necessarily "trading
+        // candidates" the operator wants the modal to default to.
+        if (!wl?.is_pinned) continue;
+        for (const it of (wl.items || [])) {
+          const sym = String(it?.tradingsymbol || '').trim();
+          if (!sym || seen.has(sym)) continue;
+          seen.add(sym);
+          out.push({ value: sym, label: `${sym}${it.exchange ? ` · ${it.exchange}` : ''}` });
+        }
+      }
+      _pinnedOptions = out;
+    } catch (_) { _pinnedOptions = []; }
+  }
 
   /** @type {Array<{id:number, category:string, key:string, value_type:string,
    *                value:string, default_value:string, description:string,
@@ -112,6 +142,7 @@
     const r = $authStore.user?.role;
     if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
     load();
+    _loadPinnedSymbols();
   });
 </script>
 
@@ -211,6 +242,20 @@
                       value={String(currentValue(s))}
                       onValueChange={(/** @type {any} */ v) => onEdit(s, v)}
                       options={(s.schema?.enum || []).map((/** @type {string} */ opt) => ({ value: opt, label: opt }))} />
+                  </div>
+                {:else if s.key === 'orders.default_symbol' && _pinnedOptions.length}
+                  <!-- Operator request: "When you update in settings it
+                       should show the drop down from pinned symbols".
+                       Pinned-watchlist items (Default + Markets) feed
+                       the dropdown; the stored value stays a string so
+                       the modal's resolveUnderlying() can map it to a
+                       tradeable contract. Falls back to a free-text
+                       input below when the watchlist fetch failed. -->
+                  <div class="flex-1">
+                    <Select ariaLabel={s.key}
+                      value={String(currentValue(s))}
+                      onValueChange={(/** @type {any} */ v) => onEdit(s, v)}
+                      options={_pinnedOptions} />
                   </div>
                 {:else if s.value_type === 'int' || s.value_type === 'float'}
                   <input type="number"
