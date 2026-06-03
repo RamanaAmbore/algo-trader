@@ -735,13 +735,12 @@
          symbol picker (typically inside a parent card header) so we
          skip the strip here entirely. -->
     {#if !headerless}
+    <!-- Minimal header — Orders title + close. Symbol + Account
+         pickers moved INTO the tabs that need them (Ticket has its
+         own; Chain derives from the picked underlying via the symbol
+         passed from context). Matches the Charts / Activity modal
+         header shape (icon + name + close X — nothing else). -->
     <div class="oes-header">
-      <!-- Modal-name chip — matches the "Charts" / "Activity" headings
-           on the sibling modals so the operator reads "Orders" at the
-           same position regardless of which icon they opened. Plural
-           matches the /orders page route name. Leading icon mirrors
-           the page-header Order button glyph (+) so the title reads
-           as the same surface the operator clicked to open it. -->
       <span class="oes-modal-name">
         <svg class="oes-modal-name-icon" width="12" height="12" viewBox="0 0 16 16"
              fill="none" stroke="currentColor" stroke-width="2.2"
@@ -750,72 +749,6 @@
         </svg>
         Orders
       </span>
-      <!-- Symbol combo — same SymbolSearchInput component the chart
-           workspace uses. Pinned anchors (NIFTY 50 / GOLD / CRUDEOIL
-           etc.) appear at the top of the dropdown; live search
-           results follow. Pin labels show the resolved tradeable
-           contract (NIFTY 50 → NIFTY26JUNFUT). -->
-      <div class="oes-sym-pick">
-        <SymbolSearchInput
-          value={_localSymbol}
-          pins={_PIN_LABELS}
-          resolvePin={(label) => label}
-          placeholder="Symbol — pick or type 3+"
-          onPick={(sym, meta) => {
-            if (meta?.pinLabel) {
-              const anchor = _LABEL_TO_ANCHOR[meta.pinLabel] || meta.pinLabel;
-              const r = resolveUnderlying(String(anchor).toUpperCase(), findNearestFuture);
-              if (r?.tradingsymbol) {
-                _localSymbol = r.tradingsymbol;
-                _pickedExchange = r.exchange || '';
-                onSymbolChange?.(r.tradingsymbol);
-              }
-            } else {
-              _localSymbol = sym;
-              if (meta?.exchange) _pickedExchange = meta.exchange;
-              onSymbolChange?.(sym);
-            }
-          }}
-          ariaLabel="Symbol — pinned or search" />
-      </div>
-      <!-- Account dropdown — placeholder "Account" doubles as its
-           label (operator feedback: "change account drop down inside
-           label as account, if account is not clear from the
-           context"). Hidden when only one account is loaded since
-           there's no choice to surface. Hidden in headerless / inline
-           mode since the host renders its own picker. -->
-      {#if !headerless && _modalAccounts.length > 1}
-        <div class="oes-account-pick">
-          <Select
-            options={_modalAccounts.map(a => ({ value: a, label: a }))}
-            value={_sharedAccount}
-            onValueChange={(v) => _onAccountChange(String(v))}
-            placeholder="Account"
-            ariaLabel="Trading account" />
-        </div>
-      {:else if !headerless && _modalAccounts.length === 1 && _sharedAccount}
-        <span class="oes-account-single" title="Single broker account">{_sharedAccount}</span>
-      {/if}
-      {#if exchange || _pickedExchange}<span class="oes-exch">{exchange || _pickedExchange}</span>{/if}
-      <!-- Chart-icon button — opens ChartModal for the current symbol.
-           Cyan-400 palette matching the card-control trio. Disabled
-           when no symbol is picked. -->
-      {#if showChartButton}
-      <button type="button" class="oes-chart-btn"
-              disabled={!_localSymbol}
-              title={_localSymbol ? `Open chart for ${_localSymbol}` : 'Pick a symbol first'}
-              aria-label={_localSymbol ? `Open chart for ${_localSymbol}` : 'Open chart'}
-              onclick={() => _chartModalOpen = true}>
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
-      {/if}
-      <!-- ★ +W (add to watchlist) button removed per operator request.
-           The onAddToWatchlist prop is kept for back-compat — callers
-           still pass it (MarketPulse, /admin/options) but it no
-           longer surfaces a visible button in the modal header.
-           Operators add to watchlist directly from /pulse. -->
       {#if _wlToast}
         <span class="oes-wl-toast" class:ok={_wlToast.ok} class:err={!_wlToast.ok}>
           {_wlToast.msg}
@@ -899,7 +832,7 @@
             currentQty={_ticketProps.currentQty ?? currentQty}
             onAddToBasket={addToBasket}
             basketMode={basketMode}
-            accountHidden={headerless}
+            accountHidden={headerless || inline}
             actionsHidden={actionsHidden || showCommonActions}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
@@ -938,22 +871,6 @@
 
       {/if}
 
-      <!-- Bottom panel — the canonical 6-tab activity surface (Orders ·
-           Agents · Terminal · Ticks · System · News). Lives INSIDE
-           .oes-body so it scrolls with the active tab content
-           (attached to the orders area) rather than floating below the
-           shell-level basket footer. Suppressed when the host renders
-           the activity in a separate surface via `hideBottomPanel`. -->
-      {#if !hideBottomPanel}
-      <div class="oes-bottom-panel">
-        <div class="oes-bottom-body">
-          <LogPanel
-            heightClass="oes-bottom-scroll"
-            defaultTab="order"
-          />
-        </div>
-      </div>
-      {/if}
     </div>
 
     <!-- Shell-level basket bar — visible from any tab when legs exist.
@@ -1061,6 +978,22 @@
           onclick={_modalFireSubmit}>
           Place {_modalSide.toLowerCase()}
         </button>
+      </div>
+    {/if}
+
+    <!-- Activity panel — canonical 6-tab LogPanel (Orders · Agents ·
+         Terminal · Ticks · System · News). Placed BELOW the common
+         action footer per operator request ("move the order placement
+         above the activity"). Suppressed when the host renders the
+         activity in a separate surface via `hideBottomPanel`. -->
+    {#if !hideBottomPanel}
+      <div class="oes-bottom-panel">
+        <div class="oes-bottom-body">
+          <LogPanel
+            heightClass="oes-bottom-scroll"
+            defaultTab="order"
+          />
+        </div>
       </div>
     {/if}
 
