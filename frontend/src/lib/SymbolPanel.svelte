@@ -912,15 +912,16 @@
          header shape (icon + name + close X — nothing else). -->
     <div class="oes-header">
       <span class="oes-modal-name">
-        <!-- Bidirectional arrow glyph matches the page-header Order
-             button (PageHeaderActions). "+" didn't communicate the
-             short-order path; this pair reads as "trade either
-             direction" — same B/S convention every desk uses. -->
+        <!-- Order-slip / receipt glyph — matches the page-header Order
+             button (PageHeaderActions). Rectangle with order lines
+             inside reads as "order entry form" without the directional
+             confusion the prior dual-arrow caused (operator: read as a
+             refresh icon). -->
         <svg class="oes-modal-name-icon" width="13" height="13" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.7"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M5 13V3M2.5 5.5L5 3l2.5 2.5" />
-          <path d="M11 3v10M8.5 10.5L11 13l2.5-2.5" />
+             fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" aria-hidden="true">
+          <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
+          <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
         </svg>
         Orders
       </span>

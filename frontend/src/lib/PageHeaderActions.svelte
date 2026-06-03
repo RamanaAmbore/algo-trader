@@ -124,17 +124,17 @@
             onclick={_openOrder}
             title="Orders{symbol ? ` — ${symbol}` : ''}"
             aria-label="Open Orders">
-      <!-- Bidirectional arrow glyph — communicates "trade in either
-           direction" (buy OR sell). The "+" plus didn't signal short
-           orders; this pair of arrows mirrors the Bloomberg / Streak
-           B/S convention without committing to either side. -->
+      <!-- Order-slip / receipt glyph — a small rectangle with order
+           lines inside. Reads as "open the order entry form" without
+           the directional + the prior dual-arrow had (operator said
+           that read as a refresh icon). Same family as the canonical
+           "form / document" icons used by IBKR TWS and Sensibull. -->
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <!-- Up arrow on left -->
-        <path d="M5 13V3M2.5 5.5L5 3l2.5 2.5" stroke="currentColor" stroke-width="1.7"
-              stroke-linecap="round" stroke-linejoin="round"/>
-        <!-- Down arrow on right -->
-        <path d="M11 3v10M8.5 10.5L11 13l2.5-2.5" stroke="currentColor" stroke-width="1.7"
-              stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="3.2" y="2" width="9.6" height="12" rx="1.2"
+              stroke="currentColor" stroke-width="1.5"/>
+        <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"
+              stroke="currentColor" stroke-width="1.4"
+              stroke-linecap="round"/>
       </svg>
     </button>
   {/if}
