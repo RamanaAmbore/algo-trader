@@ -265,10 +265,18 @@
       // way as its neighbours.
       return `<span class="log-ts log-ts-empty">—</span>`;
     }
+    // Kite's broker order_timestamp uses "YYYY-MM-DD HH:MM:SS" (IST,
+    // no T separator, no Z suffix). Normalise the space to T + tag
+    // as IST so the resulting Date instance is in the correct zone.
+    // The existing ISO path with T / Z is unchanged.
     const d = input instanceof Date
       ? input
       : (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}/.test(input))
-        ? new Date(input.includes('T') || input.includes('Z') ? input : input + 'Z')
+        ? new Date(
+            input.includes('T') || input.includes('Z')
+              ? input
+              : input.replace(' ', 'T') + '+05:30'
+          )
         : null;
     if (d && !isNaN(d.getTime())) {
       // Short dual-zone format for log rows — just the times, no date
@@ -410,7 +418,11 @@
   // order details — side, qty, symbol, price, account — on one line so
   // operators can scan placements the same way they'd read a broker blotter.
   function _orderRowHtml(o) {
-    const t    = _dualTsHtml(o.created_at);
+    // Live orders come from Kite (fetchOrders → broker rows) and carry
+    // `order_timestamp` rather than `created_at`. Algo / paper / sim
+    // rows carry `created_at`. Read whichever exists so LIVE rows in the
+    // Terminal tab don't lose their timestamp column.
+    const t    = _dualTsHtml(o.created_at || o.order_timestamp);
     const tag  = _modePill(o.mode);
     // Colour by terminal state first, then by side. FILLED = green,
     // UNFILLED = red, OPEN (still chasing) = amber, everything else
@@ -483,7 +495,10 @@
     // Order rows from the internal stream — the Terminal tab interleaves
     // operator commands with the order lifecycle they produced.
     const orderLines = (orderRows || []).map(o => ({
-      ts: _shortTime(o.created_at), html: _orderRowHtml(o),
+      // Same fallback as _orderRowHtml — broker (live) rows carry
+      // order_timestamp; algo/paper/sim rows carry created_at.
+      ts: _shortTime(o.created_at || o.order_timestamp),
+      html: _orderRowHtml(o),
     }));
     const agentLines = (agentLog || []).map(e => {
       const t = _dualTsHtml(e.timestamp);
