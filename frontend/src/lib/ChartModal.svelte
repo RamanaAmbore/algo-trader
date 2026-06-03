@@ -124,9 +124,10 @@
     align-items: center;
     gap: 0.35rem;
   }
-  /* Cyan-400 matches the page-header Chart button so the modal title
-     reads as the same surface the operator clicked to open it. */
-  .cm-title-icon { color: #67e8f9; flex-shrink: 0; }
+  /* Matches the page-header Chart button's resting colour (#22d3ee
+     = cyan-400) so the modal title icon is the exact same shade as
+     the button that opened it. */
+  .cm-title-icon { color: #22d3ee; flex-shrink: 0; }
 
   .cm-sym {
     color: #7dd3fc;

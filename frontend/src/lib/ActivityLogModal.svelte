@@ -126,9 +126,10 @@
     align-items: center;
     gap: 0.35rem;
   }
-  /* Violet-300 matches the page-header Activity button so the modal
-     title reads as the same surface the operator clicked to open it. */
-  .alm-title-icon { color: #c4b5fd; flex-shrink: 0; }
+  /* Matches the page-header Activity button's resting colour
+     (#a855f7 = violet-500) so the modal title icon is the exact same
+     shade as the button that opened it. */
+  .alm-title-icon { color: #a855f7; flex-shrink: 0; }
   .alm-close {
     margin-left: auto;
     width: 1.8rem;
