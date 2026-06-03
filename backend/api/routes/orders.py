@@ -1460,4 +1460,17 @@ class AccountsController(Controller):
             )
             for account in conn
         ]
-        return AccountsResponse(accounts=accounts)
+        # Default broker account is operator-configurable from
+        # /admin/settings (orders.default_account). When set + the
+        # account is loaded, the frontend SymbolPanel pre-selects it.
+        # Masked partners get an empty string back — the raw default
+        # code would leak the unmasked ID through this surface.
+        from backend.shared.helpers.settings import get_string
+        default_acct = "" if do_mask else get_string("orders.default_account", "")
+        # Only return the default if it's actually in the loaded set —
+        # otherwise the frontend would try to pre-select an account
+        # that doesn't exist (silent fail; operator sees the dropdown
+        # stay empty). Stale settings shouldn't break the UI.
+        if default_acct and default_acct not in conn:
+            default_acct = ""
+        return AccountsResponse(accounts=accounts, default_account=default_acct)

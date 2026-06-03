@@ -5,6 +5,7 @@
 import { fetchAccounts } from '$lib/api';
 
 let _accounts = null;
+let _defaultAccount = '';
 let _loadPromise = null;
 
 export async function loadAccounts() {
@@ -14,13 +15,23 @@ export async function loadAccounts() {
     try {
       const data = await fetchAccounts();
       _accounts = (data && data.accounts) || [];
+      _defaultAccount = String((data && data.default_account) || '');
     } catch (e) {
       _accounts = [];
+      _defaultAccount = '';
     }
     return _accounts;
   })();
   try { return await _loadPromise; }
   finally { _loadPromise = null; }
+}
+
+/** Operator-configured default broker account
+ *  (orders.default_account setting). Empty string when unset or when
+ *  the configured value isn't in the loaded set. Synchronous reader —
+ *  callers must have already loadAccounts()-ed. */
+export function getDefaultAccount() {
+  return _defaultAccount;
 }
 
 export function getAccountsSync() {

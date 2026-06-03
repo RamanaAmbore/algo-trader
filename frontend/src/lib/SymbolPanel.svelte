@@ -34,7 +34,7 @@
   import Select            from '$lib/Select.svelte';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { findNearestFuture } from '$lib/data/instruments';
-  import { loadAccounts } from '$lib/data/accounts';
+  import { loadAccounts, getDefaultAccount } from '$lib/data/accounts';
 
   // Pinned anchors shown at the top of the symbol combo's dropdown.
   // Same set as ChartWorkspace so the operator sees identical pinned
@@ -375,11 +375,18 @@
     try {
       const list = await loadAccounts();
       _modalAccounts = (list || []).map(a => String(a?.account_id || a?.account || a || '')).filter(Boolean);
-      // Auto-select when the list has exactly one entry AND no context-
-      // supplied account. Skip when host passed an account so we don't
-      // overwrite their pick.
-      if (!_sharedAccount && _modalAccounts.length === 1) {
-        _sharedAccount = _modalAccounts[0];
+      // Pre-select fall-through:
+      //   1. context-supplied account (host page passed it via prop)
+      //   2. orders.default_account setting (from /admin/settings)
+      //   3. sole loaded account when the list has exactly one entry
+      // Empty string when none of the above resolves.
+      if (!_sharedAccount) {
+        const defaultAcct = getDefaultAccount();
+        if (defaultAcct && _modalAccounts.includes(defaultAcct)) {
+          _sharedAccount = defaultAcct;
+        } else if (_modalAccounts.length === 1) {
+          _sharedAccount = _modalAccounts[0];
+        }
       }
     } catch { /* keep last-good */ }
   });

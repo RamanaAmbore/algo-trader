@@ -338,3 +338,8 @@ class AccountInfo(msgspec.Struct):
 
 class AccountsResponse(msgspec.Struct):
     accounts: list[AccountInfo]
+    # Operator-configured default broker account (orders.default_account).
+    # Empty string means "no default — auto-pick when only one account, else
+    # leave it to the operator". Frontend SymbolPanel reads this on mount
+    # to pre-select the Account dropdown.
+    default_account: str = ""
