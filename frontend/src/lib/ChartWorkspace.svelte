@@ -1049,45 +1049,54 @@
           }
         }}
         ariaLabel="Symbol — pinned or search" />
-
-      <!-- Chart type -->
-      <div class="cw-toolbar-select">
-        <Select
-          options={_CHART_TYPE_OPTS}
-          bind:value={_chartType}
-          ariaLabel="Chart type" />
-      </div>
-
-      <!-- Intraday tick stream — single toggle chip -->
-      <button type="button"
-        class="cw-range-btn cw-intraday-btn"
-        class:active={_intradayOn}
-        title={_intradayOn ? 'Intraday tick stream ON — click to turn off' : 'Intraday tick stream OFF — click to turn on'}
-        aria-pressed={_intradayOn}
-        onclick={() => _intradayOn = !_intradayOn}>
-        Intraday
-      </button>
-
-      <!-- Date range — segmented pill row (1D/1W/1M/3M/6M/1Y) -->
-      <div class="cw-range-group" role="group" aria-label="Date range">
-        {#each _RANGE_OPTS as opt}
-          <button type="button"
-            class="cw-range-btn"
-            class:active={_chartDays === opt.value}
-            title="Past {opt.label}"
-            onclick={() => _setRange(Number(opt.value))}>
-            {opt.label}
-          </button>
-        {/each}
-      </div>
-
-      <!-- Reset zoom action button — trailing edge, only when zoomed -->
-      {#if isZoomed}
-        <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
-                title="Reset zoom — show full range">Reset</button>
-      {/if}
     </div>
   {/if}
+
+  <!-- Chart controls row — chart type, intraday toggle, date range
+       (1D/1W/1M/3M/6M/1Y), reset zoom. Operator request: "keep chart
+       overlay with 1M 3M 6M 1Y row in charts model and page".
+       Pulled OUT of the compact gate so the interval pills stay
+       visible in every embed (modal, page, any future compact mount)
+       — operator's primary affordance for switching range is always
+       one click away. Overlays panel below mirrors this. -->
+  <div class="cw-controls">
+    <!-- Chart type -->
+    <div class="cw-toolbar-select">
+      <Select
+        options={_CHART_TYPE_OPTS}
+        bind:value={_chartType}
+        ariaLabel="Chart type" />
+    </div>
+
+    <!-- Intraday tick stream — single toggle chip -->
+    <button type="button"
+      class="cw-range-btn cw-intraday-btn"
+      class:active={_intradayOn}
+      title={_intradayOn ? 'Intraday tick stream ON — click to turn off' : 'Intraday tick stream OFF — click to turn on'}
+      aria-pressed={_intradayOn}
+      onclick={() => _intradayOn = !_intradayOn}>
+      Intraday
+    </button>
+
+    <!-- Date range — segmented pill row (1D/1W/1M/3M/6M/1Y) -->
+    <div class="cw-range-group" role="group" aria-label="Date range">
+      {#each _RANGE_OPTS as opt}
+        <button type="button"
+          class="cw-range-btn"
+          class:active={_chartDays === opt.value}
+          title="Past {opt.label}"
+          onclick={() => _setRange(Number(opt.value))}>
+          {opt.label}
+        </button>
+      {/each}
+    </div>
+
+    <!-- Reset zoom action button — trailing edge, only when zoomed -->
+    {#if isZoomed}
+      <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
+              title="Reset zoom — show full range">Reset</button>
+    {/if}
+  </div>
 
   <!-- Historical OHLCV chart — fills available height via flex -->
   <div class="cw-chart-container" bind:this={_chartContainerEl}>
@@ -1514,6 +1523,21 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 0.75rem 0.4rem;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+
+  /* Chart controls row (Type · Intraday · 1D/1W/1M/3M/6M/1Y · Reset).
+     Same layout family as .cw-picker but the row above it carries the
+     symbol search; this one always renders, hosted outside the
+     compact-mode gate so the date-range pills are present in every
+     embed surface. */
+  .cw-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
     flex-wrap: wrap;
     flex-shrink: 0;
