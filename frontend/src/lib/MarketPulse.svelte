@@ -1608,6 +1608,10 @@
         day_pnl: Number(r.day_change_val) || 0,
         pnl:     Number(r.pnl)            || 0,
         day_change_percentage: r.day_change_percentage ?? null,
+        // Carry the per-account |close × qty| sum through so the
+        // filtered-subset synthesised TOTAL can derive a proper
+        // Day % (Σday_pnl / Σday_prev_val × 100).
+        day_prev_val: Number(r.day_prev_val) || 0,
       }));
   });
 
@@ -1645,25 +1649,39 @@
 
   // Sum body rows into a synthesised TOTAL — used when an account
   // filter is active and the backend's all-accounts TOTAL row is
-  // therefore irrelevant. Day % / P&L % use the standard
-  // (cur_val − day_change_val) and inv_val denominators that
-  // PerformancePage / backend use, so the synthesised TOTAL matches
-  // sibling row numbers cell-for-cell.
+  // therefore irrelevant.
+  //   - Holdings carry cur_val + inv_val; Day % = day_pnl/(cur_val−day_pnl),
+  //     P&L % = pnl/inv_val. Matches PerformancePage + backend.
+  //   - Positions carry day_prev_val (|close × qty| sum); Day % =
+  //     day_pnl / day_prev_val × 100. Matches backend positions.py
+  //     summary derivation cell-for-cell.
+  // Missing-field branches return null so the grid renders an em-dash
+  // rather than NaN.
   function _synthesiseTotalRow(/** @type {any[]} */ rows) {
     const t = {
       account: 'TOTAL',
-      day_pnl: 0, pnl: 0, cur_val: 0, inv_val: 0,
+      day_pnl: 0, pnl: 0, cur_val: 0, inv_val: 0, day_prev_val: 0,
       day_change_percentage: null, pnl_percentage: null,
     };
     for (const r of rows) {
-      t.day_pnl += Number(r.day_pnl) || 0;
-      t.pnl     += Number(r.pnl)     || 0;
-      t.cur_val += Number(r.cur_val) || 0;
-      t.inv_val += Number(r.inv_val) || 0;
+      t.day_pnl      += Number(r.day_pnl)      || 0;
+      t.pnl          += Number(r.pnl)          || 0;
+      t.cur_val      += Number(r.cur_val)      || 0;
+      t.inv_val      += Number(r.inv_val)      || 0;
+      t.day_prev_val += Number(r.day_prev_val) || 0;
     }
-    const yest = t.cur_val - t.day_pnl;
-    t.day_change_percentage = (yest > 0) ? (t.day_pnl / yest) * 100 : null;
-    t.pnl_percentage        = (t.inv_val > 0) ? (t.pnl / t.inv_val) * 100 : null;
+    // Holdings path — cur_val / inv_val available.
+    if (t.cur_val > 0 || t.inv_val > 0) {
+      const yest = t.cur_val - t.day_pnl;
+      t.day_change_percentage = (yest > 0) ? (t.day_pnl / yest) * 100 : null;
+      t.pnl_percentage        = (t.inv_val > 0) ? (t.pnl / t.inv_val) * 100 : null;
+    }
+    // Positions path — day_prev_val carries the absolute-notional sum
+    // backend already computed per account. Σday_pnl / Σday_prev_val is
+    // exactly what backend's TOTAL row uses.
+    else if (t.day_prev_val > 0) {
+      t.day_change_percentage = (t.day_pnl / t.day_prev_val) * 100;
+    }
     return t;
   }
 

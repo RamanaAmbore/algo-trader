@@ -70,12 +70,14 @@ def _fetch() -> PositionsResponse:
     }])
     summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
     # day_change_percentage = Σ day_change_val / Σ |close × qty|, per-row's
-    # absolute denominator captured above. Drop the helper column afterwards.
+    # absolute denominator captured above. Rename _prev_val to the
+    # public field day_prev_val so the frontend can sum it for a
+    # filtered-subset TOTAL row.
     summary_df = summary_df.with_columns(
         (pl.col('day_change_val') / pl.col('_prev_val').replace(0, None) * 100)
         .fill_nan(0).fill_null(0)
         .alias('day_change_percentage')
-    ).drop('_prev_val')
+    ).rename({'_prev_val': 'day_prev_val'})
 
     rows = [
         PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})

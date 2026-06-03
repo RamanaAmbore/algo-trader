@@ -86,6 +86,11 @@ class PositionsSummaryRow(msgspec.Struct):
     pnl: float
     day_change_val: float = 0.0
     day_change_percentage: float = 0.0
+    # Per-account |close × qty| sum — Σ across all open positions for
+    # the account. Lets the frontend's filtered-subset TOTAL row derive
+    # a meaningful day_change_percentage (Σday_pnl / Σprev_val) without
+    # re-fetching raw positions.
+    day_prev_val: float = 0.0
 
 
 class PositionsResponse(msgspec.Struct):
