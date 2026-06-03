@@ -900,6 +900,7 @@
             basketMode={basketMode}
             accountHidden={true}
             symbolHidden={!headerless && !inline}
+            symType={_symType}
             actionsHidden={actionsHidden || showCommonActions}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}

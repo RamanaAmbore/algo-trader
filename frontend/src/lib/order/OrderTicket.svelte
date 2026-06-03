@@ -31,7 +31,10 @@
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
-  import { getInstrument } from '$lib/data/instruments';
+  import {
+    getInstrument, listExpiries, listStrikes,
+    findOption, findNearestFuture, listFutures,
+  } from '$lib/data/instruments';
 
   // Demo-mode detection — used to suppress margin preflight (403) and
   // account self-fetch (401) for anonymous prod visitors.
@@ -68,6 +71,7 @@
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean) => void) | null,
    *   symbolHidden?: boolean,
+   *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
    * }} */
   let {
     symbol,
@@ -156,6 +160,12 @@
     // the Ticket form. Same semantic as accountHidden but for the
     // symbol affordance.
     symbolHidden = false,
+    // Instrument-type intent from the picker row (Equity / Future /
+    // Option / ALL). When the operator has chosen FUT or OPT but the
+    // symbol prop is just a bare underlying (NIFTY rather than
+    // NIFTY26JUNFUT), we surface inline pickers that build the full
+    // tradingsymbol. ALL = no constraint (legacy behaviour).
+    symType = /** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'),
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -173,18 +183,104 @@
     return { BUY: 'CLOSE', SELL: 'ADD' };
   });
 
-  // Derived instrument kind from the tradingsymbol — simple suffix
-  // match. Drives which fields show.
+  // Derived instrument kind. Reads suffix from either the resolved
+  // tradingsymbol (preferred — set when bare-mode pickers built one)
+  // or the raw symbol prop. When the operator picked the picker-row
+  // Type filter (symType=FUT/OPT) but no resolved symbol exists yet,
+  // the kind falls back to OPT (CE as default) / FUT so the lots
+  // input + product defaults render correctly during the picker
+  // interaction.
   const kind = $derived.by(() => {
-    const s = (symbol || '').toUpperCase();
+    const resolved = (typeof _resolvedSymbol === 'string' ? _resolvedSymbol : '').toUpperCase();
+    const raw = (symbol || '').toUpperCase();
+    const s = resolved || raw;
     if (/CE$/.test(s)) return 'CE';
     if (/PE$/.test(s)) return 'PE';
     if (/FUT$/.test(s)) return 'FUT';
+    if (symType === 'OPT') return _pickedOptType || 'CE';
+    if (symType === 'FUT') return 'FUT';
     return 'EQ';
   });
   const isOption = $derived(kind === 'CE' || kind === 'PE');
   const isFuture = $derived(kind === 'FUT');
   const isEquity = $derived(kind === 'EQ');
+
+  // Bare-underlying mode — symbol is just the underlying name
+  // ("NIFTY") and symType says the operator wants FUT or OPT. We
+  // surface inline pickers (expiry, plus strike + CE/PE for OPT) to
+  // build the full tradingsymbol. Driven off the picker row's
+  // Type filter; defaults to off when symbol already carries a
+  // FUT/CE/PE suffix or when symType is ALL/EQ.
+  const _underlying = $derived((symbol || '').toUpperCase());
+  const _hasContractSuffix = $derived(/(FUT|CE|PE)$/.test(_underlying));
+  const _wantsFut = $derived(symType === 'FUT' && !_hasContractSuffix && !!_underlying);
+  const _wantsOpt = $derived(symType === 'OPT' && !_hasContractSuffix && !!_underlying);
+  const _isBareUnderlying = $derived(_wantsFut || _wantsOpt);
+
+  // Inline-picker state. Seeded lazily on first bare-mode entry via
+  // an effect below so the operator sees a sensible default
+  // (nearest expiry / ATM strike) rather than empty controls.
+  let _pickedExpiry = $state('');
+  let _pickedStrike = $state(/** @type {number|''} */ (''));
+  let _pickedOptType = $state(/** @type {'CE'|'PE'} */ ('CE'));
+
+  // Expiry choices for the bare-underlying picker. For OPT pulls
+  // distinct expiries from the CE side (symmetric with PE); for FUT
+  // pulls distinct expiries from the futures rows.
+  const _expiryChoices = $derived.by(() => {
+    if (!_underlying) return [];
+    if (_wantsFut) {
+      return listFutures(_underlying).map(r => r.x).filter(Boolean);
+    }
+    if (_wantsOpt) {
+      return listExpiries(_underlying, 'CE');
+    }
+    return [];
+  });
+  const _strikeChoices = $derived.by(() => {
+    if (!_wantsOpt || !_pickedExpiry) return [];
+    return listStrikes(_underlying, _pickedOptType, _pickedExpiry);
+  });
+
+  // Auto-seed defaults when the operator enters bare-underlying mode
+  // OR when the expiry/strike lists materialise after the instruments
+  // cache warms. Idempotent — only fills empty values, never overrides
+  // an operator pick.
+  $effect(() => {
+    if (!_isBareUnderlying) return;
+    if (!_pickedExpiry && _expiryChoices.length) {
+      _pickedExpiry = _expiryChoices[0];
+    }
+    if (_wantsOpt && !_pickedStrike && _strikeChoices.length) {
+      // ATM-ish proxy: middle strike. Real ATM needs spot LTP; the
+      // Chain tab does that properly. Mid-strike is fine for the
+      // ticket's defaults.
+      _pickedStrike = _strikeChoices[Math.floor(_strikeChoices.length / 2)];
+    }
+  });
+
+  // Resolved tradingsymbol — derived from the bare-mode picks. When
+  // not in bare mode, falls through to the symbol prop unchanged.
+  // Returns null when the picks haven't resolved yet so the form
+  // disables submit while the operator finishes choosing.
+  const _resolvedSymbol = $derived.by(() => {
+    if (!_isBareUnderlying) return symbol;
+    if (!_pickedExpiry) return null;
+    if (_wantsFut) {
+      const fut = findNearestFuture(_underlying);
+      // findNearestFuture returns the nearest; we want the one
+      // matching _pickedExpiry. Walk the list.
+      const list = listFutures(_underlying);
+      const match = list.find(r => r.x === _pickedExpiry) || fut;
+      return match?.s || null;
+    }
+    if (_wantsOpt) {
+      if (!_pickedStrike) return null;
+      const opt = findOption(_underlying, _pickedOptType, Number(_pickedStrike), _pickedExpiry);
+      return opt?.s || null;
+    }
+    return symbol;
+  });
 
   // Default product based on instrument when caller didn't specify.
   const productVal = $derived(product ?? (isEquity ? 'CNC' : 'NRML'));
@@ -235,6 +331,21 @@
   // qty directly).
   $effect(() => {
     if (_lotSize > 0) _qty = _lots * _lotSize;
+  });
+
+  // Re-derive _lotSize when the bare-mode picker builds a new
+  // tradingsymbol. Without this, the operator picks NIFTY → expiry +
+  // strike + CE → resolved = NIFTY26JUN22000CE — but _lotSize stays
+  // at whatever was passed in via the prop (often 0 because the
+  // caller didn't know the lot yet). Pulls from the instruments cache.
+  $effect(() => {
+    const r = _resolvedSymbol;
+    if (!r || typeof r !== 'string') return;
+    const inst = getInstrument(r.toUpperCase());
+    const ls = Number(inst?.ls) || 0;
+    if (ls > 0 && ls !== _lotSize) {
+      untrack(() => { _lotSize = ls; });
+    }
   });
 
   // When the operator flips side, reset to 1 lot (ADD direction) or
@@ -598,7 +709,7 @@
       try {
         const payload = {
           account: _account,
-          tradingsymbol: symbol,
+          tradingsymbol: _resolvedSymbol || symbol,
           exchange: exchange || 'NFO',
           quantity: Number(_qty),
           side: _side,
@@ -709,7 +820,7 @@
         brokerResp = await placeTicketOrder({
           mode:             _mode,
           side:             _side,
-          tradingsymbol:    symbol,
+          tradingsymbol:    _resolvedSymbol || symbol,
           exchange:         exchange || 'NFO',
           quantity:         Number(_qty),
           product:          _product,
@@ -863,6 +974,58 @@
           <span class="ot-label">Symbol</span>
           <span class="ot-sym-chip" title={`${exchange || '?'} · ${kind}${_lotSize ? ' · lot ' + _lotSize : ''}`}>
             {symbol || '—'}
+          </span>
+        </div>
+      {/if}
+      <!-- Bare-underlying inline pickers (Possibility B). When the
+           picker row's Type filter says FUT or OPT and the symbol is
+           just the underlying name, we surface Expiry (FUT + OPT) +
+           Strike + CE/PE (OPT only) so the operator can build the
+           full tradingsymbol without leaving the Ticket. -->
+      {#if _isBareUnderlying}
+        <div class="ot-quick-block">
+          <span class="ot-label">Expiry</span>
+          {#if _expiryChoices.length}
+            <Select
+              bind:value={_pickedExpiry}
+              ariaLabel="Expiry"
+              options={_expiryChoices.map(e => ({ value: e, label: e.slice(5) }))} />
+          {:else}
+            <span class="ot-sym-chip">—</span>
+          {/if}
+        </div>
+        {#if _wantsOpt}
+          <div class="ot-quick-block">
+            <span class="ot-label">Strike</span>
+            {#if _strikeChoices.length}
+              <Select
+                value={String(_pickedStrike)}
+                onValueChange={(v) => { _pickedStrike = Number(v); }}
+                ariaLabel="Strike"
+                options={_strikeChoices.map(k => ({ value: String(k), label: String(k) }))} />
+            {:else}
+              <span class="ot-sym-chip">—</span>
+            {/if}
+          </div>
+          <div class="ot-quick-block">
+            <span class="ot-label">CE/PE</span>
+            <div class="ot-side-toggle ot-side-toggle-compact">
+              <button type="button" class="ot-side-btn"
+                class:on={_pickedOptType === 'CE'}
+                onclick={() => { _pickedOptType = 'CE'; _pickedStrike = ''; }}>CE</button>
+              <button type="button" class="ot-side-btn"
+                class:on={_pickedOptType === 'PE'}
+                onclick={() => { _pickedOptType = 'PE'; _pickedStrike = ''; }}>PE</button>
+            </div>
+          </div>
+        {/if}
+        <!-- Resolved contract chip — confirms what tradingsymbol the
+             picks would submit. Reads "Resolving…" until the
+             instruments cache hits the right combo. -->
+        <div class="ot-quick-block">
+          <span class="ot-label">Resolved</span>
+          <span class="ot-sym-chip" class:ot-sym-chip-warn={!_resolvedSymbol}>
+            {_resolvedSymbol || 'Resolving…'}
           </span>
         </div>
       {/if}
@@ -1343,6 +1506,13 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* Warn state for the resolved-contract chip — fires when the
+     bare-mode pickers haven't yet built a valid tradingsymbol. */
+  .ot-sym-chip-warn {
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.35);
+    color: #f87171;
   }
   .ot-label {
     /* Section-header treatment so labels read as form structure
