@@ -17,7 +17,7 @@
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import { resolveAnchorToTradeable } from '$lib/data/resolveUnderlying';
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
-  import { loadAccounts, getDefaultSymbol } from '$lib/data/accounts';
+  import { loadAccounts, getDefaultSymbol, defaultSymbolStore, accountsReadyStore } from '$lib/data/accounts';
 
   // HIGH 2: derive the set of mode pills the order ticket should show.
   // Restricts LIVE to authenticated prod sessions where the master toggle
@@ -51,17 +51,26 @@
   } = $props();
 
   // Universal default falls back to the operator-configured
-  // orders.default_symbol setting (CRUDEOIL by default). Falls
-  // through to NIFTY 50 only when the setting is blank AND no
-  // caller-supplied symbol is in scope. Loaded lazily on mount so
-  // server-side renders still get a sensible value.
-  let _operatorDefault = $state('');
-  onMount(async () => {
-    try { await loadAccounts(); _operatorDefault = String(getDefaultSymbol() || '').toUpperCase(); }
-    catch (_) { /* keep blank */ }
-  });
+  // orders.default_symbol setting (CRUDEOIL by default). The
+  // defaultSymbolStore is set the moment loadAccounts() resolves
+  // (accounts.js kicks off the fetch at module-load time so by the
+  // time the operator clicks the Order button, the value is already
+  // here). Falls through to NIFTY 50 ONLY after the store has emitted
+  // and the operator's setting is blank — eliminates the prior race
+  // where the hardcoded NIFTY 50 fallback briefly leaked into the
+  // modal before the setting fetch landed.
+  const _operatorDefault = $derived(String($defaultSymbolStore || '').toUpperCase());
+  const _accountsReady   = $derived($accountsReadyStore);
+  // Kick the fetch alongside (idempotent). loadAccounts memoises so the
+  // module-level call + this one don't duplicate the network round-trip.
+  onMount(() => { loadAccounts().catch(() => {}); });
   const _anchorSymbol      = $derived(
-    String(symbol || _operatorDefault || 'NIFTY 50').toUpperCase()
+    // Caller-supplied symbol wins. Otherwise: operator default once
+    // the store has populated; before that, leave the anchor empty
+    // so the modal doesn't latch onto a stale fallback. The 'NIFTY 50'
+    // fall-through ONLY kicks in after the store has resolved with a
+    // blank operator default (anonymous demo / setting cleared).
+    String(symbol || _operatorDefault || (_accountsReady ? 'NIFTY 50' : '')).toUpperCase()
   );
   const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 
@@ -96,19 +105,30 @@
   let _chartOpen = $state(false);
   let _logOpen   = $state(false);
 
-  function _openOrder() {
+  async function _openOrder() {
     _chartOpen = false;
     _logOpen   = false;
+    // If the operator clicks before the default-symbol store has
+    // resolved, wait briefly so the modal opens with the right anchor
+    // (e.g. CRUDEOIL) rather than the empty fallback that would later
+    // race-flip. loadAccounts() is memoised + already in flight from
+    // accounts.js's module-load kick-off.
+    if (!_accountsReady) {
+      try { await loadAccounts(); } catch (_) { /* open anyway */ }
+    }
     _orderOpen = true;
   }
 
-  function _openChart() {
+  async function _openChart() {
     // Always open the ChartModal inline — the modal carries its own
     // symbol search + pinned-dropdown so the operator can pick any
-    // symbol from inside. Falls back to NIFTY 50 (see
-    // _effectiveSymbol) when no caller-supplied symbol is in scope.
+    // symbol from inside. Same default-symbol wait as _openOrder so
+    // the chart opens against the right anchor on first invoke.
     _orderOpen = false;
     _logOpen   = false;
+    if (!_accountsReady) {
+      try { await loadAccounts(); } catch (_) { /* open anyway */ }
+    }
     _chartOpen = true;
   }
 

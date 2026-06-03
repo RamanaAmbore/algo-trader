@@ -3,11 +3,20 @@
 // IndexedDB needed.
 
 import { fetchAccounts } from '$lib/api';
+import { writable } from 'svelte/store';
 
 let _accounts = null;
 let _defaultAccount = '';
 let _defaultSymbol = '';
 let _loadPromise = null;
+
+// Reactive stores so callers can subscribe and get the value the
+// moment loadAccounts() resolves. Used by PageHeaderActions to avoid
+// the "modal opens with NIFTY 50 hardcoded fallback, then race-flips
+// to CRUDEOIL once the fetch lands" UX glitch the operator hit.
+export const defaultSymbolStore  = writable('');
+export const defaultAccountStore = writable('');
+export const accountsReadyStore  = writable(false);
 
 export async function loadAccounts() {
   if (_accounts) return _accounts;
@@ -23,10 +32,22 @@ export async function loadAccounts() {
       _defaultAccount = '';
       _defaultSymbol = '';
     }
+    defaultAccountStore.set(_defaultAccount);
+    defaultSymbolStore.set(_defaultSymbol);
+    accountsReadyStore.set(true);
     return _accounts;
   })();
   try { return await _loadPromise; }
   finally { _loadPromise = null; }
+}
+
+// Kick off the fetch as soon as the module is evaluated (browser-only)
+// so by the time PageHeaderActions / SymbolPanel mount, the default
+// symbol + account are already available. Module-level cache prevents
+// duplicate fetches; the import side-effect adds no cost when the
+// page never opens an order modal.
+if (typeof window !== 'undefined') {
+  loadAccounts().catch(() => { /* silent */ });
 }
 
 /** Operator-configured default broker account
