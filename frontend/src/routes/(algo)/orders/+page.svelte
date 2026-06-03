@@ -445,6 +445,7 @@
       tabsExternal
       hideBottomPanel
       actionsHidden
+      showCommonActions={false}
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       bind:activeTab={_entryActiveTab}

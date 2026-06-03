@@ -65,6 +65,7 @@
    *   triggerSubmit?:  number,
    *   triggerBasket?:  number,
    *   showChartButton?: boolean,
+   *   showCommonActions?: boolean,
    * }} */
   let {
     defaultTab     = /** @type {'chain'|'ticket'|'command'} */ ('chain'),
@@ -142,6 +143,12 @@
     // action on the currently-active tab. Forwarded to OrderTicket.
     triggerSubmit = 0,
     triggerBasket = 0,
+    // When true the modal renders its own common action footer
+    // (+Basket / BUY/SELL) at the bottom, visible across every tab.
+    // /orders sets this false because it renders the same footer at
+    // the page level. Defaults true so the modal mount always shows
+    // the footer.
+    showCommonActions = true,
     // When false, suppresses the chart-icon button in the header.
     // Callers that open SymbolPanel FROM a chart-aware page (e.g.
     // /charts opens it via the order-icon for the symbol already on
@@ -336,6 +343,18 @@
   function _onAccountChange(/** @type {string} */ a) {
     _sharedAccount = a;
   }
+
+  // Modal-level common action footer — visible across all tabs when
+  // showCommonActions=true (modal mount). Counter-prop pattern: every
+  // click bumps an internal counter; OrderTicket's $effect on
+  // triggerSubmit/triggerBasket reacts to the cumulative value. Side
+  // toggle flips the Submit button label between BUY and SELL.
+  let _modalSide          = $state(/** @type {'BUY'|'SELL'} */ (side));
+  let _modalTriggerSubmit = $state(0);
+  let _modalTriggerBasket = $state(0);
+  function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
+  function _modalFireSubmit() { if (_activeTab === 'ticket') _modalTriggerSubmit++; }
+  function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
 
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
   // +/- steppers. Maps in place so rapid clicks accumulate cleanly
@@ -770,7 +789,7 @@
           <OrderTicket
             symbol={_ticketProps.symbol || _localSymbol}
             exchange={_ticketProps.exchange ?? exchange}
-            side={_ticketProps.side ?? side}
+            side={_ticketProps.side ?? (showCommonActions && !inline ? _modalSide : side)}
             action={_ticketProps.action ?? action}
             qty={_ticketProps.qty ?? qty}
             product={_ticketProps.product ?? product}
@@ -789,9 +808,9 @@
             onAddToBasket={addToBasket}
             basketMode={basketMode}
             accountHidden={headerless}
-            actionsHidden={actionsHidden}
-            triggerSubmit={triggerSubmit}
-            triggerBasket={triggerBasket}
+            actionsHidden={actionsHidden || showCommonActions}
+            triggerSubmit={triggerSubmit + _modalTriggerSubmit}
+            triggerBasket={triggerBasket + _modalTriggerBasket}
             hostManagesEsc={true}
             {onSubmit}
             {onClose} />
@@ -889,6 +908,33 @@
             </button>
           </div>
         </div>
+      </div>
+    {/if}
+
+    <!-- Common action footer — same shape as the /orders page-level
+         footer (+Basket · Side · BUY/SELL submit). Visible across
+         every tab (Ticket / Chain / Command). Inactive on tabs that
+         don't accept a generic submit (Chain has its own per-strike
+         buttons; CommandLine submits via Enter), but +Basket still
+         works when there's pending content. -->
+    {#if showCommonActions && !inline && !actionsHidden}
+      <div class="oes-common-actions">
+        <span class="oes-common-spacer"></span>
+        <button type="button" class="oes-common-basket"
+          title="Add the current order to the basket"
+          onclick={_modalFireBasket}>+ Basket</button>
+        <button type="button" class="oes-common-side"
+          class:oes-common-side-buy={_modalSide === 'BUY'}
+          class:oes-common-side-sell={_modalSide === 'SELL'}
+          title="Flip BUY ↔ SELL"
+          onclick={_modalFlipSide}>{_modalSide}</button>
+        <button type="button" class="oes-common-submit"
+          class:oes-common-submit-buy={_modalSide === 'BUY'}
+          class:oes-common-submit-sell={_modalSide === 'SELL'}
+          title="Place the order via the active tab"
+          onclick={_modalFireSubmit}>
+          Place {_modalSide.toLowerCase()}
+        </button>
       </div>
     {/if}
 
@@ -1569,6 +1615,50 @@
   }
   .oes-side-buy  { background: rgba(74,222,128,0.12); color: #4ade80; border: 1px solid rgba(74,222,128,0.35); }
   .oes-side-sell { background: rgba(248,113,113,0.12); color: #f87171; border: 1px solid rgba(248,113,113,0.35); }
+
+  /* ── Common action footer (modal-mode only) ─────────────────────── */
+  .oes-common-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.55rem 0.85rem;
+    background: rgba(15, 23, 42, 0.55);
+    border-top: 1px solid rgba(251, 191, 36, 0.18);
+    flex-shrink: 0;
+  }
+  .oes-common-spacer { flex: 1 1 0; }
+  .oes-common-basket,
+  .oes-common-side,
+  .oes-common-submit {
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid rgba(125, 211, 252, 0.45);
+    color: #7dd3fc;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .oes-common-basket:hover { background: rgba(125, 211, 252, 0.12); }
+  .oes-common-side-buy  { border-color: rgba(74, 222, 128, 0.55); color: #4ade80; }
+  .oes-common-side-sell { border-color: rgba(248, 113, 113, 0.55); color: #f87171; }
+  .oes-common-side-buy:hover  { background: rgba(74, 222, 128, 0.12); }
+  .oes-common-side-sell:hover { background: rgba(248, 113, 113, 0.12); }
+  .oes-common-submit-buy {
+    background: rgba(74, 222, 128, 0.18);
+    border-color: rgba(74, 222, 128, 0.65);
+    color: #4ade80;
+  }
+  .oes-common-submit-sell {
+    background: rgba(248, 113, 113, 0.18);
+    border-color: rgba(248, 113, 113, 0.65);
+    color: #f87171;
+  }
+  .oes-common-submit-buy:hover  { background: rgba(74, 222, 128, 0.28); }
+  .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
 
   /* ── Bottom panel (Log / Orders) ──────────────────────────────────── */
   .oes-bottom-panel {
