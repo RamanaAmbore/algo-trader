@@ -341,7 +341,7 @@ SEEDS: list[tuple] = [
     # nearest future contract via the instruments cache, others stay as
     # is (cash equities, indices). Pull values from your pinned watchlist
     # so the default mirrors the day's primary instrument.
-    ("orders",      "orders.default_symbol",     "string", "NIFTY",
+    ("orders",      "orders.default_symbol",     "string", "CRUDEOIL",
      "Default symbol the order / chart modal opens with when no host "
      "context overrides it. Accepts underlying names (NIFTY, BANKNIFTY, "
      "CRUDEOIL, GOLD, …) which are auto-resolved to the nearest future, "
