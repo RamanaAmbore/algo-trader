@@ -898,7 +898,8 @@
             currentQty={_ticketProps.currentQty ?? currentQty}
             onAddToBasket={addToBasket}
             basketMode={basketMode}
-            accountHidden={headerless || inline}
+            accountHidden={true}
+            symbolHidden={!headerless && !inline}
             actionsHidden={actionsHidden || showCommonActions}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
@@ -1152,35 +1153,43 @@
     position: relative;
     display: inline-flex;
     align-items: center;
-    min-width: 11rem;
-    flex: 0 1 16rem;
+    /* Take the remaining row space so Symbol gets the largest slot. */
+    flex: 1 1 0;
+    min-width: 0;
   }
+  .oes-sym-pick :global(.ssi-wrap) { width: 100%; }
+  .oes-sym-pick :global(.ssi-input) { width: 100%; min-width: 0; }
   /* Account dropdown — placeholder "Account" reads as its label when
      nothing is picked. Narrow Select pinned next to the symbol combo. */
   /* Picker row — Account · Symbol type · Symbol — between header and
      tabs. Mirrors the chart workspace's .cw-picker bar so the two
-     modals look the same. */
+     modals look the same. flex-wrap: nowrap so all 3 controls stay
+     on a single row at common viewport widths. */
   .oes-picker {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    padding: 0.45rem 0.85rem;
+    gap: 0.35rem;
+    padding: 0.4rem 0.6rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.10);
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     flex-shrink: 0;
+    min-width: 0;
   }
-  /* Type filter — fixed width sized to fit the widest label
-     "EQ · FUT · OPT" so the trigger doesn't reflow when the operator
-     picks a narrower value. */
+  /* Type filter — narrowed so it fits in the same row as Account +
+     Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
+     active selection; the active value renders fully (Equity /
+     Futures / Options all fit). */
   .oes-type-wrap {
-    width: 8.5rem;
+    width: 5.5rem;
     flex-shrink: 0;
   }
   .oes-type-wrap :global(.rbq-select-trigger) { width: 100%; }
+  /* Account picker — narrower so the picker row fits Account + Type +
+     Symbol on a single line at common viewport widths. 10 chars of
+     account code fit at 5.5rem in monospace. */
   .oes-account-pick {
     flex-shrink: 0;
-    min-width: 7rem;
-    max-width: 9rem;
+    width: 5.5rem;
   }
   .oes-account-pick :global(.rbq-select-trigger) { width: 100%; }
   .oes-account-single {
@@ -1879,14 +1888,20 @@
   .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
 
   /* ── Bottom panel (Log / Orders) ──────────────────────────────────── */
+  /* Sits AFTER the common action footer (operator request: "move the
+     order placement above the activity"). Gets a fixed slot of the
+     modal height (18-22rem depending on viewport) so the cards inside
+     stay visible without competing with the body's flex:1 grow. */
   .oes-bottom-panel {
-    /* Drop the heavy top-divider; the parent card's left-edge accent
-       already frames this region. Result: fewer horizontal lines
-       between the active-tab body and the bottom-panel tabs. */
     margin-top: 0.4rem;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
-    flex-shrink: 0;
+    flex: 0 0 22rem;
+    min-height: 18rem;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-top: 1px solid rgba(168, 85, 247, 0.18);
   }
   .oes-bottom-tabs {
     display: flex;
@@ -1935,17 +1950,19 @@
     font-variant-numeric: tabular-nums;
     line-height: 1;
   }
+  /* Bottom body fills the bottom-panel's fixed slot; LogPanel inside
+     manages its own internal scroll for the active tab. */
   .oes-bottom-body {
-    max-height: 14rem;
-    overflow-y: auto;
-    padding: 0.45rem 0.75rem;
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 0.4rem 0.6rem 0.6rem;
+    overflow: hidden;
   }
-  /* Height class passed to UnifiedLog inside the bottom panel.
-     cardMode is on (see the {#if _bottomTab === 'log'} block) so
-     UnifiedLog uses its .ul-card layout; per-row font overrides
-     would conflict with the card styling and are unnecessary. */
   :global(.oes-bottom-scroll) {
-    max-height: 13rem;
+    flex: 1 1 0;
+    min-height: 0;
     padding: 0.1rem 0.25rem;
   }
 </style>

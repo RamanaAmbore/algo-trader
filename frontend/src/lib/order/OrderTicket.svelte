@@ -67,6 +67,7 @@
    *   onAccountChange?: (account: string) => void,
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean) => void) | null,
+   *   symbolHidden?: boolean,
    * }} */
   let {
     symbol,
@@ -149,6 +150,12 @@
     // inside its common action footer so the operator sees the verdict
     // regardless of which tab is active.
     onMarginUpdate = /** @type {((preview:any, loading:boolean) => void) | null} */ (null),
+    // When true, the Symbol chip in the quick-row top strip is
+    // suppressed. Used by the order modal where the picker row above
+    // the tabs already shows the symbol — no need to repeat it inside
+    // the Ticket form. Same semantic as accountHidden but for the
+    // symbol affordance.
+    symbolHidden = false,
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -851,12 +858,14 @@
           {/if}
         </div>
       {/if}
-      <div class="ot-quick-block">
-        <span class="ot-label">Symbol</span>
-        <span class="ot-sym-chip" title={`${exchange || '?'} · ${kind}${_lotSize ? ' · lot ' + _lotSize : ''}`}>
-          {symbol || '—'}
-        </span>
-      </div>
+      {#if !symbolHidden}
+        <div class="ot-quick-block">
+          <span class="ot-label">Symbol</span>
+          <span class="ot-sym-chip" title={`${exchange || '?'} · ${kind}${_lotSize ? ' · lot ' + _lotSize : ''}`}>
+            {symbol || '—'}
+          </span>
+        </div>
+      {/if}
       <div class="ot-quick-block ot-quick-qty">
         {#if _lotSize > 0}
           <label class="ot-label" for="ot-lots">Lots</label>
