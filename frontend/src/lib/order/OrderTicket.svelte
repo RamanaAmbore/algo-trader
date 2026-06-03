@@ -242,6 +242,21 @@
     return listStrikes(_underlying, _pickedOptType, _pickedExpiry);
   });
 
+  // Clear stale picks when the underlying changes — without this,
+  // switching from NIFTY to BANKNIFTY leaves _pickedExpiry/_pickedStrike
+  // holding values from the old underlying and the resolved symbol
+  // either fails to build or builds an invalid contract.
+  let _prevUnderlying = '';
+  $effect(() => {
+    if (_underlying !== _prevUnderlying) {
+      _prevUnderlying = _underlying;
+      untrack(() => {
+        _pickedExpiry = '';
+        _pickedStrike = '';
+      });
+    }
+  });
+
   // Auto-seed defaults when the operator enters bare-underlying mode
   // OR when the expiry/strike lists materialise after the instruments
   // cache warms. Idempotent — only fills empty values, never overrides
@@ -290,6 +305,15 @@
 
   // Local form state — start from prop defaults, then operator edits.
   let _side    = $state(side);
+  // Re-sync the internal side state when the parent updates the
+  // `side` prop. Without this, the modal's "BUY / SELL" footer
+  // buttons can change _modalSide → propagate via the side prop, but
+  // OrderTicket would still submit whichever side it last held
+  // locally. action='modify' freezes the side per the existing rule.
+  $effect(() => {
+    if (action === 'modify') return;
+    if (side && side !== untrack(() => _side)) _side = side;
+  });
 
   // Resolved lot size — starts from the prop; may be updated on mount
   // via the instruments cache when the caller didn't supply one.
@@ -338,9 +362,13 @@
   // strike + CE → resolved = NIFTY26JUN22000CE — but _lotSize stays
   // at whatever was passed in via the prop (often 0 because the
   // caller didn't know the lot yet). Pulls from the instruments cache.
+  // Skips equity: equity rows often carry ls=1 in the cache which
+  // would force the ticket into the lots-stepper layout — equity
+  // wants the bare Qty input.
   $effect(() => {
     const r = _resolvedSymbol;
     if (!r || typeof r !== 'string') return;
+    if (isEquity) return;
     const inst = getInstrument(r.toUpperCase());
     const ls = Number(inst?.ls) || 0;
     if (ls > 0 && ls !== _lotSize) {
@@ -684,7 +712,7 @@
     // (Svelte 5 picks up reads inside this function automatically.)
     const _watchers = [
       _side, _qty, _account, _product, _type, _variety,
-      _price, _trigger, symbol, exchange,
+      _price, _trigger, symbol, exchange, _resolvedSymbol,
     ];
     void _watchers;
 
@@ -1030,20 +1058,24 @@
         </div>
       {/if}
       <div class="ot-quick-block ot-quick-qty">
-        {#if _lotSize > 0}
+        {#if _lotSize > 0 && !isEquity}
+          <!-- Lots layout: label + value LEFT of the +/− stepper per
+               operator request ("for lots you can keep it on the left
+               side of increment or decrement scale"). -->
           <label class="ot-label" for="ot-lots">Lots</label>
           <div class="ot-lots-row">
+            <span class="ot-lots-val" id="ot-lots" aria-label="Lots">{_lots}</span>
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(-1)}
                     disabled={_lots <= 1}
                     aria-label="Decrease lots">−</button>
-            <span class="ot-lots-val" id="ot-lots" aria-label="Lots">{_lots}</span>
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(1)}
                     aria-label="Increase lots">+</button>
-            <span class="ot-meta">(× {_lotSize} = {_qty})</span>
+            <span class="ot-meta">× {_lotSize} = {_qty}</span>
           </div>
         {:else}
+          <!-- Equity / ETF: bare Qty input, no lot concept. -->
           <label class="ot-label" for="ot-qty">Qty</label>
           <input id="ot-qty" type="number" class="ot-input ot-num"
                  step="1" min="1"

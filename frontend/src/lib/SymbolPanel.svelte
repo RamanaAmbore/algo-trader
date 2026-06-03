@@ -997,25 +997,23 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
-        <!-- Action buttons row — operator's primary interaction sits at
-             the top of the footer slot. -->
+        <!-- Action buttons row — BUY (green) + SELL (red) submit
+             buttons directly. The earlier "Side toggle + Place"
+             two-button pattern was redundant (operator asked: "what
+             is difference between buy and place buy buttons"). Now
+             each colored button BOTH selects the side AND submits in
+             one click. + Basket stays as the basket-add affordance. -->
         <div class="oes-common-row">
           <span class="oes-common-spacer"></span>
           <button type="button" class="oes-common-basket"
             title="Add the current order to the basket"
             onclick={_modalFireBasket}>+ Basket</button>
-          <button type="button" class="oes-common-side"
-            class:oes-common-side-buy={_modalSide === 'BUY'}
-            class:oes-common-side-sell={_modalSide === 'SELL'}
-            title="Flip BUY ↔ SELL"
-            onclick={_modalFlipSide}>{_modalSide}</button>
-          <button type="button" class="oes-common-submit"
-            class:oes-common-submit-buy={_modalSide === 'BUY'}
-            class:oes-common-submit-sell={_modalSide === 'SELL'}
-            title="Place the order via the active tab"
-            onclick={_modalFireSubmit}>
-            Place {_modalSide.toLowerCase()}
-          </button>
+          <button type="button" class="oes-common-submit oes-common-submit-buy"
+            title="Place a BUY order via the active tab"
+            onclick={() => { _modalSide = 'BUY'; _modalFireSubmit(); }}>BUY</button>
+          <button type="button" class="oes-common-submit oes-common-submit-sell"
+            title="Place a SELL order via the active tab"
+            onclick={() => { _modalSide = 'SELL'; _modalFireSubmit(); }}>SELL</button>
         </div>
         <!-- Margin row sits BELOW the action buttons (operator
              feedback: "margin details should be shown below order
