@@ -79,7 +79,7 @@
   let _entryAccount = $state('');
   // Default to 'chain' — basket-building option chain is the most-used
   // surface per operator. Ticket / Command are one click away.
-  let _entryActiveTab = $state(/** @type {'chain'|'ticket'|'command'} */ ('chain'));
+  let _entryActiveTab = $state(/** @type {'chain'|'ticket'} */ ('chain'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
 
   // Page-level chart modal state — opened by the chart-icon button next

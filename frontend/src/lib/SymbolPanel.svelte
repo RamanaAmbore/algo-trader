@@ -27,7 +27,6 @@
   import { logTime } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
-  import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
@@ -57,7 +56,7 @@
   );
 
   /** @type {{
-   *   defaultTab?:     'command' | 'ticket' | 'chain',
+   *   defaultTab?:     'ticket' | 'chain',
    *   symbol?:         string,
    *   exchange?:       string,
    *   instrument?:     { kind?: string, exchange?: string },
@@ -84,7 +83,7 @@
    *   headerless?:     boolean,
    *   onSymbolChange?: ((sym: string) => void) | null,
    *   tabsExternal?:   boolean,
-   *   activeTab?:      'command' | 'ticket' | 'chain',
+   *   activeTab?:      'ticket' | 'chain',
    *   hideBottomPanel?: boolean,
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
@@ -93,7 +92,7 @@
    *   showCommonActions?: boolean,
    * }} */
   let {
-    defaultTab     = /** @type {'chain'|'ticket'|'command'} */ ('chain'),
+    defaultTab     = /** @type {'chain'|'ticket'} */ ('chain'),
     symbol         = '',
     exchange       = '',
     instrument     = /** @type {{kind?:string,exchange?:string}} */ ({}),
@@ -154,7 +153,7 @@
     // to the requested defaultTab if no host binding is wired. When
     // tabsExternal is true the host MUST bind this prop or the body
     // won't update on tab clicks.
-    activeTab      = $bindable(/** @type {'command'|'ticket'|'chain'|undefined} */ (undefined)),
+    activeTab      = $bindable(/** @type {'ticket'|'chain'|undefined} */ (undefined)),
     // When true the shell omits its own bottom panel (Order Log /
     // Order History). The host renders these in a separate card.
     // Used by /orders to split the entry shell from the activity
@@ -280,11 +279,11 @@
   // state internally. Either way, downstream code reads `_activeTab`
   // and tab-click handlers write to it — the two-way bind takes care
   // of pushing the change back up to the host when applicable.
-  let _activeTabInternal = $state(/** @type {'command'|'ticket'|'chain'} */ (_resolveInitialTab()));
+  let _activeTabInternal = $state(/** @type {'ticket'|'chain'} */ (_resolveInitialTab()));
   // Seed the host's binding from the resolved default on first render.
   $effect(() => { if (activeTab === undefined) activeTab = _activeTabInternal; });
   const _activeTab = $derived(activeTab || _activeTabInternal);
-  function _setActiveTab(/** @type {'command'|'ticket'|'chain'} */ id) {
+  function _setActiveTab(/** @type {'ticket'|'chain'} */ id) {
     _activeTabInternal = id;
     activeTab = id;
   }
@@ -867,20 +866,12 @@
     </div>
     {/if}
 
-    <!-- Tab content -->
+    <!-- Tab content. Command Line tab retired — was the third option
+         alongside Chain and Ticket; the in-tab account+symbol inputs
+         duplicated the modal header's. /console keeps its own
+         command-line surface for shell-style usage. -->
     <div class="oes-body">
-      {#if _activeTab === 'command'}
-        <CommandLineTab
-          onParsedOrder={handleParsedOrder}
-          onAddToBasket={handleCmdAddToBasket}
-          prefillSide={side}
-          prefillAccount={account}
-          prefillSymbol={_localSymbol}
-          prefillQty={qty}
-          prefillPrice={price ?? 0}
-          prefillOrderType={orderType} />
-
-      {:else if _activeTab === 'ticket'}
+      {#if _activeTab === 'ticket'}
         <!-- OrderTicket renders its own overlay/modal chrome; inside
              the shell we only want the body. We render it without the
              outer overlay by mounting it directly — the shell provides

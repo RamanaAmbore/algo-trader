@@ -15,8 +15,7 @@
     placeTicketOrder, fetchLiveStatus,
     fetchAccounts,
   } from '$lib/api';
-  import Select      from '$lib/Select.svelte';
-  import MultiSelect from '$lib/MultiSelect.svelte';
+  // Select / MultiSelect imports retired with the in-tab pickers.
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -541,71 +540,15 @@
 </script>
 
 <div class="oct-root">
-  <!-- Account selector (required for basket submit) -->
-  <div class="oct-account-row">
-    <label class="oct-label" for="oct-acct">Account</label>
-    {#if _allAccounts.length === 0}
-      <span class="oct-acct-hint">No routable account — sign in or pick one from the main picker.</span>
-    {:else if _allAccounts.length === 1}
-      <span class="oct-acct-single">{_allAccounts[0]}</span>
-    {:else}
-      <div class="oct-acct-select-wrap">
-        <Select id="oct-acct"
-          bind:value={_account}
-          ariaLabel="Account"
-          placeholder="Pick account…"
-          options={_allAccounts.map(a => ({ value: a, label: a }))} />
-      </div>
-    {/if}
-  </div>
-
-  <!-- Underlying / Expiry / Kind controls -->
-  <div class="oct-controls">
-    <div class="oct-field">
-      <label class="oct-label" for="oct-und">Underlying</label>
-      <Select id="oct-und"
-        bind:value={chainUnderlying}
-        searchable={true}
-        searchPlaceholder="Type 3+ chars to filter…"
-        options={underlyingChoices.map(u => ({ value: u, label: u }))} />
-    </div>
-    <div class="oct-field">
-      <label class="oct-label" for="oct-exp">Expiry</label>
-      <Select id="oct-exp"
-        bind:value={chainExpiry}
-        options={chainExpiries.map(e => ({ value: e, label: e }))}
-        placeholder={chainExpiries.length ? 'Pick expiry' : '—'} />
-    </div>
-    <div class="oct-field">
-      <label class="oct-label" for="oct-kind">Kind</label>
-      <MultiSelect id="oct-kind"
-        bind:value={chainKinds}
-        options={[{ value: 'opt', label: 'Options' }, { value: 'fut', label: 'Futures' }]}
-        placeholder="Both" />
-    </div>
-    <!-- Place-mode toggle. Default: Basket. When ON, clicking +/− on a
-         strike or futures pill opens the Ticket tab pre-filled with
-         that leg for direct submit, instead of staging into the
-         basket. Operator workflow shortcut for the "I want to place
-         one specific leg right now" case. -->
-    {#if onPlaceLeg}
-      <div class="oct-field oct-field-mode">
-        <label class="oct-label">Mode</label>
-        <div class="oct-mode-toggle" role="group" aria-label="Add target">
-          <button type="button"
-                  class="oct-mode-btn"
-                  class:on={!_placeMode}
-                  onclick={() => _placeMode = false}
-                  title="+/− stage legs into the basket (default).">Basket</button>
-          <button type="button"
-                  class="oct-mode-btn"
-                  class:on={_placeMode}
-                  onclick={() => _placeMode = true}
-                  title="+/− open the Ticket tab pre-filled for direct submit.">Place</button>
-        </div>
-      </div>
-    {/if}
-  </div>
+  <!-- Account / Underlying / Expiry / Kind / Mode pickers retired per
+       operator request — Account lives in the modal header's Account
+       dropdown; Underlying is derived from the symbol the operator
+       picks at the header level; Expiry defaults to nearest; Kind
+       defaults to options + futures; Mode defaults to Basket. Strikes
+       grid and futures rows below pick up the defaults reactively. -->
+  {#if _allAccounts.length === 0 && !_account}
+    <div class="oct-acct-warn">No routable account — pick one from the modal header's Account dropdown.</div>
+  {/if}
 
   <!-- Spot + ATM pill -->
   {#if chainSpot != null}
@@ -855,6 +798,19 @@
     margin-bottom: 0.25rem;
   }
   .oct-acct-hint { font-size: 0.62rem; color: #7e97b8; font-style: italic; }
+  /* Subtle inline warn line shown when no broker account is loaded
+     and none was supplied via the modal header. The legacy
+     .oct-account-row wrapper is gone; this stand-alone div replaces
+     the empty-state hint that used to render inside it. */
+  .oct-acct-warn {
+    font-size: 0.62rem;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    border-radius: 3px;
+    padding: 0.28rem 0.5rem;
+    margin: 0 0 0.4rem;
+  }
   .oct-acct-single {
     font-family: monospace;
     font-size: 0.72rem;

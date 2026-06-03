@@ -7,11 +7,14 @@
  * duplicating the id/label pair.
  */
 
+// Command Line tab retired per operator request — account + symbol now
+// live in the header so the standalone command-line surface added no
+// affordance beyond what the Ticket and Chain tabs already provide.
+// /console retains its own command surface (different lifecycle).
 export const ORDER_TABS = /** @type {const} */ ([
   { id: /** @type {'chain'}   */ ('chain'),   label: 'Chain' },
   { id: /** @type {'ticket'}  */ ('ticket'),  label: 'Order ticket' },
-  { id: /** @type {'command'} */ ('command'), label: 'Command line' },
 ]);
 
-/** @type {ReadonlyArray<'chain' | 'ticket' | 'command'>} */
+/** @type {ReadonlyArray<'chain' | 'ticket'>} */
 export const ORDER_TAB_IDS = ORDER_TABS.map(t => t.id);
