@@ -10,13 +10,14 @@
    * AgentToast (auto-fire toast) is a separate concern and is NOT replaced here.
    */
 
-  import { getContext } from 'svelte';
+  import { getContext, onMount } from 'svelte';
   import { executionMode } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import { resolveAnchorToTradeable } from '$lib/data/resolveUnderlying';
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
+  import { loadAccounts, getDefaultSymbol } from '$lib/data/accounts';
 
   // HIGH 2: derive the set of mode pills the order ticket should show.
   // Restricts LIVE to authenticated prod sessions where the master toggle
@@ -49,11 +50,19 @@
     showLog   = /** @type {boolean} */ (true),
   } = $props();
 
-  // Universal default — NIFTY 50 is the canonical Indian market index
-  // and the first entry in the Markets watchlist, so an operator opening
-  // the chart icon from a context-less page (Pulse / Dashboard / Agents
-  // / Settings etc.) gets the broad-market chart immediately.
-  const _anchorSymbol      = $derived(String(symbol   || 'NIFTY 50').toUpperCase());
+  // Universal default falls back to the operator-configured
+  // orders.default_symbol setting (CRUDEOIL by default). Falls
+  // through to NIFTY 50 only when the setting is blank AND no
+  // caller-supplied symbol is in scope. Loaded lazily on mount so
+  // server-side renders still get a sensible value.
+  let _operatorDefault = $state('');
+  onMount(async () => {
+    try { await loadAccounts(); _operatorDefault = String(getDefaultSymbol() || '').toUpperCase(); }
+    catch (_) { /* keep blank */ }
+  });
+  const _anchorSymbol      = $derived(
+    String(symbol || _operatorDefault || 'NIFTY 50').toUpperCase()
+  );
   const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 
   // Resolve the anchor to a tradeable contract (NIFTY 50 → NIFTY26JUNFUT,
