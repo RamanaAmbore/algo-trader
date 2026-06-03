@@ -2020,12 +2020,20 @@
      above the activity"). Mirrors ActivityLogModal's .alm-body —
      flex column, fixed slot inside the modal's overall height, the
      LogPanel inside expands via heightClass="flex-1 min-h-0". */
+  /* Bottom activity panel — operator request: shrink so the order
+     ticket (top of the modal) gets the screen real estate needed to
+     surface the market-depth ladder. 22rem/18rem was eating ~46 % of
+     a 760px modal; 13rem/11rem leaves the ticket form + depth visible
+     while the LogPanel inside still scrolls comfortably. The active
+     tab inside (Orders / Agents / Terminal / Ticks / System / News)
+     manages its own scroll, so reducing the slot height never breaks
+     content — it just keeps the strip more compact. */
   .oes-bottom-panel {
-    flex: 0 0 22rem;
-    min-height: 18rem;
+    flex: 0 0 13rem;
+    min-height: 11rem;
     display: flex;
     flex-direction: column;
-    padding: 0.4rem 0.6rem 0.6rem;
+    padding: 0.3rem 0.6rem 0.5rem;
     overflow: hidden;
     border-top: 1px solid rgba(168, 85, 247, 0.22);
     font-family: ui-monospace, monospace;
@@ -2085,7 +2093,9 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    padding: 0.4rem 0.6rem 0.6rem;
+    /* Padding tightened (was 0.4 / 0.6 / 0.6) so the panel's already
+       reduced height isn't eaten by inner whitespace. */
+    padding: 0.2rem 0.5rem 0.35rem;
     overflow: hidden;
   }
   :global(.oes-bottom-scroll) {
