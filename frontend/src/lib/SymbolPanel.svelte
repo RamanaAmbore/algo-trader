@@ -470,20 +470,36 @@
   // render in the common action footer.
   let _modalMargin        = $state(/** @type {any} */ (null));
   let _modalMarginLoading = $state(false);
-  function _onMarginUpdate(/** @type {any} */ preview, /** @type {boolean} */ loading) {
+  // Chip-meta from OrderTicket: { isCashMode, cash, kind, side }.
+  // Drives the footer chip label swap between "Cost · Cash" (cash-mode
+  // orders: equity buy/sell + long option premium) and "Req · Avail"
+  // (margin-mode: short option, futures). Null until first emit.
+  let _chipMeta = $state(/** @type {any} */ (null));
+  function _onMarginUpdate(/** @type {any} */ preview, /** @type {boolean} */ loading, /** @type {any} */ meta) {
     _modalMargin = preview;
     _modalMarginLoading = loading;
+    if (meta) _chipMeta = meta;
   }
   // Compact derived view of the margin block so the footer template
   // stays readable. Returns null when there's nothing to show.
   const _marginInfo = $derived.by(() => {
     if (!_modalMargin && !_modalMarginLoading) return null;
     if (_modalMargin?.error) return { error: _modalMargin.error };
-    if (!_modalMargin) return { loading: true };
+    if (!_modalMargin) return { loading: true, isCashMode: !!_chipMeta?.isCashMode };
     const d = _modalMargin.diagnostics ?? {};
     const required  = Number(d.basket_margin_used) || 0;
-    const available = d.available_margin;
-    const shortfall = Number(d.margin_shortfall) || 0;
+    // Pick the "available" figure based on whether the leg consumes
+    // cash (equity buy/sell, long option premium) or margin (short
+    // option, futures). Cash comes from /api/funds (passed via meta);
+    // margin comes from broker.margins().net. Same shape downstream so
+    // the chip + colour bands work the same way.
+    const isCashMode = !!_chipMeta?.isCashMode;
+    const available = isCashMode
+      ? (typeof _chipMeta?.cash === 'number' ? _chipMeta.cash : null)
+      : d.available_margin;
+    const shortfall = isCashMode
+      ? (typeof available === 'number' && available < required ? (required - available) : 0)
+      : (Number(d.margin_shortfall) || 0);
     let afterCls = '';
     let after = null;
     if (typeof available === 'number') {
@@ -491,7 +507,7 @@
       const pct = available > 0 ? (after / available) * 100 : 0;
       afterCls = after < 0 || pct < 10 ? 'err' : pct < 40 ? 'warn' : '';
     }
-    return { required, available, after, afterCls, shortfall };
+    return { required, available, after, afterCls, shortfall, isCashMode };
   });
   // Margin pill color flavor — single source for the .oes-margin-pill-*
   // classname. Maps the live margin state into one of: err (shortfall
@@ -1055,22 +1071,26 @@
              chip. color code the chip based on margin availability". -->
         <div class="oes-common-row">
           {#if _marginInfo}
+            {@const _isCash = !!_marginInfo.isCashMode}
+            {@const _reqKey = _isCash ? 'Cost' : 'Req'}
+            {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
+            {@const _kind = _isCash ? 'Cash debit' : 'Margin required'}
             <span class="oes-margin-pill oes-margin-pill-{_marginPillCls}"
                   title={_marginInfo.error
-                    ? `Margin preview: ${_marginInfo.error}`
+                    ? `Preview: ${_marginInfo.error}`
                     : _marginInfo.loading
-                      ? 'Computing margin…'
-                      : `Required ₹${aggFmtMargin(_marginInfo.required)} vs Available ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
+                      ? `Computing ${_kind.toLowerCase()}…`
+                      : `${_kind}: ₹${aggFmtMargin(_marginInfo.required)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
               {#if _marginInfo.error}
                 ⚠ {_marginInfo.error}
               {:else if _marginInfo.loading}
-                Computing margin…
+                Computing {_isCash ? 'cost' : 'margin'}…
               {:else}
-                <span class="oes-margin-pill-key">Req</span>
+                <span class="oes-margin-pill-key">{_reqKey}</span>
                 <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.required)}</span>
                 {#if _marginInfo.available != null}
                   <span class="oes-margin-pill-sep">·</span>
-                  <span class="oes-margin-pill-key">Avail</span>
+                  <span class="oes-margin-pill-key">{_avlKey}</span>
                   <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.available)}</span>
                 {/if}
               {/if}
@@ -1085,7 +1105,7 @@
           {/if}
           <button type="button" class="oes-common-basket"
             title="Add the current order to the basket"
-            onclick={_modalFireBasket}>+ Add to basket</button>
+            onclick={_modalFireBasket}>+ Basket</button>
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}

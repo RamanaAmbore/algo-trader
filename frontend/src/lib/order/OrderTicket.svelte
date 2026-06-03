@@ -29,6 +29,7 @@
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
+  import { getDefaultAccount } from '$lib/data/accounts';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
   import {
@@ -70,7 +71,7 @@
    *   onAccountChange?: (account: string) => void,
    *   onSideChange?: ((side: 'BUY'|'SELL') => void) | null,
    *   hostManagesEsc?: boolean,
-   *   onMarginUpdate?: ((preview:any, loading:boolean) => void) | null,
+   *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, kind:string, side:string}) => void) | null,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
    * }} */
@@ -158,7 +159,7 @@
     // modal) uses this to render the same MARGIN/Avail/After/Short row
     // inside its common action footer so the operator sees the verdict
     // regardless of which tab is active.
-    onMarginUpdate = /** @type {((preview:any, loading:boolean) => void) | null} */ (null),
+    onMarginUpdate = /** @type {((preview:any, loading:boolean, meta?:{isCashMode:boolean,cash:number|null,kind:string,side:string}) => void) | null} */ (null),
     // When true, the Symbol chip in the quick-row top strip is
     // suppressed. Used by the order modal where the picker row above
     // the tabs already shows the symbol — no need to repeat it inside
@@ -606,21 +607,35 @@
   //      flips symbol / picker reloads), reset.
   $effect(() => {
     const propPick = _isRealAcct(account) ? String(account) : '';
-    // Seed from prop immediately even if _accounts hasn't resolved yet —
-    // the row already carries the correct unmasked account_id and we
-    // should trust it rather than waiting for the self-fetch to land.
+    // Account-resolution ladder (top wins):
+    //   1. Caller-supplied `account` prop — context from the host page
+    //      (e.g. clicked Edit on a specific row's order).
+    //   2. orders.default_account setting (operator's primary account,
+    //      ZG0790 by default) when it's in the loaded picker list.
+    //   3. Sole loaded account when the list has exactly one entry.
+    // Empty when none resolves so the operator can pick manually.
     if (!_account && propPick) {
       _account = propPick;
       return;
     }
-    if (!_account && _accounts.length === 1) {
-      _account = _accounts[0];
-      return;
+    if (!_account && _accounts.length) {
+      const defaultAcct = getDefaultAccount();
+      if (defaultAcct && _accounts.includes(defaultAcct)) {
+        _account = defaultAcct;
+        return;
+      }
+      if (_accounts.length === 1) {
+        _account = _accounts[0];
+        return;
+      }
     }
     if (_account && _accounts.length && !_accounts.includes(_account)) {
       // Re-check against propPick first so a late-arriving list that
       // confirms the prop doesn't clear it.
-      _account = propPick || (_accounts.length === 1 ? _accounts[0] : '');
+      const defaultAcct = getDefaultAccount();
+      _account = propPick
+        || (defaultAcct && _accounts.includes(defaultAcct) ? defaultAcct : '')
+        || (_accounts.length === 1 ? _accounts[0] : '');
     }
   });
 
@@ -732,6 +747,31 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _marginTimer = null;
 
+  // Chip-meta carries the leg-classification the host (SymbolPanel)
+  // needs to swap its margin chip between "cash" mode (equity buy/sell,
+  // long option premium = debit) and "margin" mode (short option,
+  // futures — SPAN-collateralised). isCashMode is true for cash-only
+  // orders; cash is the operator's available cash from /api/funds for
+  // the picked account (TOTAL when no specific account).
+  const _chipMeta = $derived.by(() => {
+    const isCashMode =
+      isEquity ||
+      ((kind === 'CE' || kind === 'PE') && _side === 'BUY');
+    return {
+      isCashMode,
+      cash: _accountFunds ? Number(_accountFunds.cash || 0) : null,
+      kind,
+      side: _side,
+    };
+  });
+  // Re-emit chip meta on every state change so the host chip
+  // re-renders even when the margin preview itself hasn't changed
+  // (e.g. operator flips BUY→SELL on an option without retyping qty).
+  $effect(() => {
+    void _chipMeta;
+    onMarginUpdate?.(_marginPreview, _marginLoading, _chipMeta);
+  });
+
   $effect(() => {
     // Track everything that materially affects the basket_margin number.
     // (Svelte 5 picks up reads inside this function automatically.)
@@ -753,11 +793,11 @@
     if (_isDemo || !_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
       _marginPreview = null;
       _marginLoading = false;
-      onMarginUpdate?.(null, false);
+      onMarginUpdate?.(null, false, _chipMeta);
       return;
     }
     _marginLoading = true;
-    onMarginUpdate?.(_marginPreview, true);
+    onMarginUpdate?.(_marginPreview, true, _chipMeta);
     _marginTimer = setTimeout(async () => {
       try {
         const payload = {
@@ -778,7 +818,7 @@
         _marginPreview = { error: (e?.message || 'preview failed').slice(0, 60) };
       } finally {
         _marginLoading = false;
-        onMarginUpdate?.(_marginPreview, false);
+        onMarginUpdate?.(_marginPreview, false, _chipMeta);
       }
     }, 350);
 
