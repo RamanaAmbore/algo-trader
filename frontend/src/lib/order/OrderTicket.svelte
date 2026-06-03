@@ -71,7 +71,8 @@
    *   onAccountChange?: (account: string) => void,
    *   onSideChange?: ((side: 'BUY'|'SELL') => void) | null,
    *   hostManagesEsc?: boolean,
-   *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, kind:string, side:string}) => void) | null,
+   *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
+   *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
    * }} */
@@ -159,7 +160,11 @@
     // modal) uses this to render the same MARGIN/Avail/After/Short row
     // inside its common action footer so the operator sees the verdict
     // regardless of which tab is active.
-    onMarginUpdate = /** @type {((preview:any, loading:boolean, meta?:{isCashMode:boolean,cash:number|null,kind:string,side:string}) => void) | null} */ (null),
+    onMarginUpdate = /** @type {((preview:any, loading:boolean, meta?:{isCashMode:boolean,cash:number|null,availMargin:number|null,usedMargin:number|null,fundsAccount:string,kind:string,side:string}) => void) | null} */ (null),
+    // When true, the in-ticket per-account funds line is suppressed.
+    // The order modal sets this so the funds row only renders once in
+    // the common action footer (visible on every tab).
+    fundsHidden = false,
     // When true, the Symbol chip in the quick-row top strip is
     // suppressed. Used by the order modal where the picker row above
     // the tabs already shows the symbol — no need to repeat it inside
@@ -747,19 +752,24 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _marginTimer = null;
 
-  // Chip-meta carries the leg-classification the host (SymbolPanel)
-  // needs to swap its margin chip between "cash" mode (equity buy/sell,
-  // long option premium = debit) and "margin" mode (short option,
-  // futures — SPAN-collateralised). isCashMode is true for cash-only
-  // orders; cash is the operator's available cash from /api/funds for
-  // the picked account (TOTAL when no specific account).
+  // Chip-meta carries the leg-classification + the FULL funds row the
+  // host (SymbolPanel) needs to render both:
+  //   1. the per-order Cost/Cash vs Req/Avail chip (was already there)
+  //   2. the modal-wide funds summary line ("Avail margin · Cash ·
+  //      Used") above the action footer — operator request: the
+  //      TOTAL/per-account funds line was inside OrderTicket only, so
+  //      it was hidden on the Chain tab. Surfacing it via the host
+  //      keeps it visible across every modal tab.
   const _chipMeta = $derived.by(() => {
     const isCashMode =
       isEquity ||
       ((kind === 'CE' || kind === 'PE') && _side === 'BUY');
     return {
       isCashMode,
-      cash: _accountFunds ? Number(_accountFunds.cash || 0) : null,
+      cash:         _accountFunds ? Number(_accountFunds.cash || 0)         : null,
+      availMargin:  _accountFunds ? Number(_accountFunds.avail_margin || 0) : null,
+      usedMargin:   _accountFunds ? Number(_accountFunds.used_margin || 0)  : null,
+      fundsAccount: _accountFunds ? String(_accountFunds.account || '')     : '',
       kind,
       side: _side,
     };
@@ -1160,7 +1170,7 @@
          a delayed /accounts fetch); falls back to the summed totals
          across every loaded fund row when no specific account is
          selected. Negative margin (margin debt) flips the pill red. -->
-    {#if _accountFunds}
+    {#if _accountFunds && !fundsHidden}
       <div class="ot-funds" class:ot-funds-low={_accountFunds.avail_margin < 0}
            title={_accountFunds.account === 'TOTAL'
              ? 'Sum across every loaded broker account'

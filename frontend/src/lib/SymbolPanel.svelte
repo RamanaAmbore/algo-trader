@@ -969,6 +969,7 @@
             symbolHidden={!headerless && !inline}
             symType={_symType}
             actionsHidden={actionsHidden || showCommonActions}
+            fundsHidden={showCommonActions && !inline}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
             hostManagesEsc={true}
@@ -1064,6 +1065,36 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
+        <!-- Funds summary line — sits ABOVE the action row so the
+             operator's overall wallet position (Avail margin · Cash ·
+             Used) reads at a glance on every tab. Visible regardless
+             of which tab is active. Per-order Cost vs Cash / Req vs
+             Avail chip lives on the action row below. -->
+        {#if _chipMeta && (_chipMeta.availMargin != null || _chipMeta.cash != null)}
+          <div class="oes-funds-line"
+               class:oes-funds-line-low={(_chipMeta.availMargin ?? 0) < 0}
+               title={(_chipMeta.fundsAccount === 'TOTAL')
+                 ? 'Sum across every loaded broker account'
+                 : `Funds for ${_chipMeta.fundsAccount}`}>
+            {#if _chipMeta.fundsAccount === 'TOTAL'}
+              <span class="oes-funds-k">TOTAL</span>
+            {/if}
+            {#if _chipMeta.availMargin != null}
+              <span class="oes-funds-k">Avail margin</span>
+              <span class="oes-funds-v">₹{aggFmtMargin(_chipMeta.availMargin)}</span>
+            {/if}
+            {#if _chipMeta.cash != null}
+              <span class="oes-funds-sep">·</span>
+              <span class="oes-funds-k">Cash</span>
+              <span class="oes-funds-v">₹{aggFmtMargin(_chipMeta.cash)}</span>
+            {/if}
+            {#if (_chipMeta.usedMargin ?? 0) > 0}
+              <span class="oes-funds-sep">·</span>
+              <span class="oes-funds-k">Used</span>
+              <span class="oes-funds-v">₹{aggFmtMargin(_chipMeta.usedMargin)}</span>
+            {/if}
+          </div>
+        {/if}
         <!-- Single action row: margin chip (left) + adaptive submit
              buttons (right). Operator request: "required and available
              margin can be displayed before order buttons. only two
@@ -1662,9 +1693,14 @@
   .oes-basket-clear:disabled,
   .oes-basket-submit:disabled { opacity: 0.45; cursor: progress; }
 
-  /* Body — the tab content area. */
+  /* Body — the tab content area. Flex column so child panels (chain
+     grid in particular) can `flex: 1` to fill the full available
+     height instead of clamping to their content. */
   .oes-body {
     flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     overflow-y: auto;
   }
 
@@ -1904,6 +1940,40 @@
      After · (Short) cells in a horizontal row. After is colour-coded
      by remaining-margin band (mirrors the OrderTicket's
      ot-margin-row-{err,warn,sub} convention). */
+  /* Funds summary line above the action row — Avail margin · Cash ·
+     Used (or per-account label when the operator picks a specific
+     broker). Matches the OrderTicket's .ot-funds palette so the visual
+     family stays consistent: muted slate keys, light value text, amber
+     "TOTAL" prefix. Negative avail-margin flips the row red. */
+  .oes-funds-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem 0.55rem;
+    padding: 0.25rem 0.35rem 0.35rem;
+    font-family: monospace;
+    font-size: 0.6rem;
+    color: #c8d8f0;
+  }
+  .oes-funds-line-low { color: #f87171; }
+  .oes-funds-k {
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #7e97b8;
+  }
+  /* TOTAL prefix gets the amber accent that ties to the modal title. */
+  .oes-funds-line .oes-funds-k:first-child:is(:nth-child(1)) {
+    color: #fbbf24;
+  }
+  .oes-funds-v {
+    color: #e2e8f0;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-funds-line-low .oes-funds-v { color: #f87171; }
+  .oes-funds-sep { opacity: 0.5; }
+
   /* Margin pill — single chip showing "Req ₹X · Avail ₹Y" tinted by
      availability. ok = green, warn = amber, err = red, neutral = slate
      (loading / unknown). Anchored to the LEFT of the action button

@@ -788,7 +788,18 @@
 </div>
 
 <style>
-  .oct-root { display: flex; flex-direction: column; gap: 0.5rem; }
+  /* Root is a flex column so the strike grid can grow to fill the
+     modal body's remaining height. `min-height: 0` is the canonical
+     flex-grow gate — without it the table would refuse to shrink
+     below its content height and overflow the modal. */
+  .oct-root {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+  }
 
   .oct-label {
     display: block;
@@ -910,9 +921,15 @@
      stay visible without forcing a second scroll on the modal body.
      Earlier 22rem felt cramped on tablet viewports and pushed the
      LogPanel bottom panel out of view. */
+  /* Strike grid: grow to fill the modal body's available height
+     instead of clamping to 14rem. The parent .oct-root has flex:1, and
+     here we take whatever vertical room is left after the futures bar
+     + ATM gauge above. Operator gets a full-height chain without
+     forcing a second internal scroll. */
   .chain-grid-wrap {
     overflow-y: auto;
-    max-height: 14rem;
+    flex: 1 1 0;
+    min-height: 9rem;
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 3px;
   }
