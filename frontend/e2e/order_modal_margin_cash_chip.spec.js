@@ -57,25 +57,18 @@ test.describe('Order modal margin/cash chip (c2aae3a7 · 5f93f0b2)', () => {
     await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
 
-    // Open the order modal — page-header Order button (vivid amber).
-    const orderBtn = page.locator(
-      'button[title*="rder" i]:not([disabled])'
-    ).first();
-    const btnCount = await orderBtn.count();
-    log.timeline.push(`page-header order-button candidates: ${btnCount}`);
-    if (btnCount === 0) {
-      // /orders is the orders page itself — Order button is hidden via
-      // hideOrder. Use the dashboard page-header instead.
-      log.timeline.push('no Order button on /orders (hideOrder); going to /dashboard');
-      await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2500);
-    }
+    // /orders hides the page-header Order button (`hideOrder={true}`).
+    // Use /dashboard which always renders PageHeaderActions with the
+    // amber Order pill (.pha-order).
+    log.timeline.push('navigate /dashboard');
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
 
-    const orderBtn2 = page.locator('button[title*="rder" i]:not([disabled])').first();
+    const orderBtn2 = page.locator('button.pha-order').first();
     const btnCount2 = await orderBtn2.count();
-    log.timeline.push(`order-button candidates on dashboard: ${btnCount2}`);
+    log.timeline.push(`.pha-order candidates on dashboard: ${btnCount2}`);
     if (btnCount2 === 0) {
-      log.timeline.push('skip: no Order trigger button');
+      log.timeline.push('skip: no Order trigger button (PageHeaderActions missing)');
       console.log(JSON.stringify(log, null, 2));
       return;
     }
