@@ -64,11 +64,33 @@
   flex-direction: column;
   overflow: hidden;
 }
+/* TV-friendly focus target — Tab onto the modal frame, then D-pad
+   arrows scroll the active body via the global handler in
+   +layout.svelte. */
+.canonical-modal-panel { outline: none; }
+.canonical-modal-panel:focus-visible {
+  outline: 2px solid rgba(251, 191, 36, 0.55);
+  outline-offset: -2px;
+}
 @media (max-width: 760px) {
   .canonical-modal-panel {
     width: 96vw;
     height: 90vh;
   }
+}
+
+/* ── TV remote focus ring ────────────────────────────────────────────
+   Google TV / Android TV / Amazon Fire Stick browsers expose D-pad
+   navigation through Tab + arrow keys. Scrollable containers carry
+   tabindex="0" so the operator can land on them with Tab; this rule
+   paints a thin amber outline when the container has keyboard focus
+   so the operator sees what's selected. Hidden for mouse + touch
+   (:focus-visible only). The +layout.svelte global keydown handler
+   translates arrow keys into scroll on the focused container. */
+:focus-visible.tv-scrollable,
+.tv-scrollable:focus-visible {
+  outline: 2px solid rgba(251, 191, 36, 0.55);
+  outline-offset: -2px;
 }
 
 /* ── AG Grid — RamboQuant theme ──────────────────────────────────────────── */
