@@ -996,9 +996,30 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
-        <!-- Margin row — lifted out of OrderTicket so it surfaces on
-             every tab inside the modal (Ticket / Chain / Command).
-             Stays empty until OrderTicket fires onMarginUpdate. -->
+        <!-- Action buttons row — operator's primary interaction sits at
+             the top of the footer slot. -->
+        <div class="oes-common-row">
+          <span class="oes-common-spacer"></span>
+          <button type="button" class="oes-common-basket"
+            title="Add the current order to the basket"
+            onclick={_modalFireBasket}>+ Basket</button>
+          <button type="button" class="oes-common-side"
+            class:oes-common-side-buy={_modalSide === 'BUY'}
+            class:oes-common-side-sell={_modalSide === 'SELL'}
+            title="Flip BUY ↔ SELL"
+            onclick={_modalFlipSide}>{_modalSide}</button>
+          <button type="button" class="oes-common-submit"
+            class:oes-common-submit-buy={_modalSide === 'BUY'}
+            class:oes-common-submit-sell={_modalSide === 'SELL'}
+            title="Place the order via the active tab"
+            onclick={_modalFireSubmit}>
+            Place {_modalSide.toLowerCase()}
+          </button>
+        </div>
+        <!-- Margin row sits BELOW the action buttons (operator
+             feedback: "margin details should be shown below order
+             placement buttons"). Lifted out of OrderTicket so it
+             surfaces on every tab inside the modal. -->
         {#if _marginInfo}
           <div class="oes-margin-strip">
             {#if _marginInfo.error}
@@ -1029,22 +1050,6 @@
             {/if}
           </div>
         {/if}
-        <span class="oes-common-spacer"></span>
-        <button type="button" class="oes-common-basket"
-          title="Add the current order to the basket"
-          onclick={_modalFireBasket}>+ Basket</button>
-        <button type="button" class="oes-common-side"
-          class:oes-common-side-buy={_modalSide === 'BUY'}
-          class:oes-common-side-sell={_modalSide === 'SELL'}
-          title="Flip BUY ↔ SELL"
-          onclick={_modalFlipSide}>{_modalSide}</button>
-        <button type="button" class="oes-common-submit"
-          class:oes-common-submit-buy={_modalSide === 'BUY'}
-          class:oes-common-submit-sell={_modalSide === 'SELL'}
-          title="Place the order via the active tab"
-          onclick={_modalFireSubmit}>
-          Place {_modalSide.toLowerCase()}
-        </button>
       </div>
     {/if}
 
@@ -1803,21 +1808,28 @@
   .oes-side-sell { background: rgba(248,113,113,0.12); color: #f87171; border: 1px solid rgba(248,113,113,0.35); }
 
   /* ── Common action footer (modal-mode only) ─────────────────────── */
+  /* Two-row stack: buttons on top, margin row below. */
   .oes-common-actions {
     display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.55rem 0.85rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.3rem;
+    padding: 0.5rem 0.85rem;
     background: rgba(15, 23, 42, 0.55);
     border-top: 1px solid rgba(251, 191, 36, 0.18);
     flex-shrink: 0;
   }
+  .oes-common-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
   .oes-common-spacer { flex: 1 1 0; }
 
-  /* Margin strip — sits at the leading edge of the common action
-     footer. MARGIN · Avail · After · (Short) cells in a horizontal
-     row. After is colour-coded by remaining-margin band (mirrors the
-     OrderTicket's ot-margin-row-{err,warn,sub} convention). */
+  /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
+     After · (Short) cells in a horizontal row. After is colour-coded
+     by remaining-margin band (mirrors the OrderTicket's
+     ot-margin-row-{err,warn,sub} convention). */
   .oes-margin-strip {
     display: flex;
     align-items: center;
