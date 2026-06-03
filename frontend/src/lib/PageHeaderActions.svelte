@@ -186,17 +186,18 @@
             onclick={_openLog}
             title="Activity"
             aria-label="Open Activity">
-      <!-- Clock glyph — "recent activity" reads as time-ordered events.
-           Previously this was three horizontal lines, but that visually
-           collided with the order receipt/slip icon (rectangle with the
-           same lines inside). The clock makes the two surfaces clearly
-           distinct without changing the action affordance. -->
+      <!-- Notification bell glyph — operator request. Bell semantics
+           match the existing OrderNotifications / AgentNotifications
+           bells at the page header (same violet alert family), and
+           visually splits cleanly from the order receipt + chart
+           polyline icons in the same trio. -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="8" cy="8" r="5.5"
-                stroke="currentColor" stroke-width="1.5"/>
-        <path d="M8 4.8V8l2.2 1.6"
-              stroke="currentColor" stroke-width="1.5"
-              stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
+              stroke="currentColor" stroke-width="1.4"
+              stroke-linejoin="round"/>
+        <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3"
+              stroke="currentColor" stroke-width="1.4"
+              stroke-linecap="round"/>
       </svg>
     </button>
   {/if}
