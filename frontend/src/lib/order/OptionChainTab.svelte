@@ -550,15 +550,12 @@
     <div class="oct-acct-warn">No routable account — pick one from the modal header's Account dropdown.</div>
   {/if}
 
-  <!-- Spot + ATM pill -->
-  {#if chainSpot != null}
-    <div class="oct-spot-row">
-      <span class="chain-spot-pill">
-        SPOT {priceFmt(chainSpot)}
-        {#if chainAtmStrike != null}· ATM {priceFmt(chainAtmStrike)}{/if}
-      </span>
-    </div>
-  {/if}
+  <!-- Spot + ATM "index pill" retired per operator request — the
+       index/underlying value already feeds into the strike grid
+       below (strikes are sorted relative to ATM, ATM row gets the
+       ATM-highlight class) so a standalone SPOT/ATM chip duplicated
+       what the table already encoded. -->
+
 
   <!-- Futures rows -->
   {#if chainKinds.includes('fut') && chainFutures.length}
