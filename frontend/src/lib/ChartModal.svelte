@@ -16,6 +16,16 @@
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
+  // ChartWorkspace exposes its fetch state via $bindable `loading`. While
+  // a refresh is in flight, the modal goes into a "busy" guard mode:
+  //   - overlay flips to pointer-events:auto so navbar / menu clicks
+  //     underneath are absorbed instead of triggering navigation
+  //   - chart body becomes pointer-events:none so hover/zoom are inert
+  //   - only the × button + Esc key still close the modal
+  // Mirrors industry pattern (TWS dialog modal lock, Bloomberg busy
+  // cursor) — when data is fetching, no surface clicks are honoured so
+  // the operator can't accidentally double-trigger.
+  let _loading = $state(false);
 
   // The cm-overlay is portaled to document.body, OUTSIDE the SvelteKit
   // mount root (<div id="svelte">). Svelte 5 delegates onclick handlers
@@ -68,9 +78,10 @@
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <!-- overlay is pointer-events:none so click-outside-to-close is gone;
      operator uses × button or Esc. tabindex retained for screen readers. -->
-<div class="canonical-modal-overlay cm-overlay" use:portal role="dialog" aria-modal="true"
+<div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
+     use:portal role="dialog" aria-modal="true"
      aria-label="Chart — {symbol}" tabindex="-1">
-  <div class="canonical-modal-panel cm-modal" bind:this={_modalEl}>
+  <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
            and showing the symbol up here too would duplicate it.
@@ -84,12 +95,25 @@
           <path d="M2 13h12M3 11l3-4 3 2 4-6" />
         </svg>
         Charts
+        {#if _loading}
+          <!-- Busy badge — same chart-glyph + label as the in-chart
+               spinner so the operator sees ONE consistent affordance
+               telling them "fetch in flight, hold off". -->
+          <span class="cm-busy-badge" aria-live="polite" title="Fetching chart data — modal is locked until done">
+            <svg class="cm-busy-badge-icon" width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            FETCHING…
+          </span>
+        {/if}
       </span>
       <button type="button" class="cm-close" bind:this={_closeBtnEl}
               aria-label="Close chart modal">×</button>
     </div>
     <div class="cm-body">
       <ChartWorkspace
+        bind:loading={_loading}
         symbol={symbol}
         exchange={exchange}
         mode={mode}
@@ -167,5 +191,52 @@
     overflow: hidden;
     flex: 1 1 0;
     min-height: 0;
+  }
+
+  /* Busy state — chart fetch in flight. */
+  /* Overlay swallows clicks on the page underneath (menu / navbar /
+     content) so the operator can't trigger a navigation that races
+     the in-flight fetch. */
+  .cm-overlay.cm-busy { pointer-events: auto; }
+  /* Inside the panel, header text is read-only; the chart body becomes
+     inert so hover/zoom/pan/scroll don't fire during the fetch. The ×
+     button retains pointer-events:auto (set on .cm-close directly) and
+     stays clickable. */
+  .cm-modal.cm-busy .cm-body { pointer-events: none; }
+  /* Subtle scrim over the body so the lock state is visually obvious. */
+  .cm-modal.cm-busy .cm-body::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(13, 24, 41, 0.18);
+    pointer-events: none;
+  }
+  .cm-body { position: relative; }
+
+  /* Fetching badge in the header — chart-glyph + label, cyan to match
+     the canonical refresh-indicator palette across ChartWorkspace and
+     the page-header Chart button. */
+  .cm-busy-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: 0.5rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    color: #67e8f9;
+    font-family: monospace;
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .cm-busy-badge-icon {
+    animation: cm-busy-spin 1.1s linear infinite;
+    transform-origin: 50% 50%;
+  }
+  @keyframes cm-busy-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
   }
 </style>
