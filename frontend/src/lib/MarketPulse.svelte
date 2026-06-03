@@ -2364,7 +2364,11 @@
       // day_change_val (which is only fresh as of the last loadPulse
       // — every 2 ticks). With the recompute, the subtotals strip +
       // Day P&L column update on every loadQuotes tick alongside LTP.
-      const livePos = liveQ?.ltp ?? null;
+      // Treat ltp=0 as "no live quote" — a positive LTP is the only
+      // value that should drive the live recompute. Otherwise a broken
+      // quote (pre-open, no trades yet, circuit, broker glitch) would
+      // post day_pnl = (0 − close) × qty → a phantom −100% day move.
+      const livePos = Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null;
       const closePx = Number(r.close_price) || 0;
       if (livePos != null && closePx > 0 && q !== 0) {
         row.day_pnl = (row.day_pnl ?? 0) + (livePos - closePx) * q;
@@ -2433,7 +2437,10 @@
       // (live_ltp − avg) × qty (no realised component on holdings).
       if (liveQ?.volume != null) row.volume = liveQ.volume;
       if (liveQ?.oi     != null) row.oi     = liveQ.oi;
-      const liveHold = liveQ?.ltp ?? null;
+      // Same guard as positions above — ltp=0 is treated as "no live
+      // quote", so a holdings row with a broken / pre-open quote
+      // doesn't post a phantom −100% day move via (0 − close) × qty.
+      const liveHold = Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null;
       const holdClose = Number(r.close_price) || 0;
       const holdAvg   = Number(r.average_price) || 0;
       if (liveHold != null && holdClose > 0 && heldQty !== 0) {
