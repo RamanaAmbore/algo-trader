@@ -55,6 +55,17 @@
     Object.fromEntries(_DEFAULT_PINS.map((a, i) => [_PIN_LABELS[i], a]))
   );
 
+  // Symbol-type filter — mirrors ChartWorkspace's _SYM_TYPE_OPTS so
+  // the chart and order modals use the same vocabulary. "EQ · FUT ·
+  // OPT" spells out what the unfiltered ALL value contains.
+  const _SYM_TYPE_OPTS = [
+    { value: 'ALL', label: 'EQ · FUT · OPT' },
+    { value: 'EQ',  label: 'Equity'  },
+    { value: 'FUT', label: 'Futures' },
+    { value: 'OPT', label: 'Options' },
+  ];
+  let _symType = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'));
+
   /** @type {{
    *   defaultTab?:     'ticket' | 'chain',
    *   symbol?:         string,
@@ -761,6 +772,61 @@
     </div>
     {/if}
 
+    <!-- Picker row — Account · Symbol type · Symbol — placed BEFORE
+         the tab strip so the operator sets the order's identity once
+         and both tabs (Chain / Order ticket) read from the same
+         values. Mirrors ChartWorkspace's toolbar pattern (type filter
+         + combo) so the two modals look + behave identically. -->
+    {#if !headerless && !inline}
+      <div class="oes-picker">
+        {#if _modalAccounts.length > 1}
+          <div class="oes-account-pick">
+            <Select
+              options={_modalAccounts.map(a => ({ value: a, label: a }))}
+              value={_sharedAccount}
+              onValueChange={(v) => _onAccountChange(String(v))}
+              placeholder="Account"
+              ariaLabel="Trading account" />
+          </div>
+        {:else if _modalAccounts.length === 1 && _sharedAccount}
+          <span class="oes-account-single" title="Single broker account">{_sharedAccount}</span>
+        {/if}
+        <div class="oes-type-wrap">
+          <Select
+            options={_SYM_TYPE_OPTS}
+            bind:value={_symType}
+            ariaLabel="Symbol type filter" />
+        </div>
+        <div class="oes-sym-pick">
+          <SymbolSearchInput
+            value={_localSymbol}
+            pins={_PIN_LABELS}
+            resolvePin={(label) => label}
+            type={_symType}
+            placeholder="Symbol — pick or type 3+"
+            onPick={(sym, meta) => {
+              if (meta?.pinLabel) {
+                const anchor = _LABEL_TO_ANCHOR[meta.pinLabel] || meta.pinLabel;
+                const r = resolveUnderlying(String(anchor).toUpperCase(), findNearestFuture);
+                if (r?.tradingsymbol) {
+                  _localSymbol = r.tradingsymbol;
+                  _pickedExchange = r.exchange || '';
+                  onSymbolChange?.(r.tradingsymbol);
+                }
+              } else {
+                _localSymbol = sym;
+                if (meta?.exchange) _pickedExchange = meta.exchange;
+                onSymbolChange?.(sym);
+              }
+            }}
+            ariaLabel="Symbol — pinned or search" />
+        </div>
+        {#if exchange || _pickedExchange}
+          <span class="oes-exch">{exchange || _pickedExchange}</span>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Tab strip — suppressed when the host page renders its own
          (tabsExternal). Operator clicks still flow back via the
          two-way bound `activeTab` either way. -->
@@ -1091,6 +1157,26 @@
   }
   /* Account dropdown — placeholder "Account" reads as its label when
      nothing is picked. Narrow Select pinned next to the symbol combo. */
+  /* Picker row — Account · Symbol type · Symbol — between header and
+     tabs. Mirrors the chart workspace's .cw-picker bar so the two
+     modals look the same. */
+  .oes-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.85rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.10);
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  /* Type filter — fixed width sized to fit the widest label
+     "EQ · FUT · OPT" so the trigger doesn't reflow when the operator
+     picks a narrower value. */
+  .oes-type-wrap {
+    width: 8.5rem;
+    flex-shrink: 0;
+  }
+  .oes-type-wrap :global(.rbq-select-trigger) { width: 100%; }
   .oes-account-pick {
     flex-shrink: 0;
     min-width: 7rem;
