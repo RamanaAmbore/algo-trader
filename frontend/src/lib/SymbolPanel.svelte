@@ -1059,13 +1059,17 @@
          above the activity"). Suppressed when the host renders the
          activity in a separate surface via `hideBottomPanel`. -->
     {#if !hideBottomPanel}
+      <!-- LogPanel mount mirrors ActivityLogModal exactly so both
+           surfaces render their tabs identically. The same heightClass
+           ("flex-1 min-h-0") is what makes Orders cards show on the
+           Activity modal — the previous custom oes-bottom-scroll class
+           pinned the inner scroll cap to a fixed max-height that hid
+           the card list and prevented other tabs from rendering. -->
       <div class="oes-bottom-panel">
-        <div class="oes-bottom-body">
-          <LogPanel
-            heightClass="oes-bottom-scroll"
-            defaultTab="order"
-          />
-        </div>
+        <LogPanel
+          heightClass="flex-1 min-h-0"
+          defaultTab="order"
+        />
       </div>
     {/if}
 
@@ -1900,20 +1904,20 @@
   .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
 
   /* ── Bottom panel (Log / Orders) ──────────────────────────────────── */
-  /* Sits AFTER the common action footer (operator request: "move the
-     order placement above the activity"). Gets a fixed slot of the
-     modal height (18-22rem depending on viewport) so the cards inside
-     stay visible without competing with the body's flex:1 grow. */
+  /* Sits AFTER the common action footer ("move the order placement
+     above the activity"). Mirrors ActivityLogModal's .alm-body —
+     flex column, fixed slot inside the modal's overall height, the
+     LogPanel inside expands via heightClass="flex-1 min-h-0". */
   .oes-bottom-panel {
-    margin-top: 0.4rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
     flex: 0 0 22rem;
     min-height: 18rem;
     display: flex;
     flex-direction: column;
+    padding: 0.4rem 0.6rem 0.6rem;
     overflow: hidden;
-    border-top: 1px solid rgba(168, 85, 247, 0.18);
+    border-top: 1px solid rgba(168, 85, 247, 0.22);
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
   }
   .oes-bottom-tabs {
     display: flex;
