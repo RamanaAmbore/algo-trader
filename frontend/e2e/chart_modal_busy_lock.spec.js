@@ -199,9 +199,10 @@ test.describe('ChartModal busy-lock (188086ce)', () => {
     });
     log.timeline.push(`.cm-busy-badge rule: ${JSON.stringify(badgeRule).slice(0, 360)}`);
     expect(badgeRule.found).toBe(true);
-    // Shipped declaration: color: #67e8f9 (cyan-300), monospace, cyan-400 border.
-    expect((badgeRule.cssText || '').toLowerCase()).toMatch(/#67e8f9|rgb\(103,\s*232,\s*249\)/);
-    expect((badgeRule.cssText || '').toLowerCase()).toMatch(/monospace/);
+    // Shipped declaration: chart-icon cyan-400 (#22d3ee = rgb(34,211,238))
+    // and inline-flex container for the rotating arc-spinner icon.
+    expect((badgeRule.cssText || '').toLowerCase()).toMatch(/#22d3ee|rgb\(34,\s*211,\s*238\)/);
+    expect((badgeRule.cssText || '').toLowerCase()).toMatch(/inline-flex/);
 
     // ── Clear busy → lock semantics revert ──────────────────────────
     log.timeline.push('--- remove .cm-busy and re-check restored state ---');

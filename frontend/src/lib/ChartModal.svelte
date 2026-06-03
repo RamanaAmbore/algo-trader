@@ -96,15 +96,17 @@
         </svg>
         Charts
         {#if _loading}
-          <!-- Busy badge — same chart-glyph + label as the in-chart
-               spinner so the operator sees ONE consistent affordance
-               telling them "fetch in flight, hold off". -->
-          <span class="cm-busy-badge" aria-live="polite" title="Fetching chart data — modal is locked until done">
-            <svg class="cm-busy-badge-icon" width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6"
-                    stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Busy badge — rotating arc-spinner glyph in chart-icon
+               cyan. Tells the operator "refresh in flight, modal locked
+               to × only". No text label; the rotation + cyan tint is
+               the affordance. -->
+          <span class="cm-busy-badge" aria-live="polite" title="Refreshing chart — modal is locked until done">
+            <svg class="cm-busy-badge-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5"
+                fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round"
+                stroke-dasharray="9 30" />
             </svg>
-            FETCHING…
           </span>
         {/if}
       </span>
@@ -213,23 +215,16 @@
   }
   .cm-body { position: relative; }
 
-  /* Fetching badge in the header — chart-glyph + label, cyan to match
-     the canonical refresh-indicator palette across ChartWorkspace and
-     the page-header Chart button. */
+  /* Refreshing badge in the header — icon-only, cyan to match the
+     canonical chart-icon palette across the page-header Chart button
+     and the in-chart spinner. No background pill or text label; the
+     rotation alone communicates the state, leaving the header
+     uncluttered. */
   .cm-busy-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    margin-left: 0.5rem;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.45);
-    color: #67e8f9;
-    font-family: monospace;
-    font-size: 0.58rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
+    margin-left: 0.4rem;
+    color: #22d3ee;
   }
   .cm-busy-badge-icon {
     animation: cm-busy-spin 1.1s linear infinite;

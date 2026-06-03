@@ -1301,13 +1301,18 @@
            the prior bars visible underneath so the operator sees a
            continuous update rather than a flash to empty. -->
       {#if _histLoading}
-        <div class="cw-chart-spinner" title="Fetching chart data…" aria-label="Fetching chart data">
+        <!-- Loading affordance — rotating arc-spinner glyph (same family
+             as RefreshButton's loading state), painted in the canonical
+             chart-icon cyan. No text label; the operator reads the
+             rotation as "refresh in flight" without the badge widening
+             the header. -->
+        <div class="cw-chart-spinner" title="Refreshing chart…" aria-label="Refreshing chart">
           <svg class="cw-chart-spinner-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <!-- Chart polyline glyph (matches the page-header Chart button) -->
-            <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6"
-                  stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="8" cy="8" r="5.5"
+              fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round"
+              stroke-dasharray="9 30" />
           </svg>
-          <span class="cw-chart-spinner-label">Fetching…</span>
         </div>
       {/if}
     {/if}
@@ -1723,15 +1728,6 @@
   .cw-chart-spinner-icon {
     animation: cw-spin 1.1s linear infinite;
     transform-origin: 50% 50%;
-  }
-  .cw-chart-spinner-label {
-    font-family: monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    margin-left: 0.35rem;
-    color: #67e8f9;
   }
   @keyframes cw-spin {
     from { transform: rotate(0deg); }
