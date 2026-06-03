@@ -33,7 +33,7 @@
   import Select            from '$lib/Select.svelte';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
-  import { resolveUnderlying as _resolveUnderlyingFn } from '$lib/data/resolveUnderlying';
+  import { resolveAnchorToTradeable as _resolveAnchorFn } from '$lib/data/resolveUnderlying';
   import { loadAccounts, getDefaultAccount, getDefaultSymbol } from '$lib/data/accounts';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
 
@@ -441,13 +441,15 @@
           _localSymbol = defaultSym.toUpperCase();
           onSymbolChange?.(_localSymbol);
           try {
-            // Hydrate the instruments cache before resolving — MCX
-            // commodities (CRUDEOIL / GOLD / SILVER) need it to find
-            // the nearest future. NSE index spots (NIFTY / BANKNIFTY)
-            // resolve from a static map and don't depend on it.
+            // Hydrate the instruments cache before resolving — both MCX
+            // commodities (CRUDEOIL / GOLD) and NSE index roots
+            // (NIFTY / BANKNIFTY / FINNIFTY) need findNearestFuture()
+            // to map to the tradeable contract. resolveAnchorToTradeable
+            // (not resolveUnderlying) is the right helper here because
+            // the order modal needs the FUTURE (NIFTY26JUNFUT), not the
+            // SPOT quote-key (NIFTY 50) — spot keys can't be traded.
             await loadInstruments().catch(() => null);
-            const resolved = _resolveUnderlyingFn(defaultSym.toUpperCase(), findNearestFuture);
-            const resolvedSym = resolved?.tradingsymbol || '';
+            const resolvedSym = _resolveAnchorFn(defaultSym.toUpperCase(), findNearestFuture) || '';
             if (resolvedSym && resolvedSym.toUpperCase() !== _localSymbol) {
               _localSymbol = resolvedSym.toUpperCase();
               onSymbolChange?.(_localSymbol);
@@ -972,11 +974,19 @@
             onPick={(sym, meta) => {
               if (meta?.pinLabel) {
                 const anchor = _LABEL_TO_ANCHOR[meta.pinLabel] || meta.pinLabel;
-                const r = resolveUnderlying(String(anchor).toUpperCase(), findNearestFuture);
-                if (r?.tradingsymbol) {
-                  _localSymbol = r.tradingsymbol;
-                  _pickedExchange = r.exchange || '';
-                  onSymbolChange?.(r.tradingsymbol);
+                // resolveAnchorToTradeable returns the future (or
+                // already-tradeable equity), NOT the spot quote-key.
+                // resolveUnderlying() was returning 'NIFTY 50' spot
+                // which the order modal can't trade — operator
+                // expects 'NIFTY26JUNFUT' instead.
+                const tradeable = _resolveAnchorFn(String(anchor).toUpperCase(), findNearestFuture);
+                if (tradeable) {
+                  _localSymbol = tradeable;
+                  // Exchange hint still comes from resolveUnderlying
+                  // (it knows NSE for indices, MCX for commodities).
+                  const r = resolveUnderlying(String(anchor).toUpperCase(), findNearestFuture);
+                  _pickedExchange = r?.exchange || '';
+                  onSymbolChange?.(tradeable);
                 }
               } else {
                 _localSymbol = sym;
