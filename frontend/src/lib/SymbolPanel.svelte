@@ -35,6 +35,7 @@
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
   import { resolveUnderlying as _resolveUnderlyingFn } from '$lib/data/resolveUnderlying';
   import { loadAccounts, getDefaultAccount, getDefaultSymbol } from '$lib/data/accounts';
+  import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
 
   // Pinned anchors shown at the top of the symbol combo's dropdown.
   // Same set as ChartWorkspace so the operator sees identical pinned
@@ -560,6 +561,45 @@
     }
     return { required, available, after, afterCls, shortfall, isCashMode };
   });
+  // Modal notice — single source of truth for error / warning / info
+  // banners surfaced in the action footer's LEFT slot. Priority:
+  //   1. preflight error    (err  — broker / preview blocked)
+  //   2. market closed      (warn — outside the symbol's session hours)
+  //   3. broker not loaded  (warn — account selected but broker offline)
+  //   4. info notices       (info — reserved for future use)
+  // Returns null when the row should fall through to cash / margin info.
+  const _modalNotice = $derived.by(() => {
+    // Live market clock — re-derive every minute via _modalMarginLoading
+    // alongside the normal _modalMargin dependency so the chip
+    // refreshes naturally when other state changes. For a pure clock
+    // tick, the funds/margin re-poll inherits the same cadence.
+    void _modalMarginLoading;
+    if (_modalMargin?.error) {
+      return { level: 'err',  text: '⚠ ' + String(_modalMargin.error).slice(0, 60), detail: '' };
+    }
+    if (Array.isArray(_modalMargin?.blocked) && _modalMargin.blocked.length) {
+      const b = _modalMargin.blocked[0];
+      return { level: 'err',  text: '⚠ ' + String(b?.reason || 'preview blocked').slice(0, 60), detail: String(b?.fix || '') };
+    }
+    // Market-hours check — pick the right segment based on the resolved
+    // symbol's exchange family. NSE/NFO/BFO/CDS use isNseOpen window
+    // (covers equity + index F&O); MCX uses isMcxOpen. Symbols without
+    // a known exchange fall back to isMarketOpen (any segment open).
+    try {
+      const exch = (_pickedExchange || exchange || '').toUpperCase();
+      const isMcx = exch === 'MCX' || exch === 'NCO';
+      const open = isMcx ? isMcxOpen() : (exch ? isNseOpen() : isMarketOpen());
+      if (!open) {
+        return {
+          level: 'warn',
+          text:  isMcx ? 'MCX closed — order will queue' : 'Market closed — order will queue',
+          detail: 'Outside live session hours; PAPER orders still execute. LIVE orders are deferred.',
+        };
+      }
+    } catch (_) { /* swallow */ }
+    return null;
+  });
+
   // Margin pill color flavor — single source for the .oes-margin-pill-*
   // classname. Maps the live margin state into one of: err (shortfall
   // or insufficient), warn (covers required but headroom is thin), ok
@@ -872,10 +912,15 @@
          header shape (icon + name + close X — nothing else). -->
     <div class="oes-header">
       <span class="oes-modal-name">
-        <svg class="oes-modal-name-icon" width="12" height="12" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="2.2"
-             stroke-linecap="round" aria-hidden="true">
-          <path d="M8 3v10M3 8h10" />
+        <!-- Bidirectional arrow glyph matches the page-header Order
+             button (PageHeaderActions). "+" didn't communicate the
+             short-order path; this pair reads as "trade either
+             direction" — same B/S convention every desk uses. -->
+        <svg class="oes-modal-name-icon" width="13" height="13" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 13V3M2.5 5.5L5 3l2.5 2.5" />
+          <path d="M11 3v10M8.5 10.5L11 13l2.5-2.5" />
         </svg>
         Orders
       </span>
@@ -1118,43 +1163,21 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
-        <!-- Funds summary line — sits ABOVE the action row so the
-             operator's overall wallet position (Avail margin · Cash ·
-             Used) reads at a glance on every tab. Visible regardless
-             of which tab is active. Per-order Cost vs Cash / Req vs
-             Avail chip lives on the action row below. -->
-        {#if _chipMeta && (_chipMeta.availMargin != null || _chipMeta.cash != null)}
-          <div class="oes-funds-line"
-               class:oes-funds-line-low={(_chipMeta.availMargin ?? 0) < 0}
-               title={(_chipMeta.fundsAccount === 'TOTAL')
-                 ? 'Sum across every loaded broker account'
-                 : `Funds for ${_chipMeta.fundsAccount}`}>
-            {#if _chipMeta.fundsAccount === 'TOTAL'}
-              <span class="oes-funds-k">TOTAL</span>
-            {/if}
-            {#if _chipMeta.availMargin != null}
-              <span class="oes-funds-k">Avail margin</span>
-              <span class="oes-funds-v">₹{aggFmtMargin(_chipMeta.availMargin)}</span>
-            {/if}
-            {#if _chipMeta.cash != null}
-              <span class="oes-funds-sep">·</span>
-              <span class="oes-funds-k">Cash</span>
-              <span class="oes-funds-v">₹{aggFmtMargin(_chipMeta.cash)}</span>
-            {/if}
-            {#if (_chipMeta.usedMargin ?? 0) > 0}
-              <span class="oes-funds-sep">·</span>
-              <span class="oes-funds-k">Used</span>
-              <span class="oes-funds-v">₹{aggFmtMargin(_chipMeta.usedMargin)}</span>
-            {/if}
-          </div>
-        {/if}
-        <!-- Single action row: margin chip (left) + adaptive submit
-             buttons (right). Operator request: "required and available
-             margin can be displayed before order buttons. only two
-             fields required margin and available margin as a single
-             chip. color code the chip based on margin availability". -->
+        <!-- Single action row, three-priority left slot:
+               1. Notice (market closed / broker disconnected / preview
+                  error) — wins over everything.
+               2. Cash info — when the order consumes cash (equity buy/
+                  sell, long option premium).
+               3. Margin info — for SPAN-collateralised orders (short
+                  options, futures).
+             Then the button cluster sits on the right. -->
         <div class="oes-common-row">
-          {#if _marginInfo}
+          {#if _modalNotice}
+            <span class="oes-notice oes-notice-{_modalNotice.level}"
+                  title={_modalNotice.detail || _modalNotice.text}>
+              {_modalNotice.text}
+            </span>
+          {:else if _marginInfo}
             {@const _isCash = !!_marginInfo.isCashMode}
             {@const _reqKey = _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
@@ -1993,6 +2016,29 @@
      After · (Short) cells in a horizontal row. After is colour-coded
      by remaining-margin band (mirrors the OrderTicket's
      ot-margin-row-{err,warn,sub} convention). */
+  /* Inline notice — error / warning / info banner that sits in the
+     action row's left slot. Replaces the cash/margin chip when active
+     so the operator sees the blocker BEFORE they click submit. Tinted
+     by level (err = red, warn = amber, info = sky) — same palette as
+     the .oes-margin-pill variants for visual consistency. */
+  .oes-notice {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .oes-notice-err  { background: rgba(248,113,113,0.18); border-color: rgba(248,113,113,0.55); color: #f87171; }
+  .oes-notice-warn { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.50); color: #fbbf24; }
+  .oes-notice-info { background: rgba(56,189,248,0.16); border-color: rgba(56,189,248,0.50); color: #38bdf8; }
+
   /* Funds summary line above the action row — Avail margin · Cash ·
      Used (or per-account label when the operator picks a specific
      broker). Matches the OrderTicket's .ot-funds palette so the visual

@@ -124,10 +124,17 @@
             onclick={_openOrder}
             title="Orders{symbol ? ` — ${symbol}` : ''}"
             aria-label="Open Orders">
-      <!-- Plus / Add glyph -->
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2.2"
-              stroke-linecap="round"/>
+      <!-- Bidirectional arrow glyph — communicates "trade in either
+           direction" (buy OR sell). The "+" plus didn't signal short
+           orders; this pair of arrows mirrors the Bloomberg / Streak
+           B/S convention without committing to either side. -->
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <!-- Up arrow on left -->
+        <path d="M5 13V3M2.5 5.5L5 3l2.5 2.5" stroke="currentColor" stroke-width="1.7"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- Down arrow on right -->
+        <path d="M11 3v10M8.5 10.5L11 13l2.5-2.5" stroke="currentColor" stroke-width="1.7"
+              stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </button>
   {/if}
