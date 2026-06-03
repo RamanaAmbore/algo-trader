@@ -20,6 +20,7 @@ const API_HOST = BASE.includes('localhost') ? 'https://dev.ramboq.com' : BASE;
 let _cachedToken = null;
 
 async function login(page) {
+  if (!_cachedToken && process.env.PLAYWRIGHT_TOKEN) _cachedToken = process.env.PLAYWRIGHT_TOKEN;
   if (!_cachedToken) {
     for (const u of ['rambo', 'ambore', 'admin']) {
       const r = await page.request.post(`${API_HOST}/api/auth/login`, {
