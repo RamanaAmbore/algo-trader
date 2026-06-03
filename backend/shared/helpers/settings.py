@@ -327,7 +327,7 @@ SEEDS: list[tuple] = [
     # the host page doesn't supply context-specific account. Empty string
     # falls through to "auto-pick when exactly one account is loaded";
     # otherwise the operator picks manually.
-    ("orders",      "orders.default_account",    "string", "",
+    ("orders",      "orders.default_account",    "string", "ZG0790",
      "Broker account code (e.g. ZG0790) the order modal pre-selects "
      "when no host-supplied context overrides it. Leave blank to "
      "auto-pick when exactly one account is loaded; otherwise the "

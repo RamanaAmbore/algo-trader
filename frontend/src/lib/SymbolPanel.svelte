@@ -423,6 +423,39 @@
   // triggerSubmit/triggerBasket reacts to the cumulative value. Side
   // toggle flips the Submit button label between BUY and SELL.
   let _modalSide          = $state(/** @type {'BUY'|'SELL'} */ (side));
+  // Submit button label adapts to:
+  //   currentQty=0  → "Buy" / "Sell" (plain new order)
+  //   currentQty>0  → "Add to position" / "Close position"  (long)
+  //   currentQty<0  → "Close position" / "Add to position"  (short)
+  // When the basket has legs the label switches to "Submit basket (N)"
+  // so the same button drives the basket-submit path. Operator
+  // request: "buy sell button can be a single button as buy/sell
+  // selected within order tab. it should change based on add or close
+  // when clicking order on existing symbol."
+  const _submitLabel = $derived.by(() => {
+    if (basketLegs.length > 0) return `Submit basket (${basketLegs.length})`;
+    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    const verb = (() => {
+      if (cq === 0) return _modalSide === 'BUY' ? 'Buy' : 'Sell';
+      if (cq > 0)   return _modalSide === 'BUY' ? 'Add to position' : 'Close position';
+      /* cq < 0 */  return _modalSide === 'BUY' ? 'Close position' : 'Add to position';
+    })();
+    return verb;
+  });
+  // Style class for the submit button — green when the submit will
+  // place a BUY OR add to long OR close short; red when it will place
+  // a SELL OR close long OR add to short. Cyan when basket-submit
+  // (mixed sides possible).
+  const _submitFlavor = $derived.by(() => {
+    if (basketLegs.length > 0) return 'basket';
+    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    if (cq === 0) return _modalSide === 'BUY' ? 'buy' : 'sell';
+    // Long position: BUY is add (green), SELL is close (red).
+    if (cq > 0)   return _modalSide === 'BUY' ? 'buy' : 'sell';
+    // Short position: BUY closes (green-ish since it brings flat),
+    // SELL adds to short (red).
+    return _modalSide === 'BUY' ? 'buy' : 'sell';
+  });
   let _modalTriggerSubmit = $state(0);
   let _modalTriggerBasket = $state(0);
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
@@ -459,6 +492,20 @@
       afterCls = after < 0 || pct < 10 ? 'err' : pct < 40 ? 'warn' : '';
     }
     return { required, available, after, afterCls, shortfall };
+  });
+  // Margin pill color flavor — single source for the .oes-margin-pill-*
+  // classname. Maps the live margin state into one of: err (shortfall
+  // or insufficient), warn (covers required but headroom is thin), ok
+  // (comfortable headroom). Loading + error states fall back to neutral.
+  const _marginPillCls = $derived.by(() => {
+    if (!_marginInfo || _marginInfo.loading) return 'neutral';
+    if (_marginInfo.error) return 'err';
+    if (_marginInfo.shortfall > 0) return 'err';
+    if (_marginInfo.available == null) return 'neutral';
+    const cls = _marginInfo.afterCls;
+    if (cls === 'err')  return 'err';
+    if (cls === 'warn') return 'warn';
+    return 'ok';
   });
 
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
@@ -895,6 +942,7 @@
             accounts={_ticketProps.accounts ?? accounts}
             account={_sharedAccount || _ticketProps.account || account}
             onAccountChange={_onAccountChange}
+            onSideChange={(s) => { _modalSide = s; }}
             orderId={_ticketProps.orderId ?? orderId}
             defaultMode={_ticketProps.defaultMode ?? defaultMode}
             availableModes={_ticketProps.availableModes ?? availableModes}
@@ -1000,58 +1048,57 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
-        <!-- Action buttons row — BUY (green) + SELL (red) submit
-             buttons directly. The earlier "Side toggle + Place"
-             two-button pattern was redundant (operator asked: "what
-             is difference between buy and place buy buttons"). Now
-             each colored button BOTH selects the side AND submits in
-             one click. + Basket stays as the basket-add affordance. -->
+        <!-- Single action row: margin chip (left) + adaptive submit
+             buttons (right). Operator request: "required and available
+             margin can be displayed before order buttons. only two
+             fields required margin and available margin as a single
+             chip. color code the chip based on margin availability". -->
         <div class="oes-common-row">
+          {#if _marginInfo}
+            <span class="oes-margin-pill oes-margin-pill-{_marginPillCls}"
+                  title={_marginInfo.error
+                    ? `Margin preview: ${_marginInfo.error}`
+                    : _marginInfo.loading
+                      ? 'Computing margin…'
+                      : `Required ₹${aggFmtMargin(_marginInfo.required)} vs Available ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
+              {#if _marginInfo.error}
+                ⚠ {_marginInfo.error}
+              {:else if _marginInfo.loading}
+                Computing margin…
+              {:else}
+                <span class="oes-margin-pill-key">Req</span>
+                <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.required)}</span>
+                {#if _marginInfo.available != null}
+                  <span class="oes-margin-pill-sep">·</span>
+                  <span class="oes-margin-pill-key">Avail</span>
+                  <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.available)}</span>
+                {/if}
+              {/if}
+            </span>
+          {/if}
           <span class="oes-common-spacer"></span>
+          {#if basketLegs.length > 0}
+            <button type="button" class="oes-common-clear"
+              title="Clear all basket legs"
+              disabled={basketSubmitting}
+              onclick={clearBasket}>Clear basket</button>
+          {/if}
           <button type="button" class="oes-common-basket"
             title="Add the current order to the basket"
-            onclick={_modalFireBasket}>+ Basket</button>
-          <button type="button" class="oes-common-submit oes-common-submit-buy"
-            title="Place a BUY order via the active tab"
-            onclick={() => { _modalSide = 'BUY'; _modalFireSubmit(); }}>BUY</button>
-          <button type="button" class="oes-common-submit oes-common-submit-sell"
-            title="Place a SELL order via the active tab"
-            onclick={() => { _modalSide = 'SELL'; _modalFireSubmit(); }}>SELL</button>
+            onclick={_modalFireBasket}>+ Add to basket</button>
+          <button type="button" class="oes-common-submit"
+            class:oes-common-submit-buy={_submitFlavor === 'buy'}
+            class:oes-common-submit-sell={_submitFlavor === 'sell'}
+            class:oes-common-submit-basket={_submitFlavor === 'basket'}
+            title={basketLegs.length > 0
+              ? `Submit all ${basketLegs.length} basket legs`
+              : 'Place the order via the active tab'}
+            disabled={basketSubmitting}
+            onclick={() => {
+              if (basketLegs.length > 0) submitBasket();
+              else _modalFireSubmit();
+            }}>{basketSubmitting ? 'Placing…' : _submitLabel}</button>
         </div>
-        <!-- Margin row sits BELOW the action buttons (operator
-             feedback: "margin details should be shown below order
-             placement buttons"). Lifted out of OrderTicket so it
-             surfaces on every tab inside the modal. -->
-        {#if _marginInfo}
-          <div class="oes-margin-strip">
-            {#if _marginInfo.error}
-              <span class="oes-margin-err">⚠ {_marginInfo.error}</span>
-            {:else if _marginInfo.loading}
-              <span class="oes-margin-loading">Computing margin…</span>
-            {:else}
-              <span class="oes-margin-cell">
-                <span class="oes-margin-key">Margin</span>
-                <span class="oes-margin-val">₹{aggFmtMargin(_marginInfo.required)}</span>
-              </span>
-              {#if _marginInfo.available != null}
-                <span class="oes-margin-cell">
-                  <span class="oes-margin-key">Avail</span>
-                  <span class="oes-margin-val">₹{aggFmtMargin(_marginInfo.available)}</span>
-                </span>
-                <span class="oes-margin-cell oes-margin-after-{_marginInfo.afterCls || 'ok'}">
-                  <span class="oes-margin-key">After</span>
-                  <span class="oes-margin-val">{_marginInfo.after < 0 ? '−' : ''}₹{aggFmtMargin(Math.abs(_marginInfo.after))}</span>
-                </span>
-              {/if}
-              {#if _marginInfo.shortfall > 0}
-                <span class="oes-margin-cell oes-margin-after-err">
-                  <span class="oes-margin-key">Short</span>
-                  <span class="oes-margin-val">−₹{aggFmtMargin(_marginInfo.shortfall)}</span>
-                </span>
-              {/if}
-            {/if}
-          </div>
-        {/if}
       </div>
     {/if}
 
@@ -1837,41 +1884,56 @@
      After · (Short) cells in a horizontal row. After is colour-coded
      by remaining-margin band (mirrors the OrderTicket's
      ot-margin-row-{err,warn,sub} convention). */
-  .oes-margin-strip {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    font-family: monospace;
-    font-size: 0.6rem;
-    color: #94a3b8;
-  }
-  .oes-margin-cell {
+  /* Margin pill — single chip showing "Req ₹X · Avail ₹Y" tinted by
+     availability. ok = green, warn = amber, err = red, neutral = slate
+     (loading / unknown). Anchored to the LEFT of the action button
+     cluster so the operator scans amount → buttons → submit. */
+  .oes-margin-pill {
     display: inline-flex;
-    gap: 0.28rem;
     align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.62rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+    background: rgba(126, 151, 184, 0.10);
+    color: #c8d8f0;
+    white-space: nowrap;
   }
-  .oes-margin-key {
+  .oes-margin-pill-key {
     text-transform: uppercase;
     font-weight: 700;
     letter-spacing: 0.05em;
-    color: #7e97b8;
+    opacity: 0.75;
   }
-  .oes-margin-val {
-    color: #e2e8f0;
+  .oes-margin-pill-val {
     font-variant-numeric: tabular-nums;
+    font-weight: 700;
   }
-  .oes-margin-after-ok    .oes-margin-val { color: #7dd3fc; }
-  .oes-margin-after-warn  .oes-margin-val { color: #fbbf24; }
-  .oes-margin-after-err   .oes-margin-val { color: #f87171; }
-  .oes-margin-err {
+  .oes-margin-pill-sep {
+    opacity: 0.5;
+  }
+  .oes-margin-pill-ok {
+    background: rgba(74, 222, 128, 0.14);
+    border-color: rgba(74, 222, 128, 0.45);
+    color: #86efac;
+  }
+  .oes-margin-pill-warn {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.50);
+    color: #fbbf24;
+  }
+  .oes-margin-pill-err {
+    background: rgba(248, 113, 113, 0.18);
+    border-color: rgba(248, 113, 113, 0.55);
     color: #f87171;
-    font-size: 0.6rem;
-    font-weight: 600;
   }
-  .oes-margin-loading {
-    color: #7e97b8;
-    font-size: 0.6rem;
-    font-style: italic;
+  .oes-margin-pill-neutral {
+    background: rgba(126, 151, 184, 0.12);
+    border-color: rgba(126, 151, 184, 0.35);
+    color: #c8d8f0;
   }
   .oes-common-basket,
   .oes-common-side,
@@ -1905,6 +1967,33 @@
   }
   .oes-common-submit-buy:hover  { background: rgba(74, 222, 128, 0.28); }
   .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
+  /* Basket submit — cyan to signal "multiple legs at once", distinct
+     from the directional buy/sell palette. */
+  .oes-common-submit-basket {
+    background: rgba(34, 211, 238, 0.18);
+    border-color: rgba(34, 211, 238, 0.65);
+    color: #22d3ee;
+  }
+  .oes-common-submit-basket:hover { background: rgba(34, 211, 238, 0.28); }
+  /* Clear-basket — neutral outline. */
+  .oes-common-clear {
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid rgba(126, 151, 184, 0.45);
+    color: #7e97b8;
+    transition: background 0.12s, color 0.12s;
+  }
+  .oes-common-clear:hover:not(:disabled) {
+    background: rgba(126, 151, 184, 0.12);
+    color: #c8d8f0;
+  }
+  .oes-common-clear:disabled { opacity: 0.45; cursor: progress; }
 
   /* ── Bottom panel (Log / Orders) ──────────────────────────────────── */
   /* Sits AFTER the common action footer ("move the order placement

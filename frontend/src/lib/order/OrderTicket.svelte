@@ -68,6 +68,7 @@
    *   triggerSubmit?: number,
    *   triggerBasket?: number,
    *   onAccountChange?: (account: string) => void,
+   *   onSideChange?: ((side: 'BUY'|'SELL') => void) | null,
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean) => void) | null,
    *   symbolHidden?: boolean,
@@ -118,6 +119,10 @@
     // sync the other tabs (command / chain) to the same account so
     // they all submit through the same Kite handle.
     onAccountChange = /** @type {((account: string) => void) | null} */ (null),
+    // Fired whenever the operator flips the internal BUY/SELL toggle.
+    // SymbolPanel uses this to keep its _modalSide (which drives the
+    // common-footer submit button's adaptive label) in sync.
+    onSideChange = /** @type {((side: 'BUY'|'SELL') => void) | null} */ (null),
     // Optional "+ Basket" callback — when set, the ticket renders
     // an "Add to basket" action alongside the primary Submit. The
     // caller pushes the leg into its own basket panel (same pill
@@ -375,15 +380,21 @@
   $effect(() => {
     const r = _resolvedSymbol;
     if (!r || typeof r !== 'string') return;
-    // Equity: force lot=0 so the template renders the bare Qty input.
-    // Without this, _lotSize would retain whatever the previous F&O
-    // pick set it to (e.g. 75 from NIFTY → 1500 from BANKNIFTY) and
-    // the operator would see Lots even after picking an equity.
-    if (isEquity) {
+    const up = r.toUpperCase();
+    // Pattern-only equity check — if the resolved symbol has no
+    // derivative suffix (CE/PE/FUT) AND no expiry-style 2-digit-year
+    // segment, treat it as a non-derivative (stock / ETF / index) and
+    // force lot=0 so the template renders bare Qty. This catches the
+    // common case operator picks Symbol Type=OPT then types RELIANCE
+    // by mistake — kind detection via getInstrument() may not yet
+    // have cache data, but the suffix check is always reliable.
+    const looksLikeDerivative =
+      /CE$|PE$|FUT$/.test(up) || /\d{2}[A-Z]{3}/.test(up);
+    if (isEquity || !looksLikeDerivative) {
       if (_lotSize !== 0) untrack(() => { _lotSize = 0; });
       return;
     }
-    const inst = getInstrument(r.toUpperCase());
+    const inst = getInstrument(up);
     const ls = Number(inst?.ls) || 0;
     if (ls > 0 && ls !== _lotSize) {
       untrack(() => { _lotSize = ls; });
@@ -1157,13 +1168,13 @@
                   title={currentQty
                     ? (sideLabels.BUY + ' (places a BUY order)')
                     : 'BUY this contract'}
-                  onclick={() => action !== 'modify' && (_side = 'BUY')}>{sideLabels.BUY}</button>
+                  onclick={() => { if (action !== 'modify') { _side = 'BUY'; onSideChange?.('BUY'); } }}>{sideLabels.BUY}</button>
           <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
                   disabled={action === 'modify'}
                   title={currentQty
                     ? (sideLabels.SELL + ' (places a SELL order)')
                     : 'SELL this contract'}
-                  onclick={() => action !== 'modify' && (_side = 'SELL')}>{sideLabels.SELL}</button>
+                  onclick={() => { if (action !== 'modify') { _side = 'SELL'; onSideChange?.('SELL'); } }}>{sideLabels.SELL}</button>
         </div>
       </div>
       <div class="ot-knob">

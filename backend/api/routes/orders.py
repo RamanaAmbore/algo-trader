@@ -1466,7 +1466,7 @@ class AccountsController(Controller):
         # Masked partners get an empty string back — the raw default
         # code would leak the unmasked ID through this surface.
         from backend.shared.helpers.settings import get_string
-        default_acct = "" if do_mask else get_string("orders.default_account", "")
+        default_acct = "" if do_mask else get_string("orders.default_account", "ZG0790")
         # Only return the default if it's actually in the loaded set —
         # otherwise the frontend would try to pre-select an account
         # that doesn't exist (silent fail; operator sees the dropdown
