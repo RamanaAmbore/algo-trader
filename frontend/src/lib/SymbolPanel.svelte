@@ -25,7 +25,7 @@
   import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime } from '$lib/stores';
-  import { priceFmt } from '$lib/format';
+  import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -355,6 +355,38 @@
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
   function _modalFireSubmit() { if (_activeTab === 'ticket') _modalTriggerSubmit++; }
   function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
+
+  // Margin preview lifted out of OrderTicket so the operator sees the
+  // same MARGIN / Avail / After / Short row regardless of which tab is
+  // active (matches the operator ask: "margin line should be common
+  // for all the tabs in modal"). OrderTicket fires onMarginUpdate
+  // every time its computed preview changes; we cache it here and
+  // render in the common action footer.
+  let _modalMargin        = $state(/** @type {any} */ (null));
+  let _modalMarginLoading = $state(false);
+  function _onMarginUpdate(/** @type {any} */ preview, /** @type {boolean} */ loading) {
+    _modalMargin = preview;
+    _modalMarginLoading = loading;
+  }
+  // Compact derived view of the margin block so the footer template
+  // stays readable. Returns null when there's nothing to show.
+  const _marginInfo = $derived.by(() => {
+    if (!_modalMargin && !_modalMarginLoading) return null;
+    if (_modalMargin?.error) return { error: _modalMargin.error };
+    if (!_modalMargin) return { loading: true };
+    const d = _modalMargin.diagnostics ?? {};
+    const required  = Number(d.basket_margin_used) || 0;
+    const available = d.available_margin;
+    const shortfall = Number(d.margin_shortfall) || 0;
+    let afterCls = '';
+    let after = null;
+    if (typeof available === 'number') {
+      after = available - required;
+      const pct = available > 0 ? (after / available) * 100 : 0;
+      afterCls = after < 0 || pct < 10 ? 'err' : pct < 40 ? 'warn' : '';
+    }
+    return { required, available, after, afterCls, shortfall };
+  });
 
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
   // +/- steppers. Maps in place so rapid clicks accumulate cleanly
@@ -812,6 +844,7 @@
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
             hostManagesEsc={true}
+            onMarginUpdate={showCommonActions && !inline ? _onMarginUpdate : null}
             {onSubmit}
             {onClose} />
         </div>
@@ -919,6 +952,39 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
+        <!-- Margin row — lifted out of OrderTicket so it surfaces on
+             every tab inside the modal (Ticket / Chain / Command).
+             Stays empty until OrderTicket fires onMarginUpdate. -->
+        {#if _marginInfo}
+          <div class="oes-margin-strip">
+            {#if _marginInfo.error}
+              <span class="oes-margin-err">⚠ {_marginInfo.error}</span>
+            {:else if _marginInfo.loading}
+              <span class="oes-margin-loading">Computing margin…</span>
+            {:else}
+              <span class="oes-margin-cell">
+                <span class="oes-margin-key">Margin</span>
+                <span class="oes-margin-val">₹{aggFmtMargin(_marginInfo.required)}</span>
+              </span>
+              {#if _marginInfo.available != null}
+                <span class="oes-margin-cell">
+                  <span class="oes-margin-key">Avail</span>
+                  <span class="oes-margin-val">₹{aggFmtMargin(_marginInfo.available)}</span>
+                </span>
+                <span class="oes-margin-cell oes-margin-after-{_marginInfo.afterCls || 'ok'}">
+                  <span class="oes-margin-key">After</span>
+                  <span class="oes-margin-val">{_marginInfo.after < 0 ? '−' : ''}₹{aggFmtMargin(Math.abs(_marginInfo.after))}</span>
+                </span>
+              {/if}
+              {#if _marginInfo.shortfall > 0}
+                <span class="oes-margin-cell oes-margin-after-err">
+                  <span class="oes-margin-key">Short</span>
+                  <span class="oes-margin-val">−₹{aggFmtMargin(_marginInfo.shortfall)}</span>
+                </span>
+              {/if}
+            {/if}
+          </div>
+        {/if}
         <span class="oes-common-spacer"></span>
         <button type="button" class="oes-common-basket"
           title="Add the current order to the basket"
@@ -1627,6 +1693,47 @@
     flex-shrink: 0;
   }
   .oes-common-spacer { flex: 1 1 0; }
+
+  /* Margin strip — sits at the leading edge of the common action
+     footer. MARGIN · Avail · After · (Short) cells in a horizontal
+     row. After is colour-coded by remaining-margin band (mirrors the
+     OrderTicket's ot-margin-row-{err,warn,sub} convention). */
+  .oes-margin-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: monospace;
+    font-size: 0.6rem;
+    color: #94a3b8;
+  }
+  .oes-margin-cell {
+    display: inline-flex;
+    gap: 0.28rem;
+    align-items: baseline;
+  }
+  .oes-margin-key {
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #7e97b8;
+  }
+  .oes-margin-val {
+    color: #e2e8f0;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-margin-after-ok    .oes-margin-val { color: #7dd3fc; }
+  .oes-margin-after-warn  .oes-margin-val { color: #fbbf24; }
+  .oes-margin-after-err   .oes-margin-val { color: #f87171; }
+  .oes-margin-err {
+    color: #f87171;
+    font-size: 0.6rem;
+    font-weight: 600;
+  }
+  .oes-margin-loading {
+    color: #7e97b8;
+    font-size: 0.6rem;
+    font-style: italic;
+  }
   .oes-common-basket,
   .oes-common-side,
   .oes-common-submit {

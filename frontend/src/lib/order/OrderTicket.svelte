@@ -66,6 +66,7 @@
    *   triggerBasket?: number,
    *   onAccountChange?: (account: string) => void,
    *   hostManagesEsc?: boolean,
+   *   onMarginUpdate?: ((preview:any, loading:boolean) => void) | null,
    * }} */
   let {
     symbol,
@@ -143,6 +144,11 @@
     // without this gate both fire when the ticket is embedded inside the
     // panel, producing a latent double-close race.
     hostManagesEsc = false,
+    // Fires whenever the margin preview state updates. Host (SymbolPanel
+    // modal) uses this to render the same MARGIN/Avail/After/Short row
+    // inside its common action footer so the operator sees the verdict
+    // regardless of which tab is active.
+    onMarginUpdate = /** @type {((preview:any, loading:boolean) => void) | null} */ (null),
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -576,9 +582,11 @@
     if (_isDemo || !_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
       _marginPreview = null;
       _marginLoading = false;
+      onMarginUpdate?.(null, false);
       return;
     }
     _marginLoading = true;
+    onMarginUpdate?.(_marginPreview, true);
     _marginTimer = setTimeout(async () => {
       try {
         const payload = {
@@ -599,6 +607,7 @@
         _marginPreview = { error: (e?.message || 'preview failed').slice(0, 60) };
       } finally {
         _marginLoading = false;
+        onMarginUpdate?.(_marginPreview, false);
       }
     }, 350);
 
