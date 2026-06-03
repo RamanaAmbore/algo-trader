@@ -820,7 +820,18 @@
   let _colPinned    = $state(false);
   let _colWatch     = $state(false);
   let _colPinWatch  = $state(false);
-  let topTab        = $state(/** @type {'pinned'|'watchlist'} */ ('pinned'));
+  // Top-tab is either the special 'pinned' string (the merged
+  // Default + Markets feed) OR a user-watchlist id. Operator request:
+  // "there should not be any watchlist tab. it should be the tab I
+  // have created" — each user list becomes its own peer of Pinned.
+  let topTab        = $state(/** @type {'pinned'|number} */ ('pinned'));
+  // Snap back to Pinned when the operator deletes the user list out
+  // from under the active tab.
+  $effect(() => {
+    if (typeof topTab === 'number' && !_userLists?.some(l => l.id === topTab)) {
+      topTab = 'pinned';
+    }
+  });
   let _colWinners   = $state(false);
   let _colLosers    = $state(false);
   let _colPositions = $state(false);
@@ -1299,24 +1310,16 @@
   // pinned at the bucket's bottom edge).
   const pinnedRows     = $derived(pinnedTopRows);
   const _allWatchRows  = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
-  // Watchlist tab strip — one tab per non-pinned watchlist, capped at
-  // 5 (operators with many lists scroll the chrome row to reach the
-  // rest from the Show dropdown). Default tab is the first list.
+  // User watchlists — capped at 5 visible tabs (anything beyond can be
+  // reached via the Show dropdown). Each list becomes its own top-tab.
   const _userLists = $derived((lists || []).filter(l => !l.is_pinned).slice(0, 5));
-  let watchTab = $state(/** @type {number | null} */ (null));
-  // Reset watchTab when the user-list set changes (e.g., a list got
-  // deleted out from under the active tab). Default to the first
-  // available list id when nothing is selected yet.
-  $effect(() => {
-    const ids = _userLists.map(l => l.id);
-    if (watchTab == null || !ids.includes(watchTab)) {
-      watchTab = ids.length > 0 ? ids[0] : null;
-    }
-  });
+  // watchRows now reads topTab directly — when topTab is a list id,
+  // filter to that list's rows; when it's 'pinned' the watch grid is
+  // hidden so the filter doesn't matter (shows all user-list rows).
   const watchRows = $derived(
-    watchTab == null
-      ? _allWatchRows
-      : _allWatchRows.filter(r => r.watchlist_list_id === watchTab)
+    typeof topTab === 'number'
+      ? _allWatchRows.filter(r => r.watchlist_list_id === topTab)
+      : _allWatchRows
   );
   // Per-tab row counts so the tab pill can show its denominator.
   const watchCounts = $derived.by(() => {
@@ -1527,7 +1530,7 @@
     sparklines;
     // Refresh the Curve column only on grids that are currently visible.
     if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['sparkline'], force: true });
-    if (gridWatchReady     && gridWatch     && topTab === 'watchlist') gridWatch.refreshCells({ columns: ['sparkline'], force: true });
+    if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: ['sparkline'], force: true });
     if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['sparkline'], force: true });
     if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['sparkline'], force: true });
     if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['sparkline'], force: true });
@@ -1573,7 +1576,7 @@
       // further than when the timer was scheduled).
       _lastPaintedSnap = { ..._liveLtpSnap };
       if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridWatchReady     && gridWatch     && topTab === 'watchlist') gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
       if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
@@ -3852,17 +3855,28 @@
                  class:is-collapsed={_effColPinWatch}
                  class:fs-card-on={_fsPinWatch}>
           <div class="mp-bucket-head">
-            <div class="mp-toptabs" role="tablist" aria-label="Pinned / Watchlist">
+            <!-- Top-tab strip. Pinned (Default + Markets merged feed)
+                 lives on the left; each operator-created watchlist is
+                 its own peer tab to the right, labelled with the list
+                 name directly. No generic "Watchlist" wrapper or
+                 sub-tabs — operator request: "there should not be any
+                 watchlist tab. it should be the tab I have created". -->
+            <div class="mp-toptabs" role="tablist" aria-label="Pinned and user watchlists">
               <button type="button" role="tab"
                       class="mp-toptab mp-toptab-pinned"
                       class:mp-toptab-on={topTab === 'pinned'}
                       aria-selected={topTab === 'pinned'}
                       onclick={() => topTab = 'pinned'}>Pinned</button>
-              <button type="button" role="tab"
-                      class="mp-toptab mp-toptab-watch"
-                      class:mp-toptab-on={topTab === 'watchlist'}
-                      aria-selected={topTab === 'watchlist'}
-                      onclick={() => topTab = 'watchlist'}>Watchlist</button>
+              {#each _userLists as l (l.id)}
+                <button type="button" role="tab"
+                        class="mp-toptab mp-toptab-watch"
+                        class:mp-toptab-on={topTab === l.id}
+                        aria-selected={topTab === l.id}
+                        title={l.name}
+                        onclick={() => topTab = l.id}>
+                  {l.name}
+                </button>
+              {/each}
             </div>
             <button onclick={openSearch}
                     title="Add symbol or watchlist  (/)"
@@ -3876,23 +3890,9 @@
             <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
             <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
           </div>
-          {#if topTab === 'watchlist' && _userLists.length > 1}
-            <div class="mp-bucket-subhead">
-              <div class="mp-wl-tabs" role="tablist" aria-label="Watchlist">
-                {#each _userLists as l (l.id)}
-                  <button type="button" role="tab"
-                          class="mp-wl-tab"
-                          class:mp-wl-tab-on={watchTab === l.id}
-                          aria-selected={watchTab === l.id}
-                          title={l.name}
-                          onclick={() => watchTab = l.id}>
-                    {l.name}
-                    {#if watchCounts[l.id] > 0}<span class="mp-wl-tab-count">{watchCounts[l.id]}</span>{/if}
-                  </button>
-                {/each}
-              </div>
-            </div>
-          {/if}
+          <!-- Sub-tab strip retired — each user watchlist now lives
+               as its own top-tab next to Pinned. -->
+
           <!-- Both ag-Grid containers stay in the DOM at all times so
                bind:this lands before mountGrid() runs. CSS hides the
                inactive one — switching tabs is a paint-only flip,
@@ -3902,7 +3902,7 @@
                class:mp-grid-hidden={topTab !== 'pinned'}></div>
           <div bind:this={gridWatchEl}
                class="ag-theme-algo bucket-grid"
-               class:mp-grid-hidden={topTab !== 'watchlist'}></div>
+               class:mp-grid-hidden={typeof topTab !== 'number'}></div>
         </section>
         {#if showWinners}
           <section class="mp-bucket-wrap mp-bucket-winners"
