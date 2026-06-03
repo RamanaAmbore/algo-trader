@@ -1624,6 +1624,11 @@
     return holdingsSummary
       .filter(r => {
         if (!r?.account) return false;
+        // Backend TOTAL is the all-accounts sum — keep when no filter
+        // is active so the operator sees the firm-wide number. When a
+        // filter is active, drop it and compute a filtered TOTAL below
+        // (operator request: "the holdings grid should continue to
+        // show total row when accounts are filtered").
         if (r.account === 'TOTAL') return !filterActive;
         return _includesHoldAcct(r.account);
       })
@@ -1638,15 +1643,52 @@
       }));
   });
 
+  // Sum body rows into a synthesised TOTAL — used when an account
+  // filter is active and the backend's all-accounts TOTAL row is
+  // therefore irrelevant. Day % / P&L % use the standard
+  // (cur_val − day_change_val) and inv_val denominators that
+  // PerformancePage / backend use, so the synthesised TOTAL matches
+  // sibling row numbers cell-for-cell.
+  function _synthesiseTotalRow(/** @type {any[]} */ rows) {
+    const t = {
+      account: 'TOTAL',
+      day_pnl: 0, pnl: 0, cur_val: 0, inv_val: 0,
+      day_change_percentage: null, pnl_percentage: null,
+    };
+    for (const r of rows) {
+      t.day_pnl += Number(r.day_pnl) || 0;
+      t.pnl     += Number(r.pnl)     || 0;
+      t.cur_val += Number(r.cur_val) || 0;
+      t.inv_val += Number(r.inv_val) || 0;
+    }
+    const yest = t.cur_val - t.day_pnl;
+    t.day_change_percentage = (yest > 0) ? (t.day_pnl / yest) * 100 : null;
+    t.pnl_percentage        = (t.inv_val > 0) ? (t.pnl / t.inv_val) * 100 : null;
+    return t;
+  }
+
   const positionsSummaryBody  = $derived(
     positionsSummaryData.filter(r => !isTotalRow(r) && _includesPosAcct(r.account))
   );
-  const positionsSummaryTotal = $derived(positionsSummaryData.filter(isTotalRow));
+  const positionsSummaryTotal = $derived.by(() => {
+    const filterActive = positionsAccounts && positionsAccounts.length > 0;
+    // Backend TOTAL when no filter; synthesised TOTAL across the
+    // filtered body when filter is active. Operator always sees a
+    // TOTAL row pinned at the bottom.
+    return filterActive
+      ? [_synthesiseTotalRow(positionsSummaryBody)]
+      : positionsSummaryData.filter(isTotalRow);
+  });
 
   const holdingsSummaryBody  = $derived(
     holdingsSummaryData.filter(r => !isTotalRow(r) && _includesHoldAcct(r.account))
   );
-  const holdingsSummaryTotal = $derived(holdingsSummaryData.filter(isTotalRow));
+  const holdingsSummaryTotal = $derived.by(() => {
+    const filterActive = holdingsAccounts && holdingsAccounts.length > 0;
+    return filterActive
+      ? [_synthesiseTotalRow(holdingsSummaryBody)]
+      : holdingsSummaryData.filter(isTotalRow);
+  });
 
   $effect(() => {
     if (!positionsSummaryReady || !positionsSummaryGrid) return;
