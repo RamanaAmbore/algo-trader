@@ -81,10 +81,14 @@
            (three horizontal lines) so the operator recognises which
            surface they opened. Violet matches the bell palette. -->
       <span class="alm-title">
+        <!-- Clock glyph — matches the page-header Activity button.
+             Reads as "recent time-ordered activity" and stays distinct
+             from the order receipt/slip icon. -->
         <svg class="alm-title-icon" width="12" height="12" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.9"
-             stroke-linecap="round" aria-hidden="true">
-          <path d="M3 4h10M3 8h10M3 12h6" />
+             fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" />
+          <path d="M8 4.8V8l2.2 1.6" />
         </svg>
         Activity
       </span>

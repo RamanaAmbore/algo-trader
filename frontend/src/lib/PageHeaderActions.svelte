@@ -166,10 +166,17 @@
             onclick={_openLog}
             title="Activity"
             aria-label="Open Activity">
-      <!-- Lines / list glyph -->
+      <!-- Clock glyph — "recent activity" reads as time-ordered events.
+           Previously this was three horizontal lines, but that visually
+           collided with the order receipt/slip icon (rectangle with the
+           same lines inside). The clock makes the two surfaces clearly
+           distinct without changing the action affordance. -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" stroke-width="1.9"
-              stroke-linecap="round"/>
+        <circle cx="8" cy="8" r="5.5"
+                stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 4.8V8l2.2 1.6"
+              stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </button>
   {/if}
