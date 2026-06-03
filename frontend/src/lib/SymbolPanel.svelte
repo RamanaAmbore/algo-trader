@@ -30,6 +30,31 @@
   import CommandLineTab   from '$lib/order/CommandLineTab.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
+  import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
+  import Select            from '$lib/Select.svelte';
+  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { findNearestFuture } from '$lib/data/instruments';
+  import { loadAccounts } from '$lib/data/accounts';
+
+  // Pinned anchors shown at the top of the symbol combo's dropdown.
+  // Same set as ChartWorkspace so the operator sees identical pinned
+  // options regardless of which icon they clicked. Resolved to the
+  // current tradeable contract (NIFTY 50 → NIFTY26JUNFUT,
+  // CRUDEOIL → CRUDEOILM26JUNFUT) before display.
+  const _DEFAULT_PINS = [
+    'NIFTY 50', 'BANKNIFTY', 'FINNIFTY', 'SENSEX',
+    'GOLD', 'SILVER', 'CRUDEOIL',
+  ];
+  function _pinLabel(/** @type {string} */ anchor) {
+    const r = resolveUnderlying(String(anchor || '').toUpperCase(), findNearestFuture);
+    return r?.tradingsymbol && r.tradingsymbol !== anchor ? r.tradingsymbol : anchor;
+  }
+  const _PIN_LABELS = _DEFAULT_PINS.map(_pinLabel);
+  // Reverse lookup so a pin click reaches the anchor (drives the
+  // exchange hint via resolveUnderlying when the operator picks one).
+  const _LABEL_TO_ANCHOR = $derived(
+    Object.fromEntries(_DEFAULT_PINS.map((a, i) => [_PIN_LABELS[i], a]))
+  );
 
   /** @type {{
    *   defaultTab?:     'command' | 'ticket' | 'chain',
@@ -332,6 +357,32 @@
   // initialised from the `account` prop; each tab receives it as
   // `account` and calls `onAccountChange` when its picker changes.
   let _sharedAccount = $state(account || '');
+  // Account list — falls through three layers:
+  //   1. `accounts` prop (host page injects them, e.g. /orders)
+  //   2. cached fetch from /api/accounts/ on mount when prop is empty
+  //   3. last-good cache (loadAccounts memoises in-process)
+  // The header's Account Select reads from this so the operator can
+  // pick from the same set even when the modal is opened via the
+  // page-header trio (which passes accounts={[]}).
+  let _modalAccounts = $state(/** @type {string[]} */ (Array.isArray(accounts) ? accounts : []));
+  $effect(() => {
+    if (Array.isArray(accounts) && accounts.length) {
+      untrack(() => { _modalAccounts = accounts; });
+    }
+  });
+  onMount(async () => {
+    if (_modalAccounts.length) return;
+    try {
+      const list = await loadAccounts();
+      _modalAccounts = (list || []).map(a => String(a?.account_id || a?.account || a || '')).filter(Boolean);
+      // Auto-select when the list has exactly one entry AND no context-
+      // supplied account. Skip when host passed an account so we don't
+      // overwrite their pick.
+      if (!_sharedAccount && _modalAccounts.length === 1) {
+        _sharedAccount = _modalAccounts[0];
+      }
+    } catch { /* keep last-good */ }
+  });
   // Re-sync from the prop when the caller updates it externally (e.g.
   // when /admin/options opens the modal with a new default after the
   // operator picks a different position).
@@ -693,34 +744,53 @@
         </svg>
         Orders
       </span>
+      <!-- Symbol combo — same SymbolSearchInput component the chart
+           workspace uses. Pinned anchors (NIFTY 50 / GOLD / CRUDEOIL
+           etc.) appear at the top of the dropdown; live search
+           results follow. Pin labels show the resolved tradeable
+           contract (NIFTY 50 → NIFTY26JUNFUT). -->
       <div class="oes-sym-pick">
-        <input
-          type="text"
-          class="oes-sym-input"
-          value={_symbolOpen ? _symbolQuery : (_localSymbol || '')}
-          placeholder="Symbol…"
-          spellcheck="false"
-          autocomplete="off"
-          oninput={(e) => _onSymbolInput(/** @type {HTMLInputElement} */ (e.currentTarget).value)}
-          onfocus={(e) => { _symbolQuery = ''; _symbolOpen = true; _onSymbolInput(/** @type {HTMLInputElement} */ (e.currentTarget).value); }}
-          onblur={() => setTimeout(() => { _symbolOpen = false; }, 150)}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' && _symbolSuggestions.length) { e.preventDefault(); _pickSymbol(_symbolSuggestions[0]); }
-            else if (e.key === 'Escape') { _symbolOpen = false; }
-          }} />
-        {#if _symbolOpen && _symbolSuggestions.length}
-          <div class="oes-sym-drop">
-            {#each _symbolSuggestions as inst ((inst.s ?? inst.sym ?? inst.tradingsymbol ?? '') + ':' + (inst.e ?? '') + ':' + (inst.t ?? ''))}
-              <button type="button" class="oes-sym-row"
-                onmousedown={(e) => { e.preventDefault(); _pickSymbol(inst); }}>
-                <span class="oes-sym-row-sym">{inst.s ?? inst.sym ?? inst.tradingsymbol ?? ''}</span>
-                <span class="oes-sym-row-meta">{inst.e}{inst.t ? ' · ' + inst.t : ''}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
+        <SymbolSearchInput
+          value={_localSymbol}
+          pins={_PIN_LABELS}
+          resolvePin={(label) => label}
+          placeholder="Symbol — pick or type 3+"
+          onPick={(sym, meta) => {
+            if (meta?.pinLabel) {
+              const anchor = _LABEL_TO_ANCHOR[meta.pinLabel] || meta.pinLabel;
+              const r = resolveUnderlying(String(anchor).toUpperCase(), findNearestFuture);
+              if (r?.tradingsymbol) {
+                _localSymbol = r.tradingsymbol;
+                _pickedExchange = r.exchange || '';
+                onSymbolChange?.(r.tradingsymbol);
+              }
+            } else {
+              _localSymbol = sym;
+              if (meta?.exchange) _pickedExchange = meta.exchange;
+              onSymbolChange?.(sym);
+            }
+          }}
+          ariaLabel="Symbol — pinned or search" />
       </div>
-      {#if exchange}<span class="oes-exch">{exchange}</span>{/if}
+      <!-- Account dropdown — placeholder "Account" doubles as its
+           label (operator feedback: "change account drop down inside
+           label as account, if account is not clear from the
+           context"). Hidden when only one account is loaded since
+           there's no choice to surface. Hidden in headerless / inline
+           mode since the host renders its own picker. -->
+      {#if !headerless && _modalAccounts.length > 1}
+        <div class="oes-account-pick">
+          <Select
+            options={_modalAccounts.map(a => ({ value: a, label: a }))}
+            value={_sharedAccount}
+            onValueChange={(v) => _onAccountChange(String(v))}
+            placeholder="Account"
+            ariaLabel="Trading account" />
+        </div>
+      {:else if !headerless && _modalAccounts.length === 1 && _sharedAccount}
+        <span class="oes-account-single" title="Single broker account">{_sharedAccount}</span>
+      {/if}
+      {#if exchange || _pickedExchange}<span class="oes-exch">{exchange || _pickedExchange}</span>{/if}
       <!-- Chart-icon button — opens ChartModal for the current symbol.
            Cyan-400 palette matching the card-control trio. Disabled
            when no symbol is picked. -->
@@ -1085,6 +1155,27 @@
     position: relative;
     display: inline-flex;
     align-items: center;
+    min-width: 11rem;
+    flex: 0 1 16rem;
+  }
+  /* Account dropdown — placeholder "Account" reads as its label when
+     nothing is picked. Narrow Select pinned next to the symbol combo. */
+  .oes-account-pick {
+    flex-shrink: 0;
+    min-width: 7rem;
+    max-width: 9rem;
+  }
+  .oes-account-pick :global(.rbq-select-trigger) { width: 100%; }
+  .oes-account-single {
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #c8d8f0;
+    padding: 0.18rem 0.45rem;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 3px;
+    flex-shrink: 0;
   }
   .oes-sym-input {
     background: rgba(255, 255, 255, 0.04);
