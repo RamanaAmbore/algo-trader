@@ -161,10 +161,12 @@
 </button>
 
 <style>
-  /* Vibrant cyan-400 palette — the canonical "live data / refresh"
-     accent across Bloomberg Terminal, IBKR TWS, Sensibull and Streak.
-     Shared with FullscreenButton + CollapseButton so the trio of
-     card-control icons reads as one consistent family. */
+  /* Sky-blue (sky-400 #38bdf8) palette — distinct from the chart-icon
+     cyan-400 (#22d3ee) the operator clicks next to Refresh in every
+     page header. Same "blue family" semantically (live-data accent)
+     but visually separable so the operator never confuses the two.
+     Card-control trio (Collapse / Fullscreen / DefaultSize) keeps cyan
+     since they're scoped to card headers, not the page-header strip. */
   .rf-btn {
     position: relative;
     display: inline-flex;
@@ -174,22 +176,22 @@
     height: 1.6rem;
     padding: 0;
     margin: 0;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: rgba(56, 189, 248, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.55);
     border-radius: 3px;
-    color: #22d3ee;
+    color: #38bdf8;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     overflow: visible;
   }
   .rf-btn:hover:not(:disabled) {
-    background: rgba(34, 211, 238, 0.26);
-    border-color: rgba(34, 211, 238, 0.85);
-    color: #67e8f9;
+    background: rgba(56, 189, 248, 0.26);
+    border-color: rgba(56, 189, 248, 0.85);
+    color: #7dd3fc;
   }
   .rf-btn:focus-visible {
-    outline: 2px solid rgba(34, 211, 238, 0.65);
+    outline: 2px solid rgba(56, 189, 248, 0.65);
     outline-offset: 1px;
   }
   .rf-btn:disabled {
