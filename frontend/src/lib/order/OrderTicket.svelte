@@ -329,15 +329,17 @@
   // Resolve the exchange via the instruments cache. The order modal's
   // OrderDepth poll needs `?exchange=…` to hit the right Kite quote
   // endpoint — MCX commodities need exchange=MCX, NSE F&O needs NFO,
-  // etc. Caller-supplied exchange wins; otherwise read the resolved
-  // tradingsymbol's exchange from the instruments cache. Falls back to
-  // NFO (existing OrderDepth default) when no resolution is possible.
+  // etc. The instruments cache IS authoritative: PageHeaderActions
+  // passes a generic 'NSE' default that's wrong for MCX commodities,
+  // so we look up the resolved symbol's actual exchange first and
+  // only fall back to the caller's hint when the cache lookup misses.
   const _resolvedExchange = $derived.by(() => {
-    if (exchange) return exchange;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
-    if (!sym) return '';
-    const inst = getInstrument(sym);
-    return inst?.e || '';
+    if (sym) {
+      const inst = getInstrument(sym);
+      if (inst?.e) return inst.e;
+    }
+    return exchange || '';
   });
 
   // Default product based on instrument when caller didn't specify.
