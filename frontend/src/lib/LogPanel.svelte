@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
@@ -46,10 +46,15 @@
 
   let logTab = $state(defaultTab);
   // Re-sync logTab whenever the parent updates defaultTab (e.g. /agents
-  // calling runInSim flips defaultTab to 'simulator'). Without this the
-  // tab strip silently ignores parent-driven tab switches.
+  // calling runInSim flips defaultTab to 'simulator'). Read logTab via
+  // untrack() so the operator's own tab clicks (setTab → logTab = id)
+  // don't re-trigger this effect — without untrack the comparison sees
+  // the new tab, decides it differs from defaultTab, and slams the
+  // tab back to 'order' (or whatever defaultTab was). Result was that
+  // clicking Agents / Terminal / Ticks etc. inside any LogPanel mount
+  // immediately reverted to the Orders tab.
   $effect(() => {
-    if (defaultTab && defaultTab !== logTab) logTab = defaultTab;
+    if (defaultTab && defaultTab !== untrack(() => logTab)) logTab = defaultTab;
   });
 
   // Mode → tab + filter mapping. When the parent passes `mode`, we

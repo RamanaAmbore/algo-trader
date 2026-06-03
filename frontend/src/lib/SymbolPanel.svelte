@@ -198,9 +198,14 @@
   // via $effect so an external pick (chain row + CE click, dashboard
   // row click, MarketPulse symbol pick) still updates the shell.
   let _localSymbol = $state(String(symbol || '').toUpperCase());
+  // Sync FROM prop only. Reading _localSymbol via untrack() so the
+  // operator's own picks (which set _localSymbol from inside the modal)
+  // don't re-trigger this effect — without untrack the comparison
+  // sees the new local value, decides it differs from the prop, and
+  // slams the local back to the prop, undoing the operator's typing.
   $effect(() => {
     const next = String(symbol || '').toUpperCase();
-    if (next && next !== _localSymbol) _localSymbol = next;
+    if (next && next !== untrack(() => _localSymbol)) _localSymbol = next;
   });
 
   // Symbol search dropdown state.
