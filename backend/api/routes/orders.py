@@ -1473,4 +1473,12 @@ class AccountsController(Controller):
         # stay empty). Stale settings shouldn't break the UI.
         if default_acct and default_acct not in conn:
             default_acct = ""
-        return AccountsResponse(accounts=accounts, default_account=default_acct)
+        # Default symbol — operator-configured underlying / contract.
+        # Masked partners get an empty string back: no point teasing a
+        # symbol they can't trade against (they have no real account).
+        default_sym = "" if do_mask else get_string("orders.default_symbol", "NIFTY")
+        return AccountsResponse(
+            accounts=accounts,
+            default_account=default_acct,
+            default_symbol=default_sym,
+        )

@@ -6,6 +6,7 @@ import { fetchAccounts } from '$lib/api';
 
 let _accounts = null;
 let _defaultAccount = '';
+let _defaultSymbol = '';
 let _loadPromise = null;
 
 export async function loadAccounts() {
@@ -16,9 +17,11 @@ export async function loadAccounts() {
       const data = await fetchAccounts();
       _accounts = (data && data.accounts) || [];
       _defaultAccount = String((data && data.default_account) || '');
+      _defaultSymbol  = String((data && data.default_symbol)  || '');
     } catch (e) {
       _accounts = [];
       _defaultAccount = '';
+      _defaultSymbol = '';
     }
     return _accounts;
   })();
@@ -32,6 +35,14 @@ export async function loadAccounts() {
  *  callers must have already loadAccounts()-ed. */
 export function getDefaultAccount() {
   return _defaultAccount;
+}
+
+/** Operator-configured default symbol (orders.default_symbol setting).
+ *  May be a bare underlying ("NIFTY" / "CRUDEOIL" / "GOLD") which the
+ *  modal callers resolve to a tradeable contract, or a full tradeable
+ *  symbol. Synchronous reader. */
+export function getDefaultSymbol() {
+  return _defaultSymbol;
 }
 
 export function getAccountsSync() {

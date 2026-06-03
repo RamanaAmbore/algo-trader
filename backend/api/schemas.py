@@ -343,3 +343,9 @@ class AccountsResponse(msgspec.Struct):
     # leave it to the operator". Frontend SymbolPanel reads this on mount
     # to pre-select the Account dropdown.
     default_account: str = ""
+    # Operator-configured default symbol (orders.default_symbol). May be
+    # an underlying name (NIFTY / CRUDEOIL / GOLD) which the modal
+    # resolves into a tradeable contract via the instruments cache, or a
+    # full tradeable symbol. Empty = open modal without a pre-filled
+    # symbol.
+    default_symbol: str = ""

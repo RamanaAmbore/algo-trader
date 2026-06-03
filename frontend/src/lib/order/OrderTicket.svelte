@@ -75,6 +75,7 @@
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
+   *   refreshKey?: number,
    * }} */
   let {
     symbol,
@@ -165,6 +166,13 @@
     // The order modal sets this so the funds row only renders once in
     // the common action footer (visible on every tab).
     fundsHidden = false,
+    // Increments any time the host wants the ticket to refresh its
+    // live data — depth ladder, margin preflight, funds. Used by the
+    // order modal on tab-activation so switching FROM Chain back TO
+    // Ticket re-fetches the depth (operator request: "when order
+    // ticket is clicked, market depth and other details need to be
+    // refreshed").
+    refreshKey = 0,
     // When true, the Symbol chip in the quick-row top strip is
     // suppressed. Used by the order modal where the picker row above
     // the tabs already shows the symbol — no need to repeat it inside
@@ -785,9 +793,11 @@
   $effect(() => {
     // Track everything that materially affects the basket_margin number.
     // (Svelte 5 picks up reads inside this function automatically.)
+    // Host-driven refreshKey is included so tab activation triggers an
+    // immediate re-fetch of the margin preview.
     const _watchers = [
       _side, _qty, _account, _product, _type, _variety,
-      _price, _trigger, symbol, exchange, _resolvedSymbol,
+      _price, _trigger, symbol, exchange, _resolvedSymbol, refreshKey,
     ];
     void _watchers;
 
@@ -1021,6 +1031,11 @@
     // picker. Cached for 30 s on the backend so re-opening the modal
     // is instant. 401 / 403 (anonymous demo) leaves _funds empty and
     // the pill collapses gracefully.
+    _refetchFunds();
+    return () => _escCleanup?.();
+  });
+
+  function _refetchFunds() {
     fetchFunds()
       .then(/** @param {any} r */ (r) => {
         _funds = (r?.rows || []).filter(/** @param {any} f */ (f) =>
@@ -1028,7 +1043,13 @@
         );
       })
       .catch(() => { /* silent — pill stays hidden */ });
-    return () => _escCleanup?.();
+  }
+
+  // Host-triggered refresh — when refreshKey bumps, re-fetch funds so
+  // the avail-margin chip and the modal-wide funds line both reflect
+  // the latest balances after a fill/cancel elsewhere.
+  $effect(() => {
+    if (refreshKey > 0) _refetchFunds();
   });
 </script>
 
@@ -1308,7 +1329,7 @@
          side (BUY → top ask, SELL → top bid). Operator edits to the
          price field freeze the auto-fill until they hit the ↺ button
          next to the field label. -->
-    <OrderDepth {symbol} {exchange} onQuote={onDepthQuote} />
+    <OrderDepth {symbol} {exchange} {refreshKey} onQuote={onDepthQuote} />
 
     <!-- Mode selector + chase — only relevant when *placing* a new
          order. action='modify' bypasses the place-pipeline entirely
@@ -1527,6 +1548,17 @@
     font-family: ui-monospace, monospace;
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
   }
+  /* Mobile: match the canonical-modal-panel sizing (96vw × 90vh)
+     so every modal — ticket, order shell, chart, activity — opens
+     at the same dimensions and position. Operator request: "on
+     mobile, all the modals should be of same dimensions and at the
+     same location. They should be fully visible on mobile." */
+  @media (max-width: 760px) {
+    .ot-modal {
+      width: 96vw;
+      max-height: 90vh;
+    }
+  }
 
   .ot-header {
     display: flex;
@@ -1590,8 +1622,29 @@
     min-width: 0;
   }
   /* Qty block grows a bit more than Account / Symbol — the lots
-     stepper carries multiple controls. */
-  .ot-quick-qty { flex: 1.4 1 0; }
+     stepper carries multiple controls. Label sits INLINE to the LEFT
+     of the value (operator request) instead of stacked above. */
+  .ot-quick-qty {
+    flex: 1.4 1 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .ot-quick-qty .ot-label {
+    /* Inline-mode label: stop taking 100% width of the column, drop
+       the bottom margin, align baseline with the value. */
+    width: auto;
+    min-width: 2.2rem;
+    margin: 0;
+    flex-shrink: 0;
+  }
+  .ot-quick-qty .ot-lots-row {
+    flex: 1 1 auto;
+  }
+  .ot-quick-qty .ot-input.ot-num {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   /* Symbol display chip — read-only label showing the symbol from
      SymbolPanel's shared picker. Operator picks the symbol once at
      the shell level; this chip mirrors it inside the ticket form

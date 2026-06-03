@@ -333,6 +333,20 @@ SEEDS: list[tuple] = [
      "auto-pick when exactly one account is loaded; otherwise the "
      "operator chooses from the Account dropdown each time.",
      None, None),
+    # Default symbol the order modal / chart modal pre-selects when the
+    # host page doesn't supply a contextual symbol. Operator-friendly
+    # underlying names (e.g. NIFTY / BANKNIFTY / CRUDEOIL / GOLD / RELIANCE)
+    # are resolved into a tradeable contract by the modal itself —
+    # underlyings without a tradeable cash equity are mapped to the
+    # nearest future contract via the instruments cache, others stay as
+    # is (cash equities, indices). Pull values from your pinned watchlist
+    # so the default mirrors the day's primary instrument.
+    ("orders",      "orders.default_symbol",     "string", "NIFTY",
+     "Default symbol the order / chart modal opens with when no host "
+     "context overrides it. Accepts underlying names (NIFTY, BANKNIFTY, "
+     "CRUDEOIL, GOLD, …) which are auto-resolved to the nearest future, "
+     "or full tradeable symbols. Leave blank to open the modal empty.",
+     None, None),
 
     # ── Replay / Backtest ────────────────────────────────────────��─────
     ("replay",      "replay.max_days",           "int",  60,

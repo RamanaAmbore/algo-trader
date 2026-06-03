@@ -32,8 +32,9 @@
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import Select            from '$lib/Select.svelte';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
-  import { findNearestFuture } from '$lib/data/instruments';
-  import { loadAccounts, getDefaultAccount } from '$lib/data/accounts';
+  import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
+  import { resolveUnderlying as _resolveUnderlyingFn } from '$lib/data/resolveUnderlying';
+  import { loadAccounts, getDefaultAccount, getDefaultSymbol } from '$lib/data/accounts';
 
   // Pinned anchors shown at the top of the symbol combo's dropdown.
   // Same set as ChartWorkspace so the operator sees identical pinned
@@ -304,6 +305,25 @@
     activeTab = id;
   }
 
+  // Tab-activation refresh bumps. Operator request: "when chain tab is
+  // pressed, the chain details need to be refreshed. when order ticket
+  // is clicked, market depth and other details need to be refreshed".
+  // Each child reads its bump as a $bindable / $derived prop; an
+  // increment triggers an immediate re-fetch inside the child without
+  // unmounting it (which would lose form state). Initial mount counts
+  // as one activation so the first invoke also refreshes (covers
+  // "chart also sometimes not refreshed the first time the modal gets
+  // invoked").
+  let _ticketBump = $state(1);
+  let _chainBump  = $state(1);
+  $effect(() => {
+    const t = _activeTab;
+    untrack(() => {
+      if (t === 'ticket') _ticketBump++;
+      else if (t === 'chain') _chainBump++;
+    });
+  });
+
   // Chart modal — opens ChartModal for the current symbol when the
   // operator clicks the chart-icon button in the header. Hidden in
   // headerless mode (the host page manages its own chart button).
@@ -386,11 +406,12 @@
     }
   });
   onMount(async () => {
-    if (_modalAccounts.length) return;
     try {
       const list = await loadAccounts();
-      _modalAccounts = (list || []).map(a => String(a?.account_id || a?.account || a || '')).filter(Boolean);
-      // Pre-select fall-through:
+      if (!_modalAccounts.length) {
+        _modalAccounts = (list || []).map(a => String(a?.account_id || a?.account || a || '')).filter(Boolean);
+      }
+      // Account pre-select fall-through:
       //   1. context-supplied account (host page passed it via prop)
       //   2. orders.default_account setting (from /admin/settings)
       //   3. sole loaded account when the list has exactly one entry
@@ -401,6 +422,36 @@
           _sharedAccount = defaultAcct;
         } else if (_modalAccounts.length === 1) {
           _sharedAccount = _modalAccounts[0];
+        }
+      }
+      // Symbol pre-select: same ladder.
+      //   1. host-supplied `symbol` prop (already seeds _localSymbol on init)
+      //   2. orders.default_symbol setting — resolved to a tradeable
+      //      contract via resolveUnderlying() (CRUDEOIL → CRUDEOIL26JUNFUT,
+      //      NIFTY stays NIFTY, RELIANCE stays RELIANCE). The instruments
+      //      cache hydration happens inside resolveUnderlying; we await
+      //      it here so the pre-fill is the resolved tradeable, not the
+      //      raw underlying name.
+      if (!_localSymbol) {
+        const defaultSym = getDefaultSymbol();
+        if (defaultSym) {
+          // Show the raw underlying immediately so the operator sees
+          // something while resolution runs in the background.
+          _localSymbol = defaultSym.toUpperCase();
+          onSymbolChange?.(_localSymbol);
+          try {
+            // Hydrate the instruments cache before resolving — MCX
+            // commodities (CRUDEOIL / GOLD / SILVER) need it to find
+            // the nearest future. NSE index spots (NIFTY / BANKNIFTY)
+            // resolve from a static map and don't depend on it.
+            await loadInstruments().catch(() => null);
+            const resolved = _resolveUnderlyingFn(defaultSym.toUpperCase(), findNearestFuture);
+            const resolvedSym = resolved?.tradingsymbol || '';
+            if (resolvedSym && resolvedSym.toUpperCase() !== _localSymbol) {
+              _localSymbol = resolvedSym.toUpperCase();
+              onSymbolChange?.(_localSymbol);
+            }
+          } catch { /* keep raw */ }
         }
       }
     } catch { /* keep last-good */ }
@@ -970,6 +1021,7 @@
             symType={_symType}
             actionsHidden={actionsHidden || showCommonActions}
             fundsHidden={showCommonActions && !inline}
+            refreshKey={_ticketBump}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
             hostManagesEsc={true}
@@ -988,6 +1040,7 @@
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
           {accounts}
+          refreshKey={_chainBump}
           basketLegs={basketLegs}
           onAddLeg={addToBasket}
           onRemoveLeg={(/** @type {any} */ leg) => {

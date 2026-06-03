@@ -37,6 +37,7 @@
    *   onClearBasket?:  () => void,
    *   onPlaceLeg?:     (props: any) => void,
    *   onAccountChange?: (account: string) => void,
+   *   refreshKey?:     number,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -62,6 +63,10 @@
     // routable account from this tab — shell syncs the other tabs
     // (command / ticket) to the same value.
     onAccountChange = /** @type {((a: string) => void)|undefined} */ (undefined),
+    // Host-driven refresh — increments to force a chain re-fetch
+    // (futures + strikes + ATM). Used by SymbolPanel on tab activation
+    // so switching back to Chain always shows fresh data.
+    refreshKey = 0,
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -302,6 +307,29 @@
     });
   });
   onDestroy(() => { if (chainQuotesPoll) clearInterval(chainQuotesPoll); });
+
+  // Host-triggered refresh — invalidate the spot + quotes cache keys
+  // and re-fire the fetchers so a tab activation always lands on fresh
+  // chain data (operator request: "when chain tab is pressed, the
+  // chain details need to be refreshed").
+  $effect(() => {
+    if (refreshKey <= 0) return;
+    untrack(() => {
+      // Clear keys so the next spot effect treats the underlying as
+      // newly-set and re-fetches.
+      chainSpotKey = '';
+      chainQuotesKey = '';
+      if (chainUnderlying) {
+        // Spot re-fetch — bypass the key-equality short-circuit.
+        const u = chainUnderlying; const e = chainExpiry || null;
+        fetchOptionsSpot(u, e).then((r) => {
+          chainSpotFetched = r ? { spot: Number(r.spot) || 0, source: String(r.spot_source || '') } : null;
+          chainSpotKey = `${u.toUpperCase()}|${e || ''}`;
+        }).catch(() => { chainSpotFetched = null; });
+      }
+      _refreshChainQuotes();
+    });
+  });
 
   const _fmtLtp = priceFmt;
 

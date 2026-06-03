@@ -16,8 +16,9 @@
    *   symbol: string,
    *   exchange?: string,
    *   onQuote?: (q: any) => void,
+   *   refreshKey?: number,
    * }} */
-  let { symbol, exchange = 'NFO', onQuote = null } = $props();
+  let { symbol, exchange = 'NFO', onQuote = null, refreshKey = 0 } = $props();
 
   /** @type {{ ltp: number, bid: number|null, ask: number|null, depth_buy: any[], depth_sell: any[], ohlc?: { close?: number } | null } | null} */
   let q = $state(null);
@@ -46,6 +47,14 @@
     timer = setInterval(poll, 1200);
   });
   onDestroy(() => { if (timer) clearInterval(timer); });
+
+  // Host-triggered refresh — when the host increments refreshKey we
+  // re-poll immediately so depth always reflects the latest tick on
+  // tab activation / modal re-open. Skipped when key is still 0
+  // (initial render; onMount handles the first fetch).
+  $effect(() => {
+    if (refreshKey > 0) poll();
+  });
 
   // 5-row scaffold filled from the response. Shorter arrays pad
   // with `null` so the rows stay aligned visually.
