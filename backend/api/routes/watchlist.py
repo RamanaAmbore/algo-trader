@@ -25,7 +25,9 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
 from backend.api.auth_guard import jwt_guard, auth_or_demo_guard
-from backend.api.algo.watchlist_defaults import markets_default_rows
+# NOTE: MARKETS_DEFAULT is still used by the anonymous-demo path inside
+# _demo_watchlist_items (imported lazily there). The Markets watchlist
+# is no longer seeded for real users — see _ensure_default_watchlists.
 from backend.api.database import async_session
 from backend.api.models import User, Watchlist, WatchlistItem
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -359,15 +361,15 @@ async def _resolve_user_id(session, username: str) -> int:
 
 
 async def _ensure_default_watchlists(session, user_id: int) -> None:
-    """Idempotent: create Default + Markets watchlists for this user if
-    they don't already have any. Called lazily by every endpoint so a
-    user who pre-dates the watchlist feature still gets their seeded
-    lists on first access — no migration sweep needed.
+    """Idempotent: create the single 'Default' (pinned) watchlist for
+    this user if they don't already have any.
 
-    For existing users who already have Markets, top up any symbols
-    from the seed list that aren't already present (additive only —
-    never re-adds a symbol the user explicitly removed, since this
-    only fires on the full original seed-list count match)."""
+    Operator request: "there is not market watchlist. PINNED is the
+    watchlist always present. Then any watchlist added by the user
+    should be shown a tab with PINNED." So we only seed the one Default
+    list now. The legacy Markets seed has been removed — existing users
+    who already have a Markets row keep it as-is (the operator can
+    delete it via the UI; we never silently remove a watchlist row)."""
     # One-off rename: an early seed shipped "NIFTY SMALLCAP 100" but
     # Kite's quote key is the abbreviated "NIFTY SMLCAP 100". Migrate
     # any rows that still carry the wrong name. Idempotent.
@@ -387,72 +389,17 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
     )
     existing = list(row.all())
     if existing:
-        # Top-up logic for the Markets list. Only add symbols that
-        # aren't there yet, never remove. Skip entirely if the user
-        # has clearly customised the list (item count below the
-        # original seed size, suggesting deliberate removals).
-        markets = next((rid for (rid, name) in existing if name == "Markets"), None)
-        if markets:
-            seed_pairs = {(r["tradingsymbol"], r["exchange"])
-                          for r in markets_default_rows()}
-            cur_row = await session.execute(
-                select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
-                .where(WatchlistItem.watchlist_id == markets)
-            )
-            # Cast each Row to a plain tuple so the set difference
-            # against seed_pairs (also tuples) works correctly.
-            cur_pairs = {(r[0], r[1]) for r in cur_row.all()}
-            missing = seed_pairs - cur_pairs
-            # Only top up if the existing list has at least as many of
-            # the OTHER seed entries as expected (i.e. user hasn't been
-            # removing items). The original seed had ≥10 entries.
-            if missing and len(cur_pairs & seed_pairs) >= len(seed_pairs) - len(missing):
-                now = datetime.now(timezone.utc)
-                from sqlalchemy import func
-                max_sort_r = await session.execute(
-                    select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
-                    .where(WatchlistItem.watchlist_id == markets)
-                )
-                next_sort = int(max_sort_r.scalar() or -1) + 1
-                for sym, exch in sorted(missing):
-                    session.add(WatchlistItem(
-                        watchlist_id=markets, tradingsymbol=sym,
-                        exchange=exch, sort_order=next_sort, added_at=now,
-                    ))
-                    next_sort += 1
-                await session.commit()
-                logger.info(
-                    f"Watchlist: topped up Markets for user_id={user_id} "
-                    f"with {sorted(missing)}"
-                )
+        # User already has at least one list — nothing to seed.
         return
     now = datetime.now(timezone.utc)
-    # Both auto-seeded lists land in the Pinned major group on Market
-    # Pulse (is_pinned=True). User-created lists default to is_pinned
-    # =False and land in the Watchlist major group.
     default_list = Watchlist(
         user_id=user_id, name="Default", sort_order=0,
         is_default=True, is_pinned=True,
         created_at=now, updated_at=now,
     )
-    markets_list = Watchlist(
-        user_id=user_id, name="Markets", sort_order=1,
-        is_default=False, is_pinned=True,
-        created_at=now, updated_at=now,
-    )
     session.add(default_list)
-    session.add(markets_list)
-    await session.flush()  # need markets_list.id
-    for row in markets_default_rows():
-        session.add(WatchlistItem(
-            watchlist_id=markets_list.id,
-            tradingsymbol=row["tradingsymbol"],
-            exchange=row["exchange"],
-            sort_order=row["sort_order"],
-            added_at=now,
-        ))
     await session.commit()
-    logger.info(f"Watchlist: seeded Default + Markets for user_id={user_id}")
+    logger.info(f"Watchlist: seeded Default (pinned) for user_id={user_id}")
 
 
 def _wl_info(wl: Watchlist, item_count: int) -> WatchlistInfo:
