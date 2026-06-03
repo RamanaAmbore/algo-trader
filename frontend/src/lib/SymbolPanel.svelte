@@ -841,26 +841,24 @@
         {@const disabled   = tab.id === 'chain' && chainDisabled}
         {@const isActive   = _activeTab === tab.id}
         {@const badgeCount = tab.id === 'chain' ? basketLegs.length : 0}
+        <!-- Tab styling unified with LogPanel + every other algo-side
+             tab strip: amber underline + amber text on active, slate
+             text + transparent underline otherwise. Drops the colored
+             background tint + per-tab colored dot prefix; the
+             underline is the single active-state indicator across the
+             platform. -->
         <button
           type="button"
           role="tab"
           class="oes-tab"
+          class:oes-tab-active={isActive}
           class:oes-tab-disabled={disabled}
           disabled={disabled}
           title={disabled ? 'Option chain only applies to F&O instruments' : undefined}
           aria-selected={isActive}
           aria-disabled={disabled}
-          style="
-            color: {isActive ? tab.activeTxt : '#94a3b8'};
-            background: {isActive ? tab.activeBg : 'transparent'};
-            border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
-            font-weight: {isActive ? '800' : '600'};
-            opacity: {disabled ? '0.5' : '1'};
-            cursor: {disabled ? 'not-allowed' : 'pointer'};
-          "
           onclick={() => { if (!disabled) _setActiveTab(/** @type {any} */ (tab.id)); }}
         >
-          <span class="oes-tab-dot" style="background:{tab.dot};"></span>
           {tab.label}
           {#if tab.id === 'chain' && badgeCount > 0}
             <span class="oes-tab-badge">{badgeCount}</span>
@@ -1406,6 +1404,8 @@
     border-bottom: 1px solid rgba(255,255,255,0.08);
     flex-shrink: 0;
   }
+  /* Tab style — underline-only active state, matches LogPanel +
+     /admin/tokens + every other algo-side tab strip. */
   .oes-tab {
     display: inline-flex;
     align-items: center;
@@ -1419,23 +1419,22 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    transition: color 0.12s, border-color 0.12s, opacity 0.12s;
+    color: #b4c8e6;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
     white-space: nowrap;
   }
-  .oes-tab:hover:not(.oes-tab-disabled) {
-    opacity: 0.8 !important;
+  .oes-tab:hover:not(.oes-tab-disabled):not(.oes-tab-active) {
+    color: #fbbf24;
+  }
+  .oes-tab-active {
+    border-bottom-color: #d97706;
+    color: #fbbf24;
+    font-weight: 800;
   }
   .oes-tab-disabled {
     cursor: not-allowed !important;
-  }
-  /* Colour dot — small circle before the tab label */
-  .oes-tab-dot {
-    display: inline-block;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    opacity: 0.75;
+    opacity: 0.5;
   }
   /* Count badge on Chain tab */
   .oes-tab-badge {

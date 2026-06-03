@@ -1296,9 +1296,18 @@
                   fill="#fbbf24" stroke="#fff" stroke-width="1"/>
         {/if}
       </svg>
-      <!-- Loading overlay — keeps prior bars visible during reload -->
+      <!-- Loading overlay — spinning chart-glyph icon shown over the
+           top-right of the plot while a refresh is in flight. Keeps
+           the prior bars visible underneath so the operator sees a
+           continuous update rather than a flash to empty. -->
       {#if _histLoading}
-        <div class="cw-chart-spinner">Loading…</div>
+        <div class="cw-chart-spinner" title="Refreshing chart…" aria-label="Refreshing chart">
+          <svg class="cw-chart-spinner-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <!-- Chart polyline glyph (matches the page-header Chart button) -->
+            <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
       {/if}
     {/if}
   </div>
@@ -1695,18 +1704,28 @@
     }
   }
 
-  /* Loading overlay — shown on top of prior bars while a reload is in flight */
+  /* Loading overlay — spinning chart icon, top-right corner. */
   .cw-chart-spinner {
     position: absolute;
     top: 0.5rem;
     right: 0.75rem;
-    color: #7e97b8;
-    font-size: 0.55rem;
-    font-family: monospace;
-    background: rgba(13,24,41,0.7);
-    padding: 2px 6px;
-    border-radius: 3px;
+    color: #22d3ee;
+    background: rgba(13, 24, 41, 0.78);
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    border-radius: 4px;
+    padding: 4px 6px;
     pointer-events: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cw-chart-spinner-icon {
+    animation: cw-spin 1.1s linear infinite;
+    transform-origin: 50% 50%;
+  }
+  @keyframes cw-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
   }
 
   /* ── State / empty ───────────────────────────────────────── */
