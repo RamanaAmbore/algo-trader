@@ -2667,16 +2667,19 @@
     gap: 1px;
     align-items: flex-end;
   }
-  /* Within the picker, shrink the AccountMultiSelect to exactly its
-     content width — the shared component's 5.6–8.8rem clamp was
-     adding 2–3rem of empty padding inside the trigger (between the
-     "All accounts" label and the caret) that read as "space between
-     Account and Underlying". `:global` reaches through the shared
-     `.ams` class scope. */
+  /* AccountMultiSelect wraps MultiSelect in an extra `.ams` div with
+     its own min/max-width clamp. Underlying (bare Select) and Expiry
+     (bare MultiSelect) don't have that wrapper, so their columns hug
+     the trigger natively — there's no gap between them. Force the
+     Account column to behave the same way by collapsing the `.ams`
+     wrapper to `display: contents`: the wrapper produces no box of
+     its own, and the inner MultiSelect lays out as a direct child of
+     `.opt-field`, exactly mirroring how Underlying / Expiry sit
+     inside their columns. Trades off the disabled-state title
+     tooltip the `.ams` wrapper hosts — not needed here since the
+     picker is always enabled on this page. */
   .opt-picker :global(.ams) {
-    min-width: 0;
-    max-width: none;
-    width: max-content;
+    display: contents;
   }
 
   /* SIMULATOR badge — sim-active context surfaces as a pink pill
@@ -2722,16 +2725,14 @@
     .opt-field { flex: 1 1 0; }
   }
   @media (min-width: 900px) {
-    /* Underlying — desktop natural width. */
-    .opt-picker .opt-field:nth-of-type(2) {
-      flex: 0 0 auto;
-      min-width: 8rem;
-    }
-    /* Expiry — narrower (operator: -40% from 8rem). YYYY-MM-DD pills
-       are short, no need to reserve a full Account-width slot. */
+    /* All fields content-sized (`flex: 0 0 auto`, no min-width) so the
+       row reads as one tight left-flush cluster: Account → Underlying
+       → Expiry → Chain. Operator: "left align all the fields accounts,
+       underlying, expiry and chain" — every field hugs its trigger,
+       1px gap between, empty space trails on the right. */
+    .opt-picker .opt-field:nth-of-type(2),
     .opt-picker .opt-field:nth-of-type(3) {
       flex: 0 0 auto;
-      min-width: 4.8rem;
     }
   }
 
