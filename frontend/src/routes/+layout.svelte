@@ -85,12 +85,29 @@
     return null;
   }
 
+  /** Hit-test the viewport center and walk up to the nearest
+   *  scrollable ancestor. This is what TV spatial-nav libraries do
+   *  to figure out "what card is the operator looking at". For ag-Grid
+   *  specifically this lands on .ag-body-viewport (the actual scroll
+   *  container). Returns null when the centre lands on a non-scrolling
+   *  element with no scrolling ancestor. */
+  function _centerScrollable() {
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const el = document.elementFromPoint(vw / 2, vh / 2);
+    if (!el) return null;
+    // ag-Grid: prefer the body viewport over any cell — cells don't
+    // overflow, the viewport does.
+    const agViewport = /** @type {HTMLElement|null} */ (
+      el.closest('.ag-body-viewport, .ag-center-cols-viewport') || null
+    );
+    if (agViewport && _isOverflowing(agViewport)) return agViewport;
+    // Walk up looking for the first ancestor with actual overflow.
+    return _nearestScrollAncestor(el) || null;
+  }
+
   /** Find the largest visible overflowing element on the page. Used as
-   *  the last-resort scroll target when nothing is focused and no
-   *  overlay is open — picks the card the operator is most likely
-   *  looking at by visible area. Skips the body (handled separately as
-   *  the explicit page fallback) and elements smaller than ~120px tall
-   *  to avoid latching onto tiny chip strips. */
+   *  the last-resort fallback. */
   function _largestVisibleScrollable() {
     const vw = window.innerWidth || document.documentElement.clientWidth;
     const vh = window.innerHeight || document.documentElement.clientHeight;
@@ -154,21 +171,26 @@
       if (found) { target = /** @type {HTMLElement} */ (found); break; }
     }
 
-    // 2. Nearest scrollable ancestor of the focused element.
-    if (!target && ae) target = _nearestScrollAncestor(ae);
+    // 2. Nearest scrollable ancestor of the focused element. Skips
+    //    when focus is on the hidden TV sink (it lives at body level
+    //    so has no meaningful card ancestor).
+    if (!target && ae && ae !== _tvSink) target = _nearestScrollAncestor(ae);
 
-    // 3. Largest VISIBLE overflowing card region in the viewport.
-    //    Covers per-card scroll surfaces that aren't wrapped in an
-    //    overlay (LogPanel pre, OptionChainTab strikes, dashboard
-    //    bucket grids, ag-Grid viewports, etc.). Walks every scrollable
-    //    element on the page and picks the one with the biggest visible
-    //    area — the operator's eye is naturally on the biggest visible
-    //    card with content to scroll.
+    // 3. Center-of-viewport probe. TV-app spatial-nav libraries solve
+    //    this by hit-testing the visible centre — the card the
+    //    operator is actually staring at. Walks up from that element
+    //    to find the first scrollable ancestor; for ag-Grid that
+    //    means landing on .ag-body-viewport directly.
+    if (!target) target = _centerScrollable();
+
+    // 4. Largest visible overflowing card region as a last-resort
+    //    fallback (some cards extend above / below the centre).
     if (!target) target = _largestVisibleScrollable();
 
-    // 4. Fall back to the page.
+    // 5. Fall back to the page.
     if (!target) target = /** @type {HTMLElement} */ (document.scrollingElement || document.documentElement);
     if (!target) return;
+    _showDbg(`scroll → ${target.tagName.toLowerCase()}.${(target.className || '').split(/\s+/).slice(0, 3).join('.')}`);
 
     const step = Math.max(60, Math.round(target.clientHeight * 0.18));
     const page = Math.max(240, Math.round(target.clientHeight * 0.9));
