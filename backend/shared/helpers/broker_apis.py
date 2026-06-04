@@ -94,11 +94,53 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     if df_positions.empty:
         return df_positions
 
-    # Derive day-change. Kite gives last_price + close_price (yesterday's
-    # close) per position row. Day change ₹ = (last - close) * qty.
-    # Day change % = day_change_val / |close * qty| — guarded against zero.
+    # Derive day-change. Broker-agnostic split — operator: "for overnight
+    # positions, use yesterday's market close; for newly opened positions,
+    # use entry price; for closed positions, use the realised cash". The
+    # naive `(last - close) × current_qty` form double-counts the
+    # (close - avg) × qty gap on legs opened today, treating yesterday's
+    # close as a mark the position never actually experienced. The full
+    # formula splits the leg into overnight + intraday halves:
+    #
+    #   day_pnl = (last - close) × overnight_qty                ← overnight mark
+    #           + last × (day_buy_qty − day_sell_qty)           ← intraday net qty marked at last
+    #           + (day_sell_value − day_buy_value)              ← intraday realised cash flow
+    #
+    # Reduces correctly: pure overnight → first term; opened today → 2nd + 3rd
+    # cancel into (last − avg) × qty; partially closed today → mark on
+    # remainder + realised on closed portion; fully closed today → realised
+    # cash only.
     df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
-    df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
+    _split_cols = ('overnight_quantity', 'day_buy_quantity',
+                   'day_sell_quantity', 'day_buy_value', 'day_sell_value')
+    _has_intraday_split = all(c in df_positions.columns for c in _split_cols)
+    if _has_intraday_split:
+        # Apply the lot-size multiplier consistently — Kite returns qty +
+        # day_buy_qty / day_sell_qty + day_buy_value / day_sell_value in
+        # `lots × per-share-price` units. The `quantity` column was already
+        # rescaled at line ~85 above; the other qty / value columns need the
+        # same treatment so the formula mixes consistent units.
+        if 'multiplier' in df_positions.columns:
+            mult = df_positions['multiplier'].fillna(1).replace(0, 1)
+            df_positions['overnight_quantity'] = df_positions['overnight_quantity'] * mult
+            df_positions['day_buy_quantity']   = df_positions['day_buy_quantity']   * mult
+            df_positions['day_sell_quantity']  = df_positions['day_sell_quantity']  * mult
+            df_positions['day_buy_value']      = df_positions['day_buy_value']      * mult
+            df_positions['day_sell_value']     = df_positions['day_sell_value']     * mult
+        _day_net_qty       = df_positions['day_buy_quantity'] - df_positions['day_sell_quantity']
+        _day_realised_cash = df_positions['day_sell_value']   - df_positions['day_buy_value']
+        df_positions['day_change_val'] = (
+            (df_positions['last_price'] - df_positions['close_price'])
+                * df_positions['overnight_quantity']
+            + df_positions['last_price'] * _day_net_qty
+            + _day_realised_cash
+        )
+    else:
+        # Legacy fallback — broker adapter doesn't surface intraday split.
+        # Treat every leg as overnight; same as the historical formula.
+        df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
+    # day_change_percentage denominator stays as |close × current_qty|
+    # so the chip reads "% MTM vs notional book value coming into today".
     prev_val = (df_positions['close_price'] * df_positions['quantity']).abs()
     df_positions['day_change_percentage'] = (
         df_positions['day_change_val'] / prev_val.replace(0, pd.NA) * 100
