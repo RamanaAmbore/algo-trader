@@ -187,7 +187,10 @@ _session_date: Optional[str] = None  # ISO date string — rolls over at IST mid
 # see on first sign-in. Read-only — every write endpoint stays jwt-only
 # so demo can't mutate.
 DEMO_WATCHLIST_ID = -1
-DEMO_WATCHLIST_NAME = "Markets"
+# Renamed to "Pinned" to match the authenticated experience — the user
+# saw "Markets ★" in the manage-watchlists dropdown whenever their JWT
+# expired and the API silently fell back to this demo synthetic list.
+DEMO_WATCHLIST_NAME = "Pinned"
 
 
 def _demo_watchlist_items() -> list[WatchlistItemInfo]:
