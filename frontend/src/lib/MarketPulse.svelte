@@ -29,7 +29,7 @@
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
     INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
-  import { visibleInterval, connStatus } from '$lib/stores';
+  import { visibleInterval, connStatus, authStore } from '$lib/stores';
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
@@ -111,8 +111,22 @@
   // strip + grids are stale because the broker layer is down.
   let brokerErr   = $state('');
 
+  // True when the current user is admin or designated — those are the
+  // only roles that can mutate the shared global Pinned watchlist
+  // (alias edits, item add / remove, rename, item-reorder). The
+  // backend gates the same way; the frontend hides affordances so
+  // non-admins don't get a 403 surprise.
+  const _isDesignated = $derived.by(() => {
+    const r = String($authStore.user?.role || '').toLowerCase();
+    return r === 'admin' || r === 'designated';
+  });
+
   // Add-symbol form state.
   let symInput   = $state('');
+  // Optional display name (operator's nickname for the contract). Sent
+  // as `alias` to /api/watchlist/{id}/items when present. Empty means
+  // the grid shows the raw tradingsymbol.
+  let aliasInput = $state('');
   // Instrument-TYPE picker shown next to the symbol input. EQ → cash
   // equity, FU → future, CE / PE → option call / put. Maps to an
   // exchange in addRow() (EQ → NSE, others → NFO) when the operator
@@ -212,7 +226,7 @@
    * row), which is exactly the kind of duplication /pulse is meant to
    * eliminate. Returns true if the row was actually appended.
    */
-  async function addToWatchlistDeduped(targetId, sym, exch) {
+  async function addToWatchlistDeduped(targetId, sym, exch, alias = null) {
     const needle = String(sym || '').toUpperCase();
     if (!needle) return false;
     const already = (rows) => rows.some(
@@ -221,7 +235,8 @@
     if (already(positions) || already(holdings)) {
       return false;  // silent skip — already present in positions/holdings
     }
-    await addWatchlistItem(targetId, sym, exch);
+    const aliasArg = (alias || '').trim() || null;
+    await addWatchlistItem(targetId, sym, exch, aliasArg);
     return true;
   }
 
@@ -2308,6 +2323,10 @@
         row.exchange      = row.exchange || it.exchange;
         row.tradingsymbol = sym;
         row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
+        // Operator-supplied display name on the WatchlistItem (e.g.
+        // "Crude oil" labelling CRUDEOIL26JUNFUT). The symbol cell
+        // shows this when present; tradingsymbol moves to the tooltip.
+        if (it.alias) row.display_name = String(it.alias);
         if (row.watchlist_item_id == null) {
           row.watchlist_item_id = it.id;
           row.watchlist_list_id = list.id;
@@ -2769,8 +2788,10 @@
         targetId,
         symInput.trim().toUpperCase(),
         _exchangeForType(typeInput),
+        aliasInput.trim() || null,
       );
-      symInput = ''; typeahead = []; typeaheadOpen = false;
+      symInput = ''; aliasInput = '';
+      typeahead = []; typeaheadOpen = false;
       searchOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
@@ -2797,8 +2818,9 @@
     const targetId = await _resolveTargetListId();
     if (targetId == null) return;
     try {
-      await addToWatchlistDeduped(targetId, inst.s, inst.e);
-      symInput = ''; typeahead = []; typeaheadOpen = false;
+      await addToWatchlistDeduped(targetId, inst.s, inst.e, aliasInput.trim() || null);
+      symInput = ''; aliasInput = '';
+      typeahead = []; typeaheadOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
   }
@@ -2819,9 +2841,10 @@
   function closeSearch() {
     searchOpen = false;
     typeaheadOpen = false;
-    // Reset the inline new-list name so a stale name doesn't linger
-    // when the popup reopens; targetListId is re-seeded by openSearch.
+    // Reset transient form state so the popup opens clean next time.
     newListName = '';
+    aliasInput  = '';
+    cancelRename();
   }
 
   async function makeList() {
@@ -2895,8 +2918,19 @@
 
   function symRenderer(params) {
     const row = params.data || {};
-    const alias = row.alias ? `<span class="sym-alias"> → ${row.tradingsymbol}</span>` : '';
-    const main  = row.alias || row.tradingsymbol || '';
+    // Two alias sources can light up the cell:
+    //   - row.display_name — operator-supplied nickname on the
+    //     WatchlistItem (e.g. "Crude oil" for CRUDEOIL26JUNFUT). Wins
+    //     over the quote-key alias when present.
+    //   - row.alias — quote-key vs tradingsymbol shim ("NIFTY 50"
+    //     spot keyed off "NIFTY"). Shown as a "→ raw symbol" hint.
+    const opAlias = row.display_name ? String(row.display_name) : '';
+    const main    = opAlias || row.alias || row.tradingsymbol || '';
+    // Always surface the raw tradingsymbol after the main when an alias
+    // is in play so the operator can still see what the row really is.
+    const aliasTail = (opAlias || row.alias)
+      ? `<span class="sym-alias" title="Tradingsymbol"> → ${row.tradingsymbol || ''}</span>`
+      : '';
     // CE / PE tint on the symbol text — Sensibull / Streak convention.
     // Green = Call (right to BUY the underlying), red = Put (right to
     // SELL). Operator scanning their book tells calls from puts at a
@@ -2928,7 +2962,15 @@
       badges.push(`<span class="sym-badge badge-m badge-m-${dir}" title="Top mover ${label}${sticky}">M${arrow}</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
-    const removeBtn = (row.src?.w && row.watchlist_item_id != null)
+    // Per-row remove (×) — operator can drop a watchlist row inline.
+    // Hidden on the shared global Pinned row for non-admin / non-
+    // designated users since the backend would 403 the delete; UI
+    // shouldn't tease an affordance that won't work.
+    const _isGlobalRow = !!lists.find(
+      l => l.id === row.watchlist_list_id && l.is_global
+    );
+    const _canRemoveHere = !_isGlobalRow || _isDesignated;
+    const removeBtn = (row.src?.w && row.watchlist_item_id != null && _canRemoveHere)
       ? `<span class="sym-remove" data-item="${row.watchlist_item_id}" data-list="${row.watchlist_list_id ?? ''}" title="Remove from watchlist">×</span>`
       : '';
     // Per-row actions menu — ⋯ pops a Chart / Watchlist / Trade
@@ -2948,7 +2990,7 @@
       ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
         `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
       : '';
-    return `<span class="sym-main ${optClass}">${main}</span>${alias}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
+    return `<span class="sym-main ${optClass}">${main}</span>${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
   }
 
   /**
@@ -4160,7 +4202,15 @@
           </div>
           {#if typeof targetListId === 'number'}
             {@const _tgtList = lists.find(l => l.id === targetListId)}
-            {#if _tgtList && !_tgtList.is_default}
+            <!-- Show the Rename / Delete affordances for:
+                   - operator-created lists (always)
+                   - the shared global Pinned ONLY for admin / designated
+                     users (the backend gates the same way; hiding the
+                     buttons prevents a 403 surprise for read-only viewers).
+                 The is_default flag on the shared Pinned is true, so the
+                 prior "non-default only" rule has been swapped for an
+                 explicit "non-global OR designated" rule. -->
+            {#if _tgtList && (!_tgtList.is_global || _isDesignated)}
               <!-- ✎ Rename — reveals the inline name input row below
                    so the operator can edit the watchlist's name without
                    leaving the popup. -->
@@ -4291,6 +4341,21 @@
             disabled={!symInput.trim() || (targetListId === 'NEW' && !newListName.trim())}
             class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
             title="Add to target watchlist">Add</button>
+        </div>
+        <!-- Optional display name (alias). Lets the operator label a
+             contract by its underlying nickname — e.g. type "Crude oil"
+             for CRUDEOIL26JUNFUT. Empty leaves the grid showing the
+             raw tradingsymbol; non-empty replaces the symbol cell with
+             the alias (and the tradingsymbol moves to the tooltip). -->
+        <div class="search-row" style="margin-top: 0.4rem;">
+          <input bind:value={aliasInput}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); addRow(); }
+              else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+            }}
+            class="field-input text-[0.7rem] py-1 px-2 flex-1"
+            placeholder="Display name (optional) — e.g. Crude oil"
+            autocomplete="off" />
         </div>
         {#if typeahead.length}
           <div class="search-typeahead">
