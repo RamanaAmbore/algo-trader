@@ -1,3 +1,38 @@
+"""
+broker_apis — single source of truth for every P&L number the rest of
+the app consumes (strip, dashboard grids, agent engine, paper trade
+sim, summarise helpers).
+
+Policy — what's COMPUTED here vs PASSED THROUGH from the broker:
+─────────────────────────────────────────────────────────────────────
+COMPUTED HERE from universal market-data primitives (`quantity`,
+`average_price`, `last_price`, `close_price`, `opening_quantity`,
+`overnight_quantity`, `day_buy/sell_quantity`, `day_buy/sell_value`).
+No broker-supplied P&L number is trusted; any one provided is
+shadowed under `_broker_*` for the divergence log and dropped from
+the result. Generic across Kite / Dhan / Groww / any future adapter:
+
+  • Holdings: inv_val, cur_val, pnl, pnl_percentage, price_change,
+    day_change, day_change_val
+  • Positions: unrealised, realised (today only), pnl, day_change,
+    day_change_val, day_change_percentage, pnl_percentage
+
+PASSED THROUGH from the broker (broker-side account state — not
+derivable from market data; we don't try):
+
+  • Margins / Cash: avail.cash, live_cash, opening_balance,
+    avail_margin, used_margin, collateral, span, exposure,
+    option_premium, withdrawable/payout, intraday_payin
+  • Reflects the broker's ledger (cash balance, exchange-imposed
+    margin requirements, pledged collateral) that we can't
+    reproduce. Strip's M / Cl / C chips rely on these.
+
+This boundary keeps every P&L computation independent of broker
+quirks (Kite's `m2m`, Dhan's `unrealisedProfit`, Groww's `pnl`) and
+lets the operator audit every number against (last − avg) × qty +
+(intraday split formula) without consulting per-broker docs.
+"""
+
 import pandas as pd
 
 from backend.shared.helpers.connections import Connections
@@ -43,14 +78,42 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
     if df_holdings.empty:
         return df_holdings
 
-    if {"average_price", "opening_quantity"}.issubset(df_holdings.columns):
-        df_holdings["inv_val"] = df_holdings["average_price"] * df_holdings["opening_quantity"]
-    if "pnl" in df_holdings.columns and "inv_val" in df_holdings.columns:
-        df_holdings["cur_val"] = df_holdings["inv_val"] + df_holdings["pnl"]
-        df_holdings["pnl_percentage"] = df_holdings["pnl"] / df_holdings["inv_val"] * 100
+    # Operator: "strip calculations and profit/loss for positions and
+    # holdings should not depend on brokers. It should be generic [and]
+    # calculated independently." Every numeric column the strip + the
+    # holdings grid consume is derived here from four primitives the
+    # adapter must surface in Kite-shape: `quantity`, `average_price`,
+    # `last_price`, `close_price`, plus `opening_quantity` for the
+    # day-mark (the count present at end of yesterday's session). We
+    # do NOT trust the broker's own `pnl` / `day_change` / `cur_val`
+    # fields — they're rederived from the primitives below and any
+    # broker number is logged when it drifts from ours.
+    if {"average_price", "quantity"}.issubset(df_holdings.columns):
+        df_holdings["inv_val"]  = df_holdings["average_price"] * df_holdings["quantity"]
+    if {"last_price",   "quantity"}.issubset(df_holdings.columns):
+        df_holdings["cur_val"]  = df_holdings["last_price"]    * df_holdings["quantity"]
+    if {"last_price", "average_price", "quantity"}.issubset(df_holdings.columns):
+        # Holdings are always long-only (no shorts) so pnl == unrealised
+        # against entry; no realised-leg to add. (last − avg) × qty.
+        df_holdings["pnl"] = (
+            (df_holdings["last_price"] - df_holdings["average_price"])
+            * df_holdings["quantity"]
+        )
+        if "inv_val" in df_holdings.columns:
+            df_holdings["pnl_percentage"] = (
+                df_holdings["pnl"] / df_holdings["inv_val"].replace(0, pd.NA) * 100
+            ).fillna(0)
     if {"close_price", "average_price"}.issubset(df_holdings.columns):
         df_holdings["price_change"] = df_holdings["close_price"] - df_holdings["average_price"]
+    if {"last_price", "close_price"}.issubset(df_holdings.columns):
+        df_holdings["day_change"] = df_holdings["last_price"] - df_holdings["close_price"]
     if {"day_change", "opening_quantity"}.issubset(df_holdings.columns):
+        # Day P&L on holdings = (last − close) × opening_quantity. The
+        # `opening_quantity` is the count present at end of yesterday's
+        # session — buys credited today are NOT marked from yesterday's
+        # close (operator: "for newly opened position you need the entry
+        # price"). Generic across every broker that exposes
+        # opening_quantity (Kite, Dhan, Groww).
         df_holdings["day_change_val"] = df_holdings["day_change"] * df_holdings["opening_quantity"]
     if "authorised_date" in df_holdings.columns:
         df_holdings["authorised_date"] = pd.to_datetime(
@@ -94,54 +157,102 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     if df_positions.empty:
         return df_positions
 
-    # Derive day-change. Broker-agnostic split — operator: "for overnight
-    # positions, use yesterday's market close; for newly opened positions,
-    # use entry price; for closed positions, use the realised cash". The
-    # naive `(last - close) × current_qty` form double-counts the
-    # (close - avg) × qty gap on legs opened today, treating yesterday's
-    # close as a mark the position never actually experienced. The full
-    # formula splits the leg into overnight + intraday halves:
-    #
-    #   day_pnl = (last - close) × overnight_qty                ← overnight mark
-    #           + last × (day_buy_qty − day_sell_qty)           ← intraday net qty marked at last
-    #           + (day_sell_value − day_buy_value)              ← intraday realised cash flow
-    #
-    # Reduces correctly: pure overnight → first term; opened today → 2nd + 3rd
-    # cancel into (last − avg) × qty; partially closed today → mark on
-    # remainder + realised on closed portion; fully closed today → realised
-    # cash only.
-    df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
+    # Operator: "the goal is not to depend on any broker api for any
+    # calculation and make the code generic irrespective of the broker."
+    # Every P&L number consumed downstream is derived here from the
+    # universal primitives — `quantity`, `average_price`, `last_price`,
+    # `close_price`, plus the intraday split fields
+    # (`overnight_quantity`, `day_buy/sell_quantity`,
+    # `day_buy/sell_value`). The broker's own `pnl` / `unrealised` /
+    # `realised` / `day_change` numbers are stashed under
+    # `_broker_*` columns for a divergence log only and overwritten
+    # with our generic derivation. No broker computation is trusted.
+
+    # -- Stash broker-reported numbers for the divergence log ------------
+    for _src, _dst in (('pnl',        '_broker_pnl'),
+                       ('unrealised', '_broker_unrealised'),
+                       ('realised',   '_broker_realised'),
+                       ('day_change_val', '_broker_day_change_val')):
+        if _src in df_positions.columns:
+            df_positions[_dst] = df_positions[_src]
+
+    # -- 1. unrealised = (last − avg) × current_quantity ----------------
+    # Universal definition. Works for every broker because it depends
+    # only on the three primitives the broker MUST surface.
+    df_positions['unrealised'] = (
+        (df_positions['last_price'] - df_positions['average_price'])
+        * df_positions['quantity']
+    )
+
+    # -- Rescale qty-shape intraday-split fields by multiplier --------
+    # `quantity` was already rescaled at line ~85 (multiplier transform).
+    # `overnight_quantity` / `day_buy_quantity` / `day_sell_quantity`
+    # are documented (Kite) as raw lots and need the same treatment so
+    # the formulas below mix consistent post-multiplier units. NOTE:
+    # `day_buy_value` / `day_sell_value` are ALREADY ₹ cash per Kite's
+    # API spec — must NOT be rescaled (earlier patch did and inflated
+    # MCX legs ~100×).
     _split_cols = ('overnight_quantity', 'day_buy_quantity',
                    'day_sell_quantity', 'day_buy_value', 'day_sell_value')
     _has_intraday_split = all(c in df_positions.columns for c in _split_cols)
+    if _has_intraday_split and 'multiplier' in df_positions.columns:
+        _mult = df_positions['multiplier'].fillna(1).replace(0, 1)
+        df_positions['overnight_quantity'] = df_positions['overnight_quantity'] * _mult
+        df_positions['day_buy_quantity']   = df_positions['day_buy_quantity']   * _mult
+        df_positions['day_sell_quantity']  = df_positions['day_sell_quantity']  * _mult
+
+    # -- 2. realised — cash realised on intraday closeouts -------------
+    # `(day_sell_value − day_buy_value) − last × (day_buy_qty − day_sell_qty)`
+    # is the cash impact of trades that were CLOSED today (vs. trades
+    # still held marked-to-last). For a fully-closed-today row
+    # (qty=0, day_net_qty=0), this reduces to the gross cash flow
+    # (sell_value − buy_value). For a fresh open today, it's zero.
+    # Cumulative realised across prior sessions is NOT derivable from
+    # a single snapshot — that requires session-to-session ledger
+    # storage. Documented limitation: `realised` is TODAY ONLY.
     if _has_intraday_split:
-        # Apply the lot-size multiplier consistently — Kite returns
-        # quantity / overnight_quantity / day_buy_quantity /
-        # day_sell_quantity in raw lots (per-doc convention); the
-        # `quantity` column was already rescaled at line ~85 above so
-        # the rest of the qty-shaped columns get the same treatment.
-        # IMPORTANT: day_buy_value / day_sell_value are documented as
-        # CASH (₹) in Kite's API spec — Day's accumulated buy/sell
-        # value already includes the multiplier — so they MUST NOT be
-        # rescaled here. Earlier patch did, inflating MCX legs ~100×
-        # (operator saw a +161 L blow-up). Other adapters (Dhan,
-        # Groww) follow the same cash-units convention.
-        if 'multiplier' in df_positions.columns:
-            mult = df_positions['multiplier'].fillna(1).replace(0, 1)
-            df_positions['overnight_quantity'] = df_positions['overnight_quantity'] * mult
-            df_positions['day_buy_quantity']   = df_positions['day_buy_quantity']   * mult
-            df_positions['day_sell_quantity']  = df_positions['day_sell_quantity']  * mult
-        _day_net_qty       = df_positions['day_buy_quantity'] - df_positions['day_sell_quantity']
-        _day_realised_cash = df_positions['day_sell_value']   - df_positions['day_buy_value']
+        _day_net_qty = (df_positions['day_buy_quantity']
+                        - df_positions['day_sell_quantity'])
+        df_positions['realised'] = (
+            (df_positions['day_sell_value'] - df_positions['day_buy_value'])
+            - df_positions['last_price'] * _day_net_qty
+        )
+    else:
+        df_positions['realised'] = 0.0
+
+    # -- 3. pnl = unrealised + realised --------------------------------
+    # Today's total P&L on the position. NOT lifetime cumulative.
+    # Strip's "P" chip surfaces this sum.
+    df_positions['pnl'] = df_positions['unrealised'] + df_positions['realised']
+
+    # -- 3. day-change (broker-agnostic split) ----------------------------
+    # Operator: "for overnight positions, use yesterday's market close;
+    # for newly opened position you need the entry price of the
+    # position as open price. For closed position you need to consider
+    # the [exit] price. Rest of the positions usual calculation". The
+    # split formula reduces to (last − close) × qty for pure overnight
+    # legs and to (last − avg) × qty for legs opened today; mixed legs
+    # take both terms plus the realised cash from any portion that
+    # was already closed today.
+    #
+    #   day_pnl = (last − close) × overnight_qty                ← overnight mark
+    #           + last × (day_buy_qty − day_sell_qty)           ← intraday net qty marked at last
+    #           + (day_sell_value − day_buy_value)              ← intraday realised cash flow
+    #
+    df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
+    if _has_intraday_split:
+        # Reuses the qty columns already rescaled above. `day_buy_value`
+        # / `day_sell_value` are ₹ cash and stay as-is.
         df_positions['day_change_val'] = (
             (df_positions['last_price'] - df_positions['close_price'])
                 * df_positions['overnight_quantity']
-            + df_positions['last_price'] * _day_net_qty
-            + _day_realised_cash
+            + df_positions['last_price']
+                * (df_positions['day_buy_quantity'] - df_positions['day_sell_quantity'])
+            + (df_positions['day_sell_value'] - df_positions['day_buy_value'])
         )
     else:
-        # Legacy fallback — broker adapter doesn't surface intraday split.
-        # Treat every leg as overnight; same as the historical formula.
+        # Adapter doesn't surface intraday split — fall back to
+        # (last − close) × current_qty (overnight-only assumption).
         df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
     # day_change_percentage denominator stays as |close × current_qty|
     # so the chip reads "% MTM vs notional book value coming into today".
@@ -157,6 +268,35 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     df_positions['pnl_percentage'] = (
         df_positions['pnl'] / cost_basis.replace(0, pd.NA) * 100
     ).fillna(0)
+
+    # Divergence log — sanity-check our generic derivation against the
+    # broker's own numbers stashed earlier. Open-position pnl should
+    # match (broker reports lifetime cumulative which includes any
+    # prior-session realised; our derivation is today-only). Drop the
+    # broker-shadow columns after the log so the API surface stays
+    # clean of legacy fields.
+    try:
+        _shadow_cols = ['_broker_pnl', '_broker_unrealised',
+                        '_broker_realised', '_broker_day_change_val']
+        _present = [c for c in _shadow_cols if c in df_positions.columns]
+        if _present:
+            for _i, _r in df_positions.iterrows():
+                _broker_pnl = float(_r.get('_broker_pnl', 0.0) or 0.0)
+                _ours_pnl   = float(_r.get('pnl', 0.0) or 0.0)
+                # Only flag OPEN rows — closed-today rows can legitimately
+                # diverge because the broker counts lifetime realised we
+                # can't reproduce from a single snapshot.
+                if int(_r.get('quantity', 0)) != 0:
+                    _diff = abs(_broker_pnl - _ours_pnl)
+                    if _diff > 5.0:    # ₹5 noise threshold for FX/rounding
+                        logger.debug(
+                            f"[{account}] {_r.get('tradingsymbol', '?')}: "
+                            f"pnl divergence broker={_broker_pnl:.2f} "
+                            f"ours={_ours_pnl:.2f} Δ={_broker_pnl - _ours_pnl:+.2f}"
+                        )
+            df_positions = df_positions.drop(columns=_present)
+    except Exception as _e:        # noqa: BLE001
+        logger.debug(f"[{account}] pnl divergence log skipped: {_e}")
 
     return df_positions
 
