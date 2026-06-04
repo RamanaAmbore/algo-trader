@@ -79,6 +79,16 @@ class PositionRow(msgspec.Struct):
     # TWS / Bloomberg OMON convention is to show these alongside LTP.
     delta_pos: float = 0.0
     theta_pos: float = 0.0
+    # Intraday split — operator-verifiable breakdown of the day-P&L
+    # formula. Surfaces the same numbers broker_apis splits the leg by
+    # so the operator can trace where each row's `day_change_val`
+    # came from: overnight portion vs newly opened today vs closed today.
+    # Always post-multiplier (consistent with the `quantity` column).
+    overnight_quantity: int  = 0
+    day_buy_quantity:   int  = 0
+    day_sell_quantity:  int  = 0
+    day_buy_value:      float = 0.0
+    day_sell_value:     float = 0.0
 
 
 class PositionsSummaryRow(msgspec.Struct):
