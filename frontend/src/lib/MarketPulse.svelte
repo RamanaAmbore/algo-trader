@@ -4202,15 +4202,14 @@
           </div>
           {#if typeof targetListId === 'number'}
             {@const _tgtList = lists.find(l => l.id === targetListId)}
-            <!-- Show the Rename / Delete affordances for:
-                   - operator-created lists (always)
-                   - the shared global Pinned ONLY for admin / designated
-                     users (the backend gates the same way; hiding the
-                     buttons prevents a 403 surprise for read-only viewers).
-                 The is_default flag on the shared Pinned is true, so the
-                 prior "non-default only" rule has been swapped for an
-                 explicit "non-global OR designated" rule. -->
-            {#if _tgtList && (!_tgtList.is_global || _isDesignated)}
+            <!-- Show the Rename / Delete affordances for operator-
+                 created lists only. The shared global Pinned is the
+                 canonical always-present list — its name is fixed and
+                 it can't be deleted (would leave every user without a
+                 pinned list). Designated users can still add / remove
+                 ITEMS on it via the symbol picker + per-row × glyph;
+                 only the list-level rename / delete is locked out. -->
+            {#if _tgtList && !_tgtList.is_global}
               <!-- ✎ Rename — reveals the inline name input row below
                    so the operator can edit the watchlist's name without
                    leaving the popup. -->
