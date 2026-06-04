@@ -307,9 +307,20 @@
     return { sym, exch: '' };
   }
 
+  // Cancellation token — guards against concurrent _loadHistorical
+  // calls that race when both the symbol-change effect AND the
+  // bump-driven force-refresh effect fire on first ChartModal mount.
+  // Previously a successful early fetch could be overwritten by a
+  // late timeout from the second in-flight call, leaving the chart
+  // empty with a "Slow response — try again" banner even though the
+  // bars were already fetched. Each call grabs a token; results +
+  // errors are silently dropped when the token is no longer current.
+  let _loadToken = 0;
+
   async function _loadHistorical(/** @type {boolean} */ force = false) {
     if (!symbol) return;
     if (!force && _chartLoaded) return;
+    const token = ++_loadToken;
     _histLoading = true; _histError = '';
     // Hard timeout — if a broker call hangs (e.g. Kite rate-limit retry
     // loop on backend), Promise.race ensures _histLoading clears within
@@ -326,6 +337,7 @@
       // Awaited because the resolver may need to hydrate the
       // instruments cache before findNearestFuture can return.
       const _resolved = await _resolveFetchSymbol(symbol);
+      if (token !== _loadToken) return;
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
       const promises = [
@@ -340,15 +352,20 @@
       const [hist, spotHist] = /** @type {any} */ (
         await Promise.race([Promise.all(promises), timeout])
       );
+      if (token !== _loadToken) return;   // a newer call superseded this one
       _bars     = Array.isArray(hist?.bars) ? hist.bars : [];
       _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
       if (!_bars.length) _histError = 'No data available.';
       _chartLoaded = true;
     } catch (e) {
+      if (token !== _loadToken) return;   // newer call already in flight — its result is the canonical one
       _histError = /** @type {any} */ (e)?.message || 'Load failed';
       _bars = [];
     } finally {
-      _histLoading = false;
+      // Only the newest call flips loading off; older tokens are no-ops
+      // here so the spinner stays visible while the canonical fetch is
+      // still in flight.
+      if (token === _loadToken) _histLoading = false;
       // Force a dimension re-measure after load. The ResizeObserver may
       // have fired while the modal/portal was still laying out (container
       // at zero width), leaving _chartW/_chartH stale and all SVG paths
