@@ -888,7 +888,6 @@
       <AccountMultiSelect
         bind:value={selectedAccounts}
         options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
-        placeholder="Accounts"
         theme={compactHeader ? 'dark' : 'light'} />
     </div>
   {/if}
