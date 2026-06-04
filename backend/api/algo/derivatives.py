@@ -328,6 +328,83 @@ def underlying_ltp_key(underlying: str) -> str:
     return _INDEX_LTP_KEY.get(name, f"NSE:{name}")
 
 
+async def lookup_mcx_futures_list(underlying: str, limit: int = 2) -> list[str]:
+    """Return the next *limit* non-expired MCX futures for *underlying*,
+    sorted by expiry. Used by the watchlist endpoint to expand a bare
+    commodity root into its current + next-month contracts when
+    serving the global Pinned list.
+
+    Returns an empty list when the cache is cold or no commodity matches.
+    """
+    if not underlying or limit <= 0:
+        return []
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return []
+    target_u = underlying.upper()
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _ist_today_iso = _dt.utcnow().date().isoformat()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "MCX"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x
+            and inst.x > _ist_today_iso)
+    ]
+    if not candidates:
+        return []
+    candidates.sort(key=lambda i: i.x or "")
+    return [c.s for c in candidates[:limit]]
+
+
+async def lookup_cds_futures_list(underlying: str, limit: int = 2) -> list[str]:
+    """Same as lookup_mcx_futures_list but for CDS currency futures
+    (USDINR / EURINR / GBPINR / JPYINR)."""
+    if not underlying or limit <= 0:
+        return []
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return []
+    target_u = underlying.upper()
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _ist_today_iso = _dt.utcnow().date().isoformat()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "CDS"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x
+            and inst.x > _ist_today_iso)
+    ]
+    if not candidates:
+        return []
+    candidates.sort(key=lambda i: i.x or "")
+    return [c.s for c in candidates[:limit]]
+
+
 async def lookup_mcx_front_month_future(underlying: str) -> str | None:
     """Resolve the FRONT-MONTH liquid MCX futures tradingsymbol for an
     underlying — the contract operators read as "today's spot price".

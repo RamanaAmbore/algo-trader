@@ -518,6 +518,56 @@ def _item_info(it: WatchlistItem) -> WatchlistItemInfo:
     )
 
 
+async def _expand_root_items_to_futures(items) -> list[WatchlistItemInfo]:
+    """For every stored item whose tradingsymbol is a bare MCX commodity
+    root or CDS currency root (no FUT suffix), replace it with up-to-2
+    actual contract items resolved via the instruments cache (front
+    month + next month). Items that already carry a tradeable contract
+    name (FUT suffix, NSE equity, ETF, index) pass through unchanged.
+
+    The expanded items use the parent row's id with the suffix
+    appended as a sort key — frontend treats each as a normal item;
+    delete operations against the parent id still target the stored
+    bare-root row."""
+    from backend.api.algo.derivatives import (
+        lookup_mcx_futures_list, lookup_cds_futures_list,
+    )
+    out: list[WatchlistItemInfo] = []
+    for it in items:
+        sym = (it.tradingsymbol or "").upper()
+        exch = (it.exchange or "").upper()
+        # Anything already with FUT in its name, or anything on NSE/BSE/
+        # NFO etc., is already tradeable — pass through.
+        if "FUT" in sym or exch not in ("MCX", "CDS"):
+            out.append(_item_info(it))
+            continue
+        # Resolve the front + next month future for this commodity /
+        # currency root. Empty list ⇒ instruments cache cold or the
+        # root has no listed futures; pass the raw row through so the
+        # operator still sees something (worst case the cell renders
+        # the bare name until the next API roundtrip).
+        resolver = (lookup_mcx_futures_list if exch == "MCX"
+                    else lookup_cds_futures_list)
+        futures = await resolver(sym, limit=2)
+        if not futures:
+            out.append(_item_info(it))
+            continue
+        for i, fsym in enumerate(futures):
+            # Synthetic id pattern: parent_id * 1000 + i. Lets the
+            # frontend treat each expansion as a unique row + lets the
+            # backend recover the parent id on delete via `id // 1000`.
+            out.append(WatchlistItemInfo(
+                id=it.id * 1000 + i,
+                watchlist_id=it.watchlist_id,
+                tradingsymbol=fsym,
+                exchange=exch,
+                alias=getattr(it, "alias", None),
+                sort_order=it.sort_order * 10 + i,
+                added_at=it.added_at.isoformat() if it.added_at else "",
+            ))
+    return out
+
+
 def _is_designated_role(request) -> bool:
     """True when the JWT payload says role ∈ {admin, designated}.
     Gates writes on the global Pinned row."""
@@ -647,13 +697,18 @@ class WatchlistController(Controller):
                 .order_by(WatchlistItem.sort_order, WatchlistItem.id)
             )
             items = items_row.scalars().all()
+        # Expand any bare MCX / CDS commodity root into its actual
+        # current + next-month future contracts (display only — DB rows
+        # stay as roots so the operator's curated list survives expiry
+        # rollovers).
+        expanded = await _expand_root_items_to_futures(items)
         return WatchlistFull(
             id=wl.id, name=wl.name, sort_order=wl.sort_order,
             is_default=wl.is_default, is_pinned=wl.is_pinned,
             is_global=getattr(wl, "is_global", False),
             created_at=wl.created_at.isoformat() if wl.created_at else "",
             updated_at=wl.updated_at.isoformat() if wl.updated_at else "",
-            items=[_item_info(it) for it in items],
+            items=expanded,
         )
 
     @patch("/{wl_id:int}", guards=[jwt_guard])
@@ -1095,11 +1150,18 @@ class WatchlistController(Controller):
         self, wl_id: int, item_id: int, request: Request,
     ) -> dict:
         username = _actor_sub(request)
+        # Synthetic-id detection: when a stored bare MCX / CDS root is
+        # expanded into actual future contracts at API time, each
+        # expansion gets id = parent_id * 1000 + i. Strip that back so
+        # delete on the synthesised row targets the underlying real
+        # row. id < 1000 is always real (DB rows never hit that with
+        # the seed-load order).
+        real_item_id = item_id // 1000 if item_id >= 1000 else item_id
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
             row = await session.execute(
                 select(WatchlistItem, Watchlist).join(Watchlist).where(
-                    WatchlistItem.id == item_id,
+                    WatchlistItem.id == real_item_id,
                     WatchlistItem.watchlist_id == wl_id,
                     ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
@@ -1115,7 +1177,7 @@ class WatchlistController(Controller):
                 )
             await session.delete(it)
             await session.commit()
-        return {"detail": f"Item {item_id} removed"}
+        return {"detail": f"Item {real_item_id} removed"}
 
 
 # ---------------------------------------------------------------------------
