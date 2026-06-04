@@ -25,8 +25,8 @@
   // data-tv-handles-keys, or sits inside an ag-Grid — those components
   // own their own arrow-key handling.
 
-  // Some TV browsers (older WebOS / Tizen / certain Fire OS builds)
-  // send legacy key names — accept both modern and legacy forms.
+  // Modern + legacy key names. Some TV browsers (older WebOS / Tizen /
+  // certain Fire OS builds) send 'Up'/'Down' instead of ArrowX.
   const _UP    = new Set(['ArrowUp', 'Up']);
   const _DOWN  = new Set(['ArrowDown', 'Down']);
   const _LEFT  = new Set(['ArrowLeft', 'Left']);
@@ -35,10 +35,32 @@
   const _PGDN  = new Set(['PageDown', 'Next']);
   const _HOME  = new Set(['Home']);
   const _END   = new Set(['End']);
+  // Media keys that pass THROUGH the Fire Stick / Android TV spatial-nav
+  // layer (verified by operator: kc=179 = MediaPlayPause arrives at JS
+  // even though arrow keys don't). We hijack these as fallback scroll
+  // bindings since the D-pad arrows are stolen before they reach us.
+  //   PlayPause (179) → page-down inside the focused card
+  //   Stop (178)      → page-up inside the focused card
+  //   FF (228)        → next card (focus walk)
+  //   Rewind (227)    → previous card (focus walk)
+  const _MEDIA_DOWN  = new Set(['MediaPlayPause', 'AudioPlay']);
+  const _MEDIA_UP    = new Set(['MediaStop', 'AudioStop']);
+  const _MEDIA_NEXT  = new Set(['MediaTrackNext', 'MediaFastForward', 'AudioForward']);
+  const _MEDIA_PREV  = new Set(['MediaTrackPrevious', 'MediaRewind', 'AudioRewind']);
+  // Numeric fallback for browsers that don't surface key= names for
+  // media keys but DO surface keyCode / which.
+  const _MEDIA_DOWN_KC = new Set([179]);
+  const _MEDIA_UP_KC   = new Set([178]);
+  const _MEDIA_NEXT_KC = new Set([228, 176]);
+  const _MEDIA_PREV_KC = new Set([227, 177]);
   const _ALL_KEYS = new Set([
     ..._UP, ..._DOWN, ..._LEFT, ..._RIGHT,
     ..._PGUP, ..._PGDN, ..._HOME, ..._END,
+    ..._MEDIA_DOWN, ..._MEDIA_UP, ..._MEDIA_NEXT, ..._MEDIA_PREV,
   ]);
+  function _isMatch(/** @type {KeyboardEvent} */ e, /** @type {Set<string>} */ names, /** @type {Set<number>} */ kcs) {
+    return names.has(e.key) || kcs.has(e.keyCode) || kcs.has(e.which);
+  }
 
   // Selectors that mark a popup / drawer / overlay whose body should
   // be scrolled when the operator hits arrow keys.
@@ -135,9 +157,14 @@
 
   /** @param {KeyboardEvent} e */
   function onKey(e) {
-    if (!_ALL_KEYS.has(e.key)) return;
-    // A component (Select / MultiSelect / custom listbox) called
-    // preventDefault — it's handling the key itself.
+    // Accept the modern key names, the legacy names, AND the media-key
+    // numeric codes that pass through TV spatial nav.
+    const isArrow = _ALL_KEYS.has(e.key);
+    const isMediaDown = _isMatch(e, _MEDIA_DOWN, _MEDIA_DOWN_KC);
+    const isMediaUp   = _isMatch(e, _MEDIA_UP,   _MEDIA_UP_KC);
+    const isMediaNext = _isMatch(e, _MEDIA_NEXT, _MEDIA_NEXT_KC);
+    const isMediaPrev = _isMatch(e, _MEDIA_PREV, _MEDIA_PREV_KC);
+    if (!isArrow && !isMediaDown && !isMediaUp && !isMediaNext && !isMediaPrev) return;
     if (e.defaultPrevented) return;
 
     const ae = /** @type {HTMLElement|null} */ (document.activeElement);
@@ -200,10 +227,18 @@
     else if (_DOWN.has(e.key))  dy =  step;
     else if (_LEFT.has(e.key))  dx = -step;
     else if (_RIGHT.has(e.key)) dx =  step;
-    else if (_PGUP.has(e.key))  dy = -page;
-    else if (_PGDN.has(e.key))  dy =  page;
+    else if (_PGUP.has(e.key) || isMediaUp)   dy = -page;
+    else if (_PGDN.has(e.key) || isMediaDown) dy =  page;
     else if (_HOME.has(e.key))  { target.scrollTo({ top: 0, behavior: 'smooth' }); e.preventDefault(); return; }
     else if (_END.has(e.key))   { target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' }); e.preventDefault(); return; }
+    // FF / Rewind = focus walk between scrollable cards.
+    if (isMediaNext) {
+      const moved = _focusAdjacentScrollable(target, +1);
+      if (moved) { e.preventDefault(); return; }
+    } else if (isMediaPrev) {
+      const moved = _focusAdjacentScrollable(target, -1);
+      if (moved) { e.preventDefault(); return; }
+    }
 
     if (dy === 0 && dx === 0) return;
 
