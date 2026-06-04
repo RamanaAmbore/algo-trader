@@ -3904,10 +3904,28 @@
                 </button>
               {/each}
             </div>
+            <!-- Watchlist manage button — opens the Add-to-Pulse modal
+                 which handles every list-level operation: add a symbol,
+                 create a new watchlist, rename existing, delete it,
+                 add/remove items. Earlier "+" glyph only conveyed
+                 "add" but the modal does much more — switched to a
+                 pencil-edits-list glyph (horizontal lines + pencil)
+                 which reads as "manage list". Same shortcut (/). -->
             <button onclick={openSearch}
-                    title="Add symbol or watchlist  (/)"
-                    aria-label="Add symbol or watchlist"
-                    class="mp-add-btn">+</button>
+                    title="Manage watchlists — add / rename / delete (/)"
+                    aria-label="Manage watchlists"
+                    class="mp-add-btn">
+              <svg width="14" height="14" viewBox="0 0 16 16"
+                   fill="none" stroke="currentColor" stroke-width="1.5"
+                   stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true">
+                <!-- list lines on the left -->
+                <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
+                <!-- pencil overlaid on the right -->
+                <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
+                <path d="M9.7 4.3l2 2" />
+              </svg>
+            </button>
             <span class="mp-bucket-head-spacer"></span>
             {#if _fsPinWatch}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="pulse" />
@@ -4120,7 +4138,7 @@
        aria-label="Add to Pulse" onclick={closeSearch}>
     <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
-        <span class="search-title">Add to Pulse</span>
+        <span class="search-title">Manage watchlists</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
       </div>
       <div class="search-body">
@@ -5048,13 +5066,16 @@
     row-gap: 0.18rem;
   }
 
-  /* Unified `+` add button — single chip at the end of the chrome row.
-     Bigger glyph than the surrounding watchlist tabs so it reads as
-     an action affordance rather than another tab. Same amber palette
-     as the tab borders / Save buttons so it sits in the page palette. */
+  /* Manage-watchlists button — single chip at the end of the chrome
+     row. Pencil-edits-list glyph reads as "manage list" rather than
+     just "add". Same amber palette as the tab borders / Save buttons
+     so it sits in the page palette. */
   .mp-add-btn {
     flex: 0 0 auto;
-    padding: 0 0.55rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.45rem;
     height: 1.5rem;
     font-size: 0.95rem;
     line-height: 1;
