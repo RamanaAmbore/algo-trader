@@ -1045,11 +1045,24 @@
     <div class="oes-body">
       <!-- OrderTicket is ALWAYS MOUNTED so its margin-preflight $effect
            keeps computing in the background. When the Chain tab is
-           active, we hide the ticket body via CSS rather than
-           {#if}-unmounting it — otherwise the margin strip in the
-           common action footer goes stale on tab switch (operator:
-           "margin details are not common for both tabs"). -->
-      <div class="oes-ticket-body" hidden={_activeTab !== 'ticket'}>
+           active, we hide the ticket body via inline `display: none`
+           rather than {#if}-unmounting it — otherwise the margin
+           strip in the common action footer goes stale on tab switch
+           (operator: "margin details are not common for both tabs").
+           Inline `style:display` beats the `hidden` HTML attribute we
+           used previously, which left the ticket content visible
+           beside the chain content on some build configurations
+           (operator: "it is still showing order ticket details in
+           chain followed by chain by increating the height. Chain
+           content should replace order ticket content without
+           changing the height"). The descendant `display: block
+           !important` rules on `.ot-overlay` / `.ot-modal` (needed
+           for inline rendering inside the shell) were overriding the
+           UA's `[hidden] { display: none }` cascade on some browsers,
+           so the ticket kept painting. Inline style on the wrapper
+           wins regardless. -->
+      <div class="oes-ticket-body"
+           style:display={_activeTab === 'ticket' ? null : 'none'}>
           <OrderTicket
             symbol={_ticketProps.symbol || _localSymbol}
             exchange={_ticketProps.exchange ?? _pickedExchange ?? exchange}
