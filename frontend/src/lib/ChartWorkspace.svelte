@@ -1049,7 +1049,8 @@
        operator either click a pin OR type to search from a single
        field. -->
   {#if !compact}
-    <div class="cw-picker">
+    <div class="cw-picker" class:cw-picker-busy={_histLoading}
+         aria-busy={_histLoading ? 'true' : 'false'}>
       <!-- Type filter — leading element so the operator scopes the
            instrument family FIRST. "EQ · FUT · OPT" label spells out
            what the unfiltered ALL value actually contains. -->
@@ -1057,6 +1058,7 @@
         <Select
           options={_SYM_TYPE_OPTS}
           bind:value={_symType}
+          disabled={_histLoading}
           ariaLabel="Symbol type filter" />
       </div>
 
@@ -1094,12 +1096,31 @@
        visible in every embed (modal, page, any future compact mount)
        — operator's primary affordance for switching range is always
        one click away. Overlays panel below mirrors this. -->
-  <div class="cw-controls">
+  <!-- Controls row — every interactive control here triggers either a
+       network fetch (range pills, intraday toggle, symbol picker) or a
+       redraw against the live bars. All are disabled while
+       `_histLoading` is true so the operator can't queue a second
+       request behind an in-flight one (operator: "prevent user trying
+       to generate chart when previous chart is in progress"). The busy
+       spinner in the row's leading slot tells the operator a fetch is
+       in flight; clears the moment data lands. -->
+  <div class="cw-controls" class:cw-controls-busy={_histLoading}>
+    {#if _histLoading}
+      <span class="cw-controls-spinner" title="Chart loading…" aria-live="polite" aria-label="Chart loading">
+        <svg class="cw-controls-spinner-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5"
+            fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round"
+            stroke-dasharray="9 30" />
+        </svg>
+      </span>
+    {/if}
     <!-- Chart type -->
     <div class="cw-toolbar-select">
       <Select
         options={_CHART_TYPE_OPTS}
         bind:value={_chartType}
+        disabled={_histLoading}
         ariaLabel="Chart type" />
     </div>
 
@@ -1107,6 +1128,7 @@
     <button type="button"
       class="cw-range-btn cw-intraday-btn"
       class:active={_intradayOn}
+      disabled={_histLoading}
       title={_intradayOn ? 'Intraday tick stream ON — click to turn off' : 'Intraday tick stream OFF — click to turn on'}
       aria-pressed={_intradayOn}
       onclick={() => _intradayOn = !_intradayOn}>
@@ -1119,6 +1141,7 @@
         <button type="button"
           class="cw-range-btn"
           class:active={_chartDays === opt.value}
+          disabled={_histLoading}
           title="Past {opt.label}"
           onclick={() => _setRange(Number(opt.value))}>
           {opt.label}
@@ -1134,6 +1157,7 @@
     <button type="button"
       class="cw-range-btn cw-vol-btn"
       class:active={_showVol}
+      disabled={_histLoading}
       title={_showVol ? 'Volume bars ON — click to turn off' : 'Volume bars OFF — click to turn on'}
       aria-pressed={_showVol}
       onclick={_toggleVolume}>
@@ -1142,7 +1166,9 @@
 
     <!-- Reset zoom action button — trailing edge, only when zoomed -->
     {#if isZoomed}
-      <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
+      <button type="button" class="cw-reset-zoom"
+              disabled={_histLoading}
+              onclick={_resetZoom}
               title="Reset zoom — show full range">Reset</button>
     {/if}
   </div>
@@ -1155,6 +1181,7 @@
         options={_OVERLAY_OPTS}
         bind:value={_overlays}
         bind:open={_overlayOpen}
+        disabled={_histLoading}
         placeholder="Overlays"
         ariaLabel="Overlays" />
     </div>
@@ -1823,6 +1850,35 @@
     :global(.fs-card-on) .cw-chart-container {
       min-height: calc(100vh - 12rem) !important;
     }
+  }
+
+  /* In-flight chart-load lock — applied to the symbol picker bar and
+     the controls row while `_histLoading` is true. CSS
+     `pointer-events: none` covers child elements that don't accept
+     the `disabled` prop (e.g. SymbolSearchInput's input field) so
+     every fetch-triggering control is uniformly inert. Opacity dims
+     the cluster so the lock state reads at a glance. */
+  .cw-picker-busy,
+  .cw-controls-busy {
+    pointer-events: none;
+    opacity: 0.55;
+  }
+  /* The spinner itself stays opaque + receives pointer for its
+     `title` tooltip, so the operator can hover to confirm "chart
+     loading" instead of guessing why the row is dim. */
+  .cw-controls-busy .cw-controls-spinner {
+    pointer-events: auto;
+    opacity: 1;
+  }
+  .cw-controls-spinner {
+    display: inline-flex;
+    align-items: center;
+    color: #22d3ee;
+    padding: 0 2px;
+  }
+  .cw-controls-spinner-icon {
+    animation: cw-spin 1.1s linear infinite;
+    transform-origin: 50% 50%;
   }
 
   /* Loading overlay — spinning chart icon, top-right corner. */

@@ -1790,6 +1790,24 @@
     flex-direction: column;
     overflow-y: auto;
   }
+  /* Ticket body wrapper stretches to match the body's full height
+     just like OptionChainTab's `.oct-root` does, so the visible card
+     size is identical regardless of which tab is active. Operator:
+     "chain tab card should be in sync with order ticket card size.
+     when chain is clicked, the card height should not become smaller".
+     Without this, the ticket body was block-default (intrinsic
+     content height) and the chain tab's flex-grown panel made the
+     transition feel like the card resized between tabs. */
+  .oes-ticket-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  /* `hidden` attribute on .oes-ticket-body keeps the OrderTicket
+     mounted but removes it from layout when the Chain tab is active.
+     The browser default `hidden { display: none }` already wins
+     against the inline flex above when present. */
 
   /* Ticket body — OrderTicket renders its OWN overlay + modal shell,
      which conflicts when nested inside oes-modal. We override those

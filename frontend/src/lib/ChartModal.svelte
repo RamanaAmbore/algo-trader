@@ -18,13 +18,17 @@
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
   // ChartWorkspace exposes its fetch state via $bindable `loading`. While
   // a refresh is in flight, the modal goes into a "busy" guard mode:
-  //   - overlay flips to pointer-events:auto so navbar / menu clicks
-  //     underneath are absorbed instead of triggering navigation
-  //   - chart body becomes pointer-events:none so hover/zoom are inert
-  //   - only the × button + Esc key still close the modal
+  //   - chart body becomes pointer-events:none so the operator can't
+  //     queue a second fetch behind the in-flight one (no range pill
+  //     change, no symbol re-pick, no overlay toggle)
+  //   - × close button + Esc key still close the modal
+  //   - overlay stays pointer-events:none so the navbar / menu
+  //     underneath remain reachable (operator: "only menu and modal
+  //     should be active" — they want to be able to navigate while a
+  //     fetch is running, just not re-trigger the chart)
   // Mirrors industry pattern (TWS dialog modal lock, Bloomberg busy
-  // cursor) — when data is fetching, no surface clicks are honoured so
-  // the operator can't accidentally double-trigger.
+  // cursor) — but with the lock scoped to the chart canvas instead of
+  // the whole viewport.
   let _loading = $state(false);
   // Initial-mount bump so ChartWorkspace's bump-driven reload fires
   // even when its prop-change effect would otherwise skip (operator
@@ -205,15 +209,12 @@
     min-height: 0;
   }
 
-  /* Busy state — chart fetch in flight. */
-  /* Overlay swallows clicks on the page underneath (menu / navbar /
-     content) so the operator can't trigger a navigation that races
-     the in-flight fetch. */
-  .cm-overlay.cm-busy { pointer-events: auto; }
-  /* Inside the panel, header text is read-only; the chart body becomes
-     inert so hover/zoom/pan/scroll don't fire during the fetch. The ×
-     button retains pointer-events:auto (set on .cm-close directly) and
-     stays clickable. */
+  /* Busy state — chart fetch in flight. Overlay stays
+     pointer-events:none so menu / navbar clicks underneath still
+     work; the chart body becomes inert so the operator can't
+     re-trigger the in-flight fetch. The × button retains
+     pointer-events:auto (set on .cm-close directly) and stays
+     clickable. */
   .cm-modal.cm-busy .cm-body { pointer-events: none; }
   /* Subtle scrim over the body so the lock state is visually obvious. */
   .cm-modal.cm-busy .cm-body::after {
