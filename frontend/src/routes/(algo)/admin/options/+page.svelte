@@ -2617,8 +2617,9 @@
      single row, even on narrow viewports. flex-wrap: nowrap forces
      the row; min-width: 0 on each field lets the Selects shrink to
      fit (their content scrolls / truncates inside the trigger).
-     Equal `flex: 1 1 0` on the three Selects so they share the
-     available width proportionally. */
+     Per canonical picker rule: every field is `flex: 0 0 auto` so
+     the cluster sits flush-left at natural widths and empty space
+     trails on the right. */
   .opt-picker {
     display: flex;
     flex-wrap: nowrap;
@@ -2660,16 +2661,21 @@
      flex-grow on any single field, empty space pushed to the right.
      Mobile retains all-grow so content-width pickers don't wrap
      awkwardly in a narrow column. */
-  .opt-field-grow { flex: 0 0 auto; min-width: 10rem; }
+  .opt-field-grow { flex: 0 0 auto; min-width: 8rem; }
   @media (max-width: 899px) {
     .opt-field { flex: 1 1 0; }
   }
   @media (min-width: 900px) {
-    /* Underlying + Expiry — desktop natural widths. */
-    .opt-picker .opt-field:nth-of-type(2),
-    .opt-picker .opt-field:nth-of-type(3) {
+    /* Underlying — desktop natural width. */
+    .opt-picker .opt-field:nth-of-type(2) {
       flex: 0 0 auto;
       min-width: 8rem;
+    }
+    /* Expiry — narrower (operator: -40% from 8rem). YYYY-MM-DD pills
+       are short, no need to reserve a full Account-width slot. */
+    .opt-picker .opt-field:nth-of-type(3) {
+      flex: 0 0 auto;
+      min-width: 4.8rem;
     }
   }
 

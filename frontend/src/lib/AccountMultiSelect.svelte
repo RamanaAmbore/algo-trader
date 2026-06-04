@@ -72,14 +72,14 @@
      5rem/9rem was too tight (operator: "account width shortened too
      much. increase it to accommodate 10 characters accounts"). */
   .ams {
-    min-width: 7rem;
-    max-width: 11rem;
+    min-width: 5.6rem;
+    max-width: 8.8rem;
     flex-shrink: 1;
   }
   @media (max-width: 600px) {
     .ams {
-      min-width: 5.5rem;
-      max-width: 8rem;
+      min-width: 4.4rem;
+      max-width: 6.4rem;
     }
   }
 </style>
