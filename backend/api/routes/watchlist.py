@@ -450,28 +450,41 @@ async def seed_global_pinned() -> None:
             )
             logger.info("Watchlist: migrated %d legacy Pinned rows into global",
                         len(legacy_ids))
-        # 5. If the global Pinned has zero items (fresh seed or operator
-        #    cleared it manually and we want to re-seed), populate from
-        #    watchlist_defaults. This only fires when the count is 0 so
-        #    it won't fight the operator removing items deliberately
-        #    after a non-empty seed.
-        cur_cnt = (await session.execute(
-            select(func.count(WatchlistItem.id))
+        # 5. Top up the global Pinned with any MARKETS_DEFAULT item
+        #    that isn't already in it. Additive — never removes the
+        #    operator's curated extras. The (tradingsymbol, exchange)
+        #    pair is the dedupe key.
+        from backend.api.algo.watchlist_defaults import markets_default_rows
+        current_pairs = {
+            (r.tradingsymbol.upper(), r.exchange.upper())
+            for r in (await session.execute(
+                select(WatchlistItem)
+                .where(WatchlistItem.watchlist_id == global_row.id)
+            )).scalars().all()
+        }
+        max_sort = (await session.execute(
+            select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
             .where(WatchlistItem.watchlist_id == global_row.id)
-        )).scalar() or 0
-        if int(cur_cnt) == 0:
-            from backend.api.algo.watchlist_defaults import markets_default_rows
-            for row in markets_default_rows():
-                session.add(WatchlistItem(
-                    watchlist_id=global_row.id,
-                    tradingsymbol=row["tradingsymbol"],
-                    exchange=row["exchange"],
-                    sort_order=row["sort_order"],
-                    added_at=now,
-                ))
+        )).scalar() or -1
+        next_sort = int(max_sort) + 1
+        added = 0
+        for row in markets_default_rows():
+            key = (row["tradingsymbol"].upper(), row["exchange"].upper())
+            if key in current_pairs:
+                continue
+            current_pairs.add(key)
+            session.add(WatchlistItem(
+                watchlist_id=global_row.id,
+                tradingsymbol=row["tradingsymbol"],
+                exchange=row["exchange"],
+                sort_order=next_sort,
+                added_at=now,
+            ))
+            next_sort += 1
+            added += 1
+        if added:
             logger.info(
-                "Watchlist: populated global Pinned with %d default symbols",
-                len(markets_default_rows()),
+                "Watchlist: topped up global Pinned with %d default symbols", added,
             )
         await session.commit()
 

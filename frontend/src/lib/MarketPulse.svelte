@@ -4231,23 +4231,27 @@
               <button type="button"
                 onclick={async (e) => {
                   e.preventDefault();
-                  // The enclosing {#if typeof targetListId === 'number'}
-                  // guard narrows to number at the JS level, but JSDoc
-                  // type-check sees the original number|'NEW' union, so
-                  // we cast explicitly here.
+                  // Single-click delete (operator picked the list +
+                  // clicked Delete inside the Manage popup — that's
+                  // confirmation enough). The earlier two-click
+                  // pattern confused operators ("when I delete test
+                  // watchlist it is not getting deleted" — they
+                  // missed the 4-second confirm window).
                   const id = /** @type {number} */ (targetListId);
-                  if (_pendingDeleteId === id) {
-                    _pendingDeleteId = null;
+                  try {
                     await dropList(id);
-                  } else {
-                    _pendingDeleteId = id;
-                    setTimeout(() => { _pendingDeleteId = null; }, 4000);
+                    closeSearch();
+                  } catch (err) {
+                    // Surface the failure inline so the operator sees
+                    // why nothing happened (auth lapse, 403 on Pinned,
+                    // network drop, etc.) instead of a silent no-op.
+                    _renameError = (err && err.message) || 'Delete failed.';
                   }
                 }}
                 class="text-[0.7rem] py-1 px-3 rounded font-bold border"
                 style="background: rgba(248,113,113,0.2); color: #fda4af; border-color: rgba(248,113,113,0.55);"
-                title={_pendingDeleteId === targetListId ? 'Click again to confirm delete' : `Delete "${_tgtList.name}" watchlist`}>
-                {_pendingDeleteId === targetListId ? '× Confirm?' : '🗑 Delete'}
+                title={`Delete "${_tgtList.name}" watchlist`}>
+                🗑 Delete
               </button>
             {/if}
           {/if}
