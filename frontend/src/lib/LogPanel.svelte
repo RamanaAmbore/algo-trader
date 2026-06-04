@@ -405,13 +405,12 @@
   }
 
   /**
-   * Compact `HH:MM` timestamp matching the page-header `.algo-ts`
-   * font (mono cyan tabular-nums) — used by every log row across
-   * the Agent / Terminal / Ticks / System tabs so the rows read in
-   * the same visual rhythm as the wall clock above. Tooltip carries
-   * the full dual-zone date+time for forensic context. Operator:
-   * "follow header timestamp in the same font so that it does not
-   * occupy a lot of space".
+   * Page-header dual-zone timestamp ("Sun 30 May · 21:42 IST · 12:12
+   * EDT") rendered into a log row's time chip via the same
+   * `formatDualTz()` the `.algo-ts` wall clock uses, so the operator
+   * sees the exact format above and below the chrome. Operator:
+   * "add timestamp in page header timestamp format for agents
+   * terminal ticks system".
    */
   function _simpleTime(input) {
     if (!input) {
@@ -427,15 +426,11 @@
           )
         : null;
     if (d && !isNaN(d.getTime())) {
-      const ist = d.toLocaleTimeString('en-GB', {
-        hour: '2-digit', minute: '2-digit', hour12: false,
-        timeZone: 'Asia/Kolkata',
-      });
-      const full = formatDualTz(d);
-      return `<span class="log-row-time" title="${_escAttr(full)}">${ist}</span>`;
+      return `<span class="log-row-time">${_escAttr(formatDualTz(d))}</span>`;
     }
-    // Non-ISO fallback — already-formatted "HH:MM:SS" or operator-formatted string.
-    const raw = typeof input === 'string' ? _shortTime(input).slice(0, 5) : '—';
+    // Non-ISO fallback — pass the upstream-formatted string through
+    // unchanged so it still reads in the same dual-zone column slot.
+    const raw = typeof input === 'string' ? input : '—';
     return `<span class="log-row-time">${_escAttr(raw || '—')}</span>`;
   }
 
@@ -766,10 +761,10 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     font-size: 0.65rem;
     color: #c8d8f0;
-    /* Each row sits in its own line — reset legacy `display: block`
-       inherited from the `.log-agent-*` row classes so the flex
-       layout takes over. */
+    /* Reset legacy `.log-panel .log-XXX` accents from app.css so the
+       row sits on a flat surface with no inside fill/stripe. */
     border-left: none;
+    background: transparent;
   }
   :global(.log-panel.log-rows .log-row:last-child) { border-bottom: 0; }
   :global(.log-panel.log-rows .log-row:hover) { background: rgba(255, 255, 255, 0.02); }
@@ -807,52 +802,19 @@
     letter-spacing: 0.04em;
     white-space: nowrap;
   }
-  /* Row-class accents (success / failed / alert / cooldown / etc.) —
-     in the new layout these are applied to the whole row rather than
-     to a single `<span>`. Borders moved to a left accent stripe so
-     the row keeps its News-grid shape (no block-background fill that
-     would visually fight with the time / msg / tag column rhythm). */
-  :global(.log-panel.log-rows .log-row.log-agent-success) {
-    border-left: 2px solid #4ade80;
-    padding-left: 0.4rem;
-    background: rgba(74, 222, 128, 0.04);
-  }
-  :global(.log-panel.log-rows .log-row.log-agent-failed) {
-    border-left: 2px solid #f87171;
-    padding-left: 0.4rem;
-    background: rgba(248, 113, 113, 0.05);
-  }
-  :global(.log-panel.log-rows .log-row.log-agent-alert) {
-    border-left: 2px solid #facc15;
-    padding-left: 0.4rem;
-    background: rgba(250, 204, 21, 0.04);
-  }
-  :global(.log-panel.log-rows .log-row.log-agent-triggered) {
-    border-left: 2px solid #fb923c;
-    padding-left: 0.4rem;
-    background: rgba(251, 146, 60, 0.05);
-  }
-  :global(.log-panel.log-rows .log-row.log-agent-cooldown) {
-    border-left: 2px solid #64748b;
-    padding-left: 0.4rem;
-    color: #94a3b8;
-  }
-  :global(.log-panel.log-rows .log-row.log-error) {
-    border-left: 2px solid #f87171;
-    padding-left: 0.4rem;
-    background: rgba(248, 113, 113, 0.06);
-    color: #f87171;
-  }
-  :global(.log-panel.log-rows .log-row.log-warning) {
-    border-left: 2px solid #fbbf24;
-    padding-left: 0.4rem;
-    background: rgba(251, 191, 36, 0.05);
-    color: #fbbf24;
-  }
-  :global(.log-panel.log-rows .log-row.log-debug) {
-    color: #94a3b8;
-    font-style: italic;
-  }
+  /* Row-class semantics now carry through TEXT COLOR ONLY — no inside
+     accent (left-border stripe, background tint) per operator
+     feedback. Every row sits on the same flat surface, severity reads
+     from the message colour so the three-column [time · msg · tag]
+     grid stays uncluttered. */
+  :global(.log-panel.log-rows .log-row.log-agent-success) { color: #4ade80; }
+  :global(.log-panel.log-rows .log-row.log-agent-failed)  { color: #f87171; }
+  :global(.log-panel.log-rows .log-row.log-agent-alert)   { color: #facc15; }
+  :global(.log-panel.log-rows .log-row.log-agent-triggered) { color: #fb923c; }
+  :global(.log-panel.log-rows .log-row.log-agent-cooldown)  { color: #94a3b8; }
+  :global(.log-panel.log-rows .log-row.log-error)   { color: #f87171; }
+  :global(.log-panel.log-rows .log-row.log-warning) { color: #fbbf24; }
+  :global(.log-panel.log-rows .log-row.log-debug)   { color: #94a3b8; font-style: italic; }
 
   /* Orders-tab card grid — mirrors /orders' .oc-book-grid so the
      Activity-modal Orders tab and the dedicated /orders page lay out
