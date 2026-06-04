@@ -85,6 +85,37 @@
     return null;
   }
 
+  /** Find the largest visible overflowing element on the page. Used as
+   *  the last-resort scroll target when nothing is focused and no
+   *  overlay is open — picks the card the operator is most likely
+   *  looking at by visible area. Skips the body (handled separately as
+   *  the explicit page fallback) and elements smaller than ~120px tall
+   *  to avoid latching onto tiny chip strips. */
+  function _largestVisibleScrollable() {
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    let best = null;
+    let bestArea = 0;
+    const all = document.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = /** @type {HTMLElement} */ (all[i]);
+      if (el === document.body || el === document.documentElement) continue;
+      if (!_isOverflowing(el)) continue;
+      const cs = window.getComputedStyle(el);
+      const ovY = cs.overflowY, ov = cs.overflow;
+      if (!/(auto|scroll)/.test(ovY) && !/(auto|scroll)/.test(ov)) continue;
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      const r = el.getBoundingClientRect();
+      if (r.height < 120) continue;
+      // Intersection with the viewport.
+      const visW = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+      const visH = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      const area = visW * visH;
+      if (area > bestArea) { bestArea = area; best = el; }
+    }
+    return best;
+  }
+
   /** @param {KeyboardEvent} e */
   function onKey(e) {
     if (!_ALL_KEYS.has(e.key)) return;
@@ -126,7 +157,16 @@
     // 2. Nearest scrollable ancestor of the focused element.
     if (!target && ae) target = _nearestScrollAncestor(ae);
 
-    // 3. Fall back to the page.
+    // 3. Largest VISIBLE overflowing card region in the viewport.
+    //    Covers per-card scroll surfaces that aren't wrapped in an
+    //    overlay (LogPanel pre, OptionChainTab strikes, dashboard
+    //    bucket grids, ag-Grid viewports, etc.). Walks every scrollable
+    //    element on the page and picks the one with the biggest visible
+    //    area — the operator's eye is naturally on the biggest visible
+    //    card with content to scroll.
+    if (!target) target = _largestVisibleScrollable();
+
+    // 4. Fall back to the page.
     if (!target) target = /** @type {HTMLElement} */ (document.scrollingElement || document.documentElement);
     if (!target) return;
 
