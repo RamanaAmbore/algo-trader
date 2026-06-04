@@ -328,8 +328,16 @@
   // move the cursor away if they don't want the tooltip back; if
   // they DO want it back, any movement after the window re-arms.
   let _hoverSuppressUntil = 0;
+  // Click-to-pin — operator: "make this default action for all the
+  // charts". When pinned, pointermove + pointerleave don't change the
+  // popup until the operator clicks again (or hits Esc / the × close
+  // button). Touch tap toggles via onPointerDown; desktop click goes
+  // through the click event so the existing pan/drag gestures aren't
+  // accidentally treated as taps.
+  let pinned = $state(false);
   function _dismissHover() {
     hover = null;
+    pinned = false;
     _hoverSuppressUntil = Date.now() + 350;
   }
 
@@ -401,16 +409,26 @@
       const dxVal = (dxPx / innerW) * (pan.startMax - pan.startMin);
       zoom = { xMin: pan.startMin - dxVal, xMax: pan.startMax - dxVal };
       hover = null;
+      pinned = false;
       return;
     }
+    if (pinned) return;
     _setHoverFromClientX(svg, e.clientX);
   }
-  // Mouse leave clears hover. Touch keeps it pinned until the operator
-  // taps again (toggle behaviour, see onPointerDown). Plain
-  // `hover = null` here (no _dismissHover) — leaving the chart isn't
-  // an explicit "dismiss" gesture; re-entering should hover normally.
+  // Mouse leave clears hover unless pinned. Touch keeps it pinned
+  // until the operator taps again (toggle behaviour, see onPointerDown).
   function onPointerLeave(/** @type {PointerEvent} */ e) {
+    if (pinned) return;
     if (e.pointerType !== 'touch') hover = null;
+  }
+  // Desktop click → toggle pin. Browsers only fire `click` when there's
+  // no significant drag between pointerdown and pointerup, so the
+  // existing pan/zoom flow doesn't accidentally pin on every release.
+  function onClick(/** @type {MouseEvent} */ e) {
+    if (!payoff.length || pan) return;
+    if (pinned) { _dismissHover(); return; }
+    _setHoverFromClientX(/** @type {SVGSVGElement} */ (e.currentTarget), e.clientX);
+    if (hover) pinned = true;
   }
   // Esc dismisses a pinned tooltip on desktop too — keyboard equivalent
   // of the touch-tap-to-toggle path. Listener mounts only while hover
@@ -658,12 +676,13 @@
     <div class="payoff-svg-stack">
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="payoff-svg" class:payoff-panning={pan !== null}
-         role="img" aria-label="Option payoff diagram — wheel to zoom, drag to pan"
+         role="img" aria-label="Option payoff diagram — wheel to zoom, drag to pan, click to pin"
          onwheel={onWheel}
          onpointerdown={onPointerDown}
          onpointerup={onPointerUp}
          onpointermove={onPointerMove}
-         onpointerleave={onPointerLeave}>
+         onpointerleave={onPointerLeave}
+         onclick={onClick}>
       <!-- Profit / loss shading (under the curves so the lines pop) -->
       <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
       <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>

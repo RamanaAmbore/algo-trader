@@ -39,21 +39,14 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
 
-  // Pinned quick-pick symbols — surface at the TOP of the symbol
-  // dropdown so they're one click away whenever the operator opens
-  // the picker. Mirrors the shared global Pinned watchlist.
-  //   Indices first (NIFTY family + SENSEX)
-  //   ETFs (GOLDBEES, SILVERBEES) for cash exposure to gold/silver
-  //   MCX commodity roots — _pinLabel resolves these to the near-
-  //   month future contract via the instruments cache, so the
-  //   operator sees GOLDM26JUNFUT etc. as the label (NOT the bare
-  //   commodity name). For gold/silver we use the M-mini variants.
-  /** @type {ReadonlyArray<string>} */
-  const DEFAULT_PINS = [
-    'NIFTY 50', 'BANKNIFTY', 'FINNIFTY', 'SENSEX',
-    'GOLDBEES', 'SILVERBEES',
-    'COPPER', 'CRUDEOIL', 'GOLDM', 'NATURALGAS', 'SILVERM',
-  ];
+  // The Pinned dropdown is driven entirely by the operator's actual
+  // pinned watchlists (rows on /pulse with `is_pinned=true`). No
+  // hardcoded fallback list — operator: "it should not hard code
+  // these symbols. it should always refer to pinned symbols in the
+  // dropdown". `_hydratePins()` fetches the watchlists on mount and
+  // refreshes the option set; the dropdown reads empty in the brief
+  // pre-fetch window which is fine — the symbol search box still
+  // works as the primary picker.
 
   // Tracks the exchange hint of the last pinned-or-search pick.
   // MCX commodities resolve to 'MCX'; indices/equities to 'NSE'/'BSE'.
@@ -114,9 +107,17 @@
     { value: 'ema20',    label: 'EMA 20' },
     { value: 'ema50',    label: 'EMA 50' },
     { value: 'bb',       label: 'Bollinger' },
-    { value: 'vol',      label: 'Volume' },
     { value: 'rsi',      label: 'RSI 14' },
   ];
+  // Volume lives in the main toolbar after the 1Y range pill — operator:
+  // "move volume element to after 1Y from chart to above chart". Pulled
+  // out of the floating Overlays panel so the affordance is one click
+  // away in the chrome above the chart, not nested in a dropdown.
+  function _toggleVolume() {
+    _overlays = _overlays.includes('vol')
+      ? _overlays.filter(o => o !== 'vol')
+      : [..._overlays, 'vol'];
+  }
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
   function _onPickSymbol(/** @type {string} */ sym) {
@@ -131,26 +132,19 @@
   }
 
   // Pinned-symbols Select — dedicated dropdown so the operator can
-  // load NIFTY 50 / GOLD / SILVER / CRUDEOIL etc. without typing the
-  // 3-char threshold through the symbol search. Hydrated from the
-  // operator's actual pinned watchlists (is_pinned=true) on /pulse so
-  // every Markets / Default symbol the operator has curated reaches
-  // this picker — DEFAULT_PINS only seeds the list when the watchlist
-  // API hasn't responded yet or the operator has no pinned lists.
-  // Pin option: { value: anchor (NIFTY 50 / CRUDEOIL / …),
-  //               label: resolved tradeable contract when available
-  //                      (NIFTY26JUNFUT / CRUDEOIL26JUNFUT / …),
-  //                      falls back to the anchor when the instruments
-  //                      cache is cold or no future matches }.
-  // Operator picks by intent ("the NIFTY chart") but sees the actual
-  // contract they're about to load — matches the symbol-input + chart
-  // header which already show the resolved tradingsymbol after pick.
+  // load any pinned-watchlist symbol without typing the 3-char
+  // threshold through the symbol search. Source: the operator's
+  // actual pinned watchlists (`is_pinned=true`) from /api/watchlists.
+  // Option: { value: tradingsymbol from the watchlist,
+  //           label: resolved tradeable contract from the instruments
+  //                  cache when applicable (e.g. CRUDEOIL → CRUDEOIL
+  //                  26JUNFUT), falls back to the raw tradingsymbol }.
   function _pinLabel(/** @type {string} */ anchor) {
     const r = resolveUnderlying(String(anchor || '').toUpperCase(), findNearestFuture);
     return r?.tradingsymbol && r.tradingsymbol !== anchor ? r.tradingsymbol : anchor;
   }
   /** @type {Array<{value:string,label:string}>} */
-  let _PIN_OPTS = $state(DEFAULT_PINS.map(p => ({ value: p, label: _pinLabel(p) })));
+  let _PIN_OPTS = $state(/** @type {{value:string,label:string}[]} */ ([]));
   let _pinnedValue = $state('');
 
   async function _hydratePins() {
@@ -158,34 +152,28 @@
       const lists = await fetchWatchlists();
       const rows  = Array.isArray(lists) ? lists : (lists?.watchlists ?? []);
       const pinned = rows.filter(w => w?.is_pinned);
-      if (!pinned.length) return;
-      // Fetch each pinned list in parallel; merge + dedupe symbols.
+      if (!pinned.length) { _PIN_OPTS = []; return; }
+      // Fetch each pinned list in parallel; merge in source order,
+      // dedupe symbols. The watchlist API already expands MCX/CDS
+      // roots to actual futures, so every `tradingsymbol` returned
+      // here is a tradeable contract.
       const details = await Promise.all(pinned.map(w =>
         fetchWatchlist(w.id).catch(() => null)
       ));
-      const symbols = new Set();
+      const out  = [];
+      const seen = new Set();
       for (const d of details) {
         const items = d?.items || [];
         for (const it of items) {
           const sym = String(it?.tradingsymbol || '').trim();
-          if (sym) symbols.add(sym);
+          if (sym && !seen.has(sym)) {
+            out.push({ value: sym, label: _pinLabel(sym) });
+            seen.add(sym);
+          }
         }
       }
-      // Keep DEFAULT_PINS at the top (preserves the curated index +
-      // commodity order from the seed list), then append every other
-      // pinned symbol the operator has added. Labels surface the
-      // resolved tradeable contract when available.
-      const out = [];
-      const seen = new Set();
-      for (const p of DEFAULT_PINS) {
-        if (symbols.has(p)) { out.push({ value: p, label: _pinLabel(p) }); seen.add(p); }
-      }
-      for (const s of symbols) {
-        if (!seen.has(s)) { out.push({ value: s, label: _pinLabel(s) }); seen.add(s); }
-      }
-      const missing = DEFAULT_PINS.filter(p => !seen.has(p));
-      _PIN_OPTS = [...missing.map(p => ({ value: p, label: _pinLabel(p) })), ...out];
-    } catch (_) { /* leave seeded DEFAULT_PINS in place */ }
+      _PIN_OPTS = out;
+    } catch (_) { /* leave list as-is; symbol search still works */ }
   }
 
   /** Pick from the Pinned dropdown — resolves to tradeable + loads. */
@@ -797,6 +785,14 @@
   let _chartHover = $state(null);
   /** @type {{tick:any,pxLeft:number,pxTop:number}|null} */
   let _intradayHover = $state(null);
+  // Click-to-pin — operator: "when I click on the chart, it should show
+  // popup window like payoff chart and show x and y values and other
+  // important values of the curve. It should be default in all the
+  // charts." While pinned, pointerleave doesn't dismiss the popup and a
+  // visible × close button on the popup itself toggles it off. Pin
+  // auto-clears when the underlying data changes (new symbol / range).
+  let _chartPinned    = $state(false);
+  let _intradayPinned = $state(false);
 
   // Popup dimensions used for clamping (px).
   const _TIP_W = 180;
@@ -855,6 +851,40 @@
     const pxTop  = Math.max(6, Math.min(Math.max(cH - _ITIP_H - 6, 6), rawTop));
     _intradayHover = { tick: best, pxLeft, pxTop };
   }
+
+  // Click toggles pin. Browser-native click fires after pointerup IF
+  // the down-up was a tap (no significant drag), so the existing
+  // pan/zoom drag flow doesn't accidentally pin on every release.
+  function _onChartClick(/** @type {MouseEvent} */ e) {
+    if (!_bars.length || pan) return;
+    if (_chartPinned) {
+      _chartPinned = false;
+      _chartHover  = null;
+      return;
+    }
+    // Ensure the hover anchor reflects the click position (in case the
+    // operator clicked without a preceding pointermove, e.g. on touch).
+    _onChartPointerMove(/** @type {any} */ (e));
+    if (_chartHover) _chartPinned = true;
+  }
+  function _onIntradayClick(/** @type {MouseEvent} */ e) {
+    if (!_ticks.length) return;
+    if (_intradayPinned) {
+      _intradayPinned = false;
+      _intradayHover  = null;
+      return;
+    }
+    _onIntradayPointerMove(/** @type {any} */ (e));
+    if (_intradayHover) _intradayPinned = true;
+  }
+  // Auto-clear pin when the underlying data changes — pinning a bar at
+  // 30d range and then switching to 1Y would leave a stale popup
+  // anchored at a spot that no longer reflects the data beneath it.
+  $effect(() => {
+    void symbol; void _chartDays;
+    _chartPinned    = false;
+    _intradayPinned = false;
+  });
 
   // ── Timestamp formatters for hover popups ─────────────────────────
   function _fmtBarTs(/** @type {string} */ ts) {
@@ -1096,6 +1126,20 @@
       {/each}
     </div>
 
+    <!-- Volume toggle — sits right after the 1Y pill so the affordance
+         reads as part of the chart's primary control bar instead of
+         hiding in the Overlays dropdown. Same chip shape as the range
+         buttons; active state uses the same cyan tint so the operator
+         sees "Volume ON" / "Volume OFF" at a glance. -->
+    <button type="button"
+      class="cw-range-btn cw-vol-btn"
+      class:active={_showVol}
+      title={_showVol ? 'Volume bars ON — click to turn off' : 'Volume bars OFF — click to turn on'}
+      aria-pressed={_showVol}
+      onclick={_toggleVolume}>
+      Volume
+    </button>
+
     <!-- Reset zoom action button — trailing edge, only when zoomed -->
     {#if isZoomed}
       <button type="button" class="cw-reset-zoom" onclick={_resetZoom}
@@ -1115,12 +1159,21 @@
         ariaLabel="Overlays" />
     </div>
 
-    <!-- HTML hover popup for OHLCV (replaces the SVG rect+text block) -->
+    <!-- HTML hover popup for OHLCV (replaces the SVG rect+text block).
+         Pinned state (after a click) keeps the popup anchored at the
+         click location and renders a small × close button so the
+         operator can dismiss without clicking the chart again. -->
     {#if _chartHover && !_overlayOpen && !pan}
       {@const ch = Number(_chartHover.bar.close) - Number(_chartHover.bar.open)}
       {@const pct = Number(_chartHover.bar.open) ? (ch / Number(_chartHover.bar.open)) * 100 : 0}
-      <div class="cw-hover-popup"
+      <div class="cw-hover-popup" class:cw-hover-popup-pinned={_chartPinned}
            style="left: {_chartHover.pxLeft}px; top: {_chartHover.pxTop}px;">
+        {#if _chartPinned}
+          <button type="button" class="cw-hp-close"
+                  aria-label="Close pinned popup"
+                  title="Close (or click the chart again)"
+                  onclick={(e) => { e.stopPropagation(); _chartPinned = false; _chartHover = null; }}>×</button>
+        {/if}
         <div class="cw-hp-ts">{_fmtBarTs(_chartHover.bar.ts)}</div>
         <div class="cw-hp-row">
           <span class="cw-hp-label">O</span>
@@ -1164,12 +1217,13 @@
         class="cw-svg"
         class:cw-panning={pan !== null}
         role="img"
-        aria-label="Price chart — wheel to zoom, drag to pan"
+        aria-label="Price chart — wheel to zoom, drag to pan, click to pin"
         onwheel={_onWheel}
         onpointerdown={_onPointerDown}
         onpointerup={_onPointerUp}
         onpointermove={_onPointerMove}
-        onpointerleave={() => { _chartHover = null; }}
+        onpointerleave={() => { if (!_chartPinned) _chartHover = null; }}
+        onclick={_onChartClick}
       >
         <!-- Y-axis grid + labels -->
         {#each _yTicks as tick}
@@ -1376,8 +1430,14 @@
         })}
         <!-- Intraday hover popup -->
         {#if _intradayHover && !_overlayOpen}
-          <div class="cw-hover-popup"
+          <div class="cw-hover-popup" class:cw-hover-popup-pinned={_intradayPinned}
                style="left: {_intradayHover.pxLeft}px; top: {_intradayHover.pxTop}px;">
+            {#if _intradayPinned}
+              <button type="button" class="cw-hp-close"
+                      aria-label="Close pinned popup"
+                      title="Close (or click the chart again)"
+                      onclick={(e) => { e.stopPropagation(); _intradayPinned = false; _intradayHover = null; }}>×</button>
+            {/if}
             <div class="cw-hp-ts">{_fmtTickTs(_intradayHover.tick.ts)}</div>
             <div class="cw-hp-row">
               <span class="cw-hp-label">LTP</span>
@@ -1394,9 +1454,10 @@
           </div>
         {/if}
         <svg viewBox="0 0 {W2} {H2}" preserveAspectRatio="none"
-             class="cw-intraday-svg" role="img" aria-label="Intraday tick chart"
+             class="cw-intraday-svg" role="img" aria-label="Intraday tick chart — click to pin"
              onpointermove={_onIntradayPointerMove}
-             onpointerleave={() => { _intradayHover = null; }}>
+             onpointerleave={() => { if (!_intradayPinned) _intradayHover = null; }}
+             onclick={_onIntradayClick}>
           {#each _t2YTicks as yt}
             <line x1={P2L} x2={W2 - P2R} y1={yt.y} y2={yt.y}
                   stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
@@ -1661,6 +1722,31 @@
     min-width: 9rem;
     max-width: 13rem;
   }
+  /* Pinned variant — brighter cyan border so the operator sees the
+     popup is locked in place, and `pointer-events: auto` so the ×
+     close button is clickable. */
+  .cw-hover-popup-pinned {
+    pointer-events: auto;
+    border-color: rgba(125, 211, 252, 0.85);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(125, 211, 252, 0.20);
+  }
+  .cw-hp-close {
+    position: absolute;
+    top: 0.15rem;
+    right: 0.2rem;
+    width: 0.95rem;
+    height: 0.95rem;
+    padding: 0;
+    background: none;
+    border: 0;
+    color: rgba(248, 113, 113, 0.85);
+    font-family: monospace;
+    font-size: 0.75rem;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  .cw-hp-close:hover { color: #f87171; background: rgba(248, 113, 113, 0.12); }
   .cw-hp-ts {
     color: #fbbf24;
     font-weight: 800;

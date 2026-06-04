@@ -321,7 +321,33 @@
       qty: e.qty, slippage: e.slippage,
     };
   }
-  function hideHover() { hover = null; }
+  function hideHover() { hover = null; pinnedHover = false; }
+  // Click-to-pin — operator: "make this default action for all the
+  // charts". Click on the chart picks the nearest tick to the click
+  // x-coordinate, snaps a popup carrying the timestamp + ltp + bid/ask
+  // and pins it until the operator clicks again (or hits the × close
+  // button on the popup).
+  let pinnedHover = $state(false);
+  function _onChartClick(/** @type {MouseEvent} */ e) {
+    if (!ticks.length || pan) return;
+    if (pinnedHover) { hideHover(); return; }
+    const svg = /** @type {SVGSVGElement} */ (e.currentTarget);
+    const rect = svg.getBoundingClientRect();
+    const xPx = (e.clientX - rect.left) * (W / rect.width);
+    const xVal = tMin + ((xPx - PAD_L) / innerW) * (tMax - tMin);
+    let best = ticks[0], bestD = Infinity;
+    for (const t of ticks) {
+      const d = Math.abs(+new Date(t.ts) - xVal);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    hover = {
+      x: xOf(best.ts), y: yOf(best.ltp ?? 0),
+      kind: 'tick', side: '', price: best.ltp, ts: best.ts,
+      detail: null, order_id: 0,
+      qty: null, slippage: null,
+    };
+    pinnedHover = true;
+  }
 
   function fmtPrice(/** @type {number|null} */ v) {
     if (v == null) return '—';
@@ -405,11 +431,12 @@
   {:else if ticks.length}
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="chart-svg" class:chart-panning={pan !== null}
-         role="img" aria-label="Price chart — wheel to zoom, drag to pan"
+         role="img" aria-label="Price chart — wheel to zoom, drag to pan, click to pin"
          onwheel={onWheel}
          onpointerdown={onPointerDown}
          onpointerup={onPointerUp}
-         onpointermove={onPointerMoveSvg}>
+         onpointermove={onPointerMoveSvg}
+         onclick={_onChartClick}>
       <!-- Y-axis grid + labels -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}
