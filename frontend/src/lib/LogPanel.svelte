@@ -367,18 +367,26 @@
     return 'log-info';
   }
   function _renderSimLine(entry) {
-    const ts = _dualTsHtml(entry.ts);
     const scen = entry.scenario || '';
-    if (entry.kind === 'started')  return `<span class="log-agent-success">${ts} ▶ START ${scen} · ${entry.note || ''}</span>`;
-    if (entry.kind === 'stopped')  return `<span class="log-info">${ts} ■ STOP ${scen} · ${entry.note || ''}</span>`;
+    if (entry.kind === 'started') {
+      return _logRow(entry.ts, `▶ ${scen} · ${entry.note || ''}`, 'START', 'log-agent-success');
+    }
+    if (entry.kind === 'stopped') {
+      return _logRow(entry.ts, `■ ${scen} · ${entry.note || ''}`, 'STOP', 'log-info');
+    }
     if (entry.kind === 'order') {
       const o = entry.order || {};
       const sideCls = o.side === 'BUY' ? 'log-agent-success' : 'log-info';
       const price   = (o.price != null) ? '@' + priceFmt(o.price) : '';
       // Ticks tab is sim-only by definition (entries come from the sim
       // driver's tick log) — drop the SIM mode pill since every row
-      // already implies that mode. Earlier pill was redundant noise.
-      return `<span class="${sideCls}">${ts} ◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}</span>`;
+      // already implies that mode.
+      return _logRow(
+        entry.ts,
+        `◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}`,
+        'ORDER',
+        sideCls,
+      );
     }
     const cls = _classifySimLine(entry);
     const diffs = (entry.changes || []).map(c => {
@@ -389,12 +397,58 @@
       return `<span class="log-chip"><span class="log-chip-key">${field}:</span>${arrow}${delta}</span>`;
     }).join(' ');
     const head = `tick ${entry.tick_index} · ${scen}`;
-    // Ticks tab is sim-only — no SIM pill needed on the tick line.
-    return `<span class="${cls}">${ts} ${head} ${diffs || '(no changes)'}</span>`;
+    return _logRow(entry.ts, `${head} ${diffs || '(no changes)'}`, 'TICK', cls);
   }
 
   function stripTs(l) {
     return String(l ?? '').replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s*-?\s*/, '');
+  }
+
+  /**
+   * Compact `HH:MM` timestamp matching the page-header `.algo-ts`
+   * font (mono cyan tabular-nums) — used by every log row across
+   * the Agent / Terminal / Ticks / System tabs so the rows read in
+   * the same visual rhythm as the wall clock above. Tooltip carries
+   * the full dual-zone date+time for forensic context. Operator:
+   * "follow header timestamp in the same font so that it does not
+   * occupy a lot of space".
+   */
+  function _simpleTime(input) {
+    if (!input) {
+      return `<span class="log-row-time log-row-time-empty">—</span>`;
+    }
+    const d = input instanceof Date
+      ? input
+      : (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}/.test(input))
+        ? new Date(
+            input.includes('T') || input.includes('Z')
+              ? input
+              : input.replace(' ', 'T') + '+05:30'
+          )
+        : null;
+    if (d && !isNaN(d.getTime())) {
+      const ist = d.toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', hour12: false,
+        timeZone: 'Asia/Kolkata',
+      });
+      const full = formatDualTz(d);
+      return `<span class="log-row-time" title="${_escAttr(full)}">${ist}</span>`;
+    }
+    // Non-ISO fallback — already-formatted "HH:MM:SS" or operator-formatted string.
+    const raw = typeof input === 'string' ? _shortTime(input).slice(0, 5) : '—';
+    return `<span class="log-row-time">${_escAttr(raw || '—')}</span>`;
+  }
+
+  /**
+   * Wrap a log row in the unified News-style grid: time on the left,
+   * message content in the middle (flex-grow), optional tag chip on
+   * the right. All four tabs (Agent / Terminal / Ticks / System)
+   * route through this helper so every row reads with the same shape.
+   */
+  function _logRow(timeInput, contentHtml, tagText, rowClass) {
+    const ts  = _simpleTime(timeInput);
+    const tag = tagText ? `<span class="log-row-tag">${_escAttr(String(tagText))}</span>` : '';
+    return `<div class="log-row ${rowClass || ''}">${ts}<span class="log-row-msg">${contentHtml || ''}</span>${tag}</div>`;
   }
 
   function sysClass(l) {
@@ -491,24 +545,41 @@
   }
 
   function _terminalHtml() {
-    const cmdLines = cmdHistory.map(h => ({ ts: h.time, html: _cmdEntryHtml(h) }));
-    // Order rows from the internal stream — the Terminal tab interleaves
-    // operator commands with the order lifecycle they produced.
-    const orderLines = (orderRows || []).map(o => ({
-      // Same fallback as _orderRowHtml — broker (live) rows carry
-      // order_timestamp; algo/paper/sim rows carry created_at.
-      ts: _shortTime(o.created_at || o.order_timestamp),
-      html: _orderRowHtml(o),
-    }));
+    // Each source contributes a row in the unified News-style grid
+    // (time · message · tag). Tag is the source family — CMD / ORDER /
+    // AGENT — so the operator can scan the Terminal stream at a glance.
+    const cmdLines = cmdHistory.map(h => {
+      const cls = h.status === '✓' ? 'log-agent-success'
+                : h.status === '✗' ? 'log-agent-failed'
+                : 'log-info';
+      const chips = h.fields ? Object.entries(h.fields)
+        .map(([k, v]) => `<span class="log-chip"><span class="log-chip-key">${k}:</span>${v}</span>`)
+        .join(' ') : '';
+      const content = `${h.status || ''} ${h.message || ''} ${chips}`.trim();
+      return _logRow(h.time, content, 'CMD', cls);
+    });
+    const orderLines = (orderRows || []).map(o => {
+      const status = (o.status || '').toUpperCase();
+      let cls = 'log-info';
+      if      (status === 'FILLED')          cls = 'log-agent-success';
+      else if (status === 'UNFILLED')        cls = 'log-agent-failed';
+      else if (status === 'OPEN')            cls = 'log-agent-alert';
+      else if (o.transaction_type === 'BUY') cls = 'log-agent-success';
+      const fillPrice = (o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null;
+      const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
+      const price     = fillPrice || initPrice;
+      const sym = o.symbol
+        ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
+        : '';
+      const content = `◆ ${o.transaction_type || '?'} ${o.quantity ?? '?'} ${sym} ${price} · ${o.account || '?'}`;
+      return _logRow(o.created_at || o.order_timestamp, content, 'ORDER', cls);
+    });
     const agentLines = (agentLog || []).map(e => {
-      const t = _dualTsHtml(e.timestamp);
-      // Pills scoped to Orders tab only (operator feedback) — Terminal
-      // tab interleaves command + order + agent activity; agent rows
-      // here render with no mode pill.
-      return { ts: _shortTime(e.timestamp), html: `<span class="log-agent-default">${t} ${e.event_type||''} ${e.trigger_condition||''}</span>` };
+      const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
+      return _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default');
     });
     const all = [...cmdLines, ...orderLines, ...agentLines];
-    return all.length ? all.map(x => x.html).join('\n') : '<span class="log-debug">No events.</span>';
+    return all.length ? all.join('') : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
   }
 
   function setTab(id) {
@@ -584,36 +655,33 @@
     {/if}
   </div>
 {:else}
-<pre class="log-panel {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
-  const t = _dualTsHtml(e.timestamp);
+<!-- Unified News-style row layout — every row is `[time · msg · tag]`
+     so the four tabs (Agents · Terminal · Ticks · System) read with
+     the same shape as the News tab above. Time chip inherits the
+     page-header `.algo-ts` font (mono cyan tabular-nums) so the
+     wall clock and every log row are in the same visual rhythm. -->
+<div class="log-panel log-rows {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
   const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
             : e.event_type === 'action_success' ? 'log-agent-success'
             : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
             : 'log-agent-default';
-  // Pills scoped to Orders tab only (operator feedback) — agents tab
-  // rows render without the SIM mode pill. The sim/live distinction
-  // is still visible from the Orders tab's mode filter.
   // trigger_condition is usually a JSON object like
   //   {metric:'pnl', scope:'positions.total', op:'<=', value:-50000}
   // — render as the same key:value chip pattern the order rows use
   // (chipsFromJson silently falls through for plain-text triggers).
-  const cond = chipsFromJson(e.trigger_condition);
-  const condBlock = cond ? ' ' + cond : '';
-  return `<span class="${cls}">${t} ${e.event_type||''}${condBlock}</span>`;
-}).join('\n')}{:else}<span class="log-debug">No agent events.</span>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('\n')}{:else}<span class="log-debug">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
-  // System log lines carry a leading 'YYYY-MM-DD HH:MM:SS' timestamp
-  // (UTC — the prod box runs in UTC). We pass the parsed Date through
-  // _dualTsHtml so the row gets the same page-header timestamp format
-  // every other tab uses. If parse fails (unexpected) the helper still
-  // renders a muted '—' chip so the column position stays aligned.
+  const cond = chipsFromJson(e.trigger_condition) || '';
+  const tag  = (e.event_type || '').replace(/_/g, ' ');
+  return _logRow(e.timestamp, cond, tag, cls);
+}).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No agent events.</span></div>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span></div>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
   const d = parseLogLineDate(l);
-  const tHtml = _dualTsHtml(d);
   const rest = d ? stripTs(l) : l;
-  // Pills scoped to Orders tab only (operator feedback) — System tab
-  // rows render without the SIM mode pill. The [SIM] token in the
-  // raw log line still surfaces in `rest` so the source is visible.
-  return `<span class="${sysClass(l)}">${tHtml} ${rest}</span>`;
-}).join('\n')}{:else}<span class="log-debug">No log entries.</span>{/if}{/if}</pre>
+  // Extract the log level if present at the head of the message
+  // (e.g. "INFO ...", "ERROR ..."). Surfaced as the row's right-edge
+  // tag so the operator can scan the System stream by severity.
+  const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
+  const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
+  return _logRow(d || null, rest, tag, sysClass(l));
+}).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No log entries.</span></div>{/if}{/if}</div>
 {/if}
 
 {#if _chartModalSym}
@@ -673,6 +741,118 @@
   /* Tab row — another +30% on the previous 0.48rem → 0.62rem. Padding
      scaled proportionally. Still no inter-tab gap so mobile fit holds. */
   .log-tab-row { gap: 0; }
+
+  /* Unified row layout for Agents · Terminal · Ticks · System tabs.
+     Mirrors the News tab's `.newslist-row` grid so every log row reads
+     with the same shape — time chip on the left, message in the
+     middle, optional tag pill on the right. Time chip inherits the
+     page-header `.algo-ts` font (mono cyan tabular-nums) but at log
+     density (just HH:MM, full dual-zone in the tooltip) so it doesn't
+     eat horizontal space the way the previous IST·EDT inline format
+     did. Operator: "follow header timestamp in the same font so that
+     it does not occupy a lot of space". */
+  :global(.log-panel.log-rows) {
+    /* Strip the legacy `<pre>` whitespace + monospace block constraints
+       so `.log-row` flex children lay out as one row each. */
+    white-space: normal;
+    padding: 0.25rem 0.55rem;
+    line-height: 1.35;
+  }
+  :global(.log-panel.log-rows .log-row) {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.32rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 0.65rem;
+    color: #c8d8f0;
+    /* Each row sits in its own line — reset legacy `display: block`
+       inherited from the `.log-agent-*` row classes so the flex
+       layout takes over. */
+    border-left: none;
+  }
+  :global(.log-panel.log-rows .log-row:last-child) { border-bottom: 0; }
+  :global(.log-panel.log-rows .log-row:hover) { background: rgba(255, 255, 255, 0.02); }
+
+  :global(.log-panel.log-rows .log-row-time) {
+    flex: 0 0 auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    color: #7dd3fc;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    min-width: 2.5rem;
+    line-height: 1.2;
+  }
+  :global(.log-panel.log-rows .log-row-time-empty) {
+    color: #7e97b8;
+    opacity: 0.55;
+    font-style: italic;
+  }
+  :global(.log-panel.log-rows .log-row-msg) {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+  }
+  :global(.log-panel.log-rows .log-row-tag) {
+    flex: 0 0 auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    color: #7e97b8;
+    background: rgba(126, 151, 184, 0.10);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    padding: 1px 6px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  /* Row-class accents (success / failed / alert / cooldown / etc.) —
+     in the new layout these are applied to the whole row rather than
+     to a single `<span>`. Borders moved to a left accent stripe so
+     the row keeps its News-grid shape (no block-background fill that
+     would visually fight with the time / msg / tag column rhythm). */
+  :global(.log-panel.log-rows .log-row.log-agent-success) {
+    border-left: 2px solid #4ade80;
+    padding-left: 0.4rem;
+    background: rgba(74, 222, 128, 0.04);
+  }
+  :global(.log-panel.log-rows .log-row.log-agent-failed) {
+    border-left: 2px solid #f87171;
+    padding-left: 0.4rem;
+    background: rgba(248, 113, 113, 0.05);
+  }
+  :global(.log-panel.log-rows .log-row.log-agent-alert) {
+    border-left: 2px solid #facc15;
+    padding-left: 0.4rem;
+    background: rgba(250, 204, 21, 0.04);
+  }
+  :global(.log-panel.log-rows .log-row.log-agent-triggered) {
+    border-left: 2px solid #fb923c;
+    padding-left: 0.4rem;
+    background: rgba(251, 146, 60, 0.05);
+  }
+  :global(.log-panel.log-rows .log-row.log-agent-cooldown) {
+    border-left: 2px solid #64748b;
+    padding-left: 0.4rem;
+    color: #94a3b8;
+  }
+  :global(.log-panel.log-rows .log-row.log-error) {
+    border-left: 2px solid #f87171;
+    padding-left: 0.4rem;
+    background: rgba(248, 113, 113, 0.06);
+    color: #f87171;
+  }
+  :global(.log-panel.log-rows .log-row.log-warning) {
+    border-left: 2px solid #fbbf24;
+    padding-left: 0.4rem;
+    background: rgba(251, 191, 36, 0.05);
+    color: #fbbf24;
+  }
+  :global(.log-panel.log-rows .log-row.log-debug) {
+    color: #94a3b8;
+    font-style: italic;
+  }
 
   /* Orders-tab card grid — mirrors /orders' .oc-book-grid so the
      Activity-modal Orders tab and the dedicated /orders page lay out
