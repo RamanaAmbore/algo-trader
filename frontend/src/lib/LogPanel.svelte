@@ -446,6 +446,27 @@
     return `<div class="log-row ${rowClass || ''}">${ts}<span class="log-row-msg">${contentHtml || ''}</span>${tag}</div>`;
   }
 
+  /**
+   * Numeric sort key for timestamp inputs. Accepts a Date, an ISO
+   * string, or an upstream-formatted log line. Used by every tab's
+   * rendering branch to sort rows latest-first (operator: "agents,
+   * terminal, ticks, system, news should show the rows with latest
+   * timestamps first in descending order"). Unparseable inputs sort
+   * to 0 so they land at the bottom rather than scrambling the order.
+   */
+  function _tsKey(input) {
+    if (!input) return 0;
+    if (input instanceof Date) return +input || 0;
+    if (typeof input !== 'string') return 0;
+    if (/^\d{4}-\d{2}-\d{2}/.test(input)) {
+      const norm = input.includes('T') || input.includes('Z')
+        ? input
+        : input.replace(' ', 'T') + '+05:30';
+      return +new Date(norm) || 0;
+    }
+    return Date.parse(input) || 0;
+  }
+
   function sysClass(l) {
     const s = String(l ?? '');
     return s.includes('ERROR') ? 'log-error' : s.includes('WARNING') ? 'log-warning' : 'log-info';
@@ -543,6 +564,8 @@
     // Each source contributes a row in the unified News-style grid
     // (time · message · tag). Tag is the source family — CMD / ORDER /
     // AGENT — so the operator can scan the Terminal stream at a glance.
+    // Rows are kept as {ts, html} pairs so the merged stream can be
+    // sorted latest-first across all three sources.
     const cmdLines = cmdHistory.map(h => {
       const cls = h.status === '✓' ? 'log-agent-success'
                 : h.status === '✗' ? 'log-agent-failed'
@@ -551,7 +574,7 @@
         .map(([k, v]) => `<span class="log-chip"><span class="log-chip-key">${k}:</span>${v}</span>`)
         .join(' ') : '';
       const content = `${h.status || ''} ${h.message || ''} ${chips}`.trim();
-      return _logRow(h.time, content, 'CMD', cls);
+      return { ts: h.time, html: _logRow(h.time, content, 'CMD', cls) };
     });
     const orderLines = (orderRows || []).map(o => {
       const status = (o.status || '').toUpperCase();
@@ -567,14 +590,16 @@
         ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
         : '';
       const content = `◆ ${o.transaction_type || '?'} ${o.quantity ?? '?'} ${sym} ${price} · ${o.account || '?'}`;
-      return _logRow(o.created_at || o.order_timestamp, content, 'ORDER', cls);
+      const ts = o.created_at || o.order_timestamp;
+      return { ts, html: _logRow(ts, content, 'ORDER', cls) };
     });
     const agentLines = (agentLog || []).map(e => {
       const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
-      return _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default');
+      return { ts: e.timestamp, html: _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default') };
     });
-    const all = [...cmdLines, ...orderLines, ...agentLines];
-    return all.length ? all.join('') : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
+    const all = [...cmdLines, ...orderLines, ...agentLines]
+      .sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
+    return all.length ? all.map(x => x.html).join('') : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
   }
 
   function setTab(id) {
@@ -655,7 +680,7 @@
      the same shape as the News tab above. Time chip inherits the
      page-header `.algo-ts` font (mono cyan tabular-nums) so the
      wall clock and every log row are in the same visual rhythm. -->
-<div class="log-panel log-rows {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.map(e => {
+<div class="log-panel log-rows {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.slice().sort((a, b) => _tsKey(b.timestamp) - _tsKey(a.timestamp)).map(e => {
   const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
             : e.event_type === 'action_success' ? 'log-agent-success'
             : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
@@ -667,8 +692,7 @@
   const cond = chipsFromJson(e.trigger_condition) || '';
   const tag  = (e.event_type || '').replace(/_/g, ' ');
   return _logRow(e.timestamp, cond, tag, cls);
-}).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No agent events.</span></div>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.map(_renderSimLine).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span></div>{/if}{:else}{#if systemLog.length}{@html systemLog.map(l => {
-  const d = parseLogLineDate(l);
+}).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No agent events.</span></div>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.slice().sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts)).map(_renderSimLine).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span></div>{/if}{:else}{#if systemLog.length}{@html systemLog.slice().map(l => ({ l, d: parseLogLineDate(l) })).sort((a, b) => _tsKey(b.d) - _tsKey(a.d)).map(({ l, d }) => {
   const rest = d ? stripTs(l) : l;
   // Extract the log level if present at the head of the message
   // (e.g. "INFO ...", "ERROR ..."). Surfaced as the row's right-edge
