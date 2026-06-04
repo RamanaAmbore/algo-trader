@@ -184,12 +184,81 @@
     else if (_END.has(e.key))   { target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' }); e.preventDefault(); return; }
 
     if (dy === 0 && dx === 0) return;
+
+    // Edge-bump focus walk — TV remotes have no Tab key, so when the
+    // operator hits the top / bottom of a scroll container and presses
+    // again, jump focus to the previous / next scrollable region above
+    // or below. Natural D-pad use walks the operator between cards
+    // without teaching them anything new.
+    const atTop    = target.scrollTop <= 1;
+    const atBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 1;
+    if (dy < 0 && atTop) {
+      const moved = _focusAdjacentScrollable(target, -1);
+      if (moved) { e.preventDefault(); return; }
+    } else if (dy > 0 && atBottom) {
+      const moved = _focusAdjacentScrollable(target, +1);
+      if (moved) { e.preventDefault(); return; }
+    }
+
     target.scrollBy({ top: dy, left: dx, behavior: 'smooth' });
     e.preventDefault();
   }
 
-  onMount(() => { window.addEventListener('keydown', onKey, { passive: false }); });
-  onDestroy(() => { window.removeEventListener('keydown', onKey); });
+  /** Move focus to the next / previous scrollable container relative
+   *  to `current`. Returns true when a target was found + focused. */
+  function _focusAdjacentScrollable(/** @type {HTMLElement} */ current, /** @type {1|-1} */ dir) {
+    const all = Array.from(document.querySelectorAll(
+      '[data-tv-scroll-container], .canonical-modal-panel, .oes-body, .cm-body, .alm-body, .search-modal, .algo-mobile-dropdown'
+    )).filter((el) => {
+      const cs = window.getComputedStyle(/** @type {HTMLElement} */ (el));
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      return _isOverflowing(/** @type {HTMLElement} */ (el));
+    });
+    if (!all.includes(current)) return false;
+    // Sort by vertical position in viewport so "next" = visually next
+    // down, "previous" = visually next up.
+    all.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    const idx = all.indexOf(current);
+    const next = all[idx + dir];
+    if (!next) return false;
+    /** @type {HTMLElement} */ (next).focus({ preventScroll: false });
+    /** @type {HTMLElement} */ (next).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return true;
+  }
+
+  // Walk the DOM periodically and assign tabindex="-1" to every
+  // scrollable element so _focusAdjacentScrollable() can move focus
+  // into them. tabindex="-1" makes elements programmatically focusable
+  // without inserting them into the Tab order — D-pad nav still works
+  // but the operator never accidentally lands on them via Tab.
+  function _assignFocusableScrollables() {
+    const all = document.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = /** @type {HTMLElement} */ (all[i]);
+      if (el.hasAttribute('tabindex')) continue;
+      if (!_isOverflowing(el)) continue;
+      const cs = window.getComputedStyle(el);
+      if (!/(auto|scroll)/.test(cs.overflowY) && !/(auto|scroll)/.test(cs.overflow)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height < 120) continue;
+      el.tabIndex = -1;
+      el.classList.add('tv-scrollable');
+    }
+  }
+
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let _scrollScanTimer = null;
+  onMount(() => {
+    window.addEventListener('keydown', onKey, { passive: false });
+    _assignFocusableScrollables();
+    // Re-scan every 2s to catch new scrollable cards (modals opening,
+    // grids mounting after async data lands, etc.).
+    _scrollScanTimer = setInterval(_assignFocusableScrollables, 2000);
+  });
+  onDestroy(() => {
+    window.removeEventListener('keydown', onKey);
+    if (_scrollScanTimer) clearInterval(_scrollScanTimer);
+  });
 </script>
 
 {@render children()}
