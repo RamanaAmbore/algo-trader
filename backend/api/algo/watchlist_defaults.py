@@ -1,58 +1,59 @@
 """
-Default watchlist seed lists. Every new user gets:
+Default seed list for the SHARED GLOBAL Pinned watchlist.
 
-  1. Default        — empty, the operator's working list.
-  2. Markets        — major Indian indices + MCX commodities so the
-                      operator sees something familiar on first login.
+The global Pinned is shared across every user; only admin / designated
+users can mutate it. seed_global_pinned() in routes/watchlist.py reads
+this list and populates an empty global Pinned at app boot. Operators
+add / remove items via the standard manage-watchlists UI.
 
-The Markets list is editable — operators can delete / reorder / add to
-it just like any user-created list. The seeding is a one-shot at user
-creation time; it does NOT reconcile or re-add removed symbols on
-subsequent logins.
-
-MCX commodity symbols are stored as the **plain commodity name**
-(e.g. `GOLD`, `CRUDEOIL`) — the quote endpoint resolves these to the
-current near-month future at fetch time via the instrument cache so the
-operator never has to update them month-over-month. Index symbols
-(NIFTY 50 etc.) are stable.
+Item-naming policy:
+  - Indices stored as the broker quote key (e.g. "NIFTY 50") — stable.
+  - ETFs stored as the NSE tradingsymbol (e.g. GOLDBEES) — stable.
+  - MCX commodities stored as the bare commodity ROOT (e.g. CRUDEOIL,
+    GOLDM, NATURALGAS). The frontend's _pinLabel + the quote endpoint
+    BOTH resolve these to the current near-month future via the
+    instruments cache (CRUDEOIL → CRUDEOIL26JUNFUT, GOLDM →
+    GOLDM26JUNFUT, etc.). The operator never has to roll contracts
+    month-over-month — the resolver follows the front-month expiry.
+  - GOLD / SILVER bare names have been replaced with the M-mini
+    variants (GOLDM / SILVERM) per operator request.
 """
 
 # Each entry: (tradingsymbol, exchange). The order here is the
-# `sort_order` the symbols land at — index instruments first, then
-# commodities, so the user's eye lands on the broad market gauge first.
+# `sort_order` the symbols land at — indices first, then ETFs, then
+# MCX commodities (alphabetical), then CDS.
 MARKETS_DEFAULT: list[tuple[str, str]] = [
-    # Indices — quote endpoint maps these via the broker.quote() key
-    # form `NSE:NIFTY 50` etc. Stable across months.
-    # Order: operator-preferred sequence — Nifty 50, Sensex, Bank
-    # Nifty, Nifty IT, Mid Cap, Small Cap, VIX. PIN_ORDER on the
-    # frontend mirrors this so the watchlist UI and the pinned-strip
-    # display agree.
+    # Indices — quote endpoint maps these via broker.quote() keys
+    # like NSE:NIFTY 50. Stable across months.
     ("NIFTY 50",            "NSE"),
     ("SENSEX",              "BSE"),
     ("NIFTY BANK",          "NSE"),
     ("NIFTY IT",            "NSE"),
     ("NIFTY MIDCAP 100",    "NSE"),
-    ("NIFTY SMLCAP 100",    "NSE"),   # Kite's abbreviated key (not "SMALLCAP")
+    ("NIFTY SMLCAP 100",    "NSE"),
     ("INDIA VIX",           "NSE"),
 
-    # MCX commodities — stored as bare commodity name; the quote
-    # endpoint resolves to the near-month future at fetch time.
-    ("GOLD",        "MCX"),
-    ("SILVER",      "MCX"),
-    ("CRUDEOIL",    "MCX"),
-    ("NATURALGAS",  "MCX"),
-    ("COPPER",      "MCX"),
+    # ETFs — gold + silver cash exposure via Nippon's BeES family.
+    ("GOLDBEES",            "NSE"),
+    ("SILVERBEES",          "NSE"),
 
-    # CDS currency futures — stored as bare currency pair name; the
-    # quote endpoint resolves to the near-month future at fetch time.
-    ("USDINR",      "CDS"),
+    # MCX commodities — alphabetical. Roots resolve to current near-
+    # month future at quote / chart time.
+    ("COPPER",              "MCX"),
+    ("CRUDEOIL",            "MCX"),
+    ("GOLDM",               "MCX"),
+    ("NATURALGAS",          "MCX"),
+    ("SILVERM",             "MCX"),
+
+    # CDS currency future.
+    ("USDINR",              "CDS"),
 ]
 
 
 def markets_default_rows() -> list[dict]:
     """Returns the seed list as plain dicts ready to splat into a
-    WatchlistItem(**row) constructor. Used by routes/watchlist.py at
-    user-creation time."""
+    WatchlistItem(**row) constructor. Used by seed_global_pinned to
+    populate an empty shared Pinned at app boot."""
     return [
         {"tradingsymbol": sym, "exchange": exch, "sort_order": i}
         for i, (sym, exch) in enumerate(MARKETS_DEFAULT)

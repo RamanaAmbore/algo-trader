@@ -450,6 +450,29 @@ async def seed_global_pinned() -> None:
             )
             logger.info("Watchlist: migrated %d legacy Pinned rows into global",
                         len(legacy_ids))
+        # 5. If the global Pinned has zero items (fresh seed or operator
+        #    cleared it manually and we want to re-seed), populate from
+        #    watchlist_defaults. This only fires when the count is 0 so
+        #    it won't fight the operator removing items deliberately
+        #    after a non-empty seed.
+        cur_cnt = (await session.execute(
+            select(func.count(WatchlistItem.id))
+            .where(WatchlistItem.watchlist_id == global_row.id)
+        )).scalar() or 0
+        if int(cur_cnt) == 0:
+            from backend.api.algo.watchlist_defaults import markets_default_rows
+            for row in markets_default_rows():
+                session.add(WatchlistItem(
+                    watchlist_id=global_row.id,
+                    tradingsymbol=row["tradingsymbol"],
+                    exchange=row["exchange"],
+                    sort_order=row["sort_order"],
+                    added_at=now,
+                ))
+            logger.info(
+                "Watchlist: populated global Pinned with %d default symbols",
+                len(markets_default_rows()),
+            )
         await session.commit()
 
 

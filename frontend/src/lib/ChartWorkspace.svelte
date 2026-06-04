@@ -41,13 +41,18 @@
 
   // Pinned quick-pick symbols — surface at the TOP of the symbol
   // dropdown so they're one click away whenever the operator opens
-  // the picker, without dominating the picker bar with chips.
-  // Mirrors the "Markets" auto-seeded watchlist (CLAUDE.md): indices
-  // first, then MCX commodities.
+  // the picker. Mirrors the shared global Pinned watchlist.
+  //   Indices first (NIFTY family + SENSEX)
+  //   ETFs (GOLDBEES, SILVERBEES) for cash exposure to gold/silver
+  //   MCX commodity roots — _pinLabel resolves these to the near-
+  //   month future contract via the instruments cache, so the
+  //   operator sees GOLDM26JUNFUT etc. as the label (NOT the bare
+  //   commodity name). For gold/silver we use the M-mini variants.
   /** @type {ReadonlyArray<string>} */
   const DEFAULT_PINS = [
     'NIFTY 50', 'BANKNIFTY', 'FINNIFTY', 'SENSEX',
-    'GOLD', 'SILVER', 'CRUDEOIL',
+    'GOLDBEES', 'SILVERBEES',
+    'COPPER', 'CRUDEOIL', 'GOLDM', 'NATURALGAS', 'SILVERM',
   ];
 
   // Tracks the exchange hint of the last pinned-or-search pick.

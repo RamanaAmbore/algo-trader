@@ -16,6 +16,7 @@
 
   import { untrack, onMount } from 'svelte';
   import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
+  import { fetchWatchlists, fetchWatchlist } from '$lib/api';
 
   let {
     value      = $bindable(/** @type {string} */ ('')),
@@ -44,7 +45,36 @@
   // this, the FIRST keystrokes hit suggestUnderlyings before the IDB
   // dump is loaded, the sync path returns empty, and the dropdown
   // looks broken until the 50 ms debounce fires.
-  onMount(() => { loadInstruments().catch(() => {}); });
+  onMount(() => {
+    loadInstruments().catch(() => {});
+    // Auto-fetch pinned watchlist items when the caller didn't supply
+    // a `pins` prop. Operator request: "in symbol dropdown, when until
+    // 3 chars are entered, the pinned symbols should always show first."
+    // Every callsite (Orders entry, Pulse search, etc.) now gets pinned
+    // suggestions for free without having to plumb the prop.
+    if (!pins.length) _autoLoadPins();
+  });
+
+  async function _autoLoadPins() {
+    try {
+      const lists = await fetchWatchlists();
+      const arr   = Array.isArray(lists) ? lists : (lists?.watchlists ?? []);
+      const pinned = arr.filter(w => w?.is_pinned || w?.is_global);
+      if (!pinned.length) return;
+      const details = await Promise.all(pinned.map(w =>
+        fetchWatchlist(w.id).catch(() => null)
+      ));
+      const out = [];
+      const seen = new Set();
+      for (const d of details) {
+        for (const it of (d?.items || [])) {
+          const sym = String(it?.tradingsymbol || '').trim();
+          if (sym && !seen.has(sym)) { seen.add(sym); out.push(sym); }
+        }
+      }
+      if (out.length) pins = out;
+    } catch (_) { /* leave pins empty */ }
+  }
 
   // Sync _symQuery when the `value` prop changes externally (mount or
   // parent-driven swap). Reads _symQuery via `untrack` so the operator's
