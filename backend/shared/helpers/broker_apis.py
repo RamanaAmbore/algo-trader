@@ -115,18 +115,22 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
                    'day_sell_quantity', 'day_buy_value', 'day_sell_value')
     _has_intraday_split = all(c in df_positions.columns for c in _split_cols)
     if _has_intraday_split:
-        # Apply the lot-size multiplier consistently — Kite returns qty +
-        # day_buy_qty / day_sell_qty + day_buy_value / day_sell_value in
-        # `lots × per-share-price` units. The `quantity` column was already
-        # rescaled at line ~85 above; the other qty / value columns need the
-        # same treatment so the formula mixes consistent units.
+        # Apply the lot-size multiplier consistently — Kite returns
+        # quantity / overnight_quantity / day_buy_quantity /
+        # day_sell_quantity in raw lots (per-doc convention); the
+        # `quantity` column was already rescaled at line ~85 above so
+        # the rest of the qty-shaped columns get the same treatment.
+        # IMPORTANT: day_buy_value / day_sell_value are documented as
+        # CASH (₹) in Kite's API spec — Day's accumulated buy/sell
+        # value already includes the multiplier — so they MUST NOT be
+        # rescaled here. Earlier patch did, inflating MCX legs ~100×
+        # (operator saw a +161 L blow-up). Other adapters (Dhan,
+        # Groww) follow the same cash-units convention.
         if 'multiplier' in df_positions.columns:
             mult = df_positions['multiplier'].fillna(1).replace(0, 1)
             df_positions['overnight_quantity'] = df_positions['overnight_quantity'] * mult
             df_positions['day_buy_quantity']   = df_positions['day_buy_quantity']   * mult
             df_positions['day_sell_quantity']  = df_positions['day_sell_quantity']  * mult
-            df_positions['day_buy_value']      = df_positions['day_buy_value']      * mult
-            df_positions['day_sell_value']     = df_positions['day_sell_value']     * mult
         _day_net_qty       = df_positions['day_buy_quantity'] - df_positions['day_sell_quantity']
         _day_realised_cash = df_positions['day_sell_value']   - df_positions['day_buy_value']
         df_positions['day_change_val'] = (
