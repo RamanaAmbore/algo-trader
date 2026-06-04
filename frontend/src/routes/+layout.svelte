@@ -248,17 +248,54 @@
 
   /** @type {ReturnType<typeof setInterval> | null} */
   let _scrollScanTimer = null;
+  // Visible debug chip — top-right corner. Confirms (a) whether the
+  // global keydown handler fires AT ALL on the TV browser, and (b)
+  // what key code arrives. Toggle off by deleting #tvkdbg or setting
+  // sessionStorage.tvkdbg='off'.
+  let _dbgKey = $state('');
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _dbgClear = null;
+  function _showDbg(/** @type {string} */ text) {
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.tvkdbg === 'off') return;
+    _dbgKey = text;
+    if (_dbgClear) clearTimeout(_dbgClear);
+    _dbgClear = setTimeout(() => { _dbgKey = ''; }, 1500);
+  }
+
+  // Capture-phase wrapper that runs BEFORE any other key listener on
+  // the page. Fire Stick Silk's spatial-navigation mode treats arrow
+  // keys as focus-rect moves before passing to JS — this hooks above
+  // it so our scroll handler always wins. stopImmediatePropagation
+  // prevents the OS / browser from running its own arrow behaviour.
+  /** @param {KeyboardEvent} e */
+  function onKeyCapture(e) {
+    if (!_ALL_KEYS.has(e.key)) return;
+    _showDbg(`key=${e.key} code=${e.code}`);
+    onKey(e);
+    if (e.defaultPrevented) e.stopImmediatePropagation();
+  }
+
   onMount(() => {
-    window.addEventListener('keydown', onKey, { passive: false });
+    // Capture phase + non-passive so e.preventDefault works.
+    window.addEventListener('keydown', onKeyCapture, { capture: true, passive: false });
     _assignFocusableScrollables();
-    // Re-scan every 2s to catch new scrollable cards (modals opening,
-    // grids mounting after async data lands, etc.).
     _scrollScanTimer = setInterval(_assignFocusableScrollables, 2000);
   });
   onDestroy(() => {
-    window.removeEventListener('keydown', onKey);
+    window.removeEventListener('keydown', onKeyCapture, /** @type {any} */ ({ capture: true }));
     if (_scrollScanTimer) clearInterval(_scrollScanTimer);
+    if (_dbgClear) clearTimeout(_dbgClear);
   });
 </script>
 
 {@render children()}
+
+{#if _dbgKey}
+  <div id="tvkdbg"
+       style="position:fixed; top:6px; right:6px; z-index:99999;
+              background:rgba(0,0,0,0.85); color:#fbbf24; font:11px monospace;
+              padding:4px 8px; border:1px solid #fbbf24; border-radius:3px;
+              pointer-events:none;">
+    {_dbgKey}
+  </div>
+{/if}
