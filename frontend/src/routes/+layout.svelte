@@ -248,54 +248,94 @@
 
   /** @type {ReturnType<typeof setInterval> | null} */
   let _scrollScanTimer = null;
-  // Visible debug chip — top-right corner. Confirms (a) whether the
-  // global keydown handler fires AT ALL on the TV browser, and (b)
-  // what key code arrives. Toggle off by deleting #tvkdbg or setting
-  // sessionStorage.tvkdbg='off'.
-  let _dbgKey = $state('');
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _dbgClear = null;
+  // Hard-DOM debug banner — bypasses Svelte reactivity. Writes directly
+  // to a fixed-position <div> we inject on mount. If we see this update
+  // we know JS is at least getting the event; if not, the TV browser is
+  // intercepting at the OS level and we need a manifest-based intercept.
+  /** @type {HTMLDivElement | null} */
+  let _dbgEl = null;
+  function _ensureDbg() {
+    if (typeof document === 'undefined') return null;
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.tvkdbg === 'off') return null;
+    if (_dbgEl) return _dbgEl;
+    const el = document.createElement('div');
+    el.id = 'tvkdbg';
+    el.style.cssText = [
+      'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:2147483647',
+      'background:rgba(0,0,0,0.92)', 'color:#fbbf24',
+      'font:13px/1.3 monospace', 'padding:6px 10px',
+      'border-bottom:2px solid #fbbf24', 'pointer-events:none',
+      'text-align:center', 'letter-spacing:0.04em',
+    ].join(';');
+    el.textContent = 'tv-debug: waiting for key…';
+    document.body.appendChild(el);
+    _dbgEl = el;
+    return el;
+  }
+  let _dbgCount = 0;
   function _showDbg(/** @type {string} */ text) {
-    if (typeof sessionStorage !== 'undefined' && sessionStorage.tvkdbg === 'off') return;
-    _dbgKey = text;
-    if (_dbgClear) clearTimeout(_dbgClear);
-    _dbgClear = setTimeout(() => { _dbgKey = ''; }, 1500);
+    const el = _ensureDbg();
+    if (!el) return;
+    _dbgCount++;
+    el.textContent = `tv-debug #${_dbgCount}: ${text}`;
   }
 
-  // Capture-phase wrapper that runs BEFORE any other key listener on
-  // the page. Fire Stick Silk's spatial-navigation mode treats arrow
-  // keys as focus-rect moves before passing to JS — this hooks above
-  // it so our scroll handler always wins. stopImmediatePropagation
-  // prevents the OS / browser from running its own arrow behaviour.
+  // Listener wrappers — install on BOTH document and window, BOTH
+  // capture and bubble. If any of them fires, the chip updates. Each
+  // wrapper carries its tag so we know which path the event took.
   /** @param {KeyboardEvent} e */
-  function onKeyCapture(e) {
-    if (!_ALL_KEYS.has(e.key)) return;
-    _showDbg(`key=${e.key} code=${e.code}`);
-    onKey(e);
-    if (e.defaultPrevented) e.stopImmediatePropagation();
+  function _dbgOnly(e, tag) {
+    _showDbg(`${tag} key=${e.key} code=${e.code} kc=${e.keyCode} which=${e.which}`);
+  }
+  /** @type {Record<string, (e: KeyboardEvent) => void>} */
+  const _handlers = {};
+  function _installHandlers() {
+    if (typeof window === 'undefined') return;
+    const variants = [
+      ['wcap-down',    window,   'keydown',  true ],
+      ['wbub-down',    window,   'keydown',  false],
+      ['wcap-press',   window,   'keypress', true ],
+      ['wbub-press',   window,   'keypress', false],
+      ['wcap-up',      window,   'keyup',    true ],
+      ['dcap-down',    document, 'keydown',  true ],
+      ['dbub-down',    document, 'keydown',  false],
+    ];
+    for (const [tag, tgt, ev, cap] of variants) {
+      const fn = (/** @type {KeyboardEvent} */ e) => {
+        _dbgOnly(e, /** @type {string} */ (tag));
+        if (ev === 'keydown' && cap) onKey(e);
+      };
+      _handlers[/** @type {string} */ (tag)] = fn;
+      /** @type {any} */ (tgt).addEventListener(ev, fn, { capture: cap, passive: false });
+    }
+  }
+  function _removeHandlers() {
+    if (typeof window === 'undefined') return;
+    const variants = [
+      ['wcap-down',    window,   'keydown',  true ],
+      ['wbub-down',    window,   'keydown',  false],
+      ['wcap-press',   window,   'keypress', true ],
+      ['wbub-press',   window,   'keypress', false],
+      ['wcap-up',      window,   'keyup',    true ],
+      ['dcap-down',    document, 'keydown',  true ],
+      ['dbub-down',    document, 'keydown',  false],
+    ];
+    for (const [tag, tgt, ev, cap] of variants) {
+      const fn = _handlers[/** @type {string} */ (tag)];
+      if (fn) /** @type {any} */ (tgt).removeEventListener(ev, fn, { capture: cap });
+    }
   }
 
   onMount(() => {
-    // Capture phase + non-passive so e.preventDefault works.
-    window.addEventListener('keydown', onKeyCapture, { capture: true, passive: false });
+    _ensureDbg();
+    _installHandlers();
     _assignFocusableScrollables();
     _scrollScanTimer = setInterval(_assignFocusableScrollables, 2000);
   });
   onDestroy(() => {
-    window.removeEventListener('keydown', onKeyCapture, /** @type {any} */ ({ capture: true }));
+    _removeHandlers();
     if (_scrollScanTimer) clearInterval(_scrollScanTimer);
-    if (_dbgClear) clearTimeout(_dbgClear);
   });
 </script>
 
 {@render children()}
-
-{#if _dbgKey}
-  <div id="tvkdbg"
-       style="position:fixed; top:6px; right:6px; z-index:99999;
-              background:rgba(0,0,0,0.85); color:#fbbf24; font:11px monospace;
-              padding:4px 8px; border:1px solid #fbbf24; border-radius:3px;
-              pointer-events:none;">
-    {_dbgKey}
-  </div>
-{/if}
