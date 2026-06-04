@@ -90,7 +90,7 @@
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
      use:portal role="dialog" aria-modal="true"
      aria-label="Chart — {symbol}" tabindex="-1">
-  <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl} tabindex="-1">
+  <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
            and showing the symbol up here too would duplicate it.

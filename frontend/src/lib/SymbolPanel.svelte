@@ -893,7 +893,6 @@
      use:portal={!inline}>
   <div class={inline ? 'oes-modal oes-modal-inline' : 'canonical-modal-panel oes-modal'}
        role="document"
-       tabindex="-1"
        bind:this={_modalEl}
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
 

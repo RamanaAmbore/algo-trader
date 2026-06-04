@@ -64,34 +64,11 @@
   flex-direction: column;
   overflow: hidden;
 }
-/* TV-friendly focus target — Tab onto the modal frame, then D-pad
-   arrows scroll the active body via the global handler in
-   +layout.svelte. */
-.canonical-modal-panel { outline: none; }
-.canonical-modal-panel:focus-visible {
-  outline: 2px solid rgba(251, 191, 36, 0.55);
-  outline-offset: -2px;
-}
 @media (max-width: 760px) {
   .canonical-modal-panel {
     width: 96vw;
     height: 90vh;
   }
-}
-
-/* ── TV remote focus ring ────────────────────────────────────────────
-   Google TV / Android TV / Amazon Fire Stick browsers route D-pad
-   arrows through the +layout.svelte global keydown handler. Scroll
-   containers tagged .tv-scrollable (auto-tagged on mount by the layout
-   for every overflowing element ≥ 120px tall) get tabindex=-1 so the
-   edge-bump focus walk can land on them programmatically. This rule
-   paints a thin amber outline when the container has keyboard focus
-   so the operator sees what they're scrolling. Hidden for mouse +
-   touch via :focus-visible. */
-.tv-scrollable:focus,
-.tv-scrollable:focus-visible {
-  outline: 2px solid rgba(251, 191, 36, 0.55);
-  outline-offset: -2px;
 }
 
 /* ── AG Grid — RamboQuant theme ──────────────────────────────────────────── */

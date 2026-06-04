@@ -73,7 +73,7 @@
 
 <div class="canonical-modal-overlay alm-overlay" use:portal role="dialog" aria-modal="true"
      aria-label="Activity log" tabindex="-1">
-  <div class="canonical-modal-panel alm-panel" bind:this={_modalEl} tabindex="-1">
+  <div class="canonical-modal-panel alm-panel" bind:this={_modalEl}>
     <!-- Modal chrome — title + close button. Tabs live inside LogPanel
          so the tab strip is consistent with every other LogPanel mount. -->
     <div class="alm-header">
