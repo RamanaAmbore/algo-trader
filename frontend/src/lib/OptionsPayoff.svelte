@@ -172,11 +172,14 @@
   // ── Geometry ──────────────────────────────────────────────────────
   const W = 720;
   // PAD_L widened to 36 to accommodate horizontal left-edge Y-axis labels.
-  // PAD_B trimmed back to 28 — rotated σ/price labels removed, horizontal
-  // price labels at the bottom need ~14 px clearance below the plot baseline.
+  // PAD_B widened to 36 — milestone σ ticks (±1σ / ±2σ / ±2.5σ) draw a
+  // stacked two-line label (colored σ-tag above the price) so the chart
+  // bottom needs ~26 px clearance below the plot baseline. Non-milestone
+  // whole-σ ticks still use a single-line label that fits in the same
+  // budget.
   // Tight top padding — BE chips overlap the top edge (level 0 above,
   // level 1 just inside) so the chart's data area uses the space.
-  const PAD_L = 36, PAD_R = 12, PAD_T = 14, PAD_B = 28;
+  const PAD_L = 36, PAD_R = 12, PAD_T = 14, PAD_B = 36;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -676,34 +679,68 @@
       {/each}
 
       <!-- X-axis grid — sigma tick lines at every 0.5σ across ±spanSigmas.
-           Whole-σ ticks get a stronger dash; half-σ ticks are subtler.
-           Text labels (formerly rotated −30° σ labels and −90° price
-           labels) are replaced by horizontal price labels at the bottom,
-           one per whole-σ tick only (skip half-σ to avoid clutter).
-           The center tick (0σ = spot) still draws its vertical via the
-           spot-line block below; skip it here to avoid overdrawing. -->
+           Milestone σ levels (±1σ / ±2σ / ±2.5σ) get color-coded dotted
+           verticals + a stacked two-line label (σ-tag above price). The
+           color scheme is the classic risk-band gradient: ±1σ emerald
+           (~68% containment, "typical move"), ±2σ amber (~95%, "wider
+           than typical"), ±2.5σ rose (~98.8%, "tail event"). Non-milestone
+           whole-σ ticks keep the subtle steel grid + single-line price.
+           Half-σ ticks (0.5, 1.5) are reference grid only.
+           The center tick (0σ = spot) draws via the spot-line block below;
+           skip it here to avoid overdrawing. -->
       {#each xTicks as xt}
-        {@const wholeSigma = xt.sigma != null && xt.sigma % 1 === 0}
-        {@const isCenter   = xt.sigma === 0}
+        {@const wholeSigma  = xt.sigma != null && xt.sigma % 1 === 0}
+        {@const isCenter    = xt.sigma === 0}
+        {@const absSigma    = xt.sigma != null ? Math.abs(xt.sigma) : null}
+        {@const isMilestone = absSigma === 1 || absSigma === 2 || absSigma === 2.5}
+        {@const mColor      = absSigma === 1   ? '#34d399'
+                            : absSigma === 2   ? '#fcd34d'
+                            : absSigma === 2.5 ? '#fb7185'
+                            : null}
         {#if !isCenter}
-          <!-- σ-tick vertical: dotted grid line — reference marker,
-               not a structural axis. whole-σ: "2 3"; half-σ: "1 4". -->
-          <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
-                stroke={wholeSigma ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.10)'}
-                stroke-width="1"
-                stroke-dasharray={wholeSigma ? '2 3' : '1 4'}/>
+          {#if isMilestone}
+            <!-- Milestone σ vertical — color-coded dotted line. Brighter
+                 than the neutral grid so the eye snaps to ±1σ / ±2σ / ±2.5σ
+                 as the risk-zone boundaries. -->
+            <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
+                  stroke={mColor} stroke-width="1.25"
+                  stroke-dasharray="3 3" stroke-opacity="0.6"/>
+          {:else}
+            <!-- Neutral grid: whole-σ "2 3"; half-σ "1 4". Reference
+                 marker only, not a structural axis. -->
+            <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
+                  stroke={wholeSigma ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.10)'}
+                  stroke-width="1"
+                  stroke-dasharray={wholeSigma ? '2 3' : '1 4'}/>
+          {/if}
         {/if}
-        {#if wholeSigma && !isCenter}
-          <!-- Horizontal price label at the bottom — one per whole-σ tick.
-               Rounded to integer, formatted with en-IN grouping so "22,000"
-               reads naturally (TradingView / IBKR / Sensibull convention).
-               No stroke / paint-order — labels sit below the plot baseline
-               on a clean background and don't overlap chart content. -->
+        {#if isMilestone}
+          <!-- Stacked label: colored σ-tag (top) + price (bottom). The
+               σ-tag inherits the milestone color so each band reads as a
+               single visual unit. -->
+          <text x={xt.x} y={height - PAD_B + 12}
+                text-anchor="middle"
+                fill={mColor}
+                font-size="10" font-weight="700"
+                font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+            {xt.label}
+          </text>
+          <text x={xt.x} y={height - PAD_B + 25}
+                text-anchor="middle"
+                fill={mColor}
+                font-size="10" font-weight="600"
+                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                style="font-variant-numeric: tabular-nums">
+            {Math.round(xt.s).toLocaleString('en-IN')}
+          </text>
+        {:else if wholeSigma && !isCenter}
+          <!-- Non-milestone whole-σ price label (only renders when
+               spanSigmas > 2 so we'd see ±3σ etc; typical default
+               spanSigmas=2.5 means every whole-σ is a milestone). -->
           <text x={xt.x} y={height - PAD_B + 14}
                 text-anchor="middle"
                 fill="#c8d8f0"
-                font-size="11"
-                font-weight="600"
+                font-size="11" font-weight="600"
                 font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
                 style="font-variant-numeric: tabular-nums">
             {Math.round(xt.s).toLocaleString('en-IN')}

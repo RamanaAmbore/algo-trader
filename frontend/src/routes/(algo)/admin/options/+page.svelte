@@ -461,6 +461,34 @@
     return Array.from(set).sort();
   });
 
+  /** Display labels for the Underlying picker. MCX commodity roots
+   *  (CRUDEOIL / GOLDM / NATURALGAS / …) don't have a tradeable spot —
+   *  the operator trades the front-month future. Show that contract's
+   *  full symbol (e.g. "CRUDEOIL25JUNFUT") in the dropdown label so the
+   *  picker reads as a concrete instrument instead of a placeholder
+   *  category name. Indices (NIFTY / BANKNIFTY / FINNIFTY) keep the
+   *  bare ticker — that IS the index spot. Same migration the operator
+   *  ran on Pinned watchlist (MCX/CDS root → actual future) for
+   *  consistency across the app.
+   *
+   *  The VALUE stays as the bare root so every downstream filter
+   *  (expiryChoicesForUnderlying, candidatePositions prefix match,
+   *  strategy analytics) continues to match every option / future on
+   *  that root — picking "CRUDEOIL25JUNFUT" still surfaces CRUDEOIL25JUN
+   *  + CRUDEOIL25JUL + CRUDEOIL25AUG option chains under the Expiry
+   *  picker. */
+  const underlyingOptionsForPicker = $derived.by(() => {
+    return underlyingChoicesFromBook.map(u => {
+      if (_MCX_UNDERLYINGS.has(u) && instrumentsReady) {
+        const futs = listFutures(u);
+        if (futs.length > 0) {
+          return { value: u, label: futs[0].s };
+        }
+      }
+      return { value: u, label: u };
+    });
+  });
+
   // Auto-select the first underlying from the loaded book when the
   // page lands without a cached selection. Saves the operator a click;
   // the page is essentially useless without an underlying picked, so
@@ -1933,7 +1961,7 @@
     <label class="field-label" for="opt-und">Underlying</label>
     <Select id="opt-und"
       bind:value={selectedUnderlying}
-      options={underlyingChoicesFromBook.map(u => ({ value: u, label: u }))}
+      options={underlyingOptionsForPicker}
       placeholder={underlyingChoicesFromBook.length ? 'Pick underlying…' : 'No options in book'} />
   </div>
   <div class="opt-field">
