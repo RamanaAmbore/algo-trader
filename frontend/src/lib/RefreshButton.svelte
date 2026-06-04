@@ -31,7 +31,8 @@
 -->
 <script>
   import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz } from '$lib/stores';
-  import { onMount } from 'svelte';
+  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { onMount, onDestroy } from 'svelte';
 
   /**
    * @typedef {object} Props
@@ -45,6 +46,40 @@
   // Ensure the global connection-status poller is running. Idempotent —
   // safe to call from every mounted RefreshButton.
   onMount(() => { startConnStatusPoller(); });
+
+  // Market-state tick — recomputes isNseOpen / isMcxOpen every 30 s so
+  // the button's palette tracks session boundaries automatically. The
+  // three buckets the operator cares about: both open (full hours),
+  // only MCX open (commodity-only window), market closed.
+  let _nseOpen = $state(isNseOpen());
+  let _mcxOpen = $state(isMcxOpen());
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let _mktTimer = null;
+  onMount(() => {
+    const tick = () => {
+      _nseOpen = isNseOpen();
+      _mcxOpen = isMcxOpen();
+    };
+    _mktTimer = setInterval(tick, 30_000);
+  });
+  onDestroy(() => { if (_mktTimer) clearInterval(_mktTimer); });
+
+  // Palette class — drives the three-bucket colour swap on the button.
+  //   rf-mkt-both    → emerald  (Equity + MCX both open)
+  //   rf-mkt-mcx     → amber    (only MCX, e.g. 15:30–23:30 IST)
+  //   rf-mkt-closed  → slate    (everything closed)
+  const _mktClass = $derived(
+    _nseOpen && _mcxOpen ? 'rf-mkt-both'
+    : _mcxOpen            ? 'rf-mkt-mcx'
+    :                       'rf-mkt-closed'
+  );
+  // Tooltip suffix surfaces which segments are open so the colour
+  // change is self-explanatory the first time the operator sees it.
+  const _mktTooltip = $derived(
+    _nseOpen && _mcxOpen ? 'Equity + MCX open'
+    : _mcxOpen            ? 'MCX open · Equity closed'
+    :                       'Market closed'
+  );
 
   // Watch the `loading` prop for true → false transitions and stamp
   // `lastRefreshAt`. Catches BOTH manual clicks (operator hits the
@@ -121,13 +156,14 @@
     if (_lastTs) {
       lines.push(`Last refreshed: ${formatDualTz(new Date(_lastTs))}`);
     }
+    lines.push(`Market: ${_mktTooltip}`);
     return lines.join('\n');
   });
 </script>
 
 <button
   type="button"
-  class="rf-btn"
+  class="rf-btn {_mktClass}"
   class:rf-spinning={loading}
   onclick={(e) => { e.stopPropagation(); if (!loading) onClick?.(); }}
   disabled={loading}
@@ -161,15 +197,16 @@
 </button>
 
 <style>
-  /* Emerald (emerald-400 #34d399) palette — clearly distinct from the
-     chart-icon cyan-400 (#22d3ee) and the rest of the page-header
-     trio (Order amber, Chart cyan, Log violet). Green semantically
-     reads as "refresh / fetch / go" — the same convention IBKR TWS
-     and NinjaTrader use for their reload affordance. Earlier sky-blue
-     attempt was still too close to cyan; emerald sits in its own hue
-     family so the operator never confuses the two icons.
-     Card-control trio (Collapse / Fullscreen / DefaultSize) keeps cyan
-     since they're scoped to card headers, not the page-header strip. */
+  /* Base button shape — palette comes from the .rf-mkt-* state class
+     so the icon's hue tracks the live market session boundaries.
+     Operator request: "give different color to refresh button based
+     on if the market is open or not. it should use one color when
+     equity and mcx open, only mcx open, market is closed."
+       rf-mkt-both    → emerald  (Equity + MCX both open)
+       rf-mkt-mcx     → amber    (only MCX, e.g. 15:30–23:30 IST)
+       rf-mkt-closed  → slate    (everything closed)
+     Card-control trio (Collapse / Fullscreen / DefaultSize) keeps
+     cyan since they're card-scoped, not market-state indicators. */
   .rf-btn {
     position: relative;
     display: inline-flex;
@@ -179,22 +216,60 @@
     height: 1.6rem;
     padding: 0;
     margin: 0;
-    background: rgba(52, 211, 153, 0.14);
-    border: 1px solid rgba(52, 211, 153, 0.55);
     border-radius: 3px;
-    color: #34d399;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     overflow: visible;
+    /* Defaults overridden by .rf-mkt-* below. */
+    background: rgba(52, 211, 153, 0.14);
+    border: 1px solid rgba(52, 211, 153, 0.55);
+    color: #34d399;
   }
-  .rf-btn:hover:not(:disabled) {
+  /* Both NSE + MCX open — emerald, the "full markets active" tone. */
+  .rf-mkt-both {
+    background: rgba(52, 211, 153, 0.14);
+    border-color: rgba(52, 211, 153, 0.55);
+    color: #34d399;
+  }
+  .rf-mkt-both:hover:not(:disabled) {
     background: rgba(52, 211, 153, 0.26);
     border-color: rgba(52, 211, 153, 0.85);
     color: #6ee7b7;
   }
-  .rf-btn:focus-visible {
+  .rf-mkt-both:focus-visible {
     outline: 2px solid rgba(52, 211, 153, 0.65);
+    outline-offset: 1px;
+  }
+  /* Only MCX — amber (matches the order-icon hue family + signals
+     "commodities only", a partial-session state). */
+  .rf-mkt-mcx {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+  }
+  .rf-mkt-mcx:hover:not(:disabled) {
+    background: rgba(251, 191, 36, 0.28);
+    border-color: rgba(251, 191, 36, 0.85);
+    color: #fcd34d;
+  }
+  .rf-mkt-mcx:focus-visible {
+    outline: 2px solid rgba(251, 191, 36, 0.65);
+    outline-offset: 1px;
+  }
+  /* Market closed — slate, the canonical "inactive / no signal" tone. */
+  .rf-mkt-closed {
+    background: rgba(126, 151, 184, 0.14);
+    border-color: rgba(126, 151, 184, 0.55);
+    color: #94a3b8;
+  }
+  .rf-mkt-closed:hover:not(:disabled) {
+    background: rgba(126, 151, 184, 0.26);
+    border-color: rgba(126, 151, 184, 0.85);
+    color: #c8d8f0;
+  }
+  .rf-mkt-closed:focus-visible {
+    outline: 2px solid rgba(126, 151, 184, 0.65);
     outline-offset: 1px;
   }
   .rf-btn:disabled {
