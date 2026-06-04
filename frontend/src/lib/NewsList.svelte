@@ -12,13 +12,22 @@
    *   showRefreshTime?: boolean,
    *   pollMs?: number,
    *   emptyMessage?: string,
+   *   refreshKey?: number,
    *   columns?: number,
    * }} */
   let {
     limit           = 5,
     showRefreshTime = true,
-    pollMs          = 5 * 60 * 1000,
+    /** Default 2 min so operator-visible News feeds (Activity modal,
+     *  LogPanel News tab) refresh every couple of minutes instead of
+     *  staring at the same headlines for 10 min. Backend cache (60 s)
+     *  caps actual RSS fan-out so polling cheaper-than-cache is safe. */
+    pollMs          = 2 * 60 * 1000,
     emptyMessage    = '',
+    /** When the caller bumps this number, the list re-fetches. Lets the
+     *  page-header Refresh button drive a manual reload without waiting
+     *  for the poll interval. */
+    refreshKey      = 0,
     // Magazine-style multi-column flow on wide viewports. Default 1.
     // Set to 2 (or more) and the list will reflow into N columns
     // when the viewport allows; collapses back to 1 below 900 px.
@@ -56,6 +65,15 @@
     _teardown = visibleInterval(_load, pollMs);
   });
   onDestroy(() => { _teardown?.(); });
+
+  // refreshKey-driven re-fetch — skip the very first run so we don't
+  // double-fetch on mount (onMount already calls _load once).
+  let _firstRefreshKey = true;
+  $effect(() => {
+    void refreshKey;
+    if (_firstRefreshKey) { _firstRefreshKey = false; return; }
+    _load();
+  });
 </script>
 
 {#if _news.length > 0}

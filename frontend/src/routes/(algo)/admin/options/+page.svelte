@@ -2171,6 +2171,7 @@
         dte={strategy.days_to_expiry}
         ivProxy={strategy.iv_proxy}
         legCount={strategy.legs.length}
+        legs={strategy.legs}
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         loading={loading}
@@ -2651,7 +2652,7 @@
   .opt-picker {
     display: flex;
     flex-wrap: nowrap;
-    gap: 0.4rem 0.4rem;
+    gap: 0.25rem 0.25rem;
     align-items: flex-end;
   }
 
@@ -2689,7 +2690,11 @@
      flex-grow on any single field, empty space pushed to the right.
      Mobile retains all-grow so content-width pickers don't wrap
      awkwardly in a narrow column. */
-  .opt-field-grow { flex: 0 0 auto; min-width: 8rem; }
+  /* Account column: no outer min-width reservation. AccountMultiSelect
+     owns its own width clamp (5.6–8.8rem desktop) so the column hugs
+     the AMS trigger — no empty padding to the right of "All accounts"
+     that would read as a gap between Account and Underlying. */
+  .opt-field-grow { flex: 0 0 auto; }
   @media (max-width: 899px) {
     .opt-field { flex: 1 1 0; }
   }

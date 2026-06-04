@@ -29,6 +29,7 @@
    *   loading?:     boolean,
    *   prevClose?:   number|null,
    *   multiExpiry?: boolean,
+   *   legs?:        any[],
    * }} */
   let {
     payoff = [],
@@ -59,6 +60,10 @@
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
     multiExpiry = false,
+    // Per-leg analytics from the strategy response — drives the
+    // top-right Greeks-by-leg overlay. Empty / undefined → overlay
+    // hides; chart stays single-pane (existing behaviour).
+    legs       = /** @type {any[]} */ ([]),
   } = $props();
 
   // Day's direction — flag the SPOT readout green when trading above
@@ -318,6 +323,40 @@
   }
   function fmtSpot(/** @type {number} */ v) {
     return `₹${priceFmt(v)}`;
+  }
+
+  // Compact per-leg label for the top-right overlay. Trims the bare
+  // underlying root so the row reads as e.g. "22000CE" / "JUNFUT"
+  // rather than the full "NIFTY25APR22000CE" — the underlying is
+  // already implied by the chart's context (single-underlying basket).
+  // For tradingsymbols that don't match the F&O patterns we keep the
+  // raw symbol so the operator can still identify the leg.
+  function _legShortLabel(/** @type {string|undefined|null} */ sym) {
+    if (!sym) return '—';
+    const s = String(sym).toUpperCase();
+    // Option suffix — strike + CE/PE pair sits at the tail. Walk back
+    // until we hit the strike's leading digit, then drop everything
+    // before it so e.g. "NIFTY25APR22000CE" → "22000CE".
+    const optMatch = s.match(/(\d+)(CE|PE)$/);
+    if (optMatch) return optMatch[1] + optMatch[2];
+    // Future — keep the YY+MMM+FUT tail (e.g. "25JUNFUT") so the
+    // operator can tell weekly / monthly futures apart at a glance.
+    const futMatch = s.match(/(\d{2}[A-Z]{3}FUT)$/);
+    if (futMatch) return futMatch[1];
+    return s;
+  }
+  // Greeks formatter — compact integer-with-thousands for theta / vega
+  // / rho (₹ amounts) and 2-decimal for delta / gamma (per-share
+  // ratios). Numbers >= 1000 collapse to "12.3k" so the column stays
+  // narrow even on book-sized positions.
+  function _fmtGreek(/** @type {number|null|undefined} */ v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    const abs = Math.abs(n);
+    if (abs >= 1000)     return (n / 1000).toFixed(1) + 'k';
+    if (abs >= 10)       return n.toFixed(0);
+    if (abs >= 1)        return n.toFixed(1);
+    return n.toFixed(2);
   }
 
   // After dismiss, suppress hover for a short window so the cursor's
@@ -643,6 +682,44 @@
         </div>
       {/if}
     </div>
+
+    <!-- Top-right: per-leg Greeks overlay. One row per leg in the
+         strategy's sequence (basket order), each carrying signed-qty +
+         short symbol (strike+type or last-segment of the tradingsymbol)
+         + Δ Γ Θ V ρ in compact columns. Mirrors the existing
+         .payoff-stats overlay's panel chrome (navy bg, sky-blue border,
+         monospaced) so the chart reads as two corner-anchored stat
+         blocks. Hidden when legs is empty / undefined (single-leg
+         flows that never populate the array, or pre-strategy state). -->
+    {#if legs && legs.length > 0}
+      <div class="payoff-legs">
+        <div class="pl-head">
+          <span class="pl-h-qty">QTY</span>
+          <span class="pl-h-sym">LEG</span>
+          <span class="pl-h-g" title="Delta — directional exposure per ₹1 move">Δ</span>
+          <span class="pl-h-g" title="Gamma — rate of change of Δ">Γ</span>
+          <span class="pl-h-g" title="Theta — ₹ decay per day">Θ</span>
+          <span class="pl-h-g" title="Vega — ₹ per 1% IV move">𝒱</span>
+          <span class="pl-h-g" title="Rho — ₹ per 1% rate move">ρ</span>
+        </div>
+        {#each legs as lg, i (lg.symbol + '|' + i)}
+          {@const g = lg?.greeks ?? {}}
+          {@const sqty = Number(lg?.qty ?? 0)}
+          {@const sLabel = _legShortLabel(lg?.symbol)}
+          <div class="pl-row" title={lg?.symbol || ''}>
+            <span class={'pl-qty ' + (sqty > 0 ? 'pl-qty-long' : sqty < 0 ? 'pl-qty-short' : 'pl-qty-flat')}>
+              {sqty > 0 ? '+' : ''}{sqty}
+            </span>
+            <span class="pl-sym">{sLabel}</span>
+            <span class="pl-g">{_fmtGreek(g.delta)}</span>
+            <span class="pl-g">{_fmtGreek(g.gamma)}</span>
+            <span class={'pl-g ' + (Number(g.theta) < 0 ? 'pl-g-neg' : 'pl-g-pos')}>{_fmtGreek(g.theta)}</span>
+            <span class={'pl-g ' + (Number(g.vega)  < 0 ? 'pl-g-neg' : '')}>{_fmtGreek(g.vega)}</span>
+            <span class="pl-g">{_fmtGreek(g.rho)}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
     <!--
       SVG stack wrapper — both SVGs sit absolute inside a
       relatively-positioned box whose dimensions are pinned to
@@ -1173,6 +1250,91 @@
     display: contents;
     cursor: help;
   }
+
+  /* Top-right per-leg Greeks overlay. Same panel chrome as
+     .payoff-stats but anchored right; 7-column grid: QTY · LEG · Δ Γ Θ
+     V ρ. Pointer-events disabled so it never blocks SVG hover / zoom /
+     pan. Numbers right-aligned with tabular-nums so the column stays
+     gridded as values change tick-to-tick. */
+  .payoff-legs {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.6rem;
+    display: grid;
+    grid-template-columns: max-content max-content
+                           max-content max-content max-content
+                           max-content max-content;
+    column-gap: 0.4rem;
+    row-gap: 0.08rem;
+    padding: 0.26rem 0.48rem;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(125,211,252,0.20);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.6rem;
+    line-height: 1.25;
+    z-index: 3;
+    pointer-events: none;
+    max-width: 22rem;
+  }
+  .pl-head {
+    display: contents;
+  }
+  .pl-row {
+    display: contents;
+    cursor: help;
+    pointer-events: auto;
+  }
+  .pl-h-qty, .pl-h-sym, .pl-h-g {
+    color: #fbbf24;
+    letter-spacing: 0.06em;
+    font-size: 0.55rem;
+    font-weight: 700;
+    opacity: 0.85;
+    text-align: right;
+    padding-bottom: 0.1rem;
+    border-bottom: 1px solid rgba(125,211,252,0.18);
+  }
+  .pl-h-qty { text-align: right; }
+  .pl-h-sym { text-align: left; }
+  .pl-qty {
+    text-align: right;
+    font-weight: 700;
+    font-size: 0.6rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .pl-qty-long  { color: #4ade80; }
+  .pl-qty-short { color: #f87171; }
+  .pl-qty-flat  { color: #c8d8f0; }
+  .pl-sym {
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.6rem;
+    color: #7dd3fc;
+    letter-spacing: 0.02em;
+  }
+  .pl-g {
+    text-align: right;
+    font-weight: 600;
+    font-size: 0.58rem;
+    color: #c8d8f0;
+    font-variant-numeric: tabular-nums;
+  }
+  .pl-g-pos { color: #4ade80; }
+  .pl-g-neg { color: #f87171; }
+
+  /* Fullscreen — bump the per-leg overlay font in lockstep with the
+     stat overlay so both stay readable on a maximised chart. */
+  :global(.fs-card-on) .payoff-legs {
+    font-size: 0.78rem;
+    column-gap: 0.65rem;
+  }
+  :global(.fs-card-on) .pl-h-qty,
+  :global(.fs-card-on) .pl-h-sym,
+  :global(.fs-card-on) .pl-h-g { font-size: 0.66rem; }
+  :global(.fs-card-on) .pl-qty,
+  :global(.fs-card-on) .pl-sym { font-size: 0.74rem; }
+  :global(.fs-card-on) .pl-g   { font-size: 0.7rem; }
   .ps-k {
     /* Amber label tier — bumped to 0.6rem (was 9px literal) so the
        overlay text is at the ~10px legibility floor on default DPI. */

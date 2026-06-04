@@ -41,7 +41,10 @@ from backend.shared.helpers.utils import is_enabled
 
 logger = get_logger(__name__)
 
-_CACHE_TTL = 600  # 10-minute route-level coalescing; the DB holds the accumulator
+_CACHE_TTL = 60   # 1-minute route-level coalescing — operator-visible News feeds
+                   # poll every 2 min, so a 1-min cache shields the upstream
+                   # RSS hosts from N concurrent operators while still surfacing
+                   # new headlines within ~3 min of publication.
 
 # Curated Indian financial RSS feeds — market coverage only.
 _FEEDS = [

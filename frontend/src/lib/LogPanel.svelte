@@ -549,7 +549,7 @@
     <NewsList
       limit={50}
       showRefreshTime={true}
-      pollMs={10 * 60 * 1000}
+      pollMs={2 * 60 * 1000}
       emptyMessage="No headlines."
     />
   </div>
