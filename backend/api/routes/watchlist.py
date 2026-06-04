@@ -1062,22 +1062,29 @@ class WatchlistController(Controller):
         self, wl_id: int, item_id: int, data: ReorderItemRequest, request: Request,
     ) -> WatchlistItemInfo:
         username = _actor_sub(request)
+        # Same synthetic-id strip as remove_item — keeps alias edits
+        # working on the expanded MCX / CDS futures.
+        real_item_id = item_id // 1000 if item_id >= 1000 else item_id
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
-            # Confirm the item belongs to a watchlist the user owns OR
-            # the shared global one. Join the parent so we can check
-            # is_global for write-gating without a second query.
-            row = await session.execute(
-                select(WatchlistItem, Watchlist).join(Watchlist).where(
-                    WatchlistItem.id == item_id,
+            # Two-step fetch — see remove_item for why the auto-joined
+            # query mis-filtered the shared global Pinned (user_id is
+            # NULL on global rows).
+            it = (await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.id == real_item_id,
                     WatchlistItem.watchlist_id == wl_id,
-                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
-            )
-            pair = row.one_or_none()
-            if not pair:
+            )).scalar_one_or_none()
+            if not it:
                 raise HTTPException(status_code=404, detail="Item not found")
-            it, wl = pair
+            wl = (await session.execute(
+                select(Watchlist).where(Watchlist.id == wl_id)
+            )).scalar_one_or_none()
+            if not wl:
+                raise HTTPException(status_code=404, detail="Watchlist not found")
+            if wl.user_id != user_id and not wl.is_global:
+                raise HTTPException(status_code=404, detail="Item not found")
             if wl.is_global and not _is_designated_role(request):
                 raise HTTPException(
                     status_code=403,
@@ -1154,22 +1161,32 @@ class WatchlistController(Controller):
         # expanded into actual future contracts at API time, each
         # expansion gets id = parent_id * 1000 + i. Strip that back so
         # delete on the synthesised row targets the underlying real
-        # row. id < 1000 is always real (DB rows never hit that with
-        # the seed-load order).
+        # row. id < 1000 is always real.
         real_item_id = item_id // 1000 if item_id >= 1000 else item_id
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
-            row = await session.execute(
-                select(WatchlistItem, Watchlist).join(Watchlist).where(
+            # Two-step query — explicit row fetch avoids the implicit
+            # auto-join SQLAlchemy was building without a configured
+            # relationship between WatchlistItem and Watchlist, which
+            # was returning zero rows on the global Pinned (user_id is
+            # NULL on global). Pull the item + the watchlist
+            # independently and combine in Python.
+            it = (await session.execute(
+                select(WatchlistItem).where(
                     WatchlistItem.id == real_item_id,
                     WatchlistItem.watchlist_id == wl_id,
-                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
-            )
-            pair = row.one_or_none()
-            if not pair:
+            )).scalar_one_or_none()
+            if not it:
                 raise HTTPException(status_code=404, detail="Item not found")
-            it, wl = pair
+            wl = (await session.execute(
+                select(Watchlist).where(Watchlist.id == wl_id)
+            )).scalar_one_or_none()
+            if not wl:
+                raise HTTPException(status_code=404, detail="Watchlist not found")
+            # User must own the watchlist OR it's the shared global.
+            if wl.user_id != user_id and not wl.is_global:
+                raise HTTPException(status_code=404, detail="Item not found")
             if wl.is_global and not _is_designated_role(request):
                 raise HTTPException(
                     status_code=403,
