@@ -2129,15 +2129,21 @@
         <span class="opt-section-tag tag-short" title="Max loss">
           MAX L {fmtUnbounded(strategy.risk.max_loss, false)}
         </span>
-        <!-- Greeks chips — Δ Θ 𝒱 surfaced inline in the payoff header
-             so the operator sees position-level direction / decay /
-             volatility exposure without scrolling to the Greeks card
-             below. Same `.opt-section-tag` chip chrome; greek-tagged
-             variant uses a sky-cyan tint to read as distinct from
-             the amber Net / Max chips. -->
+        <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
+             header so the operator sees position-level direction /
+             convexity / decay / volatility / rate exposure without
+             scrolling to the Greeks card below. Same `.opt-section-tag`
+             chip chrome; greek-tagged variant uses a sky-cyan tint to
+             read as distinct from the amber Net / Max chips. Sign-tinted
+             variants on theta / vega / rho since those flip sign with
+             credit vs debit structures. -->
         <span class="opt-section-tag tag-greek"
           title="Delta — net directional exposure (₹ per ₹1 spot move)">
           Δ {pctFmt(strategy.aggregate_greeks.delta)}
+        </span>
+        <span class="opt-section-tag tag-greek"
+          title="Gamma — convexity, rate of change of Δ as spot moves">
+          Γ {pctFmt(strategy.aggregate_greeks.gamma)}
         </span>
         <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.theta < 0 ? 'tag-greek-neg' : ''}"
           title="Theta — daily decay (₹/day, positive when net short premium)">
@@ -2146,6 +2152,10 @@
         <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.vega < 0 ? 'tag-greek-neg' : ''}"
           title="Vega — P&L per 1% IV move (positive = long volatility)">
           𝒱 {pctFmt(strategy.aggregate_greeks.vega)}
+        </span>
+        <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.rho < 0 ? 'tag-greek-neg' : ''}"
+          title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
+          ρ {pctFmt(strategy.aggregate_greeks.rho)}
         </span>
         {#if _fsPayoff}
           <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
@@ -2171,7 +2181,6 @@
         dte={strategy.days_to_expiry}
         ivProxy={strategy.iv_proxy}
         legCount={strategy.legs.length}
-        legs={strategy.legs}
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         loading={loading}
@@ -2652,8 +2661,22 @@
   .opt-picker {
     display: flex;
     flex-wrap: nowrap;
-    gap: 0.25rem 0.25rem;
+    /* Operator: "the space between account and underlying is not
+       removed". Inter-field gap reduced to 1px so the fields read
+       as one tight strip with just a hairline divider. */
+    gap: 1px;
     align-items: flex-end;
+  }
+  /* Within the picker, shrink the AccountMultiSelect to exactly its
+     content width — the shared component's 5.6–8.8rem clamp was
+     adding 2–3rem of empty padding inside the trigger (between the
+     "All accounts" label and the caret) that read as "space between
+     Account and Underlying". `:global` reaches through the shared
+     `.ams` class scope. */
+  .opt-picker :global(.ams) {
+    min-width: 0;
+    max-width: none;
+    width: max-content;
   }
 
   /* SIMULATOR badge — sim-active context surfaces as a pink pill
