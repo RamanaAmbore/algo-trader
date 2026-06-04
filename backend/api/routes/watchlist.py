@@ -361,19 +361,18 @@ async def _resolve_user_id(session, username: str) -> int:
 
 
 async def _ensure_default_watchlists(session, user_id: int) -> None:
-    """Idempotent: create the single 'Default' (pinned) watchlist for
-    this user if they don't already have any.
+    """Idempotent: create the single 'Pinned' watchlist for this user
+    if they don't already have any.
 
-    Operator request: "there is not market watchlist. PINNED is the
-    watchlist always present. Then any watchlist added by the user
-    should be shown a tab with PINNED." So we only seed the one Default
-    list now. The legacy Markets seed has been removed — existing users
-    who already have a Markets row keep it as-is (the operator can
-    delete it via the UI; we never silently remove a watchlist row)."""
-    # One-off rename: an early seed shipped "NIFTY SMALLCAP 100" but
-    # Kite's quote key is the abbreviated "NIFTY SMLCAP 100". Migrate
-    # any rows that still carry the wrong name. Idempotent.
+    Operator request: "PINNED is the watchlist always present. Then any
+    watchlist added by the user should be shown a tab with PINNED." So
+    we only seed ONE list called 'Pinned' and mark it is_default +
+    is_pinned. Any existing 'Default' row from earlier seeders is
+    silently renamed in-band so the Add-popup dropdown surfaces the
+    operator's vocabulary."""
     from sqlalchemy import update
+    # One-off rename: an early seed shipped "NIFTY SMALLCAP 100" but
+    # Kite's quote key is the abbreviated "NIFTY SMLCAP 100".
     await session.execute(
         update(WatchlistItem)
         .where(
@@ -381,6 +380,14 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
             WatchlistItem.exchange == "NSE",
         )
         .values(tradingsymbol="NIFTY SMLCAP 100")
+    )
+    # Rename legacy "Default" rows owned by this user → "Pinned" so the
+    # operator sees their vocabulary in the Add-popup dropdown. Idempotent
+    # — skips users who already renamed via the UI.
+    await session.execute(
+        update(Watchlist)
+        .where(Watchlist.user_id == user_id, Watchlist.name == "Default")
+        .values(name="Pinned")
     )
     await session.commit()
 
@@ -392,14 +399,14 @@ async def _ensure_default_watchlists(session, user_id: int) -> None:
         # User already has at least one list — nothing to seed.
         return
     now = datetime.now(timezone.utc)
-    default_list = Watchlist(
-        user_id=user_id, name="Default", sort_order=0,
+    pinned_list = Watchlist(
+        user_id=user_id, name="Pinned", sort_order=0,
         is_default=True, is_pinned=True,
         created_at=now, updated_at=now,
     )
-    session.add(default_list)
+    session.add(pinned_list)
     await session.commit()
-    logger.info(f"Watchlist: seeded Default (pinned) for user_id={user_id}")
+    logger.info(f"Watchlist: seeded Pinned for user_id={user_id}")
 
 
 def _wl_info(wl: Watchlist, item_count: int) -> WatchlistInfo:

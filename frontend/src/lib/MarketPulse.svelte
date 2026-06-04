@@ -3315,7 +3315,7 @@
     // Left-column buckets (monitoring views — leftColDefs).
     if (gridPinnedEl) {
       gridPinned = makeBucketGrid(gridPinnedEl, leftColDefs,
-        'Pinned watchlist is empty — add a symbol to Default or Markets.');
+        'Pinned watchlist is empty — add a symbol via the + button.');
       gridPinnedReady = true;
     }
     if (gridWatchEl) {
