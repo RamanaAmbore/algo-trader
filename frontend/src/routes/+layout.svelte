@@ -326,15 +326,82 @@
     }
   }
 
+  // ── TV-mode key capture via hidden focused input ─────────────────
+  // Fire Stick Silk / Android TV Chrome consume D-pad keys at the OS
+  // level UNLESS an input/textarea is focused. Injecting an always-
+  // focused hidden input forces the browser into keyboard-input mode
+  // — arrow / page / home / end keys now fire keydown ON THE INPUT
+  // rather than being eaten by spatial navigation. We catch them on
+  // the input, preventDefault to suppress caret movement, then route
+  // through the scroll handler.
+  /** @type {HTMLInputElement | null} */
+  let _tvSink = null;
+  function _ensureTvSink() {
+    if (typeof document === 'undefined' || _tvSink) return _tvSink;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.id = '_tvkeysink';
+    inp.setAttribute('aria-hidden', 'true');
+    inp.setAttribute('tabindex', '-1');
+    inp.autocomplete = 'off';
+    inp.style.cssText = [
+      'position:fixed', 'left:0', 'top:0',
+      'width:1px', 'height:1px',
+      'opacity:0', 'background:transparent',
+      'border:none', 'outline:none',
+      'pointer-events:none', 'z-index:-1',
+      'font-size:16px',  // ≥ 16px so iOS doesn't auto-zoom
+    ].join(';');
+    document.body.appendChild(inp);
+    inp.addEventListener('keydown', (e) => {
+      _dbgOnly(e, 'sink-down');
+      if (_ALL_KEYS.has(e.key)) {
+        e.preventDefault();
+        onKey(e);
+      }
+    }, { capture: true, passive: false });
+    // Keep focus on the sink. When the operator clicks anywhere
+    // focusable, the sink loses focus — restore it after a tick so
+    // arrow keys keep flowing. Tab moves to the next real focusable,
+    // which is fine (we put the sink first; Shift-Tab can reach it).
+    inp.addEventListener('blur', () => {
+      // Only re-grab focus if the new focus is on body or null
+      // (nothing meaningful focused). Otherwise leave the operator
+      // typing in their input alone.
+      setTimeout(() => {
+        const ae = document.activeElement;
+        if (!ae || ae === document.body) inp.focus({ preventScroll: true });
+      }, 0);
+    });
+    inp.focus({ preventScroll: true });
+    _tvSink = inp;
+    return inp;
+  }
+
+  // Refocus the sink whenever the page regains focus (operator
+  // returns from a different app), navigates, etc.
+  function _refocusSink() {
+    if (!_tvSink) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
+    _tvSink.focus({ preventScroll: true });
+  }
+
   onMount(() => {
     _ensureDbg();
+    _ensureTvSink();
     _installHandlers();
     _assignFocusableScrollables();
-    _scrollScanTimer = setInterval(_assignFocusableScrollables, 2000);
+    _scrollScanTimer = setInterval(() => {
+      _assignFocusableScrollables();
+      _refocusSink();
+    }, 2000);
+    window.addEventListener('focus', _refocusSink);
   });
   onDestroy(() => {
     _removeHandlers();
     if (_scrollScanTimer) clearInterval(_scrollScanTimer);
+    window.removeEventListener('focus', _refocusSink);
   });
 </script>
 
