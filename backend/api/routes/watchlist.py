@@ -790,7 +790,16 @@ class WatchlistController(Controller):
                     status_code=403,
                     detail="Shared Pinned watchlist cannot be deleted",
                 )
-            # Cascade delete via FK constraint on watchlist_items.
+            # Explicitly nuke child items first, then the watchlist.
+            # SQLAlchemy without a configured relationship() doesn't
+            # always honour the DB-level CASCADE on the FK — operator
+            # reported "deleting test is not working. I should be able
+            # to delete the watchlist test even if it has a symbol".
+            from sqlalchemy import delete as sa_delete
+            await session.execute(
+                sa_delete(WatchlistItem)
+                .where(WatchlistItem.watchlist_id == wl_id)
+            )
             await session.delete(wl)
             await session.commit()
         logger.info(f"Watchlist: deleted id={wl_id} by {username!r}")
