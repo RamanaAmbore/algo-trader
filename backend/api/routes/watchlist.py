@@ -22,7 +22,7 @@ from typing import Optional
 import msgspec
 from litestar import Controller, Request, delete, get, patch, post
 from litestar.exceptions import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from backend.api.auth_guard import jwt_guard, auth_or_demo_guard
 # NOTE: MARKETS_DEFAULT is still used by the anonymous-demo path inside
@@ -50,6 +50,9 @@ class WatchlistItemInfo(msgspec.Struct):
     exchange: str
     sort_order: int
     added_at: str
+    # Optional operator-supplied display name. Frontend shows alias when
+    # present and falls back to tradingsymbol.
+    alias: Optional[str] = None
 
 
 class WatchlistInfo(msgspec.Struct):
@@ -61,6 +64,10 @@ class WatchlistInfo(msgspec.Struct):
     item_count: int
     created_at: str
     updated_at: str
+    # is_global=true rows are shared across every user; only admin /
+    # designated roles can mutate them. Frontend hides Rename / Delete
+    # / item-write affordances on global rows for non-admin users.
+    is_global: bool = False
 
 
 class WatchlistFull(msgspec.Struct):
@@ -73,6 +80,7 @@ class WatchlistFull(msgspec.Struct):
     created_at: str
     updated_at: str
     items: list[WatchlistItemInfo]
+    is_global: bool = False
 
 
 class CreateWatchlistRequest(msgspec.Struct):
@@ -90,10 +98,16 @@ class AddItemRequest(msgspec.Struct):
     tradingsymbol: str
     exchange: str
     sort_order: Optional[int] = None
+    # Optional operator-supplied display name for the row. Empty/None
+    # leaves alias unset; the grid then shows the raw tradingsymbol.
+    alias: Optional[str] = None
 
 
 class ReorderItemRequest(msgspec.Struct):
-    sort_order: int
+    # PATCH on an item — operator can set sort_order, alias, or both.
+    # Either field may be omitted.
+    sort_order: Optional[int] = None
+    alias: Optional[str] = None
 
 
 class WatchlistQuote(msgspec.Struct):
@@ -360,59 +374,95 @@ async def _resolve_user_id(session, username: str) -> int:
     return int(uid)
 
 
+async def seed_global_pinned() -> None:
+    """Idempotent: ensure exactly one global 'Pinned' watchlist exists +
+    consolidate any legacy per-user Pinned/Default rows into it.
+
+    Called from init_db on every startup. Operator-created (non-pinned)
+    rows are untouched. Global Pinned rows have user_id=NULL.
+    """
+    async with async_session() as session:
+        # 1. Pull every Pinned-style legacy row (user-owned 'Pinned' or
+        #    'Default' with is_pinned=True). These will be migrated into
+        #    the global row + then deleted.
+        legacy_rows = (await session.execute(
+            select(Watchlist)
+            .where(
+                Watchlist.is_global == False,
+                Watchlist.is_pinned == True,
+                Watchlist.name.in_(["Pinned", "Default"]),
+            )
+        )).scalars().all()
+        legacy_ids = [r.id for r in legacy_rows]
+
+        # 2. Find-or-create the single global Pinned row.
+        global_row = (await session.execute(
+            select(Watchlist).where(Watchlist.is_global == True).limit(1)
+        )).scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if global_row is None:
+            global_row = Watchlist(
+                user_id=None, name="Pinned", sort_order=0,
+                is_default=True, is_pinned=True, is_global=True,
+                created_at=now, updated_at=now,
+            )
+            session.add(global_row)
+            await session.flush()
+            logger.info("Watchlist: seeded global Pinned (id=%s)", global_row.id)
+
+        # 3. Migrate legacy items in — dedupe on (tradingsymbol, exchange).
+        if legacy_ids:
+            existing_pairs = {(r.tradingsymbol.upper(), r.exchange.upper())
+                              for r in (await session.execute(
+                                  select(WatchlistItem)
+                                  .where(WatchlistItem.watchlist_id == global_row.id)
+                              )).scalars().all()}
+            sort_max = (await session.execute(
+                select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
+                .where(WatchlistItem.watchlist_id == global_row.id)
+            )).scalar() or -1
+            sort_next = int(sort_max) + 1
+            legacy_items = (await session.execute(
+                select(WatchlistItem)
+                .where(WatchlistItem.watchlist_id.in_(legacy_ids))
+            )).scalars().all()
+            for it in legacy_items:
+                key = (it.tradingsymbol.upper(), it.exchange.upper())
+                if key in existing_pairs:
+                    continue
+                existing_pairs.add(key)
+                session.add(WatchlistItem(
+                    watchlist_id=global_row.id,
+                    tradingsymbol=it.tradingsymbol,
+                    exchange=it.exchange,
+                    alias=getattr(it, "alias", None),
+                    sort_order=sort_next,
+                    added_at=it.added_at or now,
+                ))
+                sort_next += 1
+            # 4. Drop the legacy per-user rows (cascade nukes their items).
+            from sqlalchemy import delete as sa_delete
+            await session.execute(
+                sa_delete(Watchlist).where(Watchlist.id.in_(legacy_ids))
+            )
+            logger.info("Watchlist: migrated %d legacy Pinned rows into global",
+                        len(legacy_ids))
+        await session.commit()
+
+
 async def _ensure_default_watchlists(session, user_id: int) -> None:
-    """Idempotent: create the single 'Pinned' watchlist for this user
-    if they don't already have any.
-
-    Operator request: "PINNED is the watchlist always present. Then any
-    watchlist added by the user should be shown a tab with PINNED." So
-    we only seed ONE list called 'Pinned' and mark it is_default +
-    is_pinned. Any existing 'Default' row from earlier seeders is
-    silently renamed in-band so the Add-popup dropdown surfaces the
-    operator's vocabulary."""
-    from sqlalchemy import update
-    # One-off rename: an early seed shipped "NIFTY SMALLCAP 100" but
-    # Kite's quote key is the abbreviated "NIFTY SMLCAP 100".
-    await session.execute(
-        update(WatchlistItem)
-        .where(
-            WatchlistItem.tradingsymbol == "NIFTY SMALLCAP 100",
-            WatchlistItem.exchange == "NSE",
-        )
-        .values(tradingsymbol="NIFTY SMLCAP 100")
-    )
-    # Rename legacy "Default" rows owned by this user → "Pinned" so the
-    # operator sees their vocabulary in the Add-popup dropdown. Idempotent
-    # — skips users who already renamed via the UI.
-    await session.execute(
-        update(Watchlist)
-        .where(Watchlist.user_id == user_id, Watchlist.name == "Default")
-        .values(name="Pinned")
-    )
-    await session.commit()
-
-    row = await session.execute(
-        select(Watchlist.id, Watchlist.name).where(Watchlist.user_id == user_id)
-    )
-    existing = list(row.all())
-    if existing:
-        # User already has at least one list — nothing to seed.
-        return
-    now = datetime.now(timezone.utc)
-    pinned_list = Watchlist(
-        user_id=user_id, name="Pinned", sort_order=0,
-        is_default=True, is_pinned=True,
-        created_at=now, updated_at=now,
-    )
-    session.add(pinned_list)
-    await session.commit()
-    logger.info(f"Watchlist: seeded Pinned for user_id={user_id}")
+    """No-op now that Pinned is a single shared global row (see
+    seed_global_pinned in init_db). Operator-created lists are created
+    on demand via POST /api/watchlist/. Kept as a hook so the legacy
+    callsites still compile."""
+    return
 
 
 def _wl_info(wl: Watchlist, item_count: int) -> WatchlistInfo:
     return WatchlistInfo(
         id=wl.id, name=wl.name, sort_order=wl.sort_order,
         is_default=wl.is_default, is_pinned=wl.is_pinned,
+        is_global=getattr(wl, "is_global", False),
         item_count=item_count,
         created_at=wl.created_at.isoformat() if wl.created_at else "",
         updated_at=wl.updated_at.isoformat() if wl.updated_at else "",
@@ -423,9 +473,18 @@ def _item_info(it: WatchlistItem) -> WatchlistItemInfo:
     return WatchlistItemInfo(
         id=it.id, watchlist_id=it.watchlist_id,
         tradingsymbol=it.tradingsymbol, exchange=it.exchange,
+        alias=getattr(it, "alias", None),
         sort_order=it.sort_order,
         added_at=it.added_at.isoformat() if it.added_at else "",
     )
+
+
+def _is_designated_role(request) -> bool:
+    """True when the JWT payload says role ∈ {admin, designated}.
+    Gates writes on the global Pinned row."""
+    payload = getattr(request.state, "token_payload", {}) or {}
+    role = str(payload.get("role", "")).lower()
+    return role in ("admin", "designated")
 
 
 # ---------------------------------------------------------------------------
@@ -444,10 +503,8 @@ class WatchlistController(Controller):
 
     @get("/", guards=[auth_or_demo_guard])
     async def list_watchlists(self, request: Request) -> list[WatchlistInfo]:
-        """List every watchlist owned by the authenticated user. Auto-
-        seeds Default + Markets on first call for any user that doesn't
-        have any lists yet. Demo visitors get a single synthetic
-        Markets list (read-only, sourced from the canonical seed)."""
+        """List the shared global Pinned + every user-owned watchlist.
+        Demo visitors get the synthetic Markets list (read-only)."""
         if getattr(request.state, "is_demo", False):
             items = _demo_watchlist_items()
             return [WatchlistInfo(
@@ -459,14 +516,21 @@ class WatchlistController(Controller):
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
-            await _ensure_default_watchlists(session, user_id)
+            # Shared global Pinned + per-user lists in a single query.
             result = await session.execute(
-                select(Watchlist).where(Watchlist.user_id == user_id)
-                .order_by(Watchlist.sort_order, Watchlist.id)
+                select(Watchlist)
+                .where(
+                    (Watchlist.is_global == True)
+                    | (Watchlist.user_id == user_id)
+                )
+                .order_by(
+                    # Global Pinned always first (is_global true sorts
+                    # ahead of false by the negated bool trick).
+                    Watchlist.is_global.desc(),
+                    Watchlist.sort_order, Watchlist.id,
+                )
             )
             wls = result.scalars().all()
-            # Single GROUP BY query replaces N per-list COUNT(*) round-trips.
-            from sqlalchemy import func
             count_q = await session.execute(
                 select(WatchlistItem.watchlist_id, func.count(WatchlistItem.id))
                 .where(WatchlistItem.watchlist_id.in_([wl.id for wl in wls]))
@@ -482,10 +546,14 @@ class WatchlistController(Controller):
             raise HTTPException(status_code=422, detail="Name required")
         if len(name) > 64:
             raise HTTPException(status_code=422, detail="Name too long (max 64)")
+        if name.lower() == "pinned":
+            raise HTTPException(
+                status_code=409,
+                detail="'Pinned' is the shared global list — pick another name",
+            )
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
-            await _ensure_default_watchlists(session, user_id)
             # Dedupe on (user_id, name) — defended by the unique index
             # but checking ahead gives a friendlier 409 message.
             existing = await session.execute(
@@ -497,7 +565,6 @@ class WatchlistController(Controller):
                 raise HTTPException(status_code=409, detail=f"Watchlist '{name}' already exists")
             now = datetime.now(timezone.utc)
             # Place new lists after every existing one.
-            from sqlalchemy import func
             max_sort = await session.execute(
                 select(func.coalesce(func.max(Watchlist.sort_order), -1))
                 .where(Watchlist.user_id == user_id)
@@ -526,10 +593,11 @@ class WatchlistController(Controller):
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
-            await _ensure_default_watchlists(session, user_id)
             wl_row = await session.execute(
                 select(Watchlist).where(
-                    Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                    Watchlist.id == wl_id,
+                    # Either the user owns it OR it's the shared global.
+                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
             )
             wl = wl_row.scalar_one_or_none()
@@ -543,6 +611,7 @@ class WatchlistController(Controller):
         return WatchlistFull(
             id=wl.id, name=wl.name, sort_order=wl.sort_order,
             is_default=wl.is_default, is_pinned=wl.is_pinned,
+            is_global=getattr(wl, "is_global", False),
             created_at=wl.created_at.isoformat() if wl.created_at else "",
             updated_at=wl.updated_at.isoformat() if wl.updated_at else "",
             items=[_item_info(it) for it in items],
@@ -557,12 +626,19 @@ class WatchlistController(Controller):
             user_id = await _resolve_user_id(session, username)
             wl_row = await session.execute(
                 select(Watchlist).where(
-                    Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                    Watchlist.id == wl_id,
+                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
             )
             wl = wl_row.scalar_one_or_none()
             if not wl:
                 raise HTTPException(status_code=404, detail="Watchlist not found")
+            # Only admin / designated can mutate the shared global row.
+            if wl.is_global and not _is_designated_role(request):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Pinned watchlist can only be edited by designated partners",
+                )
             if data.name is not None:
                 name = (data.name or "").strip()
                 if not name:
@@ -606,12 +682,20 @@ class WatchlistController(Controller):
             user_id = await _resolve_user_id(session, username)
             wl_row = await session.execute(
                 select(Watchlist).where(
-                    Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                    Watchlist.id == wl_id,
+                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
             )
             wl = wl_row.scalar_one_or_none()
             if not wl:
                 raise HTTPException(status_code=404, detail="Watchlist not found")
+            # Global Pinned is undeletable — would leave every user
+            # without their always-present list.
+            if wl.is_global:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Shared Pinned watchlist cannot be deleted",
+                )
             # Cascade delete via FK constraint on watchlist_items.
             await session.delete(wl)
             await session.commit()
@@ -799,19 +883,28 @@ class WatchlistController(Controller):
         exchange      = (data.exchange      or "").strip().upper()
         if not tradingsymbol or not exchange:
             raise HTTPException(status_code=422, detail="tradingsymbol + exchange required")
+        alias = (data.alias or "").strip() or None
+        if alias and len(alias) > 64:
+            raise HTTPException(status_code=422, detail="Alias too long")
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
             wl_row = await session.execute(
                 select(Watchlist).where(
-                    Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                    Watchlist.id == wl_id,
+                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
             )
             wl = wl_row.scalar_one_or_none()
             if not wl:
                 raise HTTPException(status_code=404, detail="Watchlist not found")
+            # Only admin / designated can add items to the shared global row.
+            if wl.is_global and not _is_designated_role(request):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Pinned watchlist can only be edited by designated partners",
+                )
             # Cap + dedupe checks.
-            from sqlalchemy import func
             count_r = await session.execute(
                 select(func.count(WatchlistItem.id))
                 .where(WatchlistItem.watchlist_id == wl_id)
@@ -843,6 +936,7 @@ class WatchlistController(Controller):
             it = WatchlistItem(
                 watchlist_id=wl_id,
                 tradingsymbol=tradingsymbol, exchange=exchange,
+                alias=alias,
                 sort_order=sort_val, added_at=now,
             )
             session.add(it)
@@ -876,18 +970,33 @@ class WatchlistController(Controller):
         username = _actor_sub(request)
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
-            # Confirm the item belongs to a watchlist the user owns.
+            # Confirm the item belongs to a watchlist the user owns OR
+            # the shared global one. Join the parent so we can check
+            # is_global for write-gating without a second query.
             row = await session.execute(
-                select(WatchlistItem).join(Watchlist).where(
+                select(WatchlistItem, Watchlist).join(Watchlist).where(
                     WatchlistItem.id == item_id,
                     WatchlistItem.watchlist_id == wl_id,
-                    Watchlist.user_id == user_id,
+                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
             )
-            it = row.scalar_one_or_none()
-            if not it:
+            pair = row.one_or_none()
+            if not pair:
                 raise HTTPException(status_code=404, detail="Item not found")
-            it.sort_order = int(data.sort_order)
+            it, wl = pair
+            if wl.is_global and not _is_designated_role(request):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Pinned watchlist can only be edited by designated partners",
+                )
+            if data.sort_order is not None:
+                it.sort_order = int(data.sort_order)
+            if data.alias is not None:
+                # Empty string clears the alias; non-empty sets it.
+                a = data.alias.strip()
+                if a and len(a) > 64:
+                    raise HTTPException(status_code=422, detail="Alias too long")
+                it.alias = a or None
             await session.commit()
         return _item_info(it)
 
@@ -950,15 +1059,21 @@ class WatchlistController(Controller):
         async with async_session() as session:
             user_id = await _resolve_user_id(session, username)
             row = await session.execute(
-                select(WatchlistItem).join(Watchlist).where(
+                select(WatchlistItem, Watchlist).join(Watchlist).where(
                     WatchlistItem.id == item_id,
                     WatchlistItem.watchlist_id == wl_id,
-                    Watchlist.user_id == user_id,
+                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
                 )
             )
-            it = row.scalar_one_or_none()
-            if not it:
+            pair = row.one_or_none()
+            if not pair:
                 raise HTTPException(status_code=404, detail="Item not found")
+            it, wl = pair
+            if wl.is_global and not _is_designated_role(request):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Pinned watchlist can only be edited by designated partners",
+                )
             await session.delete(it)
             await session.commit()
         return {"detail": f"Item {item_id} removed"}

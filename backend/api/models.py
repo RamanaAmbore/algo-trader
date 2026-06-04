@@ -179,27 +179,35 @@ class AuthToken(Base):
 
 class Watchlist(Base):
     """
-    Per-user named watchlist (e.g. 'Default', 'Markets', 'NIFTY watch').
-    Each user starts with a 'Markets' watchlist auto-seeded with major
-    Indian indices + MCX commodities so the operator never stares at
-    an empty page on first login.
+    Watchlist owned by a single user OR shared globally (is_global=True,
+    user_id=None). Operator-created lists are always per-user; the
+    canonical 'Pinned' list is global — every user sees it, only
+    admin / designated roles can mutate it.
     """
     __tablename__ = "watchlists"
+    # The unique constraint allows multiple users to have the same name
+    # (e.g. each user's own "test"). For global rows user_id is NULL and
+    # the partial index below (created in the seeder) enforces a single
+    # global Pinned. Postgres treats NULL as distinct in standard UNIQUE
+    # so the (NULL, "Pinned") constraint doesn't collide with itself.
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_watchlist_user_name"),)
 
     id:         Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id:    Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # user_id is NULL when the row is global (shared across all users).
+    user_id:    Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     name:       Mapped[str] = mapped_column(String(64), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # is_default flags the user's primary watchlist. UI uses this to pick
     # which list a "+ Watch" affordance on /admin/options adds to.
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # is_pinned flags lists whose contents land in the "Pinned" major group
-    # on Market Pulse (top of the unified grid). Both auto-seeded lists
-    # ("Default" + "Markets") get is_pinned=True at user creation; operator-
-    # created lists default to False (they land in the "Watchlist" major
-    # group). Operator can later flip the flag on any list.
+    # on Market Pulse (top of the unified grid).
     is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # is_global=True means this row is shared across every user. Only
+    # admin / designated roles can mutate it; everyone else reads it.
+    is_global: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
@@ -229,6 +237,12 @@ class WatchlistItem(Base):
     )
     tradingsymbol: Mapped[str] = mapped_column(String(64), nullable=False)
     exchange:      Mapped[str] = mapped_column(String(8),  nullable=False)
+    # Optional operator-supplied display name. Operator can label a
+    # tradeable contract (e.g. CRUDEOIL26JUNFUT) with the underlying
+    # nickname they actually think in (e.g. "Crude oil"). The raw
+    # tradingsymbol still drives quotes / orders; alias only affects
+    # display in the watchlist grid + tooltips.
+    alias:         Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     sort_order:    Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     added_at:      Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,

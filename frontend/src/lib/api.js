@@ -434,12 +434,18 @@ export const createWatchlist      = (name)  => _post('/watchlist/', { name }, { 
 export const renameWatchlist      = (id, payload) =>
   _patch(`/watchlist/${id}`, payload, { auth: true });
 export const deleteWatchlist      = (id)    => _del(`/watchlist/${id}`, { auth: true });
-export const addWatchlistItem     = (id, tradingsymbol, exchange) =>
-  _post(`/watchlist/${id}/items`, { tradingsymbol, exchange }, { auth: true });
+export const addWatchlistItem     = (id, tradingsymbol, exchange, alias = null) =>
+  _post(`/watchlist/${id}/items`,
+        { tradingsymbol, exchange, ...(alias ? { alias } : {}) },
+        { auth: true });
 export const removeWatchlistItem  = (wlId, itemId) =>
   _del(`/watchlist/${wlId}/items/${itemId}`, { auth: true });
 export const reorderWatchlistItem = (wlId, itemId, sortOrder) =>
   _patch(`/watchlist/${wlId}/items/${itemId}`, { sort_order: sortOrder }, { auth: true });
+/** Rename / set alias on a watchlist item.
+ *  alias='' clears the alias; non-empty sets it. */
+export const renameWatchlistItem  = (wlId, itemId, alias) =>
+  _patch(`/watchlist/${wlId}/items/${itemId}`, { alias }, { auth: true });
 export const fetchWatchlistQuotes = (id)    => _get(`/watchlist/${id}/quotes`, { auth: true });
 export const fetchMovers          = ()      => _get('/watchlist/movers', { auth: true });
 /** POST /api/quote/batch — fetch LTP/bid/ask/day-change for arbitrary keys. */

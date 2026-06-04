@@ -236,6 +236,25 @@ async def init_db() -> None:
               END IF;
             END$$;
         """))
+        # Watchlist shared-global + item alias migration.
+        # is_global=True rows are shared across every user (managed by
+        # admin / designated). user_id becomes nullable to host them.
+        # alias is the operator-supplied display name on a watchlist
+        # item (e.g. "Crude oil" labelling CRUDEOIL26JUNFUT).
+        for stmt in (
+            "ALTER TABLE watchlists ADD COLUMN IF NOT EXISTS is_global BOOLEAN "
+            "NOT NULL DEFAULT FALSE",
+            "ALTER TABLE watchlists ALTER COLUMN user_id DROP NOT NULL",
+            "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS alias VARCHAR(64)",
+        ):
+            await conn.execute(text(stmt))
+        # Partial unique index — at most one global Pinned row exists.
+        # Standard UNIQUE(user_id, name) treats NULL as distinct so
+        # multiple (NULL, 'Pinned') would be allowed without this guard.
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_watchlist_global_pinned "
+            "ON watchlists ((1)) WHERE is_global = true"
+        ))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents
@@ -264,6 +283,11 @@ async def init_db() -> None:
     # overrides on subsequent boots).
     from backend.shared.helpers.settings import seed_settings
     await seed_settings()
+
+    # Seed the single shared 'Pinned' watchlist + migrate any per-user
+    # Pinned/Default rows into it. Idempotent.
+    from backend.api.routes.watchlist import seed_global_pinned
+    await seed_global_pinned()
 
     # Warm the alert-recipient cache from the users table so the very
     # first alert after a restart already routes to the right addresses.
