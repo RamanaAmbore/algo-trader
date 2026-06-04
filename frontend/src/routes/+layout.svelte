@@ -344,6 +344,14 @@
     inp.setAttribute('aria-hidden', 'true');
     inp.setAttribute('tabindex', '-1');
     inp.autocomplete = 'off';
+    // readonly + inputmode=none: keydown still fires + focusable, but
+    // the soft keyboard / OSK doesn't appear when focused. Operator
+    // reported the IME popup appeared on the TV without these. Also
+    // mark non-editable so it doesn't become a contenteditable popup
+    // target on some Android TV browsers.
+    inp.readOnly = true;
+    inp.setAttribute('inputmode', 'none');
+    inp.setAttribute('enterkeyhint', 'none');
     inp.style.cssText = [
       'position:fixed', 'left:0', 'top:0',
       'width:1px', 'height:1px',
@@ -351,6 +359,7 @@
       'border:none', 'outline:none',
       'pointer-events:none', 'z-index:-1',
       'font-size:16px',  // ≥ 16px so iOS doesn't auto-zoom
+      'caret-color:transparent',
     ].join(';');
     document.body.appendChild(inp);
     inp.addEventListener('keydown', (e) => {
