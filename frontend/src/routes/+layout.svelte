@@ -334,57 +334,53 @@
   // rather than being eaten by spatial navigation. We catch them on
   // the input, preventDefault to suppress caret movement, then route
   // through the scroll handler.
-  /** @type {HTMLInputElement | null} */
+  /** @type {HTMLElement | null} */
   let _tvSink = null;
   function _ensureTvSink() {
     if (typeof document === 'undefined' || _tvSink) return _tvSink;
-    const inp = document.createElement('input');
-    inp.type = 'text';
-    inp.id = '_tvkeysink';
-    inp.setAttribute('aria-hidden', 'true');
-    inp.setAttribute('tabindex', '-1');
-    inp.autocomplete = 'off';
-    // readonly + inputmode=none: keydown still fires + focusable, but
-    // the soft keyboard / OSK doesn't appear when focused. Operator
-    // reported the IME popup appeared on the TV without these. Also
-    // mark non-editable so it doesn't become a contenteditable popup
-    // target on some Android TV browsers.
-    inp.readOnly = true;
-    inp.setAttribute('inputmode', 'none');
-    inp.setAttribute('enterkeyhint', 'none');
-    inp.style.cssText = [
+    // Use a contenteditable DIV (not an <input>) — contenteditable
+    // takes focus and fires keydown for arrow keys WITHOUT triggering
+    // the on-screen keyboard on Fire Stick / Android TV (the OSK only
+    // pops for form inputs). tabindex=-1 makes it programmatically
+    // focusable; contenteditable=true lets it receive key events.
+    const div = document.createElement('div');
+    div.id = '_tvkeysink';
+    div.setAttribute('aria-hidden', 'true');
+    div.setAttribute('tabindex', '-1');
+    div.setAttribute('contenteditable', 'true');
+    div.setAttribute('role', 'application');  // explicit "we handle keys"
+    div.style.cssText = [
       'position:fixed', 'left:0', 'top:0',
       'width:1px', 'height:1px',
       'opacity:0', 'background:transparent',
       'border:none', 'outline:none',
       'pointer-events:none', 'z-index:-1',
-      'font-size:16px',  // ≥ 16px so iOS doesn't auto-zoom
       'caret-color:transparent',
+      'user-select:none', '-webkit-user-select:none',
+      'overflow:hidden', 'white-space:nowrap',
     ].join(';');
-    document.body.appendChild(inp);
-    inp.addEventListener('keydown', (e) => {
+    document.body.appendChild(div);
+    div.addEventListener('keydown', (e) => {
       _dbgOnly(e, 'sink-down');
       if (_ALL_KEYS.has(e.key)) {
         e.preventDefault();
         onKey(e);
       }
     }, { capture: true, passive: false });
-    // Keep focus on the sink. When the operator clicks anywhere
-    // focusable, the sink loses focus — restore it after a tick so
-    // arrow keys keep flowing. Tab moves to the next real focusable,
-    // which is fine (we put the sink first; Shift-Tab can reach it).
-    inp.addEventListener('blur', () => {
-      // Only re-grab focus if the new focus is on body or null
-      // (nothing meaningful focused). Otherwise leave the operator
-      // typing in their input alone.
+    // beforeinput captures input mutations BEFORE they apply — kills
+    // any accidental text entry on contenteditable.
+    div.addEventListener('beforeinput', (e) => {
+      e.preventDefault();
+    });
+    div.addEventListener('blur', () => {
       setTimeout(() => {
         const ae = document.activeElement;
-        if (!ae || ae === document.body) inp.focus({ preventScroll: true });
+        if (!ae || ae === document.body) div.focus({ preventScroll: true });
       }, 0);
     });
-    inp.focus({ preventScroll: true });
-    _tvSink = inp;
-    return inp;
+    div.focus({ preventScroll: true });
+    _tvSink = div;
+    return div;
   }
 
   // Refocus the sink whenever the page regains focus (operator
