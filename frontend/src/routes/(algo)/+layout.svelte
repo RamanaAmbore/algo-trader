@@ -1710,37 +1710,54 @@
   }
   .chase-chip-arrow { opacity: 0.7; }
 
-  /* ── Status-driven surface card — used across algo pages ─────────────────── */
+  /* ── Status-driven surface card — used across algo pages ───────────────────
+     Operator: "make accent consistent with colors for cards in all
+     pages". Every card now carries the same 3px amber left-border
+     accent by default. Status variants override `border-left-color`
+     (NOT `border-left` shorthand) so the left rule keeps its 3px
+     width but recolours to match the status tint — active green,
+     triggered red, etc. Non-status cards keep the canonical amber
+     ascent. Pages that previously added `.cmd-surface` for an amber
+     left rule now get it for free; the per-page custom accents
+     (`.opt-trade-surface`, `.brokers-h`, …) inherit a single
+     visual rhythm. */
   :global(.algo-status-card) {
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1.5px solid rgba(255,255,255,0.1);
+    border-left: 3px solid #fbbf24;
     border-radius: 6px;
     padding: 0.75rem;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
     color: #c8d8f0;
-    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    transition: border-color 0.15s, border-left-color 0.15s, box-shadow 0.15s, background 0.15s;
   }
   :global(.algo-status-card[data-status="active"]) {
     border-color: rgba(74,222,128,0.6);
+    border-left-color: #4ade80;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(74,222,128,0.18);
   }
   :global(.algo-status-card[data-status="inactive"]) {
     border-color: rgba(180,200,230,0.18);
+    border-left-color: rgba(180,200,230,0.35);
     opacity: 0.82;
   }
   :global(.algo-status-card[data-status="triggered"]) {
     border-color: rgba(248,113,113,0.75);
+    border-left-color: #f87171;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.22);
   }
   :global(.algo-status-card[data-status="running"]) {
     border-color: rgba(251,191,36,0.65);
+    border-left-color: #fbbf24;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(251,191,36,0.18);
   }
   :global(.algo-status-card[data-status="cooldown"]) {
     border-color: rgba(251,191,36,0.4);
+    border-left-color: rgba(251,191,36,0.75);
   }
   :global(.algo-status-card[data-status="error"]) {
     border-color: rgba(248,113,113,0.85);
+    border-left-color: #f87171;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.28);
   }
 </style>
