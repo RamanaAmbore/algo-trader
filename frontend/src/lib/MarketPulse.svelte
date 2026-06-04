@@ -20,7 +20,7 @@
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import {
     fetchWatchlists, fetchWatchlist, createWatchlist,
-    deleteWatchlist, addWatchlistItem, removeWatchlistItem,
+    deleteWatchlist, renameWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchWatchlistQuotes,
     fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
     fetchSparklines,
@@ -2842,6 +2842,32 @@
     } catch (e) { error = e.message; }
   }
 
+  // Rename UX state — set to the list id when the operator clicks
+  // ✎ Rename, then the row reveals an inline name input. Save commits
+  // to /api/watchlist/{id} via renameWatchlist; cancel reverts state.
+  let _renameId    = $state(/** @type {number|null} */ (null));
+  let _renameName  = $state('');
+  let _renameError = $state('');
+  async function commitRename() {
+    const id = _renameId;
+    const name = _renameName.trim();
+    if (id == null || !name) return;
+    _renameError = '';
+    try {
+      await renameWatchlist(id, { name });
+      _renameId = null;
+      _renameName = '';
+      await loadLists();
+    } catch (e) {
+      _renameError = e?.message || 'Rename failed';
+    }
+  }
+  function cancelRename() {
+    _renameId = null;
+    _renameName = '';
+    _renameError = '';
+  }
+
   async function dropList(/** @type {number} */ id) {
     try {
       await deleteWatchlist(id);
@@ -4117,6 +4143,24 @@
           {#if typeof targetListId === 'number'}
             {@const _tgtList = lists.find(l => l.id === targetListId)}
             {#if _tgtList && !_tgtList.is_default}
+              <!-- ✎ Rename — reveals the inline name input row below
+                   so the operator can edit the watchlist's name without
+                   leaving the popup. -->
+              <button type="button"
+                onclick={(e) => {
+                  e.preventDefault();
+                  const id = /** @type {number} */ (targetListId);
+                  if (_renameId === id) { cancelRename(); return; }
+                  _renameId = id;
+                  _renameName = _tgtList.name;
+                  _renameError = '';
+                  _pendingDeleteId = null;
+                }}
+                class="text-[0.7rem] py-1 px-3 rounded font-bold border"
+                style="background: rgba(56,189,248,0.2); color: #7dd3fc; border-color: rgba(56,189,248,0.55);"
+                title={_renameId === targetListId ? 'Cancel rename' : `Rename "${_tgtList.name}" watchlist`}>
+                {_renameId === targetListId ? '× Cancel' : '✎ Rename'}
+              </button>
               <button type="button"
                 onclick={async (e) => {
                   e.preventDefault();
@@ -4141,6 +4185,25 @@
             {/if}
           {/if}
         </div>
+        {#if _renameId !== null && _renameId === targetListId}
+          <div class="search-row" style="margin-top: 0.4rem;">
+            <input bind:value={_renameName}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                else if (e.key === 'Escape') { e.preventDefault(); cancelRename(); }
+              }}
+              class="field-input text-[0.7rem] py-1 px-2 flex-1"
+              placeholder="New name" autocomplete="off" />
+            <button type="button" onclick={commitRename}
+              disabled={!_renameName.trim()}
+              class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50">Save</button>
+          </div>
+          {#if _renameError}
+            <div class="search-hint" style="color:#f87171">{_renameError}</div>
+          {:else}
+            <div class="search-hint">Enter to save · Esc to cancel · names are case-insensitive and must be unique.</div>
+          {/if}
+        {/if}
         {#if targetListId === 'NEW'}
           <div class="search-row" style="margin-top: 0.4rem;">
             <input bind:value={newListName}
