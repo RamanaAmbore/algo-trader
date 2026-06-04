@@ -1,8 +1,8 @@
 <script>
   // Console — plain command-line terminal + the canonical 5-tab activity
   // log. The page's primary input is CommandLineTab (typed grammar
-  // commands); the Log icon in the page-header trio is suppressed
-  // because the same 5-tab surface lives inline below the entry.
+  // commands); the inline LogPanel below carries the same 5-tab surface
+  // the page-header Log icon opens in a modal — operator can use either.
   //
   // A parsed command opens SymbolPanel as a modal (defaultTab='ticket')
   // pre-filled with the parsed values, so the operator can review +
@@ -10,6 +10,7 @@
 
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import RefreshButton from '$lib/RefreshButton.svelte';
   import LogPanel from '$lib/LogPanel.svelte';
   import CommandLineTab from '$lib/order/CommandLineTab.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -17,6 +18,11 @@
   const isDemo = $derived(!$authStore.user);
 
   let logTab = $state('terminal');
+  // Manual-refresh bump for the inline LogPanel — clicking the page-
+  // header Refresh icon rotates the badge + asks LogPanel to re-poll
+  // immediately rather than waiting for its next tick.
+  let _refreshKey = $state(0);
+  function _refresh() { _refreshKey++; }
 
   // SymbolPanel-as-modal state — opened when CommandLineTab fires a
   // parsed order. Operator confirms / edits / submits from the modal.
@@ -37,9 +43,8 @@
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
-      <!-- Log icon removed on /console — the same 5-tab activity surface
-           is rendered inline below as a card. -->
-      <PageHeaderActions showLog={false} />
+      <RefreshButton onClick={_refresh} loading={false} label="console" />
+      <PageHeaderActions />
     </span>
   </div>
 

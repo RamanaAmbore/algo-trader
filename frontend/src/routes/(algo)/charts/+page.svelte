@@ -6,7 +6,6 @@
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import SymbolPanel from '$lib/SymbolPanel.svelte';
 
   // ── URL params ────────────────────────────────────────────────────
   let _symbol       = $state('');
@@ -18,13 +17,6 @@
   // operator can swap to any pinned chip or pick a fresh symbol via
   // the type-filter + search box inside ChartWorkspace.
   const DEFAULT_SYMBOL = 'NIFTY 50';
-
-  // ── Order modal ───────────────────────────────────────────────────
-  let _orderModalOpen = $state(false);
-  function _openOrderModal() {
-    if (!_symbol) return;
-    _orderModalOpen = true;
-  }
 
   function _initFromUrl() {
     const params = page.url.searchParams;
@@ -67,14 +59,14 @@
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
-      <button class="page-order-btn" disabled={!_symbol} title="Place order — {_symbol || '—'}"
-              onclick={_openOrderModal}>
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-      </button>
       <RefreshButton onClick={_refresh} loading={_chartLoading} label="charts" />
-      <PageHeaderActions hideOrder={true} hideChart={true} />
+      <!-- Order icon stays visible (operator: "charts should not have
+           chart icon" — only Chart is suppressed since the page IS
+           the chart). PageHeaderActions reuses the same SymbolPanel
+           modal the retired custom .page-order-btn did, pre-filled
+           with the page's active symbol. Log + Order icons read the
+           same shape they read on every other algo page. -->
+      <PageHeaderActions symbol={_symbol} hideChart={true} />
     </span>
   </div>
 
@@ -94,20 +86,6 @@
   </div>
 </div>
 
-{#if _orderModalOpen}
-  <SymbolPanel
-    symbol={_symbol}
-    exchange=""
-    defaultTab="ticket"
-    accounts={[]}
-    account=""
-    defaultMode="paper"
-    availableModes={['draft', 'paper', 'live']}
-    showChartButton={false}
-    onClose={() => { _orderModalOpen = false; }}
-    onSubmit={(_payload) => { _orderModalOpen = false; }}
-  />
-{/if}
 
 <style>
   /* Charts page fills the full viewport below the sticky navbar.
@@ -141,30 +119,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-  }
-
-  .page-order-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.6rem;
-    height: 1.6rem;
-    padding: 0;
-    border: 1px solid rgba(251, 191, 36, 0.55);
-    background: rgba(251, 191, 36, 0.14);
-    color: #fbbf24;
-    border-radius: 3px;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .page-order-btn:hover:not(:disabled) {
-    background: rgba(251, 191, 36, 0.22);
-    border-color: rgba(252, 211, 77, 0.65);
-    color: #fcd34d;
-  }
-  .page-order-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
   }
 
   @media (max-width: 600px) {

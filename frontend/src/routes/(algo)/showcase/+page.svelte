@@ -1,6 +1,14 @@
 <script>
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
+  import { nowStamp } from '$lib/stores';
+  import RefreshButton from '$lib/RefreshButton.svelte';
+  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+
+  // Refresh on a narrative tour page just reloads the route so the
+  // hero + section cards re-flow with fresh layout. No data is
+  // fetched, so this is effectively a UI reset.
+  function _refresh() { if (typeof window !== 'undefined') window.location.reload(); }
 
   // Recruiter-facing narrative page. Single scrollable tour that
   // explains the platform's novel pieces (5-mode execution ladder,
@@ -155,6 +163,24 @@
 </svelte:head>
 
 <div class="show" class:show-ready={_mounted}>
+  <!-- Canonical page-header — Refresh + Order + Chart + Log icons
+       sit alongside the timestamp the same way every other algo
+       page renders them. Recruiters/visitors browsing the tour get
+       the same chrome the live operator pages carry, so the screen
+       above the fold matches what the rest of the platform looks
+       like. -->
+  <div class="page-header">
+    <span class="algo-title-group">
+      <h1 class="page-title-chip">Tour</h1>
+    </span>
+    <span class="algo-ts">{$nowStamp}</span>
+    <span class="ml-auto"></span>
+    <span class="page-header-actions">
+      <RefreshButton onClick={_refresh} loading={false} label="tour" />
+      <PageHeaderActions />
+    </span>
+  </div>
+
   <!-- Hero -->
   <header class="show-hero">
     <h1 class="show-title">Rambo Terminal — Tour</h1>
