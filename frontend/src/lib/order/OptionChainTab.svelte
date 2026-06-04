@@ -957,7 +957,13 @@
   .chain-grid-wrap {
     overflow-y: auto;
     flex: 1 1 0;
-    min-height: 9rem;
+    /* Operator: "show more pe and ce rows in chain". Was 9rem
+       (~5–6 strike rows at default row height); bumped to 22rem
+       so the operator sees ~15+ rows around ATM at a glance
+       without having to scroll. The flex:1 1 0 above still lets
+       the grid grow to fill the full modal body when there's more
+       room. */
+    min-height: 22rem;
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 3px;
   }
@@ -974,7 +980,10 @@
   .chain-th-pe      { text-align: right;  color: #f87171; padding: 0.2rem 0.5rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-th-strike  { text-align: center; color: #c8d8f0; padding: 0.2rem 0.3rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-row > td {
-    padding: 0.18rem 0.4rem;
+    /* Tightened from 0.18rem → 0.1rem so more strikes fit in the
+       same vertical budget without losing button + bid/ask cell
+       legibility at 0.65rem font size. */
+    padding: 0.1rem 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.04);
   }
   .chain-row:last-child > td { border-bottom: 0; }
