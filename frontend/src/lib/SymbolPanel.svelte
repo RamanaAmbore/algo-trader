@@ -393,6 +393,17 @@
   // initialised from the `account` prop; each tab receives it as
   // `account` and calls `onAccountChange` when its picker changes.
   let _sharedAccount = $state(account || '');
+
+  // Shared mode / chase / chaseAgg state — operator: "should mode,
+  // chase, margin, common for chase and order ticket". Lifted out of
+  // OrderTicket so the same controls show up regardless of which tab
+  // (Chain / Ticket) is active. OrderTicket binds these three props
+  // (modeChaseHidden=true on its end) so its in-form mode/chase row
+  // is suppressed and the shared toolbar drives the values its submit
+  // pipeline reads. Margin pill is already in the common row below.
+  let _sharedMode     = $state(/** @type {'draft'|'paper'|'live'} */ ('paper'));
+  let _sharedChase    = $state(true);
+  let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
   // Account list — falls through three layers:
   //   1. `accounts` prop (host page injects them, e.g. /orders)
   //   2. cached fetch from /api/accounts/ on mount when prop is empty
@@ -632,11 +643,21 @@
     if (basketSubmitting || !basketLegs.length) return;
     basketSubmitting = true; basketResultMsg = '';
     let ok = 0; /** @type {string[]} */ const fails = [];
-    let basketMode2 = 'paper';
-    try {
-      const live = await fetchLiveStatus();
-      if (live && live.paper_trading_mode === false && live.branch === 'main') basketMode2 = 'live';
-    } catch { /* safe default */ }
+    // Shared mode takes precedence over the auto-resolved basketMode2
+    // when the operator explicitly picked PAPER or LIVE on the common
+    // toolbar. Falls through to the live-status auto-detect path for
+    // backward compatibility when no toolbar pick is on file.
+    let basketMode2 = _sharedMode || 'paper';
+    if (basketMode2 === 'paper' || basketMode2 === 'live') {
+      try {
+        const live = await fetchLiveStatus();
+        // Force-paper guard: if branch isn't main OR master flag says
+        // paper, downgrade to paper regardless of operator's pick.
+        if (live && (live.branch !== 'main' || live.paper_trading_mode === true)) {
+          basketMode2 = 'paper';
+        }
+      } catch { /* safe default — keep operator's pick */ }
+    }
 
     // Track failed-leg indices explicitly. The earlier code pruned
     // legs by `i >= ok` which assumed all failures were at the END of
@@ -670,9 +691,9 @@
           order_type:       'LIMIT',
           variety:          'regular',
           price:            Number(leg.limit),
-          account:          leg.account || account || '',
-          chase:            true,
-          chase_aggressiveness: leg.chaseAgg || 'low',
+          account:          leg.account || _sharedAccount || account || '',
+          chase:            _sharedChase,
+          chase_aggressiveness: _sharedChase ? (leg.chaseAgg || _sharedChaseAgg || 'low') : 'low',
         });
         ok++;
         // Surface the full ticket-shape payload to the parent (mode +
@@ -1094,6 +1115,10 @@
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
             hostManagesEsc={true}
+            bind:mode={_sharedMode}
+            bind:chase={_sharedChase}
+            bind:chaseAgg={_sharedChaseAgg}
+            modeChaseHidden={true}
             onMarginUpdate={showCommonActions && !inline ? _onMarginUpdate : null}
             {onSubmit}
             {onClose} />
@@ -1140,6 +1165,7 @@
       <div class="oes-basket-bar">
         <div class="oes-basket-pills" role="list">
           {#each basketLegs as leg, i (leg.key)}
+            {@const _legAcct = leg.account || _sharedAccount || ''}
             <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
                   class:is-disabled={basketSubmitting}
                   role="listitem"
@@ -1157,6 +1183,28 @@
                       onclick={() => updateLegByKey(leg.key, b => ({ ...b, lots: (b.lots || 1) + 1 }))}>+</button>
               {#if leg.lotSize > 1}
                 <span class="oes-basket-pill-qty">× {leg.lotSize} = {(leg.lots || 1) * leg.lotSize}</span>
+              {/if}
+              <!-- Per-leg account picker — operator: "I should be able to
+                   place order from different accounts by selecting account
+                   for each order adding them to basket and place order".
+                   Native `<select>` keeps the pill compact; bubbles up
+                   via updateLegByKey so the submitBasket loop reads
+                   leg.account on each placement call. -->
+              {#if _modalAccounts.length > 1}
+                <select class="oes-basket-pill-acct"
+                        disabled={basketSubmitting}
+                        value={_legAcct}
+                        title="Route this leg through this broker account"
+                        onchange={(e) => {
+                          const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
+                          updateLegByKey(leg.key, b => ({ ...b, account: v }));
+                        }}>
+                  {#each _modalAccounts as a}
+                    <option value={a}>{a}</option>
+                  {/each}
+                </select>
+              {:else if _legAcct}
+                <span class="oes-basket-pill-acct-static" title="Routing account (single broker loaded)">{_legAcct}</span>
               {/if}
               <button type="button" class="oes-basket-pill-remove"
                       title="Remove leg from basket"
@@ -1187,6 +1235,52 @@
          works when there's pending content. -->
     {#if showCommonActions && !inline && !actionsHidden}
       <div class="oes-common-actions">
+        <!-- Shared mode + chase toolkit — operator: "mode, chase,
+             margin, common for chase and order ticket". Sits ABOVE
+             the margin / submit row so both Chain and Ticket tabs
+             read from the same controls. PAPER + LIVE pills (DRAFT
+             omitted on the modal — host pages route drafts via
+             their own pipelines), CHASE on/off + L/M/H pills next
+             to it. State bound from `_sharedMode / _sharedChase /
+             _sharedChaseAgg`; OrderTicket suppresses its own row
+             via `modeChaseHidden=true` and reads the lifted values
+             through its bindable props. -->
+        <div class="oes-common-mode-row">
+          <span class="oes-common-mode-label">Mode</span>
+          <div class="oes-common-mode-pills">
+            <button type="button" class="oes-common-mode-pill oes-common-mode-pill-paper"
+                    class:on={_sharedMode === 'paper'}
+                    title="Routes through the prod paper engine — real bid/ask, no broker hit"
+                    onclick={() => _sharedMode = 'paper'}>PAPER</button>
+            <button type="button" class="oes-common-mode-pill oes-common-mode-pill-live"
+                    class:on={_sharedMode === 'live'}
+                    title="Submit to the broker. On dev always routes to paper. On prod, routed to LIVE only when the per-action execution.live.* flag is on."
+                    onclick={() => _sharedMode = 'live'}>LIVE</button>
+          </div>
+          <label class="oes-common-chase-toggle"
+                 title={_sharedChase
+                   ? 'Chase ON — re-quote the limit each tick until filled'
+                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+            <input type="checkbox" bind:checked={_sharedChase} />
+            <span class="oes-common-chase-label" class:on={_sharedChase}>CHASE</span>
+          </label>
+          {#if _sharedChase}
+            <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'low'}
+                      title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                      onclick={() => _sharedChaseAgg = 'low'}>L</button>
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'med'}
+                      title="Medium — peg to midpoint of bid+ask."
+                      onclick={() => _sharedChaseAgg = 'med'}>M</button>
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'high'}
+                      title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                      onclick={() => _sharedChaseAgg = 'high'}>H</button>
+            </div>
+          {/if}
+        </div>
         <!-- Single action row, three-priority left slot:
                1. Notice (market closed / broker disconnected / preview
                   error) — wins over everything.
@@ -1753,6 +1847,31 @@
     opacity: 0.7;
     font-weight: 600;
   }
+  /* Per-leg account picker — tight native <select> styled to match the
+     basket pill chrome. Stays narrow so two-leg pills don't blow up
+     the basket bar's horizontal budget. */
+  .oes-basket-pill-acct {
+    margin-left: 0.35rem;
+    height: 1.2rem;
+    padding: 0 0.25rem;
+    background: rgba(255,255,255,0.06);
+    color: #c8d8f0;
+    border: 1px solid rgba(125,211,252,0.32);
+    border-radius: 2px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    cursor: pointer;
+    max-width: 5.5rem;
+  }
+  .oes-basket-pill-acct:hover { border-color: rgba(125,211,252,0.65); }
+  .oes-basket-pill-acct:disabled { opacity: 0.45; cursor: not-allowed; }
+  .oes-basket-pill-acct-static {
+    margin-left: 0.35rem;
+    color: #7dd3fc;
+    font-size: 0.58rem;
+    font-family: ui-monospace, monospace;
+    opacity: 0.85;
+  }
   .oes-basket-pill-remove {
     border: none;
     background: transparent;
@@ -2035,6 +2154,94 @@
     gap: 0.45rem;
   }
   .oes-common-spacer { flex: 1 1 0; }
+
+  /* Shared mode + chase toolkit — sits ABOVE the margin/action row
+     so both Chain and Ticket tabs read from the same controls.
+     Compact: monospace, 0.62rem, tight gaps. Pills + chase glyphs
+     mirror the OrderTicket styling so flipping between the two
+     modal modes (modal vs standalone OrderTicket) the operator sees
+     the same affordance shape. */
+  .oes-common-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    color: #c8d8f0;
+  }
+  .oes-common-mode-label {
+    color: #fbbf24;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    font-size: 0.55rem;
+  }
+  .oes-common-mode-pills {
+    display: inline-flex;
+    border: 1px solid rgba(125,211,252,0.32);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .oes-common-mode-pill {
+    padding: 0.18rem 0.5rem;
+    background: transparent;
+    color: rgba(200,216,240,0.65);
+    border: 0;
+    border-right: 1px solid rgba(125,211,252,0.18);
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .oes-common-mode-pill:last-child { border-right: 0; }
+  .oes-common-mode-pill:hover { color: #c8d8f0; background: rgba(125,211,252,0.08); }
+  .oes-common-mode-pill.on {
+    color: #0c1830;
+    background: #7dd3fc;
+  }
+  .oes-common-mode-pill-live.on  { background: #4ade80; }
+  .oes-common-mode-pill-paper.on { background: #7dd3fc; }
+
+  .oes-common-chase-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .oes-common-chase-toggle input { margin: 0; }
+  .oes-common-chase-label {
+    color: rgba(200,216,240,0.55);
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .oes-common-chase-label.on { color: #fbbf24; }
+
+  .oes-common-chase-agg {
+    display: inline-flex;
+    border: 1px solid rgba(251,191,36,0.32);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .oes-common-chase-agg-pill {
+    padding: 0.14rem 0.4rem;
+    background: transparent;
+    color: rgba(200,216,240,0.65);
+    border: 0;
+    border-right: 1px solid rgba(251,191,36,0.20);
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .oes-common-chase-agg-pill:last-child { border-right: 0; }
+  .oes-common-chase-agg-pill:hover { color: #fbbf24; background: rgba(251,191,36,0.08); }
+  .oes-common-chase-agg-pill.on {
+    color: #0c1830;
+    background: #fbbf24;
+  }
 
   /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
      After · (Short) cells in a horizontal row. After is colour-coded

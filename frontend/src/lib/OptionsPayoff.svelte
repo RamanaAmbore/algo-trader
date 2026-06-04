@@ -719,19 +719,24 @@
                             : null}
         {#if !isCenter}
           {#if isMilestone}
-            <!-- Milestone σ vertical — color-coded dotted line. Brighter
-                 than the neutral grid so the eye snaps to ±1σ / ±2σ / ±2.5σ
-                 as the risk-zone boundaries. -->
+            <!-- Milestone σ vertical — color-coded dotted line, kept at
+                 the LEAST prominent tier per operator request ("make
+                 spot most prominent, breakeven prominent, sigma least
+                 prominent"). Hairline 0.75px stroke + 0.28 alpha so the
+                 σ bands read as a quiet risk-zone reference rather than
+                 a structural axis competing with the curves / spot /
+                 breakeven lines on top. -->
             <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
-                  stroke={mColor} stroke-width="1.25"
-                  stroke-dasharray="3 3" stroke-opacity="0.6"/>
+                  stroke={mColor} stroke-width="0.75"
+                  stroke-dasharray="2 4" stroke-opacity="0.28"/>
           {:else}
-            <!-- Neutral grid: whole-σ "2 3"; half-σ "1 4". Reference
-                 marker only, not a structural axis. -->
+            <!-- Neutral grid: even quieter than milestone sigmas — kept
+                 deliberately faint so the σ family stays the
+                 least-prominent tier. -->
             <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
-                  stroke={wholeSigma ? 'rgba(200,216,240,0.18)' : 'rgba(200,216,240,0.10)'}
-                  stroke-width="1"
-                  stroke-dasharray={wholeSigma ? '2 3' : '1 4'}/>
+                  stroke={wholeSigma ? 'rgba(200,216,240,0.10)' : 'rgba(200,216,240,0.06)'}
+                  stroke-width="0.75"
+                  stroke-dasharray={wholeSigma ? '2 4' : '1 5'}/>
           {/if}
         {/if}
         {#if isMilestone}
@@ -783,10 +788,16 @@
         {#if pin.be > sMin && pin.be < sMax}
           {@const bx = xOf(pin.be)}
           {@const chipH = 18}
-          <!-- Full-height vertical amber line — quiet alpha, distinct
-               from σ dotted grid but not competing with the curves. -->
+          <!-- Full-height amber breakeven vertical — middle prominence
+               tier per operator request ("breakeven prominent"). 1.5px
+               stroke at 0.65 alpha sits noticeably above the σ band
+               grid but quieter than the bright cyan spot line below
+               so the eye reads spot → breakevens → σ-band reference
+               in descending order of visual weight. -->
           <line x1={bx} x2={bx} y1={PAD_T} y2={height - PAD_B}
-                stroke="rgba(251,191,36,0.30)" stroke-width="1"/>
+                stroke="#fbbf24" stroke-width="1.5"
+                stroke-opacity="0.65"
+                stroke-dasharray="6 3"/>
           <!-- Connector: thin 0.5px amber line from pill bottom to PAD_T. -->
           <line x1={bx} x2={bx} y1={pin.pinY + chipH} y2={PAD_T}
                 stroke="#fbbf24" stroke-opacity="0.55" stroke-width="0.5"/>
@@ -832,12 +843,15 @@
       {/if}
 
       <!-- Z-layer 9: Spot vertical line — rendered AFTER the curves so
-           it sits on top of them. DOTTED cyan, opacity 0.3. σ ticks
-           are dashed, BE is dashed cream, today is solid amber, expiry
-           is dashed sky-blue → spot stays visually distinct. -->
+           it sits on top of them. MOST prominent tier per operator
+           request ("make current spot price line the most prominent").
+           Solid 2.25 px bright-cyan line at full opacity reads as the
+           hardest structural marker on the chart — operator's eye
+           lands here first; amber breakeven verticals come second; the
+           σ-band grid is the quietest reference tier underneath. -->
       {#if spot > sMin && spot < sMax}
         <line x1={spotX} x2={spotX} y1={PAD_T} y2={height - PAD_B}
-              stroke="#22d3ee" stroke-width="1" stroke-opacity="0.3"/>
+              stroke="#22d3ee" stroke-width="2.25" stroke-opacity="1"/>
       {/if}
 
       <!-- Y-axis labels — left-edge, horizontal. One label per yTicks

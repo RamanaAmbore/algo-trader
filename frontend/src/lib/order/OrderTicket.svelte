@@ -76,6 +76,10 @@
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
    *   refreshKey?: number,
+   *   mode?:       'draft' | 'paper' | 'live' | undefined,
+   *   chase?:      boolean | undefined,
+   *   chaseAgg?:   'low' | 'med' | 'high' | undefined,
+   *   modeChaseHidden?: boolean,
    * }} */
   let {
     symbol,
@@ -179,6 +183,17 @@
     // the Ticket form. Same semantic as accountHidden but for the
     // symbol affordance.
     symbolHidden = false,
+    // Lifted mode / chase / chase-aggressiveness controls. When the
+    // host (SymbolPanel) renders these in its shared toolbar, it
+    // binds the three props here AND passes `modeChaseHidden=true`
+    // to suppress the in-ticket .ot-mode-row. Either prop being
+    // undefined keeps the standalone behaviour — internal state
+    // takes over and the row renders. Operator: "mode, chase,
+    // margin should be common for chase and order ticket".
+    mode      = $bindable(/** @type {'draft'|'paper'|'live'|undefined} */ (undefined)),
+    chase     = $bindable(/** @type {boolean|undefined} */ (undefined)),
+    chaseAgg  = $bindable(/** @type {'low'|'med'|'high'|undefined} */ (undefined)),
+    modeChaseHidden = false,
     // Instrument-type intent from the picker row (Equity / Future /
     // Option / ALL). When the operator has chosen FUT or OPT but the
     // symbol prop is just a bare underlying (NIFTY rather than
@@ -475,8 +490,8 @@
     _variety = variety;
     _validity = 'DAY';
     _product = productVal;
-    _chase = true;
-    _chaseAgg = 'low';
+    _setChase(true);
+    _setChaseAgg('low');
     submitErr = '';
     submitOk = '';
     // _shownErr is a $derived from `_submitTried && validationErr`; flip
@@ -514,22 +529,30 @@
     if (availableModes.includes(fromStore)) return fromStore;
     return availableModes[0] || 'draft';
   }
-  let _mode    = $state(/** @type {'draft' | 'paper' | 'live'} */ (
-    untrack(_resolveInitialMode)
-  ));
-  // Chase toggle — when on, the backend's paper engine re-quotes
-  // the limit each tick until the order fills (or hits the chase-
-  // attempt cap). Default ON: industry-standard "fire and forget"
-  // workflow. When off, the order rests at the initial limit and
-  // only fills if the market naturally crosses it. MARKET / SL-M
-  // ignore the toggle (no limit to chase).
-  let _chase    = $state(true);
-  // Chase aggressiveness — analogous to IBKR Adaptive Algo's
-  // Patient / Normal / Urgent. Defaults to 'low' (passive — pegs
-  // to your own side, waits for the market) so a plain Submit
-  // doesn't accidentally cross the spread. Operator can promote
-  // to 'med' / 'high' inline before submit.
-  let _chaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  // Mode/chase/chaseAgg state. Host (SymbolPanel) may supply the
+  // matching bindable props to lift the controls into a shared
+  // toolbar; otherwise we own them internally. `_setMode/_setChase
+  // /_setChaseAgg` funnel writes to both the bound prop AND the
+  // internal backing so each side stays in sync without an explicit
+  // round-trip.
+  let _modeInternal     = $state(/** @type {'draft'|'paper'|'live'} */ (untrack(_resolveInitialMode)));
+  let _chaseInternal    = $state(true);
+  let _chaseAggInternal = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  const _mode     = $derived(mode      !== undefined ? mode      : _modeInternal);
+  const _chase    = $derived(chase     !== undefined ? chase     : _chaseInternal);
+  const _chaseAgg = $derived(chaseAgg  !== undefined ? chaseAgg  : _chaseAggInternal);
+  function _setMode(/** @type {'draft'|'paper'|'live'} */ v) {
+    _modeInternal = v;
+    if (mode !== undefined) mode = v;
+  }
+  function _setChase(/** @type {boolean} */ v) {
+    _chaseInternal = v;
+    if (chase !== undefined) chase = v;
+  }
+  function _setChaseAgg(/** @type {'low'|'med'|'high'} */ v) {
+    _chaseAggInternal = v;
+    if (chaseAgg !== undefined) chaseAgg = v;
+  }
 
   // Auto-fill plumbing — the OrderDepth child polls the quote
   // every 1.2 s and bubbles each fresh response here via
@@ -1390,8 +1413,11 @@
     <!-- Mode selector + chase — only relevant when *placing* a new
          order. action='modify' bypasses the place-pipeline entirely
          (PUT /api/orders/{id} hits the broker directly), so neither
-         mode nor chase apply there; the whole row is hidden. -->
-    {#if action !== 'modify'}
+         mode nor chase apply there; the whole row is hidden.
+         Suppressed when `modeChaseHidden` is true — the host
+         (SymbolPanel) renders the same controls in its shared
+         toolbar so Chain + Ticket both read from one toolkit. -->
+    {#if action !== 'modify' && !modeChaseHidden}
     <div class="ot-mode-row">
       <!-- Mode pills only render when there's an actual choice. With
            only one mode available (e.g. ['live']) there's nothing to
@@ -1402,7 +1428,7 @@
         <div class="ot-mode-pills">
           {#if availableModes.includes('draft')}
             <button type="button" class="ot-mode-pill ot-mode-draft" class:on={_mode === 'draft'}
-                    onclick={() => _mode = 'draft'}>DRAFT</button>
+                    onclick={() => _setMode('draft')}>DRAFT</button>
           {/if}
           <!-- PAPER pill not in default availableModes — dev is paper-
                only via the branch gate; on prod the per-action
@@ -1412,12 +1438,12 @@
           {#if availableModes.includes('paper')}
             <button type="button" class="ot-mode-pill ot-mode-paper" class:on={_mode === 'paper'}
                     title="Routes through the prod paper engine — real bid/ask, no broker hit"
-                    onclick={() => _mode = 'paper'}>PAPER</button>
+                    onclick={() => _setMode('paper')}>PAPER</button>
           {/if}
           {#if availableModes.includes('live')}
             <button type="button" class="ot-mode-pill ot-mode-live" class:on={_mode === 'live'}
                     title="Submit to backend. On dev always routes to paper. On prod, routed to LIVE only when the per-action execution.live.* flag is on."
-                    onclick={() => _mode = 'live'}>LIVE</button>
+                    onclick={() => _setMode('live')}>LIVE</button>
           {/if}
         </div>
       {/if}
@@ -1435,7 +1461,8 @@
                title={_chase
                  ? 'Chase ON — re-quote the limit each tick until filled'
                  : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-          <input type="checkbox" bind:checked={_chase} />
+          <input type="checkbox" checked={_chase}
+                 onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
           <span class="ot-chase-label" class:on={_chase}>CHASE</span>
         </label>
         {#if _chase}
@@ -1444,17 +1471,17 @@
                     class="ot-chase-agg-pill ot-chase-agg-low"
                     class:on={_chaseAgg === 'low'}
                     title="Low — patient. SELL pegs to ASK, BUY pegs to BID. Order rests on your own side; fills only if the market lifts it."
-                    onclick={() => _chaseAgg = 'low'}>L</button>
+                    onclick={() => _setChaseAgg('low')}>L</button>
             <button type="button"
                     class="ot-chase-agg-pill ot-chase-agg-med"
                     class:on={_chaseAgg === 'med'}
                     title="Medium — peg to midpoint of bid+ask. Fills when the inside moves halfway in your favour."
-                    onclick={() => _chaseAgg = 'med'}>M</button>
+                    onclick={() => _setChaseAgg('med')}>M</button>
             <button type="button"
                     class="ot-chase-agg-pill ot-chase-agg-high"
                     class:on={_chaseAgg === 'high'}
                     title="High — urgent. SELL pegs to BID, BUY pegs to ASK. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _chaseAgg = 'high'}>H</button>
+                    onclick={() => _setChaseAgg('high')}>H</button>
           </div>
         {/if}
       {/if}
