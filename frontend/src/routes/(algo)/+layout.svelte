@@ -1428,6 +1428,20 @@
     gap: 0.15rem;
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
+    /* Operator: "page heading should be fixed. it can't be scrollable".
+       Pin the header just below the algo-navbar (h-12 = 3rem) so the
+       title chip + timestamp + Refresh/Order/Chart/Log icon trio stay
+       visible while the page body scrolls beneath. Lower z-index
+       than the navbar (50) and the SIM / PAPER banners (49) so those
+       can overlap when both are visible — page header is the lowest
+       sticky layer. Solid background matches `.algo-content`'s
+       palette so scrolled-up content doesn't bleed through. */
+    position: sticky;
+    top: 3rem;
+    z-index: 40;
+    background: #0c1830;
+    padding: 0.35rem 0.5rem;
+    margin: 0 -0.5rem 0.4rem;
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)

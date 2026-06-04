@@ -453,6 +453,37 @@
     _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
     _lotsTouched = true;  // operator owns _lots from here
   }
+
+  /**
+   * Reset the ticket form to safe defaults. Replaces the legacy Exit
+   * button — operator: "there is not exit button required. probably
+   * clear button required". Wipes price/trigger overrides, resets lots
+   * to 1, restores side/order-type to the props the host passed, and
+   * forgets any submit success / error state. The modal close (×) on
+   * the SymbolPanel header handles dismissal; Clear keeps the operator
+   * in the ticket with a clean slate.
+   */
+  function clearForm() {
+    _lots = _lotSize > 0 ? 1 : 1;
+    _lotsTouched = false;
+    _qty = _lotSize > 0 ? _lots * _lotSize : (isEquity ? 1 : 0);
+    _price = '';
+    _trigger = '';
+    _priceTouched = false;
+    _side = side;
+    _type = orderType;
+    _variety = variety;
+    _validity = 'DAY';
+    _product = productVal;
+    _chase = true;
+    _chaseAgg = 'low';
+    submitErr = '';
+    submitOk = '';
+    // _shownErr is a $derived from `_submitTried && validationErr`; flip
+    // _submitTried back to false so the inline validation error chip
+    // clears alongside the form fields.
+    _submitTried = false;
+  }
   let _type    = $state(orderType);
   let _variety = $state(variety);
   // Validity (Time-in-Force): DAY by default. IOC (Immediate-Or-Cancel)
@@ -1451,10 +1482,17 @@
       {#if !actionsHidden}
       <div class="ot-footer-actions">
         {#if submitOk}
+          <!-- Post-submit success: Clear wipes the form so the operator
+               can immediately enter the next order (operator: "there is
+               not exit button required. probably clear button required").
+               × on the SymbolPanel header handles modal dismissal. -->
           <button type="button" class="ot-exit"
-                  onclick={onClose}>Exit</button>
+                  title="Reset the ticket to a clean form"
+                  onclick={clearForm}>Clear</button>
         {:else}
-          <button type="button" class="ot-exit" onclick={onClose}>Exit</button>
+          <button type="button" class="ot-exit"
+                  title="Reset the ticket to a clean form"
+                  onclick={clearForm}>Clear</button>
           {#if onAddToBasket && action === 'open'}
             <button type="button" class="ot-basket"
                     disabled={!!validationErr || submitting}
