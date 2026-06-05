@@ -415,8 +415,8 @@
       headerless
       hideBottomPanel
       showCommonActions
-      availableModes={['paper', 'live', 'shadow', 'sim', 'replay']}
-      defaultMode="paper"
+      availableModes={['live', 'paper', 'shadow']}
+      defaultMode="live"
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       bind:activeTab={_entryActiveTab}
@@ -801,6 +801,11 @@
      alongside amber Entry and cyan Activity. Section label inherits
      the same rose via the cc-label rule inside ChaseCard. */
   .bucket-card-chase { border-left-color: rgba(248, 113, 133, 0.70); }
+  /* Hide the outer chase card chrome when ChaseCard renders nothing
+     (no active chases). Avoids an empty rose-bordered band on idle
+     pages. Operator: "if there are no active chases, no need to
+     show 'no active chases'". */
+  .bucket-card-chase:not(:has(.cc-root)) { display: none; }
   .oc-chase-header { margin-bottom: 0; align-items: stretch; }
   :global(.oc-chase-header .cc-root) { width: 100%; }
   /* bucket-card-book retired (Order Book merged into Activity card). */

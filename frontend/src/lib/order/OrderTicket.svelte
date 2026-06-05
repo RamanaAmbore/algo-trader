@@ -57,8 +57,8 @@
    *   accounts?: string[],
    *   account?:  string,
    *   orderId?:  string,
-   *   defaultMode?:    'draft' | 'paper' | 'live',
-   *   availableModes?: Array<'draft' | 'paper' | 'live'>,
+   *   defaultMode?:    'draft' | 'paper' | 'live' | 'shadow',
+   *   availableModes?: Array<'draft' | 'paper' | 'live' | 'shadow'>,
    *   currentQty?: number,
    *   onSubmit:  (payload: any) => void | Promise<void>,
    *   onClose:   () => void,
@@ -76,7 +76,7 @@
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
    *   refreshKey?: number,
-   *   mode?:       'draft' | 'paper' | 'live' | undefined,
+   *   mode?:       'draft' | 'paper' | 'live' | 'shadow' | undefined,
    *   chase?:      boolean | undefined,
    *   chaseAgg?:   'low' | 'med' | 'high' | undefined,
    *   modeChaseHidden?: boolean,
@@ -102,13 +102,13 @@
     // Initial mode pill the ticket opens on. Surfaces with no drafts
     // concept (PerformancePage row click) typically pass 'paper';
     // surfaces with a drafts panel (admin/options) keep 'draft'.
-    defaultMode    = /** @type {'draft' | 'paper' | 'live'} */ ('live'),
+    defaultMode    = /** @type {'draft' | 'paper' | 'live' | 'shadow'} */ ('live'),
     // Which mode pills the operator can see. PAPER is no longer a
     // user-facing choice — on dev all orders are paper-only via the
     // branch gate; on prod the per-action execution.live.* flags
     // decide paper vs live for each action. Operators pick between
     // DRAFT (page-local what-if) and LIVE (submit to backend).
-    availableModes = /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'live']),
+    availableModes = /** @type {Array<'draft'|'paper'|'live'|'shadow'>} */ (['draft', 'live']),
     // Signed qty of the operator's existing position when the ticket
     // is opened from a position-row click. Drives the side toggle's
     // ADD/CLOSE labels — operator thinks in "I want to add to this
@@ -190,7 +190,7 @@
     // undefined keeps the standalone behaviour — internal state
     // takes over and the row renders. Operator: "mode, chase,
     // margin should be common for chase and order ticket".
-    mode      = $bindable(/** @type {'draft'|'paper'|'live'|undefined} */ (undefined)),
+    mode      = $bindable(/** @type {'draft'|'paper'|'live'|'shadow'|undefined} */ (undefined)),
     chase     = $bindable(/** @type {boolean|undefined} */ (undefined)),
     chaseAgg  = $bindable(/** @type {'low'|'med'|'high'|undefined} */ (undefined)),
     modeChaseHidden = false,
@@ -521,12 +521,12 @@
   //   3. Last resort: first available mode.
   function _resolveInitialMode() {
     const normalise = (/** @type {string} */ m) => {
-      if (m === 'sim' || m === 'replay' || m === 'shadow') return 'paper';
-      return /** @type {'draft'|'paper'|'live'} */ (m);
+      if (m === 'sim' || m === 'replay') return 'paper';
+      return /** @type {'draft'|'paper'|'live'|'shadow'} */ (m);
     };
-    if (availableModes.includes(defaultMode)) return defaultMode;
+    if (availableModes.includes(/** @type {any} */ (defaultMode))) return defaultMode;
     const fromStore = normalise(get(executionMode) || 'paper');
-    if (availableModes.includes(fromStore)) return fromStore;
+    if (availableModes.includes(/** @type {any} */ (fromStore))) return fromStore;
     return availableModes[0] || 'draft';
   }
   // Mode/chase/chaseAgg state. Host (SymbolPanel) may supply the

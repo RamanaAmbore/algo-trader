@@ -89,7 +89,7 @@
    *   accounts?:       string[],
    *   account?:        string,
    *   orderId?:        string,
-   *   defaultMode?:    'draft' | 'paper' | 'live',
+   *   defaultMode?:    'draft' | 'paper' | 'live' | 'shadow',
    *   availableModes?: Array<'draft' | 'paper' | 'live' | 'shadow' | 'sim' | 'replay'>,
    *   currentQty?:     number,
    *   onSubmit:        (payload: any) => void | Promise<void>,
@@ -125,7 +125,7 @@
     accounts       = /** @type {string[]} */ ([]),
     account        = '',
     orderId        = '',
-    defaultMode    = /** @type {'draft'|'paper'|'live'} */ ('live'),
+    defaultMode    = /** @type {'draft'|'paper'|'live'|'shadow'} */ ('live'),
     availableModes = /** @type {Array<'draft'|'paper'|'live'|'shadow'|'sim'|'replay'>} */ (['draft', 'live']),
     currentQty     = 0,
     onSubmit,
@@ -416,8 +416,14 @@
   // gets a LIVE shared toolbar from the start (operator: "when live
   // is active on navbar, the order should default to live").
   // Falls back to 'paper' when defaultMode isn't a valid toolbar mode.
-  let _sharedMode = $state(/** @type {'draft'|'paper'|'live'} */ (
-    (defaultMode === 'live' || defaultMode === 'paper') ? defaultMode : 'paper'
+  // Accept the three real execution modes (live / paper / shadow) +
+  // draft for legacy callers. Anything else falls back to 'live'
+  // since both /orders and the modal now default LIVE.
+  let _sharedMode = $state(/** @type {'draft'|'paper'|'live'|'shadow'} */ (
+    (defaultMode === 'live'
+      || defaultMode === 'paper'
+      || defaultMode === 'shadow'
+      || defaultMode === 'draft') ? defaultMode : 'live'
   ));
   let _sharedChase    = $state(true);
   let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
@@ -1292,18 +1298,21 @@
              through its bindable props. -->
         <div class="oes-common-mode-row">
           <span class="oes-common-mode-label">Mode</span>
-          <div class="oes-common-mode-pills">
-            {#each (availableModes || ['paper', 'live']).filter(m => m !== 'draft') as m}
-              <button type="button" class="oes-common-mode-pill oes-common-mode-pill-{m}"
-                      class:on={_sharedMode === m}
-                      title={m === 'paper'  ? 'Paper — risk-free engine, no broker hit.'
-                           : m === 'live'   ? 'Live — real broker order.'
-                           : m === 'shadow' ? 'Shadow — captures Kite payload + margin check, no execution.'
-                           : m === 'sim'    ? 'Simulator — fabricated scenario book.'
-                           : m === 'replay' ? 'Replay — historical candle replay.'
-                           : m}
-                      onclick={() => _sharedMode = /** @type {any} */ (m)}>{String(m).toUpperCase()}</button>
-            {/each}
+          <!-- Operator: "make mode dropdown with default as LIVE, with
+               other values PAPER and SHADOW in both orders modal and
+               page". Pill row collapsed into a single narrow Select
+               so the row is more compact and matches the dropdown
+               pattern used by Type / Account elsewhere. -->
+          <div class="oes-common-mode-pick">
+            <Select
+              bind:value={_sharedMode}
+              ariaLabel="Execution mode"
+              options={(availableModes || ['live', 'paper', 'shadow'])
+                .filter(m => m !== 'draft')
+                .map(m => ({
+                  value: m,
+                  label: String(m).toUpperCase(),
+                }))} />
           </div>
           <!-- Chase pills are only meaningful for LIMIT and SL orders
                (those carry a limit price the engine can re-quote each
@@ -2287,6 +2296,9 @@
     border-radius: 3px;
     overflow: hidden;
   }
+  /* Mode dropdown (replaces the pill group). Narrow enough to fit
+     beside the CHASE toggle on the common-actions row. */
+  .oes-common-mode-pick { min-width: 5.5rem; max-width: 7rem; }
   .oes-common-mode-pill {
     padding: 0.18rem 0.5rem;
     background: transparent;

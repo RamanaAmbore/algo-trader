@@ -25,18 +25,19 @@
     recentSymbolStore,
   } from '$lib/data/accounts';
 
-  // HIGH 2: derive the set of mode pills the order ticket should show.
-  // Restricts LIVE to authenticated prod sessions where the master toggle
-  // is already set to LIVE — everywhere else the ticket shows draft+paper only.
+  // Mode dropdown values — operator: "make mode dropdown with
+  // default as LIVE, with other values PAPER and SHADOW in both
+  // orders modal and page". Three-mode set on prod; dev / demo
+  // stays on paper to keep the safety gate, but adds shadow as
+  // an inspection-only option.
   const _algoStatus = getContext('algoStatus');
   const _effectiveModes = $derived.by(() => {
     const ctx = _algoStatus;
-    if (!ctx) return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
-    if (ctx.isDemo) return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
-    if (ctx.branch !== 'main') return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
-    // On prod: surface LIVE only when the master execution mode is already live.
-    if ($executionMode === 'live') return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper', 'live']);
-    return /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'paper']);
+    if (!ctx)              return /** @type {Array<'paper'|'live'|'shadow'>} */ (['paper', 'shadow']);
+    if (ctx.isDemo)        return /** @type {Array<'paper'|'live'|'shadow'>} */ (['paper', 'shadow']);
+    if (ctx.branch !== 'main') return /** @type {Array<'paper'|'live'|'shadow'>} */ (['paper', 'shadow']);
+    // On prod: full live/paper/shadow trio, LIVE first.
+    return /** @type {Array<'live'|'paper'|'shadow'>} */ (['live', 'paper', 'shadow']);
   });
 
   let {
@@ -228,7 +229,7 @@
     defaultTab="chain"
     accounts={[]}
     account=""
-    defaultMode={$executionMode === 'live' && _effectiveModes.includes('live') ? 'live' : 'paper'}
+    defaultMode={_effectiveModes.includes('live') ? 'live' : (_effectiveModes[0] || 'paper')}
     availableModes={_effectiveModes}
     onClose={() => { _orderOpen = false; }}
     onSubmit={() => { _orderOpen = false; }}

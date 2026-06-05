@@ -30,6 +30,14 @@
   let _killing = $state(/** @type {Set<number>} */ (new Set()));
   let _reconciling = $state(false);
   let _reconcileMsg = $state('');
+  // Operator: "in chase card, if there are no active chases, no need
+  // to show 'no active chases' and refresh it continuously". Idle
+  // detection slows the poll to a much longer interval so the card
+  // only re-fetches when something might have changed; combined
+  // with the parent's `{#if _chases.length}` hiding the section
+  // entirely when empty, the network noise goes to near-zero on
+  // idle pages. Exposed so the parent can react.
+  let _idle = $state(false);
   /** @type {ReturnType<typeof setInterval>|null} */
   let _timer = null;
 
@@ -43,6 +51,19 @@
     } finally {
       _loading = false;
     }
+    // Switch the poll cadence based on the result. Empty result =
+    // idle; slow the poll way down (default 30s) and hide the card
+    // entirely via the template gate. Non-empty = active; fast poll
+    // (3s default) so kill state stays current.
+    const wasIdle = _idle;
+    _idle = _chases.length === 0;
+    if (wasIdle !== _idle) _rescheduleTimer();
+  }
+
+  function _rescheduleTimer() {
+    if (_timer) { clearInterval(_timer); _timer = null; }
+    const ms = _idle ? Math.max(15000, pollMs * 10) : Math.max(1000, pollMs);
+    _timer = setInterval(_load, ms);
   }
 
   async function _reconcile() {
@@ -104,19 +125,25 @@
 
   onMount(() => {
     _load();
-    _timer = setInterval(_load, Math.max(1000, pollMs));
+    _rescheduleTimer();
   });
   onDestroy(() => {
     if (_timer) { clearInterval(_timer); _timer = null; }
   });
 </script>
 
+<!-- Operator: "in chase card, if there are no active chases, no
+     need to show 'no active chases' and refresh it continuously".
+     Entire root is gated on _chases.length so the card simply
+     vanishes when idle (the parent's bucket-card chrome
+     disappears with it via :empty / display:none). Polling auto-
+     slows in _rescheduleTimer when idle so background traffic
+     drops to one fetch every ~30s. -->
+{#if _chases.length}
 <div class="cc-root" class:cc-compact={compact}>
   <div class="cc-header">
     <span class="cc-label">Chases in flight</span>
-    {#if _chases.length}
-      <span class="cc-count">{_chases.length}</span>
-    {/if}
+    <span class="cc-count">{_chases.length}</span>
     <span class="cc-spacer"></span>
     {#if _reconcileMsg}
       <span class="cc-reconcile-msg" title={_reconcileMsg}>{_reconcileMsg}</span>
@@ -131,11 +158,7 @@
     </button>
   </div>
 
-  {#if !_chases.length}
-    <div class="cc-empty">
-      {_loading ? 'Loading…' : 'No active chases.'}
-    </div>
-  {:else}
+  {#if true}
     <div class="cc-grid" role="grid">
       <div class="cc-row cc-row-h" role="row">
         <span class="cc-col cc-col-acct">Account</span>
@@ -179,6 +202,7 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
   .cc-root {
