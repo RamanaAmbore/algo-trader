@@ -1364,13 +1364,30 @@
     padding: 1.8rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
-  /* Banner-aware extra padding — each sticky banner adds ~1.7rem. */
+  /* Sticky-strip-aware padding. The algo-viewport can have up to
+     THREE other sticky strips between the navbar and .algo-content:
+     - .ps-strip      (PositionStrip, always shows when positions exist; ~1.5rem)
+     - .sim-banner    (when simulator is active; ~1.7rem)
+     - .paper-banner  (when prod paper engine has open orders; ~1.7rem)
+     Each strip sits BELOW the previous one in flow but the fixed
+     .page-header was overlaying them. Bumped top + padding so the
+     page-header lands AFTER every visible sticky strip. */
+  :global(.algo-viewport:has(.ps-strip) .algo-content) {
+    padding-top: calc(1.8rem + 1.6rem);
+  }
   :global(.algo-viewport:has(.sim-banner) .algo-content),
   :global(.algo-viewport:has(.paper-banner) .algo-content) {
     padding-top: calc(1.8rem + 1.7rem);
   }
+  :global(.algo-viewport:has(.ps-strip):has(.sim-banner) .algo-content),
+  :global(.algo-viewport:has(.ps-strip):has(.paper-banner) .algo-content) {
+    padding-top: calc(1.8rem + 1.6rem + 1.7rem);
+  }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .algo-content) {
     padding-top: calc(1.8rem + 3.4rem);
+  }
+  :global(.algo-viewport:has(.ps-strip):has(.sim-banner):has(.paper-banner) .algo-content) {
+    padding-top: calc(1.8rem + 1.6rem + 3.4rem);
   }
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
@@ -1467,18 +1484,27 @@
     overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
   }
-  /* Banner-aware vertical offset — sim and paper banners are sticky
-     at top:3rem with z-index:49 (above the page-header's 45). When
-     they're visible, push the page-header below them so all three
-     bars stack cleanly: navbar → banner(s) → page-header. CSS
-     :has() updates the offset reactively as banners mount /
-     unmount; no JS measurement needed. */
+  /* Strip-aware vertical offset — three possible sticky strips can
+     sit between the navbar and .algo-content (ps-strip 1.6rem,
+     sim-banner 1.7rem, paper-banner 1.7rem). The page-header
+     needs to land BELOW whichever combination is currently
+     visible. CSS :has() handles every combination; no JS. */
+  :global(.algo-viewport:has(.ps-strip) .page-header) {
+    top: calc(3rem + 1.6rem);
+  }
   :global(.algo-viewport:has(.sim-banner) .page-header),
   :global(.algo-viewport:has(.paper-banner) .page-header) {
     top: calc(3rem + 1.7rem);
   }
+  :global(.algo-viewport:has(.ps-strip):has(.sim-banner) .page-header),
+  :global(.algo-viewport:has(.ps-strip):has(.paper-banner) .page-header) {
+    top: calc(3rem + 1.6rem + 1.7rem);
+  }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .page-header) {
     top: calc(3rem + 3.4rem);
+  }
+  :global(.algo-viewport:has(.ps-strip):has(.sim-banner):has(.paper-banner) .page-header) {
+    top: calc(3rem + 1.6rem + 3.4rem);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
