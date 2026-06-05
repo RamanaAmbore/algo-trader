@@ -79,6 +79,14 @@ class PositionRow(msgspec.Struct):
     # TWS / Bloomberg OMON convention is to show these alongside LTP.
     delta_pos: float = 0.0
     theta_pos: float = 0.0
+    # Intraday split — exposed so the Candidates grid can detect
+    # close-and-reopen activity and synthesize separate display rows.
+    # All post-multiplier (matches the `quantity` column's units).
+    overnight_quantity: int   = 0
+    day_buy_quantity:   int   = 0
+    day_sell_quantity:  int   = 0
+    day_buy_value:      float = 0.0
+    day_sell_value:     float = 0.0
 
 
 class PositionsSummaryRow(msgspec.Struct):

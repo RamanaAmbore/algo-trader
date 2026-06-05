@@ -1601,8 +1601,95 @@
   // Surface a banner when /api/positions fails so the operator sees
   // WHY the page is empty (instead of an opaque "no candidates" hint).
   let positionsLoadErr = $state('');
+
+  /**
+   * Split a broker-consolidated position into separate display rows
+   * when it had intraday close/reopen activity. Operator: "if positions
+   * are closed and the same positions are opened same or different qty,
+   * you have to show them as different rows".
+   *
+   * Trigger (Variant 1, with partial-reduction): `overnight ≠ 0` AND
+   * (`day_buy > 0` OR `day_sell > 0`).
+   *
+   * The split produces:
+   *   • Closed row    — qty = 0, P&L = realised on the portion of the
+   *                     overnight position that was closed today.
+   *                     Realised = (today's exit price − yesterday's
+   *                     close) × closed_qty.
+   *   • Open row      — qty = current_qty (signed), P&L = unrealised
+   *                     on what's currently open, day_change_val = the
+   *                     total leg P∆ minus the closed-row realised.
+   *
+   * Sum of the two rows' Day P&L Δ equals the original total day
+   * change so the TOTAL row at the bottom still reconciles to the
+   * strip's P∆ chip. The closed row keeps the original symbol /
+   * account so the operator can still scan + filter; a small "closed"
+   * tag on the row label distinguishes it visually.
+   */
+  function splitClosedReopened(/** @type {any} */ p) {
+    const oq  = Number(p.overnight_quantity || 0);
+    const dbq = Number(p.day_buy_quantity   || 0);
+    const dsq = Number(p.day_sell_quantity  || 0);
+    const dbv = Number(p.day_buy_value      || 0);
+    const dsv = Number(p.day_sell_value     || 0);
+    const close = Number(p.prev_close ?? 0);
+    // No split when overnight was zero (pure intraday open or fresh
+    // round-trip — already a single semantic event) or there were no
+    // intraday trades (pure overnight hold).
+    if (oq === 0 || (dbq === 0 && dsq === 0)) return [p];
+
+    // Side-of-close — long overnight closes via sells; short via buys.
+    // closed_qty is the unsigned magnitude that was closed today, capped
+    // at |overnight_quantity|.
+    const closed_qty = oq > 0 ? Math.min(oq, dsq) : Math.min(-oq, dbq);
+    if (closed_qty <= 0) return [p];   // intraday only added more, no close
+
+    // Today's exit price for the closed portion. For closing a LONG
+    // overnight: it was sold today at avg = dsv / dsq. For covering a
+    // SHORT: it was bought back at avg = dbv / dbq.
+    const exit_price = oq > 0
+      ? (dsq > 0 ? dsv / dsq : 0)
+      : (dbq > 0 ? dbv / dbq : 0);
+
+    // Realised on the closed portion vs yesterday's close (the day-mark
+    // anchor — same convention the P∆ formula uses). For a long sold:
+    // gain = (exit − close) × closed. For a short covered: gain = (close
+    // − exit) × closed.
+    const closed_realised = oq > 0
+      ? (exit_price - close) * closed_qty
+      : (close - exit_price) * closed_qty;
+
+    // Open row's day_change_val = total leg P∆ minus the realised the
+    // closed row absorbs, so the two rows sum back to the original.
+    const open_dcv = Number(p.day_change_val || 0) - closed_realised;
+
+    const closedRow = {
+      ...p,
+      // qty=0 means "closed" everywhere downstream (cand-row tinting,
+      // P&L cell shows realised, no chart-icon for trade-action).
+      qty: 0,
+      pnl: closed_realised,
+      day_change_val: closed_realised,
+      // Mark the row visually as the closed half via a synthesized
+      // key suffix; cand-row `c.source + '|' + c.account + '|' +
+      // c.symbol` key gets a unique tail so Svelte tracks the two
+      // halves as different rows.
+      _splitTag: 'closed',
+    };
+    const openRow = {
+      ...p,
+      // Re-attribute total leg P&L: closed row gets the realised
+      // portion; the open row keeps the remaining unrealised
+      // (broker's pnl − realised already attributed).
+      pnl: Number(p.pnl || 0) - closed_realised,
+      day_change_val: open_dcv,
+      _splitTag: 'open',
+    };
+    return [closedRow, openRow];
+  }
+
   async function loadPositions() {
-    /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number}>} */
+    /** @type {Array<any>} */
     const merged = [];
 
     // Live broker positions
@@ -1615,26 +1702,30 @@
         // Only options + futures (skip cash equities — this page is
         // options-only).
         if (!/(CE|PE|FUT)$/i.test(String(sym))) continue;
-        merged.push({
+        const baseRow = {
           symbol:   String(sym).toUpperCase(),
           account:  String(p?.account || ''),
           qty:      Number(p?.quantity || 0),
           source:   'live',
           avg_cost: p?.average_price != null ? Number(p.average_price) : null,
           ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
-          // Yesterday's close — anchors the per-row Prev Close column and
-          // the day's % move calculation. close_price is on every Kite
-          // position row; sim driver supplies it on the sim-position too.
           prev_close: p?.close_price != null ? Number(p.close_price) : null,
-          // Broker P&L (realised + unrealised). For qty=0 closed-out
-          // intraday rows this is the realized P&L; the chart adds it
-          // up separately so the legs panel + dashboard reconcile.
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
-          // Today's P&L change (broker_apis split formula). Surfaced
-          // per row so the Candidates grid can show Day P&L Δ + roll
-          // a TOTAL that matches the strip's P∆ chip exactly.
           day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
-        });
+          overnight_quantity: Number(p?.overnight_quantity || 0),
+          day_buy_quantity:   Number(p?.day_buy_quantity || 0),
+          day_sell_quantity:  Number(p?.day_sell_quantity || 0),
+          day_buy_value:      Number(p?.day_buy_value || 0),
+          day_sell_value:     Number(p?.day_sell_value || 0),
+        };
+        // Split closed-and-reopened legs into separate display rows
+        // (operator: "if positions are closed and the same positions
+        // are opened same or different qty, you have to show them as
+        // different rows"). Variant 1: trigger when overnight ≠ 0 AND
+        // either day_buy > 0 or day_sell > 0 (also covers partial
+        // reduction). Pure overnight (no day trades) or pure intraday
+        // round-trip (overnight = 0) stay as one row.
+        for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
     } catch (e) {
       // Don't blank the previous candidates on a transient failure —
@@ -1651,7 +1742,7 @@
         const sym = p?.symbol;
         if (!sym) continue;
         if (!/(CE|PE|FUT)$/i.test(String(sym))) continue;
-        merged.push({
+        const baseRow = {
           symbol:   String(sym).toUpperCase(),
           account:  String(p?.account || ''),
           qty:      Number(p?.quantity || 0),
@@ -1661,7 +1752,13 @@
           prev_close: p?.close_price != null ? Number(p.close_price) : null,
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
           day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
-        });
+          overnight_quantity: Number(p?.overnight_quantity || 0),
+          day_buy_quantity:   Number(p?.day_buy_quantity || 0),
+          day_sell_quantity:  Number(p?.day_sell_quantity || 0),
+          day_buy_value:      Number(p?.day_buy_value || 0),
+          day_sell_value:     Number(p?.day_sell_value || 0),
+        };
+        for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
     } catch (_) { /* ignore */ }
 
@@ -2295,7 +2392,7 @@
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
           </div>
-          {#each displayedCandidates as c (c.source + '|' + c.account + '|' + c.symbol)}
+          {#each displayedCandidates as c (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag || ''))}
             {@const lg = legAnalyticsBySymbol[c.symbol]}
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
@@ -2382,6 +2479,17 @@
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
                 {c.symbol}
+                {#if c._splitTag === 'closed'}
+                  <!-- Split-row tag: this row represents the portion of
+                       the overnight position that was CLOSED today.
+                       The sibling row (without the tag) represents
+                       what's still OPEN after the round-trip. -->
+                  <span class="cand-split-tag cand-split-closed"
+                        title="Closed portion of an intraday round-trip on this leg">CLOSED</span>
+                {:else if c._splitTag === 'open'}
+                  <span class="cand-split-tag cand-split-open"
+                        title="Currently open portion after today's close-and-reopen">OPEN</span>
+                {/if}
                 {#if isDraft}
                   <!-- Draft remove button — page-local removal only,
                        NO order placed. Clicking the row body still
@@ -3367,6 +3475,30 @@
     color: #fbbf24;
     font-weight: 800;
     letter-spacing: 0.08em;
+  }
+  /* Split-row tags — small chip beside the symbol, indicates whether
+     this row is the closed half or the open half of a close-and-
+     reopen sequence today. */
+  .cand-split-tag {
+    display: inline-block;
+    margin-left: 0.35rem;
+    padding: 0 0.3rem;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    border-radius: 2px;
+    font-family: ui-monospace, monospace;
+    vertical-align: middle;
+  }
+  .cand-split-closed {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+  }
+  .cand-split-open {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.10);
+    border: 1px solid rgba(74, 222, 128, 0.45);
   }
   /* Cell-level truncation so numeric tracks can shrink below their
      natural max-content without breaking row layout. Scoped to

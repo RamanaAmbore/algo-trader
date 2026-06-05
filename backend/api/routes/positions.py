@@ -20,6 +20,10 @@ _ROW_COLS = [
     'quantity', 'average_price', 'close_price', 'last_price',
     'pnl', 'pnl_percentage', 'unrealised', 'realised',
     'day_change', 'day_change_val', 'day_change_percentage',
+    # Intraday split — used by Candidates grid to detect closed-then-
+    # reopened activity and render the leg as two separate rows.
+    'overnight_quantity', 'day_buy_quantity', 'day_sell_quantity',
+    'day_buy_value', 'day_sell_value',
 ]
 
 _TTL = 30
