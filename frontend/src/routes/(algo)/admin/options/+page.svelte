@@ -3428,52 +3428,54 @@
      column's max-content. */
   .cand-grid {
     display: grid;
+    /* Operator: "lots of white space as columns are getting more
+       space than required". Switched every track from `minmax(floor,
+       1fr)` to `minmax(floor, max-content)` so columns only consume
+       what their widest cell actually needs — no stretching to fill
+       the card's remaining width. `.cand-scroll` carries the
+       horizontal scrollbar when total column widths overflow the
+       card; on wide viewports the grid leaves trailing whitespace
+       inside the scroll container (acceptable; preserves dense
+       column packing). */
     grid-template-columns:
-      auto                        /* checkbox */
-      minmax(max-content, 1.4fr)  /* symbol */
-      minmax(50px, 0.8fr)         /* expiry (MM-DD slice) */
-      minmax(max-content, 1fr)    /* account */
-      minmax(48px, 1fr)           /* qty */
-      minmax(62px, 1fr)           /* ltp */
-      minmax(62px, 1fr)           /* prev close */
-      minmax(62px, 1fr)           /* avg (cost basis) */
-      minmax(72px, 1.1fr)         /* day pnl - cumulative */
-      minmax(72px, 1.1fr)         /* day pnl delta - today */
-      minmax(52px, 1fr)           /* iv */
-      minmax(56px, 1fr)           /* delta */
-      minmax(56px, 1fr)           /* gamma */
-      minmax(62px, 1fr)           /* theta */
-      minmax(56px, 1fr);          /* vega */
+      auto                                 /* checkbox */
+      minmax(max-content, max-content)     /* symbol */
+      minmax(50px, max-content)            /* expiry (MM-DD slice) */
+      minmax(max-content, max-content)     /* account */
+      minmax(48px, max-content)            /* qty */
+      minmax(62px, max-content)            /* ltp */
+      minmax(62px, max-content)            /* prev close */
+      minmax(62px, max-content)            /* avg (cost basis) */
+      minmax(72px, max-content)            /* day pnl - cumulative */
+      minmax(72px, max-content)            /* day pnl delta - today */
+      minmax(52px, max-content)            /* iv */
+      minmax(56px, max-content)            /* delta */
+      minmax(56px, max-content)            /* gamma */
+      minmax(62px, max-content)            /* theta */
+      minmax(56px, max-content);           /* vega */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
-    /* width: max-content keeps every column at its requested floor so
-       the grid stretches beyond the card width when needed; the
-       wrapping `.cand-scroll` then triggers a horizontal scrollbar
-       (operator: "add scroll bars so that newly added columns get
-       the space required in legs"). On wider viewports the grid
-       still fills the card via the 1fr tracks. */
     width: max-content;
-    min-width: 100%;
   }
   /* When the operator filters to a single account, the Account
      column is implicit (every row carries the same value) — drop
      the column entirely. */
   .cand-grid-noacct {
     grid-template-columns:
-      auto                        /* checkbox */
-      minmax(max-content, 1.4fr)  /* symbol */
-      minmax(50px, 0.8fr)         /* expiry */
-      minmax(48px, 1fr)           /* qty */
-      minmax(62px, 1fr)           /* ltp */
-      minmax(62px, 1fr)           /* prev close */
-      minmax(62px, 1fr)           /* avg (cost basis) */
-      minmax(72px, 1.1fr)         /* day pnl */
-      minmax(72px, 1.1fr)         /* day pnl delta */
-      minmax(52px, 1fr)           /* iv */
-      minmax(56px, 1fr)           /* delta */
-      minmax(56px, 1fr)           /* gamma */
-      minmax(62px, 1fr)           /* theta */
-      minmax(56px, 1fr);          /* vega */
+      auto                                 /* checkbox */
+      minmax(max-content, max-content)     /* symbol */
+      minmax(50px, max-content)            /* expiry */
+      minmax(48px, max-content)            /* qty */
+      minmax(62px, max-content)            /* ltp */
+      minmax(62px, max-content)            /* prev close */
+      minmax(62px, max-content)            /* avg (cost basis) */
+      minmax(72px, max-content)            /* day pnl */
+      minmax(72px, max-content)            /* day pnl delta */
+      minmax(52px, max-content)            /* iv */
+      minmax(56px, max-content)            /* delta */
+      minmax(56px, max-content)            /* gamma */
+      minmax(62px, max-content)            /* theta */
+      minmax(56px, max-content);           /* vega */
   }
   /* TOTAL row — always last, visually distinct (top border + bolder
      text) so the operator sees the roll-up at a glance. The two pnl
