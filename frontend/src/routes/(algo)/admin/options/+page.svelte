@@ -1602,7 +1602,7 @@
   // WHY the page is empty (instead of an opaque "no candidates" hint).
   let positionsLoadErr = $state('');
   async function loadPositions() {
-    /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number}>} */
+    /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number}>} */
     const merged = [];
 
     // Live broker positions
@@ -1630,6 +1630,10 @@
           // intraday rows this is the realized P&L; the chart adds it
           // up separately so the legs panel + dashboard reconcile.
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
+          // Today's P&L change (broker_apis split formula). Surfaced
+          // per row so the Candidates grid can show Day P&L Δ + roll
+          // a TOTAL that matches the strip's P∆ chip exactly.
+          day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
         });
       }
     } catch (e) {
@@ -1656,6 +1660,7 @@
           ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
           prev_close: p?.close_price != null ? Number(p.close_price) : null,
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
+          day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
         });
       }
     } catch (_) { /* ignore */ }
@@ -2276,7 +2281,14 @@
             <span class="num">LTP</span>
             <span class="num">Prev</span>
             <span class="num">Avg</span>
-            <span class="num">P&amp;L</span>
+            <span class="num"
+                  title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip.">
+              Day P&amp;L
+            </span>
+            <span class="num"
+                  title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
+              Day P&amp;L Δ
+            </span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
             <span class="num">Γ</span>
@@ -2395,6 +2407,9 @@
               <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cell-pos' : 'cell-neg'}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
+              <span class="num cand-pnl {Number(c.day_change_val ?? 0) === 0 ? '' : Number(c.day_change_val ?? 0) > 0 ? 'cell-pos' : 'cell-neg'}">
+                {Number(c.day_change_val ?? 0) === 0 ? '—' : aggCompact(Number(c.day_change_val ?? 0))}
+              </span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.gamma) : '—'}</span>
@@ -2402,6 +2417,37 @@
               <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
             </div>
           {/each}
+          {#if displayedCandidates.length > 0}
+            <!-- TOTAL row — always the last row of the grid. Sums
+                 pnl + day_change_val across every displayed candidate so
+                 the two columns roll up to the strip's P and P∆ chips
+                 for the same set of accounts the grid is showing. -->
+            {@const _totalPnl = displayedCandidates.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
+            {@const _totalDcv = displayedCandidates.reduce((s, c) => s + Number(c.day_change_val ?? 0), 0)}
+            <div class="cand-row cand-row-total">
+              <span></span>
+              <span class="cand-total-label">TOTAL</span>
+              <span class="num">—</span>
+              {#if !hideAcct}<span>—</span>{/if}
+              <span class="num">—</span>
+              <span class="num">—</span>
+              <span class="num">—</span>
+              <span class="num">—</span>
+              <span class="num cand-pnl {_totalPnl >= 0 ? 'cell-pos' : 'cell-neg'}"
+                    title="Σ Day P&L across every visible row = strip's P chip for these accounts">
+                {aggCompact(_totalPnl)}
+              </span>
+              <span class="num cand-pnl {_totalDcv >= 0 ? 'cell-pos' : 'cell-neg'}"
+                    title="Σ Day P&L Δ across every visible row = strip's P∆ chip for these accounts">
+                {aggCompact(_totalDcv)}
+              </span>
+              <span class="num">—</span>
+              <span class="num">—</span>
+              <span class="num">—</span>
+              <span class="num">—</span>
+              <span class="num">—</span>
+            </div>
+          {/if}
         </div>
       </div>
     {:else if !_colLegs}
@@ -3276,7 +3322,8 @@
       minmax(34px, 1fr)           /* ltp */
       minmax(34px, 1fr)           /* prev close */
       minmax(34px, 1fr)           /* avg (cost basis) */
-      minmax(34px, 1fr)           /* pnl */
+      minmax(34px, 1fr)           /* day pnl - cumulative */
+      minmax(34px, 1fr)           /* day pnl delta - today */
       minmax(34px, 1fr)           /* iv */
       minmax(34px, 1fr)           /* delta */
       minmax(34px, 1fr)           /* gamma */
@@ -3298,12 +3345,28 @@
       minmax(34px, 1fr)           /* ltp */
       minmax(34px, 1fr)           /* prev close */
       minmax(34px, 1fr)           /* avg (cost basis) */
-      minmax(34px, 1fr)           /* pnl */
+      minmax(34px, 1fr)           /* day pnl */
+      minmax(34px, 1fr)           /* day pnl delta */
       minmax(34px, 1fr)           /* iv */
       minmax(34px, 1fr)           /* delta */
       minmax(34px, 1fr)           /* gamma */
       minmax(34px, 1fr)           /* theta */
       minmax(34px, 1fr);          /* vega */
+  }
+  /* TOTAL row — always last, visually distinct (top border + bolder
+     text) so the operator sees the roll-up at a glance. The two pnl
+     columns sum to the strip's P + P∆ chips for the same accounts. */
+  .cand-row.cand-row-total {
+    border-top: 2px solid rgba(251, 191, 36, 0.55);
+    background: rgba(251, 191, 36, 0.05);
+    font-weight: 700;
+    margin-top: 0.2rem;
+    padding-top: 0.35rem;
+  }
+  .cand-total-label {
+    color: #fbbf24;
+    font-weight: 800;
+    letter-spacing: 0.08em;
   }
   /* Cell-level truncation so numeric tracks can shrink below their
      natural max-content without breaking row layout. Scoped to
