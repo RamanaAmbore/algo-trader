@@ -792,8 +792,7 @@
           {@const bx = xOf(pin.be)}
           {@const chipH = 18}
           <!-- Full-height amber breakeven vertical — middle prominence
-               tier per operator request ("breakeven prominent"). 1.5px
-               stroke at 0.65 alpha sits noticeably above the σ band
+               tier. 1.5px stroke at 0.65 alpha sits above the σ band
                grid but quieter than the bright cyan spot line below
                so the eye reads spot → breakevens → σ-band reference
                in descending order of visual weight. -->
@@ -802,11 +801,9 @@
                 stroke-opacity="0.65"
                 stroke-dasharray="6 3"/>
           <!-- Breakeven × curve intersection — Kite-style dart at
-               (bx, zeroY). Tight + low-key per operator: "breakeven
-               dots should be less dominent." Tiny inner pin + a
-               snug halo (r=4 not r=12) so the marker reads as a
-               quiet secondary anchor under the brighter spot dart
-               below. -->
+               (bx, zeroY). Tiny inner pin + a snug halo so the
+               marker reads as a quiet secondary anchor under the
+               brighter spot dart. -->
           <circle cx={bx} cy={zeroY} r="4"
                   fill="rgba(251, 191, 36, 0.12)"
                   pointer-events="none"/>
@@ -818,21 +815,17 @@
                   fill="#fbbf24" stroke="#0c1830" stroke-width="0.75"
                   fill-opacity="0.85"
                   pointer-events="none"/>
-          <!-- Connector: thin 0.5px amber line from pill bottom to PAD_T. -->
-          <line x1={bx} x2={bx} y1={pin.pinY + chipH} y2={PAD_T}
-                stroke="#fbbf24" stroke-opacity="0.55" stroke-width="0.5"/>
-          <!-- Navy padding rect underneath to mask any σ label text
-               sitting immediately behind the pill. -->
-          <rect x={bx - pin.chipW / 2 - 1} y={pin.pinY - 1}
-                width={pin.chipW + 2} height={chipH + 2} rx="5"
-                fill="#0d1829"/>
-          <!-- Amber pill — horizontal, rx 4, text centered. -->
-          <rect x={bx - pin.chipW / 2} y={pin.pinY}
-                width={pin.chipW} height={chipH} rx="4"
-                fill="#fbbf24" stroke="#d4920c" stroke-width="1"/>
+          <!-- Operator: "remove chip for break even text decoration".
+               Plain amber text centered on the breakeven vertical,
+               with a navy stroke outline (paint-order: stroke fill)
+               so it stays readable when it crosses the σ-band grid
+               labels behind. No pill rect, no connector line. -->
           <text x={bx} y={pin.pinY + chipH / 2 + 4}
                 text-anchor="middle"
-                fill="#0d1829"
+                fill="#fbbf24"
+                stroke="#0c1830"
+                stroke-width="3"
+                paint-order="stroke fill"
                 font-size="12" font-weight="700"
                 font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
             {pin.label}
@@ -929,21 +922,33 @@
         {/if}
       {/each}
 
-      <!-- Z-layer 11: Spot price label — centered on the spot vertical,
-           just inside the plot area top (O3: font-size 13; O4: y=PAD_T+14).
-           Sits above the topmost Y-label chip on the same x column. -->
+      <!-- Z-layer 11: Spot price — operator: "remove chip for break
+           even text decoration. add it to spot price." Cyan pill
+           centered on the spot vertical, identical shape to the
+           breakeven pill the chart used to wear. Navy backing
+           rect masks any σ tick label behind it; cyan fill +
+           dark border with bold dark numerals so it reads as
+           THE prominent reference marker on the chart. -->
       {#if spot > 0 && spot > sMin && spot < sMax}
-        <text x={spotX} y={PAD_T + 14}
+        {@const spotLabel = spot.toFixed(0)}
+        {@const spotChipW = spotLabel.length * 8 + 14}
+        {@const spotChipH = 18}
+        {@const spotChipY = PAD_T + 3}
+        <!-- Navy mask underneath in case the pill overlaps a σ label. -->
+        <rect x={spotX - spotChipW / 2 - 1} y={spotChipY - 1}
+              width={spotChipW + 2} height={spotChipH + 2} rx="5"
+              fill="#0d1829"/>
+        <!-- Cyan pill — horizontal, rx 4, text centered. -->
+        <rect x={spotX - spotChipW / 2} y={spotChipY}
+              width={spotChipW} height={spotChipH} rx="4"
+              fill="#22d3ee" stroke="#0891b2" stroke-width="1"/>
+        <text x={spotX} y={spotChipY + spotChipH / 2 + 4}
               text-anchor="middle"
-              dominant-baseline="auto"
-              fill="#22d3ee"
-              stroke="#0c1830"
-              stroke-width="3"
-              paint-order="stroke fill"
-              font-size="13" font-weight="600"
+              fill="#0c1830"
+              font-size="12" font-weight="800"
               font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
               style="font-variant-numeric: tabular-nums">
-          {spot.toFixed(0)}
+          {spotLabel}
         </text>
       {/if}
 

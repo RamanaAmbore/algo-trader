@@ -1358,13 +1358,13 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Operator: "there is a good amount of whitespace wasted above
-       header text timestamp with fast icons in every page. reduce
-       it." Top padding zeroed so the sticky .page-header sits
-       flush with the navbar's bottom edge (no visible gap before
-       scrolling). Side padding (0.5rem) + generous bottom padding
-       unchanged — only the top gap was wasted. */
-    padding: 0 0.5rem 1.5rem;
+    /* Top padding reserves space for the FIXED .page-header strip
+       (operator: "make header row fixed with strip under navbar").
+       Header is removed from flow now — content needs explicit
+       offset equal to header height (~2rem) so the first card
+       doesn't slide under the strip. Bumped to 2.2rem so the rare
+       multi-line wrap (mobile portrait) doesn't overlap. */
+    padding: 2.2rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
 
@@ -1428,25 +1428,26 @@
        genuinely overflows. */
     gap: 0.15rem;
     flex-wrap: wrap;
-    margin-bottom: 0.3rem;
-    /* Sticky header pinned just below the algo-navbar (h-12 = 3rem)
-       so the title chip + timestamp + Refresh/Order/Chart/Log icon
-       trio stay visible while the page body scrolls beneath. Lower
-       z-index than the navbar (50) and the SIM / PAPER banners
-       (49) so those can overlap when both are visible — page
-       header is the lowest sticky layer. Solid background matches
-       `.algo-content`'s palette so scrolled-up content doesn't
-       bleed through.
-       Operator: "reduce whitespace above header text". Vertical
-       padding trimmed (0.35rem → 0.2rem) and algo-content's
-       top padding zeroed (see .algo-content above) so the header
-       sits flush below the navbar with no visible gap. */
-    position: sticky;
+    margin-bottom: 0;
+    /* Operator: "make header row fixed with strip under navbar".
+       True position:fixed strip pinned at top:3rem (just under
+       the algo-navbar's h-12 / 3rem). Spans full viewport width
+       (left:0 / right:0) and matches the navbar's #0a1020
+       background + amber bottom border so the navbar + page-
+       header read as one continuous strip-band.
+       Lower z-index than the navbar (50) and the SIM / PAPER
+       banners (49) so those can overlap when both are visible.
+       .algo-content reserves padding-top: 2.2rem so content
+       doesn't slide under the fixed strip. */
+    position: fixed;
     top: 3rem;
+    left: 0;
+    right: 0;
     z-index: 40;
-    background: #0c1830;
-    padding: 0.2rem 0.5rem;
-    margin: 0 -0.5rem 0.3rem;
+    background: #0a1020;
+    padding: 0.2rem 0.65rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.30);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
@@ -1494,11 +1495,10 @@
      Tighter spacing below the underline so the page content sits
      close to the title (was 0.35rem padding + 1rem margin = ~22px
      of empty zone). */
-  :global(.algo-content .page-header) {
-    border-bottom: 1px solid rgba(251,191,36,0.25);
-    padding-bottom: 0.15rem;
-    margin-bottom: 0.35rem;
-  }
+  /* Fixed-strip style on .page-header above already handles
+     border-bottom + margins for every algo page. Override block
+     retired with the sticky→fixed switch — the strip looks the
+     same on every page without per-page-scoped overrides. */
 
   /* Page-level timestamp — sky-300 so it sits cleanly next to the
      amber page-title-chip without colour-blending. Matches the algo
