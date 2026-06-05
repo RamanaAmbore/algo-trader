@@ -860,12 +860,13 @@
            marker ties to its curve. Filled inner + outer ring; halo
            dropped per "outer circle close to inner". -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
-        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
-                fill="none" stroke="#fbbf24" stroke-width="2"
-                stroke-opacity="0.95"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="6"
+                fill="none" stroke="#fbbf24" stroke-width="1.25"
+                stroke-opacity="0.55"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(currentPnl)} r="5"
-                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="3"
+                fill="#fbbf24" fill-opacity="0.85"
+                stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
 
@@ -875,12 +876,13 @@
            (operator: "Similarly the spot price line and expiry curve
            intersection point"). -->
       {#if curveAtSpot != null && spot >= sMin && spot <= sMax}
-        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="9"
-                fill="none" stroke="#7dd3fc" stroke-width="2"
-                stroke-opacity="0.95"
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="6"
+                fill="none" stroke="#7dd3fc" stroke-width="1.25"
+                stroke-opacity="0.55"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="5"
-                fill="#7dd3fc" stroke="#0c1830" stroke-width="1.5"
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="3"
+                fill="#7dd3fc" fill-opacity="0.85"
+                stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
 
@@ -892,15 +894,16 @@
            chart without any pin clutter. Halo glow widens the
            apparent weight without making the inner stroke fat. -->
       {#if spot > sMin && spot < sMax}
-        <!-- Halo glow — 6 px wide at α 0.22, paints first so the
-             solid stroke sits cleanly on top. -->
+        <!-- Halo glow — trimmed to 3 px α 0.10 per operator: "make
+             the spot price line and darts less prominent". -->
         <line x1={spotX} x2={spotX} y1={PAD_T} y2={height - PAD_B}
-              stroke="#22d3ee" stroke-width="6"
-              stroke-opacity="0.22"
+              stroke="#22d3ee" stroke-width="3"
+              stroke-opacity="0.10"
               pointer-events="none"/>
-        <!-- Inner solid stroke — sharp bright cyan at full alpha. -->
+        <!-- Inner solid stroke — thinner + lower alpha so the
+             spot line reads as a quieter reference. -->
         <line x1={spotX} x2={spotX} y1={PAD_T} y2={height - PAD_B}
-              stroke="#22d3ee" stroke-width="2.5" stroke-opacity="1"/>
+              stroke="#22d3ee" stroke-width="1.25" stroke-opacity="0.65"/>
       {/if}
 
       <!-- Y-axis labels — left-edge, horizontal. One label per yTicks
@@ -1038,22 +1041,24 @@
            Re-painted on the fg layer so the marker sits cleanly on
            top of the curves regardless of paint order. -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
-        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
-                fill="none" stroke="#fbbf24" stroke-width="2"
-                stroke-opacity="0.95"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="6"
+                fill="none" stroke="#fbbf24" stroke-width="1.25"
+                stroke-opacity="0.55"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(currentPnl)} r="5"
-                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="3"
+                fill="#fbbf24" fill-opacity="0.85"
+                stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
       <!-- Foreground spot × expiry-curve dart — sky-blue (expiry hue). -->
       {#if curveAtSpot != null && spot >= sMin && spot <= sMax}
-        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="9"
-                fill="none" stroke="#7dd3fc" stroke-width="2"
-                stroke-opacity="0.95"
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="6"
+                fill="none" stroke="#7dd3fc" stroke-width="1.25"
+                stroke-opacity="0.55"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="5"
-                fill="#7dd3fc" stroke="#0c1830" stroke-width="1.5"
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="3"
+                fill="#7dd3fc" fill-opacity="0.85"
+                stroke="#0c1830" stroke-width="1"
                 pointer-events="none"/>
       {/if}
     </svg>
