@@ -1143,7 +1143,7 @@
     padding: 0.42rem 0.95rem;
     background: transparent;
     border: 0;
-    border-bottom: 3px solid transparent;
+    border-bottom: 2px solid transparent;
     color: #94a3b8;
     font-size: 0.72rem;
     font-weight: 700;
@@ -1164,8 +1164,7 @@
      adds a halo + scale-bump so the active surface punches through
      visually. */
   .oc-tab[aria-selected="true"] {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
-                inset 0 -3px 0 currentColor;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
     font-weight: 800;
     letter-spacing: 0.10em;
   }

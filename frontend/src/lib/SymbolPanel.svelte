@@ -1423,39 +1423,35 @@
     border: none;
     background: transparent;
   }
-  /* Header */
+  /* Header — operator: "change all modal header row background so
+     that it looks prominent". Tinted gradient + bolder bottom
+     border so the strip visually separates from the body. */
   .oes-header {
     display: flex;
     align-items: center;
     gap: 0.55rem;
-    padding: 0.7rem 1rem 0.5rem;
-    border-bottom: 1px solid rgba(251,191,36,0.15);
+    padding: 0.6rem 0.95rem;
+    background: linear-gradient(180deg,
+                  rgba(251, 191, 36, 0.12) 0%,
+                  rgba(251, 191, 36, 0.04) 100%);
+    border-bottom: 1px solid rgba(251, 191, 36, 0.50);
     flex-shrink: 0;
   }
-  /* Modal-name chip — matches .cm-title / .alm-title typography on the
-     sibling modals so all three read the same at the top-left. */
+  /* Modal-name — operator: "remove decoration around orders text in
+     modal header". Strip the chip pill back to plain prominent text;
+     the header strip's tinted background carries the family identity
+     now. */
   .oes-modal-name {
-    /* Operator: "order entry card header in order page and modal
-       should be more prominent". Promoted from a quiet 0.65rem slate
-       label to an amber chip pill — same affordance shape as the
-       /orders page's bucket-header label so the modal and the page
-       read as one family. */
     font-family: monospace;
-    font-size: 0.72rem;
+    font-size: 0.78rem;
     color: #fbbf24;
-    background: rgba(251, 191, 36, 0.16);
-    border: 1px solid rgba(251, 191, 36, 0.55);
-    padding: 0.22rem 0.55rem;
-    border-radius: 4px;
     font-weight: 800;
-    letter-spacing: 0.10em;
-    box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
+    letter-spacing: 0.08em;
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.4rem;
   }
-  /* Icon color tracks the chip foreground now. */
   .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new
@@ -1719,7 +1715,7 @@
     padding: 0.55rem 1.05rem;
     background: transparent;
     border: none;
-    border-bottom: 3px solid transparent;
+    border-bottom: 2px solid transparent;
     margin-bottom: -1px;
     font-size: 0.78rem;
     font-weight: 700;
@@ -1741,8 +1737,7 @@
     font-weight: 800;
     letter-spacing: 0.08em;
     background: rgba(251, 191, 36, 0.10);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
-                inset 0 -3px 0 #fbbf24;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
   }
   .oes-tab-disabled {
     cursor: not-allowed !important;

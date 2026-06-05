@@ -110,11 +110,19 @@
 
 <style>
   .alm-header {
+    /* Prominent header strip — violet family (matches the page-header
+       Activity button palette + the panel border colour) so opening
+       the modal feels like opening a window into the same surface
+       family. Same gradient + bolder bottom border treatment as
+       ChartModal and SymbolPanel headers. */
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid rgba(168, 85, 247, 0.22);
+    padding: 0.55rem 0.85rem;
+    background: linear-gradient(180deg,
+                  rgba(168, 85, 247, 0.12) 0%,
+                  rgba(168, 85, 247, 0.04) 100%);
+    border-bottom: 1px solid rgba(168, 85, 247, 0.55);
     flex-shrink: 0;
   }
   /* Matches .cm-title / .oes-modal-name typography on the sibling

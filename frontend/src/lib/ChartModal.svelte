@@ -102,28 +102,39 @@
            mirrors the page-header Chart button glyph so the operator
            reads "I'm in Charts" at a glance. -->
       <span class="cm-title">
-        <!-- Chart glyph doubles as the refresh-state indicator — when
-             a fetch is in flight, the icon spins. No separate busy
-             badge or canvas overlay clutters the chrome. Operator:
-             "instead of showing two refresh icons, remove them.
-             instead have main chart icon to rotate when refreshing
-             the chart". Wrapper span carries the title so the
-             tooltip survives across the SVG namespace. -->
-        <span class="cm-title-icon-wrap"
-              title={_loading ? 'Refreshing chart — modal is locked until done' : ''}
-              aria-live="polite">
-          <svg class="cm-title-icon" class:cm-title-icon-loading={_loading}
-               width="12" height="12" viewBox="0 0 16 16"
-               fill="none" stroke="currentColor" stroke-width="1.9"
-               stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true">
-            <path d="M2 13h12M3 11l3-4 3 2 4-6" />
-          </svg>
-        </span>
+        <!-- Chart glyph stays static — operator: "instead of rotating
+             chart icon, keep it static". Refresh-state lives on the
+             separate refresh icon to the right of the title now. -->
+        <svg class="cm-title-icon"
+             width="12" height="12" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <path d="M2 13h12M3 11l3-4 3 2 4-6" />
+        </svg>
         Charts
       </span>
-      <button type="button" class="cm-close" bind:this={_closeBtnEl}
-              aria-label="Close chart modal">×</button>
+      <!-- Right-side action cluster — refresh-state icon + X close.
+           Refresh icon rotates while a fetch is in flight; static
+           otherwise. Operator: "add rotating refresh icon before X
+           and rotate it while refreshing. keep it right aligned". -->
+      <span class="cm-actions">
+        <span class="cm-refresh-wrap"
+              title={_loading ? 'Refreshing chart — modal is locked until done' : ''}
+              aria-live="polite">
+          <svg class="cm-refresh-icon" class:cm-refresh-icon-loading={_loading}
+               width="13" height="13" viewBox="0 0 16 16"
+               fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true">
+            <!-- Canonical circular-refresh glyph: open arc + arrowhead -->
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
+            <path d="M13.5 3v3h-3" />
+          </svg>
+        </span>
+        <button type="button" class="cm-close" bind:this={_closeBtnEl}
+                aria-label="Close chart modal">×</button>
+      </span>
     </div>
     <div class="cm-body">
       <ChartWorkspace
@@ -146,10 +157,16 @@
      chrome below. */
 
   .cm-header {
+    /* Operator: "change all modal header row background so that it
+       looks prominent". Solid darker fill + cyan-tinted bottom
+       border so the title strip visually separates from the body. */
     display: flex;
     align-items: center;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 0.55rem 0.85rem;
+    background: linear-gradient(180deg,
+                  rgba(34, 211, 238, 0.10) 0%,
+                  rgba(34, 211, 238, 0.04) 100%);
+    border-bottom: 1px solid rgba(34, 211, 238, 0.45);
     gap: 0.5rem;
     flex-shrink: 0;
   }
@@ -174,7 +191,6 @@
   }
 
   .cm-close {
-    margin-left: auto;
     width: 1.8rem;
     height: 1.8rem;
     display: inline-flex;
@@ -225,20 +241,35 @@
   }
   .cm-body { position: relative; }
 
-  .cm-title-icon-wrap {
+  /* Right-side action cluster — refresh icon + X close, sits via
+     `margin-left: auto` on the wrapper so the title group hugs left,
+     the actions hug right. Operator: "keep it right aligned". */
+  .cm-actions {
     display: inline-flex;
     align-items: center;
+    gap: 0.45rem;
+    margin-left: auto;
   }
-  /* Rotating chart-glyph while a refresh is in flight. Replaces both
-     the prior `.cm-busy-badge` (separate spinner next to the title)
-     and the chart-canvas `.cw-chart-spinner` (overlay). Single icon,
-     single rotation — no duplicate affordances cluttering the
-     chrome. */
-  .cm-title-icon-loading {
-    animation: cm-title-spin 1.1s linear infinite;
+  .cm-refresh-wrap {
+    display: inline-flex;
+    align-items: center;
+    color: #22d3ee;
+    width: 1.4rem;
+    height: 1.4rem;
+    justify-content: center;
+    border-radius: 3px;
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.55);
+  }
+  /* Refresh-state icon rotates while a fetch is in flight; static
+     otherwise. Replaces the prior `cm-title-icon-loading` rotation
+     on the chart glyph — the chart icon is the modal identity, the
+     refresh icon carries the load state. */
+  .cm-refresh-icon-loading {
+    animation: cm-refresh-spin 1.1s linear infinite;
     transform-origin: 50% 50%;
   }
-  @keyframes cm-title-spin {
+  @keyframes cm-refresh-spin {
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }
