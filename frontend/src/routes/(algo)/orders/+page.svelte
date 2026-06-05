@@ -385,15 +385,17 @@
        label + card-control trio — SymbolPanel below renders its
        own internal picker row (Account · Type · Symbol · Exchange)
        + tab strip the same way the modal does. -->
-  <!-- Operator: "remove order entry decoration in the order entry
-       header of orders page. remove order heading also in orders
-       page. rest of it should be in sync with order entry in
-       orders modal". Section label + chip decoration retired from
-       the bucket-header — the bucket-card-entry's amber left
-       accent + gradient is the only outer chrome, matching the
-       modal's panel decoration. Card-control trio kept so the
-       operator can still collapse / fullscreen the panel. -->
+  <!-- Operator: "the current orders row in order entry panel needs
+       to be removed. In the header at ORDER ENTRY on the left
+       side of the panel where full screen icon is present in the
+       row". Bucket-header carries plain "ORDER ENTRY" label on
+       the left (no chip / decoration) + card-control trio on the
+       right. SymbolPanel below renders with `headerless` so its
+       OWN internal header strip (the duplicate "ORDER ENTRY" chip
+       + close button) is suppressed — operator wanted just one
+       row, not two stacked. -->
   <div class="bucket-header oc-entry-header oc-entry-header-bare">
+    <span class="oc-entry-label">ORDER ENTRY</span>
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -403,12 +405,14 @@
     <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
   </div>
   <div class="card-body" hidden={_colEntry}>
-    <!-- `headerless` removed — SymbolPanel's own header + picker row
-         render the Account / Type / Symbol controls now (matches
-         modal). The `inline` flag still strips the modal overlay
-         frame so the panel sits flat in the bucket-card body. -->
+    <!-- `headerless` re-added: SymbolPanel's internal header strip
+         (title chip + close X) was the "current orders row" the
+         operator asked to remove. The picker row (Account · Type ·
+         Symbol · Exchange) still renders — that gate is
+         `!headerless` standalone after the earlier change. -->
     <SymbolPanel
       inline
+      headerless
       hideBottomPanel
       showCommonActions
       availableModes={['paper', 'live', 'shadow', 'sim', 'replay']}
@@ -960,8 +964,19 @@
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
   }
-  /* No-label variant — tighter top margin since there's no chip
-     to anchor the header height. */
+  /* Plain "ORDER ENTRY" label — no chip / background / border,
+     just the canonical mp-section-label typography sitting on the
+     left of the bucket-header. Pairs with the card-control trio
+     on the right. */
+  .oc-entry-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(251, 191, 36, 0.7);
+    flex-shrink: 0;
+  }
   .oc-entry-header-bare {
     margin-bottom: 0.2rem;
     min-height: 1.4rem;
