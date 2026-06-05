@@ -35,20 +35,55 @@ async def _emit_chase_terminal(
     slippage: float | None = None,
     error: str | None = None,
 ) -> None:
-    """Look up the AlgoOrder row by broker_order_id and write a chase-terminal
-    AgentEvent if the order carries an agent_id.  Fire-and-forget.
+    """Look up the AlgoOrder row by broker_order_id, update its terminal
+    status, and write a chase-terminal AgentEvent if the order carries
+    an agent_id.  Fire-and-forget.
+
+    Previously this only wrote the AgentEvent and never touched
+    AlgoOrder.status — chase-driven orders stayed at OPEN forever
+    even though the chase loop had already filled/cancelled them.
     """
     try:
         from sqlalchemy import select as _sel
+        from datetime import datetime, timezone
         from backend.api.database import async_session as _async_session
         from backend.api.models import AlgoOrder as _AlgoOrder
         from backend.api.algo.agent_engine import record_chase_terminal
 
+        # Map chase outcome → AlgoOrder.status.
+        _OUTCOME_TO_STATUS = {
+            "chase_fill":      "FILLED",
+            "chase_unfilled":  "UNFILLED",
+            "chase_cancelled": "CANCELLED",
+            "chase_failed":    "REJECTED",
+        }
+        _new_status = _OUTCOME_TO_STATUS.get(outcome)
+
+        agent_id = None
         async with _async_session() as _s:
             row = (await _s.execute(
                 _sel(_AlgoOrder).where(_AlgoOrder.broker_order_id == broker_order_id)
             )).scalar_one_or_none()
-        agent_id = getattr(row, "agent_id", None) if row else None
+            if row is not None:
+                agent_id = getattr(row, "agent_id", None)
+                if _new_status and row.status != _new_status:
+                    row.status = _new_status
+                    if attempts:
+                        try:
+                            row.attempts = int(attempts)
+                        except (TypeError, ValueError):
+                            pass
+                    if _new_status == "FILLED":
+                        if final_price is not None:
+                            try:
+                                row.fill_price = float(final_price)
+                            except (TypeError, ValueError):
+                                pass
+                        row.filled_at = datetime.now(timezone.utc)
+                    if error:
+                        row.detail = (row.detail or "")[:200] + f" · {error[:120]}"
+                    await _s.commit()
+
         await record_chase_terminal(
             agent_id=agent_id,
             outcome=outcome,
