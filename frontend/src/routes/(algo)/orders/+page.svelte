@@ -1135,17 +1135,18 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    /* Operator: "chain and order ticket should attract eye balls".
-       Bumped padding (0.32→0.42 / 0.65→0.95rem) + font (0.58→0.72rem)
-       + weight (600→700) so the tab strip reads as the page's loudest
-       action affordance — drives the operator straight to Chain or
-       Ticket from anywhere on the orders surface. */
-    padding: 0.42rem 0.95rem;
+    /* Operator: "make chain order ticket text in tabs smaller size
+       and make them consistent with other text. having them in
+       separate line already made the tabs prominent." Back to the
+       compact section-label scale (0.6rem / weight 700) — matches
+       .mp-section-label and the LogPanel tab-row sizing. The
+       dedicated tab-row line is what attracts attention now. */
+    padding: 0.3rem 0.7rem;
     background: transparent;
     border: 0;
     border-bottom: 2px solid transparent;
     color: #94a3b8;
-    font-size: 0.72rem;
+    font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1158,15 +1159,12 @@
     color: #c8d8f0;
     background: rgba(255, 255, 255, 0.04);
   }
-  /* Active-state glow — applied via the inline `aria-selected=true`
-     attribute selector. The inline style on each tab still drives
-     the active-tab COLOUR (per-tab amber/green/sky); this rule
-     adds a halo + scale-bump so the active surface punches through
-     visually. */
+  /* Active-state glow — keep the subtle halo + slight weight bump
+     so the active tab still reads clearly, but no font-size bump
+     (would re-pump the strip's size). */
   .oc-tab[aria-selected="true"] {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
     font-weight: 800;
-    letter-spacing: 0.10em;
   }
   .oc-tab-disabled {
     cursor: not-allowed;

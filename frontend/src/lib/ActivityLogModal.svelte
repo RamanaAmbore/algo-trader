@@ -87,39 +87,30 @@
              white specular highlight at the upper left, a darker
              outline + a soft drop shadow so the bell pops off the
              chip-pill background as a tiny dimensional object. -->
+        <!-- Operator: "make bell icon less 3D". Dropped the
+             feDropShadow filter + the specular-highlight stroke;
+             kept a softer radial gradient for a gentle rounded
+             read without the "popping off the page" effect.
+             Matches the PageHeaderActions Log button so opening
+             Activity from either entry surface shows the same bell. -->
         <svg class="alm-title-icon alm-title-icon-3d" width="14" height="14"
              viewBox="0 0 16 16" aria-hidden="true">
           <defs>
-            <!-- Orange gradient — operator: "change cyan color to
-                 something else for bell icon notification". Replaces
-                 the prior violet stops (which read as too cool /
-                 bluish) with the classical warm bell tone. Matches
-                 the PageHeaderActions Log button so opening Activity
-                 from either entry surface shows the same bell. -->
-            <radialGradient id="alm-bell-body" cx="35%" cy="30%" r="75%">
-              <stop offset="0%"  stop-color="#fed7aa" />
-              <stop offset="55%" stop-color="#fb923c" />
-              <stop offset="100%" stop-color="#9a3412" />
+            <radialGradient id="alm-bell-body" cx="40%" cy="38%" r="70%">
+              <stop offset="0%"  stop-color="#fdba74" />
+              <stop offset="70%" stop-color="#fb923c" />
+              <stop offset="100%" stop-color="#c2410c" />
             </radialGradient>
-            <filter id="alm-bell-shadow" x="-30%" y="-20%" width="160%" height="150%">
-              <feDropShadow dx="0" dy="0.6" stdDeviation="0.6"
-                            flood-color="#000" flood-opacity="0.55" />
-            </filter>
           </defs>
-          <g filter="url(#alm-bell-shadow)">
-            <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
-                  fill="url(#alm-bell-body)"
-                  stroke="#7c2d12" stroke-width="0.6"
-                  stroke-linejoin="round" />
-            <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
-                  fill="#c2410c" stroke="#7c2d12" stroke-width="0.5"
-                  stroke-linejoin="round" />
-            <path d="M6.2 4.3c-.6.5-1 1.2-1.1 2"
-                  fill="none" stroke="rgba(255,255,255,0.65)"
-                  stroke-width="0.7" stroke-linecap="round" />
-            <circle cx="8" cy="2.1" r="0.7" fill="#fde68a"
-                    stroke="#7c2d12" stroke-width="0.4" />
-          </g>
+          <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
+                fill="url(#alm-bell-body)"
+                stroke="#9a3412" stroke-width="0.5"
+                stroke-linejoin="round" />
+          <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
+                fill="#c2410c" stroke="#9a3412" stroke-width="0.4"
+                stroke-linejoin="round" />
+          <circle cx="8" cy="2.1" r="0.6" fill="#fdba74"
+                  stroke="#9a3412" stroke-width="0.35" />
         </svg>
         Activity
       </span>
