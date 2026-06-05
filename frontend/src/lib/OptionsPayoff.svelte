@@ -799,26 +799,21 @@
                 stroke-opacity="0.65"
                 stroke-dasharray="6 3"/>
           <!-- Breakeven × curve intersection — Kite-style dart at
-               (bx, zeroY). By definition the expiry curve crosses
-               P&L = 0 at this x, so the marker sits exactly where
-               the amber breakeven vertical meets the curve.
-               Operator: "x,y intersection point that breakeven line
-               intersects the curve, that intersection point the
-               single point alone should have the decoration".
-                 outer halo  (r=12, amber α 0.12 fill)   — soft glow
-                 middle ring (r=8, amber stroke α 0.85)   — target hoop
-                 inner dot   (r=4, solid amber + navy)    — bright pin
-               Amber matches the breakeven vertical's hue so the dart
-               reads as part of the same family. -->
-          <circle cx={bx} cy={zeroY} r="12"
+               (bx, zeroY). Tight + low-key per operator: "breakeven
+               dots should be less dominent." Tiny inner pin + a
+               snug halo (r=4 not r=12) so the marker reads as a
+               quiet secondary anchor under the brighter spot dart
+               below. -->
+          <circle cx={bx} cy={zeroY} r="4"
                   fill="rgba(251, 191, 36, 0.12)"
                   pointer-events="none"/>
-          <circle cx={bx} cy={zeroY} r="8"
-                  fill="none" stroke="#fbbf24" stroke-width="1.5"
-                  stroke-opacity="0.85"
+          <circle cx={bx} cy={zeroY} r="3.5"
+                  fill="none" stroke="#fbbf24" stroke-width="1"
+                  stroke-opacity="0.55"
                   pointer-events="none"/>
-          <circle cx={bx} cy={zeroY} r="4"
-                  fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"
+          <circle cx={bx} cy={zeroY} r="2.25"
+                  fill="#fbbf24" stroke="#0c1830" stroke-width="0.75"
+                  fill-opacity="0.85"
                   pointer-events="none"/>
           <!-- Connector: thin 0.5px amber line from pill bottom to PAD_T. -->
           <line x1={bx} x2={bx} y1={pin.pinY + chipH} y2={PAD_T}
@@ -858,10 +853,24 @@
       <!-- Today curve (solid amber, primary) -->
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
 
-      <!-- Current P&L marker (dot at spot, today_value) -->
+      <!-- Spot × today-curve intersection — MOST PROMINENT dart on
+           the chart per operator: "spot price line intersection
+           should be more prominent". Tight three-ring Kite-style
+           target in cyan (spot family). Outer halo sits close to the
+           inner pin so the marker reads as one cohesive landmark
+           rather than three loose circles ("the outer circle should
+           be close to inner circle"). -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
+        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
+                fill="rgba(34, 211, 238, 0.22)"
+                pointer-events="none"/>
+        <circle cx={spotX} cy={yOf(currentPnl)} r="7"
+                fill="none" stroke="#22d3ee" stroke-width="2"
+                stroke-opacity="1"
+                pointer-events="none"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="4"
-                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
+                fill="#22d3ee" stroke="#0c1830" stroke-width="1.75"
+                pointer-events="none"/>
       {/if}
 
       <!-- Z-layer 9: Spot vertical line — rendered AFTER the curves so
@@ -1008,8 +1017,19 @@
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
+        <!-- Foreground spot × today-curve dart — same tight Kite
+             target as the bg layer so the marker sits cleanly on
+             top of the curves regardless of paint order. -->
+        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
+                fill="rgba(34, 211, 238, 0.22)"
+                pointer-events="none"/>
+        <circle cx={spotX} cy={yOf(currentPnl)} r="7"
+                fill="none" stroke="#22d3ee" stroke-width="2"
+                stroke-opacity="1"
+                pointer-events="none"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="4"
-                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
+                fill="#22d3ee" stroke="#0c1830" stroke-width="1.75"
+                pointer-events="none"/>
       {/if}
     </svg>
     </div>
