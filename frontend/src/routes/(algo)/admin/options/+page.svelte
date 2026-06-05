@@ -3249,18 +3249,25 @@
     overflow-y: auto;
     max-height: 22rem;
     margin-top: 0.4rem;
-    /* Compact scrollbar styling — works on WebKit; falls back to
-       browser default elsewhere. */
-    scrollbar-width: thin;
-    scrollbar-color: rgba(251,191,36,0.4) transparent;
+    /* Scrollbar styling — operator: "add scroll bars so that newly
+       added columns get the space required in legs". Bumped from
+       6 px to 10 px so the horizontal track reads as a clear
+       affordance ("there's more grid off-screen") instead of a
+       hairline that's easy to miss. */
+    scrollbar-width: auto;
+    scrollbar-color: rgba(251,191,36,0.55) rgba(15, 25, 45, 0.6);
   }
-  .cand-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
+  .cand-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
+  .cand-scroll::-webkit-scrollbar-track {
+    background: rgba(15, 25, 45, 0.6);
+    border-radius: 4px;
+  }
   .cand-scroll::-webkit-scrollbar-thumb {
-    background: rgba(251,191,36,0.35);
-    border-radius: 3px;
+    background: rgba(251,191,36,0.55);
+    border-radius: 4px;
   }
   .cand-scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(251,191,36,0.55);
+    background: rgba(251,191,36,0.85);
   }
   /* Legs header row — flex container that hosts the legs-header
      button (chevron + title + tag + count) on the left and the
@@ -3424,22 +3431,29 @@
     grid-template-columns:
       auto                        /* checkbox */
       minmax(max-content, 1.4fr)  /* symbol */
-      minmax(40px, 0.8fr)         /* expiry (MM-DD slice) */
+      minmax(50px, 0.8fr)         /* expiry (MM-DD slice) */
       minmax(max-content, 1fr)    /* account */
-      minmax(26px, 1fr)           /* qty */
-      minmax(34px, 1fr)           /* ltp */
-      minmax(34px, 1fr)           /* prev close */
-      minmax(34px, 1fr)           /* avg (cost basis) */
-      minmax(34px, 1fr)           /* day pnl - cumulative */
-      minmax(34px, 1fr)           /* day pnl delta - today */
-      minmax(34px, 1fr)           /* iv */
-      minmax(34px, 1fr)           /* delta */
-      minmax(34px, 1fr)           /* gamma */
-      minmax(34px, 1fr)           /* theta */
-      minmax(34px, 1fr);          /* vega */
+      minmax(48px, 1fr)           /* qty */
+      minmax(62px, 1fr)           /* ltp */
+      minmax(62px, 1fr)           /* prev close */
+      minmax(62px, 1fr)           /* avg (cost basis) */
+      minmax(72px, 1.1fr)         /* day pnl - cumulative */
+      minmax(72px, 1.1fr)         /* day pnl delta - today */
+      minmax(52px, 1fr)           /* iv */
+      minmax(56px, 1fr)           /* delta */
+      minmax(56px, 1fr)           /* gamma */
+      minmax(62px, 1fr)           /* theta */
+      minmax(56px, 1fr);          /* vega */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
-    width: 100%;
+    /* width: max-content keeps every column at its requested floor so
+       the grid stretches beyond the card width when needed; the
+       wrapping `.cand-scroll` then triggers a horizontal scrollbar
+       (operator: "add scroll bars so that newly added columns get
+       the space required in legs"). On wider viewports the grid
+       still fills the card via the 1fr tracks. */
+    width: max-content;
+    min-width: 100%;
   }
   /* When the operator filters to a single account, the Account
      column is implicit (every row carries the same value) — drop
@@ -3448,18 +3462,18 @@
     grid-template-columns:
       auto                        /* checkbox */
       minmax(max-content, 1.4fr)  /* symbol */
-      minmax(40px, 0.8fr)         /* expiry */
-      minmax(26px, 1fr)           /* qty */
-      minmax(34px, 1fr)           /* ltp */
-      minmax(34px, 1fr)           /* prev close */
-      minmax(34px, 1fr)           /* avg (cost basis) */
-      minmax(34px, 1fr)           /* day pnl */
-      minmax(34px, 1fr)           /* day pnl delta */
-      minmax(34px, 1fr)           /* iv */
-      minmax(34px, 1fr)           /* delta */
-      minmax(34px, 1fr)           /* gamma */
-      minmax(34px, 1fr)           /* theta */
-      minmax(34px, 1fr);          /* vega */
+      minmax(50px, 0.8fr)         /* expiry */
+      minmax(48px, 1fr)           /* qty */
+      minmax(62px, 1fr)           /* ltp */
+      minmax(62px, 1fr)           /* prev close */
+      minmax(62px, 1fr)           /* avg (cost basis) */
+      minmax(72px, 1.1fr)         /* day pnl */
+      minmax(72px, 1.1fr)         /* day pnl delta */
+      minmax(52px, 1fr)           /* iv */
+      minmax(56px, 1fr)           /* delta */
+      minmax(56px, 1fr)           /* gamma */
+      minmax(62px, 1fr)           /* theta */
+      minmax(56px, 1fr);          /* vega */
   }
   /* TOTAL row — always last, visually distinct (top border + bolder
      text) so the operator sees the roll-up at a glance. The two pnl
