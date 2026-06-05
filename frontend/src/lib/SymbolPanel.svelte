@@ -1435,18 +1435,28 @@
   /* Modal-name chip — matches .cm-title / .alm-title typography on the
      sibling modals so all three read the same at the top-left. */
   .oes-modal-name {
+    /* Operator: "order entry card header in order page and modal
+       should be more prominent". Promoted from a quiet 0.65rem slate
+       label to an amber chip pill — same affordance shape as the
+       /orders page's bucket-header label so the modal and the page
+       read as one family. */
     font-family: monospace;
-    font-size: 0.65rem;
-    color: #7e97b8;
-    font-weight: 600;
+    font-size: 0.72rem;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.16);
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    padding: 0.22rem 0.55rem;
+    border-radius: 4px;
+    font-weight: 800;
+    letter-spacing: 0.10em;
+    box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
   }
-  /* Amber matches the page-header Order button so the modal title
-     reads as the same surface the operator clicked to open it. */
-  .oes-modal-name-icon { color: #fbbf24; flex-shrink: 0; }
+  /* Icon color tracks the chip foreground now. */
+  .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new
      symbol; every tab (Ticket / Chain / Command) re-renders against
@@ -1699,30 +1709,40 @@
   /* Tab style — underline-only active state, matches LogPanel +
      /admin/tokens + every other algo-side tab strip. */
   .oes-tab {
+    /* Operator: "chain and order ticket should attract eye balls".
+       Bumped padding (0.45→0.55 / 0.75→1.05rem) + font (0.65→0.78rem)
+       + weight (600→700) + border thickness (2→3 px) so the tab
+       strip becomes the modal's loudest action surface. */
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    padding: 0.45rem 0.75rem;
+    padding: 0.55rem 1.05rem;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     margin-bottom: -1px;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #b4c8e6;
     cursor: pointer;
-    transition: color 0.12s, border-color 0.12s;
+    transition: color 0.12s, border-color 0.12s, background 0.12s,
+                box-shadow 0.12s;
     white-space: nowrap;
   }
   .oes-tab:hover:not(.oes-tab-disabled):not(.oes-tab-active) {
     color: #fbbf24;
+    background: rgba(255, 255, 255, 0.04);
   }
   .oes-tab-active {
-    border-bottom-color: #d97706;
+    border-bottom-color: #fbbf24;
     color: #fbbf24;
     font-weight: 800;
+    letter-spacing: 0.08em;
+    background: rgba(251, 191, 36, 0.10);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+                inset 0 -3px 0 #fbbf24;
   }
   .oes-tab-disabled {
     cursor: not-allowed !important;

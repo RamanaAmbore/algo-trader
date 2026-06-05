@@ -870,6 +870,22 @@
   }
   /* Match each card's section-label colour to its left-edge accent. */
   .bucket-card-activity .mp-section-label { color: rgba(34, 211, 238, 0.85); }
+  /* Operator: "order entry card header in order page and modal should
+     be more prominent". Bumps the section label to a chip-style amber
+     pill so the "ORDER ENTRY" reads at a glance from across the
+     screen. Activity card label scoped separately so it keeps its
+     section-specific cyan. */
+  .bucket-card-entry .mp-section-label {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.16);
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    padding: 0.22rem 0.55rem;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
+  }
 
   /* Activity-card tabs now use the same `.oc-tab` class as the
      Entry-card tabs above — single visual vocabulary for both
@@ -1119,21 +1135,39 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    padding: 0.32rem 0.65rem;
+    /* Operator: "chain and order ticket should attract eye balls".
+       Bumped padding (0.32→0.42 / 0.65→0.95rem) + font (0.58→0.72rem)
+       + weight (600→700) so the tab strip reads as the page's loudest
+       action affordance — drives the operator straight to Chain or
+       Ticket from anywhere on the orders surface. */
+    padding: 0.42rem 0.95rem;
     background: transparent;
     border: 0;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     color: #94a3b8;
-    font-size: 0.58rem;
-    font-weight: 600;
+    font-size: 0.72rem;
+    font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     font-family: ui-monospace, monospace;
     cursor: pointer;
-    transition: color 0.12s, background 0.12s, border-color 0.12s;
+    transition: color 0.12s, background 0.12s, border-color 0.12s,
+                box-shadow 0.12s;
   }
   .oc-tab:hover:not(.oc-tab-disabled) {
     color: #c8d8f0;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  /* Active-state glow — applied via the inline `aria-selected=true`
+     attribute selector. The inline style on each tab still drives
+     the active-tab COLOUR (per-tab amber/green/sky); this rule
+     adds a halo + scale-bump so the active surface punches through
+     visually. */
+  .oc-tab[aria-selected="true"] {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+                inset 0 -3px 0 currentColor;
+    font-weight: 800;
+    letter-spacing: 0.10em;
   }
   .oc-tab-disabled {
     cursor: not-allowed;
