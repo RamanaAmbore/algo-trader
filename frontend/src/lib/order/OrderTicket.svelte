@@ -850,6 +850,10 @@
       fundsAccount: _accountFunds ? String(_accountFunds.account || '')     : '',
       kind,
       side: _side,
+      // Surfacing _type lets the shell hide chase pills for MARKET
+      // and SL-M (operator: "chase needs to be active for limit or
+      // stop limit. stop limit market does not need chase").
+      orderType: _type,
     };
   });
   // Re-emit chip meta on every state change so the host chip
@@ -1545,78 +1549,18 @@
         {/if}
       </div>
       {/if}
-      <!-- Margin / cost preview BELOW the action row. Placed-order
-           summary replaces the margin preview after a successful
-           submit; same vertical slot. -->
-      <div class="ot-footer-info">
-        {#if submitOk}
+      <!-- Operator: "margin details should be common for chain and
+           order ticket". OrderTicket's internal margin block
+           dropped — the shell's .oes-margin-pill (in
+           SymbolPanel's common action footer) now owns the
+           cost/cash vs margin/avail readout for both tabs.
+           Keeps the success message slot since that's a
+           per-ticket lifecycle signal (not shared). -->
+      {#if submitOk}
+        <div class="ot-footer-info">
           <div class="ot-ok">✓ {submitOk}</div>
-        {:else if _mode !== 'draft' && _account && Number(_qty) > 0 && symbol}
-          {#if _marginLoading && !_marginPreview}
-            <span class="ot-margin-label">Computing margin…</span>
-          {:else if _marginPreview?.error}
-            <span class="ot-margin-err">⚠ {_marginPreview.error}</span>
-          {:else if _marginPreview}
-            {@const _d = _marginPreview.diagnostics ?? {}}
-            {@const _required  = Number(_d.basket_margin_used)  || 0}
-            {@const _isCashMode = isEquity || (isOption && _side === 'BUY')}
-            {@const _available = _isCashMode
-                                  ? (_accountFunds ? Number(_accountFunds.cash || 0) : null)
-                                  : _d.available_margin}
-            {@const _shortfall = _isCashMode
-                                  ? (typeof _available === 'number' && _available < _required ? (_required - _available) : 0)
-                                  : (Number(_d.margin_shortfall) || 0)}
-            <!-- Operator: "buying or selling non-derivatives, or buying
-                 options you need cash. selling options or buying or
-                 selling futures you need show required margin and
-                 available margin. color code both based on
-                 availability." -->
-            {@const _reqLabel = _isCashMode ? 'COST' : 'MARGIN'}
-            {@const _avlLabel = _isCashMode ? 'CASH'  : 'AVAIL'}
-            {@const _reqCls = (typeof _available === 'number' && _available < _required)
-                                ? 'ot-margin-row-err'
-                                : (typeof _available === 'number' ? 'ot-margin-row-ok' : '')}
-            <div class="ot-margin-row {_reqCls}">
-              <span class="ot-margin-label">{_reqLabel}</span>
-              <span class="ot-margin-value">₹{aggFmt(_required)}</span>
-            </div>
-            {#if typeof _available === 'number'}
-              <div class="ot-margin-row ot-margin-row-sub">
-                <span class="ot-margin-label">{_avlLabel}</span>
-                <span class="ot-margin-value">₹{aggFmt(_available)}</span>
-              </div>
-              <!-- "After" = what the operator will have left if they
-                   click Submit. Most actionable single number on this
-                   surface — answers "can I afford this AND still have
-                   buffer?". Coloured by remaining-margin band:
-                     ≥40 % avail → calm sky
-                     10–40 %    → amber warning
-                     <10 % / negative → red. -->
-              {@const _after = _available - _required}
-              {@const _afterPct = _available > 0 ? (_after / _available) * 100 : 0}
-              {@const _afterCls = _after < 0 ? 'ot-margin-row-err'
-                                  : _afterPct < 10 ? 'ot-margin-row-err'
-                                  : _afterPct < 40 ? 'ot-margin-row-warn'
-                                  : 'ot-margin-row-sub'}
-              <div class="ot-margin-row {_afterCls}">
-                <span class="ot-margin-label">After</span>
-                <span class="ot-margin-value">{_after < 0 ? '−' : ''}₹{aggFmt(Math.abs(_after))}</span>
-              </div>
-            {/if}
-            {#if _shortfall > 0}
-              <div class="ot-margin-row ot-margin-row-err">
-                <span class="ot-margin-label">Short</span>
-                <span class="ot-margin-value">−₹{aggFmt(_shortfall)}</span>
-              </div>
-            {/if}
-            {#if (_marginPreview.blocked || []).length}
-              {#each _marginPreview.blocked as _b}
-                <div class="ot-margin-blocked">⚠ {_b.reason}</div>
-              {/each}
-            {/if}
-          {/if}
-        {/if}
-      </div>
+        </div>
+      {/if}
 
     </div>
   </div>

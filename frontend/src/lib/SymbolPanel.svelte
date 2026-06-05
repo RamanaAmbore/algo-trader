@@ -1263,28 +1263,38 @@
                     title="Submit to the broker. On dev always routes to paper. On prod, routed to LIVE only when the per-action execution.live.* flag is on."
                     onclick={() => _sharedMode = 'live'}>LIVE</button>
           </div>
-          <label class="oes-common-chase-toggle"
-                 title={_sharedChase
-                   ? 'Chase ON — re-quote the limit each tick until filled'
-                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-            <input type="checkbox" bind:checked={_sharedChase} />
-            <span class="oes-common-chase-label" class:on={_sharedChase}>CHASE</span>
-          </label>
-          {#if _sharedChase}
-            <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'low'}
-                      title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                      onclick={() => _sharedChaseAgg = 'low'}>L</button>
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'med'}
-                      title="Medium — peg to midpoint of bid+ask."
-                      onclick={() => _sharedChaseAgg = 'med'}>M</button>
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'high'}
-                      title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                      onclick={() => _sharedChaseAgg = 'high'}>H</button>
-            </div>
+          <!-- Chase pills are only meaningful for LIMIT and SL orders
+               (those carry a limit price the engine can re-quote each
+               tick). MARKET and SL-M fill at the book's price — no
+               limit to re-quote. Chain tab always uses LIMIT so the
+               default-true branch keeps chase visible there. -->
+          {#if _activeTab === 'chain'
+               || !_chipMeta?.orderType
+               || _chipMeta.orderType === 'LIMIT'
+               || _chipMeta.orderType === 'SL'}
+            <label class="oes-common-chase-toggle"
+                   title={_sharedChase
+                     ? 'Chase ON — re-quote the limit each tick until filled'
+                     : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+              <input type="checkbox" bind:checked={_sharedChase} />
+              <span class="oes-common-chase-label" class:on={_sharedChase}>CHASE</span>
+            </label>
+            {#if _sharedChase}
+              <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+                <button type="button" class="oes-common-chase-agg-pill"
+                        class:on={_sharedChaseAgg === 'low'}
+                        title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                        onclick={() => _sharedChaseAgg = 'low'}>L</button>
+                <button type="button" class="oes-common-chase-agg-pill"
+                        class:on={_sharedChaseAgg === 'med'}
+                        title="Medium — peg to midpoint of bid+ask."
+                        onclick={() => _sharedChaseAgg = 'med'}>M</button>
+                <button type="button" class="oes-common-chase-agg-pill"
+                        class:on={_sharedChaseAgg === 'high'}
+                        title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                        onclick={() => _sharedChaseAgg = 'high'}>H</button>
+              </div>
+            {/if}
           {/if}
         </div>
         <!-- Single action row, three-priority left slot:
