@@ -1375,7 +1375,7 @@
             <button type="button" class="oes-common-clear oes-common-clear-inline"
               title="Clear all basket legs"
               disabled={basketSubmitting}
-              onclick={clearBasket}>Clear basket</button>
+              onclick={clearBasket}>Clear</button>
           {/if}
         </div>
         <!-- Single action row, three-priority left slot:
