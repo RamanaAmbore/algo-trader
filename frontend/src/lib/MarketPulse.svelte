@@ -237,6 +237,15 @@
     }
     const aliasArg = (alias || '').trim() || null;
     await addWatchlistItem(targetId, sym, exch, aliasArg);
+    // Pre-warm the chart cache so when the operator clicks the chart
+    // icon on this new row the modal opens against memory. Operator:
+    // "you can prefetch all the pulse symbols. whenever, a symbol is
+    // added to pulse this should happen". Fire-and-forget — failure
+    // falls back to the normal load-on-open path.
+    try {
+      const { prefetchChartBars } = await import('$lib/ChartWorkspace.svelte');
+      prefetchChartBars(sym, exch);
+    } catch (_) { /* silent */ }
     return true;
   }
 
@@ -2200,6 +2209,28 @@
   // reads inside a function call evaluated as a comma-expression
   // sibling. Switched to $derived.by with explicit touches so the
   // compiler unambiguously sees both reads inside the derivation body.
+  // Module-scoped (per-instance) set of symbols whose chart bars
+  // we've already kicked off a prefetch for. Persists across
+  // unifiedRows recomputes so we don't re-fire on every poll —
+  // only NEW symbols get a prefetch. The 60s backend cache + the
+  // ChartWorkspace module cache absorb the result.
+  /** @type {Set<string>} */
+  const _prefetchedChartSyms = new Set();
+  /** @type {number[]} */
+  const _prefetchTimers = [];
+  function _stagedPrefetch(sym, exch) {
+    if (!sym || _prefetchedChartSyms.has(sym)) return;
+    _prefetchedChartSyms.add(sym);
+    // Stagger: 80ms per symbol so 30 fresh symbols spread across
+    // ~2.4s instead of hammering the backend simultaneously.
+    const t = setTimeout(() => {
+      import('$lib/ChartWorkspace.svelte')
+        .then(m => m.prefetchChartBars(sym, exch || ''))
+        .catch(() => {});
+    }, _prefetchTimers.length * 80);
+    _prefetchTimers.push(t);
+  }
+
   const unifiedRows = $derived.by(() => {
     // eslint-disable-next-line no-unused-expressions
     groupOrder; detachedSymbols;
@@ -2218,6 +2249,22 @@
       movers, showMovers,
       showWatchlist,
     );
+  });
+
+  // Non-blocking chart-bar prefetch for every symbol visible in
+  // /pulse. Operator: "you can prefetch all the pulse symbols.
+  // whenever, a symbol is added to pulse this should happen. the
+  // prefetch should non-blocking." This $effect tracks unifiedRows;
+  // any NEW symbol since the last run gets queued through
+  // _stagedPrefetch (setTimeout + dynamic import). The render loop
+  // never blocks on a prefetch.
+  $effect(() => {
+    if (!unifiedRows?.length) return;
+    for (const row of unifiedRows) {
+      const sym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      _stagedPrefetch(sym, row?.exchange || '');
+    }
   });
 
   function parseSymbol(/** @type {string} */ sym, /** @type {any} */ instCache) {
