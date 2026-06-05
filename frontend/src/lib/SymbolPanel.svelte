@@ -704,6 +704,15 @@
       || _chipMeta?.orderType === 'LIMIT'
       || _chipMeta?.orderType === 'SL'
   );
+  // Auto-uncheck chase when the active order type can't use it
+  // (MARKET / SL-M). Operator: "for market and sl m, the chase
+  // should be deselected while graying it out". The toggle is
+  // also visually `disabled` via _chaseEnabled — flipping the
+  // backing state to false ensures the order is actually placed
+  // without chase if the operator submits straight from the form.
+  $effect(() => {
+    if (!_chaseEnabled && _sharedChase) _sharedChase = false;
+  });
   // +Basket is the Ticket-tab add-to-basket affordance. Chain has
   // per-row +CE / +PE buttons; on Chain the +Basket button stays
   // visible but grayed so the operator sees the affordance is part
