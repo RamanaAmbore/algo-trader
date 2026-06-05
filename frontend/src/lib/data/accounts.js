@@ -63,14 +63,14 @@ export function setRecentAccount(/** @type {string} */ acct) {
   _lsWrite(_LS_RECENT_ACCOUNT, v);
 }
 
-/** Resolution chain: recent → settings default → fallback.
- *  The string is returned verbatim — operators pick tradeable
- *  symbols (e.g. CRUDEOIL26JUNFUT, not bare CRUDEOIL); no
- *  underlying-to-future resolver layer. */
+/** Resolution chain: recent → fallback. Operator: "Remove crudeoil
+ *  symbol as default symbol. remove the setting completely. The
+ *  symbol should be updated from the latest symbol used or clear
+ *  from the context for modals". orders.default_symbol setting
+ *  retired; modals open with the recent symbol or empty. */
 export function resolveSymbol(/** @type {string} */ fallback = '') {
   const r = _lsRead(_LS_RECENT_SYMBOL);
   if (r) return r.toUpperCase();
-  if (_defaultSymbol) return String(_defaultSymbol).toUpperCase();
   return String(fallback || '').toUpperCase();
 }
 

@@ -341,12 +341,13 @@ SEEDS: list[tuple] = [
     # nearest future contract via the instruments cache, others stay as
     # is (cash equities, indices). Pull values from your pinned watchlist
     # so the default mirrors the day's primary instrument.
-    ("orders",      "orders.default_symbol",     "string", "CRUDEOIL",
-     "Default symbol the order / chart modal opens with when no host "
-     "context overrides it. Accepts underlying names (NIFTY, BANKNIFTY, "
-     "CRUDEOIL, GOLD, …) which are auto-resolved to the nearest future, "
-     "or full tradeable symbols. Leave blank to open the modal empty.",
-     None, None),
+    # orders.default_symbol retired — modal / page resolution is now
+    # recent-symbol (operator's last pick on /orders, /charts, or any
+    # modal) → empty context. Operator: "Remove crudeoil symbol as
+    # default symbol. remove the setting completely. The symbol
+    # should be updated from the latest symbol used or clear from
+    # the context for modals". Settings seeder auto-prunes the row
+    # next boot since it's no longer in SEEDS.
 
     # ── Replay / Backtest ────────────────────────────────────────��─────
     ("replay",      "replay.max_days",           "int",  60,

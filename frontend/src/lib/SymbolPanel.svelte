@@ -28,6 +28,7 @@
   // symbol, no hidden context menus.
 
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { get as _storeGet } from 'svelte/store';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
@@ -43,7 +44,7 @@
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
   import { resolveAnchorToTradeable as _resolveAnchorFn } from '$lib/data/resolveUnderlying';
-  import { loadAccounts, getDefaultAccount, getDefaultSymbol } from '$lib/data/accounts';
+  import { loadAccounts, getDefaultAccount, recentSymbolStore } from '$lib/data/accounts';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
 
   // Pinned anchors shown at the top of the symbol combo's dropdown.
@@ -448,34 +449,18 @@
       }
       // Symbol pre-select: same ladder.
       //   1. host-supplied `symbol` prop (already seeds _localSymbol on init)
-      //   2. orders.default_symbol setting — resolved to a tradeable
-      //      contract via resolveUnderlying() (CRUDEOIL → CRUDEOIL26JUNFUT,
-      //      NIFTY stays NIFTY, RELIANCE stays RELIANCE). The instruments
-      //      cache hydration happens inside resolveUnderlying; we await
-      //      it here so the pre-fill is the resolved tradeable, not the
-      //      raw underlying name.
+      //   2. recently-used symbol from the operator's last pick on any
+      //      surface. Operator: "The symbol should be updated from the
+      //      latest symbol used or clear from the context for modals".
+      //      orders.default_symbol setting retired — no underlying-to-
+      //      future resolver layer; the recent value is whatever
+      //      tradeable the operator picked last.
       if (!_localSymbol) {
-        const defaultSym = getDefaultSymbol();
-        if (defaultSym) {
-          // Show the raw underlying immediately so the operator sees
-          // something while resolution runs in the background.
-          _localSymbol = defaultSym.toUpperCase();
+        let _recent = '';
+        try { _recent = String(_storeGet(recentSymbolStore) || '').toUpperCase(); } catch { /* empty */ }
+        if (_recent) {
+          _localSymbol = _recent;
           onSymbolChange?.(_localSymbol);
-          try {
-            // Hydrate the instruments cache before resolving — both MCX
-            // commodities (CRUDEOIL / GOLD) and NSE index roots
-            // (NIFTY / BANKNIFTY / FINNIFTY) need findNearestFuture()
-            // to map to the tradeable contract. resolveAnchorToTradeable
-            // (not resolveUnderlying) is the right helper here because
-            // the order modal needs the FUTURE (NIFTY26JUNFUT), not the
-            // SPOT quote-key (NIFTY 50) — spot keys can't be traded.
-            await loadInstruments().catch(() => null);
-            const resolvedSym = _resolveAnchorFn(defaultSym.toUpperCase(), findNearestFuture) || '';
-            if (resolvedSym && resolvedSym.toUpperCase() !== _localSymbol) {
-              _localSymbol = resolvedSym.toUpperCase();
-              onSymbolChange?.(_localSymbol);
-            }
-          } catch { /* keep raw */ }
         }
       }
     } catch { /* keep last-good */ }

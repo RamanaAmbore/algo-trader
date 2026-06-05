@@ -1763,12 +1763,12 @@ class AccountsController(Controller):
         # stay empty). Stale settings shouldn't break the UI.
         if default_acct and default_acct not in conn:
             default_acct = ""
-        # Default symbol — operator-configured underlying / contract.
-        # Masked partners get an empty string back: no point teasing a
-        # symbol they can't trade against (they have no real account).
-        default_sym = "" if do_mask else get_string("orders.default_symbol", "NIFTY")
+        # orders.default_symbol setting retired — modals now use the
+        # operator's recent symbol (localStorage on the FE) or open
+        # with empty context. Always return blank so legacy FE code
+        # paths don't latch onto a non-existent symbol.
         return AccountsResponse(
             accounts=accounts,
             default_account=default_acct,
-            default_symbol=default_sym,
+            default_symbol="",
         )

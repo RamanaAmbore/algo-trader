@@ -20,8 +20,8 @@
   // symbols directly (no NIFTY 50 → NIFTY26JUNFUT mapping). Operator:
   // "we don't have symbol and resolver concept now."
   import {
-    loadAccounts, getDefaultSymbol,
-    defaultSymbolStore, accountsReadyStore,
+    loadAccounts,
+    accountsReadyStore,
     recentSymbolStore,
   } from '$lib/data/accounts';
 
@@ -65,26 +65,24 @@
   // and the operator's setting is blank — eliminates the prior race
   // where the hardcoded NIFTY 50 fallback briefly leaked into the
   // modal before the setting fetch landed.
-  const _operatorDefault = $derived(String($defaultSymbolStore || '').toUpperCase());
-  const _recentSymbol    = $derived(String($recentSymbolStore || '').toUpperCase());
-  const _accountsReady   = $derived($accountsReadyStore);
+  const _recentSymbol  = $derived(String($recentSymbolStore || '').toUpperCase());
+  const _accountsReady = $derived($accountsReadyStore);
   // Kick the fetch alongside (idempotent). loadAccounts memoises so the
   // module-level call + this one don't duplicate the network round-trip.
   onMount(() => { loadAccounts().catch(() => {}); });
-  // Symbol resolution chain:
+  // Symbol resolution chain (operator: "Remove crudeoil symbol as
+  // default symbol ... The symbol should be updated from the latest
+  // symbol used or clear from the context for modals"):
   //   1. caller-supplied symbol (page contextual)
-  //   2. recently-used symbol (operator's last pick on /orders, /charts,
-  //      or any modal). Operator: "if any symbol is used in charts or
-  //      orders either in model, or page, the symbol should be
-  //      defaulted to that".
-  //   3. operator-configured default symbol (settings)
-  //   4. 'NIFTY 50' final fallback once the settings fetch resolves
-  const _anchorSymbol      = $derived(
-    String(symbol
-           || _recentSymbol
-           || _operatorDefault
-           || (_accountsReady ? 'NIFTY 50' : '')).toUpperCase()
+  //   2. recently-used symbol (operator's last pick on /orders,
+  //      /charts, or any modal)
+  //   3. empty — the modal opens with no symbol latched.
+  const _anchorSymbol = $derived(
+    String(symbol || _recentSymbol || '').toUpperCase()
   );
+  // Reference to silence unused-warning while keeping the import for
+  // future store-aware refactors.
+  void _accountsReady;
   const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 
   // Effective symbol passes through verbatim — no underlying-to-future
