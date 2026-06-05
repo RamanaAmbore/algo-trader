@@ -685,6 +685,26 @@
     return 'ok';
   });
 
+  // Chase only re-quotes a LIMIT (or SL with a limit). MARKET / SL-M
+  // fill at the book's price — no limit to re-quote. Chain tab
+  // always uses LIMIT so chase stays available there. Surfaced via a
+  // common derived so the template can grey out (rather than hide)
+  // the chase affordance when the active order type can't use it —
+  // operator: "make chase grayed out when market is selected for
+  // order type".
+  const _chaseEnabled = $derived(
+    _activeTab === 'chain'
+      || !_chipMeta?.orderType
+      || _chipMeta?.orderType === 'LIMIT'
+      || _chipMeta?.orderType === 'SL'
+  );
+  // +Basket is the Ticket-tab add-to-basket affordance. Chain has
+  // per-row +CE / +PE buttons; on Chain the +Basket button stays
+  // visible but grayed so the operator sees the affordance is part
+  // of the panel — operator: "what happened to +basket button which
+  // is supposed to be present in order modal and order page".
+  const _basketEnabled = $derived(_activeTab === 'ticket');
+
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
   // +/- steppers. Maps in place so rapid clicks accumulate cleanly
   // instead of relying on the remove+re-add pattern which can drop
@@ -1334,38 +1354,40 @@
                   label: String(m).toUpperCase(),
                 }))} />
           </div>
-          <!-- Chase pills are only meaningful for LIMIT and SL orders
-               (those carry a limit price the engine can re-quote each
-               tick). MARKET and SL-M fill at the book's price — no
-               limit to re-quote. Chain tab always uses LIMIT so the
-               default-true branch keeps chase visible there. -->
-          {#if _activeTab === 'chain'
-               || !_chipMeta?.orderType
-               || _chipMeta.orderType === 'LIMIT'
-               || _chipMeta.orderType === 'SL'}
-            <label class="oes-common-chase-toggle"
-                   title={_sharedChase
+          <!-- Chase is only meaningful for LIMIT and SL orders (those
+               carry a limit price the engine can re-quote each tick).
+               MARKET and SL-M fill at the book's price — no limit to
+               re-quote. Operator: "make chase grayed out when market
+               is selected for order type". Render the toggle + agg
+               pills unconditionally so the affordance is always
+               visible; flip them disabled + tinted when the active
+               order type can't use chase. Chain tab always uses
+               LIMIT so chase is always enabled there. -->
+          <label class="oes-common-chase-toggle"
+                 class:is-disabled={!_chaseEnabled}
+                 title={!_chaseEnabled
+                   ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
+                   : _sharedChase
                      ? 'Chase ON — re-quote the limit each tick until filled'
                      : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-              <input type="checkbox" bind:checked={_sharedChase} />
-              <span class="oes-common-chase-label" class:on={_sharedChase}>CHASE</span>
-            </label>
-            {#if _sharedChase}
-              <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-                <button type="button" class="oes-common-chase-agg-pill"
-                        class:on={_sharedChaseAgg === 'low'}
-                        title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                        onclick={() => _sharedChaseAgg = 'low'}>L</button>
-                <button type="button" class="oes-common-chase-agg-pill"
-                        class:on={_sharedChaseAgg === 'med'}
-                        title="Medium — peg to midpoint of bid+ask."
-                        onclick={() => _sharedChaseAgg = 'med'}>M</button>
-                <button type="button" class="oes-common-chase-agg-pill"
-                        class:on={_sharedChaseAgg === 'high'}
-                        title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                        onclick={() => _sharedChaseAgg = 'high'}>H</button>
-              </div>
-            {/if}
+            <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
+            <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
+          </label>
+          {#if _sharedChase && _chaseEnabled}
+            <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'low'}
+                      title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                      onclick={() => _sharedChaseAgg = 'low'}>L</button>
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'med'}
+                      title="Medium — peg to midpoint of bid+ask."
+                      onclick={() => _sharedChaseAgg = 'med'}>M</button>
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'high'}
+                      title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                      onclick={() => _sharedChaseAgg = 'high'}>H</button>
+            </div>
           {/if}
           <!-- Clear basket lifted to the mode/chase row per operator
                request — frees space in the submit row so the Submit
@@ -1438,15 +1460,20 @@
             </span>
           {/if}
           <span class="oes-common-spacer"></span>
-          <!-- +Basket only makes sense on the Ticket tab — _modalFireBasket
-               no-ops on Chain (Chain has its own +CE/+PE staging
-               buttons). Hidden on Chain so operators don't see a
-               clickable-but-silent control (audit defect #9). -->
-          {#if _activeTab === 'ticket'}
-            <button type="button" class="oes-common-basket"
-              title="Add the current order to the basket"
-              onclick={_modalFireBasket}>+ Basket</button>
-          {/if}
+          <!-- +Basket — operator: "what happened to +basket button
+               which is supposed to be present in order modal and
+               order page". Always rendered so the affordance is
+               consistent across tabs. On Chain the per-row +CE / +PE
+               buttons are the primary path; the common +Basket
+               grays out so the operator sees the control without
+               clicking-into-silence. -->
+          <button type="button" class="oes-common-basket"
+            class:is-disabled={!_basketEnabled}
+            disabled={!_basketEnabled}
+            title={_basketEnabled
+              ? 'Add the current order to the basket'
+              : 'Switch to Ticket tab — Chain uses per-row +CE / +PE buttons'}
+            onclick={_modalFireBasket}>+ Basket</button>
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
@@ -2355,6 +2382,14 @@
     user-select: none;
   }
   .oes-common-chase-toggle input { margin: 0; }
+  /* Grayed-out state for MARKET / SL-M order types — chase is not
+     applicable (no limit price to re-quote). Operator: "make chase
+     grayed out when market is selected for order type". */
+  .oes-common-chase-toggle.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+  .oes-common-chase-toggle.is-disabled input { cursor: not-allowed; }
   .oes-common-chase-label {
     color: rgba(200,216,240,0.55);
     font-size: 0.55rem;
@@ -2586,7 +2621,14 @@
     letter-spacing: 0.04em;
   }
   .oes-common-clear-inline:hover { background: rgba(248, 113, 133, 0.10); }
-  .oes-common-basket:hover { background: rgba(125, 211, 252, 0.12); }
+  .oes-common-basket:hover:not(.is-disabled) { background: rgba(125, 211, 252, 0.12); }
+  /* Grayed-out +Basket on Chain tab — affordance stays visible so
+     the operator knows the basket flow exists; clicking it would
+     do nothing on Chain (per-row +CE / +PE is the path there). */
+  .oes-common-basket.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
   .oes-common-side-buy  { border-color: rgba(74, 222, 128, 0.55); color: #4ade80; }
   .oes-common-side-sell { border-color: rgba(248, 113, 113, 0.55); color: #f87171; }
   .oes-common-side-buy:hover  { background: rgba(74, 222, 128, 0.12); }
