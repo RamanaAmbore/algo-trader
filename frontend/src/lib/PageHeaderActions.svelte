@@ -14,6 +14,7 @@
   import { executionMode } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
+  import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import { resolveAnchorToTradeable } from '$lib/data/resolveUnderlying';
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
@@ -169,8 +170,13 @@
   {/if}
 
   {#if !hideChart}
+    <!-- onmouseenter / onfocus prefetch warms ChartWorkspace's module
+         cache so the click-to-open hits memory. Operator: "I see
+         delay chart plotting first time when I open the modal." -->
     <button type="button" class="pha-btn pha-chart"
             onclick={_openChart}
+            onmouseenter={() => { if (_effectiveSymbol) prefetchChartBars(_effectiveSymbol, _effectiveExchange); }}
+            onfocus={() => { if (_effectiveSymbol) prefetchChartBars(_effectiveSymbol, _effectiveExchange); }}
             title="Charts{symbol ? ` — ${symbol}` : ''}"
             aria-label="Open Charts">
       <!-- Polyline chart glyph -->

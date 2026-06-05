@@ -38,6 +38,31 @@
       if (oldest != null) _BAR_CACHE.delete(oldest);
     }
   }
+
+  /** Pre-warm the OHLCV cache for a symbol — operator hovers the
+   *  chart-open affordance, we fetch the bars in the background, then
+   *  the click-to-open is instant (cache hit). Operator: "I see delay
+   *  chart plotting first time when I open the modal." Idempotent
+   *  per-symbol within the 60 s TTL; multiple hover events collapse
+   *  into one network round-trip.
+   *  @param {string} symbol
+   *  @param {string} [exchange]
+   *  @param {number} [days]
+   */
+  export async function prefetchChartBars(symbol, exchange = '', days = 30) {
+    if (!symbol) return;
+    const _interval = 'day';
+    const key = `${symbol.toUpperCase()}|${(exchange || '').toUpperCase()}|${days}|${_interval}|`;
+    if (_cacheGet(key)) return;  // already warm
+    try {
+      // Lazy-import to avoid a circular static-import graph between
+      // ChartWorkspace.svelte and api.js at module load.
+      const { fetchOptionsHistorical } = await import('$lib/api');
+      const hist = await fetchOptionsHistorical(symbol, { days, exchange: exchange || undefined });
+      const bars = Array.isArray(hist?.bars) ? hist.bars : [];
+      if (bars.length) _cachePut(key, bars, []);
+    } catch (_) { /* silent — best-effort prefetch */ }
+  }
 </script>
 
 <script>
