@@ -836,10 +836,26 @@
       <!-- Today curve (solid amber, primary) -->
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
 
-      <!-- Current P&L marker (dot at spot, today_value) -->
+      <!-- Spot × today-curve intersection marker — Kite-style target:
+           bright cyan inner dot (solid fill) + concentric outer ring.
+           Reads as a clear "you are here" pin at the (spot, today P&L)
+           point, much more prominent than a plain dot. Operator:
+           "show it as dart with round filled in circle, and outer
+           ring to it like kite". -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
+        <!-- Outer halo — large, very low alpha, no stroke. Adds the
+             soft glow Kite uses on its heatmap pins. -->
+        <circle cx={spotX} cy={yOf(currentPnl)} r="12"
+                fill="rgba(34, 211, 238, 0.12)"/>
+        <!-- Middle ring — stroke only, the "target" hoop. -->
+        <circle cx={spotX} cy={yOf(currentPnl)} r="8"
+                fill="none" stroke="#22d3ee" stroke-width="1.5"
+                stroke-opacity="0.85"/>
+        <!-- Inner dot — solid fill, navy outline lifts it off the
+             grid; the contrasting outline reads cleanly on any
+             curve color. -->
         <circle cx={spotX} cy={yOf(currentPnl)} r="4"
-                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
+                fill="#22d3ee" stroke="#0c1830" stroke-width="1.5"/>
       {/if}
 
       <!-- Z-layer 9: Spot vertical line — rendered AFTER the curves so
@@ -986,8 +1002,16 @@
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
+        <!-- Foreground intersection marker — same Kite-style dart
+             (halo + ring + inner dot) as the bg layer so the marker
+             sits cleanly on top of the today / expiry curves. -->
+        <circle cx={spotX} cy={yOf(currentPnl)} r="12"
+                fill="rgba(34, 211, 238, 0.12)"/>
+        <circle cx={spotX} cy={yOf(currentPnl)} r="8"
+                fill="none" stroke="#22d3ee" stroke-width="1.5"
+                stroke-opacity="0.85"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="4"
-                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"/>
+                fill="#22d3ee" stroke="#0c1830" stroke-width="1.5"/>
       {/if}
     </svg>
     </div>
