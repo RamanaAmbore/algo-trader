@@ -1469,26 +1469,29 @@
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
   }
   /* Strip-aware vertical offset — three possible sticky strips can
-     sit between the navbar and .algo-content (ps-strip 1.6rem,
-     sim-banner 1.7rem, paper-banner 1.7rem). The page-header
-     needs to land BELOW whichever combination is currently
-     visible. CSS :has() handles every combination; no JS. */
+     sit between the navbar and .algo-content. The page-header
+     `top` lands at-or-just-below the previous strip's sticky
+     bottom edge so there's NO scrolling-content gap during
+     scroll. Values are tightened slightly above the strips'
+     true rendered heights (ps-strip ~24.17px, banners ~27px) so
+     the page-header marginally overlaps the strip below rather
+     than leaving a sub-pixel gap. */
   :global(.algo-viewport:has(.ps-strip) .page-header) {
-    top: calc(3rem + 1.6rem);
+    top: calc(3rem + 1.5rem);  /* 72px — flush with ps-strip's sticky bottom */
   }
   :global(.algo-viewport:has(.sim-banner) .page-header),
   :global(.algo-viewport:has(.paper-banner) .page-header) {
-    top: calc(3rem + 1.7rem);
+    top: calc(3rem + 1.65rem);  /* 74.4px — flush with banner sticky bottom */
   }
   :global(.algo-viewport:has(.ps-strip):has(.sim-banner) .page-header),
   :global(.algo-viewport:has(.ps-strip):has(.paper-banner) .page-header) {
-    top: calc(3rem + 1.6rem + 1.7rem);
+    top: calc(3rem + 1.5rem + 1.65rem);
   }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .page-header) {
-    top: calc(3rem + 3.4rem);
+    top: calc(3rem + 3.3rem);
   }
   :global(.algo-viewport:has(.ps-strip):has(.sim-banner):has(.paper-banner) .page-header) {
-    top: calc(3rem + 1.6rem + 3.4rem);
+    top: calc(3rem + 1.5rem + 3.3rem);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
