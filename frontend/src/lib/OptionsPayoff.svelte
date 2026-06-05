@@ -853,36 +853,54 @@
       <!-- Today curve (solid amber, primary) -->
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
 
-      <!-- Spot × today-curve intersection — MOST PROMINENT dart on
-           the chart per operator: "spot price line intersection
-           should be more prominent". Tight three-ring Kite-style
-           target in cyan (spot family). Outer halo sits close to the
-           inner pin so the marker reads as one cohesive landmark
-           rather than three loose circles ("the outer circle should
-           be close to inner circle"). -->
+      <!-- Spot × today-curve dart — operator: "The one intersection
+           point between the spot price line and today's payoff line
+           should have the filled circle with outer circle." Two
+           concentric circles in the today curve's amber hue so the
+           marker ties to its curve. Filled inner + outer ring; halo
+           dropped per "outer circle close to inner". -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
-        <circle cx={spotX} cy={yOf(currentPnl)} r="12"
-                fill="rgba(34, 211, 238, 0.22)"
-                pointer-events="none"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="9"
-                fill="none" stroke="#22d3ee" stroke-width="2.25"
-                stroke-opacity="1"
+                fill="none" stroke="#fbbf24" stroke-width="2"
+                stroke-opacity="0.95"
                 pointer-events="none"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="5"
-                fill="#22d3ee" stroke="#0c1830" stroke-width="1.75"
+                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"
                 pointer-events="none"/>
       {/if}
 
-      <!-- Z-layer 9: Spot vertical line — rendered AFTER the curves so
-           it sits on top of them. MOST prominent tier per operator
-           request ("make current spot price line the most prominent").
-           Solid 2.25 px bright-cyan line at full opacity reads as the
-           hardest structural marker on the chart — operator's eye
-           lands here first; amber breakeven verticals come second; the
-           σ-band grid is the quietest reference tier underneath. -->
+      <!-- Spot × expiry-curve dart — same two-circle pattern in the
+           expiry curve's sky-blue hue so the operator can tell at a
+           glance which curve they're reading the value from
+           (operator: "Similarly the spot price line and expiry curve
+           intersection point"). -->
+      {#if curveAtSpot != null && spot >= sMin && spot <= sMax}
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="9"
+                fill="none" stroke="#7dd3fc" stroke-width="2"
+                stroke-opacity="0.95"
+                pointer-events="none"/>
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="5"
+                fill="#7dd3fc" stroke="#0c1830" stroke-width="1.5"
+                pointer-events="none"/>
+      {/if}
+
+      <!-- Spot vertical line — operator: "remove decoration for spot
+           price line. but still make more prominent". No dart sits
+           on the line itself; instead the line gets a halo (wider
+           translucent cyan underneath) + a sharp solid stroke on top
+           so it reads as the most prominent structural marker on the
+           chart without any pin clutter. Halo glow widens the
+           apparent weight without making the inner stroke fat. -->
       {#if spot > sMin && spot < sMax}
+        <!-- Halo glow — 6 px wide at α 0.22, paints first so the
+             solid stroke sits cleanly on top. -->
         <line x1={spotX} x2={spotX} y1={PAD_T} y2={height - PAD_B}
-              stroke="#22d3ee" stroke-width="2.25" stroke-opacity="1"/>
+              stroke="#22d3ee" stroke-width="6"
+              stroke-opacity="0.22"
+              pointer-events="none"/>
+        <!-- Inner solid stroke — sharp bright cyan at full alpha. -->
+        <line x1={spotX} x2={spotX} y1={PAD_T} y2={height - PAD_B}
+              stroke="#22d3ee" stroke-width="2.5" stroke-opacity="1"/>
       {/if}
 
       <!-- Y-axis labels — left-edge, horizontal. One label per yTicks
@@ -1016,19 +1034,26 @@
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
+      <!-- Foreground spot × today-curve dart — amber (today curve hue).
+           Re-painted on the fg layer so the marker sits cleanly on
+           top of the curves regardless of paint order. -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
-        <!-- Foreground spot × today-curve dart — same tight Kite
-             target as the bg layer so the marker sits cleanly on
-             top of the curves regardless of paint order. -->
-        <circle cx={spotX} cy={yOf(currentPnl)} r="12"
-                fill="rgba(34, 211, 238, 0.22)"
-                pointer-events="none"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="9"
-                fill="none" stroke="#22d3ee" stroke-width="2.25"
-                stroke-opacity="1"
+                fill="none" stroke="#fbbf24" stroke-width="2"
+                stroke-opacity="0.95"
                 pointer-events="none"/>
         <circle cx={spotX} cy={yOf(currentPnl)} r="5"
-                fill="#22d3ee" stroke="#0c1830" stroke-width="1.75"
+                fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"
+                pointer-events="none"/>
+      {/if}
+      <!-- Foreground spot × expiry-curve dart — sky-blue (expiry hue). -->
+      {#if curveAtSpot != null && spot >= sMin && spot <= sMax}
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="9"
+                fill="none" stroke="#7dd3fc" stroke-width="2"
+                stroke-opacity="0.95"
+                pointer-events="none"/>
+        <circle cx={spotX} cy={yOf(curveAtSpot.expiry_value)} r="5"
+                fill="#7dd3fc" stroke="#0c1830" stroke-width="1.5"
                 pointer-events="none"/>
       {/if}
     </svg>
