@@ -1427,30 +1427,32 @@
      that it looks prominent". Tinted gradient + bolder bottom
      border so the strip visually separates from the body. */
   .oes-header {
+    /* Standard modal header — reduced vertical padding (0.35rem)
+       matches ChartModal + ActivityLogModal so all three modals open
+       with the same chrome height. */
     display: flex;
     align-items: center;
-    gap: 0.55rem;
-    padding: 0.6rem 0.95rem;
+    gap: 0.5rem;
+    padding: 0.35rem 0.85rem;
     background: linear-gradient(180deg,
                   rgba(251, 191, 36, 0.12) 0%,
                   rgba(251, 191, 36, 0.04) 100%);
     border-bottom: 1px solid rgba(251, 191, 36, 0.50);
     flex-shrink: 0;
   }
-  /* Modal-name — operator: "remove decoration around orders text in
-     modal header". Strip the chip pill back to plain prominent text;
-     the header strip's tinted background carries the family identity
-     now. */
+  /* Modal-name — plain prominent text. Standard 0.72rem matches
+     the sibling modals so the title row reads identically across
+     ChartModal / SymbolPanel / ActivityLogModal. */
   .oes-modal-name {
     font-family: monospace;
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     color: #fbbf24;
     font-weight: 800;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.35rem;
   }
   .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
@@ -1667,23 +1669,23 @@
      every modal. Top-right of the header, 1.8rem square, font-size
      1.1rem so the × glyph reads from a quick glance. */
   .oes-close {
-    /* Push to the right edge of the header. The wl-toast (if shown)
-       gets squeezed against the close button — same as before. */
+    /* Standard close button — square 1.4rem matches ChartModal's
+       refresh + close buttons; glyph 0.95rem is proportional to the
+       0.72rem header title text. */
     margin-left: auto;
     background: none;
     border: 1px solid rgba(248, 113, 113, 0.35);
     color: #f87171;
-    width: 1.8rem;
-    height: 1.8rem;
+    width: 1.4rem;
+    height: 1.4rem;
     border-radius: 3px;
-    /* Defensive: button always receives clicks + sits above panel content */
     pointer-events: auto;
     position: relative;
     z-index: 2;
     flex-shrink: 0;
     cursor: pointer;
     font-family: monospace;
-    font-size: 1.1rem;
+    font-size: 0.95rem;
     line-height: 1;
     padding: 0;
     display: inline-flex;

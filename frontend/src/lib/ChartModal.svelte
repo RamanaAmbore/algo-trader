@@ -158,11 +158,14 @@
 
   .cm-header {
     /* Operator: "change all modal header row background so that it
-       looks prominent". Solid darker fill + cyan-tinted bottom
-       border so the title strip visually separates from the body. */
+       looks prominent. reduce the height of all modal headers and
+       make them consistent." Standard vertical padding (0.35rem) +
+       cyan-tinted gradient + bottom border. Same shape as the
+       SymbolPanel + ActivityLogModal sibling headers so all three
+       modals open with the same chrome height. */
     display: flex;
     align-items: center;
-    padding: 0.55rem 0.85rem;
+    padding: 0.35rem 0.85rem;
     background: linear-gradient(180deg,
                   rgba(34, 211, 238, 0.10) 0%,
                   rgba(34, 211, 238, 0.04) 100%);
@@ -172,10 +175,13 @@
   }
 
   .cm-title {
+    /* Standard modal title — 0.72rem matches the SymbolPanel and
+       ActivityLogModal titles so all three read identically. */
     font-family: monospace;
-    font-size: 0.65rem;
-    color: #7e97b8;
-    font-weight: 600;
+    font-size: 0.72rem;
+    color: #67e8f9;
+    font-weight: 700;
+    letter-spacing: 0.04em;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
@@ -191,8 +197,12 @@
   }
 
   .cm-close {
-    width: 1.8rem;
-    height: 1.8rem;
+    /* Operator: "X and refresh rotating icon should be of similar
+       size and consistent with header text font size". Square 1.4rem
+       button matches the refresh icon to the left; glyph font-size
+       (0.95rem) is proportional to the 0.72rem header text. */
+    width: 1.4rem;
+    height: 1.4rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -200,15 +210,12 @@
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: #f87171;
-    font-size: 1.1rem;
+    font-size: 0.95rem;
     line-height: 1;
     padding: 0;
     cursor: pointer;
     font-family: monospace;
     transition: background 0.1s;
-    /* Defensive: ensure the button always receives clicks regardless
-       of any ancestor's pointer-events setting and that nothing inside
-       the chart workspace can paint over it. */
     pointer-events: auto;
     position: relative;
     z-index: 2;
@@ -251,12 +258,15 @@
     margin-left: auto;
   }
   .cm-refresh-wrap {
+    /* Refresh icon — square 1.4rem to match the X close button to
+       its right. Same chip chrome as the page-header RefreshButton
+       so the operator's mental model carries across surfaces. */
     display: inline-flex;
     align-items: center;
-    color: #22d3ee;
+    justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    justify-content: center;
+    color: #22d3ee;
     border-radius: 3px;
     background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.55);

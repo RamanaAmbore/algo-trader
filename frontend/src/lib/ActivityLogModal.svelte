@@ -110,15 +110,13 @@
 
 <style>
   .alm-header {
-    /* Prominent header strip — violet family (matches the page-header
-       Activity button palette + the panel border colour) so opening
-       the modal feels like opening a window into the same surface
-       family. Same gradient + bolder bottom border treatment as
-       ChartModal and SymbolPanel headers. */
+    /* Standard modal header — reduced vertical padding (0.35rem)
+       matches ChartModal + SymbolPanel so all three modals open
+       with the same chrome height. */
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.55rem 0.85rem;
+    padding: 0.35rem 0.85rem;
     background: linear-gradient(180deg,
                   rgba(168, 85, 247, 0.12) 0%,
                   rgba(168, 85, 247, 0.04) 100%);
@@ -130,10 +128,13 @@
      Earlier styling rendered the label as "LOG" caps which was out
      of sync with the rest of the modal trio. */
   .alm-title {
+    /* Standard 0.72rem matches the sibling modal titles
+       (ChartModal / SymbolPanel). */
     font-family: monospace;
-    font-size: 0.65rem;
-    color: #7e97b8;
-    font-weight: 600;
+    font-size: 0.72rem;
+    color: #c4b5fd;
+    font-weight: 700;
+    letter-spacing: 0.04em;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
@@ -143,9 +144,12 @@
      shade as the button that opened it. */
   .alm-title-icon { color: #a855f7; flex-shrink: 0; }
   .alm-close {
+    /* Standard close — square 1.4rem matches ChartModal +
+       SymbolPanel close buttons; glyph 0.95rem is proportional to
+       the 0.72rem header title text. */
     margin-left: auto;
-    width: 1.8rem;
-    height: 1.8rem;
+    width: 1.4rem;
+    height: 1.4rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -153,7 +157,7 @@
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: #f87171;
-    font-size: 1.1rem;
+    font-size: 0.95rem;
     line-height: 1;
     padding: 0;
     cursor: pointer;
