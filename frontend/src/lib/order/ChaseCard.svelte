@@ -159,6 +159,13 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
+    /* Operator: "chase in flight card has data crossing the
+       boundaries. make it look like other cards". width:100% +
+       min-width:0 lets the grid below shrink instead of pushing
+       past the bucket-card's right edge. */
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .cc-header {
     display: flex;
@@ -201,30 +208,43 @@
     display: flex;
     flex-direction: column;
     gap: 0;
+    width: 100%;
+    /* Scroll-x on overflow: protects against narrow viewports where
+       the column total exceeds available width. The grid itself
+       still uses fr units so wide viewports never trigger the
+       scrollbar. */
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
   .cc-row {
     display: grid;
+    /* Mix of fr columns and tight fixed widths so the row fits the
+       card on common viewports. minmax(0, ...) lets cells shrink
+       past their content with text-overflow:ellipsis. */
     grid-template-columns:
-      minmax(4rem, 1fr)  /* acct  */
-      3rem               /* side  */
-      3rem               /* qty   */
-      minmax(8rem, 2fr)  /* sym   */
-      4.5rem             /* limit */
-      3.5rem             /* att   */
-      2.5rem             /* age   */
-      3.5rem             /* mode  */
-      3rem;              /* kill  */
-    column-gap: 0.45rem;
+      minmax(0, 1.4fr)   /* acct  */
+      minmax(0, 0.6fr)   /* side  */
+      minmax(0, 0.6fr)   /* qty   */
+      minmax(0, 2.4fr)   /* sym   */
+      minmax(0, 1fr)     /* limit */
+      minmax(0, 0.8fr)   /* att   */
+      minmax(0, 0.6fr)   /* age   */
+      minmax(0, 0.8fr)   /* mode  */
+      minmax(2.6rem, auto); /* kill — locked min so the button always fits */
+    column-gap: 0.4rem;
     align-items: center;
     padding: 0.32rem 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     font-size: 0.62rem;
     font-family: ui-monospace, monospace;
     color: #c8d8f0;
+    min-width: 0;
   }
   .cc-compact .cc-row {
     grid-template-columns:
-      minmax(4rem, 1fr) 3rem 3rem minmax(8rem, 2fr) 4.5rem 3.5rem 3rem;
+      minmax(0, 1.4fr) minmax(0, 0.6fr) minmax(0, 0.6fr)
+      minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, 0.8fr)
+      minmax(2.6rem, auto);
   }
   .cc-row-h {
     color: #7e97b8;

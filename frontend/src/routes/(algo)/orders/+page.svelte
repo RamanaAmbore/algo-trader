@@ -337,71 +337,16 @@
 <section class="bucket-card bucket-card-entry mt-1 mb-2"
   class:fs-card-on={_fsEntry}
   class:is-collapsed={_colEntry}>
+  <!-- Operator: "the layout for order entry in orders page is
+       different from order entry in order modal. correct order
+       entry in orders page". Bucket-header now carries only the
+       section label + card-control trio; the Symbol search, chart
+       icon, Account picker, and tab strip are rendered by
+       SymbolPanel's own internal header (matching the modal).
+       Removed: page-level SymbolSearchInput, oc-chart-btn,
+       oc-entry-account, oc-tabs duplicates. -->
   <div class="bucket-header oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
-    <!-- Symbol picker — sits IMMEDIATELY after the section label per
-         operator request. SymbolPanel below renders `headerless` so
-         its own copy of this picker is suppressed. -->
-    <SymbolSearchInput
-      bind:value={_entrySymbol}
-      placeholder="Symbol…"
-      onPick={(sym) => { _entrySymbol = sym; }}
-      ariaLabel="Order entry symbol search" />
-    <!-- Chart icon button — opens ChartModal for the current entry
-         symbol. Same cyan-400 palette + 1.4rem sizing as the
-         card-control trio. Disabled when no symbol is picked. -->
-    <button type="button" class="oc-chart-btn"
-            disabled={!_entrySymbol}
-            title={_entrySymbol ? `Open chart for ${_entrySymbol}` : 'Pick a symbol first'}
-            aria-label={_entrySymbol ? `Open chart for ${_entrySymbol}` : 'Open chart'}
-            onclick={() => _orderChartModalOpen = true}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-    </button>
-    <!-- Page-level Account picker — every shell tab (Ticket, Chain,
-         Command) inherits this. Each tab can still override locally
-         (the Ticket form's Account select stays for per-ticket flips;
-         Command Line accepts an account token to override for that
-         one command). -->
-    {#if _entryAccounts.length > 1}
-      <div class="oc-entry-account">
-        <Select bind:value={_entryAccount}
-                placeholder="Account…"
-                ariaLabel="Order entry account"
-                options={_entryAccounts.map(a => ({ value: a, label: a }))} />
-      </div>
-    {:else if _entryAccounts.length === 1}
-      <span class="oc-entry-acct-chip" title="Single broker account">{_entryAccounts[0]}</span>
-    {/if}
-    <!-- Tab strip lifted out of SymbolPanel and into the bucket-header
-         per operator request "move the tabs to the row with text
-         order entry". Same colour palette and dot indicators as
-         SymbolPanel's internal strip. Active tab pushes through the
-         bound activeTab prop to flip the shell body below. -->
-    <div class="oc-tabs" role="tablist">
-      {#each TABS as tab}
-        {@const disabled = tab.id === 'chain' && _chainDisabled}
-        {@const isActive = _entryActiveTab === tab.id}
-        <button type="button" role="tab"
-          class="oc-tab"
-          class:oc-tab-disabled={disabled}
-          disabled={disabled}
-          title={disabled ? 'Chain tab applies to F&O instruments only' : undefined}
-          aria-selected={isActive}
-          aria-disabled={disabled}
-          style="
-            color: {isActive ? tab.activeTxt : '#94a3b8'};
-            background: {isActive ? tab.activeBg : 'transparent'};
-            border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
-            font-weight: {isActive ? '800' : '600'};
-            opacity: {disabled ? '0.5' : '1'};
-          "
-          onclick={() => { if (!disabled) _entryActiveTab = /** @type {any} */ (tab.id); }}>
-          {tab.label}
-        </button>
-      {/each}
-    </div>
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -428,8 +373,6 @@
          .oc-actions block this page used to maintain was deleted. -->
     <SymbolPanel
       inline
-      headerless
-      tabsExternal
       hideBottomPanel
       showCommonActions
       availableModes={['paper', 'live', 'shadow', 'sim', 'replay']}
