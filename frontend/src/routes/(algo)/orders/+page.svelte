@@ -19,7 +19,8 @@
   import { loadAccounts } from '$lib/data/accounts';
   import Select from '$lib/Select.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
-  import { executionMode } from '$lib/stores';
+  // executionMode store import retired with the page-level mode
+  // pills — SymbolPanel's shared toolbar owns _sharedMode now.
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
   import { longPress } from '$lib/actions/longPress.js';
@@ -87,37 +88,13 @@
   // to the symbol picker in the Order Entry bucket-header.
   let _orderChartModalOpen = $state(false);
 
-  // Common action footer — Mode pills + Exit + +Basket + BUY/SELL
-  // submit live at the page level (not inside each tab) so the
-  // operator sees the same affordances regardless of which tab
-  // (Ticket / Chain / Command) is active.
-  let _commonMode = $state(/** @type {'paper'|'live'|'shadow'|'sim'|'replay'} */ (
-    /** @type {any} */ (executionMode).get?.() || 'paper'
-  ));
-  executionMode.subscribe(v => { _commonMode = /** @type {any} */ (v) || 'paper'; });
-  // Counter-prop dispatch. The footer increments these; the
-  // OrderTicket inside SymbolPanel reacts via $effect.
+  // Counter-prop dispatch — SymbolPanel's common-actions footer
+  // increments these to fire submit/basket on the active tab.
+  // OrderTicket inside SymbolPanel reacts via $effect. The page no
+  // longer maintains its own mode / side state — SymbolPanel's
+  // shared toolbar (_sharedMode, _modalSide) drives both.
   let _triggerSubmit = $state(0);
   let _triggerBasket = $state(0);
-  // Tracks the operator's intended side (BUY/SELL) for the common
-  // submit button label. Updated when the operator clicks the side
-  // toggle inside the active tab — currently surfaces only as a
-  // sticky label hint since the Ticket form owns its own _side
-  // state. Defaults BUY; flipped by the page-level Side pill below.
-  let _commonSide = $state(/** @type {'BUY'|'SELL'} */ ('BUY'));
-
-  function _fireSubmit() {
-    if (_entryActiveTab === 'ticket') { _triggerSubmit++; return; }
-    // Other tabs handle submit via their own widgets for now.
-    // CommandLineTab: Enter key. ChainTab: in-card buttons.
-  }
-  function _fireBasket() {
-    if (_entryActiveTab === 'ticket') { _triggerBasket++; return; }
-  }
-  function _fireExit() {
-    // Reset the entry symbol — closes the operator's working state.
-    _entrySymbol = '';
-  }
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
   // on CollapseButton) so every page load opens both cards expanded
@@ -440,13 +417,23 @@
          `onSymbolChange` callback is unused here (the chain tab
          doesn't surface a way to re-pick from inside the shell)
          but reserved for future tab-internal picks. -->
+    <!-- Operator: "make order entry functionality in sync with orders
+         page order entry functionality. code should be reusable".
+         /orders now uses SymbolPanel's shared common-actions footer
+         (.oes-common-actions) — same Mode pills, CHASE toggle +
+         L/M/H aggressiveness, margin pill, +Basket, Clear, Submit
+         as the PageHeaderActions modal. Difference is just the
+         `availableModes` prop: /orders gets all five execution
+         modes, the modal sticks with paper/live. The custom
+         .oc-actions block this page used to maintain was deleted. -->
     <SymbolPanel
       inline
       headerless
       tabsExternal
       hideBottomPanel
-      actionsHidden
-      showCommonActions={false}
+      showCommonActions
+      availableModes={['paper', 'live', 'shadow', 'sim', 'replay']}
+      defaultMode="paper"
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       bind:activeTab={_entryActiveTab}
@@ -458,9 +445,6 @@
       side="BUY"
       onSymbolChange={(sym) => { _entrySymbol = sym; }}
       onSubmit={(payload) => {
-        // Drafts are page-local — no broker write. PAPER / LIVE submits
-        // hit the backend; the Order Book card below picks them up via
-        // the WebSocket order_update postback (or this defensive refresh).
         if (payload?.mode === 'draft') return;
         loadOrders();
       }}
@@ -470,45 +454,6 @@
         Demo: read-only — sign in to place orders
       </div>
     {/if}
-    <!-- Common action footer — Mode pills + Exit + +Basket + BUY/SELL
-         submit. Lives at the page level (not inside each tab body) so
-         every order entry channel (Order Ticket / Chain / Command Line)
-         sees the same affordances. The buttons dispatch to the active
-         tab via counter-prop signalling. -->
-    <div class="oc-actions">
-      <div class="oc-actions-mode" role="group" aria-label="Execution mode">
-        {#each /** @type {const} */ (['paper','live','shadow','sim','replay']) as m}
-          <button type="button" class="oc-mode-pill"
-            class:on={_commonMode === m}
-            title={m === 'paper' ? 'Paper — risk-free engine, no broker hit.'
-                  : m === 'live' ? 'Live — real broker order.'
-                  : m === 'shadow' ? 'Shadow — captures Kite payload + margin check, no execution.'
-                  : m === 'sim' ? 'Simulator — fabricated scenario book.'
-                  : 'Replay — historical candle replay.'}
-            onclick={() => executionMode.set(/** @type {any} */ (m))}>{m.toUpperCase()}</button>
-        {/each}
-      </div>
-      <span class="oc-actions-spacer"></span>
-      <button type="button" class="oc-act-exit"
-        title="Clear the entry shell"
-        onclick={_fireExit}>Exit</button>
-      <button type="button" class="oc-act-basket"
-        title="Add the current order to the basket — submit all together via the BUY/SELL button"
-        onclick={_fireBasket}>+ Basket</button>
-      <button type="button" class="oc-act-side"
-        title="Flip side BUY ↔ SELL"
-        onclick={() => _commonSide = _commonSide === 'BUY' ? 'SELL' : 'BUY'}>
-        {_commonSide}
-      </button>
-      <button type="button"
-        class="oc-act-submit"
-        class:oc-act-buy={_commonSide === 'BUY'}
-        class:oc-act-sell={_commonSide === 'SELL'}
-        title="Place the order via the active tab"
-        onclick={_fireSubmit}>
-        Place {_commonSide.toLowerCase()}
-      </button>
-    </div>
   </div>
 </section>
 
@@ -992,96 +937,10 @@
      buttons dispatch to whichever tab is active (Ticket / Chain /
      Command) so the operator always sees the same row of
      affordances regardless of which entry channel they're using. */
-  .oc-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-top: 0.5rem;
-    padding: 0.4rem 0.5rem;
-    background: rgba(15, 23, 42, 0.40);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 4px;
-  }
-  .oc-actions-spacer { flex: 1 1 0; }
-  .oc-actions-mode {
-    display: inline-flex;
-    gap: 0.15rem;
-    align-items: center;
-  }
-  .oc-mode-pill {
-    padding: 0.18rem 0.45rem;
-    background: rgba(126, 151, 184, 0.10);
-    border: 1px solid rgba(126, 151, 184, 0.30);
-    border-radius: 3px;
-    color: #94a3b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .oc-mode-pill:hover { color: #c8d8f0; border-color: rgba(126, 151, 184, 0.55); }
-  .oc-mode-pill.on {
-    background: rgba(251, 191, 36, 0.18);
-    border-color: rgba(251, 191, 36, 0.65);
-    color: #fbbf24;
-  }
-  .oc-act-exit,
-  .oc-act-basket,
-  .oc-act-side,
-  .oc-act-submit {
-    padding: 0.32rem 0.7rem;
-    border-radius: 3px;
-    font-size: 0.65rem;
-    font-weight: 800;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    border: 1px solid;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .oc-act-exit {
-    background: rgba(126, 151, 184, 0.10);
-    border-color: rgba(126, 151, 184, 0.40);
-    color: #94a3b8;
-  }
-  .oc-act-exit:hover {
-    background: rgba(126, 151, 184, 0.20);
-    color: #c8d8f0;
-  }
-  .oc-act-basket {
-    background: rgba(125, 211, 252, 0.12);
-    border-color: rgba(125, 211, 252, 0.45);
-    color: #7dd3fc;
-  }
-  .oc-act-basket:hover { background: rgba(125, 211, 252, 0.22); color: #bae6fd; }
-  .oc-act-side {
-    background: rgba(251, 191, 36, 0.12);
-    border-color: rgba(251, 191, 36, 0.45);
-    color: #fbbf24;
-    min-width: 3.5rem;
-    text-align: center;
-  }
-  .oc-act-side:hover { background: rgba(251, 191, 36, 0.20); }
-  .oc-act-submit {
-    color: #f1f7ff;
-    min-width: 7rem;
-    text-align: center;
-  }
-  .oc-act-submit.oc-act-buy {
-    background: rgba(74, 222, 128, 0.20);
-    border-color: rgba(74, 222, 128, 0.65);
-    color: #4ade80;
-  }
-  .oc-act-submit.oc-act-buy:hover { background: rgba(74, 222, 128, 0.30); }
-  .oc-act-submit.oc-act-sell {
-    background: rgba(248, 113, 113, 0.20);
-    border-color: rgba(248, 113, 113, 0.65);
-    color: #f87171;
-  }
-  .oc-act-submit.oc-act-sell:hover { background: rgba(248, 113, 113, 0.30); }
+  /* .oc-actions / .oc-mode-pill / .oc-act-{exit,basket,side,submit}
+     CSS retired — the page-level custom footer was replaced by
+     SymbolPanel's shared .oes-common-actions block so both surfaces
+     (modal + /orders) read from one component. ~80 lines dropped. */
 
   /* Chart icon button next to the symbol picker in the Order Entry
      header. Same cyan-400 palette + 1.4rem sizing as the card-control

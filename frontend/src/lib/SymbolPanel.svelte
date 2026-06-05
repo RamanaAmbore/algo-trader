@@ -94,7 +94,7 @@
    *   account?:        string,
    *   orderId?:        string,
    *   defaultMode?:    'draft' | 'paper' | 'live',
-   *   availableModes?: Array<'draft' | 'paper' | 'live'>,
+   *   availableModes?: Array<'draft' | 'paper' | 'live' | 'shadow' | 'sim' | 'replay'>,
    *   currentQty?:     number,
    *   onSubmit:        (payload: any) => void | Promise<void>,
    *   onClose:         () => void,
@@ -130,7 +130,7 @@
     account        = '',
     orderId        = '',
     defaultMode    = /** @type {'draft'|'paper'|'live'} */ ('live'),
-    availableModes = /** @type {Array<'draft'|'paper'|'live'>} */ (['draft', 'live']),
+    availableModes = /** @type {Array<'draft'|'paper'|'live'|'shadow'|'sim'|'replay'>} */ (['draft', 'live']),
     currentQty     = 0,
     onSubmit,
     onClose,
@@ -1268,29 +1268,32 @@
          don't accept a generic submit (Chain has its own per-strike
          buttons; CommandLine submits via Enter), but +Basket still
          works when there's pending content. -->
-    {#if showCommonActions && !inline && !actionsHidden}
+    {#if showCommonActions && !actionsHidden}
       <div class="oes-common-actions">
         <!-- Shared mode + chase toolkit — operator: "mode, chase,
              margin, common for chase and order ticket". Sits ABOVE
              the margin / submit row so both Chain and Ticket tabs
-             read from the same controls. PAPER + LIVE pills (DRAFT
-             omitted on the modal — host pages route drafts via
-             their own pipelines), CHASE on/off + L/M/H pills next
-             to it. State bound from `_sharedMode / _sharedChase /
+             read from the same controls. Mode pills now iterate
+             `availableModes` so /orders (paper/live/shadow/sim/
+             replay) and the modal (paper/live) share the same
+             markup. State bound from `_sharedMode / _sharedChase /
              _sharedChaseAgg`; OrderTicket suppresses its own row
              via `modeChaseHidden=true` and reads the lifted values
              through its bindable props. -->
         <div class="oes-common-mode-row">
           <span class="oes-common-mode-label">Mode</span>
           <div class="oes-common-mode-pills">
-            <button type="button" class="oes-common-mode-pill oes-common-mode-pill-paper"
-                    class:on={_sharedMode === 'paper'}
-                    title="Routes through the prod paper engine — real bid/ask, no broker hit"
-                    onclick={() => _sharedMode = 'paper'}>PAPER</button>
-            <button type="button" class="oes-common-mode-pill oes-common-mode-pill-live"
-                    class:on={_sharedMode === 'live'}
-                    title="Submit to the broker. On dev always routes to paper. On prod, routed to LIVE only when the per-action execution.live.* flag is on."
-                    onclick={() => _sharedMode = 'live'}>LIVE</button>
+            {#each (availableModes || ['paper', 'live']).filter(m => m !== 'draft') as m}
+              <button type="button" class="oes-common-mode-pill oes-common-mode-pill-{m}"
+                      class:on={_sharedMode === m}
+                      title={m === 'paper'  ? 'Paper — risk-free engine, no broker hit.'
+                           : m === 'live'   ? 'Live — real broker order.'
+                           : m === 'shadow' ? 'Shadow — captures Kite payload + margin check, no execution.'
+                           : m === 'sim'    ? 'Simulator — fabricated scenario book.'
+                           : m === 'replay' ? 'Replay — historical candle replay.'
+                           : m}
+                      onclick={() => _sharedMode = /** @type {any} */ (m)}>{String(m).toUpperCase()}</button>
+            {/each}
           </div>
           <!-- Chase pills are only meaningful for LIMIT and SL orders
                (those carry a limit price the engine can re-quote each
