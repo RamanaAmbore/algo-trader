@@ -143,17 +143,16 @@
        ? breakevens.filter(b => b != null)
        : (breakeven != null ? [breakeven] : [])));
 
-  // BE chip pin positions — sit close to the curves to minimise wasted
-  // top whitespace. Level 0 hovers half above / half below the chart's
-  // top edge (navy backing rect masks the curves behind so text stays
-  // legible). Level 1 stacks BELOW level 0 (inside the chart) so two
-  // close-together BEs don't both clip above the viewport.
+  // BE label pin positions — operator: "keep breakeven text under the
+  // x axis instead of showing at the top with the curve". Labels now
+  // sit BELOW the chart's plot baseline (height - PAD_B), in the same
+  // band as the σ-tick price labels but offset further down so the
+  // two row-types don't collide. Level-0 is the lower band; level-1
+  // stacks ABOVE level-0 (closer to the baseline) so two close-
+  // together BEs each have their own row without colliding.
   /** @type {Array<{be:number,label:string,pinY:number,chipW:number}>} */
   const bePins = $derived.by(() => {
     return breakevenList.map((be, i) => {
-      // Operator: "remove BE in breakeven chip decoration". The chip's
-      // position + amber outline already identifies it as a breakeven
-      // marker; the "BE " prefix is redundant text.
       const label = priceFmt(be);
       const chipW = label.length * 7 + 14;
       let stackLevel = 0;
@@ -162,9 +161,10 @@
           stackLevel = Math.max(stackLevel, 1);
         }
       }
-      // Level 0: chip straddles PAD_T (half above, half below).
-      // Level 1: 22 px below level 0, fully inside the chart area.
-      const pinY = PAD_T - 9 + stackLevel * 22;
+      // Sit in the bottom padding region, below the σ-tick labels
+      // (which occupy +12 to +25 below the baseline on milestone
+      // ticks). Level 0 at baseline + 28; level 1 stacks at + 14.
+      const pinY = (height - PAD_B) + 28 - stackLevel * 14;
       return { be, label, pinY, chipW };
     });
   });
@@ -180,9 +180,11 @@
   // bottom needs ~26 px clearance below the plot baseline. Non-milestone
   // whole-σ ticks still use a single-line label that fits in the same
   // budget.
-  // Tight top padding — BE chips overlap the top edge (level 0 above,
-  // level 1 just inside) so the chart's data area uses the space.
-  const PAD_L = 36, PAD_R = 12, PAD_T = 14, PAD_B = 36;
+  // Top padding tight since BE labels no longer overlap the top edge —
+  // they sit BELOW the x-axis baseline now (see bePins above).
+  // PAD_B bumped 36 → 50 to make room for BE labels under the σ-tick
+  // price labels (σ row at +12/+25, BE row at +28 from baseline).
+  const PAD_L = 36, PAD_R = 12, PAD_T = 14, PAD_B = 50;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -790,12 +792,11 @@
       {#each bePins as pin}
         {#if pin.be > sMin && pin.be < sMax}
           {@const bx = xOf(pin.be)}
-          {@const chipH = 18}
           <!-- Full-height amber breakeven vertical — middle prominence
                tier. 1.5px stroke at 0.65 alpha sits above the σ band
-               grid but quieter than the bright cyan spot line below
-               so the eye reads spot → breakevens → σ-band reference
-               in descending order of visual weight. -->
+               grid but quieter than the bright cyan spot line so the
+               eye reads spot → breakevens → σ-band in descending
+               order of visual weight. -->
           <line x1={bx} x2={bx} y1={PAD_T} y2={height - PAD_B}
                 stroke="#fbbf24" stroke-width="1.5"
                 stroke-opacity="0.65"
@@ -815,12 +816,14 @@
                   fill="#fbbf24" stroke="#0c1830" stroke-width="0.75"
                   fill-opacity="0.85"
                   pointer-events="none"/>
-          <!-- Operator: "remove chip for break even text decoration".
-               Plain amber text centered on the breakeven vertical,
-               with a navy stroke outline (paint-order: stroke fill)
-               so it stays readable when it crosses the σ-band grid
-               labels behind. No pill rect, no connector line. -->
-          <text x={bx} y={pin.pinY + chipH / 2 + 4}
+          <!-- Operator: "keep breakeven text under the x axis instead
+               of showing at the top with the curve". Plain amber
+               text rendered in the bottom padding band, anchored at
+               pin.pinY (= chart baseline + 28, stacked above when
+               two BEs are close horizontally). Navy stroke outline
+               (paint-order: stroke fill) so the label stays readable
+               when it sits beside a σ-tick price label. -->
+          <text x={bx} y={pin.pinY}
                 text-anchor="middle"
                 fill="#fbbf24"
                 stroke="#0c1830"

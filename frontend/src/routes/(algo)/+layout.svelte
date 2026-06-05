@@ -1358,13 +1358,12 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Top padding reserves space for the FIXED .page-header strip
-       (operator: "make header row fixed with strip under navbar").
-       Header is removed from flow now — content needs explicit
-       offset equal to header height (~2rem) so the first card
-       doesn't slide under the strip. Bumped to 2.2rem so the rare
-       multi-line wrap (mobile portrait) doesn't overlap. */
-    padding: 2.2rem 0.5rem 1.5rem;
+    /* No top padding — the sticky .page-header sits in flow as the
+       first child of .algo-content, naturally appearing just below
+       any sim/paper banner that's also sticky at top:3rem (banners
+       come first in the algo-viewport markup). Side + bottom
+       padding unchanged. */
+    padding: 0 0.5rem 1.5rem;
     color: #c8d8f0;
   }
 
@@ -1428,24 +1427,23 @@
        genuinely overflows. */
     gap: 0.15rem;
     flex-wrap: wrap;
-    margin-bottom: 0;
-    /* Operator: "make header row fixed with strip under navbar".
-       True position:fixed strip pinned at top:3rem (just under
-       the algo-navbar's h-12 / 3rem). Spans full viewport width
-       (left:0 / right:0) and matches the navbar's #0a1020
-       background + amber bottom border so the navbar + page-
-       header read as one continuous strip-band.
-       Lower z-index than the navbar (50) and the SIM / PAPER
-       banners (49) so those can overlap when both are visible.
-       .algo-content reserves padding-top: 2.2rem so content
-       doesn't slide under the fixed strip. */
-    position: fixed;
+    margin-bottom: 0.3rem;
+    /* Operator: "header text row is partially hidden by strip under
+       navbar". The previous position:fixed pinned the header at
+       top:3rem, the same y as the sim/paper banner stickies (also
+       at top:3rem with z-index:49). The banners covered the
+       page-header content. Reverted to position:sticky so the
+       header naturally sits BELOW any banners in document flow
+       (banners render before .algo-content in the markup) and
+       still sticks just under the navbar when scrolled. Full-
+       viewport-wide strip look retained via the negative
+       horizontal margins + navbar-matching background. */
+    position: sticky;
     top: 3rem;
-    left: 0;
-    right: 0;
     z-index: 40;
     background: #0a1020;
     padding: 0.2rem 0.65rem;
+    margin: 0 -0.5rem 0.3rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   }
