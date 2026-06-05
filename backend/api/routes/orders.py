@@ -459,6 +459,98 @@ class OrdersController(Controller):
             for r in rows
         ]
 
+    @post("/algo/reconcile")
+    async def reconcile_algo_orders(self, request: Request) -> dict:
+        """Admin sweep — re-syncs stale OPEN algo_orders rows against the
+        broker. Operator-triggered after observing rows stuck at OPEN
+        when the broker has already moved the order to a terminal
+        status (postback miss, network drop, etc.).
+
+        Strategy: group OPEN live rows by account, fetch each
+        account's order book once, then map Kite's per-order status
+        through _KITE_STATUS_MAP. If the broker no longer carries the
+        order_id at all, mark it UNFILLED (best-effort — operator can
+        still re-fire manually).
+        """
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403, detail="admin only")
+
+        import asyncio as _asyncio
+        from sqlalchemy import select as _sql_select
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        from backend.shared.helpers.connections import Connections
+        from datetime import datetime, timezone
+
+        _KITE_TO_ALGO = {
+            "COMPLETE":  "FILLED",
+            "CANCELLED": "CANCELLED",
+            "REJECTED":  "REJECTED",
+            "EXPIRED":   "UNFILLED",
+        }
+
+        # Pull every live OPEN algo_orders row.
+        async with async_session() as s:
+            rows = (await s.execute(
+                _sql_select(AlgoOrder).where(
+                    AlgoOrder.mode == "live",
+                    AlgoOrder.status == "OPEN",
+                )
+            )).scalars().all()
+
+            if not rows:
+                return {"scanned": 0, "updated": 0, "missing": 0}
+
+            # Group rows by account so each broker call is one lookup.
+            by_acct: dict[str, list] = {}
+            for r in rows:
+                by_acct.setdefault(str(r.account or ""), []).append(r)
+
+            conn = Connections()
+            updated = 0
+            missing = 0
+
+            for acct, acct_rows in by_acct.items():
+                broker = conn.conn.get(acct)
+                if broker is None:
+                    # Account not loaded — can't reconcile. Skip.
+                    continue
+                try:
+                    broker_orders = await _asyncio.to_thread(broker.orders)
+                except Exception as e:
+                    logger.warning(f"reconcile: broker.orders() for {acct} failed: {e}")
+                    continue
+                by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
+
+                for r in acct_rows:
+                    bid = str(r.broker_order_id or "")
+                    if not bid:
+                        continue
+                    bo = by_id.get(bid)
+                    if bo is None:
+                        # Broker doesn't carry this order any more.
+                        r.status = "UNFILLED"
+                        r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
+                        missing += 1
+                        continue
+                    kite_status = str(bo.get("status") or "").upper()
+                    new_status = _KITE_TO_ALGO.get(kite_status)
+                    if new_status and r.status != new_status:
+                        r.status = new_status
+                        if new_status == "FILLED":
+                            try:
+                                ap = bo.get("average_price") or bo.get("price")
+                                if ap is not None:
+                                    r.fill_price = float(ap)
+                                r.filled_at = datetime.now(timezone.utc)
+                            except (TypeError, ValueError):
+                                pass
+                        updated += 1
+
+            await s.commit()
+
+        return {"scanned": len(rows), "updated": updated, "missing": missing}
+
     @get("/{order_id:int}/events")
     async def order_events(self, order_id: int, request: Request) -> list[AlgoOrderEventInfo]:
         """Per-order event timeline, oldest-first.
@@ -1335,6 +1427,22 @@ class OrdersController(Controller):
                 from backend.api.algo.order_events import write_event as _write_event
                 import asyncio as _asyncio
 
+                # Kite → AlgoOrder.status mapping. Operator reported
+                # algo_orders rows stuck at OPEN even after Kite said the
+                # order was COMPLETE/CANCELLED/REJECTED — the previous
+                # postback handler only wrote a timeline event and never
+                # synced the row's status field. Map terminal Kite
+                # statuses and update the row in the same transaction
+                # that records the event so the orders list stays in
+                # lockstep with the broker.
+                _KITE_STATUS_MAP = {
+                    "COMPLETE":  "FILLED",
+                    "CANCELLED": "CANCELLED",
+                    "REJECTED":  "REJECTED",
+                    "EXPIRED":   "UNFILLED",
+                }
+                _new_status = _KITE_STATUS_MAP.get(str(status or "").upper())
+
                 async def _pb_event():
                     try:
                         async with _async_session() as _s:
@@ -1343,6 +1451,18 @@ class OrdersController(Controller):
                                     _AlgoOrder.broker_order_id == str(order_id)
                                 )
                             )).scalars().all()
+                            for _r in _rows:
+                                if _new_status and _r.status != _new_status:
+                                    _r.status = _new_status
+                                    if _new_status == "FILLED" and price:
+                                        try:
+                                            _r.fill_price = float(price)
+                                        except (TypeError, ValueError):
+                                            pass
+                                        if _r.created_at:
+                                            from datetime import datetime, timezone
+                                            _r.filled_at = datetime.now(timezone.utc)
+                            await _s.commit()
                         for _r in _rows:
                             await _write_event(
                                 _r.id, "postback",
@@ -1351,6 +1471,7 @@ class OrdersController(Controller):
                                 payload={
                                     "broker_order_id": order_id,
                                     "status": status,
+                                    "new_algo_status": _new_status,
                                     "tradingsymbol": tradingsymbol,
                                     "transaction_type": txn,
                                     "quantity": qty,
