@@ -20,12 +20,6 @@ _ROW_COLS = [
     'quantity', 'average_price', 'close_price', 'last_price',
     'pnl', 'pnl_percentage', 'unrealised', 'realised',
     'day_change', 'day_change_val', 'day_change_percentage',
-    # Intraday split — broker-agnostic day-P&L breakdown so the operator
-    # can verify per leg whether it was held overnight, opened today, or
-    # partially closed today. All four are post-multiplier (mirrors the
-    # `quantity` column's rescale in broker_apis::fetch_positions).
-    'overnight_quantity', 'day_buy_quantity', 'day_sell_quantity',
-    'day_buy_value', 'day_sell_value',
 ]
 
 _TTL = 30

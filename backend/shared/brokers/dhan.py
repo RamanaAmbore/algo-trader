@@ -480,19 +480,6 @@ def _normalise_positions(resp: Any) -> dict:
             "overnight_quantity": int(p.get("carryFwdQty", 0) or 0),
             "day_buy_quantity":   int(p.get("dayBuyQty",   0) or 0),
             "day_sell_quantity":  int(p.get("daySellQty",  0) or 0),
-            # Day-trade cash values — used by broker_apis' day-P&L splitter
-            # to separate intraday-opened legs from overnight ones. Dhan
-            # surfaces dayBuyAvg / daySellAvg per side; multiply by the
-            # matching qty to recover the cash value (= raw_qty × raw_price).
-            "day_buy_value":      float(p.get("dayBuyValue",  0) or 0)
-                                  or (float(p.get("dayBuyAvg", 0) or 0)
-                                      * int(p.get("dayBuyQty", 0) or 0)),
-            "day_sell_value":     float(p.get("daySellValue", 0) or 0)
-                                  or (float(p.get("daySellAvg", 0) or 0)
-                                      * int(p.get("daySellQty", 0) or 0)),
-            "multiplier":      int(p.get("multiplier", 1) or 1),
-            "close_price":     float(p.get("previousClose",
-                                           p.get("closePrice", 0)) or 0),
             "average_price":   float(p.get("netAvgPrice",  0) or 0),
             "last_price":      float(p.get("lastTradedPrice", 0) or 0),
             "buy_price":       float(p.get("buyAvg",       0) or 0),
