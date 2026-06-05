@@ -102,26 +102,25 @@
            mirrors the page-header Chart button glyph so the operator
            reads "I'm in Charts" at a glance. -->
       <span class="cm-title">
-        <svg class="cm-title-icon" width="12" height="12" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.9"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M2 13h12M3 11l3-4 3 2 4-6" />
-        </svg>
+        <!-- Chart glyph doubles as the refresh-state indicator — when
+             a fetch is in flight, the icon spins. No separate busy
+             badge or canvas overlay clutters the chrome. Operator:
+             "instead of showing two refresh icons, remove them.
+             instead have main chart icon to rotate when refreshing
+             the chart". Wrapper span carries the title so the
+             tooltip survives across the SVG namespace. -->
+        <span class="cm-title-icon-wrap"
+              title={_loading ? 'Refreshing chart — modal is locked until done' : ''}
+              aria-live="polite">
+          <svg class="cm-title-icon" class:cm-title-icon-loading={_loading}
+               width="12" height="12" viewBox="0 0 16 16"
+               fill="none" stroke="currentColor" stroke-width="1.9"
+               stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true">
+            <path d="M2 13h12M3 11l3-4 3 2 4-6" />
+          </svg>
+        </span>
         Charts
-        {#if _loading}
-          <!-- Busy badge — rotating arc-spinner glyph in chart-icon
-               cyan. Tells the operator "refresh in flight, modal locked
-               to × only". No text label; the rotation + cyan tint is
-               the affordance. -->
-          <span class="cm-busy-badge" aria-live="polite" title="Refreshing chart — modal is locked until done">
-            <svg class="cm-busy-badge-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle cx="8" cy="8" r="5.5"
-                fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round"
-                stroke-dasharray="9 30" />
-            </svg>
-          </span>
-        {/if}
       </span>
       <button type="button" class="cm-close" bind:this={_closeBtnEl}
               aria-label="Close chart modal">×</button>
@@ -226,22 +225,20 @@
   }
   .cm-body { position: relative; }
 
-  /* Refreshing badge in the header — icon-only, cyan to match the
-     canonical chart-icon palette across the page-header Chart button
-     and the in-chart spinner. No background pill or text label; the
-     rotation alone communicates the state, leaving the header
-     uncluttered. */
-  .cm-busy-badge {
+  .cm-title-icon-wrap {
     display: inline-flex;
     align-items: center;
-    margin-left: 0.4rem;
-    color: #22d3ee;
   }
-  .cm-busy-badge-icon {
-    animation: cm-busy-spin 1.1s linear infinite;
+  /* Rotating chart-glyph while a refresh is in flight. Replaces both
+     the prior `.cm-busy-badge` (separate spinner next to the title)
+     and the chart-canvas `.cw-chart-spinner` (overlay). Single icon,
+     single rotation — no duplicate affordances cluttering the
+     chrome. */
+  .cm-title-icon-loading {
+    animation: cm-title-spin 1.1s linear infinite;
     transform-origin: 50% 50%;
   }
-  @keyframes cm-busy-spin {
+  @keyframes cm-title-spin {
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }

@@ -1122,16 +1122,12 @@
        spinner in the row's leading slot tells the operator a fetch is
        in flight; clears the moment data lands. -->
   <div class="cw-controls" class:cw-controls-busy={_histLoading}>
-    {#if _histLoading}
-      <span class="cw-controls-spinner" title="Chart loading…" aria-live="polite" aria-label="Chart loading">
-        <svg class="cw-controls-spinner-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle cx="8" cy="8" r="5.5"
-            fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round"
-            stroke-dasharray="9 30" />
-        </svg>
-      </span>
-    {/if}
+    <!-- Leading-slot spinner removed — the modal title-glyph rotation
+         and the page-header RefreshButton's icon swap already carry
+         the loading state across both surfaces. The `.cw-controls-
+         busy` class still applies the disabled state + opacity dim so
+         the controls visibly lock during a fetch. -->
+
     <!-- Chart type -->
     <div class="cw-toolbar-select">
       <Select
@@ -1408,25 +1404,10 @@
                   fill="#fbbf24" stroke="#fff" stroke-width="1"/>
         {/if}
       </svg>
-      <!-- Loading overlay — spinning chart-glyph icon shown over the
-           top-right of the plot while a refresh is in flight. Keeps
-           the prior bars visible underneath so the operator sees a
-           continuous update rather than a flash to empty. -->
-      {#if _histLoading}
-        <!-- Loading affordance — rotating arc-spinner glyph (same family
-             as RefreshButton's loading state), painted in the canonical
-             chart-icon cyan. No text label; the operator reads the
-             rotation as "refresh in flight" without the badge widening
-             the header. -->
-        <div class="cw-chart-spinner" title="Refreshing chart…" aria-label="Refreshing chart">
-          <svg class="cw-chart-spinner-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <circle cx="8" cy="8" r="5.5"
-              fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round"
-              stroke-dasharray="9 30" />
-          </svg>
-        </div>
-      {/if}
+      <!-- Loading overlay removed — the modal's title-glyph rotation
+           (.cm-title-icon-loading) carries the refresh state across
+           both modal + page contexts now. No duplicate spinner on the
+           canvas. -->
     {/if}
   </div>
 
@@ -1880,47 +1861,9 @@
     pointer-events: none;
     opacity: 0.55;
   }
-  /* The spinner itself stays opaque + receives pointer for its
-     `title` tooltip, so the operator can hover to confirm "chart
-     loading" instead of guessing why the row is dim. */
-  .cw-controls-busy .cw-controls-spinner {
-    pointer-events: auto;
-    opacity: 1;
-  }
-  .cw-controls-spinner {
-    display: inline-flex;
-    align-items: center;
-    color: #22d3ee;
-    padding: 0 2px;
-  }
-  .cw-controls-spinner-icon {
-    animation: cw-spin 1.1s linear infinite;
-    transform-origin: 50% 50%;
-  }
-
-  /* Loading overlay — spinning chart icon, top-right corner. */
-  .cw-chart-spinner {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.75rem;
-    color: #22d3ee;
-    background: rgba(13, 24, 41, 0.78);
-    border: 1px solid rgba(34, 211, 238, 0.45);
-    border-radius: 4px;
-    padding: 4px 6px;
-    pointer-events: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .cw-chart-spinner-icon {
-    animation: cw-spin 1.1s linear infinite;
-    transform-origin: 50% 50%;
-  }
-  @keyframes cw-spin {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(360deg); }
-  }
+  /* Spinner glyphs retired — the rotating chart title-icon in
+     ChartModal + the page-header RefreshButton's loading swap are the
+     canonical refresh indicators now; no in-chart spinner needed. */
 
   /* ── State / empty ───────────────────────────────────────── */
   .cw-state {
