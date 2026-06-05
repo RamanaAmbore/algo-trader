@@ -1358,10 +1358,12 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Padding-top matches .page-header's min-height EXACTLY — strip
-       is 1.8rem (1.4rem buttons + 0.15rem pad×2 + 1px border).
-       No gap below strip, no overlap with first card. */
-    padding: 1.8rem 0.5rem 1.5rem;
+    /* Padding-top matches the page-header strip's actual rendered
+       height. Strip min-height is 2rem but PageHeaderActions
+       buttons (1.4rem) + Refresh (1.4rem) + 0.15rem pad×2 +
+       1px border yield ~2rem true. Playwright-measured to 32px
+       on prod. */
+    padding: 2rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
   /* algo-content padding-top is always EXACTLY the page-header
@@ -1461,7 +1463,7 @@
        header was partially hidden + extra space below; both
        resolve once the strip's actual height matches the
        reserved padding-top on .algo-content (also 1.8rem now). */
-    min-height: 1.8rem;
+    min-height: 2rem;
     box-sizing: border-box;
     overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
