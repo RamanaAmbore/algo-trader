@@ -10,6 +10,7 @@
   import { priceFmt, aggCompact } from '$lib/format';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import OrderCard from '$lib/order/OrderCard.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { chipsHtml, chipsFromJson } from '$lib/logChips';
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -281,9 +282,32 @@
     ['shadow', 'Shadow'],
     ['replay', 'Replay'],
   ];
+  // Account multi-select filter — matches the /orders Order Activity
+  // card. Operator: "order activity tabs have all accounts in order
+  // page. the order modal should also have it"; "keep the activity
+  // panel of orders page should be in sync with activity panel of
+  // orders modal". Empty array = no account filter (show every row);
+  // any selection narrows the order grid to just those accounts.
+  /** @type {string[]} */
+  let orderAccountFilter = $state([]);
+  const _availableAccounts = $derived.by(() => {
+    const s = new Set();
+    for (const o of orderRows || []) {
+      const a = String(o?.account || '').trim();
+      if (a) s.add(a);
+    }
+    return [...s].sort();
+  });
   const filteredOrderRows = $derived.by(() => {
-    if (orderModeFilter === 'all') return orderRows;
-    return (orderRows || []).filter(o => (o?.mode || 'live') === orderModeFilter);
+    let rows = orderRows || [];
+    if (orderModeFilter !== 'all') {
+      rows = rows.filter(o => (o?.mode || 'live') === orderModeFilter);
+    }
+    if (orderAccountFilter.length > 0) {
+      const want = new Set(orderAccountFilter);
+      rows = rows.filter(o => want.has(String(o?.account || '')));
+    }
+    return rows;
   });
 
   // ── Shared helpers so every tab renders the same way ─────────────────
@@ -711,6 +735,13 @@
         {label}
       </button>
     {/each}
+    {#if _availableAccounts.length > 1}
+      <span class="om-acct-wrap">
+        <AccountMultiSelect
+          bind:value={orderAccountFilter}
+          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      </span>
+    {/if}
   </div>
   <div class="lp-order-scroll {heightClass}">
     {#if filteredOrderRows.length}
@@ -1018,12 +1049,21 @@
      Colours mirror the .mode-pill-* tokens so the subnav reads as the
      same vocabulary the mode pills inside the rows already use. */
   .om-bar {
-    display: inline-flex;
-    gap: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     padding: 0.18rem 0;
     margin-bottom: 0.2rem;
     border-bottom: 1px dashed rgba(251,191,36,0.12);
+    flex-wrap: wrap;
   }
+  /* Mode chips and the account multi-select are siblings now —
+     `.om-bar` flips from inline-flex to flex so the chip group on
+     the left and the multi-select on the right co-exist on one
+     row. The chip group keeps its segmented look via inline-flex
+     on the wrapping span. */
+  .om-bar > .om-chip ~ .om-chip { margin-left: 0; }
+  .om-acct-wrap { display: inline-flex; min-width: 8rem; max-width: 16rem; }
   .om-chip {
     background: transparent;
     border: 1px solid rgba(255,255,255,0.10);
