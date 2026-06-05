@@ -459,6 +459,129 @@ class OrdersController(Controller):
             for r in rows
         ]
 
+    @get("/chases/active")
+    async def list_active_chases(self, request: Request) -> list[AlgoOrderInfo]:
+        """In-flight chase orders — every OPEN algo_orders row
+        (regardless of mode) so the operator can see manual + agent
+        chases on a single surface. Sorted newest-first.
+
+        Operator: "add a card in orders for chase and kill
+        functionality". Read path mirrors list_algo_orders so the UI
+        can reuse the same row component.
+        """
+        from sqlalchemy import desc, select as sql_select
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        async with async_session() as s:
+            rows = (await s.execute(
+                sql_select(AlgoOrder)
+                .where(AlgoOrder.status == "OPEN")
+                .order_by(desc(AlgoOrder.id))
+                .limit(500)
+            )).scalars().all()
+        do_mask = not is_admin_request(request)
+        masked_acct = (
+            (lambda a: mask_column(pd.Series([a]))[0]) if do_mask else (lambda a: a)
+        )
+        return [
+            AlgoOrderInfo(
+                id=r.id, account=masked_acct(r.account), symbol=r.symbol,
+                exchange=r.exchange,
+                transaction_type=r.transaction_type, quantity=r.quantity,
+                initial_price=(float(r.initial_price) if r.initial_price is not None else None),
+                fill_price=(float(r.fill_price) if r.fill_price is not None else None),
+                attempts=int(r.attempts or 0),
+                status=r.status, engine=r.engine, mode=r.mode,
+                detail=r.detail,
+                created_at=r.created_at.isoformat() if r.created_at else "",
+            )
+            for r in rows
+        ]
+
+    @post("/chases/{algo_order_id:int}/kill")
+    async def kill_chase(self, algo_order_id: int, request: Request) -> dict:
+        """Cancel an in-flight chase — best-effort across paper, live,
+        and shadow modes. Admin-only.
+
+        - Paper: ask the engine to cancel the open order (paper.cancel_order).
+        - Live: call broker.cancel_order(variety, broker_order_id).
+        - Shadow: just flip the row's status (nothing real to cancel).
+        Sets AlgoOrder.status='CANCELLED' and writes a 'killed' event so
+        the timeline reflects the operator action.
+        """
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403, detail="admin only")
+
+        import asyncio as _asyncio
+        from sqlalchemy import select as _sql_select
+        from datetime import datetime, timezone
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        from backend.api.algo.order_events import write_event as _write_event
+
+        async with async_session() as s:
+            row = (await s.execute(
+                _sql_select(AlgoOrder).where(AlgoOrder.id == algo_order_id)
+            )).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="order not found")
+            if row.status != "OPEN":
+                return {"ok": True, "already_terminal": True, "status": row.status}
+
+            mode = (row.mode or "").lower()
+            err_msg = ""
+
+            if mode == "paper":
+                try:
+                    from backend.api.algo.paper import get_prod_paper_engine
+                    eng = get_prod_paper_engine()
+                    # Engine matches by algo_order_id — cancel via the
+                    # in-memory book; cancellation propagates to status.
+                    cancelled = False
+                    with eng._lock:
+                        for o in eng._open_orders:
+                            if o.get("algo_order_id") == row.id and o.get("status") == "OPEN":
+                                o["status"] = "CANCELLED"
+                                cancelled = True
+                    if not cancelled:
+                        err_msg = "paper engine no longer tracking"
+                except Exception as e:
+                    err_msg = f"paper cancel failed: {e}"
+
+            elif mode == "live":
+                try:
+                    from backend.shared.helpers.connections import Connections
+                    conn = Connections()
+                    broker = conn.conn.get(str(row.account or ""))
+                    if broker is None:
+                        err_msg = f"account {row.account} not loaded"
+                    elif not (row.broker_order_id or "").strip():
+                        err_msg = "no broker_order_id on row"
+                    else:
+                        await _asyncio.to_thread(
+                            broker.cancel_order,
+                            variety="regular",
+                            order_id=str(row.broker_order_id),
+                        )
+                except Exception as e:
+                    err_msg = f"broker cancel failed: {e}"
+
+            # Update DB row + write event in the same transaction.
+            row.status = "CANCELLED"
+            row.detail = ((row.detail or "")[:200]
+                          + f" · killed by operator{' — ' + err_msg if err_msg else ''}")
+            await s.commit()
+            _row_id = row.id
+
+        invalidate("orders")
+        await _write_event(
+            _row_id, "killed",
+            f"Chase killed by operator{' (' + err_msg + ')' if err_msg else ''}",
+            payload={"err": err_msg or None,
+                     "ts": datetime.now(timezone.utc).isoformat()},
+        )
+        return {"ok": True, "err": err_msg or None}
+
     @post("/algo/reconcile")
     async def reconcile_algo_orders(self, request: Request) -> dict:
         """Admin sweep — re-syncs stale OPEN algo_orders rows against the

@@ -10,6 +10,7 @@
   import { fetchOrders, cancelOrder } from '$lib/api';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
+  import ChaseCard from '$lib/order/ChaseCard.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
@@ -511,6 +512,16 @@
   </div>
 </section>
 
+<!-- Chases in flight — every OPEN algo_orders row across paper /
+     live / shadow. Per-row Kill button cancels the chase
+     (paper-engine flip OR broker.cancel_order). Reusable card; see
+     ChaseCard.svelte for the markup + polling. -->
+<section class="bucket-card bucket-card-chase mb-2">
+  <div class="bucket-header oc-chase-header">
+    <ChaseCard pollMs={3000} onKilled={() => loadOrders()} />
+  </div>
+</section>
+
 <!-- Order Activity card — single card that absorbs both Order Book
      (the order grid that used to be its own card) and Order Log
      (UnifiedLog of order / agent events). Book is the default tab;
@@ -857,6 +868,12 @@
     box-sizing: border-box;
   }
   .bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); }
+  /* Chase card — rose accent so it reads as the "kill" surface
+     alongside amber Entry and cyan Activity. Section label inherits
+     the same rose via the cc-label rule inside ChaseCard. */
+  .bucket-card-chase { border-left-color: rgba(248, 113, 133, 0.70); }
+  .oc-chase-header { margin-bottom: 0; align-items: stretch; }
+  :global(.oc-chase-header .cc-root) { width: 100%; }
   /* bucket-card-book retired (Order Book merged into Activity card). */
 
   .bucket-header { margin-bottom: 0.35rem; }

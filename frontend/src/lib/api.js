@@ -362,6 +362,24 @@ export const seedSimLive          = () => _post('/simulator/seed-live', {}, { au
 // tab of the LogPanel on /agents and /admin/simulator.
 export const fetchAlgoOrdersRecent = (n = 100, mode = 'all') =>
   _get(`/orders/algo/recent?n=${n}&mode=${mode}`, { auth: true });
+
+/** GET /api/orders/chases/active — every algo_orders row currently in
+ *  OPEN state across paper / live / shadow modes. Used by the Chase
+ *  card on /orders to surface in-flight chases the operator can kill.
+ */
+export const fetchActiveChases = () =>
+  _get('/orders/chases/active', { auth: true });
+
+/** POST /api/orders/chases/{id}/kill — best-effort cancel of an
+ *  in-flight chase (paper: engine flip; live: broker.cancel_order).
+ *  Admin-only. */
+export const killChase = (algoOrderId) =>
+  _post(`/orders/chases/${algoOrderId}/kill`, {}, { auth: true });
+
+/** POST /api/orders/algo/reconcile — admin sweep that syncs stale
+ *  OPEN rows against the broker. Returns {scanned, updated, missing}. */
+export const reconcileAlgoOrders = () =>
+  _post('/orders/algo/reconcile', {}, { auth: true });
 // Synthesize-and-start — scenario generated live from the agent's condition
 // tree. Preferred over manually picking a scenario when the goal is "test
 // this specific agent."
