@@ -601,13 +601,26 @@
       const b = _modalMargin.blocked[0];
       return { level: 'err',  text: '⚠ ' + String(b?.reason || 'preview blocked').slice(0, 60), detail: String(b?.fix || '') };
     }
-    // Market-hours check — pick the right segment based on the resolved
-    // symbol's exchange family. NSE/NFO/BFO/CDS use isNseOpen window
-    // (covers equity + index F&O); MCX uses isMcxOpen. Symbols without
-    // a known exchange fall back to isMarketOpen (any segment open).
+    // Market-hours check — pick the right segment based on the
+    // resolved symbol's exchange family. Operator: "market closed
+    // order will queue not correct message ... should be displayed
+    // only when non-mcx symbols are selected. mcx is open, so any
+    // symbol from mcx are valid for trading."
+    //
+    // Detection order:
+    //   1. explicit exchange (_pickedExchange OR exchange prop)
+    //   2. tradingsymbol-pattern fallback — MCX commodity names
+    //      (CRUDEOIL, GOLD, SILVER, COPPER, NATURALGAS, ZINC, LEAD,
+    //      ALUMINIUM, NICKEL, MENTHA, COTTON, CARDAMOM) — covers the
+    //      case where the operator picked a symbol via the global
+    //      search and the exchange wasn't pre-resolved into a prop.
+    // For an MCX symbol while MCX is open, never warn. For non-MCX
+    // symbols, warn only when their session is closed.
     try {
+      const _sym = String(_localSymbol || symbol || '').toUpperCase();
+      const _mcxNames = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)/;
       const exch = (_pickedExchange || exchange || '').toUpperCase();
-      const isMcx = exch === 'MCX' || exch === 'NCO';
+      const isMcx = exch === 'MCX' || exch === 'NCO' || _mcxNames.test(_sym);
       const open = isMcx ? isMcxOpen() : (exch ? isNseOpen() : isMarketOpen());
       if (!open) {
         return {
@@ -1296,6 +1309,16 @@
               </div>
             {/if}
           {/if}
+          <!-- Clear basket lifted to the mode/chase row per operator
+               request — frees space in the submit row so the Submit
+               button isn't cramped. -->
+          {#if basketLegs.length > 0}
+            <span class="oes-common-spacer"></span>
+            <button type="button" class="oes-common-clear oes-common-clear-inline"
+              title="Clear all basket legs"
+              disabled={basketSubmitting}
+              onclick={clearBasket}>Clear basket</button>
+          {/if}
         </div>
         <!-- Single action row, three-priority left slot:
                1. Notice (market closed / broker disconnected / preview
@@ -1316,7 +1339,11 @@
             {@const _reqKey = _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
             {@const _kind = _isCash ? 'Cash debit' : 'Margin required'}
-            <span class="oes-margin-pill oes-margin-pill-{_marginPillCls}"
+            <!-- Operator: "for the margin area allocate to two rows
+                 of space". Required + Available stack on two lines
+                 (kept inline-grid for tight alignment). Buttons
+                 below match the new pill height. -->
+            <span class="oes-margin-pill oes-margin-pill-{_marginPillCls} oes-margin-pill-stack"
                   title={_marginInfo.error
                     ? `Preview: ${_marginInfo.error}`
                     : _marginInfo.loading
@@ -1327,23 +1354,20 @@
               {:else if _marginInfo.loading}
                 Computing {_isCash ? 'cost' : 'margin'}…
               {:else}
-                <span class="oes-margin-pill-key">{_reqKey}</span>
-                <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.required)}</span>
+                <span class="oes-margin-pill-row">
+                  <span class="oes-margin-pill-key">{_reqKey}</span>
+                  <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.required)}</span>
+                </span>
                 {#if _marginInfo.available != null}
-                  <span class="oes-margin-pill-sep">·</span>
-                  <span class="oes-margin-pill-key">{_avlKey}</span>
-                  <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.available)}</span>
+                  <span class="oes-margin-pill-row">
+                    <span class="oes-margin-pill-key">{_avlKey}</span>
+                    <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.available)}</span>
+                  </span>
                 {/if}
               {/if}
             </span>
           {/if}
           <span class="oes-common-spacer"></span>
-          {#if basketLegs.length > 0}
-            <button type="button" class="oes-common-clear"
-              title="Clear all basket legs"
-              disabled={basketSubmitting}
-              onclick={clearBasket}>Clear basket</button>
-          {/if}
           <button type="button" class="oes-common-basket"
             title="Add the current order to the basket"
             onclick={_modalFireBasket}>+ Basket</button>
@@ -1351,6 +1375,7 @@
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
             class:oes-common-submit-basket={_submitFlavor === 'basket'}
+            class:oes-common-submit-narrow={basketLegs.length > 0}
             title={basketLegs.length > 0
               ? `Submit all ${basketLegs.length} basket legs`
               : 'Place the order via the active tab'}
@@ -1358,7 +1383,11 @@
             onclick={() => {
               if (basketLegs.length > 0) submitBasket();
               else _modalFireSubmit();
-            }}>{basketSubmitting ? 'Placing…' : _submitLabel}</button>
+            }}>{basketSubmitting
+                ? 'Placing…'
+                : (basketLegs.length > 0
+                    ? `Submit (${basketLegs.length})`
+                    : _submitLabel)}</button>
         </div>
       </div>
     {/if}
@@ -2369,6 +2398,23 @@
     color: #c8d8f0;
     white-space: nowrap;
   }
+  /* Stacked variant — two rows (Req / Avail) one above the other.
+     Sized to match the action buttons' new 2-row height. */
+  .oes-margin-pill-stack {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    padding: 0.35rem 0.6rem;
+    line-height: 1.15;
+  }
+  .oes-margin-pill-row {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    width: 100%;
+    justify-content: space-between;
+  }
   .oes-margin-pill-key {
     text-transform: uppercase;
     font-weight: 700;
@@ -2405,7 +2451,9 @@
   .oes-common-basket,
   .oes-common-side,
   .oes-common-submit {
-    padding: 0.35rem 0.75rem;
+    /* Bumped vertical padding so button height matches the new
+       two-row .oes-margin-pill-stack. */
+    padding: 0.55rem 0.75rem;
     border-radius: 4px;
     font-family: monospace;
     font-size: 0.66rem;
@@ -2417,6 +2465,30 @@
     color: #7dd3fc;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
+  /* Compact Submit label when basket is active — short "Submit (N)"
+     text + slightly smaller font + tighter padding so the cluster
+     fits even on narrow viewports. */
+  .oes-common-submit-narrow {
+    font-size: 0.6rem;
+    padding-left: 0.55rem;
+    padding-right: 0.55rem;
+    letter-spacing: 0.02em;
+  }
+  /* Clear-basket pill nested in the chase row — smaller, quieter
+     red so it doesn't compete with the chase pills next to it. */
+  .oes-common-clear-inline {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.55rem;
+    border-radius: 3px;
+    border: 1px solid rgba(248, 113, 133, 0.40);
+    background: transparent;
+    color: rgba(248, 113, 133, 0.85);
+    cursor: pointer;
+    font-family: monospace;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .oes-common-clear-inline:hover { background: rgba(248, 113, 133, 0.10); }
   .oes-common-basket:hover { background: rgba(125, 211, 252, 0.12); }
   .oes-common-side-buy  { border-color: rgba(74, 222, 128, 0.55); color: #4ade80; }
   .oes-common-side-sell { border-color: rgba(248, 113, 113, 0.55); color: #f87171; }
