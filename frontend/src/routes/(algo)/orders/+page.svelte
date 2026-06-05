@@ -82,7 +82,15 @@
   // charts or orders either in model, or page, the symbol should
   // be defaulted to that." A late settings fetch can land after
   // mount; we patch _entrySymbol once the resolved value differs.
-  let _entrySymbol = $state(resolveSymbol());
+  let _entrySymbol   = $state(resolveSymbol());
+  // Track the exchange alongside the symbol so commodity options
+  // (MCX) and currency contracts (CDS) don't race with the
+  // instruments-cache lookup inside OrderTicket / OrderDepth.
+  // Operator: "chain and order depth is not getting updated in
+  // orders page for commodity options" — the exchange that
+  // SymbolSearchInput's onPick meta carries is now persisted so
+  // depth + chain see MCX from the first poll.
+  let _entryExchange = $state('');
 
   // Symbol-type filter — shared 4-option vocabulary (All / Equity /
   // Futures / Options) so every surface uses the same picker.
@@ -393,7 +401,14 @@
       bind:value={_entrySymbol}
       placeholder="Symbol…"
       type={_entrySymType}
-      onPick={(sym) => { _entrySymbol = sym; }}
+      onPick={(sym, meta) => {
+        _entrySymbol = sym;
+        // Capture the exchange off the instruments cache match —
+        // commodity options need MCX, currency needs CDS, F&O
+        // needs NFO. Falls back to '' so the receiving
+        // OrderTicket can still look up via getInstrument().
+        _entryExchange = String(meta?.exchange || '');
+      }}
       ariaLabel="Order entry symbol search" />
     <button type="button" class="oc-chart-btn"
             disabled={!_entrySymbol}
@@ -435,6 +450,7 @@
       bind:activeTab={_entryActiveTab}
       defaultTab="chain"
       symbol={_entrySymbol}
+      exchange={_entryExchange}
       account={_entryAccount}
       accounts={_entryAccounts}
       action="open"
