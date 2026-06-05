@@ -109,15 +109,10 @@
     { value: 'bb',       label: 'Bollinger' },
     { value: 'rsi',      label: 'RSI 14' },
   ];
-  // Volume lives in the main toolbar after the 1Y range pill — operator:
-  // "move volume element to after 1Y from chart to above chart". Pulled
-  // out of the floating Overlays panel so the affordance is one click
-  // away in the chrome above the chart, not nested in a dropdown.
-  function _toggleVolume() {
-    _overlays = _overlays.includes('vol')
-      ? _overlays.filter(o => o !== 'vol')
-      : [..._overlays, 'vol'];
-  }
+  // Volume bars are ALWAYS on — operator: "remove volume chip from
+  // chart and always keep volume on for chart in the modal and
+  // page". _showVol below is hard-coded true; the toggle function
+  // and the toolbar chip are gone.
 
   /** Called by SymbolSearchInput when the operator picks a symbol. */
   function _onPickSymbol(/** @type {string} */ sym) {
@@ -225,8 +220,9 @@
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
   let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('line'));
-  // Overlays MultiSelect — drives derived booleans below. Volume on by default.
-  let _overlays    = $state(/** @type {string[]} */(['vol']));
+  // Overlays MultiSelect — drives derived booleans below. Volume
+  // is no longer in this list (always-on via _showVol const below).
+  let _overlays    = $state(/** @type {string[]} */([]));
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
@@ -234,7 +230,8 @@
   let _intradayOn = $state(false);
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
-  const _showVol   = $derived(_overlays.includes('vol'));
+  // Always on — volume bars render unconditionally.
+  const _showVol   = true;
   const _showEma20 = $derived(_overlays.includes('ema20'));
   const _showEma50 = $derived(_overlays.includes('ema50'));
   const _showBb    = $derived(_overlays.includes('bb'));
@@ -1162,20 +1159,10 @@
       {/each}
     </div>
 
-    <!-- Volume toggle — sits right after the 1Y pill so the affordance
-         reads as part of the chart's primary control bar instead of
-         hiding in the Overlays dropdown. Same chip shape as the range
-         buttons; active state uses the same cyan tint so the operator
-         sees "Volume ON" / "Volume OFF" at a glance. -->
-    <button type="button"
-      class="cw-range-btn cw-vol-btn"
-      class:active={_showVol}
-      disabled={_histLoading}
-      title={_showVol ? 'Volume bars ON — click to turn off' : 'Volume bars OFF — click to turn on'}
-      aria-pressed={_showVol}
-      onclick={_toggleVolume}>
-      Volume
-    </button>
+    <!-- Volume chip retired (operator: "remove volume chip from
+         chart and always keep volume on for chart in the modal
+         and page"). _overlays['vol'] is hard-coded ON in the
+         state init so the bars render unconditionally. -->
 
     <!-- Reset zoom action button — trailing edge, only when zoomed -->
     {#if isZoomed}
