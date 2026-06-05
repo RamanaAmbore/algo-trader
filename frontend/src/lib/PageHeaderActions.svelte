@@ -233,7 +233,7 @@
     defaultTab="chain"
     accounts={[]}
     account=""
-    defaultMode="paper"
+    defaultMode={$executionMode === 'live' && _effectiveModes.includes('live') ? 'live' : 'paper'}
     availableModes={_effectiveModes}
     onClose={() => { _orderOpen = false; }}
     onSubmit={() => { _orderOpen = false; }}
