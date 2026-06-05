@@ -609,23 +609,6 @@
 </script>
 
 <div class="flex items-stretch mb-2 log-tab-row">
-  <!-- Log icon at the leading edge — matches the page-header Log
-       button glyph in PageHeaderActions so both "log" surfaces read
-       as the same affordance. Three horizontal lines = list / log
-       (industry-standard convention; same shape Sentry / Datadog /
-       Splunk use). Same column reservation + amber accent at low
-       saturation as the retired rotated "log" text. -->
-  <span class="log-section-wrap" aria-hidden="true">
-    <!-- Notification bell glyph — matches the page-header Activity
-         button and the ActivityLogModal title icon. Bell ties this
-         strip into the existing notifications family. -->
-    <svg class="log-section-icon" width="14" height="14" viewBox="0 0 16 16"
-         fill="none" stroke="currentColor" stroke-width="1.4"
-         stroke-linecap="round" stroke-linejoin="round">
-      <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z" />
-      <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3" />
-    </svg>
-  </span>
   {#each VISIBLE_TABS as [id, label]}
     <button onclick={() => setTab(id)}
       class="log-tab-btn border-b-2 transition-colors
@@ -867,28 +850,6 @@
     white-space: nowrap;
     letter-spacing: 0.02em;
     font-family: ui-monospace, monospace;
-  }
-
-  /* Vertical "log" label — muted monospace section marker, mirrors the
-     understated navbar brand text instead of a coloured chip. The
-     two-layer split (wrap + text) keeps flex layout and writing-mode
-     from conflicting. */
-  .log-section-wrap {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 0.7rem;
-    padding: 0 0.15rem;
-    margin-right: 0.2rem;
-    align-self: stretch;
-  }
-  .log-section-icon {
-    /* Subtle gold — same amber hue as the navbar accents but at low
-       saturation so the activity-pulse glyph reads as a quiet section
-       stamp, not a UI control. Matches the typography retired from the
-       former rotated "log" text. */
-    color: rgba(251, 191, 36, 0.55);
-    flex-shrink: 0;
   }
 
   /* Unified-log container inside the LogPanel — matches the <pre>
