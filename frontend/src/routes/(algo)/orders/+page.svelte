@@ -1146,7 +1146,7 @@
     border: 0;
     border-bottom: 2px solid transparent;
     color: #94a3b8;
-    font-size: 0.6rem;
+    font-size: 0.58rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;

@@ -1220,17 +1220,16 @@
             </span>
           {/each}
         </div>
-        <div class="oes-basket-meta">
-          {#if basketResultMsg}
+        <!-- Operator: "clear submit basket area duplicates common
+             buttons". Dropped .oes-basket-actions (Clear + Submit)
+             since the common action footer already carries both.
+             Result message stays so post-submit feedback is still
+             visible alongside the leg pills. -->
+        {#if basketResultMsg}
+          <div class="oes-basket-meta">
             <span class="oes-basket-result">{basketResultMsg}</span>
-          {/if}
-          <div class="oes-basket-actions">
-            <button type="button" class="oes-basket-clear" disabled={basketSubmitting} onclick={clearBasket}>Clear</button>
-            <button type="button" class="oes-basket-submit" disabled={basketSubmitting} onclick={submitBasket}>
-              {basketSubmitting ? 'Placing…' : `Submit basket (${basketLegs.length})`}
-            </button>
           </div>
-        </div>
+        {/if}
       </div>
     {/if}
 

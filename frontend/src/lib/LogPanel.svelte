@@ -760,16 +760,26 @@
     padding: 0.25rem 0.55rem;
     line-height: 1.35;
   }
+  /* Operator: "for agents, terminal, ticks, and system, the row
+     data is indented wasting space. Change the font of timestamp
+     so that it occupied less space. make the row data to display
+     in the next line of timestamp in the same row, so that you
+     can use full available space."
+     Layout split into two rows inside the same .log-row:
+       row 1: [ time · TAG ]      (compact metadata strip)
+       row 2: [ message ]          (full width, uses everything)
+     Achieved via flex-wrap + per-child `order` so we don't have
+     to restructure the markup. */
   :global(.log-panel.log-rows .log-row) {
     display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.32rem 0;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 0.4rem;
+    row-gap: 0.05rem;
+    padding: 0.28rem 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     color: #c8d8f0;
-    /* Reset legacy `.log-panel .log-XXX` accents from app.css so the
-       row sits on a flat surface with no inside fill/stripe. */
     border-left: none;
     background: transparent;
   }
@@ -778,36 +788,44 @@
 
   :global(.log-panel.log-rows .log-row-time) {
     flex: 0 0 auto;
+    order: 0;
     font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    /* Smaller than message — timestamps are scan-fodder, not the
+       content the operator focuses on. */
+    font-size: 0.52rem;
     color: #7dd3fc;
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
-    min-width: 2.5rem;
-    line-height: 1.2;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    opacity: 0.85;
   }
   :global(.log-panel.log-rows .log-row-time-empty) {
     color: #7e97b8;
     opacity: 0.55;
     font-style: italic;
   }
-  :global(.log-panel.log-rows .log-row-msg) {
-    flex: 1 1 auto;
-    min-width: 0;
-    word-break: break-word;
-  }
   :global(.log-panel.log-rows .log-row-tag) {
     flex: 0 0 auto;
+    order: 1;
     font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-size: 0.5rem;
     color: #7e97b8;
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
-    padding: 1px 6px;
+    padding: 0 5px;
     border-radius: 2px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     white-space: nowrap;
+    line-height: 1.3;
+  }
+  :global(.log-panel.log-rows .log-row-msg) {
+    /* flex-basis: 100% pushes msg to its own line below time + tag */
+    flex: 1 1 100%;
+    order: 2;
+    min-width: 0;
+    word-break: break-word;
+    line-height: 1.3;
   }
   /* Row-class semantics now carry through TEXT COLOR ONLY — no inside
      accent (left-border stripe, background tint) per operator
