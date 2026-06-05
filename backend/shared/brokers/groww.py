@@ -639,6 +639,19 @@ def _normalise_positions(resp: Any) -> dict:
                                             p.get("overnight_quantity", 0)) or 0),
             "day_buy_quantity":   int(p.get("day_buy_quantity",  0) or 0),
             "day_sell_quantity":  int(p.get("day_sell_quantity", 0) or 0),
+            # Day-trade cash values for the split P∆ formula. Derive
+            # from price × qty when Groww doesn't return value
+            # directly. ₹ cash to match Kite convention.
+            "day_buy_value":      float(p.get("day_buy_value",  0) or 0)
+                                  or (float(p.get("day_buy_price",  0) or 0)
+                                      * int(p.get("day_buy_quantity",  0) or 0)),
+            "day_sell_value":     float(p.get("day_sell_value", 0) or 0)
+                                  or (float(p.get("day_sell_price", 0) or 0)
+                                      * int(p.get("day_sell_quantity", 0) or 0)),
+            "multiplier":      int(p.get("multiplier",
+                                         p.get("lot_size", 1)) or 1),
+            "close_price":     float(p.get("close_price",
+                                           p.get("previous_close", 0)) or 0),
             "average_price":   float(p.get("average_price",
                                            p.get("net_price", 0)) or 0),
             "last_price":      float(p.get("last_price",

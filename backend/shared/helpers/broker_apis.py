@@ -94,11 +94,52 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     if df_positions.empty:
         return df_positions
 
-    # Derive day-change. Kite gives last_price + close_price (yesterday's
-    # close) per position row. Day change ₹ = (last - close) * qty.
-    # Day change % = day_change_val / |close * qty| — guarded against zero.
+    # ── P∆ (day change in P&L on positions) ─────────────────────────────
+    # Operator: "p delta change in profit/loss change from begin of the
+    # day, after open of the position, after close of the position".
+    # Legacy (last − close) × qty form only works for purely overnight
+    # legs; double-counts the (close − avg) gap on legs opened today and
+    # mis-attributes today's realised on closeouts.
+    #
+    # Generic split formula (derived from value-change + cash-flow
+    # accounting, broker-agnostic):
+    #
+    #     P∆_row = (last − close) × overnight_qty            ← MTM on held overnight
+    #            + last × (day_buy_qty − day_sell_qty)       ← MTM on intraday net qty
+    #            + (day_sell_value − day_buy_value)          ← realised cash today
+    #
+    # Reduces correctly for every case:
+    #   • held overnight, no trades         → (last − close) × qty
+    #   • opened today (one side only)      → (last − avg) × qty
+    #   • closed today (covered overnight)  → realised on closeout
+    #   • round-trip in one session         → realised cash flow
+    #   • partially closed                  → mark on remainder + realised
+    #   • added more today                  → mark on overnight + paper on new
+    #
+    # Multiplier: applied to qty-shape fields only (raw lots → shares-
+    # equiv); `day_buy_value` / `day_sell_value` are already ₹ cash per
+    # Kite API spec and MUST NOT be rescaled (earlier patch did, inflating
+    # MCX legs ~100×). Falls back to legacy form when the adapter omits
+    # the split fields. P, unrealised, realised, pnl_percentage are left
+    # entirely on the broker's pass-through value to preserve lifetime
+    # cumulative semantics for the P chip.
     df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
-    df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
+    _split_cols = ('overnight_quantity', 'day_buy_quantity',
+                   'day_sell_quantity', 'day_buy_value', 'day_sell_value')
+    if all(c in df_positions.columns for c in _split_cols):
+        _mult = (df_positions['multiplier'].fillna(1).replace(0, 1)
+                 if 'multiplier' in df_positions.columns
+                 else 1)
+        _oq  = df_positions['overnight_quantity'] * _mult
+        _dbq = df_positions['day_buy_quantity']   * _mult
+        _dsq = df_positions['day_sell_quantity']  * _mult
+        df_positions['day_change_val'] = (
+            (df_positions['last_price'] - df_positions['close_price']) * _oq
+            + df_positions['last_price'] * (_dbq - _dsq)
+            + (df_positions['day_sell_value'] - df_positions['day_buy_value'])
+        )
+    else:
+        df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
     prev_val = (df_positions['close_price'] * df_positions['quantity']).abs()
     df_positions['day_change_percentage'] = (
         df_positions['day_change_val'] / prev_val.replace(0, pd.NA) * 100
