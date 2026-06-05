@@ -345,8 +345,40 @@
 <section class="bucket-card bucket-card-entry mt-1 mb-2"
   class:fs-card-on={_fsEntry}
   class:is-collapsed={_colEntry}>
+  <!-- Operator: "I don't see actual option chain when I press chain
+       button. order ticket is also not showing order depth ... User
+       should be able to place order either using order modal or
+       orders page". Bucket-header carries the Symbol picker,
+       Chart-open shortcut, and Account picker — without these the
+       SymbolPanel below has no `_localSymbol` to drive the Chain /
+       Ticket / Depth fetches. (The modal gets its symbol via a
+       prop from the page header; /orders needs its own input.) -->
   <div class="bucket-header oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
+    <SymbolSearchInput
+      bind:value={_entrySymbol}
+      placeholder="Symbol…"
+      onPick={(sym) => { _entrySymbol = sym; }}
+      ariaLabel="Order entry symbol search" />
+    <button type="button" class="oc-chart-btn"
+            disabled={!_entrySymbol}
+            title={_entrySymbol ? `Open chart for ${_entrySymbol}` : 'Pick a symbol first'}
+            aria-label={_entrySymbol ? `Open chart for ${_entrySymbol}` : 'Open chart'}
+            onclick={() => _orderChartModalOpen = true}>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+    {#if _entryAccounts.length > 1}
+      <div class="oc-entry-account">
+        <Select bind:value={_entryAccount}
+                placeholder="Account…"
+                ariaLabel="Order entry account"
+                options={_entryAccounts.map(a => ({ value: a, label: a }))} />
+      </div>
+    {:else if _entryAccounts.length === 1}
+      <span class="oc-entry-acct-chip" title="Single broker account">{_entryAccounts[0]}</span>
+    {/if}
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
