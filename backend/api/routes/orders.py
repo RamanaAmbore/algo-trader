@@ -461,17 +461,39 @@ class OrdersController(Controller):
 
     @get("/chases/active")
     async def list_active_chases(self, request: Request) -> list[AlgoOrderInfo]:
-        """In-flight chase orders — every OPEN algo_orders row
-        (regardless of mode) so the operator can see manual + agent
-        chases on a single surface. Sorted newest-first.
+        """In-flight chase orders — algo_orders rows in OPEN state
+        across paper / live / shadow. Sorted newest-first.
 
-        Operator: "add a card in orders for chase and kill
-        functionality". Read path mirrors list_algo_orders so the UI
-        can reuse the same row component.
+        Two cheap inline reconciles before returning so the card
+        never surfaces an order that's already dead (operator: "how
+        can an order present in chase in flight when they are no
+        open orders"):
+          1. paper rows whose id isn't in the paper engine's open
+             set — marked UNFILLED in DB, dropped from response.
+          2. live rows with no broker_order_id (placement never
+             succeeded) — marked REJECTED in DB, dropped.
+
+        Live rows that DO carry a broker_order_id are trusted to be
+        legitimately in-flight; the operator-triggered reconcile
+        endpoint does the broker round-trip when they want a
+        thorough sweep.
         """
         from sqlalchemy import desc, select as sql_select
+        from datetime import datetime, timezone
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
+
+        # Snapshot paper engine's open-order ids ONCE before the DB
+        # query so we don't pay for the lock on every row.
+        try:
+            from backend.api.algo.paper import get_prod_paper_engine
+            _pe = get_prod_paper_engine()
+            _paper_open_ids = {
+                o.get("algo_order_id") for o in _pe.open_order_details()
+            }
+        except Exception:
+            _paper_open_ids = None  # engine unavailable → don't drop paper rows
+
         async with async_session() as s:
             rows = (await s.execute(
                 sql_select(AlgoOrder)
@@ -479,6 +501,30 @@ class OrdersController(Controller):
                 .order_by(desc(AlgoOrder.id))
                 .limit(500)
             )).scalars().all()
+
+            kept = []
+            dropped_paper = 0
+            dropped_live = 0
+            for r in rows:
+                mode = (r.mode or "").lower()
+                if mode == "paper" and _paper_open_ids is not None:
+                    if r.id not in _paper_open_ids:
+                        r.status = "UNFILLED"
+                        r.detail = ((r.detail or "")[:200]
+                                    + " · paper engine no longer tracking")
+                        dropped_paper += 1
+                        continue
+                elif mode == "live":
+                    if not (r.broker_order_id or "").strip():
+                        r.status = "REJECTED"
+                        r.detail = ((r.detail or "")[:200]
+                                    + " · live placement never returned broker_order_id")
+                        dropped_live += 1
+                        continue
+                kept.append(r)
+            if dropped_paper or dropped_live:
+                await s.commit()
+
         do_mask = not is_admin_request(request)
         masked_acct = (
             (lambda a: mask_column(pd.Series([a]))[0]) if do_mask else (lambda a: a)
@@ -495,7 +541,7 @@ class OrdersController(Controller):
                 detail=r.detail,
                 created_at=r.created_at.isoformat() if r.created_at else "",
             )
-            for r in rows
+            for r in kept
         ]
 
     @post("/chases/{algo_order_id:int}/kill")

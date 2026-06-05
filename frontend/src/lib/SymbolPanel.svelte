@@ -1487,14 +1487,17 @@
     overflow-y: auto;
   }
   .oes-modal.oes-modal-inline {
+    /* Operator: "the outer container ascent, borders, heading should
+       be in sync with the current order entry card container in
+       orders page". The host bucket-card on /orders provides its
+       own amber-left-accent / gradient / border chrome, so the
+       inline SymbolPanel strips its outer panel decoration to
+       avoid double-framing. Tabs / body / common-actions still
+       render — matching the modal's internal layout. */
     width: 100%;
     max-height: none;
     border-radius: 0;
     box-shadow: none;
-    /* Drop the amber outline + gradient background — the host card
-       provides its own chrome, so a second nested border would
-       double-frame the content. Per operator request "remove the
-       current yellow border". */
     border: none;
     background: transparent;
   }

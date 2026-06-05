@@ -15,7 +15,7 @@
    *   onKilled?     — callback fired after a successful kill
    */
   import { onMount, onDestroy } from 'svelte';
-  import { fetchActiveChases, killChase } from '$lib/api';
+  import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
 
   let {
@@ -28,6 +28,8 @@
   let _loading = $state(false);
   let _err     = $state('');
   let _killing = $state(/** @type {Set<number>} */ (new Set()));
+  let _reconciling = $state(false);
+  let _reconcileMsg = $state('');
   /** @type {ReturnType<typeof setInterval>|null} */
   let _timer = null;
 
@@ -40,6 +42,22 @@
       _err = e?.message || 'load failed';
     } finally {
       _loading = false;
+    }
+  }
+
+  async function _reconcile() {
+    if (_reconciling) return;
+    _reconciling = true;
+    _reconcileMsg = '';
+    try {
+      const r = await reconcileAlgoOrders();
+      _reconcileMsg = `Reconciled — scanned ${r?.scanned ?? 0}, updated ${r?.updated ?? 0}, missing ${r?.missing ?? 0}`;
+      await _load();
+      setTimeout(() => { _reconcileMsg = ''; }, 4000);
+    } catch (e) {
+      _err = `reconcile: ${e?.message || 'failed'}`;
+    } finally {
+      _reconciling = false;
     }
   }
 
@@ -100,9 +118,17 @@
       <span class="cc-count">{_chases.length}</span>
     {/if}
     <span class="cc-spacer"></span>
-    {#if _err}
+    {#if _reconcileMsg}
+      <span class="cc-reconcile-msg" title={_reconcileMsg}>{_reconcileMsg}</span>
+    {:else if _err}
       <span class="cc-err" title={_err}>{_err.slice(0, 60)}</span>
     {/if}
+    <button type="button" class="cc-reconcile"
+      title="Re-sync live OPEN rows against the broker (live mode only)"
+      disabled={_reconciling}
+      onclick={_reconcile}>
+      {_reconciling ? 'Reconciling…' : 'Reconcile'}
+    </button>
   </div>
 
   {#if !_chases.length}
@@ -198,6 +224,29 @@
     font-size: 0.55rem;
     font-family: monospace;
   }
+  .cc-reconcile-msg {
+    color: #4ade80;
+    font-size: 0.55rem;
+    font-family: monospace;
+  }
+  .cc-reconcile {
+    padding: 0.18rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid rgba(125, 211, 252, 0.45);
+    background: transparent;
+    color: #7dd3fc;
+    font-family: monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .cc-reconcile:hover:not(:disabled) {
+    background: rgba(125, 211, 252, 0.12);
+    color: #bae6fd;
+  }
+  .cc-reconcile:disabled { opacity: 0.45; cursor: progress; }
   .cc-empty {
     color: #7e97b8;
     font-size: 0.65rem;

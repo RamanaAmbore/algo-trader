@@ -334,17 +334,17 @@
      request. Has its own [Collapse · DefaultSize · Fullscreen] trio
      on the right. Tabs strip stays in the header alongside the
      section label + Symbol + Account picker. -->
+<!-- Operator: "keep the bucket cards. the outer container ascent,
+     borders, heading should be in sync with the current order entry
+     card container in orders page". bucket-card-entry wrapper (amber
+     left accent + navy gradient + "Order Entry" label) restored —
+     just the INNER content (tabs / body / common-actions) comes
+     from SymbolPanel and matches the modal's rendering exactly.
+     `headerless` suppresses SymbolPanel's own header chip so the
+     bucket-header's section label isn't duplicated. -->
 <section class="bucket-card bucket-card-entry mt-1 mb-2"
   class:fs-card-on={_fsEntry}
   class:is-collapsed={_colEntry}>
-  <!-- Operator: "the layout for order entry in orders page is
-       different from order entry in order modal. correct order
-       entry in orders page". Bucket-header now carries only the
-       section label + card-control trio; the Symbol search, chart
-       icon, Account picker, and tab strip are rendered by
-       SymbolPanel's own internal header (matching the modal).
-       Removed: page-level SymbolSearchInput, oc-chart-btn,
-       oc-entry-account, oc-tabs duplicates. -->
   <div class="bucket-header oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
     <span class="oc-spacer"></span>
@@ -356,23 +356,9 @@
     <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
   </div>
   <div class="card-body" hidden={_colEntry}>
-    <!-- 3-tab inline shell (Order Ticket default · Chain · Command).
-         `headerless={true}` suppresses the shell's own symbol
-         picker — the bucket-header above carries it. The
-         `onSymbolChange` callback is unused here (the chain tab
-         doesn't surface a way to re-pick from inside the shell)
-         but reserved for future tab-internal picks. -->
-    <!-- Operator: "make order entry functionality in sync with orders
-         page order entry functionality. code should be reusable".
-         /orders now uses SymbolPanel's shared common-actions footer
-         (.oes-common-actions) — same Mode pills, CHASE toggle +
-         L/M/H aggressiveness, margin pill, +Basket, Clear, Submit
-         as the PageHeaderActions modal. Difference is just the
-         `availableModes` prop: /orders gets all five execution
-         modes, the modal sticks with paper/live. The custom
-         .oc-actions block this page used to maintain was deleted. -->
     <SymbolPanel
       inline
+      headerless
       hideBottomPanel
       showCommonActions
       availableModes={['paper', 'live', 'shadow', 'sim', 'replay']}
