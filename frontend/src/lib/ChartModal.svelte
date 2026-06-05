@@ -165,17 +165,19 @@
      chrome below. */
 
   .cm-header {
-    /* Operator: "make all the modal header look like orders header
-       background decoration". Mirrors the .bucket-card strip on
-       /orders — same navy gradient, white inset highlight, bold
-       bottom border. Each modal keeps its accent colour on the
-       bottom border for identity. */
+    /* Operator: "The line below modal headers is too prominent.
+       Reduce its prominence. Instead, change background color of
+       the header for modals." Stronger cyan-tinted gradient bg
+       acts as the visual separator from the body; bottom border
+       is a hairline (1px low-alpha). */
     display: flex;
     align-items: center;
     padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    background: linear-gradient(180deg,
+                  rgba(34, 211, 238, 0.18) 0%,
+                  rgba(34, 211, 238, 0.06) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1.5px solid rgba(34, 211, 238, 0.55);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     gap: 0.5rem;
     flex-shrink: 0;
   }
@@ -237,27 +239,20 @@
     overflow: hidden;
     flex: 1 1 0;
     min-height: 0;
-    /* Small breathing room around the chart card so the curved
-       top corners + cyan accent edge are visible against the
-       modal's navy panel background. */
-    padding: 0.5rem 0.55rem 0.55rem 0.55rem;
     display: flex;
     flex-direction: column;
   }
   .cm-chart-card {
+    /* Operator: "There is an additional accent and border for chart
+       in chart modal. Remove it." Stripped the white outline + cyan
+       left-edge accent + drop shadow — only the curved top corners
+       remain so the chart canvas sits flush against the modal frame
+       without competing chrome. */
     flex: 1 1 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-left: 3px solid rgba(34, 211, 238, 0.70);
-    /* Curved top corners only — bottom corners stay square to sit
-       flush against the modal frame's rounded bottom. Operator:
-       "curved corners on the top left and right". */
     border-radius: 6px 6px 0 0;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
-                inset 0 1px 0 rgba(255, 255, 255, 0.06);
     overflow: hidden;
   }
 

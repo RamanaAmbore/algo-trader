@@ -90,10 +90,16 @@
         <svg class="alm-title-icon alm-title-icon-3d" width="14" height="14"
              viewBox="0 0 16 16" aria-hidden="true">
           <defs>
+            <!-- Orange gradient — operator: "change cyan color to
+                 something else for bell icon notification". Replaces
+                 the prior violet stops (which read as too cool /
+                 bluish) with the classical warm bell tone. Matches
+                 the PageHeaderActions Log button so opening Activity
+                 from either entry surface shows the same bell. -->
             <radialGradient id="alm-bell-body" cx="35%" cy="30%" r="75%">
-              <stop offset="0%"  stop-color="#e9d5ff" />
-              <stop offset="55%" stop-color="#a855f7" />
-              <stop offset="100%" stop-color="#6b21a8" />
+              <stop offset="0%"  stop-color="#fed7aa" />
+              <stop offset="55%" stop-color="#fb923c" />
+              <stop offset="100%" stop-color="#9a3412" />
             </radialGradient>
             <filter id="alm-bell-shadow" x="-30%" y="-20%" width="160%" height="150%">
               <feDropShadow dx="0" dy="0.6" stdDeviation="0.6"
@@ -101,22 +107,18 @@
             </filter>
           </defs>
           <g filter="url(#alm-bell-shadow)">
-            <!-- Bell body -->
             <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
                   fill="url(#alm-bell-body)"
-                  stroke="#4c1d95" stroke-width="0.6"
+                  stroke="#7c2d12" stroke-width="0.6"
                   stroke-linejoin="round" />
-            <!-- Clapper -->
             <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
-                  fill="#7e22ce" stroke="#4c1d95" stroke-width="0.5"
+                  fill="#c2410c" stroke="#7c2d12" stroke-width="0.5"
                   stroke-linejoin="round" />
-            <!-- Specular highlight (upper-left) -->
             <path d="M6.2 4.3c-.6.5-1 1.2-1.1 2"
                   fill="none" stroke="rgba(255,255,255,0.65)"
                   stroke-width="0.7" stroke-linecap="round" />
-            <!-- Small bell-knob -->
-            <circle cx="8" cy="2.1" r="0.7" fill="#c4b5fd"
-                    stroke="#4c1d95" stroke-width="0.4" />
+            <circle cx="8" cy="2.1" r="0.7" fill="#fde68a"
+                    stroke="#7c2d12" stroke-width="0.4" />
           </g>
         </svg>
         Activity
@@ -139,27 +141,29 @@
 
 <style>
   .alm-header {
-    /* Operator: "make all the modal header look like orders header
-       background decoration". Navy gradient + white inset highlight
-       + violet bottom border so the ActivityLogModal strip matches
-       the ChartModal + SymbolPanel chrome while keeping its violet
-       identity. */
+    /* Operator: "The line below modal headers is too prominent.
+       Reduce its prominence. Instead, change background color of
+       the header for modals." Stronger orange-tinted gradient bg
+       acts as the visual separator from the body; bottom border is
+       a hairline (1px low-alpha). */
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    background: linear-gradient(180deg,
+                  rgba(251, 146, 60, 0.20) 0%,
+                  rgba(251, 146, 60, 0.08) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1.5px solid rgba(168, 85, 247, 0.55);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-shrink: 0;
   }
-  /* Plain title text — operator: "remove pill kind of decoration
-     for modal header text". Bold uppercase violet glyphs on the
-     navy gradient strip; the gradient itself is the prominence. */
+  /* Plain orange text — matches the new bell + page-header button
+     palette. Activity / notification family across the app reads
+     in warm orange now. */
   .alm-title {
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
-    color: #c4b5fd;
+    color: #fdba74;
     font-weight: 800;
     letter-spacing: 0.10em;
     text-transform: uppercase;
@@ -167,10 +171,10 @@
     align-items: center;
     gap: 0.35rem;
   }
-  /* Matches the page-header Activity button's resting colour
-     (#a855f7 = violet-500) so the modal title icon is the exact same
-     shade as the button that opened it. */
-  .alm-title-icon { color: #a855f7; flex-shrink: 0; }
+  /* Matches the page-header Activity button's new orange resting
+     colour (#fb923c = orange-400) so the modal title icon is the
+     exact same shade as the button that opened it. */
+  .alm-title-icon { color: #fb923c; flex-shrink: 0; }
   /* 3D bell variant — colour comes from the inline SVG gradient, so
      the base `color` is irrelevant; small vertical lift so the bell
      reads as a dimensional pin sitting on the chip rather than text. */
@@ -212,10 +216,11 @@
     padding: 0.4rem 0.6rem 0.6rem;
     overflow: hidden;
   }
-  /* Panel-specific border tint — violet matches the Log icon's palette
-     in PageHeaderActions so the operator gets a visual "this is the
-     activity surface" signal. The frame size + position is canonical. */
+  /* Panel-specific border tint — orange matches the Log icon's new
+     palette in PageHeaderActions so the operator gets a visual
+     "this is the activity surface" signal. The frame size +
+     position is canonical. */
   :global(.canonical-modal-panel.alm-panel) {
-    border-color: rgba(168, 85, 247, 0.40);
+    border-color: rgba(251, 146, 60, 0.45);
   }
 </style>

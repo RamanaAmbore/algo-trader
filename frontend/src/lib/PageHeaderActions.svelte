@@ -186,18 +186,42 @@
             onclick={_openLog}
             title="Activity"
             aria-label="Open Activity">
-      <!-- Notification bell glyph — operator request. Bell semantics
-           match the existing OrderNotifications / AgentNotifications
-           bells at the page header (same violet alert family), and
-           visually splits cleanly from the order receipt + chart
-           polyline icons in the same trio. -->
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
-              stroke="currentColor" stroke-width="1.4"
-              stroke-linejoin="round"/>
-        <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3"
-              stroke="currentColor" stroke-width="1.4"
-              stroke-linecap="round"/>
+      <!-- 3D bell glyph — operator: "keep fast bell icon to activity
+           header also". Same dimensional bell rendered on the
+           ActivityLogModal title (radial gradient body, dark outline,
+           specular highlight, drop shadow), mirrored on this page-
+           header button so opening Activity from either entry point
+           gets the same identity glyph. Orange palette per
+           operator: "change cyan color to something else for bell
+           icon notification" — bell becomes the classical warm
+           notification color, distinct from the violet that read
+           as too cool-tone. -->
+      <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+        <defs>
+          <radialGradient id="pha-bell-body" cx="35%" cy="30%" r="75%">
+            <stop offset="0%"  stop-color="#fed7aa" />
+            <stop offset="55%" stop-color="#fb923c" />
+            <stop offset="100%" stop-color="#9a3412" />
+          </radialGradient>
+          <filter id="pha-bell-shadow" x="-30%" y="-20%" width="160%" height="150%">
+            <feDropShadow dx="0" dy="0.6" stdDeviation="0.6"
+                          flood-color="#000" flood-opacity="0.55" />
+          </filter>
+        </defs>
+        <g filter="url(#pha-bell-shadow)">
+          <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
+                fill="url(#pha-bell-body)"
+                stroke="#7c2d12" stroke-width="0.6"
+                stroke-linejoin="round" />
+          <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
+                fill="#c2410c" stroke="#7c2d12" stroke-width="0.5"
+                stroke-linejoin="round" />
+          <path d="M6.2 4.3c-.6.5-1 1.2-1.1 2"
+                fill="none" stroke="rgba(255,255,255,0.65)"
+                stroke-width="0.7" stroke-linecap="round" />
+          <circle cx="8" cy="2.1" r="0.7" fill="#fde68a"
+                  stroke="#7c2d12" stroke-width="0.4" />
+        </g>
       </svg>
     </button>
   {/if}
@@ -299,14 +323,19 @@
     color: #67e8f9;
   }
 
-  /* ── Log button — muted violet ───────────────────────────────── */
+  /* ── Log / Activity button — muted orange ────────────────────
+     Operator: "change cyan color to something else for bell icon
+     notification". Switched from violet to orange — classical
+     notification warm-tone, distinct from the Order button's
+     amber-yellow so the three buttons (amber-yellow Order, cyan
+     Chart, orange Activity) stay visually separable. */
   .pha-log {
-    border: 1px solid rgba(168, 85, 247, 0.40);
-    color: #a855f7;
+    border: 1px solid rgba(251, 146, 60, 0.45);
+    color: #fb923c;
   }
   .pha-log:hover:not(:disabled) {
-    background: rgba(168, 85, 247, 0.12);
-    border-color: rgba(216, 180, 254, 0.65);
-    color: #c084fc;
+    background: rgba(251, 146, 60, 0.14);
+    border-color: rgba(253, 186, 116, 0.70);
+    color: #fdba74;
   }
 </style>

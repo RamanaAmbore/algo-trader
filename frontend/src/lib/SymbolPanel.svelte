@@ -1423,18 +1423,21 @@
     border: none;
     background: transparent;
   }
-  /* Header — operator: "make all the modal header look like orders
-     header background decoration". Mirrors the .bucket-card strip on
-     /orders — navy gradient, white inset highlight, amber bottom
-     border for SymbolPanel's identity. */
+  /* Operator: "The line below modal headers is too prominent.
+     Reduce its prominence. Instead, change background color of
+     the header for modals." Stronger amber-tinted gradient bg
+     acts as the visual separator from the body; bottom border is
+     a hairline (1px low-alpha). */
   .oes-header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    background: linear-gradient(180deg,
+                  rgba(251, 191, 36, 0.18) 0%,
+                  rgba(251, 191, 36, 0.06) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1.5px solid rgba(251, 191, 36, 0.55);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-shrink: 0;
   }
   /* Plain title text — operator: "remove pill kind of decoration
