@@ -18,7 +18,11 @@
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import { resolveAnchorToTradeable } from '$lib/data/resolveUnderlying';
   import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
-  import { loadAccounts, getDefaultSymbol, defaultSymbolStore, accountsReadyStore } from '$lib/data/accounts';
+  import {
+    loadAccounts, getDefaultSymbol,
+    defaultSymbolStore, accountsReadyStore,
+    recentSymbolStore,
+  } from '$lib/data/accounts';
 
   // HIGH 2: derive the set of mode pills the order ticket should show.
   // Restricts LIVE to authenticated prod sessions where the master toggle
@@ -61,17 +65,24 @@
   // where the hardcoded NIFTY 50 fallback briefly leaked into the
   // modal before the setting fetch landed.
   const _operatorDefault = $derived(String($defaultSymbolStore || '').toUpperCase());
+  const _recentSymbol    = $derived(String($recentSymbolStore || '').toUpperCase());
   const _accountsReady   = $derived($accountsReadyStore);
   // Kick the fetch alongside (idempotent). loadAccounts memoises so the
   // module-level call + this one don't duplicate the network round-trip.
   onMount(() => { loadAccounts().catch(() => {}); });
+  // Symbol resolution chain:
+  //   1. caller-supplied symbol (page contextual)
+  //   2. recently-used symbol (operator's last pick on /orders, /charts,
+  //      or any modal). Operator: "if any symbol is used in charts or
+  //      orders either in model, or page, the symbol should be
+  //      defaulted to that".
+  //   3. operator-configured default symbol (settings)
+  //   4. 'NIFTY 50' final fallback once the settings fetch resolves
   const _anchorSymbol      = $derived(
-    // Caller-supplied symbol wins. Otherwise: operator default once
-    // the store has populated; before that, leave the anchor empty
-    // so the modal doesn't latch onto a stale fallback. The 'NIFTY 50'
-    // fall-through ONLY kicks in after the store has resolved with a
-    // blank operator default (anonymous demo / setting cleared).
-    String(symbol || _operatorDefault || (_accountsReady ? 'NIFTY 50' : '')).toUpperCase()
+    String(symbol
+           || _recentSymbol
+           || _operatorDefault
+           || (_accountsReady ? 'NIFTY 50' : '')).toUpperCase()
   );
   const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 

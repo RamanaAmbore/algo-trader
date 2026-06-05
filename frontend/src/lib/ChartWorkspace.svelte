@@ -190,6 +190,11 @@
     _chartLoaded = false;
     _intradayOn = false;
     onSymbolChange?.(upper);
+    // Record as the operator's most recent symbol so /orders +
+    // /charts (page or modal) default to it on next open.
+    import('$lib/data/accounts')
+      .then(m => m.setRecentSymbol(upper))
+      .catch(() => {});
     _loadHistorical(true);
   }
 

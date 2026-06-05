@@ -6,6 +6,7 @@
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import { resolveSymbol, setRecentSymbol } from '$lib/data/accounts';
 
   // ── URL params ────────────────────────────────────────────────────
   let _symbol       = $state('');
@@ -13,10 +14,13 @@
   let _error        = $state('');
   let _bump         = $state(0);
 
-  // Default symbol when the page lands with no ?symbol= param. The
-  // operator can swap to any pinned chip or pick a fresh symbol via
-  // the type-filter + search box inside ChartWorkspace.
-  const DEFAULT_SYMBOL = 'NIFTY 50';
+  // Default symbol when the page lands with no ?symbol= param.
+  // Resolution chain: ?symbol= → recent → settings default →
+  // NIFTY 50. Operator: "let orders page and chart page use
+  // default symbol if there is no recent symbol is used in charts
+  // or orders. if any symbol is used ... the symbol should be
+  // defaulted to that."
+  const _FALLBACK_SYMBOL = 'NIFTY 50';
 
   function _initFromUrl() {
     const params = page.url.searchParams;
@@ -35,6 +39,7 @@
   function _onSymbolChange(/** @type {string} */ sym) {
     const s = String(sym || '').toUpperCase();
     _symbol = s;
+    if (s) setRecentSymbol(s);
     const url = new URL(page.url);
     url.searchParams.set('symbol', s);
     goto(url.toString(), { replaceState: true, noScroll: true, keepFocus: true });
@@ -42,7 +47,8 @@
 
   onMount(() => {
     _initFromUrl();
-    if (!_symbol) _symbol = DEFAULT_SYMBOL;
+    if (!_symbol) _symbol = resolveSymbol(_FALLBACK_SYMBOL);
+    if (_symbol) setRecentSymbol(_symbol);
   });
 </script>
 

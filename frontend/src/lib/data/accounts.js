@@ -18,6 +18,67 @@ export const defaultSymbolStore  = writable('');
 export const defaultAccountStore = writable('');
 export const accountsReadyStore  = writable(false);
 
+// ── Recently-used symbol + account ─────────────────────────────────
+// Operator: "let orders page and chart page use default symbol if
+// there is no recent symbol is used in charts or orders. if any
+// symbol is used in charts or orders either in model, or page, the
+// symbol should be defaulted to that. similarly the account in
+// orders page should be defaulted to recent order account."
+//
+// Resolution chain on every reader: recent → settings default → ''.
+// Persisted in localStorage so the value survives a hard refresh.
+const _LS_RECENT_SYMBOL  = 'ramboq.recent.symbol';
+const _LS_RECENT_ACCOUNT = 'ramboq.recent.account';
+
+function _lsRead(/** @type {string} */ key) {
+  if (typeof window === 'undefined') return '';
+  try { return localStorage.getItem(key) || ''; } catch { return ''; }
+}
+function _lsWrite(/** @type {string} */ key, /** @type {string} */ value) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value) localStorage.setItem(key, value);
+    else       localStorage.removeItem(key);
+  } catch { /* ignore */ }
+}
+
+export const recentSymbolStore  = writable(_lsRead(_LS_RECENT_SYMBOL));
+export const recentAccountStore = writable(_lsRead(_LS_RECENT_ACCOUNT));
+
+/** Record the symbol the operator just used (search-picked OR
+ *  submitted on an order). Empty / whitespace-only inputs are
+ *  ignored so an accidental clear doesn't wipe the persisted value. */
+export function setRecentSymbol(/** @type {string} */ sym) {
+  const v = String(sym || '').trim().toUpperCase();
+  if (!v) return;
+  recentSymbolStore.set(v);
+  _lsWrite(_LS_RECENT_SYMBOL, v);
+}
+
+/** Record the account the operator just placed an order from. */
+export function setRecentAccount(/** @type {string} */ acct) {
+  const v = String(acct || '').trim();
+  if (!v) return;
+  recentAccountStore.set(v);
+  _lsWrite(_LS_RECENT_ACCOUNT, v);
+}
+
+/** Resolution chain: recent → settings default → fallback. */
+export function resolveSymbol(/** @type {string} */ fallback = '') {
+  const r = _lsRead(_LS_RECENT_SYMBOL);
+  if (r) return r.toUpperCase();
+  if (_defaultSymbol) return String(_defaultSymbol).toUpperCase();
+  return String(fallback || '').toUpperCase();
+}
+
+/** Resolution chain: recent → settings default → fallback. */
+export function resolveAccount(/** @type {string} */ fallback = '') {
+  const r = _lsRead(_LS_RECENT_ACCOUNT);
+  if (r) return r;
+  if (_defaultAccount) return _defaultAccount;
+  return fallback || '';
+}
+
 export async function loadAccounts() {
   if (_accounts) return _accounts;
   if (_loadPromise) return _loadPromise;

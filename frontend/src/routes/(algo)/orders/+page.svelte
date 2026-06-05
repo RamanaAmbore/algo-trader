@@ -16,7 +16,11 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { loadInstruments } from '$lib/data/instruments';
   import { priceFmt, qtyFmt } from '$lib/format';
-  import { loadAccounts } from '$lib/data/accounts';
+  import {
+    loadAccounts,
+    resolveSymbol, resolveAccount,
+    setRecentSymbol, setRecentAccount,
+  } from '$lib/data/accounts';
   import Select from '$lib/Select.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   // executionMode store import retired with the page-level mode
@@ -70,15 +74,23 @@
   let _exchangeFilter = $state('all');
   let selectedOrder = $state(/** @type {any|null} */(null));
 
-  // Page-level Symbol picker for the Order Entry card. Sits in the
-  // bucket-header right after the "Order Entry" label, and we pass
-  // its value down to the inline SymbolPanel via the `symbol` prop.
-  // SymbolPanel's `headerless={true}` flag skips the shell's own
-  // copy of this picker so the operator sees one chip, not two.
-  let _entrySymbol     = $state('');
+  // Page-level Symbol picker for the Order Entry card. Seeded from
+  // the recent-symbol store → settings default → empty. Operator:
+  // "let orders page ... use default symbol if there is no recent
+  // symbol is used in charts or orders. if any symbol is used in
+  // charts or orders either in model, or page, the symbol should
+  // be defaulted to that." A late settings fetch can land after
+  // mount; we patch _entrySymbol once the resolved value differs.
+  let _entrySymbol = $state(resolveSymbol());
 
-  // Page-level shared state for the Order Entry shell.
-  let _entryAccount = $state('');
+  // Account seeded the same way — recent → settings default → first
+  // loaded account in the post-fetch loadAccounts effect below.
+  let _entryAccount = $state(resolveAccount());
+
+  // Persist the operator's symbol pick so re-opening the page (or
+  // jumping to /charts) reads the same recent symbol.
+  $effect(() => { if (_entrySymbol) setRecentSymbol(_entrySymbol); });
+  $effect(() => { if (_entryAccount) setRecentAccount(_entryAccount); });
   // Default to 'chain' — basket-building option chain is the most-used
   // surface per operator. Ticket / Command are one click away.
   let _entryActiveTab = $state(/** @type {'chain'|'ticket'} */ ('chain'));
@@ -274,7 +286,15 @@
         _entryAccounts = (list || [])
           .map(a => String(a?.account_id || a?.account || a || ''))
           .filter(Boolean);
-        if (!_entryAccount && _entryAccounts.length === 1) _entryAccount = _entryAccounts[0];
+        // Re-resolve once the settings + accounts list have landed:
+        //   recent → settings.default → first-loaded fallback.
+        if (!_entryAccount) {
+          _entryAccount = resolveAccount(_entryAccounts[0] || '');
+        }
+        if (!_entrySymbol) {
+          const s = resolveSymbol();
+          if (s) _entrySymbol = s;
+        }
       })
       .catch(() => {});
     loadInstruments().catch(() => {});

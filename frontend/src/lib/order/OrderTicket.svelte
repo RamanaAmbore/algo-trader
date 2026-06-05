@@ -1046,6 +1046,16 @@
           `#${oid}`
         );
       }
+      // Record the symbol + account as the operator's most recent
+      // pick so the next /orders or /charts page open lands on
+      // them. (Operator: "if any symbol is used in charts or
+      // orders ... the symbol should be defaulted to that".)
+      try {
+        const { setRecentSymbol, setRecentAccount } = await import('$lib/data/accounts');
+        if (symbol)   setRecentSymbol(String(symbol));
+        if (_account) setRecentAccount(String(_account));
+      } catch { /* silent */ }
+
       // Notify the caller — DRAFT mode appends to drafts[]; PAPER /
       // LIVE let the caller refresh its local view if it wants to.
       // Thread the broker response so the caller can surface order_id /
