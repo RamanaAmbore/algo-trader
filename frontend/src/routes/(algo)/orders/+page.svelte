@@ -21,6 +21,7 @@
     resolveSymbol, resolveAccount,
     setRecentSymbol, setRecentAccount,
   } from '$lib/data/accounts';
+  import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import Select from '$lib/Select.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   // executionMode store import retired with the page-level mode
@@ -82,6 +83,11 @@
   // be defaulted to that." A late settings fetch can land after
   // mount; we patch _entrySymbol once the resolved value differs.
   let _entrySymbol = $state(resolveSymbol());
+
+  // Symbol-type filter — shared 4-option vocabulary (All / Equity /
+  // Futures / Options) so every surface uses the same picker.
+  // Default 'ALL' matches ChartWorkspace + SymbolPanel.
+  let _entrySymType = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'));
 
   // Account seeded the same way — recent → settings default → first
   // loaded account in the post-fetch loadAccounts effect below.
@@ -375,9 +381,18 @@
        prop from the page header; /orders needs its own input.) -->
   <div class="bucket-header oc-entry-header">
     <span class="mp-section-label">Order Entry</span>
+    <!-- Symbol-type filter — shared with ChartWorkspace / SymbolPanel
+         so the same 4-option vocabulary appears on every surface.
+         Narrow Select; "Futures" is the widest label. -->
+    <div class="oc-entry-symtype">
+      <Select bind:value={_entrySymType}
+              options={SYM_TYPE_OPTS}
+              ariaLabel="Symbol type filter" />
+    </div>
     <SymbolSearchInput
       bind:value={_entrySymbol}
       placeholder="Symbol…"
+      type={_entrySymType}
       onPick={(sym) => { _entrySymbol = sym; }}
       ariaLabel="Order entry symbol search" />
     <button type="button" class="oc-chart-btn"
@@ -964,6 +979,9 @@
   /* Account picker chrome — when multiple brokers loaded use a Select,
      when only one the chip below renders the read-only code. */
   .oc-entry-account { min-width: 9rem; max-width: 13rem; }
+  /* Symbol-type filter — narrow enough to fit beside Symbol search
+     on common viewports. "Futures" is the widest label (~50px). */
+  .oc-entry-symtype { min-width: 5.5rem; max-width: 7rem; }
   .oc-entry-acct-chip {
     display: inline-flex;
     align-items: center;

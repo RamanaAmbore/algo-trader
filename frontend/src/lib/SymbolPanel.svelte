@@ -30,6 +30,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
+  import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime } from '$lib/stores';
@@ -65,15 +66,9 @@
     Object.fromEntries(_DEFAULT_PINS.map((a, i) => [_PIN_LABELS[i], a]))
   );
 
-  // Symbol-type filter — mirrors ChartWorkspace's _SYM_TYPE_OPTS so
-  // the chart and order modals use the same vocabulary. "EQ · FUT ·
-  // OPT" spells out what the unfiltered ALL value contains.
-  const _SYM_TYPE_OPTS = [
-    { value: 'ALL', label: 'EQ · FUT · OPT' },
-    { value: 'EQ',  label: 'Equity'  },
-    { value: 'FUT', label: 'Futures' },
-    { value: 'OPT', label: 'Options' },
-  ];
+  // Symbol-type filter — shared 4-option vocabulary so every
+  // surface (modals, /orders, /charts) reads the same.
+  const _SYM_TYPE_OPTS = SYM_TYPE_OPTS;
   let _symType = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'));
 
   /** @type {{

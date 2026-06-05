@@ -99,6 +99,7 @@
     findEquity, findNearestFuture, getInstrument,
   } from '$lib/data/instruments';
   import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
+  import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -139,15 +140,9 @@
   // EQ = equities + indices; FUT = futures; OPT = CE+PE; ALL = no filter.
   let _symType        = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */('ALL'));
   /** @type {Array<{value:string,label:string}>} */
-  // Label "EQ · FUT · OPT" spells out what the ALL filter actually
-  // includes — earlier "All" alone gave no indication of which
-  // instrument types were on the menu.
-  const _SYM_TYPE_OPTS = [
-    { value: 'ALL', label: 'EQ · FUT · OPT' },
-    { value: 'EQ',  label: 'Equity' },
-    { value: 'FUT', label: 'Futures' },
-    { value: 'OPT', label: 'Options' },
-  ];
+  // Shared 4-option constant — same vocabulary on every surface
+  // (imported at top of script).
+  const _SYM_TYPE_OPTS = SYM_TYPE_OPTS;
 
   /** @type {Array<{value:string,label:string}>} */
   const _CHART_TYPE_OPTS = [
