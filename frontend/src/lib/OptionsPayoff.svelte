@@ -798,6 +798,28 @@
                 stroke="#fbbf24" stroke-width="1.5"
                 stroke-opacity="0.65"
                 stroke-dasharray="6 3"/>
+          <!-- Breakeven × curve intersection — Kite-style dart at
+               (bx, zeroY). By definition the expiry curve crosses
+               P&L = 0 at this x, so the marker sits exactly where
+               the amber breakeven vertical meets the curve.
+               Operator: "x,y intersection point that breakeven line
+               intersects the curve, that intersection point the
+               single point alone should have the decoration".
+                 outer halo  (r=12, amber α 0.12 fill)   — soft glow
+                 middle ring (r=8, amber stroke α 0.85)   — target hoop
+                 inner dot   (r=4, solid amber + navy)    — bright pin
+               Amber matches the breakeven vertical's hue so the dart
+               reads as part of the same family. -->
+          <circle cx={bx} cy={zeroY} r="12"
+                  fill="rgba(251, 191, 36, 0.12)"
+                  pointer-events="none"/>
+          <circle cx={bx} cy={zeroY} r="8"
+                  fill="none" stroke="#fbbf24" stroke-width="1.5"
+                  stroke-opacity="0.85"
+                  pointer-events="none"/>
+          <circle cx={bx} cy={zeroY} r="4"
+                  fill="#fbbf24" stroke="#0c1830" stroke-width="1.5"
+                  pointer-events="none"/>
           <!-- Connector: thin 0.5px amber line from pill bottom to PAD_T. -->
           <line x1={bx} x2={bx} y1={pin.pinY + chipH} y2={PAD_T}
                 stroke="#fbbf24" stroke-opacity="0.55" stroke-width="0.5"/>
@@ -911,23 +933,6 @@
         {@const expCol = hover.expiry >= 0 ? '#4ade80' : '#f87171'}
         <line x1={hover.x} x2={hover.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(255,255,255,0.20)" stroke-width="1"/>
-        <!-- Hover X,Y intersection dart — Kite-style target marker
-             at the cursor's snapped point on the today curve.
-             Operator: "I want the x,y intersection to have the
-             decoration". Three concentric circles:
-               outer halo  (r=12, cyan α 0.12 fill)   — soft glow
-               middle ring (r=8, cyan stroke α 0.85)  — target hoop
-               inner dot   (r=4, solid cyan + navy)   — bright pin
-             Cyan ties the dart visually to the spot family. -->
-        <circle cx={hover.x} cy={hover.y} r="12"
-                fill="rgba(34, 211, 238, 0.12)"
-                pointer-events="none"/>
-        <circle cx={hover.x} cy={hover.y} r="8"
-                fill="none" stroke="#22d3ee" stroke-width="1.5"
-                stroke-opacity="0.85" pointer-events="none"/>
-        <circle cx={hover.x} cy={hover.y} r="4"
-                fill="#22d3ee" stroke="#0c1830" stroke-width="1.5"
-                pointer-events="none"/>
         <g>
           <!-- Click-anywhere-on-tooltip-to-close (operator: "instead
                of using X, pressing on the tooltip should close it").
