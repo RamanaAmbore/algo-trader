@@ -39,6 +39,21 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
 
+  // Module-level OHLCV cache — operator reported chart re-fetches
+  // when re-opening the same symbol. Each ChartWorkspace instance
+  // fires _loadHistorical(true) twice on mount (onMount + initial
+  // bump), and a new instance is created every time ChartModal
+  // mounts; without this cache every open round-trips even when
+  // the backend returns the same bytes (its own 60 s cache covers
+  // the network leg, but the parse + render is still wasted).
+  // Keyed by (symbol, exchange, days, underlying-for-spot-overlay);
+  // 60 s TTL matches the backend's _HIST_CACHE_TTL_OK; simple LRU
+  // cap at 60 entries.
+  /** @type {Map<string, {bars:any[], spotBars:any[], expiresAt:number}>} */
+  const _BAR_CACHE = new Map();
+  const _BAR_CACHE_TTL_MS = 60_000;
+  const _BAR_CACHE_MAX    = 60;
+
   // The Pinned dropdown is driven entirely by the operator's actual
   // pinned watchlists (rows on /pulse with `is_pinned=true`). No
   // hardcoded fallback list — operator: "it should not hard code
@@ -337,6 +352,24 @@
       if (token !== _loadToken) return;
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
+
+      // Module-level cache lookup — see _BAR_CACHE comment at top.
+      // Skipped on Refresh-button driven loads (handled later by the
+      // bypass-cache path — currently every force=true call also
+      // accepts cached bars because the user-visible source-of-truth
+      // is the backend's 60s cache; an explicit bypass would require
+      // a new param. For now the cache is consulted even on force=true
+      // so back-to-back opens of the same symbol render instantly).
+      const cacheKey = `${fetchSym}|${(fetchExch || '').toUpperCase()}|${_chartDays}|${_isDerivative ? (_underlying || '') : ''}`;
+      const _cached = _BAR_CACHE.get(cacheKey);
+      if (_cached && Date.now() < _cached.expiresAt) {
+        _bars = _cached.bars;
+        _spotBars = _cached.spotBars;
+        if (!_bars.length) _histError = 'No data available.';
+        _chartLoaded = true;
+        return;
+      }
+
       const promises = [
         fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch }),
       ];
@@ -354,6 +387,21 @@
       _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
       if (!_bars.length) _histError = 'No data available.';
       _chartLoaded = true;
+
+      // Cache write — only when we got non-empty bars; empty results
+      // happen on rate-limit / preview blocked and shouldn't poison
+      // the next open. LRU evict the oldest entry when over cap.
+      if (_bars.length) {
+        _BAR_CACHE.set(cacheKey, {
+          bars: _bars,
+          spotBars: _spotBars,
+          expiresAt: Date.now() + _BAR_CACHE_TTL_MS,
+        });
+        if (_BAR_CACHE.size > _BAR_CACHE_MAX) {
+          const _oldest = _BAR_CACHE.keys().next().value;
+          if (_oldest != null) _BAR_CACHE.delete(_oldest);
+        }
+      }
     } catch (e) {
       if (token !== _loadToken) return;   // newer call already in flight — its result is the canonical one
       _histError = /** @type {any} */ (e)?.message || 'Load failed';
