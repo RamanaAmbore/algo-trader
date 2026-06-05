@@ -1001,8 +1001,14 @@
          the tab strip so the operator sets the order's identity once
          and both tabs (Chain / Order ticket) read from the same
          values. Mirrors ChartWorkspace's toolbar pattern (type filter
-         + combo) so the two modals look + behave identically. -->
-    {#if !headerless && !inline}
+         + combo). Renders in BOTH modal AND inline mode so /orders
+         and the modal share the exact same chrome (operator: "make
+         sure all the elements from order entry panel in orders
+         modal should be present in order entry panel in orders
+         page"). Only headerless suppresses it — that's the
+         host-renders-its-own escape hatch (e.g. LogPanel / context
+         menu mounts). -->
+    {#if !headerless}
       <div class="oes-picker">
         {#if _modalAccounts.length > 1}
           <div class="oes-account-pick">
