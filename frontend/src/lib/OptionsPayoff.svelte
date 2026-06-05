@@ -861,14 +861,14 @@
            rather than three loose circles ("the outer circle should
            be close to inner circle"). -->
       {#if currentPnl != null && spot >= sMin && spot <= sMax}
-        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="12"
                 fill="rgba(34, 211, 238, 0.22)"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(currentPnl)} r="7"
-                fill="none" stroke="#22d3ee" stroke-width="2"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
+                fill="none" stroke="#22d3ee" stroke-width="2.25"
                 stroke-opacity="1"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(currentPnl)} r="4"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="5"
                 fill="#22d3ee" stroke="#0c1830" stroke-width="1.75"
                 pointer-events="none"/>
       {/if}
@@ -1020,14 +1020,14 @@
         <!-- Foreground spot × today-curve dart — same tight Kite
              target as the bg layer so the marker sits cleanly on
              top of the curves regardless of paint order. -->
-        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="12"
                 fill="rgba(34, 211, 238, 0.22)"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(currentPnl)} r="7"
-                fill="none" stroke="#22d3ee" stroke-width="2"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="9"
+                fill="none" stroke="#22d3ee" stroke-width="2.25"
                 stroke-opacity="1"
                 pointer-events="none"/>
-        <circle cx={spotX} cy={yOf(currentPnl)} r="4"
+        <circle cx={spotX} cy={yOf(currentPnl)} r="5"
                 fill="#22d3ee" stroke="#0c1830" stroke-width="1.75"
                 pointer-events="none"/>
       {/if}
