@@ -687,13 +687,19 @@
 
   // Chase only re-quotes a LIMIT (or SL with a limit). MARKET / SL-M
   // fill at the book's price — no limit to re-quote. Chain tab
-  // always uses LIMIT so chase stays available there. Surfaced via a
-  // common derived so the template can grey out (rather than hide)
-  // the chase affordance when the active order type can't use it —
-  // operator: "make chase grayed out when market is selected for
-  // order type".
+  // always uses LIMIT so chase stays available there. Derivatives
+  // (FUT / CE / PE) are *always* chase-eligible — operator: "chase
+  // is default for derivatives as market order cannot be placed" —
+  // because Kite rejects MARKET on F&O anyway, so the order type
+  // dropdown is effectively LIMIT / SL for derivatives. Keeping the
+  // toggle enabled means it stays ON (default true) regardless of
+  // whether the operator landed on the form with the orderType
+  // chip mid-update. Surfaced via a derived so the template can
+  // grey out (rather than hide) the chase affordance when the
+  // active order type can't use it.
   const _chaseEnabled = $derived(
     _activeTab === 'chain'
+      || _isDerivative
       || !_chipMeta?.orderType
       || _chipMeta?.orderType === 'LIMIT'
       || _chipMeta?.orderType === 'SL'
@@ -1179,7 +1185,7 @@
           <OrderTicket
             symbol={_ticketProps.symbol || _localSymbol}
             exchange={_ticketProps.exchange ?? _pickedExchange ?? exchange}
-            side={_ticketProps.side ?? (showCommonActions && !inline ? _modalSide : side)}
+            side={_ticketProps.side ?? (showCommonActions ? _modalSide : side)}
             action={_ticketProps.action ?? action}
             qty={_ticketProps.qty ?? qty}
             product={_ticketProps.product ?? product}
@@ -1211,7 +1217,7 @@
             bind:chase={_sharedChase}
             bind:chaseAgg={_sharedChaseAgg}
             modeChaseHidden={true}
-            onMarginUpdate={showCommonActions && !inline ? _onMarginUpdate : null}
+            onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
             {onSubmit}
             {onClose} />
       </div>
@@ -2117,7 +2123,23 @@
     border-radius: 0 !important;
     background: none !important;
     box-shadow: none !important;
-    padding: 0.5rem 0.4rem !important;
+    /* Match .oes-common-actions L/R inset so the order ticket form
+       (Type · Product · Lots / Limit row · Submit pre-check) aligns
+       vertically with the +Basket / BUY/SELL button row beneath it.
+       Operator: "order ticket contents left good amount of space
+       left and right because of which it is not aligning with the
+       container with +basket and buy buttons". The common-actions
+       row has 0.4rem L/R; matching here means the ticket row first/
+       last child sits flush with the +Basket pill above. */
+    padding: 0.35rem 0.4rem !important;
+  }
+  /* Ticket rows: kill any flex `gap` end-of-row drift by clamping
+     margin to 0. The row container is gap-driven; trailing children
+     don't carry margin in flex but defensive zeroing keeps the
+     left/right edges of the row exactly at .ot-modal's 0.4rem inset. */
+  .oes-ticket-body :global(.ot-row) {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
   }
   /* Hide the OrderTicket's own × close button — the shell has one. */
   .oes-ticket-body :global(.ot-close) {
