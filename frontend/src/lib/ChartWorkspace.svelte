@@ -1076,6 +1076,18 @@
     return v.toFixed(dp);
   }
 
+  // Persist whatever symbol the chart shows (caller prop OR operator
+  // pick) so the next /orders or /charts open carries the same
+  // context. Operator: "when I go to orders page, that symbol ...
+  // is not getting defaulted".
+  $effect(() => {
+    const s = String(symbol || '').toUpperCase();
+    if (!s) return;
+    import('$lib/data/accounts')
+      .then(m => m.setRecentSymbol(s))
+      .catch(() => {});
+  });
+
   // ── Lifecycle ─────────────────────────────────────────────────────
   let _mounted = true;
 

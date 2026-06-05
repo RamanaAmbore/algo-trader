@@ -475,7 +475,28 @@
   $effect(() => { if (account) untrack(() => { _sharedAccount = account; }); });
   function _onAccountChange(/** @type {string} */ a) {
     _sharedAccount = a;
+    // Persist the operator's pick so /orders defaults to it next time.
+    if (a) {
+      import('$lib/data/accounts')
+        .then(m => m.setRecentAccount(a))
+        .catch(() => {});
+    }
   }
+
+  // Persist whatever symbol / account the modal opened with (caller
+  // prop, recent-store fallback, or live pick) so the next /orders
+  // or /charts open carries the same context. Operator: "I have
+  // opened a orders modal where it showed the symbol. when I go to
+  // orders page, that symbol and account is not getting defaulted".
+  $effect(() => {
+    const sym  = _localSymbol;
+    const acct = _sharedAccount;
+    if (!sym && !acct) return;
+    import('$lib/data/accounts').then(m => {
+      if (sym)  m.setRecentSymbol(String(sym));
+      if (acct) m.setRecentAccount(String(acct));
+    }).catch(() => {});
+  });
 
   // Modal-level common action footer — visible across all tabs when
   // showCommonActions=true (modal mount). Counter-prop pattern: every
