@@ -1423,32 +1423,36 @@
     border: none;
     background: transparent;
   }
-  /* Header — operator: "change all modal header row background so
-     that it looks prominent". Tinted gradient + bolder bottom
-     border so the strip visually separates from the body. */
+  /* Header — operator: "make all the modal header look like orders
+     header background decoration". Mirrors the .bucket-card strip on
+     /orders — navy gradient, white inset highlight, amber bottom
+     border for SymbolPanel's identity. */
   .oes-header {
-    /* Standard modal header — reduced vertical padding (0.35rem)
-       matches ChartModal + ActivityLogModal so all three modals open
-       with the same chrome height. */
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg,
-                  rgba(251, 191, 36, 0.12) 0%,
-                  rgba(251, 191, 36, 0.04) 100%);
-    border-bottom: 1px solid rgba(251, 191, 36, 0.50);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-bottom: 1.5px solid rgba(251, 191, 36, 0.55);
     flex-shrink: 0;
   }
-  /* Modal-name — plain prominent text. Standard 0.72rem matches
-     the sibling modals so the title row reads identically across
-     ChartModal / SymbolPanel / ActivityLogModal. */
+  /* Modal-name — chip-pill title matching the bucket-card-entry
+     .mp-section-label on /orders ("ORDER ENTRY" amber chip). Same
+     chip chrome the sibling modals use (cyan on ChartModal, violet
+     on ActivityLogModal). */
   .oes-modal-name {
-    font-family: monospace;
+    font-family: ui-monospace, monospace;
     font-size: 0.72rem;
     color: #fbbf24;
     font-weight: 800;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: rgba(251, 191, 36, 0.16);
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    padding: 0.22rem 0.55rem;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;

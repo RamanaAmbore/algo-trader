@@ -81,14 +81,43 @@
            (three horizontal lines) so the operator recognises which
            surface they opened. Violet matches the bell palette. -->
       <span class="alm-title">
-        <!-- Notification bell glyph — matches the page-header Activity
-             button and the LogPanel section icon. Bell semantics
-             align with the existing notifications family. -->
-        <svg class="alm-title-icon" width="12" height="12" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.4"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z" />
-          <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3" />
+        <!-- Notification bell — operator: "make the bell icon look like
+             a little 3D". Filled body with a violet radial gradient
+             (light top, deep bottom) for a rounded surface, a small
+             white specular highlight at the upper left, a darker
+             outline + a soft drop shadow so the bell pops off the
+             chip-pill background as a tiny dimensional object. -->
+        <svg class="alm-title-icon alm-title-icon-3d" width="14" height="14"
+             viewBox="0 0 16 16" aria-hidden="true">
+          <defs>
+            <radialGradient id="alm-bell-body" cx="35%" cy="30%" r="75%">
+              <stop offset="0%"  stop-color="#e9d5ff" />
+              <stop offset="55%" stop-color="#a855f7" />
+              <stop offset="100%" stop-color="#6b21a8" />
+            </radialGradient>
+            <filter id="alm-bell-shadow" x="-30%" y="-20%" width="160%" height="150%">
+              <feDropShadow dx="0" dy="0.6" stdDeviation="0.6"
+                            flood-color="#000" flood-opacity="0.55" />
+            </filter>
+          </defs>
+          <g filter="url(#alm-bell-shadow)">
+            <!-- Bell body -->
+            <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
+                  fill="url(#alm-bell-body)"
+                  stroke="#4c1d95" stroke-width="0.6"
+                  stroke-linejoin="round" />
+            <!-- Clapper -->
+            <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
+                  fill="#7e22ce" stroke="#4c1d95" stroke-width="0.5"
+                  stroke-linejoin="round" />
+            <!-- Specular highlight (upper-left) -->
+            <path d="M6.2 4.3c-.6.5-1 1.2-1.1 2"
+                  fill="none" stroke="rgba(255,255,255,0.65)"
+                  stroke-width="0.7" stroke-linecap="round" />
+            <!-- Small bell-knob -->
+            <circle cx="8" cy="2.1" r="0.7" fill="#c4b5fd"
+                    stroke="#4c1d95" stroke-width="0.4" />
+          </g>
         </svg>
         Activity
       </span>
@@ -110,31 +139,36 @@
 
 <style>
   .alm-header {
-    /* Standard modal header — reduced vertical padding (0.35rem)
-       matches ChartModal + SymbolPanel so all three modals open
-       with the same chrome height. */
+    /* Operator: "make all the modal header look like orders header
+       background decoration". Navy gradient + white inset highlight
+       + violet bottom border so the ActivityLogModal strip matches
+       the ChartModal + SymbolPanel chrome while keeping its violet
+       identity. */
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg,
-                  rgba(168, 85, 247, 0.12) 0%,
-                  rgba(168, 85, 247, 0.04) 100%);
-    border-bottom: 1px solid rgba(168, 85, 247, 0.55);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-bottom: 1.5px solid rgba(168, 85, 247, 0.55);
     flex-shrink: 0;
   }
-  /* Matches .cm-title / .oes-modal-name typography on the sibling
-     modals — natural-case, weight 600, no uppercase / letter-spacing.
-     Earlier styling rendered the label as "LOG" caps which was out
-     of sync with the rest of the modal trio. */
+  /* Chip-pill title — matches the bucket-card-entry .mp-section-label
+     on /orders and the sibling cyan/amber chips on ChartModal /
+     SymbolPanel. Violet palette since this modal's identity is
+     violet (matches the page-header Activity button). */
   .alm-title {
-    /* Standard 0.72rem matches the sibling modal titles
-       (ChartModal / SymbolPanel). */
-    font-family: monospace;
+    font-family: ui-monospace, monospace;
     font-size: 0.72rem;
     color: #c4b5fd;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-weight: 800;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: rgba(168, 85, 247, 0.18);
+    border: 1px solid rgba(168, 85, 247, 0.55);
+    padding: 0.22rem 0.55rem;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(168, 85, 247, 0.20);
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
@@ -143,6 +177,10 @@
      (#a855f7 = violet-500) so the modal title icon is the exact same
      shade as the button that opened it. */
   .alm-title-icon { color: #a855f7; flex-shrink: 0; }
+  /* 3D bell variant — colour comes from the inline SVG gradient, so
+     the base `color` is irrelevant; small vertical lift so the bell
+     reads as a dimensional pin sitting on the chip rather than text. */
+  .alm-title-icon-3d { transform: translateY(-0.5px); }
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
        SymbolPanel close buttons; glyph 0.95rem is proportional to

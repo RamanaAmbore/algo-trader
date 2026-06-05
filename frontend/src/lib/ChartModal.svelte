@@ -137,15 +137,23 @@
       </span>
     </div>
     <div class="cm-body">
-      <ChartWorkspace
-        bind:loading={_loading}
-        symbol={symbol}
-        exchange={exchange}
-        mode={mode}
-        compact={false}
-        showHeader={false}
-        bump={_initialBump}
-      />
+      <!-- Chart card — operator: "for charts, the chart card inside the
+           modal have curved corners on the top left and right.. make
+           it look like orders". Wraps the workspace in a bucket-card
+           style frame with rounded top corners, navy gradient, white
+           inset highlight, and a cyan left-edge accent matching the
+           modal's identity. -->
+      <div class="cm-chart-card">
+        <ChartWorkspace
+          bind:loading={_loading}
+          symbol={symbol}
+          exchange={exchange}
+          mode={mode}
+          compact={false}
+          showHeader={false}
+          bump={_initialBump}
+        />
+      </div>
     </div>
   </div>
 </div>
@@ -157,31 +165,36 @@
      chrome below. */
 
   .cm-header {
-    /* Operator: "change all modal header row background so that it
-       looks prominent. reduce the height of all modal headers and
-       make them consistent." Standard vertical padding (0.35rem) +
-       cyan-tinted gradient + bottom border. Same shape as the
-       SymbolPanel + ActivityLogModal sibling headers so all three
-       modals open with the same chrome height. */
+    /* Operator: "make all the modal header look like orders header
+       background decoration". Mirrors the .bucket-card strip on
+       /orders — same navy gradient, white inset highlight, bold
+       bottom border. Each modal keeps its accent colour on the
+       bottom border for identity. */
     display: flex;
     align-items: center;
     padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg,
-                  rgba(34, 211, 238, 0.10) 0%,
-                  rgba(34, 211, 238, 0.04) 100%);
-    border-bottom: 1px solid rgba(34, 211, 238, 0.45);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-bottom: 1.5px solid rgba(34, 211, 238, 0.55);
     gap: 0.5rem;
     flex-shrink: 0;
   }
 
   .cm-title {
-    /* Standard modal title — 0.72rem matches the SymbolPanel and
-       ActivityLogModal titles so all three read identically. */
-    font-family: monospace;
+    /* Chip-pill title — same chrome as the bucket-card-entry
+       .mp-section-label on /orders so the modal header's "Charts"
+       reads as a prominent identity pill rather than free text. */
+    font-family: ui-monospace, monospace;
     font-size: 0.72rem;
     color: #67e8f9;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-weight: 800;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: rgba(34, 211, 238, 0.16);
+    border: 1px solid rgba(34, 211, 238, 0.55);
+    padding: 0.22rem 0.55rem;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(34, 211, 238, 0.18);
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
@@ -229,6 +242,28 @@
     overflow: hidden;
     flex: 1 1 0;
     min-height: 0;
+    /* Small breathing room around the chart card so the curved
+       top corners + cyan accent edge are visible against the
+       modal's navy panel background. */
+    padding: 0.5rem 0.55rem 0.55rem 0.55rem;
+    display: flex;
+    flex-direction: column;
+  }
+  .cm-chart-card {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-left: 3px solid rgba(34, 211, 238, 0.70);
+    /* Curved top corners only — bottom corners stay square to sit
+       flush against the modal frame's rounded bottom. Operator:
+       "curved corners on the top left and right". */
+    border-radius: 6px 6px 0 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    overflow: hidden;
   }
 
   /* Busy state — chart fetch in flight. Overlay stays
