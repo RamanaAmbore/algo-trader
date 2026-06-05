@@ -42,15 +42,55 @@ function _lsWrite(/** @type {string} */ key, /** @type {string} */ value) {
   } catch { /* ignore */ }
 }
 
-export const recentSymbolStore  = writable(_lsRead(_LS_RECENT_SYMBOL));
+// Bare underlying names that operators search for to BUILD a
+// derivative ticket — they're NOT directly tradable (you trade
+// CRUDEOIL26JUNFUT, not "CRUDEOIL"; you trade NIFTY26JUN22000CE,
+// not "NIFTY"). Persisting one as the "recent symbol" leaves the
+// /orders + chart pages opening with a bare name that can't be
+// placed and surfaces no valid quote. Operator: "order entry is
+// showing crudeoil for symbol which is not a valid symbol. it
+// should be corrected everywhere".
+const _BARE_UNDERLYINGS = new Set([
+  // Index underlyings (NSE)
+  'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
+  'SENSEX', 'BANKEX',
+  // MCX commodities
+  'CRUDEOIL', 'CRUDEOILM', 'GOLD', 'GOLDM', 'GOLDPETAL', 'GOLDGUINEA',
+  'SILVER', 'SILVERM', 'SILVERMIC',
+  'COPPER', 'NATURALGAS', 'NATGASMINI', 'ZINC', 'LEAD', 'LEADMINI',
+  'ALUMINIUM', 'ALUMINI', 'NICKEL', 'MENTHA', 'COTTON', 'CARDAMOM',
+  // CDS / currency underlyings
+  'USDINR', 'EURINR', 'GBPINR', 'JPYINR',
+]);
+
+function _isTradableSymbol(/** @type {string} */ s) {
+  const v = String(s || '').trim().toUpperCase();
+  if (!v) return false;
+  return !_BARE_UNDERLYINGS.has(v);
+}
+
+// Pre-filter any stale bare-underlying value already persisted in
+// localStorage before the validation existed (e.g. operator had
+// "CRUDEOIL" set from a prior session). Keeps the recentSymbolStore
+// initial value in sync with what resolveSymbol returns.
+const _initialSym = _lsRead(_LS_RECENT_SYMBOL);
+const _bootSym    = _isTradableSymbol(_initialSym) ? _initialSym : '';
+if (typeof window !== 'undefined' && _initialSym && !_bootSym) {
+  try { localStorage.removeItem(_LS_RECENT_SYMBOL); } catch { /* ignore */ }
+}
+export const recentSymbolStore  = writable(_bootSym);
 export const recentAccountStore = writable(_lsRead(_LS_RECENT_ACCOUNT));
 
 /** Record the symbol the operator just used (search-picked OR
  *  submitted on an order). Empty / whitespace-only inputs are
- *  ignored so an accidental clear doesn't wipe the persisted value. */
+ *  ignored so an accidental clear doesn't wipe the persisted value.
+ *  Bare underlying names (NIFTY / CRUDEOIL / GOLD / …) are also
+ *  rejected — they're not directly tradable; persisting one as the
+ *  "recent" surface defaults every page to an unplaceable symbol. */
 export function setRecentSymbol(/** @type {string} */ sym) {
   const v = String(sym || '').trim().toUpperCase();
   if (!v) return;
+  if (!_isTradableSymbol(v)) return;
   recentSymbolStore.set(v);
   _lsWrite(_LS_RECENT_SYMBOL, v);
 }
@@ -70,7 +110,11 @@ export function setRecentAccount(/** @type {string} */ acct) {
  *  retired; modals open with the recent symbol or empty. */
 export function resolveSymbol(/** @type {string} */ fallback = '') {
   const r = _lsRead(_LS_RECENT_SYMBOL);
-  if (r) return r.toUpperCase();
+  // Defensive: an existing localStorage entry for a bare underlying
+  // (e.g. operator's prior session had "CRUDEOIL" set before this
+  // validation existed) is also stripped so /orders + chart pages
+  // don't keep opening with an unplaceable symbol after the upgrade.
+  if (r && _isTradableSymbol(r)) return r.toUpperCase();
   return String(fallback || '').toUpperCase();
 }
 
