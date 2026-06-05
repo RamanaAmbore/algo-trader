@@ -188,6 +188,14 @@
     color: #7e97b8;
     letter-spacing: 0.03em;
     margin-bottom: 0.35rem;
+    /* Operator: "the line with the text refreshed at has new line
+       after edt which is wasting available space. remove it".
+       Keep the "Refreshed at … IST · … EDT" on a single line; let
+       horizontal overflow ellipsis it on viewports too narrow to
+       fit the full dual-tz string. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .newslist-empty {
