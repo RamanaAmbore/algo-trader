@@ -778,7 +778,10 @@
     row-gap: 0.05rem;
     padding: 0.28rem 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    font-size: 0.62rem;
+    /* Operator: "agents, terminal, ticks and system text size
+       should be equal to news tab text size of the data". News
+       row is 0.72rem; matching here. */
+    font-size: 0.72rem;
     color: #c8d8f0;
     border-left: none;
     background: transparent;
@@ -790,9 +793,9 @@
     flex: 0 0 auto;
     order: 0;
     font-family: ui-monospace, monospace;
-    /* Smaller than message — timestamps are scan-fodder, not the
-       content the operator focuses on. */
-    font-size: 0.52rem;
+    /* Matches .newslist-time (0.62rem) — same scan-fodder
+       proportion as the news tab. */
+    font-size: 0.62rem;
     color: #7dd3fc;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
@@ -808,7 +811,9 @@
     flex: 0 0 auto;
     order: 1;
     font-family: ui-monospace, monospace;
-    font-size: 0.5rem;
+    /* Bumped with the message size — same proportion as
+       .newslist-src on the news tab. */
+    font-size: 0.6rem;
     color: #7e97b8;
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
