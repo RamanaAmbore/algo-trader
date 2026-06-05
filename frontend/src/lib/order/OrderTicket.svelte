@@ -1367,9 +1367,10 @@
           <div class="ot-label-block">
             <label class="ot-label" for="ot-price">
               Limit price
-              {#if !_priceTouched && _price !== '' && _price != null}
-                <span class="ot-price-auto" title="Pre-filled from {_side === 'BUY' ? 'top ask' : 'top bid'} on the depth ladder. Edit to override; click ↺ to re-arm auto-fill.">auto</span>
-              {/if}
+              <!-- "auto" chip removed per operator request — the
+                   value in the input already conveys the price; the
+                   chip was noise. ↺ reset button stays so operators
+                   can re-arm the depth-derived fill after editing. -->
               {#if _priceTouched && _lastQuote}
                 <button type="button" class="ot-price-reset"
                         title="Re-arm auto-fill — restore {_side === 'BUY' ? 'top ask' : 'top bid'}"
@@ -1558,18 +1559,30 @@
           {:else if _marginPreview}
             {@const _d = _marginPreview.diagnostics ?? {}}
             {@const _required  = Number(_d.basket_margin_used)  || 0}
-            {@const _available = _d.available_margin}
-            {@const _shortfall = Number(_d.margin_shortfall)    || 0}
-            {@const _label = (_side === 'BUY' && (_type === 'LIMIT' || _type === 'MARKET') && isOption)
-                                ? 'COST'   /* long-option debit = premium × qty */
-                                : 'MARGIN' /* SPAN + exposure / shorts / futures */}
-            <div class="ot-margin-row">
-              <span class="ot-margin-label">{_label}</span>
+            {@const _isCashMode = isEquity || (isOption && _side === 'BUY')}
+            {@const _available = _isCashMode
+                                  ? (_accountFunds ? Number(_accountFunds.cash || 0) : null)
+                                  : _d.available_margin}
+            {@const _shortfall = _isCashMode
+                                  ? (typeof _available === 'number' && _available < _required ? (_required - _available) : 0)
+                                  : (Number(_d.margin_shortfall) || 0)}
+            <!-- Operator: "buying or selling non-derivatives, or buying
+                 options you need cash. selling options or buying or
+                 selling futures you need show required margin and
+                 available margin. color code both based on
+                 availability." -->
+            {@const _reqLabel = _isCashMode ? 'COST' : 'MARGIN'}
+            {@const _avlLabel = _isCashMode ? 'CASH'  : 'AVAIL'}
+            {@const _reqCls = (typeof _available === 'number' && _available < _required)
+                                ? 'ot-margin-row-err'
+                                : (typeof _available === 'number' ? 'ot-margin-row-ok' : '')}
+            <div class="ot-margin-row {_reqCls}">
+              <span class="ot-margin-label">{_reqLabel}</span>
               <span class="ot-margin-value">₹{aggFmt(_required)}</span>
             </div>
             {#if typeof _available === 'number'}
               <div class="ot-margin-row ot-margin-row-sub">
-                <span class="ot-margin-label">Avail</span>
+                <span class="ot-margin-label">{_avlLabel}</span>
                 <span class="ot-margin-value">₹{aggFmt(_available)}</span>
               </div>
               <!-- "After" = what the operator will have left if they
@@ -2209,6 +2222,11 @@
   /* Shortfall row — red so the operator sees they can't afford this. */
   .ot-margin-row-err .ot-margin-label,
   .ot-margin-row-err .ot-margin-value { color: #f87171; font-weight: 700; }
+  /* Sufficient — green so a glance reads "affordable" (operator:
+     "color code both based on availability"). Applied to the
+     primary COST/MARGIN row when available >= required. */
+  .ot-margin-row-ok .ot-margin-label,
+  .ot-margin-row-ok .ot-margin-value { color: #4ade80; font-weight: 700; }
   /* "After" row when remaining margin is in the 10-40 % band — amber
      warning instead of red. Sub-row size so it doesn't compete with
      the headline COST/MARGIN row above. */
