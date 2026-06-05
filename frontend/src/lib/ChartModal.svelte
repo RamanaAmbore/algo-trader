@@ -243,16 +243,15 @@
     flex-direction: column;
   }
   .cm-chart-card {
-    /* Operator: "There is an additional accent and border for chart
-       in chart modal. Remove it." Stripped the white outline + cyan
-       left-edge accent + drop shadow — only the curved top corners
-       remain so the chart canvas sits flush against the modal frame
-       without competing chrome. */
+    /* Operator: "in charts modal the content area top left and right
+       corners have a small round corner which is not in sync with
+       other modals. keep it in sync". SymbolPanel and
+       ActivityLogModal bodies have square corners; matched by
+       dropping the top border-radius. */
     flex: 1 1 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    border-radius: 6px 6px 0 0;
     overflow: hidden;
   }
 
