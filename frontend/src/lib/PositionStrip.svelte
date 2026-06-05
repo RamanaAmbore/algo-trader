@@ -233,7 +233,9 @@
 <style>
   .ps-strip {
     /* Sticky below the navbar (which sits at top:0 z-index:50). 48px is
-       the navbar's natural rendered height (h-12). */
+       the navbar's natural rendered height (h-12). Explicit height
+       (1.5rem = 24px) keeps the layout math deterministic so the
+       page-header strip below can align flush at top:4.5rem. */
     position: sticky;
     top: 48px;
     z-index: 49;
@@ -242,7 +244,9 @@
     justify-content: flex-start;
     gap: 0.9rem;
     width: 100%;
-    padding: 0.2rem 0.85rem;
+    height: 1.5rem;
+    box-sizing: border-box;
+    padding: 0 0.85rem;
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
     border-bottom: 1px solid rgba(251,191,36,0.18);
     color: #c8d8f0;

@@ -1358,11 +1358,10 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Matches the page-header strip's new min-height (2.3rem) so
-       content sits flush below the strip's bg gutter — no scroll-
-       through gap, ~0.5rem visual breathing room between the strip
-       text and the first card. */
-    padding: 2.3rem 0.5rem 1.5rem;
+    /* Operator: "gap between header row and below data is too
+       small". Padding = strip height (2rem) + 0.6rem breathing
+       room = 2.6rem. Content sits ~0.6rem below strip bottom. */
+    padding: 2.6rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
   /* algo-content padding-top is always EXACTLY the page-header
@@ -1454,14 +1453,12 @@
     right: 0;
     z-index: 45;
     background: #0a1020;
-    /* Asymmetric padding: tight on top so title text sits high in
-       the strip; larger on bottom so the navy bg extends downward
-       as a visible gutter (operator: "data below page header is
-       too close to the header"). The bg-filled gutter ALSO covers
-       any scroll-gap between this strip and the strip above
-       (operator: "small gap shows scrolling text"). */
-    padding: 0.15rem 0.65rem 0.5rem 0.65rem;
-    min-height: 2.3rem;
+    /* Symmetric tight padding — operator: "header row is getting
+       more space at the bottom of the row within the row".
+       Breathing room between strip and content lives OUTSIDE the
+       strip (in .algo-content's padding-top below), not inside. */
+    padding: 0.15rem 0.65rem;
+    min-height: 2rem;
     box-sizing: border-box;
     overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
