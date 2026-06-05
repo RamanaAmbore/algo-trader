@@ -1358,13 +1358,27 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* No top padding — the sticky .page-header sits in flow as the
-       first child of .algo-content, naturally appearing just below
-       any sim/paper banner that's also sticky at top:3rem (banners
-       come first in the algo-viewport markup). Side + bottom
-       padding unchanged. */
-    padding: 0 0.5rem 1.5rem;
+    /* Reserve space for the FIXED .page-header strip (operator: "i
+       don't want header row to scroll in all the pages"). Sticky
+       wasn't enough — some pages wrap content in a parent with
+       overflow:hidden / transform that broke the sticky context.
+       Fixed always pins; the padding-top below reserves space.
+       :has() variants below add extra padding when sim / paper
+       banners (1.6rem each) are also visible. */
+    padding: 2.2rem 0.5rem 1.5rem;
     color: #c8d8f0;
+  }
+  /* When sim or paper banner is visible (sticky at top:3rem,
+     ~1.6rem tall) the page-header is pushed below it (see
+     .page-header :has() rules) — content needs matching extra
+     padding-top so the first card doesn't slide under the
+     header strip. */
+  :global(.algo-viewport:has(.sim-banner) .algo-content),
+  :global(.algo-viewport:has(.paper-banner) .algo-content) {
+    padding-top: calc(2.2rem + 1.7rem);
+  }
+  :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .algo-content) {
+    padding-top: calc(2.2rem + 3.4rem);
   }
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
@@ -1427,25 +1441,38 @@
        genuinely overflows. */
     gap: 0.15rem;
     flex-wrap: wrap;
-    margin-bottom: 0.3rem;
-    /* Operator: "header text row is partially hidden by strip under
-       navbar". The previous position:fixed pinned the header at
-       top:3rem, the same y as the sim/paper banner stickies (also
-       at top:3rem with z-index:49). The banners covered the
-       page-header content. Reverted to position:sticky so the
-       header naturally sits BELOW any banners in document flow
-       (banners render before .algo-content in the markup) and
-       still sticks just under the navbar when scrolled. Full-
-       viewport-wide strip look retained via the negative
-       horizontal margins + navbar-matching background. */
-    position: sticky;
+    margin-bottom: 0;
+    /* Operator: "i don't want header row to scroll in all the
+       pages". Fixed at top:3rem, full viewport width, so the
+       title chip + timestamp + Refresh/Order/Chart/Log icons
+       never scroll regardless of how the page wraps its content
+       (sticky was breaking inside pages that used
+       overflow:hidden / transform containers). z-index 45 sits
+       below the navbar (50) and below the sim/paper banner
+       stickies (49) — the :has() rules below shift the header
+       DOWN to accommodate visible banners so there's no overlap. */
+    position: fixed;
     top: 3rem;
-    z-index: 40;
+    left: 0;
+    right: 0;
+    z-index: 45;
     background: #0a1020;
     padding: 0.2rem 0.65rem;
-    margin: 0 -0.5rem 0.3rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  }
+  /* Banner-aware vertical offset — sim and paper banners are sticky
+     at top:3rem with z-index:49 (above the page-header's 45). When
+     they're visible, push the page-header below them so all three
+     bars stack cleanly: navbar → banner(s) → page-header. CSS
+     :has() updates the offset reactively as banners mount /
+     unmount; no JS measurement needed. */
+  :global(.algo-viewport:has(.sim-banner) .page-header),
+  :global(.algo-viewport:has(.paper-banner) .page-header) {
+    top: calc(3rem + 1.7rem);
+  }
+  :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .page-header) {
+    top: calc(3rem + 3.4rem);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
