@@ -30,11 +30,11 @@
   // cursor) — but with the lock scoped to the chart canvas instead of
   // the whole viewport.
   let _loading = $state(false);
-  // Initial-mount bump so ChartWorkspace's bump-driven reload fires
-  // even when its prop-change effect would otherwise skip (operator
-  // request: "chart also some times not refreshed the first time the
-  // modal gets invoked"). One-shot, incremented on mount.
-  let _initialBump = $state(0);
+  // _initialBump retired — ChartWorkspace's onMount now reliably
+  // fires the historical fetch and the symbol-effect skips its
+  // own initial Svelte-runs-once tick (see ChartWorkspace.svelte
+  // _firstSymEffect). Was causing 3 fetches per modal open;
+  // audit defect #7.
 
   // The cm-overlay is portaled to document.body, OUTSIDE the SvelteKit
   // mount root (<div id="svelte">). Svelte 5 delegates onclick handlers
@@ -77,10 +77,6 @@
     window.addEventListener('keydown', _onKey, { capture: true });
     _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
-    // Force the chart to fetch on first invoke — covers the case where
-    // the ChartWorkspace prop-change effect skips its initial load
-    // (race when symbol is the same as the SSR-time default).
-    _initialBump = 1;
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey, { capture: true });
@@ -151,7 +147,6 @@
           mode={mode}
           compact={false}
           showHeader={false}
-          bump={_initialBump}
         />
       </div>
     </div>

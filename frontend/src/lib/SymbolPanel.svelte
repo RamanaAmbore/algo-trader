@@ -1343,7 +1343,12 @@
                   title={_modalNotice.detail || _modalNotice.text}>
               {_modalNotice.text}
             </span>
-          {:else if _marginInfo}
+          {:else if _marginInfo && _activeTab === 'ticket'}
+            <!-- Margin pill is only meaningful while the Ticket
+                 form drives the preview. On Chain tab the pill
+                 would show stale Ticket-form numbers (audit
+                 defect #8); chain-basket aggregate margin lives
+                 on the basket-pill row above. -->
             {@const _isCash = !!_marginInfo.isCashMode}
             {@const _reqKey = _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
@@ -1377,9 +1382,15 @@
             </span>
           {/if}
           <span class="oes-common-spacer"></span>
-          <button type="button" class="oes-common-basket"
-            title="Add the current order to the basket"
-            onclick={_modalFireBasket}>+ Basket</button>
+          <!-- +Basket only makes sense on the Ticket tab — _modalFireBasket
+               no-ops on Chain (Chain has its own +CE/+PE staging
+               buttons). Hidden on Chain so operators don't see a
+               clickable-but-silent control (audit defect #9). -->
+          {#if _activeTab === 'ticket'}
+            <button type="button" class="oes-common-basket"
+              title="Add the current order to the basket"
+              onclick={_modalFireBasket}>+ Basket</button>
+          {/if}
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}

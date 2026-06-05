@@ -1364,6 +1364,7 @@
                    step="1" min="1"
                    bind:value={_lots}
                    oninput={() => { _lotsTouched = true; }}
+                   onblur={() => { _lots = Math.max(1, Number(_lots) || 1); }}
                    aria-label="Lots" />
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(1)}
@@ -1381,6 +1382,7 @@
                    class="ot-input ot-num ot-lots-input"
                    step="1" min="1"
                    bind:value={_qty}
+                   onblur={() => { _qty = Math.max(1, Number(_qty) || 1); }}
                    aria-label="Qty" />
             <button type="button" class="ot-lots-step"
                     onclick={() => { _qty = (Number(_qty) || 0) + 1; }}

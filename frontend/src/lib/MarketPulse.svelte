@@ -4997,7 +4997,11 @@
      gets the maximum number of rows on-screen with the column
      header pinned at the top. */
   .mp-flat-wrap {
-    padding: 0.4rem;
+    /* Operator: "before there is a gap between page header and
+       pinned tab. this is specific to pulse". Top padding zeroed
+       so the pinned/watchlist tab strip sits flush below the
+       page-header. Side + bottom padding kept. */
+    padding: 0 0.4rem 0.4rem;
     display: flex;
     flex-direction: column;
     /* 100vh minus navbar (4 rem) + page chrome (~3 rem). Fits inside

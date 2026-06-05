@@ -1079,21 +1079,25 @@
   // _intradayOn here doesn't make this effect depend on it —
   // otherwise writing back false re-fires the effect endlessly
   // (caught: 80+ /api/options/historical calls in 2s).
+  // _firstSymEffect skips the initial Svelte-fires-on-mount run
+  // because onMount already kicked off _loadHistorical(); was
+  // causing 2 fetches per ChartModal open (audit defect #7).
+  let _firstSymEffect = true;
   $effect(() => {
     void symbol; void exchange;
-    if (_mounted) {
-      _chartLoaded = false;
-      zoom = null;
-      _chartHover = null;
-      _bars = [];
-      _spotBars = [];
-      _greeks = null;
-      untrack(() => {
-        if (_intradayOn) _intradayOn = false;
-      });
-      _loadHistorical(true);
-      if (_isOption) _loadGreeks();
-    }
+    if (!_mounted) return;
+    if (_firstSymEffect) { _firstSymEffect = false; return; }
+    _chartLoaded = false;
+    zoom = null;
+    _chartHover = null;
+    _bars = [];
+    _spotBars = [];
+    _greeks = null;
+    untrack(() => {
+      if (_intradayOn) _intradayOn = false;
+    });
+    _loadHistorical(true);
+    if (_isOption) _loadGreeks();
   });
 
   // External reload trigger.
