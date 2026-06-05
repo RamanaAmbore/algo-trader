@@ -1227,29 +1227,45 @@
           </span>
         </div>
       {/if}
+      <!-- Operator: "lots/qty can have stepper before after and also
+           should have provision to enter number for qty/lots".
+           Layout: [−] [editable input] [+] · meta. Same shape for
+           Lots (F&O) and Qty (equity). -->
       <div class="ot-quick-block ot-quick-qty">
         {#if _lotSize > 0 && !isEquity}
-          <!-- Lots layout: label + value LEFT of the +/− stepper per
-               operator request ("for lots you can keep it on the left
-               side of increment or decrement scale"). -->
           <label class="ot-label" for="ot-lots">Lots</label>
           <div class="ot-lots-row">
-            <span class="ot-lots-val" id="ot-lots" aria-label="Lots">{_lots}</span>
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(-1)}
                     disabled={_lots <= 1}
                     aria-label="Decrease lots">−</button>
+            <input id="ot-lots" type="number"
+                   class="ot-input ot-num ot-lots-input"
+                   step="1" min="1"
+                   bind:value={_lots}
+                   oninput={() => { _lotsTouched = true; }}
+                   aria-label="Lots" />
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(1)}
                     aria-label="Increase lots">+</button>
             <span class="ot-meta">× {_lotSize} = {_qty}</span>
           </div>
         {:else}
-          <!-- Equity / ETF: bare Qty input, no lot concept. -->
           <label class="ot-label" for="ot-qty">Qty</label>
-          <input id="ot-qty" type="number" class="ot-input ot-num"
-                 step="1" min="1"
-                 bind:value={_qty} />
+          <div class="ot-lots-row">
+            <button type="button" class="ot-lots-step"
+                    onclick={() => { _qty = Math.max(1, (Number(_qty) || 1) - 1); }}
+                    disabled={!_qty || _qty <= 1}
+                    aria-label="Decrease qty">−</button>
+            <input id="ot-qty" type="number"
+                   class="ot-input ot-num ot-lots-input"
+                   step="1" min="1"
+                   bind:value={_qty}
+                   aria-label="Qty" />
+            <button type="button" class="ot-lots-step"
+                    onclick={() => { _qty = (Number(_qty) || 0) + 1; }}
+                    aria-label="Increase qty">+</button>
+          </div>
         {/if}
       </div>
     </div>
@@ -1305,22 +1321,20 @@
            (side) and "how I'm doing it" (knobs) in one horizontal
            sweep. Locked when action='modify' (Kite doesn't support
            flipping side on a working order). -->
+      <!-- Side as a Select (operator: "buy and sell be drop down
+           like type in order ticket"). Frees up horizontal space
+           previously taken by the two-pill toggle. -->
       <div class="ot-knob ot-knob-side">
-        <label class="ot-label">Side</label>
-        <div class="ot-side-toggle ot-side-toggle-compact" class:ot-locked={action === 'modify'}>
-          <button type="button" class="ot-side-btn ot-side-buy"  class:on={_side === 'BUY'}
-                  disabled={action === 'modify'}
-                  title={currentQty
-                    ? (sideLabels.BUY + ' (places a BUY order)')
-                    : 'BUY this contract'}
-                  onclick={() => { if (action !== 'modify') { _side = 'BUY'; onSideChange?.('BUY'); } }}>{sideLabels.BUY}</button>
-          <button type="button" class="ot-side-btn ot-side-sell" class:on={_side === 'SELL'}
-                  disabled={action === 'modify'}
-                  title={currentQty
-                    ? (sideLabels.SELL + ' (places a SELL order)')
-                    : 'SELL this contract'}
-                  onclick={() => { if (action !== 'modify') { _side = 'SELL'; onSideChange?.('SELL'); } }}>{sideLabels.SELL}</button>
-        </div>
+        <label class="ot-label" for="ot-side-sel">Side</label>
+        <Select id="ot-side-sel"
+                bind:value={_side}
+                disabled={action === 'modify'}
+                ariaLabel="Side"
+                onValueChange={(v) => onSideChange?.(/** @type {'BUY'|'SELL'} */ (v))}
+                options={[
+                  { value: 'BUY',  label: sideLabels.BUY  },
+                  { value: 'SELL', label: sideLabels.SELL },
+                ]} />
       </div>
       <div class="ot-knob">
         <label class="ot-label" for="ot-type-sel">Type</label>
@@ -1850,6 +1864,21 @@
     gap: 0.25rem;
     flex-wrap: nowrap;
     height: 1.7rem;
+  }
+  /* Editable [−][N][+] input — sits between the two stepper buttons.
+     Narrow but readable; same height as the steppers so the trio
+     reads as one control. */
+  .ot-lots-input {
+    width: 3.2rem;
+    height: 1.7rem;
+    text-align: center;
+    padding: 0 0.25rem;
+    -moz-appearance: textfield;
+  }
+  .ot-lots-input::-webkit-outer-spin-button,
+  .ot-lots-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
   }
   .ot-lots-step {
     width: 1.7rem;
