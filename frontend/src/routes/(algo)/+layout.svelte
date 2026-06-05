@@ -1308,7 +1308,11 @@
     letter-spacing: 0.02em;
     position: sticky;
     top: 3rem;
-    z-index: 48;
+    /* Bumped 48 → 49 to match the sim-banner so the two banners
+       share a stacking context layer above .ps-strip. Below 49
+       the paper-banner was hidden by ps-strip when both pinned
+       at top:3rem (audit defect #5). */
+    z-index: 49;
   }
   .paper-banner-dot {
     width: 0.5rem;
@@ -1331,7 +1335,10 @@
   .replay-banner {
     position: sticky;
     top: 3rem;
-    z-index: 39;
+    /* Bumped 39 → 49 to share the banner layer with sim and paper
+       banners. Below 49 the replay banner sat behind the
+       page-header strip; audit defect #4. */
+    z-index: 49;
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -1463,23 +1470,29 @@
     overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
   }
-  /* Strip-aware vertical offset — three possible sticky strips can
-     sit between the navbar and .algo-content. The page-header
-     `top` lands at-or-just-below the previous strip's sticky
-     bottom edge so there's NO scrolling-content gap during
-     scroll. Values are tightened slightly above the strips'
-     true rendered heights (ps-strip ~24.17px, banners ~27px) so
-     the page-header marginally overlaps the strip below rather
-     than leaving a sub-pixel gap. */
+  /* Strip-aware vertical offset — four possible sticky strips can
+     sit between the navbar and .algo-content:
+       - .ps-strip      (PositionStrip, 1.5rem)
+       - .sim-banner    (1.65rem)
+       - .paper-banner  (1.65rem)
+       - .replay-banner (1.65rem) — added in audit pass; was
+         previously absent from this cascade so the page-header
+         overlay it during replay sessions.
+     Sim / paper / replay are operationally mutually-exclusive
+     (only one execution mode runs at a time) so combinations
+     beyond ps-strip + {one banner} are theoretical only — the
+     four "any-banner" rules cover what actually ships. */
   :global(.algo-viewport:has(.ps-strip) .page-header) {
     top: calc(3rem + 1.5rem);  /* 72px — flush with ps-strip's sticky bottom */
   }
   :global(.algo-viewport:has(.sim-banner) .page-header),
-  :global(.algo-viewport:has(.paper-banner) .page-header) {
+  :global(.algo-viewport:has(.paper-banner) .page-header),
+  :global(.algo-viewport:has(.replay-banner) .page-header) {
     top: calc(3rem + 1.65rem);  /* 74.4px — flush with banner sticky bottom */
   }
   :global(.algo-viewport:has(.ps-strip):has(.sim-banner) .page-header),
-  :global(.algo-viewport:has(.ps-strip):has(.paper-banner) .page-header) {
+  :global(.algo-viewport:has(.ps-strip):has(.paper-banner) .page-header),
+  :global(.algo-viewport:has(.ps-strip):has(.replay-banner) .page-header) {
     top: calc(3rem + 1.5rem + 1.65rem);
   }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .page-header) {

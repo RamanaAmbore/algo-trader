@@ -615,7 +615,16 @@
     // order at submit time with a precise reason.
     try {
       const _sym = String(_localSymbol || symbol || '').toUpperCase();
-      const _mcxNames = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)/;
+      // MCX-by-name pattern: commodity ROOT followed by either an
+      // MCX-specific tail (MINI, M, MICRO, or an expiry token like
+      // `25APRFUT` / `25APR` / `26JUNFUT`). The trailing anchor stops
+      // the regex from misclassifying NSE ETFs like GOLDBEES,
+      // GOLDIAM, SILVERBEES which begin with the same root.
+      // Tail patterns:
+      //   FUT$                         — month-future
+      //   (MINI|MICRO|M)?\d{2}[A-Z]{3}  — expiry token (`25APRFUT`, etc.)
+      //   (MINI|MICRO|M)$              — bare mini/micro
+      const _mcxNames = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)(FUT$|(MINI|MICRO|M)?\d{2}[A-Z]{3}|(MINI|MICRO|M)$)/;
       const _explicitExch = (_pickedExchange || exchange || '').toUpperCase();
       const _isMcxByName = _mcxNames.test(_sym);
       const isMcx = _explicitExch === 'MCX' || _explicitExch === 'NCO' || _isMcxByName;

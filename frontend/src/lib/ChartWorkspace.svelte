@@ -1,3 +1,45 @@
+<script module>
+  // Module-level OHLCV cache — operator reported chart re-fetches
+  // when re-opening the same symbol. Each ChartWorkspace instance
+  // fires _loadHistorical(true) more than once on mount, and a new
+  // instance is created every time ChartModal mounts; without this
+  // cache every open round-trips even when the backend returns the
+  // same bytes. Audit caught that previously this cache lived in
+  // the per-instance <script> block, making it a no-op — moved here
+  // so it's truly module-scoped.
+  //
+  // Key: `${symbol}|${exchange}|${days}|${interval}|${underlying}`.
+  // The `interval` segment was missing originally — if the chart
+  // ever wires a 1h toggle the FE would serve daily bars for an
+  // hourly request without it.
+  /** @type {Map<string, {bars:any[], spotBars:any[], expiresAt:number}>} */
+  const _BAR_CACHE = new Map();
+  const _BAR_CACHE_TTL_MS = 60_000;
+  const _BAR_CACHE_MAX    = 60;
+
+  export function _cacheGet(/** @type {string} */ key) {
+    const e = _BAR_CACHE.get(key);
+    if (!e) return null;
+    if (Date.now() >= e.expiresAt) { _BAR_CACHE.delete(key); return null; }
+    // True LRU — touch on access so the next eviction targets the
+    // genuinely least-recently-used entry rather than oldest-by-
+    // insertion.
+    _BAR_CACHE.delete(key);
+    _BAR_CACHE.set(key, e);
+    return e;
+  }
+
+  export function _cachePut(/** @type {string} */ key,
+                            /** @type {any[]} */ bars,
+                            /** @type {any[]} */ spotBars) {
+    _BAR_CACHE.set(key, { bars, spotBars, expiresAt: Date.now() + _BAR_CACHE_TTL_MS });
+    if (_BAR_CACHE.size > _BAR_CACHE_MAX) {
+      const oldest = _BAR_CACHE.keys().next().value;
+      if (oldest != null) _BAR_CACHE.delete(oldest);
+    }
+  }
+</script>
+
 <script>
   // ChartWorkspace — unified symbol charting surface.
   //
@@ -38,21 +80,6 @@
   import Select from '$lib/Select.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
-
-  // Module-level OHLCV cache — operator reported chart re-fetches
-  // when re-opening the same symbol. Each ChartWorkspace instance
-  // fires _loadHistorical(true) twice on mount (onMount + initial
-  // bump), and a new instance is created every time ChartModal
-  // mounts; without this cache every open round-trips even when
-  // the backend returns the same bytes (its own 60 s cache covers
-  // the network leg, but the parse + render is still wasted).
-  // Keyed by (symbol, exchange, days, underlying-for-spot-overlay);
-  // 60 s TTL matches the backend's _HIST_CACHE_TTL_OK; simple LRU
-  // cap at 60 entries.
-  /** @type {Map<string, {bars:any[], spotBars:any[], expiresAt:number}>} */
-  const _BAR_CACHE = new Map();
-  const _BAR_CACHE_TTL_MS = 60_000;
-  const _BAR_CACHE_MAX    = 60;
 
   // The Pinned dropdown is driven entirely by the operator's actual
   // pinned watchlists (rows on /pulse with `is_pinned=true`). No
@@ -353,16 +380,15 @@
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
 
-      // Module-level cache lookup — see _BAR_CACHE comment at top.
-      // Skipped on Refresh-button driven loads (handled later by the
-      // bypass-cache path — currently every force=true call also
-      // accepts cached bars because the user-visible source-of-truth
-      // is the backend's 60s cache; an explicit bypass would require
-      // a new param. For now the cache is consulted even on force=true
-      // so back-to-back opens of the same symbol render instantly).
-      const cacheKey = `${fetchSym}|${(fetchExch || '').toUpperCase()}|${_chartDays}|${_isDerivative ? (_underlying || '') : ''}`;
-      const _cached = _BAR_CACHE.get(cacheKey);
-      if (_cached && Date.now() < _cached.expiresAt) {
+      // Module-level cache lookup — see _BAR_CACHE comment in the
+      // <script module> block at top. Cache key includes interval
+      // (currently always "day" but future-proofed against an
+      // intraday/hourly toggle) so a 1h request can never serve
+      // cached daily bars.
+      const _interval = 'day';
+      const cacheKey = `${fetchSym}|${(fetchExch || '').toUpperCase()}|${_chartDays}|${_interval}|${_isDerivative ? (_underlying || '') : ''}`;
+      const _cached = _cacheGet(cacheKey);
+      if (_cached) {
         _bars = _cached.bars;
         _spotBars = _cached.spotBars;
         if (!_bars.length) _histError = 'No data available.';
@@ -390,17 +416,9 @@
 
       // Cache write — only when we got non-empty bars; empty results
       // happen on rate-limit / preview blocked and shouldn't poison
-      // the next open. LRU evict the oldest entry when over cap.
+      // the next open. LRU eviction handled by _cachePut.
       if (_bars.length) {
-        _BAR_CACHE.set(cacheKey, {
-          bars: _bars,
-          spotBars: _spotBars,
-          expiresAt: Date.now() + _BAR_CACHE_TTL_MS,
-        });
-        if (_BAR_CACHE.size > _BAR_CACHE_MAX) {
-          const _oldest = _BAR_CACHE.keys().next().value;
-          if (_oldest != null) _BAR_CACHE.delete(_oldest);
-        }
+        _cachePut(cacheKey, _bars, _spotBars);
       }
     } catch (e) {
       if (token !== _loadToken) return;   // newer call already in flight — its result is the canonical one
