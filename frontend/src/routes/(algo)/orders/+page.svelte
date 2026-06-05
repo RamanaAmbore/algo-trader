@@ -395,7 +395,15 @@
        + close button) is suppressed — operator wanted just one
        row, not two stacked. -->
   <div class="bucket-header oc-entry-header oc-entry-header-bare">
-    <span class="oc-entry-label">ORDER ENTRY</span>
+    <span class="oc-entry-label">
+      <svg class="oc-entry-icon" width="13" height="13" viewBox="0 0 16 16"
+           fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" aria-hidden="true">
+        <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
+        <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
+      </svg>
+      ORDER ENTRY
+    </span>
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -969,22 +977,44 @@
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
   }
-  /* Plain "ORDER ENTRY" label — no chip / background / border,
-     just the canonical mp-section-label typography sitting on the
-     left of the bucket-header. Pairs with the card-control trio
-     on the right. */
+  /* "ORDER ENTRY" label — matches the SymbolPanel modal's
+     `.oes-modal-name` typography (0.72rem, weight 800, amber-100%,
+     0.10em letter-spacing) so the inline /orders bucket-card header
+     and the popup modal header read identically. Icon + text inside
+     a single span — same shape as the modal's order glyph + name. */
   .oc-entry-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
     font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.10em;
     text-transform: uppercase;
-    color: rgba(251, 191, 36, 0.7);
+    color: #fbbf24;
     flex-shrink: 0;
   }
+  .oc-entry-icon { color: currentColor; flex-shrink: 0; }
+  /* Header strip — amber gradient + bottom border identical to
+     `.oes-header` in SymbolPanel. Operator: "keep order modal
+     order entry and order entry in order page to have similar
+     look and feel". Negative margins pull the strip out to the
+     bucket-card edges (bucket-card padding is 0.55 / 0.65 / 0.6 /
+     0.8) so the amber gradient spans edge-to-edge the same way
+     the modal's .oes-header sits flush against the modal frame.
+     Top corners pick up the bucket-card 6px radius minus the
+     1.5px outer border. */
   .oc-entry-header-bare {
-    margin-bottom: 0.2rem;
+    margin: -0.55rem -0.65rem 0.45rem -0.8rem;
     min-height: 1.4rem;
+    padding: 0.35rem 0.5rem;
+    background: linear-gradient(180deg,
+                  rgba(251, 191, 36, 0.18) 0%,
+                  rgba(251, 191, 36, 0.06) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-top-left-radius: 4.5px;
+    border-top-right-radius: 4.5px;
   }
 
   /* Account picker chrome — when multiple brokers loaded use a Select,
