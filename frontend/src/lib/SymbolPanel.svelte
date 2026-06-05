@@ -1179,7 +1179,7 @@
             onAddToBasket={addToBasket}
             basketMode={basketMode}
             accountHidden={true}
-            symbolHidden={false}
+            symbolHidden={true}
             symType={_symType}
             actionsHidden={actionsHidden || showCommonActions}
             fundsHidden={false}
