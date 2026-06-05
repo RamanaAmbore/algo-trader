@@ -385,6 +385,14 @@
   let basketLegs   = $state([]);
   /** @type {string} */ let basketResultMsg = $state('');
   let basketSubmitting = $state(false);
+  // Sticky result line — persists in the common-actions row for a
+  // few seconds after the basket-bar collapses, so the operator
+  // gets a clear confirmation that submit landed. Cleared via
+  // `_stickyResultTimer`.
+  /** @type {string} */ let _stickyResultMsg = $state('');
+  /** @type {'ok' | 'err' | ''} */ let _stickyResultLevel = $state('');
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let _stickyResultTimer;
 
   function addToBasket(/** @type {any} */ leg) {
     basketLegs = [...basketLegs, leg];
@@ -770,8 +778,20 @@
     basketSubmitting = false;
     const total = basketLegs.length;
     if (!fails.length) {
-      basketResultMsg = `${ok}/${total} placed`;
+      basketResultMsg = `${ok}/${total} placed · basket cleared`;
       basketLegs = [];
+      // Sticky for 3s so the operator sees the basket was cleared
+      // — earlier the result line disappeared with the basket bar
+      // (basketResultMsg is rendered inside the basket-bar block),
+      // so there was no confirmation that submit landed. Re-render
+      // the message via _stickyResultMsg which has its own slot.
+      _stickyResultMsg = `${ok}/${total} placed · basket cleared`;
+      _stickyResultLevel = 'ok';
+      if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
+      _stickyResultTimer = setTimeout(() => {
+        _stickyResultMsg = '';
+        _stickyResultLevel = '';
+      }, 3000);
       setTimeout(onClose, 1500);
     } else if (ok > 0) {
       basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}`;
@@ -1159,10 +1179,10 @@
             onAddToBasket={addToBasket}
             basketMode={basketMode}
             accountHidden={true}
-            symbolHidden={!headerless && !inline}
+            symbolHidden={false}
             symType={_symType}
             actionsHidden={actionsHidden || showCommonActions}
-            fundsHidden={showCommonActions && !inline}
+            fundsHidden={false}
             refreshKey={_ticketBump}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
@@ -1367,17 +1387,24 @@
                   options, futures).
              Then the button cluster sits on the right. -->
         <div class="oes-common-row">
-          {#if _modalNotice}
+          {#if _stickyResultMsg}
+            <span class="oes-sticky-result oes-sticky-result-{_stickyResultLevel || 'ok'}"
+                  title={_stickyResultMsg}>
+              {_stickyResultMsg}
+            </span>
+          {:else if _modalNotice}
             <span class="oes-notice oes-notice-{_modalNotice.level}"
                   title={_modalNotice.detail || _modalNotice.text}>
               {_modalNotice.text}
             </span>
-          {:else if _marginInfo && _activeTab === 'ticket'}
-            <!-- Margin pill is only meaningful while the Ticket
-                 form drives the preview. On Chain tab the pill
-                 would show stale Ticket-form numbers (audit
-                 defect #8); chain-basket aggregate margin lives
-                 on the basket-pill row above. -->
+          {:else if _marginInfo}
+            <!-- Margin pill is shared between Chain and Ticket so
+                 the operator reads the same Required / Avail values
+                 regardless of which tab is active. Operator:
+                 "margin message should be common between chain and
+                 order ticket". The chain-basket aggregate pill on
+                 the basket-pill row above stays as a per-leg
+                 breakdown; this is the single live preview. -->
             {@const _isCash = !!_marginInfo.isCashMode}
             {@const _reqKey = _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
@@ -1539,7 +1566,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.35rem 0.85rem;
+    padding: 0.35rem 0.5rem;
     background: linear-gradient(180deg,
                   rgba(251, 191, 36, 0.18) 0%,
                   rgba(251, 191, 36, 0.06) 100%);
@@ -1588,7 +1615,7 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    padding: 0.4rem 0.6rem;
+    padding: 0.4rem 0.4rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.10);
     flex-wrap: nowrap;
     flex-shrink: 0;
@@ -1808,7 +1835,7 @@
   .oes-tabs {
     display: flex;
     gap: 0;
-    padding: 0 1rem;
+    padding: 0 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.08);
     flex-shrink: 0;
   }
@@ -2063,7 +2090,7 @@
     border-radius: 0 !important;
     background: none !important;
     box-shadow: none !important;
-    padding: 0.6rem 0.9rem !important;
+    padding: 0.5rem 0.4rem !important;
   }
   /* Hide the OrderTicket's own × close button — the shell has one. */
   .oes-ticket-body :global(.ot-close) {
@@ -2257,7 +2284,7 @@
     flex-direction: column;
     align-items: stretch;
     gap: 0.3rem;
-    padding: 0.5rem 0.85rem;
+    padding: 0.5rem 0.4rem;
     background: rgba(15, 23, 42, 0.55);
     border-top: 1px solid rgba(251, 191, 36, 0.18);
     flex-shrink: 0;
@@ -2386,6 +2413,35 @@
   .oes-notice-err  { background: rgba(248,113,113,0.18); border-color: rgba(248,113,113,0.55); color: #f87171; }
   .oes-notice-warn { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.50); color: #fbbf24; }
   .oes-notice-info { background: rgba(56,189,248,0.16); border-color: rgba(56,189,248,0.50); color: #38bdf8; }
+
+  /* Sticky result line — same shape as notice; replaces the
+     transient basketResultMsg that vanished alongside the basket
+     bar after a successful chase placement. Lives in the
+     common-actions LEFT slot for ~3 s after submit lands. */
+  .oes-sticky-result {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.62rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .oes-sticky-result-ok {
+    background: rgba(74,222,128,0.18);
+    border-color: rgba(74,222,128,0.55);
+    color: #4ade80;
+  }
+  .oes-sticky-result-err {
+    background: rgba(248,113,113,0.18);
+    border-color: rgba(248,113,113,0.55);
+    color: #f87171;
+  }
 
   /* Funds summary line above the action row — Avail margin · Cash ·
      Used (or per-account label when the operator picks a specific
