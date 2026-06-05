@@ -805,6 +805,15 @@
     box-sizing: border-box;
   }
   .bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); }
+  /* Order Entry card overrides `.bucket-card`'s inner padding to
+     zero — SymbolPanel's picker / tabs / body / common-actions
+     each define their own horizontal inset, the same way they do
+     inside the modal panel chrome. Operator: "if you keep order
+     ticket specific content in card, it will match order modal".
+     Card-body still ships a small inner bottom buffer so the
+     common-actions row doesn't slam against the bucket-card border. */
+  .bucket-card-entry { padding: 0 0 0.4rem 0; }
+  .bucket-card-entry > .card-body { padding: 0; }
   /* Chase card — rose accent so it reads as the "kill" surface
      alongside amber Entry and cyan Activity. Section label inherits
      the same rose via the cc-label rule inside ChaseCard. */
@@ -996,16 +1005,12 @@
   }
   .oc-entry-icon { color: currentColor; flex-shrink: 0; }
   /* Header strip — amber gradient + bottom border identical to
-     `.oes-header` in SymbolPanel. Operator: "keep order modal
-     order entry and order entry in order page to have similar
-     look and feel". Negative margins pull the strip out to the
-     bucket-card edges (bucket-card padding is 0.55 / 0.65 / 0.6 /
-     0.8) so the amber gradient spans edge-to-edge the same way
-     the modal's .oes-header sits flush against the modal frame.
-     Top corners pick up the bucket-card 6px radius minus the
-     1.5px outer border. */
+     `.oes-header` in SymbolPanel. With the bucket-card-entry
+     padding zeroed, the strip naturally sits flush against the
+     bucket-card frame (no negative margins needed). Top corners
+     match the bucket-card 6px radius minus the 1.5px outer border. */
   .oc-entry-header-bare {
-    margin: -0.55rem -0.65rem 0.45rem -0.8rem;
+    margin: 0 0 0 0;
     min-height: 1.4rem;
     padding: 0.35rem 0.5rem;
     background: linear-gradient(180deg,
