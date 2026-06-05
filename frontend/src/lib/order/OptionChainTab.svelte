@@ -88,11 +88,30 @@
   // lands past index 1000 in the Kite instruments dump).
   const _COMMON_INDICES_AND_COMMODITIES = POPULAR_UNDERLYINGS;
 
-  // Derive the seed underlying from the symbol prop (strip trailing
-  // digits + CE/PE/FUT suffix). E.g. NIFTY25APR22000CE → NIFTY.
+  // Kite spot-index quote-key → F&O underlying root. Same map as
+  // resolveUnderlying.js KITE_INDEX_QUOTE_KEY_TO_ROOT — duplicated here
+  // so OptionChainTab has no circular dependency on resolveUnderlying.
+  // Kept in sync with that file; update both if new indices are added.
+  const _KITE_IDX_TO_ROOT = /** @type {Record<string,string>} */ ({
+    'NIFTY 50':           'NIFTY',
+    'NIFTY BANK':         'BANKNIFTY',
+    'NIFTY FIN SERVICE':  'FINNIFTY',
+    'NIFTY MID SELECT':   'MIDCPNIFTY',
+    'NIFTY NEXT 50':      'NIFTYNXT50',
+    'SENSEX':             'SENSEX',
+    'BANKEX':             'BANKEX',
+  });
+
+  // Derive the seed underlying from the symbol prop. Handles:
+  //   - Kite index quote-key forms (e.g. "NIFTY 50" → "NIFTY")
+  //   - Full contract tradingsymbols (e.g. NIFTY25APR22000CE → NIFTY)
+  //   - Plain roots (e.g. NIFTY → NIFTY)
   const seedUnderlying = $derived.by(() => {
     if (!symbol) return '';
-    return String(symbol).toUpperCase().replace(/\d.*$/, '') || '';
+    const upper = String(symbol).toUpperCase().trim();
+    // Normalise index quote-key forms first, then strip digit-suffix.
+    const mapped = _KITE_IDX_TO_ROOT[upper] || upper;
+    return mapped.replace(/\d.*$/, '') || mapped;
   });
 
   // Derive the seed expiry from the symbol prop when it's a specific

@@ -1665,7 +1665,7 @@
     background: rgba(16,185,129,0.15); color: #6ee7b7; border-color: rgba(16,185,129,0.5);
   }
   :global(.sim-btn-load:hover) {
-    background: rgba(16,185,129,0.25); border-color: #10b981;
+    background: rgba(74,222,128,0.25); border-color: #4ade80;
   }
   :global(.sim-btn-step) {
     background: rgba(125,211,252,0.15); color: #7dd3fc; border-color: rgba(125,211,252,0.5);

@@ -15,48 +15,25 @@
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { loadInstruments } from '$lib/data/instruments';
-  import { priceFmt, qtyFmt } from '$lib/format';
   import {
     loadAccounts,
     resolveSymbol, resolveAccount,
     setRecentSymbol, setRecentAccount,
   } from '$lib/data/accounts';
-  import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
-  import Select from '$lib/Select.svelte';
-  import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   // executionMode store import retired with the page-level mode
   // pills — SymbolPanel's shared toolbar owns _sharedMode now.
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
-  import { longPress } from '$lib/actions/longPress.js';
-  import { ORDER_TABS } from '$lib/order/tabs.js';
-
-  // Row-level chart modal — distinct from any header-level chart state.
+  import OrderCard from '$lib/order/OrderCard.svelte';
+  // Row-level chart modal state.
   let _rowChartModalSym  = $state('');
   let _rowChartModalExch = $state('');
-  function _openRowChart(/** @type {string} */ symbol, /** @type {string} */ exchange = '') {
-    _rowChartModalSym  = String(symbol  || '').toUpperCase();
-    _rowChartModalExch = String(exchange || '');
-  }
 
-  // Tab strip metadata — sourced from ORDER_TABS ($lib/order/tabs.js)
-  // with visual palette layered on. Chart tab removed — chart now lives
-  // in ChartModal (icon button next to symbol picker).
-  // Chain first — basket builder is the most-used surface per operator.
-  const TABS = ORDER_TABS.map(t => ({
-    ...t,
-    ...(t.id === 'chain'   ? { dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)'  } :
-        t.id === 'ticket'  ? { dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)'  } :
-                             { dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' }),
-  }));
-
-  // Activity-card tabs share the same shape + style as the Entry-
-  // card tabs above (single oc-tab class) so the two tab strips
-  // read as one consistent vocabulary across the page. Each tab
-  // carries its own colour for the active underline + text.
+  // Activity-card tab definitions — id drives class-based colour
+  // (oc-tab--log = sky, oc-tab--book = green) instead of inline style.
   const ACT_TABS = /** @type {const} */ ([
-    { id: 'log',  label: 'Agents', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' },
-    { id: 'book', label: 'Orders', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)' },
+    { id: 'log',  label: 'Agents' },
+    { id: 'book', label: 'Orders' },
   ]);
 
   let orders        = $state([]);
@@ -92,11 +69,6 @@
   // depth + chain see MCX from the first poll.
   let _entryExchange = $state('');
 
-  // Symbol-type filter — shared 4-option vocabulary (All / Equity /
-  // Futures / Options) so every surface uses the same picker.
-  // Default 'ALL' matches ChartWorkspace + SymbolPanel.
-  let _entrySymType = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'));
-
   // Account seeded the same way — recent → settings default → first
   // loaded account in the post-fetch loadAccounts effect below.
   let _entryAccount = $state(resolveAccount());
@@ -109,10 +81,6 @@
   // surface per operator. Ticket / Command are one click away.
   let _entryActiveTab = $state(/** @type {'chain'|'ticket'} */ ('chain'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
-
-  // Page-level chart modal state — opened by the chart-icon button next
-  // to the symbol picker in the Order Entry bucket-header.
-  let _orderChartModalOpen = $state(false);
 
   // Counter-prop dispatch — SymbolPanel's common-actions footer
   // increments these to fire submit/basket on the active tab.
@@ -139,14 +107,6 @@
   // surface uses.
   let _activityTab = $state(/** @type {'log'|'book'} */ ('book'));
 
-  // Chain tab is disabled for cash equity (no FUT/CE/PE suffix). Same
-  // logic SymbolPanel uses internally; duplicated here so the tab
-  // strip in our bucket-header knows when to grey out the Chain pill.
-  const _chainDisabled = $derived.by(() => {
-    const s = String(_entrySymbol || '').toUpperCase();
-    if (!s) return false; // no symbol picked yet — leave Chain clickable
-    return !/(?:CE|PE|FUT)$/.test(s);
-  });
   // OrderTicket props — opens a SymbolPanel modal pre-filled from a
   // row click (Modify / Repeat path). The top-of-page inline shell
   // handles fresh placement; this separate modal handles single-target
@@ -168,48 +128,9 @@
     catch (e) { error = e.message; }
     finally { loading = false; }
   }
-  const statusDataAttr = (/** @type {string} */ s) => {
-    const c = s?.toUpperCase();
-    if (c === 'COMPLETE') return 'active';
-    if (c === 'REJECTED' || c === 'CANCELLED') return 'error';
-    if (c === 'OPEN' || c === 'TRIGGER PENDING') return 'running';
-    return 'inactive';
-  };
-  const txnColor = (/** @type {string} */ t) => t === 'BUY' ? 'color: var(--btn-buy)' : 'color: var(--btn-sell)';
-  // Industry standard: distinct hues per account, readable on dark bg
-  const ACCT_COLORS = ['text-sky-300', 'text-amber-300', 'text-fuchsia-300', 'text-teal-300'];
-  const _acctList = /** @type {string[]} */ ([]);
-  const acctColor = (/** @type {string} */ a) => {
-    let idx = _acctList.indexOf(a);
-    if (idx < 0) { _acctList.push(a); idx = _acctList.length - 1; }
-    return ACCT_COLORS[idx % ACCT_COLORS.length];
-  };
-
-  // Status check used by per-row action gating.
+  // Status check used by per-row action gating (Modify / Cancel buttons).
   const isOpenStatus = (/** @type {string} */ s) =>
     s === 'OPEN' || s === 'TRIGGER PENDING';
-
-  // Slippage on a filled order = avg_price − limit_price. Signed
-  // (positive = paid more / received less than asked); null when the
-  // order is unfilled or has no limit price (MARKET orders).
-  const slippage = (/** @type {any} */ o) => {
-    if (o.status !== 'COMPLETE') return null;
-    if (o.average_price == null || o.price == null) return null;
-    const p = Number(o.price);
-    if (!(p > 0)) return null;
-    const d = Number(o.average_price) - p;
-    return Number.isFinite(d) ? d : null;
-  };
-
-  // Tag colour-coding — ramboq-ticket = blue (manual operator
-  // placement), ramboq-agent* = amber (algo / agent-fired). Anything
-  // else stays neutral.
-  const tagClass = (/** @type {string} */ tag) => {
-    if (!tag) return '';
-    if (tag === 'ramboq-ticket') return 'tag-manual';
-    if (tag.startsWith('ramboq-agent')) return 'tag-agent';
-    return '';
-  };
 
   // Available account / exchange values for the filter chips.
   const _availableAccounts = $derived([...new Set(orders.map(o => o.account).filter(Boolean))]);
@@ -436,6 +357,9 @@
      ChaseCard.svelte for the markup + polling. -->
 <section class="bucket-card bucket-card-chase mb-2">
   <div class="bucket-header oc-chase-header">
+    <span class="mp-section-label">Chases</span>
+  </div>
+  <div class="card-body oc-chase-body">
     <ChaseCard pollMs={3000} onKilled={() => loadOrders()} />
   </div>
 </section>
@@ -454,14 +378,8 @@
       {#each ACT_TABS as tab}
         {@const isActive = _activityTab === tab.id}
         <button type="button" role="tab"
-          class="oc-tab"
+          class="oc-tab oc-tab--{tab.id}"
           aria-selected={isActive}
-          style="
-            color: {isActive ? tab.activeTxt : '#94a3b8'};
-            background: {isActive ? tab.activeBg : 'transparent'};
-            border-bottom-color: {isActive ? tab.activeBorder : 'transparent'};
-            font-weight: {isActive ? '800' : '600'};
-          "
           onclick={() => _activityTab = /** @type {any} */ (tab.id)}>
           {tab.label}
           {#if tab.id === 'book' && _filteredOrders.length > 0}
@@ -517,76 +435,30 @@
     {:else if _filteredOrders.length}
       <div class="oc-book-grid">
         {#each _filteredOrders as o (o.order_id)}
-          <!-- Outer is a div role=button (not <button>) so the inline
-               Cancel / Modify / Repeat <button> elements can nest
-               without invalid HTML. Click + Enter / Space toggle the
-               OrderDetail panel; the inline actions stopPropagation
-               so they don't double-fire the toggle. -->
-          <div role="button" tabindex="0"
-            onclick={() => selectedOrder = (selectedOrder?.order_id === o.order_id ? null : o)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedOrder = (selectedOrder?.order_id === o.order_id ? null : o); } }}
-            class="algo-status-card text-left p-2.5 transition order-card"
-            data-status={statusDataAttr(o.status)}>
-            <div class="flex items-center justify-between mb-0.5 gap-1">
-              <span class="font-semibold text-xs"><span style="{txnColor(o.transaction_type)}">{o.transaction_type}</span> <span class="{acctColor(o.account)}">{o.account}</span> <!-- svelte-ignore a11y_interactive_supports_focus --><span
-                  class="text-[#c8d8f0] oc-sym-btn"
-                  role="button"
-                  tabindex="0"
-                  title="Open {o.tradingsymbol}"
-                  onclick={(e) => { e.stopPropagation(); orderTicketProps = { symbol: o.tradingsymbol, exchange: o.exchange || '' }; }}
-                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); orderTicketProps = { symbol: o.tradingsymbol, exchange: o.exchange || '' }; } }}
-                  oncontextmenu={(ev) => { ev.preventDefault(); _ctxMenu = { symbol: o.tradingsymbol, exchange: o.exchange || '', x: ev.clientX, y: ev.clientY }; }}
-                  use:longPress={(ev) => { _ctxMenu = { symbol: o.tradingsymbol, exchange: o.exchange || '', x: ev.clientX, y: ev.clientY }; }}
-                >{o.tradingsymbol}</span></span>
-              <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
-                {o.status === 'COMPLETE' ? 'bg-green-500/15 text-green-400 border-green-500/40'
-                : o.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{o.status}</span>
-            </div>
-            <!-- Order chip row uses the same .log-chip / .log-chip-key
-                 styles as LogPanel's order log + agent log so the operator
-                 reads a single chip family across every surface
-                 (operator feedback: "keep them in sync"). -->
-            <div class="flex flex-wrap items-center gap-y-1">
-              {#if o.exchange}<span class="log-chip"><span class="log-chip-key">ex:</span>{o.exchange}</span>{/if}
-              <span class="log-chip"><span class="log-chip-key">qty:</span>{qtyFmt(o.filled_quantity)}/{qtyFmt(o.quantity)}</span>
-              <span class="log-chip"><span class="log-chip-key">type:</span>{o.order_type}</span>
-              <span class="log-chip"><span class="log-chip-key">price:</span>{o.average_price != null ? priceFmt(o.average_price) : o.price != null ? priceFmt(o.price) : '—'}</span>
-              {#if slippage(o) != null}<span class="log-chip log-chip-slip" class:slip-up={slippage(o) > 0} class:slip-down={slippage(o) < 0}><span class="log-chip-key">slip:</span>{slippage(o) > 0 ? '+' : ''}{priceFmt(slippage(o))}</span>{/if}
-              {#if o.trigger_price}<span class="log-chip"><span class="log-chip-key">trigger:</span>{priceFmt(o.trigger_price)}</span>{/if}
-              {#if o.validity}<span class="log-chip"><span class="log-chip-key">validity:</span>{o.validity}</span>{/if}
-              <span class="log-chip"><span class="log-chip-key">product:</span>{o.product}</span>
-              <span class="log-chip"><span class="log-chip-key">variety:</span>{o.variety}</span>
-              {#if o.order_timestamp}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(o.order_timestamp))}</span>{/if}
-              {#if o.tag}<span class="log-chip {tagClass(o.tag)}"><span class="log-chip-key">tag:</span>{o.tag}</span>{/if}
-              {#if o.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{o.status_message}</span>{/if}
-            </div>
-            <!-- Inline action strip — Modify + Cancel ONLY on open
-                 orders. Operator: "remove refresh button [from] order
-                 cards which are in completed status. Only open order
-                 cards can [show the] refresh button". The legacy
-                 Repeat (circular-arrow) glyph on terminal orders read
-                 like a refresh affordance and confused the operator —
-                 dropped. To re-fire a completed order the operator
-                 clicks the symbol cell, which already opens the
-                 OrderTicket modal pre-filled. -->
-            {#if isOpenStatus(o.status)}
-              <div class="oc-row-actions">
-                <button type="button" class="oc-act-btn" title="Modify order"
-                  aria-label="Modify order" onclick={(e) => inlineModify(o, e)}>
-                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                    <path d="M11.5 3l1.5 1.5L5 12.5 2 13l.5-3L11.5 3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </button>
-                <button type="button" class="oc-act-btn oc-act-cancel" title="Cancel order"
-                  aria-label="Cancel order" onclick={(e) => inlineCancel(o, e)}>
-                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                    <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                  </svg>
-                </button>
-              </div>
-            {/if}
-          </div>
+          <OrderCard
+            order={o}
+            onCardClick={() => { selectedOrder = (selectedOrder?.order_id === o.order_id ? null : o); }}
+            onSymbolClick={(ord, _e) => { orderTicketProps = { symbol: ord.tradingsymbol, exchange: ord.exchange || '' }; }}
+            onSymbolContext={(ord, ev) => { _ctxMenu = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', x: ev.clientX, y: ev.clientY }; }}>
+            {#snippet actions(ord)}
+              {#if isOpenStatus(ord.status)}
+                <div class="oc-row-actions">
+                  <button type="button" class="oc-act-btn" title="Modify order"
+                    aria-label="Modify order" onclick={(e) => inlineModify(ord, e)}>
+                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                      <path d="M11.5 3l1.5 1.5L5 12.5 2 13l.5-3L11.5 3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                  <button type="button" class="oc-act-btn oc-act-cancel" title="Cancel order"
+                    aria-label="Cancel order" onclick={(e) => inlineCancel(ord, e)}>
+                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                      <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                </div>
+              {/if}
+            {/snippet}
+          </OrderCard>
         {/each}
       </div>
     {:else}
@@ -629,14 +501,6 @@
 />
 
 </div>
-
-{#if _orderChartModalOpen && _entrySymbol}
-  <ChartModal
-    symbol={_entrySymbol}
-    exchange=""
-    mode="live"
-    onClose={() => _orderChartModalOpen = false} />
-{/if}
 
 {#if _rowChartModalSym}
   <ChartModal
@@ -802,8 +666,9 @@
      pages. Operator: "if there are no active chases, no need to
      show 'no active chases'". */
   .bucket-card-chase:not(:has(.cc-root)) { display: none; }
-  .oc-chase-header { margin-bottom: 0; align-items: stretch; }
-  :global(.oc-chase-header .cc-root) { width: 100%; }
+  .oc-chase-header { margin-bottom: 0.25rem; }
+  .oc-chase-body { padding: 0; }
+  :global(.oc-chase-body .cc-root) { width: 100%; }
   /* bucket-card-book retired (Order Book merged into Activity card). */
 
   .bucket-header { margin-bottom: 0.35rem; }
@@ -927,34 +792,6 @@
      SymbolPanel's shared .oes-common-actions block so both surfaces
      (modal + /orders) read from one component. ~80 lines dropped. */
 
-  /* Chart icon button next to the symbol picker in the Order Entry
-     header. Same cyan-400 palette + 1.4rem sizing as the card-control
-     trio (CollapseButton, FullscreenButton). */
-  .oc-chart-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    background: rgba(34, 211, 238, 0.10);
-    border: 1px solid rgba(34, 211, 238, 0.40);
-    border-radius: 3px;
-    color: #22d3ee;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-    padding: 0;
-  }
-  .oc-chart-btn:hover:not(:disabled) {
-    background: rgba(103, 232, 249, 0.18);
-    color: #67e8f9;
-    border-color: rgba(103, 232, 249, 0.65);
-  }
-  .oc-chart-btn:disabled {
-    opacity: 0.38;
-    cursor: not-allowed;
-  }
-
   /* Flat section header — only the card-control trio rides here
      now (Collapse / DefaultSize / Fullscreen). Section label +
      other decorations removed per operator request. */
@@ -1001,27 +838,7 @@
     border-top-right-radius: 4.5px;
   }
 
-  /* Account picker chrome — when multiple brokers loaded use a Select,
-     when only one the chip below renders the read-only code. */
-  .oc-entry-account { min-width: 9rem; max-width: 13rem; }
-  /* Symbol-type filter — narrow enough to fit beside Symbol search
-     on common viewports. "Futures" is the widest label (~50px). */
-  .oc-entry-symtype { min-width: 5.5rem; max-width: 7rem; }
-  .oc-entry-acct-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.18rem 0.5rem;
-    background: rgba(34, 211, 238, 0.10);
-    border: 1px solid rgba(34, 211, 238, 0.35);
-    border-radius: 3px;
-    color: #67e8f9;
-    font-size: 0.65rem;
-    font-weight: 700;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-  }
-
-  /* Tab strip lifted into the bucket-header. Compact horizontal
+  /* Tab strip — Activity card Agents / Orders tabs. Compact horizontal
      scroller; each pill carries the same colour dot SymbolPanel
      used internally so the operator's mental model carries
      ("CHART = sky", "TICKET = amber", "CHAIN = green", "COMMAND =
@@ -1059,13 +876,23 @@
     color: #c8d8f0;
     background: rgba(255, 255, 255, 0.04);
   }
-  /* Active-state glow — same shape as the modal's .oes-tab-active:
-     amber underline + bg tint + weight bump + halo. Audit defect
-     #17 (active-state visuals were diverging across page vs modal). */
+  /* Active-state base — box-shadow + weight. Per-variant colour rules
+     below supply color, background, and border-bottom-color. */
   .oc-tab[aria-selected="true"] {
-    background: rgba(251, 191, 36, 0.10);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
     font-weight: 800;
+  }
+  /* sky variant — Activity Agents tab */
+  .oc-tab--log[aria-selected="true"] {
+    color: #7dd3fc;
+    background: rgba(125, 211, 252, 0.14);
+    border-bottom-color: #7dd3fc;
+  }
+  /* green variant — Activity Orders tab */
+  .oc-tab--book[aria-selected="true"] {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.14);
+    border-bottom-color: #4ade80;
   }
   .oc-tab-disabled {
     cursor: not-allowed;
@@ -1300,14 +1127,4 @@
     color: #fca5a5;
   }
 
-  /* Slippage chip on COMPLETE rows — green when negative (paid less),
-     red when positive (paid more). Hugs the same shape as the rest
-     of the .log-chip family. */
-  .log-chip-slip.slip-up   { color: #fca5a5; }
-  .log-chip-slip.slip-down { color: #86efac; }
-
-  /* Tag colour coding — algo vs manual. Operator can tell at a glance
-     which orders came from the ticket vs which were agent-fired. */
-  .tag-manual { color: #67e8f9; background: rgba(34, 211, 238, 0.10); }
-  .tag-agent  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
 </style>

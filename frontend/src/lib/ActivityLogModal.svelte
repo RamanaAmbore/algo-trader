@@ -16,6 +16,8 @@
 
   import { onMount, onDestroy } from 'svelte';
   import LogPanel from '$lib/LogPanel.svelte';
+  import ChaseCard from '$lib/order/ChaseCard.svelte';
+  import BellIcon from '$lib/icons/BellIcon.svelte';
   import { portal } from '$lib/portal';
 
   let {
@@ -81,30 +83,10 @@
            (three horizontal lines) so the operator recognises which
            surface they opened. Violet matches the bell palette. -->
       <span class="alm-title">
-        <!-- Notification bell — operator: "make the bell icon look like
-             a little 3D". Filled body with a violet radial gradient
-             (light top, deep bottom) for a rounded surface, a small
-             white specular highlight at the upper left, a darker
-             outline + a soft drop shadow so the bell pops off the
-             chip-pill background as a tiny dimensional object. -->
-        <!-- Operator: "make bell 3D icon less 3D decoration". Flat
-             orange fill (no radial gradient), thin uniform outline
-             — reads as a friendly bell icon, not a rendered
-             object. Matches the PageHeaderActions Log button so
-             opening Activity from either entry surface shows the
-             same bell. -->
-        <svg class="alm-title-icon alm-title-icon-3d" width="14" height="14"
-             viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
-                fill="#fb923c"
-                stroke="#9a3412" stroke-width="0.4"
-                stroke-linejoin="round" />
-          <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
-                fill="#fb923c" stroke="#9a3412" stroke-width="0.4"
-                stroke-linejoin="round" />
-          <circle cx="8" cy="2.1" r="0.55" fill="#fb923c"
-                  stroke="#9a3412" stroke-width="0.4" />
-        </svg>
+        <!-- Shared BellIcon — flat orange (#fb923c), amber-700 (#b45309) outline.
+             Replaces the inlined SVG with hard-coded #9a3412 that was duplicated
+             in PageHeaderActions. Same bell identity on both surfaces. -->
+        <BellIcon width="14" height="14" class="alm-title-icon alm-title-icon-3d" />
         Activity
       </span>
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
@@ -112,6 +94,10 @@
     </div>
 
     <div class="alm-body">
+      <!-- ChaseCard — surfaces OPEN algo_orders across paper/live/shadow.
+           idle-hide CSS in ChaseCard suppresses it when empty, so this
+           is non-disruptive when there are no active chases. -->
+      <ChaseCard pollMs={3000} compact={true} />
       <!-- Tab list inherited from LogPanel's default — keeps every
            surface (this modal, the Order modal bottom panel, /console,
            /agents) in sync without duplicating the array per callsite. -->

@@ -4,7 +4,7 @@
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
-    fetchOrders,
+    fetchOrders, cancelOrder,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
@@ -246,6 +246,51 @@
   /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
+
+  // ── Order-card inline actions (Cancel / Modify) ──────────────────────────
+  // Cancel hits the broker DELETE endpoint directly; Modify dispatches a
+  // custom event so the host page can open its own modify modal (LogPanel
+  // is mounted in many surfaces; they own the modify flow).
+  /** @type {Set<string>} */
+  let _cancelling = $state(new Set());
+  /** @type {string} */
+  let _cancelErr  = $state('');
+
+  /** Returns true when the order is an OPEN broker order that can be acted on. */
+  function _isOpenBroker(/** @type {any} */ o) {
+    const st = (o?.status || '').toUpperCase();
+    return (st === 'OPEN' || st === 'TRIGGER PENDING') && !o?.mode;
+  }
+
+  async function _cancelRow(/** @type {any} */ o) {
+    const key = String(o.order_id || o.id || '');
+    if (_cancelling.has(key)) return;
+    _cancelling = new Set([..._cancelling, key]);
+    _cancelErr = '';
+    try {
+      await cancelOrder(o.order_id, o.account, o.variety || 'regular');
+      // Force immediate refresh so cancelled row disappears.
+      await _loadOrders();
+    } catch (e) {
+      _cancelErr = /** @type {any} */ (e)?.message || 'cancel failed';
+      setTimeout(() => { _cancelErr = ''; }, 3000);
+    } finally {
+      const next = new Set(_cancelling);
+      next.delete(key);
+      _cancelling = next;
+    }
+  }
+
+  // Dispatches a custom DOM event so the host can open its modify modal.
+  // Hosts that don't listen receive a no-op (bubbles up and is ignored).
+  function _requestModify(/** @type {any} */ o, /** @type {HTMLElement | null} */ el) {
+    el?.dispatchEvent(new CustomEvent('lp:modify-order', {
+      detail: o,
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
   /** Escape HTML attribute values from broker-supplied strings (defence-in-depth). */
   const _escAttr = (/** @type {any} */ v) =>
     String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -747,10 +792,44 @@
     {#if filteredOrderRows.length}
       <div class="oc-book-grid">
         {#each filteredOrderRows as o (o.order_id ?? o.id)}
+          {@const _oKey = String(o.order_id || o.id || '')}
           <OrderCard order={o}
             onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ord.symbol || ''; _symPanelExch = ord.exchange || ''; }}
-            onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }} />
+            onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }}>
+            {#snippet actions(ord)}
+              {#if _isOpenBroker(ord)}
+                <div class="lp-oc-actions" role="group" aria-label="Order actions">
+                  <!-- Modify — dispatches lp:modify-order so the host page opens its modal -->
+                  <button type="button" class="lp-oc-btn lp-oc-modify"
+                    title="Modify order"
+                    aria-label="Modify"
+                    onclick={(e) => { e.stopPropagation(); _requestModify(ord, e.currentTarget?.closest('.alm-body, .lp-order-scroll')); }}>
+                    <!-- Pencil / edit glyph — cyan-400 -->
+                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M11.5 2.5l2 2L5 13H3v-2L11.5 2.5z" stroke="currentColor" stroke-width="1.6"
+                            stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                  <!-- Cancel — calls broker DELETE endpoint -->
+                  <button type="button" class="lp-oc-btn lp-oc-cancel"
+                    title="Cancel order"
+                    aria-label="Cancel"
+                    disabled={_cancelling.has(_oKey)}
+                    onclick={(e) => { e.stopPropagation(); _cancelRow(ord); }}>
+                    <!-- X glyph — red-400 -->
+                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8"
+                            stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                </div>
+              {/if}
+            {/snippet}
+          </OrderCard>
         {/each}
+        {#if _cancelErr}
+          <div class="log-row log-debug" style="color:#f87171">{_cancelErr}</div>
+        {/if}
       </div>
     {:else}
       <div class="log-debug py-2 text-center">No {orderModeFilter} orders.</div>
@@ -1081,10 +1160,15 @@
   .om-chip:first-child { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
   .om-chip:last-child  { border-right-width: 1px; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
   .om-chip:hover { color: #c8d8f0; }
-  .om-chip.om-on.om-chip-all   { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
-  .om-chip.om-on.om-chip-paper { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
-  .om-chip.om-on.om-chip-live  { background: rgba(16,185,129,0.14); color: #6ee7b7; border-color: rgba(16,185,129,0.45); }
-  .om-chip.om-on.om-chip-sim   { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+  .om-chip.om-on.om-chip-all    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+  .om-chip.om-on.om-chip-paper  { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
+  /* Canonical green (#4ade80) for live — replaces off-palette emerald #10b981 */
+  .om-chip.om-on.om-chip-live   { background: rgba(74,222,128,0.14); color: #6ee7b7; border-color: rgba(74,222,128,0.45); }
+  .om-chip.om-on.om-chip-sim    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+  /* Shadow — orange #fb923c, matching the mode pill palette */
+  .om-chip.om-on.om-chip-shadow { background: rgba(251,146,60,0.14); color: #fb923c; border-color: rgba(251,146,60,0.45); }
+  /* Replay — canonical green #4ade80 */
+  .om-chip.om-on.om-chip-replay { background: rgba(74,222,128,0.14); color: #4ade80; border-color: rgba(74,222,128,0.45); }
 
   /* Preflight verdict chip — ✓ when basket_margin / Kite preflight
      accepted the order, ✗ when it pushed back. Hover the chip to see
@@ -1141,6 +1225,48 @@
   :global(.log-sym-cell:hover) {
     color: #7dd3fc;
     text-decoration: underline;
+  }
+
+  /* ── Inline Cancel / Modify action strip on OPEN broker OrderCards ─── */
+  .lp-oc-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.4rem;
+  }
+  .lp-oc-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0;
+    border-radius: 3px;
+    cursor: pointer;
+    background: none;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+    flex-shrink: 0;
+  }
+  .lp-oc-btn:disabled { opacity: 0.4; cursor: progress; }
+  /* Modify — cyan-400 palette (matches all other edit affordances) */
+  .lp-oc-modify {
+    border: 1px solid rgba(34,211,238,0.45);
+    color: #22d3ee;
+  }
+  .lp-oc-modify:hover:not(:disabled) {
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(103,232,249,0.65);
+    color: #67e8f9;
+  }
+  /* Cancel — red-400 palette (matches order rejection / kill affordances) */
+  .lp-oc-cancel {
+    border: 1px solid rgba(248,113,113,0.45);
+    color: #f87171;
+  }
+  .lp-oc-cancel:hover:not(:disabled) {
+    background: rgba(248,113,113,0.14);
+    border-color: rgba(252,165,165,0.65);
+    color: #fca5a5;
   }
 
 </style>

@@ -41,31 +41,16 @@
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import Select            from '$lib/Select.svelte';
-  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
-  import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
-  import { resolveAnchorToTradeable as _resolveAnchorFn } from '$lib/data/resolveUnderlying';
+  // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
+  // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore } from '$lib/data/accounts';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
 
-  // Pinned anchors shown at the top of the symbol combo's dropdown.
-  // Same set as ChartWorkspace so the operator sees identical pinned
-  // options regardless of which icon they clicked. Resolved to the
-  // current tradeable contract (NIFTY 50 → NIFTY26JUNFUT,
-  // CRUDEOIL → CRUDEOILM26JUNFUT) before display.
-  const _DEFAULT_PINS = [
-    'NIFTY 50', 'BANKNIFTY', 'FINNIFTY', 'SENSEX',
-    'GOLD', 'SILVER', 'CRUDEOIL',
-  ];
-  function _pinLabel(/** @type {string} */ anchor) {
-    const r = resolveUnderlying(String(anchor || '').toUpperCase(), findNearestFuture);
-    return r?.tradingsymbol && r.tradingsymbol !== anchor ? r.tradingsymbol : anchor;
-  }
-  const _PIN_LABELS = _DEFAULT_PINS.map(_pinLabel);
-  // Reverse lookup so a pin click reaches the anchor (drives the
-  // exchange hint via resolveUnderlying when the operator picks one).
-  const _LABEL_TO_ANCHOR = $derived(
-    Object.fromEntries(_DEFAULT_PINS.map((a, i) => [_PIN_LABELS[i], a]))
-  );
+  // Pinned anchors: no hardcoded list — SymbolSearchInput's own
+  // _autoLoadPins() fires when no `pins` prop is supplied and loads
+  // from loadWatchlistSymbols(). Drop _DEFAULT_PINS / _PIN_LABELS /
+  // _LABEL_TO_ANCHOR entirely; the picked symbol is already the
+  // real tradingsymbol, so no reverse-lookup is needed.
 
   // Symbol-type filter — shared 4-option vocabulary so every
   // surface (modals, /orders, /charts) reads the same.
@@ -250,7 +235,11 @@
   // Determine whether Chain tab applies.
   // Equity = no FUT/CE/PE suffix AND (kind=equity OR exchange is cash-equity).
   const _sym = $derived(_localSymbol);
-  const _isDerivative = $derived(/(?:CE|PE|FUT)$/.test(_sym));
+  // Lookbehind: a digit must precede CE/PE/FUT so bare equity names
+  // that happen to end in those letters (hypothetical edge-cases) aren't
+  // misclassified. All Kite contract tradingsymbols have the form
+  // <ROOT><YYMMM><STRIKE>CE — the digit before the suffix is reliable.
+  const _isDerivative = $derived(/\d(?:CE|PE|FUT)$/.test(_sym));
   const _isEquityExch = $derived(
     (!_isDerivative) &&
     (
@@ -264,43 +253,50 @@
       ) && !_isDerivative)
     )
   );
-  // Track whether the currently-picked symbol has tradeable options.
-  // Equity tickers like RELIANCE / INFY / TCS are cash-equity on NSE
-  // but ALSO have NFO option chains (CE / PE strikes per expiry); the
-  // operator wants the Chain tab open for those so they can browse
-  // strikes without retyping the underlying. _hasOptionsForSymbol
-  // re-runs whenever _localSymbol changes; instruments may load lazily,
-  // so it's wrapped in $derived so the gate flips the moment the
-  // instruments cache hydrates.
-  let _hasOptionsForSymbol = $state(false);
+  // Track whether the currently-picked symbol has tradeable F&O (options
+  // OR futures). Equity tickers like RELIANCE / INFY / TCS are cash-equity
+  // on NSE but ALSO have NFO option chains; GOLD / CRUDEOIL have MCX
+  // futures. _hasFNOForSymbol re-runs whenever _localSymbol changes;
+  // instruments may load lazily, so it's $state updated by an async $effect.
+  let _hasFNOForSymbol = $state(false);
+  // Flip true after the first $effect run so chainDisabled returns false
+  // (assume enabled) during the async hydration window — avoids the tab
+  // strip briefly greying out for valid equities while instruments load.
+  let _chainGateLoaded = $state(false);
   $effect(() => {
     const s = _localSymbol;
-    if (!s) { _hasOptionsForSymbol = false; return; }
-    // hasOptions wants the underlying root, not a full contract
-    // tradingsymbol. Strip the trailing digit/expiry/CE-PE-FUT
-    // suffix so RELIANCE → RELIANCE, NIFTY26JUN22000CE → NIFTY,
-    // CRUDEOIL26JUNFUT → CRUDEOIL. Matches OptionChainTab's own
-    // seedUnderlying derivation.
-    const root = String(s).toUpperCase().replace(/\d.*$/, '') || s;
+    if (!s) { _hasFNOForSymbol = false; _chainGateLoaded = true; return; }
+    // hasFNO wants the underlying root, not a full contract tradingsymbol.
+    // Strip trailing digit/expiry/CE-PE-FUT so RELIANCE→RELIANCE,
+    // NIFTY26JUN22000CE→NIFTY, CRUDEOIL26JUNFUT→CRUDEOIL.
+    // Also normalise Kite index quote-key forms (e.g. "NIFTY 50"→"NIFTY")
+    // so operators who pick via the Pulse grid's spot quote-key still land
+    // on the correct underlying root.
+    const upper = String(s).toUpperCase().trim();
     (async () => {
       try {
         const mod = await import('$lib/data/instruments');
+        const ruMod = await import('$lib/data/resolveUnderlying');
         await mod.loadInstruments?.();
-        _hasOptionsForSymbol = !!mod.hasOptions?.(root);
+        const mapped = ruMod.KITE_INDEX_QUOTE_KEY_TO_ROOT[upper] || upper;
+        const root = mapped.replace(/\d.*$/, '') || mapped;
+        _hasFNOForSymbol = !!mod.hasFNO?.(root);
       } catch (_) {
-        _hasOptionsForSymbol = false;
+        _hasFNOForSymbol = false;
+      } finally {
+        _chainGateLoaded = true;
       }
     })();
   });
   // Chain stays available when the symbol IS a derivative contract
   // (the chain navigates around the underlying) or when the
   // underlying has F&O coverage (RELIANCE → NFO CE/PE; CRUDEOIL →
-  // MCX CE/PE; NIFTY → NFO weeklies). Operator: "when there is no
-  // active option/future, chain should be disabled". The earlier
-  // `_isEquityExch` filter meant MCX / CDS / etc. underlyings that
-  // happen to have NO options (rare but possible) still showed Chain
-  // — they fall through to disabled now.
-  const chainDisabled = $derived(!_isDerivative && !_hasOptionsForSymbol);
+  // MCX FUT; NIFTY → NFO weeklies). During the async hydration window
+  // (_chainGateLoaded=false) return false (assume enabled) so the tab
+  // strip doesn't briefly grey out for valid equities while instruments load.
+  const chainDisabled = $derived(
+    _chainGateLoaded && !_isDerivative && !_hasFNOForSymbol
+  );
 
   // Resolve initial tab — fall through chain → ticket when equity.
   function _resolveInitialTab() {
@@ -1100,32 +1096,14 @@
         <div class="oes-sym-pick">
           <SymbolSearchInput
             value={_localSymbol}
-            pins={_PIN_LABELS}
-            resolvePin={(label) => label}
             type={_symType}
             placeholder="Symbol — pick or type 3+"
             onPick={(sym, meta) => {
-              if (meta?.pinLabel) {
-                const anchor = _LABEL_TO_ANCHOR[meta.pinLabel] || meta.pinLabel;
-                // resolveAnchorToTradeable returns the future (or
-                // already-tradeable equity), NOT the spot quote-key.
-                // resolveUnderlying() was returning 'NIFTY 50' spot
-                // which the order modal can't trade — operator
-                // expects 'NIFTY26JUNFUT' instead.
-                const tradeable = _resolveAnchorFn(String(anchor).toUpperCase(), findNearestFuture);
-                if (tradeable) {
-                  _localSymbol = tradeable;
-                  // Exchange hint still comes from resolveUnderlying
-                  // (it knows NSE for indices, MCX for commodities).
-                  const r = resolveUnderlying(String(anchor).toUpperCase(), findNearestFuture);
-                  _pickedExchange = r?.exchange || '';
-                  onSymbolChange?.(tradeable);
-                }
-              } else {
-                _localSymbol = sym;
-                if (meta?.exchange) _pickedExchange = meta.exchange;
-                onSymbolChange?.(sym);
-              }
+              // No hardcoded pin list — every picked symbol is already
+              // a real tradingsymbol (from watchlist auto-load or search).
+              _localSymbol = sym;
+              if (meta?.exchange) _pickedExchange = meta.exchange;
+              onSymbolChange?.(sym);
             }}
             ariaLabel="Symbol — pinned or search" />
         </div>

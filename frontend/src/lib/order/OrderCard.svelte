@@ -25,6 +25,7 @@
 
   import { priceFmt, qtyFmt } from '$lib/format';
   import { formatDualTz } from '$lib/stores';
+  import { longPress } from '$lib/actions/longPress.js';
 
   let {
     /** @type {any} */                                   order,
@@ -125,7 +126,8 @@
         title="Open {_sym}"
         onclick={(e) => { e.stopPropagation(); onSymbolClick?.(order, e); }}
         onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSymbolClick?.(order, e); } }}
-        oncontextmenu={(e) => { e.preventDefault(); onSymbolContext?.(order, e); }}>{_sym}</span>
+        oncontextmenu={(e) => { e.preventDefault(); onSymbolContext?.(order, e); }}
+        use:longPress={(ev) => { onSymbolContext?.(order, ev); }}>{_sym}</span>
     </span>
     <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
       {order.status === 'COMPLETE' || order.status === 'FILLED' ? 'bg-green-500/15 text-green-400 border-green-500/40'
@@ -158,3 +160,14 @@
     {@render actions(order)}
   {/if}
 </div>
+
+<style>
+  /* Slippage chip colouring — positive slip (paid more) = red,
+     negative (received more) = green. */
+  :global(.log-chip-slip.slip-up)   { color: #fca5a5; }
+  :global(.log-chip-slip.slip-down) { color: #86efac; }
+
+  /* Tag colour-coding — manual ticket = sky-blue, agent-fired = amber. */
+  :global(.tag-manual) { color: #67e8f9; background: rgba(34, 211, 238, 0.10); }
+  :global(.tag-agent)  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+</style>

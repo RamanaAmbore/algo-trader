@@ -312,3 +312,8 @@ export function hasFutures(underlying) {
   if (!_byUnderlyingType) return false;
   return _byUnderlyingType.has(`${underlying.toUpperCase()}|FUT`);
 }
+
+/** Returns true if the given underlying has options OR futures (any F&O coverage). */
+export function hasFNO(underlying) {
+  return hasOptions(underlying) || hasFutures(underlying);
+}

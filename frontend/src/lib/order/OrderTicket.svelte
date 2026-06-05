@@ -1665,7 +1665,7 @@
     margin-bottom: 0.6rem;
   }
   .ot-symbol-text {
-    font-size: 0.9rem;
+    font-size: 0.78rem;
     font-weight: 700;
     color: #c8d8f0;
     display: block;
@@ -1684,7 +1684,7 @@
     height: 1.55rem;
     border-radius: 3px;
     cursor: pointer;
-    font-size: 1rem;
+    font-size: 0.78rem;
     line-height: 1;
   }
   .ot-close:hover { border-color: #f87171; color: #f87171; }

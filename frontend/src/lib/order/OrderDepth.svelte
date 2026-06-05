@@ -42,11 +42,25 @@
     }
   }
 
+  function _onVisibilityChange() {
+    if (document.hidden) {
+      if (timer) { clearInterval(timer); timer = null; }
+    } else {
+      // Page became visible — poll immediately then resume cadence.
+      poll();
+      timer = setInterval(poll, 2000);
+    }
+  }
+
   onMount(() => {
     poll();
-    timer = setInterval(poll, 1200);
+    timer = setInterval(poll, 2000);
+    document.addEventListener('visibilitychange', _onVisibilityChange);
   });
-  onDestroy(() => { if (timer) clearInterval(timer); });
+  onDestroy(() => {
+    if (timer) clearInterval(timer);
+    document.removeEventListener('visibilitychange', _onVisibilityChange);
+  });
 
   // Host-triggered refresh — when the host increments refreshKey we
   // re-poll immediately so depth always reflects the latest tick on
