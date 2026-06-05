@@ -196,28 +196,22 @@
            icon notification" — bell becomes the classical warm
            notification color, distinct from the violet that read
            as too cool-tone. -->
-      <!-- Operator: "make bell icon less 3D". Dropped the feDropShadow
-           filter + the specular-highlight stroke. Kept a softer
-           radial gradient (closer mid-stop, smaller deep-tone range)
-           so the bell still has a gentle rounded read without the
-           "popping off the page" effect. -->
+      <!-- Operator: "make bell 3D icon less 3D decoration". Flattened
+           the radial gradient to a near-solid orange (very subtle
+           top-to-bottom shift only). Outline stroke kept but very
+           thin so it just defines the silhouette without adding
+           dimensional shading. Reads as a flat-but-friendly bell
+           icon, not a rendered object. -->
       <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-        <defs>
-          <radialGradient id="pha-bell-body" cx="40%" cy="38%" r="70%">
-            <stop offset="0%"  stop-color="#fdba74" />
-            <stop offset="70%" stop-color="#fb923c" />
-            <stop offset="100%" stop-color="#c2410c" />
-          </radialGradient>
-        </defs>
         <path d="M8 2c-2.4 0-4 1.9-4 4.2 0 2.1-.8 3.6-1.7 4.5-.3.3-.1.8.3.8h10.8c.4 0 .6-.5.3-.8-.9-.9-1.7-2.4-1.7-4.5C12 3.9 10.4 2 8 2z"
-              fill="url(#pha-bell-body)"
-              stroke="#9a3412" stroke-width="0.5"
+              fill="#fb923c"
+              stroke="#9a3412" stroke-width="0.4"
               stroke-linejoin="round" />
         <path d="M6.6 13c.2.8.8 1.3 1.4 1.3.6 0 1.2-.5 1.4-1.3z"
-              fill="#c2410c" stroke="#9a3412" stroke-width="0.4"
+              fill="#fb923c" stroke="#9a3412" stroke-width="0.4"
               stroke-linejoin="round" />
-        <circle cx="8" cy="2.1" r="0.6" fill="#fdba74"
-                stroke="#9a3412" stroke-width="0.35" />
+        <circle cx="8" cy="2.1" r="0.55" fill="#fb923c"
+                stroke="#9a3412" stroke-width="0.4" />
       </svg>
     </button>
   {/if}
