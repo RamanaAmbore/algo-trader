@@ -1865,12 +1865,13 @@
      break onto two lines on narrow viewports. Height pinned to
      1.7rem to match the .ot-side-toggle so the [−] N [+] glyphs
      and the BUY/SELL pill share the same y-baseline + y-centre. */
-  /* Lots + Limit row — 65 % / 35 % split (operator: "let lots/qty
-     take 65 % of the space and 35 % for limit price"). Falls back
-     to full-width on narrow viewports via flex-wrap. */
-  .ot-lots-price-row { gap: 0.6rem; align-items: flex-start; }
+  /* Lots + Limit row — 65 % / 35 % split with NO gap (operator:
+     "lots and limit price should not have gap between them. if
+     required expand both the elements to fill the gap"). Cells
+     expand to exactly 65 / 35 of the row width and sit flush. */
+  .ot-lots-price-row { gap: 0; align-items: flex-start; }
   .ot-lots-cell  { flex: 0 0 65%; min-width: 0; }
-  .ot-price-cell { flex: 0 0 calc(35% - 0.6rem); min-width: 0; }
+  .ot-price-cell { flex: 0 0 35%; min-width: 0; }
   .ot-price-cell .ot-input { width: 100%; }
 
   .ot-lots-row {
