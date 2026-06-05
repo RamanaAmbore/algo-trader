@@ -1182,7 +1182,7 @@
             symbolHidden={true}
             symType={_symType}
             actionsHidden={actionsHidden || showCommonActions}
-            fundsHidden={false}
+            fundsHidden={true}
             refreshKey={_ticketBump}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
