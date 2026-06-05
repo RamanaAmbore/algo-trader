@@ -256,25 +256,6 @@
       availableModes: ['paper'],
     };
   }
-  function inlineRepeat(/** @type {any} */ o, /** @type {Event} */ e) {
-    e?.stopPropagation();
-    orderTicketProps = {
-      symbol:    String(o.tradingsymbol || '').toUpperCase(),
-      exchange:  o.exchange || 'NFO',
-      side:      o.transaction_type,
-      action:    'open',
-      qty:       Number(o.quantity) || 0,
-      lotSize:   1,
-      orderType: o.order_type || 'LIMIT',
-      price:     o.price > 0 ? o.price : undefined,
-      trigger:   o.trigger_price > 0 ? o.trigger_price : undefined,
-      product:   o.product,
-      account:   String(o.account || ''),
-      accounts:  [],
-      defaultMode:    'live',
-      availableModes: ['live'],
-    };
-  }
 
   // Empty-state copy adapts to which filter is active so the operator
   // never sees a generic "no orders" when they're actually looking at
@@ -580,11 +561,17 @@
               {#if o.tag}<span class="log-chip {tagClass(o.tag)}"><span class="log-chip-key">tag:</span>{o.tag}</span>{/if}
               {#if o.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{o.status_message}</span>{/if}
             </div>
-            <!-- Inline action strip — Cancel/Modify for live orders,
-                 Repeat for terminal ones. Cyan-400 palette matching
-                 the card-control trio family. -->
-            <div class="oc-row-actions">
-              {#if isOpenStatus(o.status)}
+            <!-- Inline action strip — Modify + Cancel ONLY on open
+                 orders. Operator: "remove refresh button [from] order
+                 cards which are in completed status. Only open order
+                 cards can [show the] refresh button". The legacy
+                 Repeat (circular-arrow) glyph on terminal orders read
+                 like a refresh affordance and confused the operator —
+                 dropped. To re-fire a completed order the operator
+                 clicks the symbol cell, which already opens the
+                 OrderTicket modal pre-filled. -->
+            {#if isOpenStatus(o.status)}
+              <div class="oc-row-actions">
                 <button type="button" class="oc-act-btn" title="Modify order"
                   aria-label="Modify order" onclick={(e) => inlineModify(o, e)}>
                   <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
@@ -597,16 +584,8 @@
                     <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                   </svg>
                 </button>
-              {:else}
-                <button type="button" class="oc-act-btn" title="Repeat as new order"
-                  aria-label="Repeat as new order" onclick={(e) => inlineRepeat(o, e)}>
-                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                    <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    <path d="M13.5 2v3.5H10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </button>
-              {/if}
-            </div>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
