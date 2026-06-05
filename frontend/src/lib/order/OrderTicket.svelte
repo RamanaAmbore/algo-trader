@@ -804,7 +804,13 @@
     _submitTried = true;
     if (validationErr) return;
     onAddToBasket(_basketPayload());
-    onClose();
+    // Operator: "when i press +basket in order ticket, the modal is
+    // disappearing which is not correct. it should behave like
+    // chain". Add-to-basket is a STAGING action — the operator
+    // expects to keep adding legs (matching the Chain tab's
+    // +CE/+PE buttons which never close). Removed onClose(); the
+    // shell's basket bar shows the added leg + Submit/Clear still
+    // sits in the common footer.
   }
 
   let submitting = $state(false);
