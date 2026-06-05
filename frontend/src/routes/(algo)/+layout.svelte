@@ -1358,27 +1358,23 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Reserve space for the FIXED .page-header strip (operator: "i
-       don't want header row to scroll in all the pages"). Sticky
-       wasn't enough — some pages wrap content in a parent with
-       overflow:hidden / transform that broke the sticky context.
-       Fixed always pins; the padding-top below reserves space.
-       :has() variants below add extra padding when sim / paper
-       banners (1.6rem each) are also visible. */
-    padding: 2.2rem 0.5rem 1.5rem;
+    /* Reserve EXACT space for the FIXED .page-header strip — strip
+       height = 0.2rem pad + ~1.1rem content + 0.2rem pad + 1px
+       border ≈ 1.65rem. Operator: "it is adding more space below
+       header row" — earlier 2.2rem left a visible gap; tightened
+       to 1.7rem so the first card sits flush under the strip. */
+    padding: 1.7rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
-  /* When sim or paper banner is visible (sticky at top:3rem,
-     ~1.6rem tall) the page-header is pushed below it (see
-     .page-header :has() rules) — content needs matching extra
-     padding-top so the first card doesn't slide under the
-     header strip. */
+  /* Banner-aware extra padding — each sticky banner adds ~1.7rem.
+     Mirrors the .page-header :has() offset rules so the first
+     card never slides under the header strip. */
   :global(.algo-viewport:has(.sim-banner) .algo-content),
   :global(.algo-viewport:has(.paper-banner) .algo-content) {
-    padding-top: calc(2.2rem + 1.7rem);
+    padding-top: calc(1.7rem + 1.7rem);
   }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .algo-content) {
-    padding-top: calc(2.2rem + 3.4rem);
+    padding-top: calc(1.7rem + 3.4rem);
   }
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
@@ -1458,8 +1454,13 @@
     z-index: 45;
     background: #0a1020;
     padding: 0.2rem 0.65rem;
+    /* Operator: "header row is underneath strip". The previous
+       6px drop-shadow made the strip read as a thicker band
+       extending downward (the title text appeared to be inside
+       a larger filled zone). Reduced to a flat 1px amber
+       hairline only — strip is exactly 1 row tall, content
+       starts immediately below. */
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   }
   /* Banner-aware vertical offset — sim and paper banners are sticky
      at top:3rem with z-index:49 (above the page-header's 45). When
