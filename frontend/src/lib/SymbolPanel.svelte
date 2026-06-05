@@ -276,11 +276,17 @@
   $effect(() => {
     const s = _localSymbol;
     if (!s) { _hasOptionsForSymbol = false; return; }
+    // hasOptions wants the underlying root, not a full contract
+    // tradingsymbol. Strip the trailing digit/expiry/CE-PE-FUT
+    // suffix so RELIANCE → RELIANCE, NIFTY26JUN22000CE → NIFTY,
+    // CRUDEOIL26JUNFUT → CRUDEOIL. Matches OptionChainTab's own
+    // seedUnderlying derivation.
+    const root = String(s).toUpperCase().replace(/\d.*$/, '') || s;
     (async () => {
       try {
         const mod = await import('$lib/data/instruments');
         await mod.loadInstruments?.();
-        _hasOptionsForSymbol = !!mod.hasOptions?.(s);
+        _hasOptionsForSymbol = !!mod.hasOptions?.(root);
       } catch (_) {
         _hasOptionsForSymbol = false;
       }
@@ -1494,15 +1500,15 @@
     overflow-y: auto;
   }
   .oes-modal.oes-modal-inline {
-    /* Operator: "the outer container ascent, borders, heading should
-       be in sync with the current order entry card container in
-       orders page". The host bucket-card on /orders provides its
-       own amber-left-accent / gradient / border chrome, so the
-       inline SymbolPanel strips its outer panel decoration to
-       avoid double-framing. Tabs / body / common-actions still
-       render — matching the modal's internal layout. */
+    /* Outer chrome stripped (the host bucket-card provides amber
+       accent + gradient). Operator: "increase the order entry panel
+       height and make it similar to order modal entry panel".
+       Modal panel uses `height: min(82vh, 760px)`; mirror that on
+       the inline embed so the chain grid / depth ladder render
+       with comparable vertical room and the tab body scrolls
+       inside the same envelope. */
     width: 100%;
-    max-height: none;
+    min-height: min(78vh, 720px);
     border-radius: 0;
     box-shadow: none;
     border: none;
