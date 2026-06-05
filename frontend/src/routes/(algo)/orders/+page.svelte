@@ -814,25 +814,6 @@
      common-actions row doesn't slam against the bucket-card border. */
   .bucket-card-entry { padding: 0 0 0.4rem 0; }
   .bucket-card-entry > .card-body { padding: 0; }
-  /* Operator: "keep order entry panel height in orders page should
-     be in sync with order entry panel in order modal". Modal panel
-     is `height: min(82vh, 760px)`; matching it here keeps the
-     bucket-card's chain + ticket + common-actions visible without
-     scrolling the page. Capped so short viewports still render
-     above the fold. */
-  .bucket-card-entry > .card-body {
-    min-height: min(70vh, 600px);
-    display: flex;
-    flex-direction: column;
-  }
-  .bucket-card-entry > .card-body > :global(.oes-overlay) {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-  .bucket-card-entry > .card-body > :global(.oes-overlay) > :global(.oes-modal) {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
   /* Chase card — rose accent so it reads as the "kill" surface
      alongside amber Entry and cyan Activity. Section label inherits
      the same rose via the cc-label rule inside ChaseCard. */
