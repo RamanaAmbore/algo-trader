@@ -601,27 +601,27 @@
       const b = _modalMargin.blocked[0];
       return { level: 'err',  text: '⚠ ' + String(b?.reason || 'preview blocked').slice(0, 60), detail: String(b?.fix || '') };
     }
-    // Market-hours check — pick the right segment based on the
-    // resolved symbol's exchange family. Operator: "market closed
-    // order will queue not correct message ... should be displayed
-    // only when non-mcx symbols are selected. mcx is open, so any
-    // symbol from mcx are valid for trading."
+    // Market-hours check — operator: "when exchange is resolved
+    // showing the message is appropriate". So the warning only
+    // fires when we KNOW which segment the order is going to:
     //
-    // Detection order:
     //   1. explicit exchange (_pickedExchange OR exchange prop)
-    //   2. tradingsymbol-pattern fallback — MCX commodity names
-    //      (CRUDEOIL, GOLD, SILVER, COPPER, NATURALGAS, ZINC, LEAD,
-    //      ALUMINIUM, NICKEL, MENTHA, COTTON, CARDAMOM) — covers the
-    //      case where the operator picked a symbol via the global
-    //      search and the exchange wasn't pre-resolved into a prop.
-    // For an MCX symbol while MCX is open, never warn. For non-MCX
-    // symbols, warn only when their session is closed.
+    //   2. tradingsymbol-pattern fallback for common MCX
+    //      commodities (CRUDEOIL / GOLD / SILVER / ...) — counts
+    //      as resolved because the symbol itself disambiguates.
+    //
+    // When we can't resolve the exchange at all, suppress the
+    // notice rather than guessing — the broker will reject the
+    // order at submit time with a precise reason.
     try {
       const _sym = String(_localSymbol || symbol || '').toUpperCase();
       const _mcxNames = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)/;
-      const exch = (_pickedExchange || exchange || '').toUpperCase();
-      const isMcx = exch === 'MCX' || exch === 'NCO' || _mcxNames.test(_sym);
-      const open = isMcx ? isMcxOpen() : (exch ? isNseOpen() : isMarketOpen());
+      const _explicitExch = (_pickedExchange || exchange || '').toUpperCase();
+      const _isMcxByName = _mcxNames.test(_sym);
+      const isMcx = _explicitExch === 'MCX' || _explicitExch === 'NCO' || _isMcxByName;
+      const resolved = !!_explicitExch || _isMcxByName;
+      if (!resolved) return null;  // exchange not known — no warning
+      const open = isMcx ? isMcxOpen() : isNseOpen();
       if (!open) {
         return {
           level: 'warn',
