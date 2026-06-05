@@ -1358,12 +1358,11 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Padding-top matches the page-header strip's actual rendered
-       height. Strip min-height is 2rem but PageHeaderActions
-       buttons (1.4rem) + Refresh (1.4rem) + 0.15rem pad×2 +
-       1px border yield ~2rem true. Playwright-measured to 32px
-       on prod. */
-    padding: 2rem 0.5rem 1.5rem;
+    /* Matches the page-header strip's new min-height (2.3rem) so
+       content sits flush below the strip's bg gutter — no scroll-
+       through gap, ~0.5rem visual breathing room between the strip
+       text and the first card. */
+    padding: 2.3rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
   /* algo-content padding-top is always EXACTLY the page-header
@@ -1455,15 +1454,14 @@
     right: 0;
     z-index: 45;
     background: #0a1020;
-    padding: 0.15rem 0.65rem;
-    /* Explicit min-height makes the strip deterministic — 1.8rem
-       fits the 1.4rem buttons + tight padding on a single line.
-       overflow:visible prevents any ancestor's implicit clipping
-       from hiding the strip's bottom edge. Operator reported the
-       header was partially hidden + extra space below; both
-       resolve once the strip's actual height matches the
-       reserved padding-top on .algo-content (also 1.8rem now). */
-    min-height: 2rem;
+    /* Asymmetric padding: tight on top so title text sits high in
+       the strip; larger on bottom so the navy bg extends downward
+       as a visible gutter (operator: "data below page header is
+       too close to the header"). The bg-filled gutter ALSO covers
+       any scroll-gap between this strip and the strip above
+       (operator: "small gap shows scrolling text"). */
+    padding: 0.15rem 0.65rem 0.5rem 0.65rem;
+    min-height: 2.3rem;
     box-sizing: border-box;
     overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
