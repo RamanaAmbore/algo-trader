@@ -1227,47 +1227,10 @@
           </span>
         </div>
       {/if}
-      <!-- Operator: "lots/qty can have stepper before after and also
-           should have provision to enter number for qty/lots".
-           Layout: [−] [editable input] [+] · meta. Same shape for
-           Lots (F&O) and Qty (equity). -->
-      <div class="ot-quick-block ot-quick-qty">
-        {#if _lotSize > 0 && !isEquity}
-          <label class="ot-label" for="ot-lots">Lots</label>
-          <div class="ot-lots-row">
-            <button type="button" class="ot-lots-step"
-                    onclick={() => stepLots(-1)}
-                    disabled={_lots <= 1}
-                    aria-label="Decrease lots">−</button>
-            <input id="ot-lots" type="number"
-                   class="ot-input ot-num ot-lots-input"
-                   step="1" min="1"
-                   bind:value={_lots}
-                   oninput={() => { _lotsTouched = true; }}
-                   aria-label="Lots" />
-            <button type="button" class="ot-lots-step"
-                    onclick={() => stepLots(1)}
-                    aria-label="Increase lots">+</button>
-            <span class="ot-meta">× {_lotSize} = {_qty}</span>
-          </div>
-        {:else}
-          <label class="ot-label" for="ot-qty">Qty</label>
-          <div class="ot-lots-row">
-            <button type="button" class="ot-lots-step"
-                    onclick={() => { _qty = Math.max(1, (Number(_qty) || 1) - 1); }}
-                    disabled={!_qty || _qty <= 1}
-                    aria-label="Decrease qty">−</button>
-            <input id="ot-qty" type="number"
-                   class="ot-input ot-num ot-lots-input"
-                   step="1" min="1"
-                   bind:value={_qty}
-                   aria-label="Qty" />
-            <button type="button" class="ot-lots-step"
-                    onclick={() => { _qty = (Number(_qty) || 0) + 1; }}
-                    aria-label="Increase qty">+</button>
-          </div>
-        {/if}
-      </div>
+      <!-- Lots/Qty moved into its own row below alongside Limit Price
+           (operator: "lots and limit price should be in the same row.
+           let lots/qty take 65% of the space and 35% for limit
+           price"). The quick-row above now ends after Resolved. -->
     </div>
 
     <!-- Side toggle moved into the knobs row below per operator
@@ -1378,38 +1341,82 @@
       </div>
     </div>
 
-    <!-- Price + Trigger (conditional) -->
-    {#if showLimit || showTrigger}
+    <!-- Lots/Qty + Limit price (or Trigger when no limit) — single
+         row, 65% / 35% split per operator request. Trigger gets its
+         own row below when both showLimit AND showTrigger (SL). -->
+    <div class="ot-row ot-lots-price-row">
+      <div class="ot-label-block ot-lots-cell">
+        {#if _lotSize > 0 && !isEquity}
+          <label class="ot-label" for="ot-lots">Lots</label>
+          <div class="ot-lots-row">
+            <button type="button" class="ot-lots-step"
+                    onclick={() => stepLots(-1)}
+                    disabled={_lots <= 1}
+                    aria-label="Decrease lots">−</button>
+            <input id="ot-lots" type="number"
+                   class="ot-input ot-num ot-lots-input"
+                   step="1" min="1"
+                   bind:value={_lots}
+                   oninput={() => { _lotsTouched = true; }}
+                   aria-label="Lots" />
+            <button type="button" class="ot-lots-step"
+                    onclick={() => stepLots(1)}
+                    aria-label="Increase lots">+</button>
+            <span class="ot-meta">× {_lotSize} = {_qty}</span>
+          </div>
+        {:else}
+          <label class="ot-label" for="ot-qty">Qty</label>
+          <div class="ot-lots-row">
+            <button type="button" class="ot-lots-step"
+                    onclick={() => { _qty = Math.max(1, (Number(_qty) || 1) - 1); }}
+                    disabled={!_qty || _qty <= 1}
+                    aria-label="Decrease qty">−</button>
+            <input id="ot-qty" type="number"
+                   class="ot-input ot-num ot-lots-input"
+                   step="1" min="1"
+                   bind:value={_qty}
+                   aria-label="Qty" />
+            <button type="button" class="ot-lots-step"
+                    onclick={() => { _qty = (Number(_qty) || 0) + 1; }}
+                    aria-label="Increase qty">+</button>
+          </div>
+        {/if}
+      </div>
+      {#if showLimit}
+        <div class="ot-label-block ot-price-cell">
+          <label class="ot-label" for="ot-price">
+            Limit price
+            {#if _priceTouched && _lastQuote}
+              <button type="button" class="ot-price-reset"
+                      title="Re-arm auto-fill — restore {_side === 'BUY' ? 'top ask' : 'top bid'}"
+                      aria-label="Reset price to depth"
+                      onclick={() => { _priceTouched = false; _autoFillFromQuote(); }}>↺</button>
+            {/if}
+          </label>
+          <input id="ot-price" type="number" class="ot-input ot-num"
+                 step="0.05"
+                 bind:value={_price}
+                 oninput={() => { _priceTouched = true; }} />
+        </div>
+      {:else if showTrigger}
+        <div class="ot-label-block ot-price-cell">
+          <label class="ot-label" for="ot-trigger">Trigger</label>
+          <input id="ot-trigger" type="number" class="ot-input ot-num"
+                 step="0.05"
+                 bind:value={_trigger} />
+        </div>
+      {/if}
+    </div>
+
+    <!-- Trigger row only when BOTH limit AND trigger are required (SL). -->
+    {#if showLimit && showTrigger}
       <div class="ot-row">
-        {#if showLimit}
-          <div class="ot-label-block">
-            <label class="ot-label" for="ot-price">
-              Limit price
-              <!-- "auto" chip removed per operator request — the
-                   value in the input already conveys the price; the
-                   chip was noise. ↺ reset button stays so operators
-                   can re-arm the depth-derived fill after editing. -->
-              {#if _priceTouched && _lastQuote}
-                <button type="button" class="ot-price-reset"
-                        title="Re-arm auto-fill — restore {_side === 'BUY' ? 'top ask' : 'top bid'}"
-                        aria-label="Reset price to depth"
-                        onclick={() => { _priceTouched = false; _autoFillFromQuote(); }}>↺</button>
-              {/if}
-            </label>
-            <input id="ot-price" type="number" class="ot-input ot-num"
-                   step="0.05"
-                   bind:value={_price}
-                   oninput={() => { _priceTouched = true; }} />
-          </div>
-        {/if}
-        {#if showTrigger}
-          <div class="ot-label-block">
-            <label class="ot-label" for="ot-trigger">Trigger</label>
-            <input id="ot-trigger" type="number" class="ot-input ot-num"
-                   step="0.05"
-                   bind:value={_trigger} />
-          </div>
-        {/if}
+        <div class="ot-label-block">
+          <label class="ot-label" for="ot-trigger">Trigger</label>
+          <input id="ot-trigger" type="number" class="ot-input ot-num"
+                 step="0.05"
+                 bind:value={_trigger} />
+        </div>
       </div>
     {/if}
 
@@ -1858,6 +1865,14 @@
      break onto two lines on narrow viewports. Height pinned to
      1.7rem to match the .ot-side-toggle so the [−] N [+] glyphs
      and the BUY/SELL pill share the same y-baseline + y-centre. */
+  /* Lots + Limit row — 65 % / 35 % split (operator: "let lots/qty
+     take 65 % of the space and 35 % for limit price"). Falls back
+     to full-width on narrow viewports via flex-wrap. */
+  .ot-lots-price-row { gap: 0.6rem; align-items: flex-start; }
+  .ot-lots-cell  { flex: 0 0 65%; min-width: 0; }
+  .ot-price-cell { flex: 0 0 calc(35% - 0.6rem); min-width: 0; }
+  .ot-price-cell .ot-input { width: 100%; }
+
   .ot-lots-row {
     display: inline-flex;
     align-items: center;

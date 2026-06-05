@@ -1735,7 +1735,7 @@
     border: none;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
-    font-size: 0.52rem;
+    font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
