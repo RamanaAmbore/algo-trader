@@ -1501,27 +1501,29 @@
   }
   .oes-modal.oes-modal-inline {
     /* Outer chrome stripped (the host bucket-card provides amber
-       accent + gradient). Operator: "reduce the height of chain
-       grid for strike prices by half so that the order ticket
-       space height also gets reduced in sync with it and wasted
-       space gets reduced". min-height dropped from 78vh/720px →
-       55vh/520px so the panel envelope shrinks alongside the
-       compressed chain grid; the ticket tab inherits the same
-       smaller height so wasted space is removed without
-       collapsing the ticket form below readable.
+       accent + gradient).
+       Operator: "the orders page is not scrolling. it is showing
+       footer behind order activity". An explicit min-height here
+       was forcing the bucket-card to a tall viewport-relative
+       size and breaking the page's natural document scroll —
+       Order Activity ran off the viewport without ever pushing
+       the footer down. Switched to a content-driven height:
+       the panel grows with the chain grid / depth ladder.
        display:flex column is REQUIRED — .oes-body uses flex:1 to
        absorb the remaining space; without a flex column parent
        the body collapsed to zero height and chain rows + depth
-       ladder rendered invisibly. */
+       ladder rendered invisibly. min-height on .oes-body now
+       gives the body a reasonable floor so the chain tab still
+       has room for ~15 strikes when first opened. */
     width: 100%;
     display: flex;
     flex-direction: column;
-    min-height: min(55vh, 520px);
     border-radius: 0;
     box-shadow: none;
     border: none;
     background: transparent;
   }
+  .oes-modal.oes-modal-inline > .oes-body { min-height: 18rem; }
   /* Operator: "The line below modal headers is too prominent.
      Reduce its prominence. Instead, change background color of
      the header for modals." Stronger amber-tinted gradient bg
