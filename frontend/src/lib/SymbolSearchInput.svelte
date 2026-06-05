@@ -16,7 +16,7 @@
 
   import { untrack, onMount } from 'svelte';
   import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
-  import { fetchWatchlists, fetchWatchlist } from '$lib/api';
+  import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols';
 
   let {
     value      = $bindable(/** @type {string} */ ('')),
@@ -57,22 +57,14 @@
 
   async function _autoLoadPins() {
     try {
-      const lists = await fetchWatchlists();
-      const arr   = Array.isArray(lists) ? lists : (lists?.watchlists ?? []);
-      const pinned = arr.filter(w => w?.is_pinned || w?.is_global);
-      if (!pinned.length) return;
-      const details = await Promise.all(pinned.map(w =>
-        fetchWatchlist(w.id).catch(() => null)
-      ));
-      const out = [];
-      const seen = new Set();
-      for (const d of details) {
-        for (const it of (d?.items || [])) {
-          const sym = String(it?.tradingsymbol || '').trim();
-          if (sym && !seen.has(sym)) { seen.add(sym); out.push(sym); }
-        }
-      }
-      if (out.length) pins = out;
+      // Single source of truth — see loadWatchlistSymbols. Operator:
+      // "Symbol dropdown is not showing all the pinned symbols from
+      // pulse. every symbol dropdown should be consistent and use
+      // the same code". The loader returns EVERY tradingsymbol the
+      // operator has watchlisted (pinned + user-created lists), in
+      // the same order Pulse renders them — pinned/global first.
+      const { syms } = await loadWatchlistSymbols();
+      if (syms.length) pins = syms;
     } catch (_) { /* leave pins empty */ }
   }
 

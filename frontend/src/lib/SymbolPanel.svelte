@@ -292,10 +292,15 @@
       }
     })();
   });
-  // Chain stays available when the equity has an option chain (e.g.
-  // RELIANCE → NFO CE/PE strikes). Only pure cash-equities with no
-  // F&O coverage land on the disabled state.
-  const chainDisabled = $derived(_isEquityExch && !_isDerivative && !_hasOptionsForSymbol);
+  // Chain stays available when the symbol IS a derivative contract
+  // (the chain navigates around the underlying) or when the
+  // underlying has F&O coverage (RELIANCE → NFO CE/PE; CRUDEOIL →
+  // MCX CE/PE; NIFTY → NFO weeklies). Operator: "when there is no
+  // active option/future, chain should be disabled". The earlier
+  // `_isEquityExch` filter meant MCX / CDS / etc. underlyings that
+  // happen to have NO options (rare but possible) still showed Chain
+  // — they fall through to disabled now.
+  const chainDisabled = $derived(!_isDerivative && !_hasOptionsForSymbol);
 
   // Resolve initial tab — fall through chain → ticket when equity.
   function _resolveInitialTab() {
