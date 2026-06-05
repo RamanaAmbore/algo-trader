@@ -99,6 +99,56 @@
   let systemLog = $state(/** @type {string[]} */ ([]));
   let simLog    = $state(/** @type {any[]} */ ([]));
 
+  // Derived row arrays for the keyed {#each} renderers below —
+  // operator-visible benefit: text selection inside an agent /
+  // sim / system row is no longer wiped on every poll (audit
+  // defect #11 — the old @html-joined-string approach destroyed
+  // DOM identity per row). Each entry carries a stable `key` so
+  // Svelte can diff per row; the `html` string is the same as
+  // _logRow() output but wrapped one DOM node at a time.
+  const _agentRows = $derived.by(() => {
+    return agentLog.slice()
+      .sort((a, b) => _tsKey(b.timestamp) - _tsKey(a.timestamp))
+      .map((e, i) => {
+        const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
+                  : e.event_type === 'action_success' ? 'log-agent-success'
+                  : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
+                  : 'log-agent-default';
+        const cond = chipsFromJson(e.trigger_condition) || '';
+        const tag  = (e.event_type || '').replace(/_/g, ' ');
+        return {
+          key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
+          html: _logRow(e.timestamp, cond, tag, cls),
+        };
+      });
+  });
+  const _simRows = $derived.by(() => {
+    return simLog.slice()
+      .sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts))
+      .map((entry, i) => ({
+        key: `s${entry.ts || ''}-${entry.kind || ''}-${i}`,
+        html: _renderSimLine(entry),
+      }));
+  });
+  const _sysRows = $derived.by(() => {
+    return systemLog.slice()
+      .map(l => ({ l, d: parseLogLineDate(l) }))
+      .sort((a, b) => _tsKey(b.d) - _tsKey(a.d))
+      .map(({ l, d }, i) => {
+        const rest = d ? stripTs(l) : l;
+        const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
+        const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
+        return {
+          // System log keys can't use timestamp alone (multiple lines
+          // per second possible); compose with line content hash via
+          // a length+first-32-chars tuple — cheap to compute, stable
+          // across polls for the same source line.
+          key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}`,
+          html: _logRow(d || null, rest, tag, sysClass(l)),
+        };
+      });
+  });
+
   /** @type {Array<ReturnType<typeof setInterval>>} */
   const _intervals = [];
   function _every(/** @type {() => Promise<void> | void} */ fn) {
@@ -434,6 +484,24 @@
     return `<span class="log-row-time">${_escAttr(raw || '—')}</span>`;
   }
 
+  /** Plain-text version of _simpleTime for use as React-style child
+   *  text in {#each}-rendered rows where Svelte owns the wrapping
+   *  span. Returns a string (or '—' fallback). */
+  function _simpleTimeText(input) {
+    if (!input) return '—';
+    const d = input instanceof Date
+      ? input
+      : (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}/.test(input))
+        ? new Date(
+            input.includes('T') || input.includes('Z')
+              ? input
+              : input.replace(' ', 'T') + '+05:30'
+          )
+        : null;
+    if (d && !isNaN(d.getTime())) return formatDualTz(d);
+    return typeof input === 'string' ? (input || '—') : '—';
+  }
+
   /**
    * Wrap a log row in the unified News-style grid: time on the left,
    * message content in the middle (flex-grow), optional tag chip on
@@ -663,27 +731,34 @@
      the same shape as the News tab above. Time chip inherits the
      page-header `.algo-ts` font (mono cyan tabular-nums) so the
      wall clock and every log row are in the same visual rhythm. -->
-<div class="log-panel log-rows {heightClass}">{#if logTab === 'terminal'}{@html _terminalHtml()}{:else if logTab === 'agent'}{#if agentLog.length}{@html agentLog.slice().sort((a, b) => _tsKey(b.timestamp) - _tsKey(a.timestamp)).map(e => {
-  const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
-            : e.event_type === 'action_success' ? 'log-agent-success'
-            : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
-            : 'log-agent-default';
-  // trigger_condition is usually a JSON object like
-  //   {metric:'pnl', scope:'positions.total', op:'<=', value:-50000}
-  // — render as the same key:value chip pattern the order rows use
-  // (chipsFromJson silently falls through for plain-text triggers).
-  const cond = chipsFromJson(e.trigger_condition) || '';
-  const tag  = (e.event_type || '').replace(/_/g, ' ');
-  return _logRow(e.timestamp, cond, tag, cls);
-}).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No agent events.</span></div>{/if}{:else if logTab === 'simulator'}{#if simLog.length}{@html simLog.slice().sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts)).map(_renderSimLine).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span></div>{/if}{:else}{#if systemLog.length}{@html systemLog.slice().map(l => ({ l, d: parseLogLineDate(l) })).sort((a, b) => _tsKey(b.d) - _tsKey(a.d)).map(({ l, d }) => {
-  const rest = d ? stripTs(l) : l;
-  // Extract the log level if present at the head of the message
-  // (e.g. "INFO ...", "ERROR ..."). Surfaced as the row's right-edge
-  // tag so the operator can scan the System stream by severity.
-  const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
-  const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
-  return _logRow(d || null, rest, tag, sysClass(l));
-}).join('')}{:else}<div class="log-row log-debug"><span class="log-row-msg">No log entries.</span></div>{/if}{/if}</div>
+<!-- Each log row gets its own DOM node via keyed {#each}, so a
+     poll-driven update only touches rows whose data actually
+     changed. Audit defect #11 (the old @html-joined-string
+     approach destroyed all row DOM identity on every poll,
+     killing text selection inside the log). -->
+<div class="log-panel log-rows {heightClass}">
+  {#if logTab === 'terminal'}
+    {@html _terminalHtml()}
+  {:else if logTab === 'agent'}
+    {#if _agentRows.length}
+      {#each _agentRows as r (r.key)}{@html r.html}{/each}
+    {:else}
+      <div class="log-row log-debug"><span class="log-row-msg">No agent events.</span></div>
+    {/if}
+  {:else if logTab === 'simulator'}
+    {#if _simRows.length}
+      {#each _simRows as r (r.key)}{@html r.html}{/each}
+    {:else}
+      <div class="log-row log-debug"><span class="log-row-msg">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span></div>
+    {/if}
+  {:else}
+    {#if _sysRows.length}
+      {#each _sysRows as r (r.key)}{@html r.html}{/each}
+    {:else}
+      <div class="log-row log-debug"><span class="log-row-msg">No log entries.</span></div>
+    {/if}
+  {/if}
+</div>
 {/if}
 
 {#if _chartModalSym}
@@ -867,7 +942,10 @@
     .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
   :global(.log-tab-btn) {
-    font-size: 0.62rem;
+    /* Matches .oc-tab / .oes-tab — single-axis 0.02rem audit drift
+       (was 0.62rem). All compact tab strips now read at the same
+       size across the platform. */
+    font-size: 0.6rem;
     font-weight: 600;
     padding: 0.18rem 0.44rem;
     white-space: nowrap;

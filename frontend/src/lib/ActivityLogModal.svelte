@@ -135,8 +135,8 @@
     gap: 0.5rem;
     padding: 0.35rem 0.85rem;
     background: linear-gradient(180deg,
-                  rgba(251, 146, 60, 0.20) 0%,
-                  rgba(251, 146, 60, 0.08) 100%);
+                  rgba(251, 146, 60, 0.18) 0%,
+                  rgba(251, 146, 60, 0.06) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-shrink: 0;

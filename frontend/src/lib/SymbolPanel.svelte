@@ -1,3 +1,11 @@
+<script module>
+  // MCX commodity-name pattern hoisted to module-level so the regex
+  // object is built once at module load, not rebuilt on every
+  // reactive tick of _modalNotice. Tail anchor stops NSE ETFs like
+  // GOLDBEES / SILVERBEES from being misclassified as MCX.
+  const _MCX_NAMES_RE = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)(FUT$|(MINI|MICRO|M)?\d{2}[A-Z]{3}|(MINI|MICRO|M)$)/;
+</script>
+
 <script>
   // SymbolPanel — unified symbol-keyed modal. Replaces three older
   // surfaces: OrderEntryShell (tabbed order entry), SymbolChartModal
@@ -624,9 +632,8 @@
       //   FUT$                         — month-future
       //   (MINI|MICRO|M)?\d{2}[A-Z]{3}  — expiry token (`25APRFUT`, etc.)
       //   (MINI|MICRO|M)$              — bare mini/micro
-      const _mcxNames = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)(FUT$|(MINI|MICRO|M)?\d{2}[A-Z]{3}|(MINI|MICRO|M)$)/;
       const _explicitExch = (_pickedExchange || exchange || '').toUpperCase();
-      const _isMcxByName = _mcxNames.test(_sym);
+      const _isMcxByName = _MCX_NAMES_RE.test(_sym);
       const isMcx = _explicitExch === 'MCX' || _explicitExch === 'NCO' || _isMcxByName;
       const resolved = !!_explicitExch || _isMcxByName;
       if (!resolved) return null;  // exchange not known — no warning
@@ -1854,11 +1861,8 @@
     gap: 0.4rem;
     margin-left: auto;
   }
-  .oes-basket-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
+  /* .oes-basket-actions retired with the Submit/Clear lift to the
+     common footer (656be671). Audit defect #12. */
 
   /* Per-leg pills. Mirror the chain-tab basket palette so an
      operator scanning the bottom strip from any tab gets the same
@@ -1967,31 +1971,10 @@
   .oes-basket-pill-remove:hover:not(:disabled) { color: #f87171; }
   .oes-basket-pill-remove:disabled { opacity: 0.35; cursor: not-allowed; }
   .oes-basket-pill.is-disabled { opacity: 0.55; }
-  .oes-basket-clear,
-  .oes-basket-submit {
-    height: 1.9rem;
-    padding: 0 0.85rem;
-    border-radius: 2px;
-    font-family: monospace;
-    font-size: 0.62rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    border: 1px solid currentColor;
-    background: transparent;
-    white-space: nowrap;
-  }
-  .oes-basket-clear  { color: #a3b9d0; }
-  .oes-basket-clear:hover:not(:disabled) { background: rgba(163,185,208,0.08); }
-  .oes-basket-submit {
-    color: #fff;
-    background: #4ade80;
-    border-color: #4ade80;
-    font-weight: 800;
-  }
-  .oes-basket-submit:hover:not(:disabled) { background: #4ade80; border-color: #4ade80; }
-  .oes-basket-clear:disabled,
-  .oes-basket-submit:disabled { opacity: 0.45; cursor: progress; }
+  /* .oes-basket-clear / .oes-basket-submit retired with the
+     duplicate-buttons drop (656be671); the common footer's
+     .oes-common-clear / .oes-common-submit own those affordances
+     now. Audit defect #12. */
 
   /* Body — the tab content area. Flex column so child panels (chain
      grid in particular) can `flex: 1` to fill the full available

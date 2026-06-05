@@ -1159,10 +1159,11 @@
     color: #c8d8f0;
     background: rgba(255, 255, 255, 0.04);
   }
-  /* Active-state glow — keep the subtle halo + slight weight bump
-     so the active tab still reads clearly, but no font-size bump
-     (would re-pump the strip's size). */
+  /* Active-state glow — same shape as the modal's .oes-tab-active:
+     amber underline + bg tint + weight bump + halo. Audit defect
+     #17 (active-state visuals were diverging across page vs modal). */
   .oc-tab[aria-selected="true"] {
+    background: rgba(251, 191, 36, 0.10);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
     font-weight: 800;
   }

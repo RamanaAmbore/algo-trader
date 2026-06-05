@@ -865,8 +865,17 @@
   // Re-emit chip meta on every state change so the host chip
   // re-renders even when the margin preview itself hasn't changed
   // (e.g. operator flips BUY→SELL on an option without retyping qty).
+  // Dedupe via JSON-string ref-equality so identical chipMeta /
+  // preview / loading triples don't churn the host's reactive
+  // graph on every keystroke; audit defect #14.
+  let _lastEmittedKey = '';
   $effect(() => {
     void _chipMeta;
+    const key = JSON.stringify({
+      m: _marginPreview, l: _marginLoading, c: _chipMeta,
+    });
+    if (key === _lastEmittedKey) return;
+    _lastEmittedKey = key;
     onMarginUpdate?.(_marginPreview, _marginLoading, _chipMeta);
   });
 
@@ -1767,24 +1776,6 @@
     opacity: 0.85;
   }
 
-  /* "auto" chip next to the Limit price label — flags that the
-     value is being fed from the depth ladder and the operator
-     hasn't typed anything yet. Tiny pill so it doesn't compete
-     with the input below. */
-  .ot-price-auto {
-    display: inline-block;
-    margin-left: 0.4rem;
-    padding: 0 0.3rem;
-    border-radius: 2px;
-    background: rgba(74,222,128,0.15);
-    border: 1px solid rgba(74,222,128,0.45);
-    color: #4ade80;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    vertical-align: 1px;
-  }
   /* Re-arm-auto button — visible only after the operator has
      touched the price field. Click → reset _priceTouched and
      re-fill from the latest quote. */
@@ -1876,9 +1867,13 @@
   /* Lots + Limit row — 65 % / 35 % split with NO gap (operator:
      "lots and limit price should not have gap between them. if
      required expand both the elements to fill the gap"). Cells
-     expand to exactly 65 / 35 of the row width and sit flush. */
+     expand to exactly 65 / 35 of the row width and sit flush.
+     When Lots is the only child (MARKET order — no limit, no
+     trigger) it takes the full row instead of leaving 35 %
+     whitespace; audit defect #19. */
   .ot-lots-price-row { gap: 0; align-items: flex-start; }
   .ot-lots-cell  { flex: 0 0 65%; min-width: 0; }
+  .ot-lots-cell:only-child { flex: 1 1 100%; }
   .ot-price-cell { flex: 0 0 35%; min-width: 0; }
   .ot-price-cell .ot-input { width: 100%; }
 
@@ -2184,51 +2179,10 @@
     font-size: 0.62rem;
     margin: 0.4rem 0;
   }
-  /* ── Margin / cash preview ─────────────────────────────────────────
-     Rows live inline inside .ot-footer-info, to the left of the
-     Cancel/Submit buttons. No outer container — the footer's top
-     border + the buttons' visual weight provide enough containment. */
-  .ot-margin-row {
-    /* Label + value sit side-by-side with a small gap — earlier this
-       row used `justify-content: space-between` which stretched the
-       two ends across the full footer-info width, leaving a wide gap
-       between MARGIN/Avail/Short labels and their amounts. Operator
-       wants them clustered tightly so the eye reads "MARGIN ₹X / Avail
-       ₹Y / Short ₹Z" as a compact stack, not three wide rows. */
-    display: flex;
-    align-items: baseline;
-    gap: 0.4rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .ot-margin-row + .ot-margin-row { margin-top: 0.05rem; }
-  .ot-margin-label {
-    color: #fbbf24;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-size: 0.58rem;
-  }
-  .ot-margin-value {
-    color: #c8d8f0;
-    font-weight: 700;
-    font-size: 0.7rem;
-  }
-  /* Sub-row — Available, etc. Lower contrast so the primary row dominates. */
-  .ot-margin-row-sub .ot-margin-label { color: rgba(200,216,240,0.55); font-weight: 500; }
-  .ot-margin-row-sub .ot-margin-value { color: rgba(200,216,240,0.75); font-weight: 500; font-size: 0.62rem; }
-  /* Shortfall row — red so the operator sees they can't afford this. */
-  .ot-margin-row-err .ot-margin-label,
-  .ot-margin-row-err .ot-margin-value { color: #f87171; font-weight: 700; }
-  /* Sufficient — green so a glance reads "affordable" (operator:
-     "color code both based on availability"). Applied to the
-     primary COST/MARGIN row when available >= required. */
-  .ot-margin-row-ok .ot-margin-label,
-  .ot-margin-row-ok .ot-margin-value { color: #4ade80; font-weight: 700; }
-  /* "After" row when remaining margin is in the 10-40 % band — amber
-     warning instead of red. Sub-row size so it doesn't compete with
-     the headline COST/MARGIN row above. */
-  .ot-margin-row-warn .ot-margin-label,
-  .ot-margin-row-warn .ot-margin-value { color: #fbbf24; font-weight: 600; font-size: 0.62rem; }
+  /* Margin/cash preview rules retired — the lift-to-shell commit
+     (fcd75587) removed the inline .ot-margin-row markup; the shell's
+     .oes-margin-pill now owns the cost/margin readout. CSS block
+     dropped as dead code (audit defect #12). */
   /* Preflight blockers (segment inactive, freeze qty, etc.) */
   .ot-margin-blocked {
     color: #f87171;
