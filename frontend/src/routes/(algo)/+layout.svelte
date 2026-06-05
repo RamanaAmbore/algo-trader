@@ -1358,24 +1358,19 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Reserve space for the FIXED .page-header strip. Strip's true
-       rendered height is dominated by the tallest child — the
-       PageHeaderActions buttons (1.6rem) + RefreshButton (1.4rem)
-       + 0.2rem pad top/bottom + 1px border ≈ 2.05rem. Previous
-       1.7rem was too tight and the first card slid under. 2.2rem
-       gives a small buffer without leaving a visible gap. */
-    padding: 2.2rem 0.5rem 1.5rem;
+    /* Padding-top matches .page-header's min-height EXACTLY — strip
+       is 1.8rem (1.4rem buttons + 0.15rem pad×2 + 1px border).
+       No gap below strip, no overlap with first card. */
+    padding: 1.8rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
-  /* Banner-aware extra padding — each sticky banner adds ~1.7rem.
-     Mirrors the .page-header :has() offset rules so the first
-     card never slides under the header strip. */
+  /* Banner-aware extra padding — each sticky banner adds ~1.7rem. */
   :global(.algo-viewport:has(.sim-banner) .algo-content),
   :global(.algo-viewport:has(.paper-banner) .algo-content) {
-    padding-top: calc(2.2rem + 1.7rem);
+    padding-top: calc(1.8rem + 1.7rem);
   }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .algo-content) {
-    padding-top: calc(2.2rem + 3.4rem);
+    padding-top: calc(1.8rem + 3.4rem);
   }
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
@@ -1459,13 +1454,17 @@
     right: 0;
     z-index: 45;
     background: #0a1020;
-    padding: 0.2rem 0.65rem;
-    /* Operator: "header row is underneath strip". The previous
-       6px drop-shadow made the strip read as a thicker band
-       extending downward (the title text appeared to be inside
-       a larger filled zone). Reduced to a flat 1px amber
-       hairline only — strip is exactly 1 row tall, content
-       starts immediately below. */
+    padding: 0.15rem 0.65rem;
+    /* Explicit min-height makes the strip deterministic — 1.8rem
+       fits the 1.4rem buttons + tight padding on a single line.
+       overflow:visible prevents any ancestor's implicit clipping
+       from hiding the strip's bottom edge. Operator reported the
+       header was partially hidden + extra space below; both
+       resolve once the strip's actual height matches the
+       reserved padding-top on .algo-content (also 1.8rem now). */
+    min-height: 1.8rem;
+    box-sizing: border-box;
+    overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
   }
   /* Banner-aware vertical offset — sim and paper banners are sticky
