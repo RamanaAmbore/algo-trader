@@ -1724,21 +1724,20 @@
   /* Tab style — underline-only active state, matches LogPanel +
      /admin/tokens + every other algo-side tab strip. */
   .oes-tab {
-    /* Operator: "chain and order ticket should attract eye balls".
-       Bumped padding (0.45→0.55 / 0.75→1.05rem) + font (0.65→0.78rem)
-       + weight (600→700) + border thickness (2→3 px) so the tab
-       strip becomes the modal's loudest action surface. */
+    /* Tabs match the /orders page .oc-tab compact scale — the
+       container header carries the prominence, the tabs read as
+       section identifiers, not a loud CTA. */
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    padding: 0.55rem 1.05rem;
+    padding: 0.3rem 0.7rem;
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
-    font-size: 0.78rem;
+    font-size: 0.52rem;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #b4c8e6;
     cursor: pointer;
@@ -1754,7 +1753,6 @@
     border-bottom-color: #fbbf24;
     color: #fbbf24;
     font-weight: 800;
-    letter-spacing: 0.08em;
     background: rgba(251, 191, 36, 0.10);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
   }
@@ -1948,13 +1946,28 @@
 
   /* Body — the tab content area. Flex column so child panels (chain
      grid in particular) can `flex: 1` to fill the full available
-     height instead of clamping to their content. */
+     height instead of clamping to their content.
+     Operator: "chain specific data area or order ticket specific
+     data area height should be same so that there is no waste of
+     space". Each tab panel below uses flex:1 + min-height:0 so they
+     consume the full body height regardless of their content. */
   .oes-body {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
+  }
+  /* Equal-height tab panels — ticket and chain BOTH absorb the
+     full .oes-body height. Whichever tab is hidden via
+     style:display:none reclaims its space; the visible one fills
+     the body. Tab switch never changes the body height. */
+  .oes-ticket-body,
+  .oes-body :global(.oct-root) {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   /* Ticket body — OrderTicket renders its OWN overlay + modal shell,

@@ -69,19 +69,21 @@
 </script>
 
 <div class="ot-depth">
-  <div class="ot-depth-h">
-    Depth · {symbol}{exchange ? ' · ' + exchange : ''}
-    {#if q && q.ltp}
-      <span class="ot-depth-ltp">LTP ₹{priceFmt(q.ltp)}</span>
-      {#if q.ohlc?.close && q.ohlc.close > 0}
-        <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
+  <!-- Operator: "I don't want to see DEPTH · CRUDEOIL26JUNFUT · MCX
+       in market depth". Dropped the prefix. LTP / Prev chips kept
+       since they're useful market context above the bid/ask ladder. -->
+  {#if (q && q.ltp) || err}
+    <div class="ot-depth-h">
+      {#if q && q.ltp}
+        <span class="ot-depth-ltp">LTP ₹{priceFmt(q.ltp)}</span>
+        {#if q.ohlc?.close && q.ohlc.close > 0}
+          <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
+        {/if}
+      {:else if err}
+        <span class="ot-depth-meta">{err}</span>
       {/if}
-    {:else if err}
-      <span class="ot-depth-meta">{err}</span>
-    {:else}
-      <span class="ot-depth-meta">loading…</span>
-    {/if}
-  </div>
+    </div>
+  {/if}
   <div class="ot-depth-grid">
     <span class="ot-depth-label">Bid qty</span>
     <span class="ot-depth-label">Bid</span>
