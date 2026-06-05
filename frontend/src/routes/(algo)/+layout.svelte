@@ -1631,6 +1631,13 @@
     color: #fbbf24;
     border-bottom: none;
     padding-bottom: 0;
+    /* h1 default browser margin (~0.67em top/bottom) inflated the
+       page-header flex container above its 1.8rem min-height,
+       pushing the strip taller and breaking the matched
+       padding-top reservation. Reset to 0 + tight line-height
+       so the strip stays exactly 1.8rem. */
+    margin: 0;
+    line-height: 1.1;
   }
   :global(.algo-content .btn-secondary) {
     color: #c8d8f0;
