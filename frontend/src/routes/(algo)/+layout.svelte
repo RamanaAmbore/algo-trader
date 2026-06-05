@@ -1358,12 +1358,13 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Tighter side padding (0.5rem instead of 1rem) so the grids +
-       log panel have more horizontal room on narrow widths.
-       Top padding tightened to 0.5rem so the page content sits
-       close to the PositionStrip immediately above (was 1rem,
-       which left visible empty space below the strip's underline). */
-    padding: 0.5rem 0.5rem 1.5rem;
+    /* Operator: "there is a good amount of whitespace wasted above
+       header text timestamp with fast icons in every page. reduce
+       it." Top padding zeroed so the sticky .page-header sits
+       flush with the navbar's bottom edge (no visible gap before
+       scrolling). Side padding (0.5rem) + generous bottom padding
+       unchanged — only the top gap was wasted. */
+    padding: 0 0.5rem 1.5rem;
     color: #c8d8f0;
   }
 
@@ -1427,21 +1428,25 @@
        genuinely overflows. */
     gap: 0.15rem;
     flex-wrap: wrap;
-    margin-bottom: 0.4rem;
-    /* Operator: "page heading should be fixed. it can't be scrollable".
-       Pin the header just below the algo-navbar (h-12 = 3rem) so the
-       title chip + timestamp + Refresh/Order/Chart/Log icon trio stay
-       visible while the page body scrolls beneath. Lower z-index
-       than the navbar (50) and the SIM / PAPER banners (49) so those
-       can overlap when both are visible — page header is the lowest
-       sticky layer. Solid background matches `.algo-content`'s
-       palette so scrolled-up content doesn't bleed through. */
+    margin-bottom: 0.3rem;
+    /* Sticky header pinned just below the algo-navbar (h-12 = 3rem)
+       so the title chip + timestamp + Refresh/Order/Chart/Log icon
+       trio stay visible while the page body scrolls beneath. Lower
+       z-index than the navbar (50) and the SIM / PAPER banners
+       (49) so those can overlap when both are visible — page
+       header is the lowest sticky layer. Solid background matches
+       `.algo-content`'s palette so scrolled-up content doesn't
+       bleed through.
+       Operator: "reduce whitespace above header text". Vertical
+       padding trimmed (0.35rem → 0.2rem) and algo-content's
+       top padding zeroed (see .algo-content above) so the header
+       sits flush below the navbar with no visible gap. */
     position: sticky;
     top: 3rem;
     z-index: 40;
     background: #0c1830;
-    padding: 0.35rem 0.5rem;
-    margin: 0 -0.5rem 0.4rem;
+    padding: 0.2rem 0.5rem;
+    margin: 0 -0.5rem 0.3rem;
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
@@ -1491,8 +1496,8 @@
      of empty zone). */
   :global(.algo-content .page-header) {
     border-bottom: 1px solid rgba(251,191,36,0.25);
-    padding-bottom: 0.2rem;
-    margin-bottom: 0.45rem;
+    padding-bottom: 0.15rem;
+    margin-bottom: 0.35rem;
   }
 
   /* Page-level timestamp — sky-300 so it sits cleanly next to the
