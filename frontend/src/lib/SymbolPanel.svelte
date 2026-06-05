@@ -1437,10 +1437,9 @@
     border-bottom: 1.5px solid rgba(251, 191, 36, 0.55);
     flex-shrink: 0;
   }
-  /* Modal-name — chip-pill title matching the bucket-card-entry
-     .mp-section-label on /orders ("ORDER ENTRY" amber chip). Same
-     chip chrome the sibling modals use (cyan on ChartModal, violet
-     on ActivityLogModal). */
+  /* Plain title text — operator: "remove pill kind of decoration
+     for modal header text". Bold uppercase amber glyphs on the
+     navy gradient strip; the gradient itself is the prominence. */
   .oes-modal-name {
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
@@ -1448,11 +1447,6 @@
     font-weight: 800;
     letter-spacing: 0.10em;
     text-transform: uppercase;
-    background: rgba(251, 191, 36, 0.16);
-    border: 1px solid rgba(251, 191, 36, 0.55);
-    padding: 0.22rem 0.55rem;
-    border-radius: 4px;
-    box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;

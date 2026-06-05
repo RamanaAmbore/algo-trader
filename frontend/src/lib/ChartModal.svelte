@@ -181,20 +181,15 @@
   }
 
   .cm-title {
-    /* Chip-pill title — same chrome as the bucket-card-entry
-       .mp-section-label on /orders so the modal header's "Charts"
-       reads as a prominent identity pill rather than free text. */
+    /* Plain title text — operator: "remove pill kind of decoration
+       for modal header text". Bold uppercase cyan glyphs on the
+       navy gradient strip; the gradient itself is the prominence. */
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
     color: #67e8f9;
     font-weight: 800;
     letter-spacing: 0.10em;
     text-transform: uppercase;
-    background: rgba(34, 211, 238, 0.16);
-    border: 1px solid rgba(34, 211, 238, 0.55);
-    padding: 0.22rem 0.55rem;
-    border-radius: 4px;
-    box-shadow: 0 1px 4px rgba(34, 211, 238, 0.18);
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;

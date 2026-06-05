@@ -153,10 +153,9 @@
     border-bottom: 1.5px solid rgba(168, 85, 247, 0.55);
     flex-shrink: 0;
   }
-  /* Chip-pill title — matches the bucket-card-entry .mp-section-label
-     on /orders and the sibling cyan/amber chips on ChartModal /
-     SymbolPanel. Violet palette since this modal's identity is
-     violet (matches the page-header Activity button). */
+  /* Plain title text — operator: "remove pill kind of decoration
+     for modal header text". Bold uppercase violet glyphs on the
+     navy gradient strip; the gradient itself is the prominence. */
   .alm-title {
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
@@ -164,11 +163,6 @@
     font-weight: 800;
     letter-spacing: 0.10em;
     text-transform: uppercase;
-    background: rgba(168, 85, 247, 0.18);
-    border: 1px solid rgba(168, 85, 247, 0.55);
-    padding: 0.22rem 0.55rem;
-    border-radius: 4px;
-    box-shadow: 0 1px 4px rgba(168, 85, 247, 0.20);
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
