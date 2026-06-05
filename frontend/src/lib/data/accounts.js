@@ -63,7 +63,10 @@ export function setRecentAccount(/** @type {string} */ acct) {
   _lsWrite(_LS_RECENT_ACCOUNT, v);
 }
 
-/** Resolution chain: recent → settings default → fallback. */
+/** Resolution chain: recent → settings default → fallback.
+ *  The string is returned verbatim — operators pick tradeable
+ *  symbols (e.g. CRUDEOIL26JUNFUT, not bare CRUDEOIL); no
+ *  underlying-to-future resolver layer. */
 export function resolveSymbol(/** @type {string} */ fallback = '') {
   const r = _lsRead(_LS_RECENT_SYMBOL);
   if (r) return r.toUpperCase();

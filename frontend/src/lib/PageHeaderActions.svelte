@@ -16,8 +16,9 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
-  import { resolveAnchorToTradeable } from '$lib/data/resolveUnderlying';
-  import { findNearestFuture, loadInstruments } from '$lib/data/instruments';
+  // Symbol-resolver imports retired — operators pick tradeable
+  // symbols directly (no NIFTY 50 → NIFTY26JUNFUT mapping). Operator:
+  // "we don't have symbol and resolver concept now."
   import {
     loadAccounts, getDefaultSymbol,
     defaultSymbolStore, accountsReadyStore,
@@ -86,31 +87,10 @@
   );
   const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 
-  // Resolve the anchor to a tradeable contract (NIFTY 50 → NIFTY26JUNFUT,
-  // CRUDEOIL → CRUDEOILM26JUNFUT, RELIANCE → RELIANCE) so both modals
-  // open with the actual future / option / equity tradingsymbol — not
-  // the spot quote-key or commodity root, which are non-tradeable and
-  // make the historical endpoint walk every exchange searching for a
-  // contract that doesn't exist.
-  let _resolvedSymbol = $state('');
-  $effect(() => {
-    const anchor = _anchorSymbol;
-    if (!anchor) { _resolvedSymbol = ''; return; }
-    // Sync first — instruments cache is usually warm.
-    let tradeable = resolveAnchorToTradeable(anchor, findNearestFuture);
-    if (tradeable) { _resolvedSymbol = tradeable; return; }
-    // Cold cache — hydrate then retry, fall back to anchor on failure.
-    _resolvedSymbol = anchor;
-    (async () => {
-      try {
-        await loadInstruments();
-        const t = resolveAnchorToTradeable(anchor, findNearestFuture);
-        if (t && t !== anchor) _resolvedSymbol = t;
-      } catch (_) { /* leave _resolvedSymbol at the anchor */ }
-    })();
-  });
-
-  const _effectiveSymbol = $derived(_resolvedSymbol || _anchorSymbol);
+  // Effective symbol passes through verbatim — no underlying-to-future
+  // resolver layer. Operator picks what they want to trade; that's
+  // what the modal opens against.
+  const _effectiveSymbol = $derived(_anchorSymbol);
 
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
