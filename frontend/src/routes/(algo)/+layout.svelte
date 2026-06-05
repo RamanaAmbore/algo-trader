@@ -1430,7 +1430,12 @@
      narrow widths. Used by every admin page via `.page-header`. */
   :global(.page-header) {
     display: flex;
-    align-items: baseline;
+    /* align-items: baseline pushed tall buttons (1.4-1.6rem) above
+       the visible strip on some viewports because the buttons'
+       baseline = their bottom edge, so they extended UP from the
+       text baseline. center-aligned keeps every child inside the
+       strip box reliably. */
+    align-items: center;
     justify-content: space-between;
     /* Tight gap so title chip + timestamp + action cluster stay on
        one row on mobile. flex-wrap still kicks in only when the row

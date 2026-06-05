@@ -230,14 +230,10 @@
 {/if}
 
 <style>
-  /* ── Page header ────────────────────────────────────────────────── */
-  .page-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.65rem;
-  }
+  /* Scoped .page-header override removed — was shadowing the
+     layout's :global(.page-header) fixed-strip rule due to
+     Svelte's class-hash specificity. All algo pages now share
+     the same sticky-strip behavior from +layout.svelte. */
   .err-banner {
     margin-bottom: 0.5rem;
     padding: 0.25rem 0.65rem;
