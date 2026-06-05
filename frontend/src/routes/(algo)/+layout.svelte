@@ -1358,12 +1358,13 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Reserve EXACT space for the FIXED .page-header strip — strip
-       height = 0.2rem pad + ~1.1rem content + 0.2rem pad + 1px
-       border ≈ 1.65rem. Operator: "it is adding more space below
-       header row" — earlier 2.2rem left a visible gap; tightened
-       to 1.7rem so the first card sits flush under the strip. */
-    padding: 1.7rem 0.5rem 1.5rem;
+    /* Reserve space for the FIXED .page-header strip. Strip's true
+       rendered height is dominated by the tallest child — the
+       PageHeaderActions buttons (1.6rem) + RefreshButton (1.4rem)
+       + 0.2rem pad top/bottom + 1px border ≈ 2.05rem. Previous
+       1.7rem was too tight and the first card slid under. 2.2rem
+       gives a small buffer without leaving a visible gap. */
+    padding: 2.2rem 0.5rem 1.5rem;
     color: #c8d8f0;
   }
   /* Banner-aware extra padding — each sticky banner adds ~1.7rem.
@@ -1371,10 +1372,10 @@
      card never slides under the header strip. */
   :global(.algo-viewport:has(.sim-banner) .algo-content),
   :global(.algo-viewport:has(.paper-banner) .algo-content) {
-    padding-top: calc(1.7rem + 1.7rem);
+    padding-top: calc(2.2rem + 1.7rem);
   }
   :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .algo-content) {
-    padding-top: calc(1.7rem + 3.4rem);
+    padding-top: calc(2.2rem + 3.4rem);
   }
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */

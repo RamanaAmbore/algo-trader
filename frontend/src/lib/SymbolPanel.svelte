@@ -401,7 +401,14 @@
   // (modeChaseHidden=true on its end) so its in-form mode/chase row
   // is suppressed and the shared toolbar drives the values its submit
   // pipeline reads. Margin pill is already in the common row below.
-  let _sharedMode     = $state(/** @type {'draft'|'paper'|'live'} */ ('paper'));
+  // Initial value honours the caller's defaultMode prop so opening
+  // the modal from PageHeaderActions while the navbar is in LIVE
+  // gets a LIVE shared toolbar from the start (operator: "when live
+  // is active on navbar, the order should default to live").
+  // Falls back to 'paper' when defaultMode isn't a valid toolbar mode.
+  let _sharedMode = $state(/** @type {'draft'|'paper'|'live'} */ (
+    (defaultMode === 'live' || defaultMode === 'paper') ? defaultMode : 'paper'
+  ));
   let _sharedChase    = $state(true);
   let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
   // Account list — falls through three layers:

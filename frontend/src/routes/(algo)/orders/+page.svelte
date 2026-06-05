@@ -449,7 +449,7 @@
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       bind:activeTab={_entryActiveTab}
-      defaultTab="ticket"
+      defaultTab="chain"
       symbol={_entrySymbol}
       account={_entryAccount}
       accounts={_entryAccounts}
