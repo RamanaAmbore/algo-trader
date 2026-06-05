@@ -980,11 +980,14 @@
   .chain-th-pe      { text-align: right;  color: #f87171; padding: 0.2rem 0.5rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-th-strike  { text-align: center; color: #c8d8f0; padding: 0.2rem 0.3rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-row > td {
-    /* Tightened from 0.18rem → 0.1rem so more strikes fit in the
-       same vertical budget without losing button + bid/ask cell
-       legibility at 0.65rem font size. */
-    padding: 0.1rem 0.4rem;
+    /* Operator: "reduce the height of chain grid for strike prices
+       by half". Vertical padding zeroed (was 0.1rem), button
+       padding + font compressed below — each strike row drops
+       from ~18px to ~9px so the whole grid roughly halves in
+       height. */
+    padding: 0 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.04);
+    line-height: 1.1;
   }
   .chain-row:last-child > td { border-bottom: 0; }
   .chain-td-ce      { text-align: left; }
@@ -1060,10 +1063,11 @@
     color: #fbbf24;
   }
   .chain-btn {
-    font-family: monospace; font-size: 0.65rem; font-weight: 700;
-    padding: 1px 6px; border-radius: 2px;
+    font-family: monospace; font-size: 0.55rem; font-weight: 700;
+    padding: 0 5px; border-radius: 2px;
     border: 1px solid currentColor; background: transparent;
     cursor: pointer; letter-spacing: 0.04em; transition: background 0.12s;
+    line-height: 1.3;
   }
   .chain-btn-pair { display: inline-flex; gap: 3px; }
   .chain-btn-buy  { color: #4ade80; }

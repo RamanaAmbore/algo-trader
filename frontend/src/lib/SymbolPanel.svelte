@@ -1501,11 +1501,14 @@
   }
   .oes-modal.oes-modal-inline {
     /* Outer chrome stripped (the host bucket-card provides amber
-       accent + gradient). Operator: "increase the order entry panel
-       height and make it similar to order modal entry panel".
-       Modal panel uses `height: min(82vh, 760px)`; mirror that on
-       the inline embed so the chain grid / depth ladder render
-       with comparable vertical room.
+       accent + gradient). Operator: "reduce the height of chain
+       grid for strike prices by half so that the order ticket
+       space height also gets reduced in sync with it and wasted
+       space gets reduced". min-height dropped from 78vh/720px →
+       55vh/520px so the panel envelope shrinks alongside the
+       compressed chain grid; the ticket tab inherits the same
+       smaller height so wasted space is removed without
+       collapsing the ticket form below readable.
        display:flex column is REQUIRED — .oes-body uses flex:1 to
        absorb the remaining space; without a flex column parent
        the body collapsed to zero height and chain rows + depth
@@ -1513,7 +1516,7 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    min-height: min(78vh, 720px);
+    min-height: min(55vh, 520px);
     border-radius: 0;
     box-shadow: none;
     border: none;

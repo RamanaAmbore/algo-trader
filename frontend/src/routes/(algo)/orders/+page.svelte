@@ -385,8 +385,15 @@
        label + card-control trio — SymbolPanel below renders its
        own internal picker row (Account · Type · Symbol · Exchange)
        + tab strip the same way the modal does. -->
-  <div class="bucket-header oc-entry-header">
-    <span class="mp-section-label">Order Entry</span>
+  <!-- Operator: "remove order entry decoration in the order entry
+       header of orders page. remove order heading also in orders
+       page. rest of it should be in sync with order entry in
+       orders modal". Section label + chip decoration retired from
+       the bucket-header — the bucket-card-entry's amber left
+       accent + gradient is the only outer chrome, matching the
+       modal's panel decoration. Card-control trio kept so the
+       operator can still collapse / fullscreen the panel. -->
+  <div class="bucket-header oc-entry-header oc-entry-header-bare">
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -943,14 +950,21 @@
     cursor: not-allowed;
   }
 
-  /* Flat section header — section label + symbol + account + tabs.
-     Single horizontal line, gap between siblings. */
+  /* Flat section header — only the card-control trio rides here
+     now (Collapse / DefaultSize / Fullscreen). Section label +
+     other decorations removed per operator request. */
   .oc-entry-header {
     display: flex;
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
+  }
+  /* No-label variant — tighter top margin since there's no chip
+     to anchor the header height. */
+  .oc-entry-header-bare {
+    margin-bottom: 0.2rem;
+    min-height: 1.4rem;
   }
 
   /* Account picker chrome — when multiple brokers loaded use a Select,
