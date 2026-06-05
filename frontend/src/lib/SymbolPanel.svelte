@@ -1505,9 +1505,14 @@
        height and make it similar to order modal entry panel".
        Modal panel uses `height: min(82vh, 760px)`; mirror that on
        the inline embed so the chain grid / depth ladder render
-       with comparable vertical room and the tab body scrolls
-       inside the same envelope. */
+       with comparable vertical room.
+       display:flex column is REQUIRED — .oes-body uses flex:1 to
+       absorb the remaining space; without a flex column parent
+       the body collapsed to zero height and chain rows + depth
+       ladder rendered invisibly. */
     width: 100%;
+    display: flex;
+    flex-direction: column;
     min-height: min(78vh, 720px);
     border-radius: 0;
     box-shadow: none;
