@@ -151,7 +151,10 @@
   /** @type {Array<{be:number,label:string,pinY:number,chipW:number}>} */
   const bePins = $derived.by(() => {
     return breakevenList.map((be, i) => {
-      const label = 'BE ' + priceFmt(be);
+      // Operator: "remove BE in breakeven chip decoration". The chip's
+      // position + amber outline already identifies it as a breakeven
+      // marker; the "BE " prefix is redundant text.
+      const label = priceFmt(be);
       const chipW = label.length * 7 + 14;
       let stackLevel = 0;
       for (let j = 0; j < i; j++) {
