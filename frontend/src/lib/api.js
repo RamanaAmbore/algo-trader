@@ -552,6 +552,29 @@ export async function previewOrderMargin(payload) {
   return _post('/orders/preflight', payload, { auth: true });
 }
 
+/** POST /api/orders/basket — place all legs in one atomic backend call.
+ *  Request:  { groups: [{ account, legs: [...] }] }
+ *  Response: { groups: [{ account, basket_id, results: [...], margin_required, margin_available }] } */
+export async function placeBasket(groups) {
+  return _post('/orders/basket', { groups }, { auth: true });
+}
+
+/** POST /api/orders/basket/margin — per-account margin check without placing.
+ *  Same shape as placeBasket request.
+ *  Response: { groups: [{ account, required, available, shortfall, error }] }
+ *
+ *  In-memory 1.5 s cache keyed by JSON-stringified payload so rapid
+ *  picker changes don't fire redundant round-trips. */
+const _basketMarginCache = new Map();
+export async function fetchBasketMargin(groups) {
+  const key = JSON.stringify(groups);
+  const cached = _basketMarginCache.get(key);
+  if (cached && Date.now() - cached.ts < 1500) return cached.data;
+  const data = await _post('/orders/basket/margin', { groups }, { auth: true });
+  _basketMarginCache.set(key, { ts: Date.now(), data });
+  return data;
+}
+
 /** GET /api/charts/intraday-equity?n=… — rolling intraday P&L buffer.
  *  Returns `{points: [{ts, day_pnl, cum_pnl}]}`. One point per ~5 min
  *  tick during market hours; wiped on IST date rollover. Admin-guarded. */

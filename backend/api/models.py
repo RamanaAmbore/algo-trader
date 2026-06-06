@@ -285,6 +285,20 @@ class AlgoOrder(Base):
     )
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expiry_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
+    # Auto profit-target — set once at order creation; engine arms a child
+    # TP order on fill.  Exactly one of target_pct / target_abs is set
+    # (or both may be None to opt out of the TP feature).
+    target_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    target_abs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # parent_order_id links a take-profit child row back to the originating
+    # parent AlgoOrder.  NULL on parent rows; set on every TP child so
+    # idempotency checks can skip duplicate TP creation.
+    parent_order_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("algo_orders.id"), nullable=True, index=True,
+    )
+    # basket_tag groups the legs of a single basket submission.  Carried
+    # through to kite.place_order(tag=…) so the broker also groups them.
+    basket_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

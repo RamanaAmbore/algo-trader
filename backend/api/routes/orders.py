@@ -36,6 +36,13 @@ from backend.api.routes.ws import broadcast
 from backend.api.schemas import (
     AccountInfo,
     AccountsResponse,
+    BasketGroup,
+    BasketGroupResult,
+    BasketLegResult,
+    BasketMarginGroupResult,
+    BasketMarginResponse,
+    BasketOrderRequest,
+    BasketOrderResponse,
     CancelOrderResponse,
     ModifyOrderRequest,
     ModifyOrderResponse,
@@ -387,6 +394,179 @@ class AlgoOrderInfo(msgspec.Struct):
     mode: str
     detail: str | None
     created_at: str
+    # Basket / TP metadata — None on legacy rows.
+    target_pct: float | None = None
+    target_abs: float | None = None
+    parent_order_id: int | None = None
+    basket_tag: str | None = None
+
+
+def _resolve_target_pct(override: float | None) -> float:
+    """Return the effective TP fraction for a new order.
+
+    Priority:
+      1. explicit `override` from the request (including 0.0 to disable TP)
+      2. `algo.default_target_pct` DB setting
+      3. hard-coded fallback of 0.30
+    A negative value is clamped to 0 (disabled).
+    """
+    if override is not None:
+        return max(0.0, float(override))
+    from backend.shared.helpers.settings import get_float
+    return max(0.0, get_float("algo.default_target_pct", 0.30))
+
+
+async def _arm_take_profit(
+    parent_row_id: int,
+    parent_account: str,
+    parent_symbol: str,
+    parent_exchange: str,
+    parent_side: str,      # "BUY" | "SELL"
+    fill_price: float,
+    target_pct: float,
+    target_abs: float | None,
+    parent_mode: str,      # "paper" | "live"
+    parent_product: str = "NRML",
+) -> None:
+    """Arm a take-profit child order on fill.
+
+    Called from the postback handler and _emit_chase_terminal when a parent
+    order reaches FILLED.  Idempotent: skips if a child row already exists
+    for this parent.
+
+    Logic:
+      - BUY parent  → SELL TP  @ fill_price × (1 + target_pct)
+      - SELL parent → BUY  TP  @ fill_price × (1 - target_pct)
+      If target_abs is also set, adds it on top of the pct delta.
+    """
+    if not fill_price or fill_price <= 0:
+        return
+    if not target_pct and not target_abs:
+        return
+
+    try:
+        from sqlalchemy import select as _sel, func as _func
+        from datetime import datetime, timezone
+        from backend.api.database import async_session as _async_session
+        from backend.api.models import AlgoOrder as _AlgoOrder
+
+        async with _async_session() as _s:
+            # Idempotency — skip if a TP child already exists.
+            existing = (await _s.execute(
+                _sel(_func.count(_AlgoOrder.id)).where(
+                    _AlgoOrder.parent_order_id == parent_row_id
+                )
+            )).scalar_one()
+            if existing:
+                return
+
+            # Resolve parent row to get quantity (needed for the child).
+            parent = (await _s.execute(
+                _sel(_AlgoOrder).where(_AlgoOrder.id == parent_row_id)
+            )).scalar_one_or_none()
+            if parent is None:
+                return
+
+            qty = int(parent.quantity or 0)
+            if not qty:
+                return
+
+            parent_side_u = (parent_side or "BUY").upper()
+            tp_side = "SELL" if parent_side_u == "BUY" else "BUY"
+
+            # Compute TP price.
+            pct_delta = float(target_pct or 0.0)
+            abs_delta = float(target_abs or 0.0)
+            if tp_side == "SELL":
+                tp_price = fill_price * (1.0 + pct_delta) + abs_delta
+            else:
+                tp_price = fill_price * (1.0 - pct_delta) - abs_delta
+            tp_price = max(0.01, round(tp_price, 2))
+
+            tp_detail = (
+                f"TP +{pct_delta*100:.0f}% · parent #{parent_row_id} "
+                f"fill ₹{fill_price:.2f} → limit ₹{tp_price:.2f}"
+            )
+
+            tp_row = _AlgoOrder(
+                account=parent_account,
+                symbol=parent_symbol,
+                exchange=parent_exchange,
+                transaction_type=tp_side,
+                quantity=qty,
+                initial_price=tp_price,
+                status="OPEN",
+                engine="target",
+                mode=parent_mode,
+                target_pct=target_pct,
+                target_abs=target_abs,
+                parent_order_id=parent_row_id,
+                detail=tp_detail,
+            )
+            _s.add(tp_row)
+            await _s.commit()
+            tp_id = tp_row.id
+
+        # Register with the paper engine so it chases the TP.
+        if parent_mode == "paper":
+            try:
+                from backend.api.algo.paper import get_prod_paper_engine
+                eng = get_prod_paper_engine()
+                eng.register_open_order({
+                    "algo_order_id": tp_id,
+                    "account":       parent_account,
+                    "symbol":        parent_symbol,
+                    "side":          tp_side,
+                    "qty":           qty,
+                    "limit_price":   tp_price,
+                    "initial_price": tp_price,
+                    "exchange":      parent_exchange,
+                    "agent_slug":    "auto-tp",
+                    "action_type":   "place_order",
+                    "chase_agg":     "low",
+                })
+            except Exception as _pe:
+                logger.warning(f"[TP] paper engine register failed for tp #{tp_id}: {_pe}")
+
+        elif parent_mode == "live":
+            # Live TP — fire kite.place_order as a limit order.
+            try:
+                broker = _broker_for(parent_account)
+                from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+                _ls = await get_lot_size(parent_exchange, parent_symbol)
+                _kq = to_kite_qty(parent_exchange, qty, _ls)
+                kite_order_id = broker.place_order(
+                    variety="regular",
+                    exchange=parent_exchange,
+                    tradingsymbol=parent_symbol,
+                    transaction_type=tp_side,
+                    quantity=_kq,
+                    product=parent_product or "NRML",
+                    order_type="LIMIT",
+                    price=tp_price,
+                    validity="DAY",
+                    tag=f"ramboq-tp-{parent_row_id}",
+                )
+                # Link the broker order id back to the child row.
+                from backend.api.database import async_session as _async_session2
+                from backend.api.models import AlgoOrder as _AO2
+                async with _async_session2() as _s2:
+                    tp_upd = (await _s2.execute(
+                        _sel(_AO2).where(_AO2.id == tp_id)
+                    )).scalar_one_or_none()
+                    if tp_upd is not None:
+                        tp_upd.broker_order_id = str(kite_order_id)
+                    await _s2.commit()
+                logger.info(f"[TP] live TP order placed: broker={kite_order_id} "
+                            f"tp_id={tp_id} parent={parent_row_id}")
+            except Exception as _le:
+                logger.error(f"[TP] live TP placement failed for parent #{parent_row_id}: {_le}")
+
+        logger.info(f"[TP] armed: tp_id={tp_id} parent={parent_row_id} "
+                    f"side={tp_side} limit=₹{tp_price:.2f} mode={parent_mode}")
+
+    except Exception as _e:
+        logger.warning(f"[TP] _arm_take_profit failed for parent #{parent_row_id}: {_e}")
 
 
 class OrdersController(Controller):
@@ -455,6 +635,10 @@ class OrdersController(Controller):
                 status=r.status, engine=r.engine, mode=r.mode,
                 detail=r.detail,
                 created_at=r.created_at.isoformat() if r.created_at else "",
+                target_pct=(float(r.target_pct) if r.target_pct is not None else None),
+                target_abs=(float(r.target_abs) if r.target_abs is not None else None),
+                parent_order_id=r.parent_order_id,
+                basket_tag=r.basket_tag,
             )
             for r in rows
         ]
@@ -540,6 +724,10 @@ class OrdersController(Controller):
                 status=r.status, engine=r.engine, mode=r.mode,
                 detail=r.detail,
                 created_at=r.created_at.isoformat() if r.created_at else "",
+                target_pct=(float(r.target_pct) if r.target_pct is not None else None),
+                target_abs=(float(r.target_abs) if r.target_abs is not None else None),
+                parent_order_id=r.parent_order_id,
+                basket_tag=r.basket_tag,
             )
             for r in kept
         ]
@@ -1404,6 +1592,7 @@ class OrdersController(Controller):
             _manual_aid = await get_agent_id_by_slug("manual")
         except Exception:
             pass
+        _eff_target_pct = _resolve_target_pct(data.target_pct)
         try:
             async with async_session() as s:
                 row = AlgoOrder(
@@ -1412,6 +1601,7 @@ class OrdersController(Controller):
                     initial_price=(float(data.price) if data.price is not None else None),
                     status="OPEN", engine="paper", mode="paper",
                     agent_id=_manual_aid,
+                    target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
                     detail=detail,
                 )
                 s.add(row)
@@ -1614,6 +1804,7 @@ class OrdersController(Controller):
 
                 async def _pb_event():
                     try:
+                        _filled_rows = []
                         async with _async_session() as _s:
                             _rows = (await _s.execute(
                                 _sql_select(_AlgoOrder).where(
@@ -1631,6 +1822,7 @@ class OrdersController(Controller):
                                         if _r.created_at:
                                             from datetime import datetime, timezone
                                             _r.filled_at = datetime.now(timezone.utc)
+                                        _filled_rows.append(_r)
                             await _s.commit()
                         for _r in _rows:
                             await _write_event(
@@ -1648,6 +1840,26 @@ class OrdersController(Controller):
                                     "status_message": status_msg,
                                 },
                             )
+                        # Auto TP — arm take-profit child on every fill that
+                        # has a target_pct / target_abs set and is a parent
+                        # (parent_order_id is NULL) to prevent TP-of-TP chains.
+                        for _r in _filled_rows:
+                            if ((_r.target_pct or _r.target_abs)
+                                    and _r.parent_order_id is None
+                                    and _r.fill_price):
+                                import asyncio as _aio2
+                                _aio2.create_task(_arm_take_profit(
+                                    parent_row_id=_r.id,
+                                    parent_account=str(_r.account or ""),
+                                    parent_symbol=str(_r.symbol or ""),
+                                    parent_exchange=str(_r.exchange or "NFO"),
+                                    parent_side=str(_r.transaction_type or "BUY"),
+                                    fill_price=float(_r.fill_price),
+                                    target_pct=float(_r.target_pct or 0.0),
+                                    target_abs=(_r.target_abs
+                                                and float(_r.target_abs)),
+                                    parent_mode=str(_r.mode or "live"),
+                                ))
                     except Exception as _pe:
                         logger.debug(f"postback event write failed: {_pe}")
 
@@ -1704,6 +1916,319 @@ class OrdersController(Controller):
         except Exception as e:
             logger.error(f"Postback error: {e}")
             return {"status": "error", "detail": str(e)}
+
+    @post("/basket/margin")
+    async def basket_margin(self, data: BasketOrderRequest, request: Request) -> BasketMarginResponse:
+        """
+        Compute the offset-aware margin for a basket of orders WITHOUT placing them.
+
+        Calls kite.basket_order_margins(orders) per account in parallel.
+        This is the true Kite basket benefit: spreads and hedges reduce
+        the required margin vs. summing per-leg margin individually.
+
+        Demo sessions → 403. Non-admin → 403.
+        """
+        if getattr(request.state, "is_demo", False):
+            raise HTTPException(status_code=403, detail="Demo: basket margin requires sign-in.")
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403, detail="Admin access required.")
+
+        import asyncio as _asyncio
+
+        async def _margin_for_group(grp: BasketGroup) -> BasketMarginGroupResult:
+            account = (grp.account or "").strip()
+            if not account:
+                return BasketMarginGroupResult(
+                    account=account, required=None, available=None,
+                    shortfall=None, error="account is required",
+                )
+            try:
+                broker = _broker_for(account)
+                orders_payload = [
+                    {
+                        "exchange":         leg.exchange.upper(),
+                        "tradingsymbol":    leg.tradingsymbol.upper(),
+                        "transaction_type": leg.transaction_type.upper(),
+                        "variety":          leg.variety or "regular",
+                        "product":          leg.product or "NRML",
+                        "order_type":       leg.order_type or "LIMIT",
+                        "quantity":         leg.quantity,
+                        "price":            float(leg.price or 0),
+                        "trigger_price":    float(leg.trigger_price or 0),
+                    }
+                    for leg in grp.legs
+                ]
+                result = await _asyncio.to_thread(broker.basket_order_margins, orders_payload)
+                # Kite returns {"initial": {...}, "final": {...}}; we surface
+                # "final" as the post-hedge required margin.
+                final  = (result or {}).get("final", {}) or {}
+                avail  = (result or {}).get("initial", {}).get("available", {}) or {}
+                required  = float(final.get("total") or 0)
+                available = float(avail.get("cash") or 0)
+                shortfall = max(0.0, required - available)
+                return BasketMarginGroupResult(
+                    account=account,
+                    required=required,
+                    available=available,
+                    shortfall=shortfall,
+                )
+            except HTTPException:
+                raise
+            except Exception as _e:
+                logger.warning(f"[BASKET-MARGIN] account={account} error={_e}")
+                return BasketMarginGroupResult(
+                    account=account, required=None, available=None,
+                    shortfall=None, error=str(_e)[:200],
+                )
+
+        results = await _asyncio.gather(*[_margin_for_group(g) for g in data.groups])
+        return BasketMarginResponse(groups=list(results))
+
+    @post("/basket")
+    async def basket_order(self, data: BasketOrderRequest, request: Request) -> BasketOrderResponse:
+        """
+        True multi-account basket order endpoint.
+
+        Legs are grouped by account.  Per group:
+          - LIVE mode: each leg is dispatched via kite.place_order with a
+            shared `tag="ramboq-basket-<uuid>"`.  Groups run concurrently
+            via asyncio.gather; legs within a group run in sequence (Kite
+            expects sequential placement for a basket — the tag links them
+            server-side).
+          - PAPER mode: each leg is persisted as an AlgoOrder and registered
+            with the prod paper engine.
+          - SHADOW mode: logs the Kite payload + computes basket_margin
+            without executing.
+
+        Demo → 403 (consistent with /ticket).
+        Non-prod branch + mode=live → 403.
+        paper_trading_mode=ON + mode=live → 403.
+        """
+        import asyncio as _asyncio
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from backend.api.database import async_session as _async_session2
+        from backend.api.models import AlgoOrder as _AlgoOrder2
+        from backend.shared.helpers.utils import is_prod_branch
+        from backend.shared.helpers.settings import get_bool as _get_bool
+
+        if getattr(request.state, "is_demo", False):
+            raise HTTPException(status_code=403,
+                detail="Demo: basket orders require sign-in.")
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403,
+                detail="Admin access required for basket orders.")
+
+        # Resolve effective mode — same gate as /ticket.
+        _ptm = _get_bool("execution.paper_trading_mode", False)
+        _shadow = _get_bool("execution.shadow_mode", False)
+        _shadow_on = _shadow and is_prod_branch()
+        # Determine mode: shadow > paper_trading_mode > LIVE.
+        if _shadow_on:
+            eff_mode = "shadow"
+        elif not is_prod_branch() or _ptm:
+            eff_mode = "paper"
+        else:
+            eff_mode = "live"
+
+        eff_target_pct = _resolve_target_pct(data.target_pct)
+
+        async def _dispatch_group(grp: BasketGroup) -> BasketGroupResult:
+            account = (grp.account or "").strip()
+            if not account:
+                return BasketGroupResult(
+                    account=account,
+                    basket_id="",
+                    results=[BasketLegResult(leg_index=i, order_id=None,
+                                            status="error",
+                                            error="account is required")
+                             for i in range(len(grp.legs))],
+                )
+
+            conns = Connections()
+            if account not in conns.conn:
+                return BasketGroupResult(
+                    account=account,
+                    basket_id="",
+                    results=[BasketLegResult(leg_index=i, order_id=None,
+                                            status="error",
+                                            error=f"unknown account: {account}")
+                             for i in range(len(grp.legs))],
+                )
+
+            basket_id = f"ramboq-basket-{_uuid.uuid4().hex[:12]}"
+            leg_results: list[BasketLegResult] = []
+
+            for i, leg in enumerate(grp.legs):
+                sym = leg.tradingsymbol.upper().strip()
+                side = leg.transaction_type.upper()
+                qty = int(leg.quantity or 0)
+                exch = (leg.exchange or "NFO").upper()
+
+                # Basic validation per leg.
+                if not sym or qty <= 0 or side not in _TXN_TYPES or exch not in _EXCHANGES:
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=f"invalid leg: sym={sym} qty={qty} side={side} exch={exch}",
+                    ))
+                    continue
+
+                if eff_mode == "live":
+                    try:
+                        broker = _broker_for(account)
+                        from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+                        _ls = await get_lot_size(exch, sym)
+                        _kq = to_kite_qty(exch, qty, _ls)
+                        kite_oid = await _asyncio.to_thread(
+                            broker.place_order,
+                            variety=leg.variety or "regular",
+                            exchange=exch,
+                            tradingsymbol=sym,
+                            transaction_type=side,
+                            quantity=_kq,
+                            product=leg.product or "NRML",
+                            order_type=leg.order_type or "LIMIT",
+                            price=float(leg.price or 0),
+                            trigger_price=float(leg.trigger_price or 0),
+                            validity="DAY",
+                            tag=basket_id,
+                        )
+                        # Persist AlgoOrder row so the order book tracks it.
+                        async with _async_session2() as _s:
+                            _r = _AlgoOrder2(
+                                account=account, symbol=sym, exchange=exch,
+                                transaction_type=side, quantity=qty,
+                                initial_price=float(leg.price or 0) or None,
+                                broker_order_id=str(kite_oid),
+                                status="OPEN", engine="live", mode="live",
+                                basket_tag=basket_id,
+                                target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                            )
+                            _s.add(_r)
+                            await _s.commit()
+                        invalidate("orders")
+                        leg_results.append(BasketLegResult(
+                            leg_index=i, order_id=str(kite_oid), status="OPEN",
+                        ))
+                    except Exception as _e:
+                        leg_results.append(BasketLegResult(
+                            leg_index=i, order_id=None, status="error",
+                            error=str(_e)[:200],
+                        ))
+
+                elif eff_mode == "shadow":
+                    # Log payload; compute basket margin for the group but
+                    # don't place any orders.
+                    logger.info(
+                        f"[SHADOW-BASKET] {account} leg {i}: {side} {qty} {sym} "
+                        f"@{leg.price} tag={basket_id}"
+                    )
+                    async with _async_session2() as _s:
+                        _r = _AlgoOrder2(
+                            account=account, symbol=sym, exchange=exch,
+                            transaction_type=side, quantity=qty,
+                            initial_price=float(leg.price or 0) or None,
+                            status="OPEN", engine="shadow", mode="shadow",
+                            basket_tag=basket_id,
+                            target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                            detail=f"[SHADOW-BASKET] leg {i} tag={basket_id}",
+                        )
+                        _s.add(_r)
+                        await _s.commit()
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="SHADOW",
+                    ))
+
+                else:
+                    # Paper mode.
+                    from backend.api.algo.paper import get_prod_paper_engine
+                    _manual_aid2: int | None = None
+                    try:
+                        from backend.api.algo.agent_engine import get_agent_id_by_slug as _ga
+                        _manual_aid2 = await _ga("manual")
+                    except Exception:
+                        pass
+                    _detail = (f"[PAPER-BASKET] {side} {qty} {sym} "
+                               f"tag={basket_id}")
+                    async with _async_session2() as _s:
+                        _r = _AlgoOrder2(
+                            account=account, symbol=sym, exchange=exch,
+                            transaction_type=side, quantity=qty,
+                            initial_price=float(leg.price or 0) or None,
+                            status="OPEN", engine="paper", mode="paper",
+                            agent_id=_manual_aid2,
+                            basket_tag=basket_id,
+                            target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                            detail=_detail,
+                        )
+                        _s.add(_r)
+                        await _s.commit()
+                        _paper_id = _r.id
+
+                    if leg.price and qty > 0:
+                        try:
+                            eng = get_prod_paper_engine()
+                            eng.register_open_order({
+                                "algo_order_id": _paper_id,
+                                "account":       account,
+                                "symbol":        sym,
+                                "side":          side,
+                                "qty":           qty,
+                                "limit_price":   float(leg.price),
+                                "initial_price": float(leg.price),
+                                "exchange":      exch,
+                                "agent_slug":    "basket-ticket",
+                                "action_type":   "place_order",
+                                "chase_agg":     "low",
+                            })
+                        except Exception as _pe:
+                            logger.warning(
+                                f"[PAPER-BASKET] engine register failed for "
+                                f"#{_paper_id}: {_pe}"
+                            )
+
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=str(_paper_id), status="PAPER",
+                    ))
+
+            # Compute offset-aware margin for the group (best-effort; not a
+            # gate — operators already see it before submitting via /basket/margin).
+            margin_required: float | None = None
+            margin_available: float | None = None
+            try:
+                broker = _broker_for(account)
+                orders_payload = [
+                    {
+                        "exchange":         (leg.exchange or "NFO").upper(),
+                        "tradingsymbol":    leg.tradingsymbol.upper(),
+                        "transaction_type": leg.transaction_type.upper(),
+                        "variety":          leg.variety or "regular",
+                        "product":          leg.product or "NRML",
+                        "order_type":       leg.order_type or "LIMIT",
+                        "quantity":         leg.quantity,
+                        "price":            float(leg.price or 0),
+                        "trigger_price":    float(leg.trigger_price or 0),
+                    }
+                    for leg in grp.legs
+                ]
+                mr = await _asyncio.to_thread(broker.basket_order_margins, orders_payload)
+                final_m = (mr or {}).get("final", {}) or {}
+                avail_m = (mr or {}).get("initial", {}).get("available", {}) or {}
+                margin_required  = float(final_m.get("total") or 0)
+                margin_available = float(avail_m.get("cash") or 0)
+            except Exception as _me:
+                logger.debug(f"[BASKET] margin lookup failed for {account}: {_me}")
+
+            return BasketGroupResult(
+                account=account,
+                basket_id=basket_id,
+                results=leg_results,
+                margin_required=margin_required,
+                margin_available=margin_available,
+            )
+
+        group_results = await _asyncio.gather(*[_dispatch_group(g) for g in data.groups])
+        return BasketOrderResponse(groups=list(group_results))
 
     @delete("/{order_id:str}", status_code=HTTP_200_OK)
     async def cancel_order(

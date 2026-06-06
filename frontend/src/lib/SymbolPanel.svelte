@@ -32,7 +32,7 @@
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
-  import { placeTicketOrder, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
+  import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
@@ -401,7 +401,75 @@
   function removeBasketLeg(/** @type {number} */ i) {
     basketLegs = basketLegs.filter((_, k) => k !== i);
   }
-  function clearBasket() { basketLegs = []; basketResultMsg = ''; }
+  function clearBasket() { basketLegs = []; basketResultMsg = ''; _basketMarginRows = []; }
+
+  // ── Per-account basket margin strip ──────────────────────────────────
+  // When the basket spans >1 account, show Required / Available / After
+  // per account above the leg pills. When there's only 1 account, the
+  // existing single-account margin pill in the common footer stays as-is.
+  /** @type {Array<{account:string,required:number,available:number,shortfall:number,error:string|null}>} */
+  let _basketMarginRows = $state([]);
+  let _basketMarginTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+
+  // Derive the distinct set of accounts in the current basket.
+  const _basketAccounts = $derived.by(() => {
+    const seen = new Set();
+    for (const leg of basketLegs) {
+      const a = leg.account || _sharedAccount || '';
+      if (a) seen.add(a);
+    }
+    return [...seen];
+  });
+
+  // Debounced effect — fires 500 ms after any basket change when basket
+  // spans ≥2 accounts; clears the strip when basket is empty or single-acct.
+  $effect(() => {
+    // Track reactive inputs.
+    const legs = basketLegs;
+    const accts = _basketAccounts;
+    void legs; void accts;
+
+    if (_basketMarginTimer) { clearTimeout(_basketMarginTimer); _basketMarginTimer = null; }
+
+    if (!legs.length || accts.length < 2) {
+      _basketMarginRows = [];
+      return;
+    }
+    _basketMarginTimer = setTimeout(async () => {
+      try {
+        // Build groups matching the basket/margin request shape.
+        /** @type {Map<string,any[]>} */
+        const byAcct = new Map();
+        for (const leg of legs) {
+          const a = leg.account || _sharedAccount || '';
+          if (!a) continue;
+          if (!byAcct.has(a)) byAcct.set(a, []);
+          byAcct.get(a)?.push({
+            tradingsymbol: leg.sym,
+            exchange: leg.exchange || 'NFO',
+            side: leg.side,
+            quantity: (leg.lots || 1) * (leg.lotSize || 1),
+            product: leg.product || 'NRML',
+            order_type: 'LIMIT',
+            price: Number(leg.limit) || 0,
+          });
+        }
+        const groups = [...byAcct.entries()].map(([account, _legs]) => ({ account, legs: _legs }));
+        const resp = await fetchBasketMargin(groups);
+        _basketMarginRows = (resp?.groups || []).map(/** @type {any} */ (g) => ({
+          account: g.account,
+          required: Number(g.required || 0),
+          available: Number(g.available || 0),
+          shortfall: Number(g.shortfall || 0),
+          error: g.error || null,
+        }));
+      } catch { _basketMarginRows = []; }
+    }, 500);
+
+    return () => {
+      if (_basketMarginTimer) { clearTimeout(_basketMarginTimer); _basketMarginTimer = null; }
+    };
+  });
 
   // ── Shared account state ─────────────────────────────────────────
   // Single source of truth for the routable account across all three
@@ -731,108 +799,118 @@
     basketLegs = basketLegs.map(b => b.key === key ? updater(b) : b);
   }
 
-  /** Submit every leg in the shell basket via placeTicketOrder. */
+  /** Submit every leg in the shell basket via POST /api/orders/basket. */
   async function submitBasket() {
     if (basketSubmitting || !basketLegs.length) return;
     basketSubmitting = true; basketResultMsg = '';
-    let ok = 0; /** @type {string[]} */ const fails = [];
-    // Shared mode takes precedence over the auto-resolved basketMode2
-    // when the operator explicitly picked PAPER or LIVE on the common
-    // toolbar. Falls through to the live-status auto-detect path for
-    // backward compatibility when no toolbar pick is on file.
+
+    // Validate that every leg has a limit price before going to the backend.
+    const missingQuote = basketLegs.find(leg => !(Number(leg.limit) > 0));
+    if (missingQuote) {
+      basketResultMsg = `${missingQuote.side} ${missingQuote.sym}: no quote yet — re-open chain so bid/ask loads.`;
+      basketSubmitting = false;
+      return;
+    }
+
+    // Resolve effective mode, applying the same force-paper guard as before.
     let basketMode2 = _sharedMode || 'paper';
     if (basketMode2 === 'paper' || basketMode2 === 'live') {
       try {
         const live = await fetchLiveStatus();
-        // Force-paper guard: if branch isn't main OR master flag says
-        // paper, downgrade to paper regardless of operator's pick.
         if (live && (live.branch !== 'main' || live.paper_trading_mode === true)) {
           basketMode2 = 'paper';
         }
-      } catch { /* safe default — keep operator's pick */ }
+      } catch { /* keep operator's pick */ }
     }
 
-    // Track failed-leg indices explicitly. The earlier code pruned
-    // legs by `i >= ok` which assumed all failures were at the END of
-    // the array — but the loop continues on error, so `ok` is a
-    // counter of successes, not a positional index. A failing leg in
-    // the MIDDLE would survive while a passing leg at the end got
-    // dropped. Bug now fixed with an explicit failedIdx set.
+    // Build groups: one group per distinct account.
+    /** @type {Map<string, {legIndex: number, leg: any}[]>} */
+    const byAcct = new Map();
+    basketLegs.forEach((leg, idx) => {
+      const acct = leg.account || _sharedAccount || account || '';
+      if (!byAcct.has(acct)) byAcct.set(acct, []);
+      byAcct.get(acct)?.push({ legIndex: idx, leg });
+    });
+
+    const groups = [...byAcct.entries()].map(([acct, entries]) => ({
+      account: acct,
+      mode: basketMode2,
+      legs: entries.map(({ leg }) => ({
+        tradingsymbol:    leg.sym,
+        exchange:         leg.exchange || 'NFO',
+        side:             leg.side,
+        quantity:         (leg.lots || 1) * (leg.lotSize || 1),
+        product:          leg.product || 'NRML',
+        order_type:       'LIMIT',
+        variety:          'regular',
+        price:            Number(leg.limit),
+        chase:            _sharedChase,
+        chase_aggressiveness: _sharedChase ? (leg.chaseAgg || _sharedChaseAgg || 'low') : 'low',
+        target_pct:       leg.target_pct   ?? null,
+        target_abs:       leg.target_abs   ?? null,
+      })),
+    }));
+
+    const total = basketLegs.length;
     /** @type {Set<number>} */
     const failedIdx = new Set();
-    for (let i = 0; i < basketLegs.length; i++) {
-      const leg = basketLegs[i];
-      try {
-        const hasLimit = Number(leg.limit) > 0;
-        if (!hasLimit) {
-          // Every order is LIMIT + chase[low] by default — silently
-          // downgrading to MARKET when the quote hadn't arrived yet
-          // bypassed the operator's intent and made the chase engine
-          // a no-op (MARKET fills immediately). Force the operator to
-          // either wait for the quote or override per-leg manually.
-          fails.push(`${leg.side} ${leg.sym}: no quote yet — re-open the chain so the bid/ask price loads, then submit again.`);
-          failedIdx.add(i);
-          continue;
-        }
-        const brokerResp = await placeTicketOrder({
-          mode:             basketMode2,
-          side:             leg.side,
-          tradingsymbol:    leg.sym,
-          exchange:         leg.exchange || 'NFO',
-          quantity:         (leg.lots || 1) * (leg.lotSize || 1),
-          product:          leg.product || 'NRML',
-          order_type:       'LIMIT',
-          variety:          'regular',
-          price:            Number(leg.limit),
-          account:          leg.account || _sharedAccount || account || '',
-          chase:            _sharedChase,
-          chase_aggressiveness: _sharedChase ? (leg.chaseAgg || _sharedChaseAgg || 'low') : 'low',
+    let ok = 0;
+    /** @type {string[]} */
+    const fails = [];
+
+    try {
+      const resp = await placeBasket(groups);
+      // Map per-account results back to original leg indices.
+      /** @type {Map<number,any>} */
+      const resultByOrigIdx = new Map();
+      let groupIdx = 0;
+      for (const [acct, entries] of byAcct) {
+        const grpResp = (resp?.groups || [])[groupIdx];
+        groupIdx++;
+        entries.forEach(({ legIndex, leg }, i) => {
+          const r = grpResp?.results?.[i];
+          resultByOrigIdx.set(legIndex, { leg, acct, r });
         });
-        ok++;
-        // Surface the full ticket-shape payload to the parent (mode +
-        // broker_response are what /admin/options needs to push a
-        // completion toast and link the fill broadcast back to the
-        // right order). Earlier we only spread `leg` which had no
-        // mode/broker_response, so the parent's toast logic silently
-        // fell through and the operator saw nothing land.
-        onSubmit?.({
-          mode:           basketMode2,
-          side:           leg.side,
-          symbol:         leg.sym,
-          quantity:       (leg.lots || 1) * (leg.lotSize || 1),
-          price:          Number(leg.limit),
-          account:        leg.account || account || '',
-          broker_response: brokerResp,
-          _basketLeg:     true,
-          ...leg,
-        });
-      } catch (e) {
-        fails.push(`${leg.side} ${leg.sym}: ${/** @type {any} */ (e)?.message || 'failed'}`);
-        failedIdx.add(i);
       }
+      for (const [origIdx, { leg, acct, r }] of resultByOrigIdx) {
+        if (!r || r.status === 'REJECTED' || r.error) {
+          fails.push(`${leg.side} ${leg.sym}: ${r?.error || 'rejected'}`);
+          failedIdx.add(origIdx);
+        } else {
+          ok++;
+          onSubmit?.({
+            mode:            basketMode2,
+            side:            leg.side,
+            symbol:          leg.sym,
+            quantity:        (leg.lots || 1) * (leg.lotSize || 1),
+            price:           Number(leg.limit),
+            account:         acct,
+            broker_response: { order_id: r.order_id, status: r.status },
+            _basketLeg:      true,
+            ...leg,
+          });
+        }
+      }
+    } catch (e) {
+      // Full request failure — mark all legs failed.
+      basketLegs.forEach((_, i) => failedIdx.add(i));
+      fails.push(/** @type {any} */ (e)?.message || 'Basket submit failed');
     }
+
     basketSubmitting = false;
-    const total = basketLegs.length;
+    const numAccts = byAcct.size;
     if (!fails.length) {
-      basketResultMsg = `${ok}/${total} placed · basket cleared`;
+      const msg = `${ok}/${total} placed across ${numAccts} account${numAccts > 1 ? 's' : ''} · basket cleared`;
+      basketResultMsg = msg;
       basketLegs = [];
-      // Sticky for 3s so the operator sees the basket was cleared
-      // — earlier the result line disappeared with the basket bar
-      // (basketResultMsg is rendered inside the basket-bar block),
-      // so there was no confirmation that submit landed. Re-render
-      // the message via _stickyResultMsg which has its own slot.
-      _stickyResultMsg = `${ok}/${total} placed · basket cleared`;
+      _basketMarginRows = [];
+      _stickyResultMsg = msg;
       _stickyResultLevel = 'ok';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
-      _stickyResultTimer = setTimeout(() => {
-        _stickyResultMsg = '';
-        _stickyResultLevel = '';
-      }, 3000);
+      _stickyResultTimer = setTimeout(() => { _stickyResultMsg = ''; _stickyResultLevel = ''; }, 3000);
       setTimeout(onClose, 1500);
     } else if (ok > 0) {
       basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}`;
-      // Keep ONLY the legs that failed so the operator can retry just
-      // those (after fixing the quote / limit / etc.).
       basketLegs = basketLegs.filter((_, i) => failedIdx.has(i));
     } else {
       basketResultMsg = `Failed: ${fails[0]}`;
@@ -1253,6 +1331,27 @@
          any tab without flipping back to Chain. -->
     {#if basketLegs.length > 0}
       <div class="oes-basket-bar">
+        <!-- Per-account margin strip — shown when basket spans >1 account.
+             Single-account baskets keep using the existing common-footer
+             margin pill so behaviour is unchanged for the typical case. -->
+        {#if _basketMarginRows.length > 1}
+          <div class="oes-basket-margin-strip">
+            {#each _basketMarginRows as row (row.account)}
+              {@const _after = row.available - row.required}
+              {@const _cls = row.error ? 'bms-row-err' : row.shortfall > 0 ? 'bms-row-short' : _after < row.required * 0.1 ? 'bms-row-warn' : 'bms-row-ok'}
+              <span class="bms-row {_cls}" title={row.error || `${row.account}: Required ₹${aggFmtMargin(row.required)} · Available ₹${aggFmtMargin(row.available)} · After ₹${aggFmtMargin(_after)}`}>
+                <span class="bms-acct">{row.account}</span>
+                {#if row.error}
+                  <span class="bms-err">{row.error.slice(0, 30)}</span>
+                {:else}
+                  <span class="bms-kv"><span class="bms-k">Req</span><span class="bms-v">₹{aggFmtMargin(row.required)}</span></span>
+                  <span class="bms-kv"><span class="bms-k">Avail</span><span class="bms-v">₹{aggFmtMargin(row.available)}</span></span>
+                  <span class="bms-kv {row.shortfall > 0 ? 'bms-kv-short' : ''}"><span class="bms-k">After</span><span class="bms-v">₹{aggFmtMargin(_after)}</span></span>
+                {/if}
+              </span>
+            {/each}
+          </div>
+        {/if}
         <div class="oes-basket-pills" role="list">
           {#each basketLegs as leg, i (leg.key)}
             {@const _legAcct = leg.account || _sharedAccount || ''}
@@ -1922,6 +2021,37 @@
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */
+  /* Per-account basket margin strip */
+  .oes-basket-margin-strip {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.6rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(74,222,128,0.18);
+    margin-bottom: 0.2rem;
+  }
+  .bms-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.15rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+    border: 1px solid;
+  }
+  .bms-row-ok    { border-color: rgba(74,222,128,0.35); background: rgba(74,222,128,0.08); color: #4ade80; }
+  .bms-row-warn  { border-color: rgba(251,191,36,0.35); background: rgba(251,191,36,0.08); color: #fbbf24; }
+  .bms-row-short { border-color: rgba(248,113,113,0.45); background: rgba(248,113,113,0.10); color: #f87171; }
+  .bms-row-err   { border-color: rgba(248,113,113,0.35); background: rgba(248,113,113,0.08); color: #f87171; }
+  .bms-acct { font-weight: 700; margin-right: 0.15rem; }
+  .bms-kv   { display: inline-flex; gap: 0.15rem; }
+  .bms-k    { opacity: 0.65; }
+  .bms-v    { font-variant-numeric: tabular-nums; }
+  .bms-kv-short .bms-v { color: #f87171; }
+  .bms-err  { opacity: 0.85; }
+
   .oes-basket-bar {
     position: sticky;
     bottom: 0;

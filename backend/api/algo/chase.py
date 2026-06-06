@@ -95,6 +95,40 @@ async def _emit_chase_terminal(
             slippage=slippage,
             error=error,
         )
+
+        # Auto TP — arm take-profit child after a chase fill.
+        # Only fires when the filled parent row has target_pct / target_abs
+        # set and is itself a parent (parent_order_id IS NULL) so we never
+        # create TP-of-TP chains.
+        if outcome == "chase_fill" and final_price:
+            try:
+                from sqlalchemy import select as _sel2
+                from backend.api.database import async_session as _as2
+                from backend.api.models import AlgoOrder as _AO2
+                async with _as2() as _s2:
+                    _filled = (await _s2.execute(
+                        _sel2(_AO2).where(_AO2.broker_order_id == broker_order_id)
+                    )).scalar_one_or_none()
+                    if (_filled is not None
+                            and (_filled.target_pct or _filled.target_abs)
+                            and _filled.parent_order_id is None):
+                        from backend.api.routes.orders import _arm_take_profit
+                        import asyncio as _aio3
+                        _aio3.create_task(_arm_take_profit(
+                            parent_row_id=_filled.id,
+                            parent_account=str(_filled.account or ""),
+                            parent_symbol=str(_filled.symbol or symbol),
+                            parent_exchange=str(_filled.exchange or "NFO"),
+                            parent_side=str(_filled.transaction_type or side),
+                            fill_price=float(final_price),
+                            target_pct=float(_filled.target_pct or 0.0),
+                            target_abs=(_filled.target_abs
+                                        and float(_filled.target_abs)),
+                            parent_mode=str(_filled.mode or "live"),
+                        ))
+            except Exception as _tp_e:
+                logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")
+
     except Exception as _e:
         logger.debug(f"_emit_chase_terminal: {_e}")
 

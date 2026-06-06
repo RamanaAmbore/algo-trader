@@ -28,7 +28,7 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, fetchSettings } from '$lib/api';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
@@ -510,6 +510,25 @@
   let _validity = $state('DAY');
   let _price   = $state(price ?? '');
   let _trigger = $state(trigger ?? '');
+
+  // ── Target take-profit ───────────────────────────────────────────────
+  // Two modes: % (default) or ₹. Default pct seeded from the
+  // `algo.default_target_pct` setting fetched on mount. Operator
+  // can toggle via the pill next to the field.
+  // `_targetMode` drives which field is shown and which payload field
+  // is populated; the other is set to null.
+  let _targetMode = $state(/** @type {'pct' | 'abs'} */ ('pct'));
+  let _targetPct = $state(/** @type {number|''} */ (''));
+  let _targetAbs = $state(/** @type {number|''} */ (''));
+
+  // Derived payload values — null when empty so the backend can
+  // distinguish "not set" from zero.
+  const _targetPctVal = $derived(
+    _targetMode === 'pct' && Number(_targetPct) > 0 ? Number(_targetPct) / 100 : null
+  );
+  const _targetAbsVal = $derived(
+    _targetMode === 'abs' && Number(_targetAbs) > 0 ? Number(_targetAbs) : null
+  );
   let _product = $state(productVal);
   // Initial mode:
   //   1. defaultMode prop wins when the caller explicitly picked one
@@ -767,15 +786,17 @@
    *  renders as a regular basket pill alongside quick-adds. */
   function _basketPayload() {
     return {
-      side:     _side,
-      sym:      symbol,
-      exchange: exchange || 'NFO',
-      account:  _account,
-      lots:     Math.max(1, Number(_lots) || 1),
-      lotSize:  Number(_lotSize) || 1,
-      product:  _product,
-      limit:    showLimit ? Number(_roundToTick(_price)) || 0 : 0,
-      chaseAgg: showLimit && _chase ? _chaseAgg : 'low',
+      side:       _side,
+      sym:        symbol,
+      exchange:   exchange || 'NFO',
+      account:    _account,
+      lots:       Math.max(1, Number(_lots) || 1),
+      lotSize:    Number(_lotSize) || 1,
+      product:    _product,
+      limit:      showLimit ? Number(_roundToTick(_price)) || 0 : 0,
+      chaseAgg:   showLimit && _chase ? _chaseAgg : 'low',
+      target_pct: _targetPctVal,
+      target_abs: _targetAbsVal,
     };
   }
 
@@ -1011,6 +1032,8 @@
       // so the AlgoOrder row records the intent for replay.
       chase:               showLimit ? _chase : false,
       chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
+      target_pct:          _targetPctVal,
+      target_abs:          _targetAbsVal,
     };
     submitting = true; submitErr = ''; submitOk = '';
     /** @type {any} */
@@ -1131,6 +1154,23 @@
     // is instant. 401 / 403 (anonymous demo) leaves _funds empty and
     // the pill collapses gracefully.
     _refetchFunds();
+
+    // Seed default target pct from the `algo.default_target_pct` setting.
+    // Silent fallback — if the setting is absent the field stays empty.
+    if (!_isDemo) {
+      fetchSettings()
+        .then(/** @param {any} r */ (r) => {
+          const row = (r?.settings || []).find(
+            /** @param {any} s */ (s) => s.key === 'algo.default_target_pct'
+          );
+          const v = row ? Number(row.value) : NaN;
+          if (v > 0 && !_targetPct) {
+            _targetPct = /** @type {number} */ (+(v * 100).toFixed(2));
+          }
+        })
+        .catch(() => { /* silent — field stays empty */ });
+    }
+
     return () => _escCleanup?.();
   });
 
@@ -1443,6 +1483,46 @@
           <input id="ot-trigger" type="number" class="ot-input ot-num"
                  step="0.05"
                  bind:value={_trigger} />
+        </div>
+      </div>
+    {/if}
+
+    <!-- Target take-profit — optional field. When set, the backend
+         creates a linked TP order on fill. Toggle between % and ₹
+         modes via the mode pill. Industry analogue: Kite GTT,
+         ToS bracket-order TP leg. Shown only for new orders. -->
+    {#if action === 'open'}
+      <div class="ot-row ot-target-row">
+        <div class="ot-label-block" style="flex: 1 1 0; min-width: 0">
+          <label class="ot-label" for="ot-target">
+            Target
+            <span class="ot-label-sub">(optional)</span>
+          </label>
+          <div class="ot-target-input-row">
+            <button type="button" class="ot-target-mode-pill"
+                    class:on={_targetMode === 'pct'}
+                    title="Percentage above entry price"
+                    onclick={() => { _targetMode = 'pct'; }}>%</button>
+            <button type="button" class="ot-target-mode-pill"
+                    class:on={_targetMode === 'abs'}
+                    title="Absolute ₹ above entry price"
+                    onclick={() => { _targetMode = 'abs'; }}>₹</button>
+            {#if _targetMode === 'pct'}
+              <input id="ot-target" type="number" class="ot-input ot-num ot-target-input"
+                     step="0.1" min="0" placeholder="e.g. 30"
+                     bind:value={_targetPct} />
+              {#if Number(_targetPct) > 0}
+                <span class="ot-target-hint">+{Number(_targetPct).toFixed(1)}%</span>
+              {/if}
+            {:else}
+              <input id="ot-target" type="number" class="ot-input ot-num ot-target-input"
+                     step="1" min="0" placeholder="₹ amount"
+                     bind:value={_targetAbs} />
+              {#if Number(_targetAbs) > 0}
+                <span class="ot-target-hint">+₹{Number(_targetAbs).toLocaleString('en-IN')}</span>
+              {/if}
+            {/if}
+          </div>
         </div>
       </div>
     {/if}
@@ -2354,4 +2434,38 @@
   }
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
   .ot-submit-basket-mode:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Target take-profit row */
+  .ot-target-row { flex-wrap: nowrap; }
+  .ot-label-sub { opacity: 0.5; font-weight: 400; font-size: 0.55rem; margin-left: 0.2rem; }
+  .ot-target-input-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-wrap: nowrap;
+  }
+  .ot-target-mode-pill {
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(125,211,252,0.35);
+    background: transparent;
+    color: #7dd3fc;
+    font-size: 0.6rem;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .ot-target-mode-pill.on {
+    background: rgba(125,211,252,0.18);
+    border-color: rgba(125,211,252,0.65);
+    color: #bae6fd;
+  }
+  .ot-target-mode-pill:hover:not(.on) { background: rgba(125,211,252,0.08); }
+  .ot-target-input { width: 6rem; flex-shrink: 0; }
+  .ot-target-hint {
+    font-size: 0.6rem;
+    color: #4ade80;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
 </style>

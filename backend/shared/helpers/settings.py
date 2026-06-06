@@ -293,6 +293,11 @@ SEEDS: list[tuple] = [
      "15:00 IST, MCX at 23:00 IST. Bg task does the equity (close all "
      "ITM/NTM) vs commodity (close unhedged ITM only) split internally.",
      "h", {"min": 0, "max": 6, "step": 0.25}),
+    ("algo",        "algo.default_target_pct",      "float", 0.30,
+     "Default auto take-profit % of fill price for every ticket / basket "
+     "order.  E.g. 0.30 = +30% above entry for a BUY; -30% below for a "
+     "SELL.  Set to 0 to disable auto-TP globally.",
+     "%", {"min": 0.0, "max": 10.0, "step": 0.05}),
     ("algo",        "algo.expiry_ntm_buffer_pct",   "float", 2.0,
      "% from strike to flag as near-the-money on expiry-day scan.",
      "%", {"min": 0, "max": 10, "step": 0.1}),

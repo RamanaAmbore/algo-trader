@@ -236,6 +236,20 @@ async def init_db() -> None:
               END IF;
             END$$;
         """))
+        # Feature: basket orders + auto profit-target (June 2026).
+        # Four new columns on algo_orders; all nullable / defaulted so
+        # existing rows remain valid without any data migration.
+        for stmt in (
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS target_pct DOUBLE PRECISION",
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS target_abs DOUBLE PRECISION",
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS parent_order_id INTEGER "
+            "REFERENCES algo_orders(id)",
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS basket_tag VARCHAR(64)",
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_parent_order_id "
+            "ON algo_orders (parent_order_id)",
+        ):
+            await conn.execute(text(stmt))
+
         # Watchlist shared-global + item alias migration.
         # is_global=True rows are shared across every user (managed by
         # admin / designated). user_id becomes nullable to host them.

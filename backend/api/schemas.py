@@ -236,6 +236,63 @@ class PlaceOrderRequest(msgspec.Struct):
     tag: Optional[str] = None
 
 
+class BasketLeg(msgspec.Struct):
+    """One leg inside a basket order group."""
+    tradingsymbol: str
+    exchange: str
+    transaction_type: str           # "BUY" | "SELL"
+    quantity: int
+    order_type: str = "LIMIT"
+    product: str = "NRML"
+    price: Optional[float] = None
+    trigger_price: Optional[float] = None
+    variety: str = "regular"
+
+
+class BasketGroup(msgspec.Struct):
+    """All legs that belong to one broker account in a basket call."""
+    account: str
+    legs: list[BasketLeg]
+
+
+class BasketOrderRequest(msgspec.Struct):
+    """POST /api/orders/basket request body."""
+    groups: list[BasketGroup]
+    # Optional TP override; falls back to algo.default_target_pct when None.
+    target_pct: Optional[float] = None
+
+
+class BasketLegResult(msgspec.Struct):
+    leg_index: int
+    order_id: Optional[str]
+    status: str            # "OPEN" | "PAPER" | "SHADOW" | "error"
+    error: Optional[str] = None
+
+
+class BasketGroupResult(msgspec.Struct):
+    account: str
+    basket_id: str
+    results: list[BasketLegResult]
+    margin_required: Optional[float] = None
+    margin_available: Optional[float] = None
+
+
+class BasketOrderResponse(msgspec.Struct):
+    groups: list[BasketGroupResult]
+
+
+class BasketMarginGroupResult(msgspec.Struct):
+    account: str
+    required: Optional[float]
+    available: Optional[float]
+    shortfall: Optional[float]
+    error: Optional[str] = None
+
+
+class BasketMarginResponse(msgspec.Struct):
+    groups: list[BasketMarginGroupResult]
+
+
 class TicketOrderRequest(msgspec.Struct):
     """
     Operator-initiated order from the reusable <OrderTicket>.
@@ -278,6 +335,10 @@ class TicketOrderRequest(msgspec.Struct):
     # so existing callers need no change; chain/command tabs can pass
     # "chain" or "command" to distinguish in agent_events.
     source: str = "ticket"
+    # Auto take-profit — fractional override (e.g. 0.30 = +30%).  None
+    # means "use algo.default_target_pct from DB settings".  0.0 disables
+    # TP for this specific order regardless of the default.
+    target_pct: Optional[float] = None
 
 
 class TicketOrderResponse(msgspec.Struct):
