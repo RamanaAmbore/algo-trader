@@ -447,7 +447,7 @@
           byAcct.get(a)?.push({
             tradingsymbol: leg.sym,
             exchange: leg.exchange || 'NFO',
-            side: leg.side,
+            transaction_type: leg.side,
             quantity: (leg.lots || 1) * (leg.lotSize || 1),
             product: leg.product || 'NRML',
             order_type: 'LIMIT',
@@ -838,7 +838,7 @@
       legs: entries.map(({ leg }) => ({
         tradingsymbol:    leg.sym,
         exchange:         leg.exchange || 'NFO',
-        side:             leg.side,
+        transaction_type: leg.side,
         quantity:         (leg.lots || 1) * (leg.lotSize || 1),
         product:          leg.product || 'NRML',
         order_type:       'LIMIT',
@@ -1373,6 +1373,23 @@
               {#if leg.lotSize > 1}
                 <span class="oes-basket-pill-qty">× {leg.lotSize} = {(leg.lots || 1) * leg.lotSize}</span>
               {/if}
+              <!-- Per-leg limit price — editable so operator can submit
+                   outside market hours when bid/ask hasn't pre-filled. -->
+              <span class="oes-basket-pill-limit-wrap"
+                    title={!(Number(leg.limit) > 0) ? 'Set a limit price to submit' : `Limit ₹${leg.limit}`}>
+                <span class="oes-basket-pill-limit-prefix">₹</span>
+                <input type="number"
+                       class="oes-basket-pill-limit"
+                       class:oes-basket-pill-limit-warn={!(Number(leg.limit) > 0)}
+                       disabled={basketSubmitting}
+                       min="0"
+                       step="0.05"
+                       value={leg.limit ?? 0}
+                       oninput={(e) => {
+                         const v = parseFloat(/** @type {HTMLInputElement} */ (e.currentTarget).value) || 0;
+                         updateLegByKey(leg.key, b => ({ ...b, limit: v }));
+                       }} />
+              </span>
               <!-- Per-leg account picker — operator: "I should be able to
                    place order from different accounts by selecting account
                    for each order adding them to basket and place order".
@@ -2188,6 +2205,40 @@
   .oes-basket-pill-remove:hover:not(:disabled) { color: #f87171; }
   .oes-basket-pill-remove:disabled { opacity: 0.35; cursor: not-allowed; }
   .oes-basket-pill.is-disabled { opacity: 0.55; }
+  .oes-basket-pill-limit-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.05rem;
+    margin-left: 0.3rem;
+  }
+  .oes-basket-pill-limit-prefix {
+    font-size: 0.65rem;
+    color: rgba(200,216,240,0.6);
+    line-height: 1;
+  }
+  .oes-basket-pill-limit {
+    width: 5em;
+    background: rgba(15,25,45,0.7);
+    border: 1px solid rgba(125,211,252,0.3);
+    border-radius: 3px;
+    color: #c8d8f0;
+    font-family: 'Roboto Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.25rem;
+    text-align: right;
+    -moz-appearance: textfield;
+  }
+  .oes-basket-pill-limit::-webkit-inner-spin-button,
+  .oes-basket-pill-limit::-webkit-outer-spin-button { -webkit-appearance: none; }
+  .oes-basket-pill-limit:focus {
+    outline: none;
+    border-color: rgba(125,211,252,0.7);
+  }
+  .oes-basket-pill-limit-warn {
+    border-color: rgba(248,113,113,0.7);
+    color: #f87171;
+  }
   /* .oes-basket-clear / .oes-basket-submit retired with the
      duplicate-buttons drop (656be671); the common footer's
      .oes-common-clear / .oes-common-submit own those affordances
