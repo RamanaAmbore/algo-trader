@@ -15,7 +15,7 @@
     placeTicketOrder, fetchLiveStatus,
     fetchAccounts,
   } from '$lib/api';
-  // Select / MultiSelect imports retired with the in-tab pickers.
+  import Select from '$lib/Select.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -196,6 +196,34 @@
     if (!instrumentsReady || !chainUnderlying) return [];
     return listExpiries(chainUnderlying.toUpperCase(), 'CE');
   });
+  // Human-readable expiry label for the picker. Input is YYYY-MM-DD;
+  // output is e.g. "26 Jun 2026" / "26 Jun 2026 (Thu)" so the
+  // operator can scan the date at a glance instead of parsing ISO.
+  function _humanExpiry(/** @type {string} */ iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso + 'T00:00:00Z');
+      if (Number.isNaN(d.getTime())) return iso;
+      const day = d.getUTCDate();
+      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+      const yr  = d.getUTCFullYear();
+      const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
+      return `${day} ${mon} ${yr} (${dow})`;
+    } catch { return iso; }
+  }
+  // Days-to-expiry, rounded down. Drives the amber "rolls in N days"
+  // chip in the toolbar so the operator sees the imminent roll.
+  function _daysToExpiry(/** @type {string} */ iso) {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso + 'T15:30:00+05:30');
+      const diffMs = d.getTime() - Date.now();
+      return Math.max(0, Math.floor(diffMs / 86_400_000));
+    } catch { return null; }
+  }
+  const _chainExpiryOptions = $derived(
+    chainExpiries.map(e => ({ value: e, label: _humanExpiry(e) }))
+  );
   const chainStrikes = $derived.by(() => {
     if (!instrumentsReady || !chainUnderlying || !chainExpiry) return [];
     return listStrikes(chainUnderlying.toUpperCase(), 'CE', chainExpiry);
@@ -609,6 +637,32 @@
     <div class="oct-acct-warn">No routable account — pick one from the modal header's Account dropdown.</div>
   {/if}
 
+  <!-- Expiry picker — operator picks which expiry the strike grid
+       and futures row are anchored against. Defaults to the nearest
+       non-expired contract (seedExpiry → chainExpiries[0] fallback).
+       When the picked expiry is within 3 days the chip flips amber
+       so the operator sees the imminent roll. -->
+  {#if chainUnderlying && chainExpiries.length}
+    {@const _dte = _daysToExpiry(chainExpiry)}
+    <div class="oct-toolbar">
+      <span class="oct-toolbar-label">Expiry</span>
+      <div class="oct-expiry-pick">
+        <Select
+          bind:value={chainExpiry}
+          options={_chainExpiryOptions}
+          ariaLabel="Chain expiry"
+          placeholder="Pick expiry…" />
+      </div>
+      {#if _dte != null && chainExpiry}
+        <span class="oct-expiry-dte"
+              class:oct-expiry-dte-warn={_dte <= 3}
+              title="Days until this contract's expiry">
+          {_dte === 0 ? 'expires today' : `${_dte}d to expiry`}
+        </span>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Spot + ATM "index pill" retired per operator request — the
        index/underlying value already feeds into the strike grid
        below (strikes are sorted relative to ATM, ATM row gets the
@@ -877,6 +931,45 @@
     border-radius: 3px;
     padding: 0.28rem 0.5rem;
     margin: 0 0 0.4rem;
+  }
+  /* Expiry toolbar — sits above the futures row + strike grid so
+     operator picks the contract month BEFORE scanning strikes. */
+  .oct-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.1rem 0.35rem;
+    margin-bottom: 0.25rem;
+    border-bottom: 1px dashed rgba(251, 191, 36, 0.10);
+    flex-wrap: wrap;
+  }
+  .oct-toolbar-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(251, 191, 36, 0.7);
+    flex-shrink: 0;
+  }
+  .oct-expiry-pick { min-width: 11rem; max-width: 16rem; flex: 0 1 auto; }
+  /* Days-to-expiry chip — slate-blue resting, amber when ≤ 3 days
+     to expiry so the operator sees the imminent roll. */
+  .oct-expiry-dte {
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    font-weight: 700;
+    color: #7e97b8;
+    background: rgba(125, 145, 184, 0.08);
+    border: 1px solid rgba(125, 145, 184, 0.22);
+    border-radius: 3px;
+    padding: 0.15rem 0.45rem;
+    flex-shrink: 0;
+  }
+  .oct-expiry-dte-warn {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+    border-color: rgba(251, 191, 36, 0.42);
   }
   .oct-acct-single {
     font-family: monospace;
