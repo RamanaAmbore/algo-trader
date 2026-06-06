@@ -98,7 +98,7 @@
     loadInstruments, searchByPrefix, suggestUnderlyings,
     findEquity, findNearestFuture, getInstrument,
   } from '$lib/data/instruments';
-  import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
+  import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES, INDEX_LTP_KEY } from '$lib/data/resolveUnderlying';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
@@ -259,6 +259,42 @@
     if (!_isDerivative) return null;
     const m = symbol.match(/^([A-Z]+)/i);
     return m ? m[1].toUpperCase() : null;
+  });
+
+  // ── Front-month resolution for bare MCX commodity roots ──────────
+  // When the operator passes e.g. symbol="CRUDEOIL" (a bare MCX root,
+  // not a tradeable tradingsymbol), the chart internally charts the
+  // nearest-expiry future. The info strip shows the resolved contract,
+  // and a "Front-month" chip renders below the controls row carrying
+  // the expiry date and a roll-warning when expiry is ≤ 3 days away.
+  //
+  // INDEX roots (NIFTY/BANKNIFTY/…) are excluded — those have their
+  // own spot tickers and are handled by _KITE_INDEX_TO_ROOT / _resolveFetchSymbol.
+  // The _resolveFetchSymbol path already handles the OHLCV fetch for
+  // MCX roots; this derived is purely for the display chip.
+  const _frontMonthInfo = $derived.by(() => {
+    const upper = String(symbol || '').toUpperCase();
+    if (!MCX_COMMODITIES.has(upper)) return null;    // only MCX roots
+    if (INDEX_LTP_KEY[upper]) return null;            // guard (shouldn't overlap, but safe)
+    const fut = findNearestFuture(upper);
+    if (!fut?.s || !fut?.x) return null;
+    const expiryIso = String(fut.x);                 // "YYYY-MM-DD"
+    const todayMs   = Date.now();
+    const expiryMs  = Date.parse(expiryIso + 'T23:59:00+05:30'); // IST EOD
+    const daysLeft  = Math.ceil((expiryMs - todayMs) / 86_400_000);
+    const rolling   = daysLeft <= 3;
+    // Format expiry as "19 Jun" for the chip label.
+    const expDate   = new Date(expiryMs);
+    const MONTHS    = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const expLabel  = `${expDate.getDate()} ${MONTHS[expDate.getMonth()]}`;
+    return {
+      contract:   String(fut.s),
+      exchange:   String(fut.e || 'MCX'),
+      expiryIso,
+      expLabel,
+      daysLeft,
+      rolling,
+    };
   });
 
   // ── Mode auto-detection ───────────────────────────────────────────
@@ -1280,6 +1316,21 @@
     {/if}
   </div>
 
+  <!-- Front-month chip — shown when symbol is a bare MCX commodity
+       root. Amber roll-warning when expiry is ≤ 3 days away. -->
+  {#if _frontMonthInfo}
+    <div class="cw-frontmonth-bar">
+      <span class="cw-fm-chip" class:cw-fm-rolling={_frontMonthInfo.rolling}
+            title="Instrument cache resolved {symbol} → {_frontMonthInfo.contract} (exchange: {_frontMonthInfo.exchange})">
+        {#if _frontMonthInfo.rolling}
+          Front-month: {_frontMonthInfo.contract} · rolls in {_frontMonthInfo.daysLeft} {_frontMonthInfo.daysLeft === 1 ? 'day' : 'days'}
+        {:else}
+          Front-month: {_frontMonthInfo.contract} · expiry {_frontMonthInfo.expLabel}
+        {/if}
+      </span>
+    </div>
+  {/if}
+
   <!-- Historical OHLCV chart — fills available height via flex -->
   <div class="cw-chart-container" bind:this={_chartContainerEl}>
     <!-- Floating Overlays panel — TradingView-style, anchored top-right -->
@@ -1604,7 +1655,10 @@
 
   <!-- Info strip -->
   <div class="cw-info-strip">
-    <span class="cw-info-sym">{symbol || '—'}</span>
+    <span class="cw-info-sym">{_frontMonthInfo ? _frontMonthInfo.contract : (symbol || '—')}</span>
+    {#if _frontMonthInfo && symbol !== _frontMonthInfo.contract}
+      <span class="cw-info-root">({symbol})</span>
+    {/if}
     {#if _lastClose != null}
       <span class="cw-info-close">₹{priceFmt(_lastClose)}</span>
     {/if}
@@ -2042,6 +2096,11 @@
   .cw-neg { color: #f87171; }
   .cw-info-meta { color: #7e97b8; }
   .cw-meta-text { color: #7e97b8; font-size: 0.55rem; font-family: monospace; }
+  .cw-info-root {
+    color: #4a5a7a;
+    font-size: 0.55rem;
+    font-family: monospace;
+  }
   .cw-legend-dash {
     display: inline-block;
     width: 14px;
@@ -2050,6 +2109,41 @@
     opacity: 0.7;
     vertical-align: middle;
     margin-right: 2px;
+  }
+
+  /* ── Front-month resolution chip ────────────────────────────── */
+  .cw-frontmonth-bar {
+    display: flex;
+    align-items: center;
+    padding: 0.2rem 0.75rem;
+    flex-shrink: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .cw-fm-chip {
+    display: inline-flex;
+    align-items: center;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #7e97b8;
+    background: rgba(125, 145, 184, 0.08);
+    border: 1px solid rgba(125, 145, 184, 0.22);
+    border-radius: 3px;
+    padding: 0.12rem 0.45rem;
+    white-space: nowrap;
+    cursor: default;
+    user-select: none;
+  }
+  /* Amber roll-warning variant — expiry ≤ 3 days */
+  .cw-fm-chip.cw-fm-rolling {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+    border-color: rgba(251, 191, 36, 0.42);
+  }
+  @media (max-width: 600px) {
+    .cw-frontmonth-bar { padding: 0.2rem 0.5rem; }
+    .cw-fm-chip { font-size: 0.55rem; }
   }
 
   /* ── Greeks strip ────────────────────────────────────────── */

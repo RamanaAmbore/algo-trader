@@ -40,6 +40,7 @@
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
+  import LegLabel from '$lib/LegLabel.svelte';
   import Select            from '$lib/Select.svelte';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
@@ -1368,7 +1369,7 @@
                   role="listitem"
                   title="Click × to remove from basket">
               <span class="oes-basket-pill-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
-              <span class="oes-basket-pill-sym">{leg.sym}</span>
+              <span class="oes-basket-pill-sym"><LegLabel sym={leg.sym} compact={true} /></span>
               <button type="button" class="oes-basket-pill-step"
                       title="Decrease lots"
                       disabled={basketSubmitting || (leg.lots || 1) <= 1}

@@ -29,6 +29,7 @@
    *   loading?:     boolean,
    *   prevClose?:   number|null,
    *   multiExpiry?: boolean,
+   *   legSymbols?:  string[],
    * }} */
   let {
     payoff = [],
@@ -59,6 +60,7 @@
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
     multiExpiry = false,
+    legSymbols = /** @type {string[]} */ ([]),
   } = $props();
 
   // Day's direction — flag the SPOT readout green when trading above
@@ -291,6 +293,7 @@
 
   import { untrack } from 'svelte';
   import { priceFmt, aggFmt, aggCompact } from '$lib/format';
+  import LegLabel from '$lib/LegLabel.svelte';
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "-10K".
   // Keeps left-edge labels short enough to fit in PAD_L budget.
@@ -1075,6 +1078,14 @@
     </svg>
     </div>
     <div class="payoff-legend">
+      {#if legSymbols.length > 0}
+        <span class="legend-legs">
+          {#each legSymbols as sym (sym)}
+            <LegLabel {sym} />
+          {/each}
+        </span>
+        <span class="legend-sep" aria-hidden="true"></span>
+      {/if}
       <span class="legend-item">
         <span class="legend-line legend-today"></span>
         Today (BS)
@@ -1232,6 +1243,20 @@
     color: #c8d8f0;
     border-top: 1px solid rgba(255,255,255,0.05);
     margin-top: 0.3rem;
+  }
+  .legend-legs {
+    display: inline-flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-size: 0.63rem;
+  }
+  .legend-sep {
+    display: inline-block;
+    width: 1px;
+    height: 0.8em;
+    background: rgba(200, 216, 240, 0.2);
+    align-self: center;
   }
   .legend-item {
     display: inline-flex;

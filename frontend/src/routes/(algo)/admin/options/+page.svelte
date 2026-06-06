@@ -37,6 +37,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import LegLabel from '$lib/LegLabel.svelte';
   import { longPress } from '$lib/actions/longPress.js';
 
   // Row-level chart modal for Candidates panel rows.
@@ -2285,6 +2286,7 @@
         legCount={strategy.legs.length}
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
+        legSymbols={strategy.legs.map(/** @param {{symbol:string}} l */ l => l.symbol)}
         loading={loading}
         height={320} />
     </div>
@@ -2478,7 +2480,7 @@
                 use:longPress={(ev) => {
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
-                {c.symbol}
+                <LegLabel sym={c.symbol} />
                 {#if c._splitTag === 'closed'}
                   <!-- Split-row tag: this row represents the portion of
                        the overnight position that was CLOSED today.
