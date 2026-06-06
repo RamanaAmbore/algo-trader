@@ -1405,15 +1405,25 @@
                    via updateLegByKey so the submitBasket loop reads
                    leg.account on each placement call. -->
               {#if _modalAccounts.length > 1}
+                <!-- updateLegByKey matches the pattern used by the lots
+                     stepper + limit input (lines 1375/1380/1398) — proven
+                     reactive in Svelte 5 because the array map+spread
+                     forces a basketLegs reassignment. Direct mutation
+                     (`leg.account = v`) did NOT propagate through the
+                     each-block iteration variable, possibly due to a
+                     Svelte 5 proxy quirk under the keyed `(leg.key)`
+                     binding. value=_legAcct on the select keeps the
+                     visible state in lockstep with leg.account. -->
                 <select class="oes-basket-pill-acct"
                         disabled={basketSubmitting}
+                        value={_legAcct}
                         title="Route this leg through this broker account"
                         onchange={(e) => {
                           const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
-                          leg.account = v;
+                          updateLegByKey(leg.key, b => ({ ...b, account: v }));
                         }}>
                   {#each _modalAccounts as a}
-                    <option value={a} selected={a === _legAcct}>{a}</option>
+                    <option value={a}>{a}</option>
                   {/each}
                 </select>
               {:else if _legAcct}

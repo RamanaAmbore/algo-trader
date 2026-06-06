@@ -101,6 +101,33 @@ async function addFirstCeLeg(page) {
   await expect(page.locator('.oes-basket-pill').first()).toBeVisible({ timeout: 8_000 });
 }
 
+/**
+ * Switch the chain picker to `acct` (account B) before adding leg 2.
+ * Primary path: click the .oes-account-pick .rbq-select-trigger, then
+ * click the matching option.  Falls back silently if the Select is not
+ * present (single-account environment).
+ */
+async function switchPickerAccount(page, acct) {
+  const trigger = page.locator('.oes-picker .oes-account-pick .rbq-select-trigger');
+  const visible = await trigger.isVisible({ timeout: 3_000 }).catch(() => false);
+  if (!visible) {
+    console.log(`[exercise] picker account Select not visible — single-account env, skip switch`);
+    return false;
+  }
+  await trigger.click();
+  // The option list renders inside .rbq-select-panel; find the matching label
+  const option = page.locator('.rbq-select-panel .rbq-select-option', { hasText: acct }).first();
+  const optVisible = await option.isVisible({ timeout: 3_000 }).catch(() => false);
+  if (!optVisible) {
+    console.log(`[exercise] option "${acct}" not found in picker — closing panel`);
+    await page.keyboard.press('Escape');
+    return false;
+  }
+  await option.click();
+  console.log(`[exercise] picker switched to account: ${acct}`);
+  return true;
+}
+
 async function addSecondCeLeg(page) {
   const ceAddBtns = page.locator('.chain-td-ce .chain-btn-buy');
   await expect(ceAddBtns.first()).toBeVisible({ timeout: 8_000 });
@@ -172,30 +199,57 @@ test.describe('Paper Exercise — Phase 1 + 2', () => {
     await goOrders(page);
     await ensureChainGridVisible(page);
 
-    // Add leg 1
-    await addFirstCeLeg(page);
-    // Add leg 2 at a different strike
-    await addSecondCeLeg(page);
+    // ── Multi-account basket via chain-picker switch (PRIMARY PATH) ─────
+    // Primary: switch the chain picker to account B before adding leg 2,
+    // so leg.account is set correctly from the moment the leg is created
+    // (avoids the Svelte 5 reactivity quirk on the per-leg basket pill
+    // select — tracked as a known defect).
+    //
+    // Fallback (if picker switch is blocked / single-account): attempt
+    // to set the per-leg basket pill <select> on leg 2 directly.
 
-    // Confirm we have at least 2 pills
+    if (_state.loadedAccounts.length >= 2) {
+      const acctA = _state.loadedAccounts[0];
+      const acctB = _state.loadedAccounts[1];
+
+      // Ensure picker is on account A before leg 1
+      await switchPickerAccount(page, acctA);
+
+      // Add leg 1 (account A)
+      await addFirstCeLeg(page);
+      console.log(`[exercise] leg 1 added with picker account: ${acctA}`);
+
+      // Switch picker to account B before leg 2
+      const switched = await switchPickerAccount(page, acctB);
+
+      // Add leg 2 (should inherit account B from picker)
+      await addSecondCeLeg(page);
+      console.log(`[exercise] leg 2 added with picker account: ${acctB} (picker switched: ${switched})`);
+
+      if (!switched) {
+        // Fallback: try per-leg basket pill <select> (known defect — may not propagate)
+        const pillSelects = page.locator('.oes-basket-pill-acct');
+        const selCount = await pillSelects.count();
+        console.log(`[exercise] FALLBACK per-leg account selects: ${selCount}`);
+        if (selCount >= 2) {
+          await pillSelects.nth(1).selectOption(acctB).catch((e) => {
+            console.log(`[exercise] FALLBACK select failed (known defect): ${e.message}`);
+          });
+          console.log(`[exercise] FALLBACK: attempted per-leg select for leg 2 → ${acctB}`);
+        }
+      }
+    } else {
+      // Single-account: add both legs normally
+      await addFirstCeLeg(page);
+      await addSecondCeLeg(page);
+      console.log(`[exercise] only 1 broker account loaded — basket is single-account`);
+    }
+
+    // Confirm we have at least 2 pills (or 1 if chain has only 1 row)
     const pills = page.locator('.oes-basket-pill');
     const pillCount = await pills.count();
     console.log(`[exercise] basket pill count: ${pillCount}`);
     expect(pillCount).toBeGreaterThanOrEqual(1);
-
-    // Per-leg account assignment if 2 accounts available
-    if (_state.loadedAccounts.length >= 2) {
-      const acct2 = _state.loadedAccounts[1];
-      const pillSelects = page.locator('.oes-basket-pill-acct');
-      const selCount = await pillSelects.count();
-      console.log(`[exercise] per-leg account selects: ${selCount}`);
-      if (selCount >= 2) {
-        await pillSelects.nth(1).selectOption(acct2);
-        console.log(`[exercise] set leg 2 account to: ${acct2}`);
-      }
-    } else {
-      console.log(`[exercise] only 1 broker account loaded — basket is single-account`);
-    }
 
     // Fill limit inputs with "1.00"
     const limitInputs = page.locator('.oes-basket-pill-limit');
@@ -277,8 +331,16 @@ test.describe('Paper Exercise — Phase 1 + 2', () => {
     await goOrders(page);
     await ensureChainGridVisible(page);
 
-    await addFirstCeLeg(page);
-    await addSecondCeLeg(page);
+    // Use picker-switch flow for multi-account (same logic as step-1)
+    if (_state.loadedAccounts.length >= 2) {
+      await switchPickerAccount(page, _state.loadedAccounts[0]);
+      await addFirstCeLeg(page);
+      await switchPickerAccount(page, _state.loadedAccounts[1]);
+      await addSecondCeLeg(page);
+    } else {
+      await addFirstCeLeg(page);
+      await addSecondCeLeg(page);
+    }
 
     const limitInputs = page.locator('.oes-basket-pill-limit');
     const limitCount = await limitInputs.count();
@@ -435,6 +497,27 @@ test.describe('Paper Exercise — Phase 1 + 2', () => {
     // Check sticky result contained "placed"
     if (_state.stickyResultText && !/placed/i.test(_state.stickyResultText)) {
       issues.push(`sticky result did not contain "placed": "${_state.stickyResultText}"`);
+    }
+
+    // Multi-account check: sticky result should mention "across 2 accounts"
+    if (_state.loadedAccounts.length >= 2) {
+      if (_state.stickyResultText && !/across\s+2\s+accounts/i.test(_state.stickyResultText)) {
+        console.warn(`[exercise] multi-account sticky result check: expected "across 2 accounts" — got: "${_state.stickyResultText}"`);
+        issues.push(`sticky result does not mention "across 2 accounts" — per-leg account routing may be broken`);
+      } else {
+        console.log('[exercise] multi-account sticky result: OK — "across 2 accounts" confirmed');
+      }
+
+      // Check distinct accounts on AlgoOrder rows in same basket
+      const basketRows = _state.algoRows.filter((o) => o.basket_tag);
+      if (basketRows.length >= 2) {
+        const accts = [...new Set(basketRows.map((r) => r.account))];
+        if (accts.length < 2) {
+          issues.push(`AlgoOrder rows all have same account (${accts[0]}) — multi-account routing failed`);
+        } else {
+          console.log(`[exercise] AlgoOrder distinct accounts: ${JSON.stringify(accts)} — OK`);
+        }
+      }
     }
 
     // Check mode=paper on algo rows
