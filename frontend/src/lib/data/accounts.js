@@ -50,7 +50,7 @@ function _lsWrite(/** @type {string} */ key, /** @type {string} */ value) {
 // placed and surfaces no valid quote. Operator: "order entry is
 // showing crudeoil for symbol which is not a valid symbol. it
 // should be corrected everywhere".
-const _BARE_UNDERLYINGS = new Set([
+export const _BARE_UNDERLYINGS = new Set([
   // Index underlyings (NSE)
   'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50',
   'SENSEX', 'BANKEX',

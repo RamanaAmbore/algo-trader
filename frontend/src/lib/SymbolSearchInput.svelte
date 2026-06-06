@@ -15,8 +15,14 @@
   //   ariaLabel     — accessible label for the input
 
   import { untrack, onMount } from 'svelte';
-  import { loadInstruments, searchByPrefix, suggestUnderlyings } from '$lib/data/instruments';
+  import { loadInstruments, searchByPrefix } from '$lib/data/instruments';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols';
+  import { _BARE_UNDERLYINGS } from '$lib/data/accounts';
+
+  /** True when sym is a bare non-tradable underlying (CRUDEOIL, NIFTY, …). */
+  function _isBareRoot(/** @type {string} */ sym) {
+    return _BARE_UNDERLYINGS.has(String(sym || '').toUpperCase());
+  }
 
   let {
     value      = $bindable(/** @type {string} */ ('')),
@@ -63,8 +69,11 @@
       // the same code". The loader returns EVERY tradingsymbol the
       // operator has watchlisted (pinned + user-created lists), in
       // the same order Pulse renders them — pinned/global first.
+      // Filter bare underlying roots (CRUDEOIL, NIFTY, …) — they're
+      // not directly tradable and confuse the picker.
       const { syms } = await loadWatchlistSymbols();
-      if (syms.length) pins = syms;
+      const tradable = syms.filter(s => !_isBareRoot(s));
+      if (tradable.length) pins = tradable;
     } catch (_) { /* leave pins empty */ }
   }
 
@@ -96,23 +105,14 @@
     });
   }
 
-  /** Core search — sync fast-path then debounced async full-instrument search. */
+  /** Core search — debounced async full-instrument search.
+   *  The former sync fast-path via suggestUnderlyings() is removed:
+   *  that function returns bare underlying NAMES (CRUDEOIL, NIFTY, …),
+   *  not tradable tradingsymbols, so it produced unplaceable rows in
+   *  the dropdown. searchByPrefix() returns real instrument-cache rows. */
   async function _runSearch(/** @type {string} */ v) {
-    let syncHit = false;
-    // Sync fast-path: suggestUnderlyings is synchronous, pops on the
-    // same tick the operator types (no wait for IndexedDB).
-    if (type === 'ALL' || type === 'EQ') {
-      try {
-        const sync = suggestUnderlyings(v, 16);
-        if (Array.isArray(sync) && sync.length) {
-          _symSuggestions = sync.map(s => ({ sym: s, e: '', t: 'EQ' }));
-          syncHit = true;
-        }
-      } catch (_) { /* sync path failed — async fallback below */ }
-    } else {
-      _symSuggestions = [];
-    }
-    _searching = !syncHit;   // show "Searching…" only when sync produced nothing
+    _symSuggestions = [];
+    _searching = true;
     if (_symDebounce) clearTimeout(_symDebounce);
     _symDebounce = setTimeout(async () => {
       try {
@@ -120,10 +120,17 @@
         // Fetch wide (80) then filter — searchByPrefix front-loads EQ rows
         // so a small limit would starve OPT/FUT picks on heavy-volume names.
         const full = await searchByPrefix(v, 80);
-        const filtered = _filterByType(Array.isArray(full) ? full : []);
-        if (filtered.length) _symSuggestions = filtered.slice(0, 14);
-        else if (type !== 'ALL') _symSuggestions = [];
-      } catch (_) { /* keep sync result */ }
+        const typed = _filterByType(Array.isArray(full) ? full : []);
+        // Drop bare underlying roots — they're not directly tradable.
+        // EQ rows whose tradingsymbol exactly matches a bare root are
+        // excluded (e.g. the equity "NIFTY" entry for the index name).
+        const tradable = typed.filter(r => {
+          const sym = String(r?.s || r?.sym || r?.tradingsymbol || '').toUpperCase();
+          return !_isBareRoot(sym);
+        });
+        if (tradable.length) _symSuggestions = tradable.slice(0, 14);
+        else _symSuggestions = [];
+      } catch (_) { /* leave empty */ }
       finally { _searching = false; }
     }, 50);
   }

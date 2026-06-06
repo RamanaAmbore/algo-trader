@@ -459,6 +459,65 @@ async def lookup_mcx_front_month_future(underlying: str) -> str | None:
     return candidates[0].s
 
 
+async def lookup_mcx_future_for_expiry(underlying: str,
+                                       target_expiry: date) -> str | None:
+    """Return the MCX FUT tradingsymbol for *underlying* whose expiry is the
+    FIRST futures contract expiring ON OR AFTER *target_expiry*.
+
+    This is the calendar-aware counterpart of ``lookup_mcx_front_month_future``.
+    When the operator analyses a CRUDEOIL Sep option, the option's underlying
+    is the Sep future — using the Jun front-month future as the spot anchor
+    gives a BS calibration that is off by the Jun→Sep basis spread (up to
+    ₹200–500 on a ₹6800 base).
+
+    Resolution logic:
+      1. Filter MCX FUT instruments for *underlying* with a non-empty expiry.
+      2. Sort ascending by expiry string (ISO format sorts correctly).
+      3. Return the FIRST contract whose expiry date is >= target_expiry.
+         For options that expire WITH the front-month (target_expiry is on or
+         before the nearest listed futures expiry), this is the front-month —
+         i.e. existing behaviour is preserved.
+      4. When no contract is on-or-after target_expiry (rare — operator
+         analysing a far-out option that has no listed future yet), fall back
+         to the LAST listed contract (nearest-available far contract).
+      5. Returns None when the instruments cache is cold or no MCX future is
+         listed for the underlying at all.
+
+    Return type: bare tradingsymbol (e.g. ``'CRUDEOIL26SEPFUT'``) or None.
+    """
+    if not underlying or target_expiry is None:
+        return None
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+    if not items:
+        return None
+    target_u = underlying.upper()
+    candidates = [
+        inst for inst in items
+        if (inst.e == "MCX"
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == target_u
+            and inst.x)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda i: i.x or "")
+    target_iso = target_expiry.isoformat()
+    # First contract whose expiry >= target_expiry
+    for inst in candidates:
+        if (inst.x or "") >= target_iso:
+            return inst.s
+    # All listed futures expire before target_expiry — return the last one
+    # (farthest available contract is the best we can do)
+    return candidates[-1].s
+
+
 async def front_month_underlying_quote_key(underlying: str) -> str | None:
     """Kite quote key for the "current liquid spot" of an underlying
     NAME, resolved differently per instrument class:

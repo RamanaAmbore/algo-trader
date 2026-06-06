@@ -1056,7 +1056,7 @@
    *  (effect below). Stays null until the first fetch lands; the
    *  derived `chainSpot` falls back to strategy.spot when this is
    *  unavailable. */
-  /** @type {{spot:number, source:string, prevClose:number|null} | null} */
+  /** @type {{spot:number, source:string, prevClose:number|null, contract:string|null} | null} */
   let chainSpotFetched = $state(null);
   let chainSpotKey = ''; // last-fetched cache key — skip duplicate calls
   $effect(() => {
@@ -1080,6 +1080,7 @@
           spot:      Number(r.spot) || 0,
           source:    String(r.spot_source || ''),
           prevClose: r.spot_prev_close != null ? Number(r.spot_prev_close) : null,
+          contract:  r.spot_anchor_contract ? String(r.spot_anchor_contract) : null,
         } : null;
       }).catch(() => {
         if (chainSpotKey !== key) return;
@@ -2287,6 +2288,9 @@
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         legSymbols={strategy.legs.map(/** @param {{symbol:string}} l */ l => l.symbol)}
+        spotAnchor={strategy.spot_anchor_contract
+          ? { contract: strategy.spot_anchor_contract, source: 'futures', expiryISO: strategy.expiry ?? '' }
+          : null}
         loading={loading}
         height={320} />
     </div>

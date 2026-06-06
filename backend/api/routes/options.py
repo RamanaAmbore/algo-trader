@@ -41,6 +41,7 @@ from backend.api.algo.derivatives import (
     implied_vol,
     is_mcx_underlying,
     lookup_mcx_front_month_future,
+    lookup_mcx_future_for_expiry,
     multileg_extremes,
     multileg_greeks,
     multileg_payoff_curve,
@@ -168,10 +169,11 @@ class SpotResponse(msgspec.Struct):
     its ATM highlight + auto-scroll on whichever underlying the
     operator picked, regardless of whether it matches the page's
     primary strategy underlying."""
-    underlying:       str
-    spot:             float
-    spot_source:      str            # 'sim' | 'live' | 'close' | 'depth' | 'futures' | 'fallback'
-    spot_prev_close:  float | None
+    underlying:            str
+    spot:                  float
+    spot_source:           str            # 'sim' | 'live' | 'close' | 'depth' | 'futures' | 'fallback'
+    spot_prev_close:       float | None
+    spot_anchor_contract:  str | None = None  # e.g. CRUDEOIL25JUNFUT when source='futures'
 
 
 class ChainQuoteRow(msgspec.Struct):
@@ -292,6 +294,13 @@ class OptionAnalyticsResponse(msgspec.Struct):
     # (operator override, sim, fallback path).
     spot_prev_close: float | None = None
 
+    # When source='futures' on an MCX commodity, the bare tradingsymbol
+    # of the futures contract used as the spot anchor (e.g.
+    # 'CRUDEOIL26SEPFUT'). None for index/equity paths and non-futures
+    # sources. Lets the UI chip-tip show "Anchored on CRUDEOIL26SEPFUT"
+    # so the operator knows which contract the IV was calibrated against.
+    spot_anchor_contract: str | None = None
+
 
 class HistoricalBar(msgspec.Struct):
     ts:     str
@@ -405,6 +414,9 @@ class StrategyResponse(msgspec.Struct):
     # (calendar spread / diagonal). Lets the frontend show a footnote that
     # the X-axis uses front-month as the spot reference, not the per-leg month.
     multi_expiry:      bool  = False
+    # Resolved futures tradingsymbol used as the spot anchor when
+    # source='futures' (MCX commodities). Null for index/equity paths.
+    spot_anchor_contract: str | None = None
 
 
 # ── Resolvers ─────────────────────────────────────────────────────────
@@ -577,13 +589,15 @@ async def _lookup_mcx_future(underlying: str,
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
                         expiry_hint: Optional[date] = None
-                        ) -> tuple[float, str, Optional[float]]:
-    """Spot for the underlying. Returns `(spot, source, prev_close)`
+                        ) -> tuple[float, str, Optional[float], Optional[str]]:
+    """Spot for the underlying. Returns `(spot, source, prev_close, anchor_contract)`
     so the UI can flag stale data and color the spot value against
     yesterday's close. Sources: 'override' | 'sim' | 'live' | 'close'
     | 'depth' | 'futures' | 'fallback'. `prev_close` is None when
     the broker didn't include ohlc.close on the resolving leg
-    (overrides, sim, fallback).
+    (overrides, sim, fallback). `anchor_contract` is the resolved
+    futures tradingsymbol when source='futures' (MCX commodities),
+    else None.
 
     Resolution order:
       1. Operator override
@@ -603,12 +617,12 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     if override is not None and override > 0:
         # Operator overrides don't carry a prev_close; the UI just shows
         # the value as-is without a sign cue.
-        return (float(override), "override", None)
+        return (float(override), "override", None, None)
     try:
         from backend.api.algo.sim.driver import get_driver
         drv = get_driver()
         if drv.active and underlying in drv._underlyings:
-            return (float(drv._underlyings[underlying]), "sim", None)
+            return (float(drv._underlyings[underlying]), "sim", None, None)
     except Exception:
         pass
 
@@ -626,7 +640,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
             quote_dict = resp.get(key) or {}
             px, src = _ltp_from_quote(quote_dict)
             if px is not None:
-                return (px, src, _prev_close_from_quote(quote_dict))
+                return (px, src, _prev_close_from_quote(quote_dict), None)
         except Exception as e:
             logger.warning(f"options spot quote for {underlying} failed: {e}")
 
@@ -641,12 +655,17 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     #    option's contract month/year; if nothing matches we accept the
     #    near-month future returned by the cache.  Only on a full cache
     #    miss do we fall through to the walk-forward below.
-    # 3b. MCX commodities: always use the front-month future as the spot,
-    #     regardless of which contract month the option is in. Operators
-    #     think in terms of "today's crude oil price" — that's the
-    #     front-month. Per-leg σ calibration absorbs the cross-month spread.
+    #    Calendar-aware per-expiry lookup when expiry_hint is provided: a
+    #    Sep option is anchored against the Sep future, not the Jun
+    #    front-month. Jun->Sep basis spread can be 200-500 on a 6800
+    #    CRUDEOIL base -- a material IV miscalibration. Falls back to
+    #    front-month when expiry_hint is None or no match is found.
     if is_commodity:
-        resolved_sym = await lookup_mcx_front_month_future(underlying)
+        resolved_sym: Optional[str] = None
+        if expiry_hint is not None:
+            resolved_sym = await lookup_mcx_future_for_expiry(underlying, expiry_hint)
+        if resolved_sym is None:
+            resolved_sym = await lookup_mcx_front_month_future(underlying)
         if resolved_sym:
             full_key = f"MCX:{resolved_sym}"
             try:
@@ -654,10 +673,11 @@ async def _resolve_spot(underlying: str, override: Optional[float],
                 quote_dict = resp.get(full_key) or {}
                 px, _src = _ltp_from_quote(quote_dict)
                 if px is not None:
-                    return (px, "futures", _prev_close_from_quote(quote_dict))
+                    return (px, "futures", _prev_close_from_quote(quote_dict),
+                            resolved_sym)
             except Exception as e:
                 logger.warning(
-                    f"options MCX-near-month spot for {underlying} "
+                    f"options MCX spot for {underlying} "
                     f"({full_key}) failed: {e}"
                 )
 
@@ -683,7 +703,8 @@ async def _resolve_spot(underlying: str, override: Optional[float],
                         # just needs to know the spot came from the
                         # futures proxy, not the index.
                         return (px, "futures",
-                                _prev_close_from_quote(quote_dict))
+                                _prev_close_from_quote(quote_dict),
+                                fut_sym if is_commodity else None)
                 except Exception as e:
                     logger.warning(
                         f"options futures-spot quote for {underlying} "
@@ -698,7 +719,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
         # payoff diagram still draws sensibly (strike-centred); the
         # operator gets a 'fallback' chip so they know the spot is
         # synthetic and shouldn't be trusted for absolute P&L.
-        return (float(fallback), "fallback", None)
+        return (float(fallback), "fallback", None, None)
 
     raise HTTPException(status_code=502,
                         detail=f"spot for {underlying} unavailable from any source")
@@ -866,7 +887,7 @@ class OptionsController(Controller):
         # matching monthly futures contract for commodities (MCX
         # underlyings have no NSE spot ticker — index lookup misses
         # silently and we'd otherwise anchor on the strike).
-        S, spot_src, spot_prev_close = await _resolve_spot(
+        S, spot_src, spot_prev_close, _spot_anchor_single = await _resolve_spot(
             parsed["underlying"], spot,
             fallback=parsed["strike"],
             expiry_hint=parsed["expiry"])
@@ -1008,6 +1029,7 @@ class OptionsController(Controller):
             span_pct=span_pct_resolved,
             span_sigmas=float(span_sigmas) if span_pct is None else 0.0,
             spot_prev_close=spot_prev_close,
+            spot_anchor_contract=_spot_anchor_single,
         )
 
     @get("/spot")
@@ -1038,12 +1060,13 @@ class OptionsController(Controller):
         # null (suppresses the ATM highlight + spot pill); we don't
         # want to anchor the UI on a synthetic median-strike value
         # here.
-        px, src, prev = await _resolve_spot(und, None, expiry_hint=expiry_d)
+        px, src, prev, _anc = await _resolve_spot(und, None, expiry_hint=expiry_d)
         return SpotResponse(
             underlying=und,
             spot=px,
             spot_source=src,
             spot_prev_close=prev,
+            spot_anchor_contract=_anc,
         )
 
     @get("/chain-quotes")
@@ -1190,7 +1213,7 @@ class OptionsController(Controller):
             raise HTTPException(status_code=400,
                 detail=f"expiry must be ISO format YYYY-MM-DD, got {exp!r}")
         try:
-            spot, src, prev = await _resolve_spot(und, None, expiry_hint=expiry_d)
+            spot, src, prev, _anc2 = await _resolve_spot(und, None, expiry_hint=expiry_d)
         except HTTPException:
             raise
         except Exception as e:
@@ -1584,7 +1607,7 @@ class OptionsController(Controller):
             expiry_hint = date.fromisoformat(
                 _leg_expiry_iso(data.legs[0], first_parsed)
             )
-        S, _spot_src, spot_prev_close = await _resolve_spot(
+        S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
             underlying, data.spot,
             fallback=median_strike,
             expiry_hint=expiry_hint)
@@ -1943,4 +1966,5 @@ class OptionsController(Controller):
                 if parse_tradingsymbol(leg.symbol.upper().strip())
                    and parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
             }) > 1,
+            spot_anchor_contract=_spot_anchor,
         )

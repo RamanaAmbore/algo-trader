@@ -30,6 +30,7 @@
    *   prevClose?:   number|null,
    *   multiExpiry?: boolean,
    *   legSymbols?:  string[],
+   *   spotAnchor?:  {contract:string, source:string, expiryISO?:string} | null,
    * }} */
   let {
     payoff = [],
@@ -61,7 +62,31 @@
     prevClose  = /** @type {number|null|undefined} */ (null),
     multiExpiry = false,
     legSymbols = /** @type {string[]} */ ([]),
+    // When the spot comes from a front-month MCX futures contract
+    // rather than an index tick, this carries the contract symbol
+    // and its expiry so the chip + roll warning can render.
+    spotAnchor = /** @type {{contract:string, source:string, expiryISO?:string} | null} */ (null),
   } = $props();
+
+  // Days until the anchor contract expires — used to decide whether
+  // to flip the chip to amber "rolls in N days" mode. Computed from
+  // expiryISO vs today's wall-clock date (UTC midnight comparison is
+  // fine for a 3-day threshold; DST drift < 1 day won't matter here).
+  const anchorDaysToExpiry = $derived.by(() => {
+    if (!spotAnchor?.expiryISO) return null;
+    try {
+      const expMs  = new Date(spotAnchor.expiryISO + 'T00:00:00Z').getTime();
+      const todayMs = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
+      return Math.round((expMs - todayMs) / 86_400_000);
+    } catch {
+      return null;
+    }
+  });
+
+  // True when the anchor is within 3 calendar days of expiry.
+  const anchorRollingSoon = $derived(
+    anchorDaysToExpiry !== null && anchorDaysToExpiry <= 3
+  );
 
   // Day's direction — flag the SPOT readout green when trading above
   // yesterday's close, red below. Falls through to the neutral cyan
@@ -597,7 +622,9 @@
     <div class="payoff-stats">
       {#if spot != null}
         <div class="ps-row"
-             title="Current spot price for the underlying — anchor for every other stat in this overlay">
+             title={spotAnchor?.source === 'futures'
+               ? `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`
+               : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
           <span class="ps-k">SPOT</span>
           <span class={'ps-v ps-spot-' + spotDir}>{fmtSpot(spot)}</span>
         </div>
@@ -1114,6 +1141,19 @@
         Spot
       </span>
     </div>
+    {#if spotAnchor?.contract}
+      {@const _ancTitle = `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`}
+      <p class="payoff-anchor-chip"
+         class:payoff-anchor-chip--amber={anchorRollingSoon}
+         title={_ancTitle}>
+        Spot anchor: <span class="anchor-contract">{spotAnchor.contract}</span>
+        {#if anchorRollingSoon}
+          &#9888; rolls in {anchorDaysToExpiry} {anchorDaysToExpiry === 1 ? 'day' : 'days'}
+        {:else}
+          &#9403;
+        {/if}
+      </p>
+    {/if}
     {#if multiExpiry}
       <p class="payoff-multi-expiry-note">
         Calendar/diagonal basket — chart assumes proportional movement across contract months.
@@ -1364,5 +1404,32 @@
        against the navy chart bg, below the 4.5:1 target for body
        text. Operator's only multi-expiry context cue. */
     color: rgba(200, 216, 240, 0.85);
+  }
+
+  /* Spot-anchor chip — slate-blue palette for normal state;
+     flips to amber when the contract expires within 3 days. */
+  .payoff-anchor-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin: 0.25rem 0 0;
+    padding: 1px 6px;
+    font-size: 0.58rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #7e97b8;
+    background: rgba(125, 145, 184, 0.08);
+    border: 1px solid rgba(125, 145, 184, 0.22);
+    border-radius: 3px;
+    cursor: default;
+  }
+  .payoff-anchor-chip .anchor-contract {
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  /* Amber roll-warning state */
+  .payoff-anchor-chip--amber {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+    border-color: rgba(251, 191, 36, 0.42);
   }
 </style>
