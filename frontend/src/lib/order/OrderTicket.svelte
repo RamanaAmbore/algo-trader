@@ -518,7 +518,7 @@
   // `_targetMode` drives which field is shown and which payload field
   // is populated; the other is set to null.
   let _targetMode = $state(/** @type {'pct' | 'abs'} */ ('pct'));
-  let _targetPct = $state(/** @type {number|''} */ (''));
+  let _targetPct = $state(/** @type {number} */ (30));
   let _targetAbs = $state(/** @type {number|''} */ (''));
 
   // Derived payload values — null when empty so the backend can
@@ -1169,13 +1169,12 @@
           // DB stores as fraction (0.30); UI displays as percent (30).
           // Fallback to 30 if setting is missing or zero.
           const pct = v > 0 ? +(v * 100).toFixed(2) : 30;
-          if (!_targetPct) {
-            _targetPct = /** @type {number} */ (pct);
-          }
+          // Always apply the DB value — it's authoritative.
+          // The initial state of 30 is just a synchronous default.
+          _targetPct = /** @type {number} */ (pct);
         })
         .catch(() => {
-          // Silent fetch failure — pre-fill with the default (30 %).
-          if (!_targetPct) _targetPct = /** @type {number} */ (30);
+          // Silent fetch failure — initial default of 30 already set; no-op.
         });
     }
 

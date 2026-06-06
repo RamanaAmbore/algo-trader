@@ -1407,14 +1407,13 @@
               {#if _modalAccounts.length > 1}
                 <select class="oes-basket-pill-acct"
                         disabled={basketSubmitting}
-                        value={_legAcct}
                         title="Route this leg through this broker account"
                         onchange={(e) => {
                           const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
-                          updateLegByKey(leg.key, b => ({ ...b, account: v }));
+                          leg.account = v;
                         }}>
                   {#each _modalAccounts as a}
-                    <option value={a}>{a}</option>
+                    <option value={a} selected={a === _legAcct}>{a}</option>
                   {/each}
                 </select>
               {:else if _legAcct}
