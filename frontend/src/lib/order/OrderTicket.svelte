@@ -1160,15 +1160,23 @@
     if (!_isDemo) {
       fetchSettings()
         .then(/** @param {any} r */ (r) => {
-          const row = (r?.settings || []).find(
+          // fetchSettings returns a raw array (list of SettingInfo objects),
+          // not a {settings: [...]} wrapper.
+          const row = (Array.isArray(r) ? r : []).find(
             /** @param {any} s */ (s) => s.key === 'algo.default_target_pct'
           );
           const v = row ? Number(row.value) : NaN;
-          if (v > 0 && !_targetPct) {
-            _targetPct = /** @type {number} */ (+(v * 100).toFixed(2));
+          // DB stores as fraction (0.30); UI displays as percent (30).
+          // Fallback to 30 if setting is missing or zero.
+          const pct = v > 0 ? +(v * 100).toFixed(2) : 30;
+          if (!_targetPct) {
+            _targetPct = /** @type {number} */ (pct);
           }
         })
-        .catch(() => { /* silent — field stays empty */ });
+        .catch(() => {
+          // Silent fetch failure — pre-fill with the default (30 %).
+          if (!_targetPct) _targetPct = /** @type {number} */ (30);
+        });
     }
 
     return () => _escCleanup?.();

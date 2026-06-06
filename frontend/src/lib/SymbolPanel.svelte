@@ -415,7 +415,7 @@
   const _basketAccounts = $derived.by(() => {
     const seen = new Set();
     for (const leg of basketLegs) {
-      const a = leg.account || _sharedAccount || '';
+      const a = leg.account || _sharedAccount || account || '';
       if (a) seen.add(a);
     }
     return [...seen];
@@ -441,7 +441,7 @@
         /** @type {Map<string,any[]>} */
         const byAcct = new Map();
         for (const leg of legs) {
-          const a = leg.account || _sharedAccount || '';
+          const a = legAccountOf(leg);
           if (!a) continue;
           if (!byAcct.has(a)) byAcct.set(a, []);
           byAcct.get(a)?.push({
@@ -799,6 +799,14 @@
     basketLegs = basketLegs.map(b => b.key === key ? updater(b) : b);
   }
 
+  /**
+   * Resolve the effective account for a basket leg.
+   * Priority: per-leg account field → shell-level shared account → prop account.
+   * Extracted so submitBasket and the margin debounce use the exact same logic.
+   */
+  const legAccountOf = (/** @type {any} */ leg) =>
+    leg.account || _sharedAccount || account || '';
+
   /** Submit every leg in the shell basket via POST /api/orders/basket. */
   async function submitBasket() {
     if (basketSubmitting || !basketLegs.length) return;
@@ -827,7 +835,7 @@
     /** @type {Map<string, {legIndex: number, leg: any}[]>} */
     const byAcct = new Map();
     basketLegs.forEach((leg, idx) => {
-      const acct = leg.account || _sharedAccount || account || '';
+      const acct = legAccountOf(leg);
       if (!byAcct.has(acct)) byAcct.set(acct, []);
       byAcct.get(acct)?.push({ legIndex: idx, leg });
     });

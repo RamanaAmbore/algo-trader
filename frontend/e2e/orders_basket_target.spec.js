@@ -125,18 +125,9 @@ test.setTimeout(90_000);
 test.describe('/orders — basket + target (Phase 1 + 2)', () => {
 
   // ── Test 1: multi-account basket margin strip ──────────────────────────
-  // DEFECT documented with test.fail() INSIDE the test so it doesn't
-  // bleed the annotation onto test 2.
-  // Root cause: SymbolPanel.svelte line ~450 sends `side: leg.side` but
-  // backend BasketLeg schema (schemas.py:243) requires `transaction_type`.
-  // POST /api/orders/basket/margin → 400 "Object missing required field
-  // `transaction_type`". _basketMarginRows stays [], strip never renders.
+  // Fix 1 (commit 80d309c1): SymbolPanel.svelte now sends `transaction_type`
+  // instead of `side` to /api/orders/basket/margin. Strip should render.
   test('1: multi-account basket shows .oes-basket-margin-strip with 2 rows', async ({ page }) => {
-    test.fail(true,
-      'DEFECT: SymbolPanel.svelte ~L450 sends `side: leg.side` but BasketLeg schema ' +
-      'requires `transaction_type`. POST /api/orders/basket/margin → 400. ' +
-      'Fix: change `side: leg.side` → `transaction_type: leg.side`.'
-    );
     await authOnce(page);
 
     const loadedAccts = await getLoadedAccounts(page);
@@ -202,19 +193,10 @@ test.describe('/orders — basket + target (Phase 1 + 2)', () => {
   });
 
   // ── Test 3: submit basket → sticky result + pills clear ───────────────
-  // DEFECT: basket submit is blocked by a "no quote yet — re-open chain
-  // so bid/ask loads" notice when market is closed (outside 09:15–15:30 IST).
-  // The Submit button is enabled but clicking it triggers a UI guard that
-  // prevents submitBasket() from running until bid/ask is resolved.
-  // .oes-sticky-result-ok never appears outside market hours.
-  // Expected fix: allow paper-mode basket submit with stale/zero quotes, or
-  // suppress the quote-required guard for PAPER/DRAFT mode.
+  // Fix 2 (commit 80d309c1): basket pills now carry an editable ₹-prefixed
+  // limit input (.oes-basket-pill-limit). Fill each to "1.00" before submit
+  // so the backend receives a valid limit price and places the paper order.
   test('3: submit basket → sticky result shows "placed" and basket pills clear', async ({ page }) => {
-    test.fail(true,
-      'DEFECT: basket submit blocked by "no quote yet" guard outside market hours. ' +
-      'Submit button visible+enabled; guard prevents submitBasket(). ' +
-      '.oes-sticky-result-ok never appears. Expected: visible + /placed/ text. Actual: not found (15s).'
-    );
     await authOnce(page);
     await goOrders(page);
     await ensureChainGridVisible(page);
@@ -223,9 +205,16 @@ test.describe('/orders — basket + target (Phase 1 + 2)', () => {
     await addFirstCeLeg(page);
     await addSecondCeLeg(page);
 
-    // Confirm 2 pills visible before submit.
+    // Confirm pills visible before submit.
     const pills = page.locator('.oes-basket-pill');
     await expect(pills.first()).toBeVisible({ timeout: 5_000 });
+
+    // Fix 2: fill the editable limit input on each basket pill before submit.
+    const limitInputs = page.locator('.oes-basket-pill-limit');
+    const limitCount = await limitInputs.count();
+    for (let i = 0; i < limitCount; i++) {
+      await limitInputs.nth(i).fill('1.00');
+    }
 
     // Submit via the common-actions button (labelled "Submit (N)").
     const submitBtn = page.locator('.oes-common-submit').last();
