@@ -468,8 +468,38 @@
       const bandOrder = { close: 0, netted: 1, otm: 2 };
       const bo = (bandOrder[a._band] ?? 9) - (bandOrder[b._band] ?? 9);
       if (bo !== 0) return bo;
+      // Within NETTED band, sort by pair id so paired rows sit
+      // adjacent — operator: "in netted, show the opposite
+      // positions together color coded". N1-A, N1-B, N2-A, N2-B …
+      if (a._band === 'netted' && b._band === 'netted') {
+        const ap = a._pairId || '';
+        const bp = b._pairId || '';
+        if (ap !== bp) return ap < bp ? -1 : 1;
+      }
       return acctSymSort(a, b);
     });
+
+    // Tag each NETTED row with a `_pairTint` color-cycle index so
+    // the renderer can apply one of N alternating background tints
+    // per pair — operator: "you can alternate color for each
+    // netted opposite positions". Numbered 0..4 cycling so two
+    // adjacent pairs always read as distinct.
+    const _assignPairTint = (arr) => {
+      const map = new Map();
+      let cycle = 0;
+      for (const r of arr) {
+        if (r._band !== 'netted') continue;
+        const pid = r._pairId || '';
+        if (!pid) continue;
+        if (!map.has(pid)) {
+          map.set(pid, cycle % 5);
+          cycle++;
+        }
+        r._pairTint = map.get(pid);
+      }
+    };
+    _assignPairTint(result.commodity);
+    _assignPairTint(result.equity);
 
     return result;
   });
@@ -2534,7 +2564,7 @@
               _ci === 0 ||
               displayedCandidates[_ci - 1]?._band !== c._band
             )}
-              {@const _bandLabels = { close: 'TO CLOSE', netted: 'NETTED', otm: 'OUT OF THE MONEY' }}
+              {@const _bandLabels = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' }}
               {@const _bandCount = displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
               <div class="expiry-band-header expiry-band-header-{c._band}" aria-label="{_bandLabels[c._band] ?? c._band} — {c._segment}">
                 <!-- Pill — section identity in a single visual chunk:
@@ -2589,6 +2619,7 @@
                  class:expiry-band-close={legsTab === 'expiry' && c._band === 'close'}
                  class:expiry-band-netted={legsTab === 'expiry' && c._band === 'netted'}
                  class:expiry-band-otm={legsTab === 'expiry' && c._band === 'otm'}
+                 data-pair-tint={legsTab === 'expiry' && c._band === 'netted' ? (c._pairTint ?? 0) : null}
                  class:cand-row-equity-close={c._expiryStatus === 'equity-close'}
                  class:cand-row-commodity-close={c._expiryStatus === 'commodity-close'}
                  role="button"
@@ -3570,6 +3601,33 @@
   .cand-row.expiry-band-netted {
     background-color: rgba(125, 145, 184, 0.08) !important;
     box-shadow: inset 3px 0 0 rgba(125, 145, 184, 0.35);
+  }
+  /* Per-pair tint — each pair of opposite positions inside the
+     NETTED band gets one of 5 alternating background tints + a
+     matching left-edge accent so the operator can visually map
+     "this row cancels that one". Cycle-of-5 means two adjacent
+     pairs are always visually distinct. Operator: "in netted, show
+     the opposite positions together color coded · you can
+     alternate color for each netted opposite positions". */
+  .cand-row.expiry-band-netted[data-pair-tint="0"] {
+    background-color: rgba(125, 211, 252, 0.10) !important;  /* sky */
+    box-shadow: inset 3px 0 0 rgba(125, 211, 252, 0.65);
+  }
+  .cand-row.expiry-band-netted[data-pair-tint="1"] {
+    background-color: rgba(168, 85, 247, 0.10) !important;   /* violet */
+    box-shadow: inset 3px 0 0 rgba(168, 85, 247, 0.65);
+  }
+  .cand-row.expiry-band-netted[data-pair-tint="2"] {
+    background-color: rgba(45, 212, 191, 0.10) !important;   /* teal */
+    box-shadow: inset 3px 0 0 rgba(45, 212, 191, 0.65);
+  }
+  .cand-row.expiry-band-netted[data-pair-tint="3"] {
+    background-color: rgba(244, 114, 182, 0.10) !important;  /* pink */
+    box-shadow: inset 3px 0 0 rgba(244, 114, 182, 0.65);
+  }
+  .cand-row.expiry-band-netted[data-pair-tint="4"] {
+    background-color: rgba(132, 204, 22, 0.10) !important;   /* lime */
+    box-shadow: inset 3px 0 0 rgba(132, 204, 22, 0.65);
   }
   .cand-row.expiry-band-otm {
     background-color: transparent !important;
