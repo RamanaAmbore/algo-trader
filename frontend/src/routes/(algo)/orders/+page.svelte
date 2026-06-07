@@ -325,8 +325,6 @@
       headerless
       hideBottomPanel
       showCommonActions
-      availableModes={['live', 'paper', 'shadow']}
-      defaultMode="live"
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       bind:activeTab={_entryActiveTab}
@@ -525,8 +523,6 @@
     product={orderTicketProps.product}
     accounts={orderTicketProps.accounts}
     account={orderTicketProps.account}
-    defaultMode={orderTicketProps.defaultMode}
-    availableModes={orderTicketProps.availableModes}
     currentQty={orderTicketProps.currentQty ?? 0}
     onSubmit={(payload) => {
       // Drafts are page-local — no broker write, no refresh needed.

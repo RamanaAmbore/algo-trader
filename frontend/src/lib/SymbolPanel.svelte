@@ -34,7 +34,7 @@
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
-  import { logTime } from '$lib/stores';
+  import { logTime, executionMode } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -497,11 +497,14 @@
   // Accept the three real execution modes (live / paper / shadow) +
   // draft for legacy callers. Anything else falls back to 'live'
   // since both /orders and the modal now default LIVE.
-  let _sharedMode = $state(/** @type {'draft'|'paper'|'live'|'shadow'} */ (
-    (defaultMode === 'live'
-      || defaultMode === 'paper'
-      || defaultMode === 'shadow'
-      || defaultMode === 'draft') ? defaultMode : 'live'
+  // Phase B: _sharedMode removed — execution mode is now read-only from the
+  // navbar mode dropdown via the global executionMode store. defaultMode /
+  // availableModes props are kept for backward-compat but are no longer consumed
+  // by the common-actions row or the basket submit.
+  // @deprecated — availableModes / defaultMode props have no effect. Mode is
+  //   read from $executionMode (set via the navbar mode dropdown).
+  let _sharedMode = $derived(/** @type {'draft'|'paper'|'live'|'shadow'} */ (
+    /** @type {any} */ ($executionMode) || 'paper'
   ));
   let _sharedChase    = $state(true);
   let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
@@ -821,8 +824,8 @@
       return;
     }
 
-    // Resolve effective mode, applying the same force-paper guard as before.
-    let basketMode2 = _sharedMode || 'paper';
+    // Resolve effective mode from the global store (Phase B: no per-ticket override).
+    let basketMode2 = $executionMode || 'paper';
     if (basketMode2 === 'paper' || basketMode2 === 'live') {
       try {
         const live = await fetchLiveStatus();
@@ -1292,7 +1295,7 @@
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
             triggerBasket={triggerBasket + _modalTriggerBasket}
             hostManagesEsc={true}
-            bind:mode={_sharedMode}
+            mode={_sharedMode}
             bind:chase={_sharedChase}
             bind:chaseAgg={_sharedChaseAgg}
             modeChaseHidden={true}
@@ -1470,22 +1473,19 @@
              through its bindable props. -->
         <div class="oes-common-mode-row">
           <span class="oes-common-mode-label">Mode</span>
-          <!-- Operator: "make mode dropdown with default as LIVE, with
-               other values PAPER and SHADOW in both orders modal and
-               page". Pill row collapsed into a single narrow Select
-               so the row is more compact and matches the dropdown
-               pattern used by Type / Account elsewhere. -->
-          <div class="oes-common-mode-pick">
-            <Select
-              bind:value={_sharedMode}
-              ariaLabel="Execution mode"
-              options={(availableModes || ['live', 'paper', 'shadow'])
-                .filter(m => m !== 'draft')
-                .map(m => ({
-                  value: m,
-                  label: String(m).toUpperCase(),
-                }))} />
-          </div>
+          <!-- Phase B: mode is now read-only — set from the navbar mode dropdown.
+               Chip reuses the LogPanel mode-pill-* palette (sky=paper, red=live,
+               orange=shadow, amber=sim, green=replay). "change" link navigates
+               to /admin/execution so operator can flip modes without hunting. -->
+          <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
+                title="Current execution mode (set from the navbar dropdown)">
+            {($executionMode ?? 'paper').toUpperCase()}
+          </span>
+          <a href="/admin/execution?mode={$executionMode ?? 'paper'}"
+             class="oes-common-mode-change"
+             title="Change mode (opens the execution settings page)">
+            change
+          </a>
           <!-- Chase is only meaningful for LIMIT and SL orders (those
                carry a limit price the engine can re-quote each tick).
                MARKET and SL-M fill at the book's price — no limit to
@@ -2563,29 +2563,26 @@
     border-radius: 3px;
     overflow: hidden;
   }
-  /* Mode dropdown (replaces the pill group). Narrow enough to fit
-     beside the CHASE toggle on the common-actions row. */
-  .oes-common-mode-pick { min-width: 5.5rem; max-width: 7rem; }
-  .oes-common-mode-pill {
+  /* Phase B: static mode chip (read-only — set from navbar). */
+  .oes-common-mode-chip {
+    display: inline-flex;
+    align-items: center;
     padding: 0.18rem 0.5rem;
-    background: transparent;
-    color: rgba(200,216,240,0.65);
-    border: 0;
-    border-right: 1px solid rgba(125,211,252,0.18);
+    border: 1px solid currentColor;
+    border-radius: 9999px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+  .oes-common-mode-change {
     font-family: ui-monospace, monospace;
     font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    cursor: pointer;
+    color: #7e97b8;
+    text-decoration: none;
+    padding: 0 0.25rem;
   }
-  .oes-common-mode-pill:last-child { border-right: 0; }
-  .oes-common-mode-pill:hover { color: #c8d8f0; background: rgba(125,211,252,0.08); }
-  .oes-common-mode-pill.on {
-    color: #0c1830;
-    background: #7dd3fc;
-  }
-  .oes-common-mode-pill-live.on  { background: #4ade80; }
-  .oes-common-mode-pill-paper.on { background: #7dd3fc; }
+  .oes-common-mode-change:hover { color: #c8d8f0; text-decoration: underline; }
 
   .oes-common-chase-toggle {
     display: inline-flex;

@@ -26,20 +26,9 @@
   } from '$lib/data/accounts';
   import BellIcon from '$lib/icons/BellIcon.svelte';
 
-  // Mode dropdown values — operator: "make mode dropdown with
-  // default as LIVE, with other values PAPER and SHADOW in both
-  // orders modal and page". Three-mode set on prod; dev / demo
-  // stays on paper to keep the safety gate, but adds shadow as
-  // an inspection-only option.
+  // Phase B: availableModes / defaultMode no longer passed to SymbolPanel.
+  // Mode is read from the global executionMode store (set via navbar dropdown).
   const _algoStatus = getContext('algoStatus');
-  const _effectiveModes = $derived.by(() => {
-    const ctx = _algoStatus;
-    if (!ctx)              return /** @type {Array<'paper'|'live'|'shadow'>} */ (['paper', 'shadow']);
-    if (ctx.isDemo)        return /** @type {Array<'paper'|'live'|'shadow'>} */ (['paper', 'shadow']);
-    if (ctx.branch !== 'main') return /** @type {Array<'paper'|'live'|'shadow'>} */ (['paper', 'shadow']);
-    // On prod: full live/paper/shadow trio, LIVE first.
-    return /** @type {Array<'live'|'paper'|'shadow'>} */ (['live', 'paper', 'shadow']);
-  });
 
   let {
     /** Default symbol to pre-fill the Order + Chart modals.
@@ -207,8 +196,6 @@
     defaultTab="chain"
     accounts={[]}
     account=""
-    defaultMode={_effectiveModes.includes('live') ? 'live' : (_effectiveModes[0] || 'paper')}
-    availableModes={_effectiveModes}
     onClose={() => { _orderOpen = false; }}
     onSubmit={() => { _orderOpen = false; }}
   />
