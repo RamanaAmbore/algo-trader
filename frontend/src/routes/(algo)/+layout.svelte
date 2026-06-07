@@ -972,11 +972,11 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    height: 1.55rem;
-    padding: 0 0.75rem;
+    height: 1.4rem;
+    padding: 0 0.6rem;
     border-radius: 9999px;
     font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     font-weight: 800;
     letter-spacing: 0.10em;
     line-height: 1;
@@ -1515,7 +1515,7 @@
      Extends .algo-mode-badge (defined above) with cursor + caret. */
   .mode-trigger {
     cursor: pointer;
-    padding: 0 0.65rem;
+    padding: 0 0.5rem;
     gap: 0.3rem;
     outline: none;
     transition: filter 0.08s;
@@ -1557,9 +1557,9 @@
     display: block;
     width: 100%;
     text-align: left;
-    padding: 0.35rem 0.75rem;
+    padding: 0.28rem 0.65rem;
     font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     font-weight: 600;
     letter-spacing: 0.07em;
     color: var(--mc, #94a3b8);

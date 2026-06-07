@@ -249,6 +249,9 @@
   ]);
 
   const expiryCloseAnalysis = $derived.by(() => {
+    // Each array now carries rows with _band ∈ {'close','netted','otm'}
+    // plus _pairId (shared by both members of a netted pair),
+    // _closeId (unique to each to-close row), and _reason.
     /** @type {{equity:any[], commodity:any[]}} */
     const result = { equity: [], commodity: [] };
     const spot = Number(strategy?.spot || 0);
@@ -277,6 +280,8 @@
       const isITM = optType === 'CE' ? spot > strike : spot < strike;
       const lg = legAnalyticsBySymbol[c.symbol];
       const theta = Number(lg?.greeks?.theta ?? 0) || 0;
+      const otmDist = isITM ? 0
+        : (optType === 'CE' ? strike - spot : spot - strike);
       annotated.push({
         ...c,
         _strike: strike,
@@ -288,43 +293,47 @@
         _spot: spot,
         _qty: qty,
         _theta: theta,
+        _otmDist: otmDist,
       });
     }
 
-    // Equity ITM → all closed (no hedge exception on NFO). Brokers
-    // settle each account independently, so we don't sort here —
-    // the final account-then-symbol sort below handles display.
+    // Equity segment — ITM → close, OTM → otm band.
+    // No hedge exception on NFO; each contract settles independently.
+    let _eqCloseCounter = 0;
     for (const r of annotated) {
-      if (r._segment === 'equity' && r._isITM) {
-        result.equity.push({ ...r, _reason: 'ITM equity — physical settlement risk' });
+      if (r._segment !== 'equity') continue;
+      if (r._isITM) {
+        _eqCloseCounter++;
+        result.equity.push({
+          ...r,
+          _band: 'close',
+          _closeId: `C${_eqCloseCounter}`,
+          _reason: 'ITM equity — physical settlement risk',
+        });
+      } else {
+        result.equity.push({
+          ...r,
+          _band: 'otm',
+          _reason: `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
+        });
       }
     }
 
-    // Commodity ITM — greedy theta-priority netting, scoped per
-    // ACCOUNT. Four valid pair types (broker settles each account
-    // independently, so we never net across accounts):
+    // Commodity segment — greedy theta-priority netting, scoped per
+    // (account, underlying, expiry). Same four pair rules preserved.
     //
-    //   1. Long CE + Short CE  (any strikes — opposite sign,
-    //      same opt type → qty cancellation)
-    //   2. Long PE + Short PE  (same rule on PE side)
-    //   3. Long CE + Long PE   (both receive at settlement —
-    //      no further action so long as spot sits between
-    //      the two strikes)
-    //   4. Short CE + Short PE (locked-in payment — operator
-    //      can't reduce by closing one leg without leaving
-    //      the other exposed)
+    // Output enrichment vs previous version:
+    //   • Fully netted pairs → _band='netted', shared _pairId
+    //   • Partial cancels → consumed slice goes to 'netted' with
+    //     _pairId + _splitNote; remaining qty stays in the map and
+    //     may form another pair or land as residual
+    //   • Residual (non-zero after all greedy attempts) → _band='close'
+    //   • Non-ITM commodity positions → _band='otm'
     //
-    // Pairs NOT allowed (these remain as residual / need close):
-    //   • Long CE + Short PE (synthetic long underlying —
-    //     both bet on spot up; doesn't net)
-    //   • Short CE + Long PE (synthetic short — directional)
-    //   • Same-sign same-opt-type (Long CE + Long CE — just
-    //     more of the same exposure, can't cancel)
-    //
-    // Greedy theta priority: sort by |theta| DESC and, for each
-    // position from the top, find the highest-|theta| valid
-    // partner. Pairs reduce both qtys by min(|qty|). Residual
-    // (non-zero remaining qty) surfaces in the Close tab.
+    // Theta-priority direction is UNCHANGED: high |theta| paired
+    // first → low |theta| as residual = to-close. This matches the
+    // "close the positions that are costing you the most time-value"
+    // logic in the original algorithm.
     function _canPair(A, B, remaining) {
       const aq = remaining.get(A) || 0;
       const bq = remaining.get(B) || 0;
@@ -338,13 +347,17 @@
       return false;
     }
 
-    // Group by (account, underlying, expiry) — netting only
-    // applies to positions that share all three. Different
-    // underlyings settle on different contracts; different
-    // expiries settle on different dates; different accounts
-    // can't net at the broker. Within each group the four pair
-    // rules (long-CE ↔ short-CE, long-PE ↔ short-PE,
-    // long-CE ↔ long-PE, short-CE ↔ short-PE) apply.
+    // Emit OTM commodity positions first.
+    for (const r of annotated) {
+      if (r._segment !== 'commodity' || r._isITM) continue;
+      result.commodity.push({
+        ...r,
+        _band: 'otm',
+        _reason: `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
+      });
+    }
+
+    // Group ITM commodity positions by (account, underlying, expiry).
     /** @type {Record<string, any[]>} */
     const groups = {};
     for (const r of annotated) {
@@ -352,12 +365,22 @@
       const key = `${r.account || ''}|${r._underlying}|${r._expiry}`;
       (groups[key] ??= []).push(r);
     }
+
     for (const key of Object.keys(groups)) {
       const grp = groups[key];
       const sortedAbs = grp.slice().sort(
         (a, b) => Math.abs(b._theta || 0) - Math.abs(a._theta || 0));
+
+      // remaining tracks signed qty consumed through netting.
       const remaining = new Map();
       for (const r of sortedAbs) remaining.set(r, r._qty);
+
+      // nettedRows accumulates {row, consumedQty, pairId, splitNote}
+      // so we can emit them all after the greedy pass.
+      /** @type {Array<{row:any, consumedQty:number, pairId:string, splitNote:string}>} */
+      const nettedRows = [];
+      let pairCounter = 0;
+
       for (const A of sortedAbs) {
         let aq = remaining.get(A) || 0;
         while (aq !== 0) {
@@ -371,56 +394,105 @@
             if (t > bestT) { bestB = B; bestT = t; }
           }
           if (!bestB) break;
+          pairCounter++;
+          const pairId = `N${pairCounter}`;
           const bq = remaining.get(bestB) || 0;
           const netAmt = Math.min(Math.abs(aq), Math.abs(bq));
-          remaining.set(A, aq - netAmt * Math.sign(aq));
-          remaining.set(bestB, bq - netAmt * Math.sign(bq));
+          const newAq = aq - netAmt * Math.sign(aq);
+          const newBq = bq - netAmt * Math.sign(bq);
+          remaining.set(A, newAq);
+          remaining.set(bestB, newBq);
+          // Record consumed slices for both members of the pair.
+          const aSplit = newAq !== 0;
+          const bSplit = newBq !== 0;
+          nettedRows.push({
+            row: A,
+            consumedQty: netAmt * Math.sign(aq),
+            pairId,
+            splitNote: aSplit ? `split ${aq > 0 ? '+' : ''}${aq}→${netAmt * Math.sign(aq)}` : '',
+          });
+          nettedRows.push({
+            row: bestB,
+            consumedQty: netAmt * Math.sign(bq),
+            pairId,
+            splitNote: bSplit ? `split ${bq > 0 ? '+' : ''}${bq}→${netAmt * Math.sign(bq)}` : '',
+          });
           aq = remaining.get(A) || 0;
         }
       }
+
+      // Emit netted rows.
+      for (const { row, consumedQty, pairId, splitNote } of nettedRows) {
+        result.commodity.push({
+          ...row,
+          _band: 'netted',
+          _pairId: pairId,
+          _residualQty: consumedQty,
+          _reason: splitNote
+            ? `Netted (${splitNote})`
+            : `Netted — broker settles at expiry`,
+        });
+      }
+
+      // Residuals → close band.
+      let closeCounter = 0;
       for (const r of sortedAbs) {
         const q = remaining.get(r) || 0;
-        if (q === 0) continue;   // fully netted, hide from Close
+        if (q === 0) continue;
+        closeCounter++;
         result.commodity.push({
           ...r,
+          _band: 'close',
+          _closeId: `C${closeCounter}`,
           _residualQty: q,
           _reason: `Unhedged ITM commodity (residual qty ${q > 0 ? '+' : ''}${q})`,
         });
       }
     }
 
-    // Final display sort — account ASC, then symbol ASC. Per-
-    // account grouping reads cleanly when the operator scans
-    // top-to-bottom; symbol sort within an account makes
-    // contracts on the same underlying / strike cluster visually.
+    // Final display sort per band — account ASC, then symbol ASC.
     const acctSymSort = (a, b) => {
       const ac = String(a.account || '').localeCompare(String(b.account || ''));
       if (ac !== 0) return ac;
       return String(a.symbol || '').localeCompare(String(b.symbol || ''));
     };
-    result.equity.sort(acctSymSort);
-    result.commodity.sort(acctSymSort);
+    // Sort within each band independently so band order is preserved
+    // in rendering (we'll render close → netted → otm).
+    result.equity.sort((a, b) => {
+      const bandOrder = { close: 0, netted: 1, otm: 2 };
+      const bo = (bandOrder[a._band] ?? 9) - (bandOrder[b._band] ?? 9);
+      if (bo !== 0) return bo;
+      return acctSymSort(a, b);
+    });
+    result.commodity.sort((a, b) => {
+      const bandOrder = { close: 0, netted: 1, otm: 2 };
+      const bo = (bandOrder[a._band] ?? 9) - (bandOrder[b._band] ?? 9);
+      if (bo !== 0) return bo;
+      return acctSymSort(a, b);
+    });
 
     return result;
   });
+  // expiryCloseTotal counts only the 'close' band rows — those
+  // are the ones that need operator action before expiry.
   const expiryCloseTotal = $derived(
-    expiryCloseAnalysis.equity.length + expiryCloseAnalysis.commodity.length
+    expiryCloseAnalysis.equity.filter(r => r._band === 'close').length +
+    expiryCloseAnalysis.commodity.filter(r => r._band === 'close').length
   );
 
   // Rows surfaced inside the Legs card's grid. When legsTab='legs'
   // the operator sees the full candidate set in its natural order.
   // When 'expiry', we pull rows from expiryCloseAnalysis directly so
   // the theta-DESC ordering survives the trip to the rendered grid.
-  // Either equity ITM (red) OR commodity unnetted residual (amber)
-  // — whichever segment the underlying belongs to. Perfectly-netted
-  // rows aren't displayed; they're settled internally.
+  // All three bands (close / netted / otm) are surfaced; _expiryStatus
+  // encodes both segment and band so the CSS tint applies correctly.
   const displayedCandidates = $derived.by(() => {
     if (legsTab !== 'expiry') return candidatePositions;
     const out = [];
     for (const r of expiryCloseAnalysis.equity)
-      out.push({ ...r, _expiryStatus: 'equity-close' });
+      out.push({ ...r, _expiryStatus: `equity-${r._band}` });
     for (const r of expiryCloseAnalysis.commodity)
-      out.push({ ...r, _expiryStatus: 'commodity-close' });
+      out.push({ ...r, _expiryStatus: `commodity-${r._band}` });
     return out;
   });
 
@@ -2429,7 +2501,27 @@
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
           </div>
-          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c.draftId != null ? c.draftId : _ci))}
+          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
+            <!-- Band section headers — inject a full-width header row
+                 when this row is the first of its band in the expiry view.
+                 Three bands: close (amber) → netted (slate) → otm (muted).
+                 We check whether this row is the first of its band by
+                 comparing with the previous row's band. -->
+            {#if legsTab === 'expiry' && c._band && (
+              _ci === 0 ||
+              displayedCandidates[_ci - 1]?._band !== c._band
+            )}
+              {@const _bandLabels = { close: 'TO CLOSE', netted: 'NETTED', otm: 'OUT OF THE MONEY' }}
+              {@const _bandCount = displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
+              <div class="expiry-band-header expiry-band-header-{c._band}" aria-label="{_bandLabels[c._band] ?? c._band} — {c._segment}">
+                <span class="expiry-band-label">{_bandLabels[c._band] ?? c._band}</span>
+                <span class="expiry-band-count">{_bandCount}</span>
+                {#if c._band === 'close'}<span class="expiry-band-hint">action required before expiry</span>
+                {:else if c._band === 'netted'}<span class="expiry-band-hint">broker nets at settlement — no action needed</span>
+                {:else if c._band === 'otm'}<span class="expiry-band-hint">expires worthless — monitor only</span>
+                {/if}
+              </div>
+            {/if}
             {@const lg = legAnalyticsBySymbol[c.symbol]}
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
@@ -2462,6 +2554,9 @@
                  class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
+                 class:expiry-band-close={legsTab === 'expiry' && c._band === 'close'}
+                 class:expiry-band-netted={legsTab === 'expiry' && c._band === 'netted'}
+                 class:expiry-band-otm={legsTab === 'expiry' && c._band === 'otm'}
                  class:cand-row-equity-close={c._expiryStatus === 'equity-close'}
                  class:cand-row-commodity-close={c._expiryStatus === 'commodity-close'}
                  role="button"
@@ -2541,6 +2636,13 @@
                             e.stopPropagation();
                             if (c.draftId != null) removeDraft(c.draftId);
                           }}>×</button>
+                {/if}
+                {#if legsTab === 'expiry' && c._band}
+                  {#if c._band === 'close' && c._closeId}
+                    <span class="expiry-id-chip expiry-id-close" title={c._reason}>{c._closeId}</span>
+                  {:else if c._band === 'netted' && c._pairId}
+                    <span class="expiry-id-chip expiry-id-netted" title={c._reason ?? ''}>{c._pairId}</span>
+                  {/if}
                 {/if}
               </span>
               <span class="num font-mono text-[0.55rem]">{_expiryStr ? _expiryStr.slice(5) : '—'}</span>
@@ -3420,15 +3522,29 @@
     flex-shrink: 0;
   }
 
-  /* Close-tab row tints — applied to .cand-row when legsTab is
-     'expiry'. Same grid layout as Legs (no extra columns, no
-     extra text), only the row background + left accent border
-     changes by category:
-       equity-close    → red (must close, no hedge exception)
-       commodity-close → amber (MCX ITM, not net-hedged)
-       hedged          → muted grey (info — broker nets these)
-     Specificity has to outrank cand-row-long / cand-row-short
-     so the close tint reads on the existing dir-coloured rows. */
+  /* Expiry tab — three-band row tints. Specificity must outrank
+     cand-row-long / cand-row-short (hence !important on bg).
+     Band semantics:
+       close  → amber accent — operator action required
+       netted → slate/cool — broker settles, no action needed
+       otm    → faded/muted — expires worthless, monitor only
+     Legacy cand-row-equity-close / cand-row-commodity-close are kept
+     so the existing _expiryStatus-based class assignments still work;
+     the new band classes are the canonical path going forward. */
+  .cand-row.expiry-band-close {
+    background-color: var(--algo-amber-bg-soft) !important;
+    box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
+  }
+  .cand-row.expiry-band-netted {
+    background-color: rgba(125, 145, 184, 0.08) !important;
+    box-shadow: inset 3px 0 0 rgba(125, 145, 184, 0.35);
+  }
+  .cand-row.expiry-band-otm {
+    background-color: transparent !important;
+    box-shadow: none;
+    opacity: 0.55;
+  }
+  /* Legacy band aliases — keep while _expiryStatus still references them. */
   .cand-row.cand-row-equity-close {
     background-color: var(--algo-red-bg) !important;
     box-shadow: inset 3px 0 0 rgba(248, 113, 113, 0.65);
@@ -3436,6 +3552,87 @@
   .cand-row.cand-row-commodity-close {
     background-color: rgba(251, 191, 36, 0.10) !important;
     box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
+  }
+
+  /* Band section header — full-width separator between the three
+     expiry bands. Uses column-span on the grid subgrid. */
+  .expiry-band-header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem 0.25rem;
+    margin-top: 0.5rem;
+    border-bottom: 1px solid rgba(200, 216, 240, 0.12);
+  }
+  .expiry-band-header:first-of-type,
+  .expiry-band-header-close:first-child {
+    margin-top: 0;
+  }
+  .expiry-band-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    line-height: 1;
+  }
+  .expiry-band-count {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 600;
+    padding: 0.05rem 0.3rem;
+    border-radius: 999px;
+    line-height: 1;
+  }
+  .expiry-band-hint {
+    font-size: 0.57rem;
+    opacity: 0.65;
+    font-style: italic;
+    color: var(--algo-muted);
+  }
+  /* Per-band colour overrides for header label + count chip. */
+  .expiry-band-header-close .expiry-band-label { color: #fbbf24; }
+  .expiry-band-header-close .expiry-band-count {
+    background: var(--algo-amber-bg-strong);
+    color: #fbbf24;
+    border: 1px solid var(--algo-amber-border-soft);
+  }
+  .expiry-band-header-netted .expiry-band-label { color: #94a3b8; }
+  .expiry-band-header-netted .expiry-band-count {
+    background: rgba(125, 145, 184, 0.15);
+    color: #94a3b8;
+    border: 1px solid rgba(125, 145, 184, 0.3);
+  }
+  .expiry-band-header-otm .expiry-band-label { color: var(--algo-muted); }
+  .expiry-band-header-otm .expiry-band-count {
+    background: rgba(126, 151, 184, 0.12);
+    color: var(--algo-muted);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+  }
+
+  /* Tag chip inside the symbol cell — #N1 / #C1. */
+  .expiry-id-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    margin-left: 0.25rem;
+    line-height: 1;
+    vertical-align: middle;
+  }
+  .expiry-id-close {
+    background: var(--algo-amber-bg-strong);
+    color: #fbbf24;
+    border: 1px solid var(--algo-amber-border-soft);
+  }
+  .expiry-id-netted {
+    background: rgba(125, 145, 184, 0.15);
+    color: #94a3b8;
+    border: 1px solid rgba(125, 145, 184, 0.3);
   }
   /* .legs-chevron retired — no callsites. */
 
