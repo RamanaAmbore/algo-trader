@@ -187,7 +187,7 @@
              dropdown subtree, leaving the picker button visually
              present but unclickable. Same root cause behind the
              navbar hamburger drawer hang on /admin/options. -->
-        {#each filteredOptions as opt, i (opt.value)}
+        {#each filteredOptions as opt, i (String(opt.value) + '|' + i)}
           {@const selected = String(opt.value) === String(value)}
           <li role="option" aria-selected={selected}
               class="rbq-select-option

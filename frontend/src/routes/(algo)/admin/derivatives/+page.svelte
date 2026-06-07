@@ -2059,9 +2059,6 @@
 
 <svelte:head><title>Derivatives | RamboQuant Analytics</title></svelte:head>
 
-<svelte:boundary onerror={(err) => console.warn('[derivatives] boundary caught:', err)}>
-{#snippet failed(_err)}{/snippet}
-
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Derivatives</h1>
@@ -2432,7 +2429,7 @@
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
           </div>
-          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag || '') + '|' + (c.draftId != null ? c.draftId : _ci))}
+          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c.draftId != null ? c.draftId : _ci))}
             {@const lg = legAnalyticsBySymbol[c.symbol]}
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
@@ -2838,7 +2835,6 @@
   <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
-</svelte:boundary>
 
 <style>
   /* Page-header title + (i) + optional SIM badge as a single inline
