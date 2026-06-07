@@ -802,40 +802,37 @@
     flex-wrap: wrap;
     margin-bottom: 0.4rem;
   }
-  /* "ORDER ENTRY" label — matches the SymbolPanel modal's
-     `.oes-modal-name` typography (0.72rem, weight 800, amber-100%,
-     0.10em letter-spacing) so the inline /orders bucket-card header
-     and the popup modal header read identically. Icon + text inside
-     a single span — same shape as the modal's order glyph + name. */
+  /* "ORDER ENTRY" label — matches the page's `.mp-section-label`
+     convention used by Chase + Activity cards (0.6rem, weight 700,
+     amber-70%, 0.08em letter-spacing). Section identity comes from
+     the card's left-edge accent colour, not a header background.
+     Operator: "order entry card header has different background
+     colors. Other cards don't have a separate header background
+     color" — the amber gradient strip was a misstep importing the
+     modal's `.oes-header` chrome into a page card. Reverted to the
+     plain section-label convention. */
   .oc-entry-label {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.3rem;
     font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
-    font-weight: 800;
-    letter-spacing: 0.10em;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #fbbf24;
+    color: rgba(251, 191, 36, 0.7);
     flex-shrink: 0;
   }
-  .oc-entry-icon { color: currentColor; flex-shrink: 0; }
-  /* Header strip — amber gradient + bottom border identical to
-     `.oes-header` in SymbolPanel. With the bucket-card-entry
-     padding zeroed, the strip naturally sits flush against the
-     bucket-card frame (no negative margins needed). Top corners
-     match the bucket-card 6px radius minus the 1.5px outer border. */
+  .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }
+  /* Header — plain row matching every other bucket-card on the page.
+     Small inset padding so the label + collapse/fullscreen trio
+     don't slam against the bucket-card frame (since
+     `.bucket-card-entry` has its outer padding zeroed for the
+     SymbolPanel content alignment). */
   .oc-entry-header-bare {
-    margin: 0 0 0 0;
+    margin: 0;
     min-height: 1.4rem;
     padding: 0.35rem 0.5rem;
-    background: linear-gradient(180deg,
-                  rgba(251, 191, 36, 0.18) 0%,
-                  rgba(251, 191, 36, 0.06) 100%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    border-top-left-radius: 4.5px;
-    border-top-right-radius: 4.5px;
   }
 
   /* Tab strip — Activity card Agents / Orders tabs. Compact horizontal
