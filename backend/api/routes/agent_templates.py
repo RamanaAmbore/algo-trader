@@ -1,8 +1,16 @@
 """
-Agent fragment CRUD — admin endpoints for reusable notify/condition
-sub-trees (Item 2 Stage 1 = notify only).
+Agent template CRUD — admin endpoints for reusable notify/condition
+sub-trees ($ref-able from inside an agent's events / conditions tree).
 
-Routes:
+Operator vocabulary in v2.1+:
+  • notify templates    — saved channel lists (telegram + email + log + …)
+  • condition templates — saved condition sub-trees ($ref expands inline)
+  • action templates    — RESERVED for a future stage
+
+Routes (URL kept under /api/admin/fragments for back-compat with
+pre-v2.1 callers; the underlying model + module are now AgentTemplate /
+template_registry):
+
   GET    /api/admin/fragments[?kind=notify|condition]   list (active + inactive)
   GET    /api/admin/fragments/{id}                       read one
   POST   /api/admin/fragments                            create custom
@@ -10,7 +18,7 @@ Routes:
   DELETE /api/admin/fragments/{id}                       custom only
   POST   /api/admin/fragments/reload                     rebuild in-memory cache
 
-Every mutation calls FragmentRegistry.reload() so edits take effect
+Every mutation calls TemplateRegistry.reload() so edits take effect
 without a service restart — matches the grammar-token pattern.
 """
 
@@ -25,7 +33,7 @@ from sqlalchemy import select
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session
-from backend.api.models import AgentFragment
+from backend.api.models import AgentTemplate
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,7 +69,7 @@ class FragmentPatch(msgspec.Struct):
 _VALID_KINDS = {"notify", "condition"}
 
 
-def _to_out(row: AgentFragment) -> FragmentOut:
+def _to_out(row: AgentTemplate) -> FragmentOut:
     return FragmentOut(
         id=row.id, kind=row.kind, name=row.name, body=row.body,
         description=row.description or "", is_system=row.is_system,
@@ -94,27 +102,27 @@ def _validate_body_shape(kind: str, body) -> None:
 
 async def _reload_registry() -> None:
     try:
-        from backend.api.algo.fragment_registry import REGISTRY
+        from backend.api.algo.template_registry import REGISTRY
         await REGISTRY.reload()
     except Exception as e:
-        logger.error(f"FragmentRegistry reload failed: {e}")
+        logger.error(f"TemplateRegistry reload failed: {e}")
 
 
 # ── Controller ─────────────────────────────────────────────────────────
 
-class AgentFragmentController(Controller):
+class AgentTemplateController(Controller):
     path = "/api/admin/fragments"
 
     @get("/", guards=[admin_guard])
     async def list_fragments(self, kind: str | None = None) -> list[FragmentOut]:
         async with async_session() as s:
-            q = select(AgentFragment).order_by(
-                AgentFragment.kind, AgentFragment.name)
+            q = select(AgentTemplate).order_by(
+                AgentTemplate.kind, AgentTemplate.name)
             if kind:
                 if kind not in _VALID_KINDS:
                     raise HTTPException(status_code=400,
                         detail=f"kind must be one of {sorted(_VALID_KINDS)}")
-                q = q.where(AgentFragment.kind == kind)
+                q = q.where(AgentTemplate.kind == kind)
             rows = (await s.execute(q)).scalars().all()
         return [_to_out(r) for r in rows]
 
@@ -122,7 +130,7 @@ class AgentFragmentController(Controller):
     async def get_fragment(self, frag_id: int) -> FragmentOut:
         async with async_session() as s:
             row = (await s.execute(
-                select(AgentFragment).where(AgentFragment.id == frag_id)
+                select(AgentTemplate).where(AgentTemplate.id == frag_id)
             )).scalar_one_or_none()
         if not row:
             raise HTTPException(status_code=404,
@@ -142,15 +150,15 @@ class AgentFragmentController(Controller):
         _validate_body_shape(data.kind, data.body)
         async with async_session() as s:
             existing = (await s.execute(
-                select(AgentFragment).where(
-                    AgentFragment.kind == data.kind,
-                    AgentFragment.name == name,
+                select(AgentTemplate).where(
+                    AgentTemplate.kind == data.kind,
+                    AgentTemplate.name == name,
                 )
             )).scalar_one_or_none()
             if existing:
                 raise HTTPException(status_code=409,
                     detail=f"Fragment {data.kind}/{name} already exists")
-            row = AgentFragment(
+            row = AgentTemplate(
                 kind=data.kind, name=name, body=data.body,
                 description=data.description or "",
                 is_system=False, is_active=True,
@@ -165,7 +173,7 @@ class AgentFragmentController(Controller):
     async def update_fragment(self, frag_id: int, data: FragmentPatch) -> FragmentOut:
         async with async_session() as s:
             row = (await s.execute(
-                select(AgentFragment).where(AgentFragment.id == frag_id)
+                select(AgentTemplate).where(AgentTemplate.id == frag_id)
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(status_code=404,
@@ -193,7 +201,7 @@ class AgentFragmentController(Controller):
     async def delete_fragment(self, frag_id: int) -> dict:
         async with async_session() as s:
             row = (await s.execute(
-                select(AgentFragment).where(AgentFragment.id == frag_id)
+                select(AgentTemplate).where(AgentTemplate.id == frag_id)
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(status_code=404,

@@ -283,18 +283,27 @@ export const deleteGrammarToken = (id) =>
   _del(`/admin/grammar/tokens/${id}`, { auth: true });
 export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { auth: true });
 
-// ── Agent fragments — reusable notify / condition saved sub-trees ─────
-// System fragments toggle-only; custom support full CRUD.
-export const fetchAgentFragments = (kind) =>
+// ── Agent templates — reusable notify / condition saved sub-trees ────
+// System templates toggle-only; custom support full CRUD. URL kept at
+// /admin/fragments for back-compat; underlying model + module renamed
+// to AgentTemplate / template_registry in v2.1.
+export const fetchAgentTemplates = (kind) =>
   _get(`/admin/fragments/${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`,
        { auth: true });
-export const createAgentFragment = (payload) =>
+export const createAgentTemplate = (payload) =>
   _post('/admin/fragments/', payload, { auth: true });
-export const patchAgentFragment  = (id, payload) =>
+export const patchAgentTemplate  = (id, payload) =>
   _patch(`/admin/fragments/${id}`, payload, { auth: true });
-export const deleteAgentFragment = (id) =>
+export const deleteAgentTemplate = (id) =>
   _del(`/admin/fragments/${id}`, { auth: true });
-export const reloadFragments     = () => _post('/admin/fragments/reload', {}, { auth: true });
+export const reloadAgentTemplates = () =>
+  _post('/admin/fragments/reload', {}, { auth: true });
+// Pre-v2.1 names kept as aliases — remove in v2.2.
+export const fetchAgentFragments = fetchAgentTemplates;
+export const createAgentFragment = createAgentTemplate;
+export const patchAgentFragment  = patchAgentTemplate;
+export const deleteAgentFragment = deleteAgentTemplate;
+export const reloadFragments     = reloadAgentTemplates;
 
 // ── Order templates — TP/SL/Wing exit-rule presets attached at OrderTicket
 // submit time. System rows are toggle + tune; custom rows full CRUD.

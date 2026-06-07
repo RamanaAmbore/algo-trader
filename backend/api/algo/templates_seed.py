@@ -2,7 +2,7 @@
 Order-template seeder — system-defined exit-rule presets the operator
 picks at OrderTicket submit time.
 
-Pattern follows backend/api/algo/fragment_registry.py::seed_fragments:
+Pattern follows backend/api/algo/template_registry.py::seed_agent_templates:
 - SYSTEM_TEMPLATES is the declarative list, slug-keyed.
 - seed_templates() runs in app.on_startup; inserts missing rows,
   refreshes mutable metadata (name / description / applies_to /

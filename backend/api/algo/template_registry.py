@@ -1,23 +1,28 @@
 """
-Agent fragment registry — Stage 1 (notify only).
+Agent template registry — saved $ref-able sub-trees (notify + condition).
 
-A fragment is a saved JSONB body that an agent can reference via
+An AgentTemplate is a saved JSONB body that an agent can reference via
 `{"$ref": "<name>"}`. The engine resolves the ref against this
 registry at evaluation / dispatch time.
 
 This module owns:
 
   - in-memory cache of {kind: {name: body}} for fast lookup
-  - load_from_db()           — pull all active fragments on boot / reload
-  - resolve_events(events)   — expand $ref entries in a notify list
-  - SYSTEM_FRAGMENTS         — declarative seed list (mirrors the
-                                grammar.SYSTEM_TOKENS pattern)
-  - seed_fragments()         — upsert system fragments on startup
+  - load_from_db()                 — pull all active templates on boot / reload
+  - resolve_events(events)         — expand $ref entries in a notify list
+  - SYSTEM_AGENT_TEMPLATES         — declarative seed list (mirrors the
+                                      grammar.SYSTEM_TOKENS pattern)
+  - seed_agent_templates()         — upsert system templates on startup
 
-Cycle detection: notify lists are flat (no nested $refs in v1 — a
-fragment body is a list of {channel, enabled} dicts only). Stage 2
-(condition fragments) will introduce a visited-set cycle guard for
-nested resolutions.
+Cycle detection: condition $refs walk a visited set so A → B → A loops
+log a warning and return [] instead of recursing forever.
+
+Renamed from fragment_registry.py / TemplateRegistry / SYSTEM_AGENT_TEMPLATES
+in v2.1 — operator vocabulary unified under "templates" (order
+templates + agent templates). DB table keeps its historical name
+`agent_fragments` so existing rows survive without a migration. The
+old `seed_fragments` / `resolve_events` callable names stay as
+backward-compatible aliases (see end of file).
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ logger = get_logger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SYSTEM_FRAGMENTS — seeded on every boot
+#  SYSTEM_AGENT_TEMPLATES — seeded on every boot
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # Two notify fragments cover the patterns repeated across BUILTIN_AGENTS:
@@ -44,7 +49,7 @@ logger = get_logger(__name__)
 # legacy inline shape for backward compat); they GIVE OPERATORS a saved
 # reference they can swap in when authoring custom agents via the UI.
 
-SYSTEM_FRAGMENTS: list[dict] = [
+SYSTEM_AGENT_TEMPLATES: list[dict] = [
     {
         "kind": "notify",
         "name": "notify-critical-trio",
@@ -144,8 +149,8 @@ SYSTEM_FRAGMENTS: list[dict] = [
 #  Registry singleton
 # ═══════════════════════════════════════════════════════════════════════════
 
-class FragmentRegistry:
-    _instance: "FragmentRegistry | None" = None
+class TemplateRegistry:
+    _instance: "TemplateRegistry | None" = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -159,21 +164,21 @@ class FragmentRegistry:
         mutation so edits land without a restart."""
         from sqlalchemy import select
         from backend.api.database import async_session
-        from backend.api.models import AgentFragment
+        from backend.api.models import AgentTemplate
 
         next_cache: dict[str, dict[str, list | dict]] = {
             "notify": {}, "condition": {},
         }
         async with async_session() as s:
             result = await s.execute(
-                select(AgentFragment).where(AgentFragment.is_active == True)  # noqa: E712
+                select(AgentTemplate).where(AgentTemplate.is_active == True)  # noqa: E712
             )
             for row in result.scalars().all():
                 bucket = next_cache.setdefault(row.kind, {})
                 bucket[row.name] = row.body
         self._cache = next_cache
         logger.info(
-            f"FragmentRegistry reloaded — "
+            f"TemplateRegistry reloaded — "
             f"notify={len(next_cache.get('notify', {}))} "
             f"condition={len(next_cache.get('condition', {}))}"
         )
@@ -184,7 +189,7 @@ class FragmentRegistry:
         return self._cache.get(kind, {}).get(name)
 
 
-REGISTRY = FragmentRegistry()
+REGISTRY = TemplateRegistry()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -228,31 +233,31 @@ def resolve_events(events: list | None) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Seeder — upsert SYSTEM_FRAGMENTS on every app startup
+#  Seeder — upsert SYSTEM_AGENT_TEMPLATES on every app startup
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def seed_fragments() -> None:
-    """Insert/update system fragments. Custom (is_system=False) rows
-    are never touched. Existing system rows have their body and
+async def seed_agent_templates() -> None:
+    """Insert/update system agent templates. Custom (is_system=False)
+    rows are never touched. Existing system rows have their body and
     description refreshed from code so operator edits to system rows
     are intentionally overwritten — operators clone to a custom
-    fragment if they want a permanent change."""
+    template if they want a permanent change."""
     from sqlalchemy import select
     from backend.api.database import async_session
-    from backend.api.models import AgentFragment
+    from backend.api.models import AgentTemplate
 
     async with async_session() as s:
         existing = await s.execute(
-            select(AgentFragment).where(AgentFragment.is_system == True)  # noqa: E712
+            select(AgentTemplate).where(AgentTemplate.is_system == True)  # noqa: E712
         )
         by_key = {(r.kind, r.name): r for r in existing.scalars().all()}
 
         inserted = updated = 0
-        for spec in SYSTEM_FRAGMENTS:
+        for spec in SYSTEM_AGENT_TEMPLATES:
             key = (spec["kind"], spec["name"])
             row = by_key.get(key)
             if row is None:
-                s.add(AgentFragment(
+                s.add(AgentTemplate(
                     kind=spec["kind"],
                     name=spec["name"],
                     body=spec["body"],
@@ -268,7 +273,18 @@ async def seed_fragments() -> None:
                 updated += 1
         await s.commit()
         logger.info(
-            f"Agent fragments seeded — inserted={inserted} updated={updated}"
+            f"Agent templates seeded — inserted={inserted} updated={updated}"
         )
     # Hot-rebuild the in-memory cache.
     await REGISTRY.reload()
+
+
+# ── Backwards-compatibility shims ─────────────────────────────────────
+# Pre-v2.1 callers used SYSTEM_FRAGMENTS / FragmentRegistry / seed_fragments.
+# Aliasing here keeps any external script that imported the old names
+# working without a code change while internal consumers migrate to the
+# new vocabulary. Remove these shims in v2.2 once external surfaces
+# are confirmed migrated.
+SYSTEM_FRAGMENTS = SYSTEM_AGENT_TEMPLATES   # noqa: N816 — legacy name
+FragmentRegistry = TemplateRegistry         # noqa: N816 — legacy alias
+seed_fragments   = seed_agent_templates     # noqa: N816 — legacy name

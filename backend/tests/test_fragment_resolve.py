@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from backend.api.algo.fragment_registry import resolve_events, REGISTRY
+from backend.api.algo.template_registry import resolve_events, REGISTRY
 
 
 def _set_cache(notify: dict):

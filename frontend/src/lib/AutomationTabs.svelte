@@ -1,17 +1,19 @@
 <!--
   AutomationTabs — shared tab strip linking the surfaces that
   collectively form the Automation workspace. Dropped at the top of:
-    /automation              → Agents rules list (event-driven)
-    /automation/templates    → Order Templates (per-order config — Phase 3)
-    /automation/activity     → Recent fires (agent_fire / action events)
-    /admin/tokens            → Grammar tokens catalog (admin)
-    /automation/fragments    → Reusable sub-trees ($ref-able)
-    /admin/research          → Lab (Claude Code + MCP research, admin)
+    /automation                 → Agents rules list (event-driven)
+    /automation/templates       → Order Templates (TP/SL/Wing presets)
+    /automation/agent-templates → Notify + Condition Templates ($ref-able)
+    /automation/activity        → Recent fires (agent_fire / action events)
+    /admin/tokens               → Grammar tokens catalog (admin)
+    /admin/research             → Lab (Claude Code + MCP research, admin)
 
-  Operator mental model: Agents (event-driven) and Templates (per-order
-  config) sit side by side at the top — both decide HOW the engine acts
-  on positions. Activity / Tokens / Fragments / Lab are the supporting
-  surfaces (history, vocabulary, reuse, exploration).
+  Operator mental model: every reusable saved thing is a "template".
+  Order Templates govern order attachments (TP/SL/Wing); Agent
+  Templates govern agent composition (notify channels, condition
+  sub-trees, action presets). Both come from the same family but
+  serve different lifecycles — order templates pick at submit time,
+  agent templates pick at agent-design time.
 
   Industry analogue: TradingView "Alerts & Automations" tab strip;
   NinjaTrader Control Center workspace. Renamed from
@@ -21,16 +23,16 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
 
-  // Order = operator-workflow order: the two configuration surfaces
-  // first (Agents, Templates), then history (Activity), then building
-  // blocks (Tokens, Fragments), then exploration (Lab).
+  // Operator-workflow order: configuration surfaces first (Agents +
+  // both template kinds), history (Activity), building blocks
+  // (Tokens), exploration (Lab).
   const TABS = [
-    { href: '/automation',           label: 'Agents'    },
-    { href: '/automation/templates', label: 'Templates' },
-    { href: '/automation/activity',  label: 'Activity'  },
-    { href: '/admin/tokens',         label: 'Tokens'    },
-    { href: '/automation/fragments', label: 'Fragments' },
-    { href: '/admin/research',       label: 'Lab'       },
+    { href: '/automation',                 label: 'Agents'           },
+    { href: '/automation/templates',       label: 'Order Templates'  },
+    { href: '/automation/agent-templates', label: 'Agent Templates'  },
+    { href: '/automation/activity',        label: 'Activity'         },
+    { href: '/admin/tokens',               label: 'Tokens'           },
+    { href: '/admin/research',             label: 'Lab'              },
   ];
 
   // Longest-match — /automation/activity must beat /automation.

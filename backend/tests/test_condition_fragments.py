@@ -19,7 +19,7 @@ import pandas as pd
 from datetime import datetime, timezone
 
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
-from backend.api.algo.fragment_registry import REGISTRY
+from backend.api.algo.template_registry import REGISTRY
 from backend.api.algo import grammar as _grammar
 from backend.api.algo.grammar_registry import REGISTRY as GRAMMAR_REGISTRY
 

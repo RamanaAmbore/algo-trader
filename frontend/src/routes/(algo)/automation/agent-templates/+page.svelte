@@ -1,17 +1,23 @@
 <!--
-  /automation/fragments — reusable notify / condition saved sub-trees.
+  /automation/agent-templates — reusable notify / condition templates
+  ($ref-able from inside an agent's conditions / events tree).
+
+  Two kinds today:
+    • notify templates    — saved channel lists (telegram + email + log)
+    • condition templates — saved condition sub-trees (any/all/not/leaf)
+    • action templates    — RESERVED for a future stage
 
   Operator workflow:
-    - Browse all fragments (filter by kind via the segmented control)
+    - Browse all templates (filter by kind via the segmented control)
     - Expand a row to see its body
-    - Custom fragments: full edit / delete
-    - System fragments: toggle is_active only (body + description
+    - Custom templates: full edit / delete
+    - System templates: toggle is_active only (body + description
       are owned by code seeds)
-    - Create a new custom fragment via the form at the bottom
+    - Create a new custom template via the form at the bottom
 
-  Stage 3 of the Item 2 build — notify ($ref in agent.events) and
-  condition ($ref in agent.conditions) are both supported. Action
-  fragments are reserved for a future stage.
+  Renamed from /automation/fragments in v2.1 — vocabulary unified
+  under "templates" (order templates + agent templates). The
+  /automation/fragments URL still works via 308 redirect.
 -->
 <script>
   import { onMount } from 'svelte';
@@ -54,7 +60,7 @@
     try {
       fragments = await fetchAgentFragments();
     } catch (e) {
-      error = e.message || 'failed to load fragments';
+      error = e.message || 'failed to load templates';
     } finally {
       loading = false;
     }
@@ -145,7 +151,7 @@
 
   async function removeFragment(/** @type {any} */ f) {
     const ok = await _confirmRef?.ask({
-      title: 'Delete fragment?',
+      title: 'Delete agent template?',
       message: `Delete <b>${f.name}</b>? This cannot be undone.`,
       danger: true,
       confirmLabel: 'Delete',
@@ -173,16 +179,16 @@
 
 <ConfirmModal bind:this={_confirmRef} />
 
-<svelte:head><title>Agent Fragments | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>Agent Templates | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Fragments</h1>
+    <h1 class="page-title-chip">Agent Templates</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={doReload} loading={busy} label="fragments" />
+    <RefreshButton onClick={doReload} loading={busy} label="templates" />
     <PageHeaderActions />
   </span>
 </div>
@@ -206,7 +212,7 @@
 </section>
 
 {#if loading}
-  <div class="muted">Loading fragments…</div>
+  <div class="muted">Loading templates…</div>
 {:else if error}
   <div class="err">{error}</div>
 {:else}
@@ -224,7 +230,7 @@
               {#if f.is_system}<span class="frag-pill frag-pill-system">SYSTEM</span>{/if}
               {#if !f.is_active}<span class="frag-pill frag-pill-off">OFF</span>{/if}
               <span class="frag-desc">{f.description || '—'}</span>
-              <DisclosureChevron open={expandedId === f.id} ariaLabel={expandedId === f.id ? 'Collapse fragment' : 'Expand fragment'} />
+              <DisclosureChevron open={expandedId === f.id} ariaLabel={expandedId === f.id ? 'Collapse template' : 'Expand template'} />
             </button>
             {#if expandedId === f.id}
               <div class="frag-body">
@@ -251,7 +257,7 @@
 
 {#if !isDemo}
   <section id="frag-form" class="algo-status-card p-3 mt-4 form-card">
-    <h2 class="form-title">{editingId ? `Edit fragment #${editingId}` : 'Create custom fragment'}</h2>
+    <h2 class="form-title">{editingId ? `Edit template #${editingId}` : 'Create custom template'}</h2>
 
     <div class="form-row">
       <label>Kind</label>
@@ -270,13 +276,13 @@
       {#if editingId}
         <span class="form-readonly">{formName}</span>
       {:else}
-        <input class="form-input" bind:value={formName} placeholder="my-fragment-name" />
+        <input class="form-input" bind:value={formName} placeholder="my-template-name" />
       {/if}
     </div>
 
     <div class="form-row">
       <label>Description</label>
-      <input class="form-input" bind:value={formDescription} placeholder="One-line summary of what this fragment does" />
+      <input class="form-input" bind:value={formDescription} placeholder="One-line summary of what this template does" />
     </div>
 
     <div class="form-row form-row-body">

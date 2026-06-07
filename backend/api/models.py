@@ -733,10 +733,10 @@ class Setting(Base):
 
 
 # ---------------------------------------------------------------------------
-# Agent fragments — reusable saved condition/notify/action sub-trees
+# Agent templates — reusable saved condition/notify/action sub-trees
 # ---------------------------------------------------------------------------
 #
-# A fragment is a saved JSONB body that an agent can reference inline via
+# An AgentTemplate is a saved JSONB body that an agent can reference inline via
 # `{"$ref": "<name>"}`. Two kinds today:
 #
 #   notify — saves an events list (channels + enabled flags). Used in
@@ -750,16 +750,22 @@ class Setting(Base):
 #            `conditions` field via `{"$ref": "loss-positions-default"}`.
 #            Stage 2 — Stage 1 lands notify only.
 #
-# System fragments ship with the code and seed on every boot. Operators
-# can deactivate but not delete them; custom fragments have full CRUD.
+# System templates ship with the code and seed on every boot. Operators
+# can deactivate but not delete them; custom templates have full CRUD.
 #
-# The evaluator dereferences refs lazily via the FragmentRegistry
+# The evaluator dereferences refs lazily via the TemplateRegistry
 # singleton. Cycles (A refs B refs A) are detected with a visited set
 # and surface as a warning + no-fire — same graceful path as missing
 # tokens in the existing grammar pipeline.
+#
+# Renamed from AgentFragment in v2.1 alongside fragment_registry.py
+# → template_registry.py. The DB table keeps its historical name
+# `agent_fragments` so existing rows survive the rename without
+# requiring a migration; the Python class + module paths use the new
+# vocabulary.
 
-class AgentFragment(Base):
-    __tablename__ = "agent_fragments"
+class AgentTemplate(Base):
+    __tablename__ = "agent_fragments"   # historical — table rename pending
 
     id: Mapped[int]           = mapped_column(primary_key=True, autoincrement=True)
     # 'condition' or 'notify'. Reserved 'action' for a future stage.

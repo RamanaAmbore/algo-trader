@@ -280,7 +280,7 @@ def evaluate(cond: dict, ctx: Context, _visited: set | None = None) -> list[dict
                 f"'{ref_name}' referenced inside its own resolution chain"
             )
             return []
-        from backend.api.algo.fragment_registry import REGISTRY as _FRAG
+        from backend.api.algo.template_registry import REGISTRY as _FRAG
         body = _FRAG.get('condition', ref_name)
         if body is None:
             logger.warning(
@@ -412,7 +412,7 @@ def validate(cond: dict) -> list[str]:
                     f"resolution chain"
                 )
                 return
-            from backend.api.algo.fragment_registry import REGISTRY as _FRAG
+            from backend.api.algo.template_registry import REGISTRY as _FRAG
             body = _FRAG.get('condition', ref)
             if body is None:
                 errors.append(

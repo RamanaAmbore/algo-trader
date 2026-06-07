@@ -282,11 +282,11 @@ async def init_db() -> None:
     from backend.api.algo.grammar_registry import REGISTRY
     await REGISTRY.reload()
 
-    # Seed agent fragments (reusable notify/condition sub-trees). Has
+    # Seed agent templates (reusable notify/condition sub-trees). Has
     # to land BEFORE seed_agents so any builtin agent referencing a
-    # fragment via $ref can resolve it on first dispatch.
-    from backend.api.algo.fragment_registry import seed_fragments
-    await seed_fragments()
+    # template via $ref can resolve it on first dispatch.
+    from backend.api.algo.template_registry import seed_agent_templates
+    await seed_agent_templates()
 
     # Seed built-in agents
     from backend.api.algo.agent_engine import seed_agents
