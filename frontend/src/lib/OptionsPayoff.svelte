@@ -172,22 +172,21 @@
 
   // BE label pin positions — operator: "keep breakeven text under the
   // x axis instead of showing at the top with the curve". Labels now
-  // Operator: "show break even x axis label vertically along the
-  // breakeven lines above x axis so that they don't overlap sigma
-  // x axis text. use the same sigma text font size". BE labels
-  // now render rotated 90° (reads bottom-to-top), positioned just
-  // above the x-axis baseline so they trace UP the breakeven
-  // vertical line into the chart area instead of competing with
-  // σ-tick text in the bottom padding band.
+  // Operator: "show breakeven x axis labels horizontal a little
+  // above x axis". BE labels render as plain horizontal text just
+  // above the chart baseline (inside the plot area) — same font
+  // size as σ-tick labels so the two label families read at the
+  // same weight, and the labels are positioned in the chart
+  // proper rather than below the baseline where they'd compete
+  // with σ-tick price text.
   /** @type {Array<{be:number,label:string,pinY:number}>} */
   const bePins = $derived.by(() => {
     return breakevenList.map((be) => {
       const label = priceFmt(be);
-      // Anchor 4px above the chart baseline. The rotated text grows
-      // UPWARD from this point (text-anchor='end' + rotate(-90)
-      // makes the text's END sit at pinY, so the readable text
-      // extends UP into the plot area).
-      const pinY = (height - PAD_B) - 4;
+      // 6px above the chart baseline — sits inside the plot area
+      // just above the x-axis line. Operator: "horizontal a little
+      // above x axis".
+      const pinY = (height - PAD_B) - 6;
       return { be, label, pinY };
     });
   });
@@ -842,17 +841,14 @@
                   fill="#fbbf24" stroke="#0c1830" stroke-width="0.75"
                   fill-opacity="0.85"
                   pointer-events="none"/>
-          <!-- Operator: "show break even x axis label vertically
-               along the breakeven lines above x axis so that they
-               don't overlap sigma x axis text. use the same sigma
-               text font size". Rotated -90° so the text reads
-               bottom-to-top along the BE line, sits just above the
-               x-axis baseline, tracks UP the BE vertical into the
-               chart area. Matches σ-tick font-size (10) so the
-               two label families read at the same visual weight. -->
+          <!-- Operator: "show breakeven x axis labels horizontal a
+               little above x axis". Plain horizontal text sitting
+               6px above the chart baseline, inside the plot area
+               (NOT in the bottom padding band where the σ-tick
+               labels live). Navy stroke outline keeps the text
+               readable when it sits over a curve or σ grid line. -->
           <text x={bx} y={pin.pinY}
-                text-anchor="end"
-                transform="rotate(-90 {bx} {pin.pinY})"
+                text-anchor="middle"
                 fill="#fbbf24"
                 stroke="#0c1830"
                 stroke-width="3"
