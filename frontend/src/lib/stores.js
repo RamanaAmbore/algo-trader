@@ -234,9 +234,28 @@ export function marketAwareInterval(fn, ms) {
 /** Global execution-mode store.
  *  Read by OrderTicket on open to set the default mode pill.
  *  Values: 'sim' | 'replay' | 'paper' | 'shadow' | 'live'
- *  Defaults to 'paper'; will be wired to /api/admin/execution/mode
- *  in a follow-up commit. */
-export const executionMode = writable(/** @type {'sim'|'replay'|'paper'|'shadow'|'live'} */ ('paper'));
+ *
+ *  Initial value picks LIVE on prod and PAPER on dev so the navbar
+ *  chip reads correctly during the brief window before
+ *  /api/admin/execution/mode responds. Operator: "live should be
+ *  default in prod. any other mode default in dev". Branch is
+ *  inferred from hostname — `dev.<...>` prefix → dev (PAPER), every
+ *  other host (including the canonical `ramboq.com` + any internal
+ *  preview) → prod (LIVE). SSR-safe: when `window` is unavailable
+ *  the boot value falls through to 'live' (the prod default). The
+ *  API response always overrides this within the first poll cycle. */
+function _bootMode() {
+  try {
+    if (typeof window !== 'undefined') {
+      const host = String(window.location?.hostname ?? '');
+      if (host.startsWith('dev.') || host === 'localhost' || host === '127.0.0.1') {
+        return 'paper';
+      }
+    }
+  } catch { /* SSR / non-browser context */ }
+  return 'live';
+}
+export const executionMode = writable(/** @type {'sim'|'replay'|'paper'|'shadow'|'live'} */ (_bootMode()));
 
 export function branchLabel(/** @type {string|null|undefined} */ name) {
   if (!name) return '';
