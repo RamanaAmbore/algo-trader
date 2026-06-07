@@ -30,7 +30,7 @@ from litestar.exceptions import HTTPException
 from litestar.params import Parameter
 from litestar.status_codes import HTTP_200_OK
 
-from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, is_admin_request, is_authenticated_request
+from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, admin_guard, is_admin_request, is_authenticated_request
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.routes.ws import broadcast
 from backend.api.schemas import (
@@ -693,10 +693,19 @@ class OrdersController(Controller):
                 mode = (r.mode or "").lower()
                 if mode == "paper" and _paper_open_ids is not None:
                     if r.id not in _paper_open_ids:
-                        r.status = "UNFILLED"
-                        r.detail = ((r.detail or "")[:200]
-                                    + " · paper engine no longer tracking")
-                        dropped_paper += 1
+                        # Guard: only flip to UNFILLED when the row is still
+                        # OPEN in the DB.  The engine's concurrent step() may
+                        # have already written FILLED; a plain assignment would
+                        # overwrite that terminal status.  SQLAlchemy ORM
+                        # doesn't expose UPDATE … WHERE clauses directly, so
+                        # only mutate if the refreshed instance still shows
+                        # OPEN (the SELECT above fetched it as OPEN, but a
+                        # concurrent commit could have raced us).
+                        if r.status == "OPEN":
+                            r.status = "UNFILLED"
+                            r.detail = ((r.detail or "")[:200]
+                                        + " · paper engine no longer tracking")
+                            dropped_paper += 1
                         continue
                 elif mode == "live":
                     if not (r.broker_order_id or "").strip():
@@ -732,20 +741,19 @@ class OrdersController(Controller):
             for r in kept
         ]
 
-    @post("/chases/{algo_order_id:int}/kill")
+    @post("/chases/{algo_order_id:int}/kill", guards=[admin_guard])
     async def kill_chase(self, algo_order_id: int, request: Request) -> dict:
         """Cancel an in-flight chase — best-effort across paper, live,
         and shadow modes. Admin-only.
 
-        - Paper: ask the engine to cancel the open order (paper.cancel_order).
+        - Paper: delegate to engine.cancel_paper_order() which writes the
+          canonical AlgoOrderEvent(kind='cancel') row and flips DB status
+          via _safe_update_algo_order_cancel.
         - Live: call broker.cancel_order(variety, broker_order_id).
         - Shadow: just flip the row's status (nothing real to cancel).
         Sets AlgoOrder.status='CANCELLED' and writes a 'killed' event so
         the timeline reflects the operator action.
         """
-        if not is_admin_request(request):
-            raise HTTPException(status_code=403, detail="admin only")
-
         import asyncio as _asyncio
         from sqlalchemy import select as _sql_select
         from datetime import datetime, timezone
@@ -769,14 +777,11 @@ class OrdersController(Controller):
                 try:
                     from backend.api.algo.paper import get_prod_paper_engine
                     eng = get_prod_paper_engine()
-                    # Engine matches by algo_order_id — cancel via the
-                    # in-memory book; cancellation propagates to status.
-                    cancelled = False
-                    with eng._lock:
-                        for o in eng._open_orders:
-                            if o.get("algo_order_id") == row.id and o.get("status") == "OPEN":
-                                o["status"] = "CANCELLED"
-                                cancelled = True
+                    # Delegate to the engine's canonical cancel path — it writes
+                    # the AlgoOrderEvent(kind='cancel') row and flips the DB row
+                    # to CANCELLED via _safe_update_algo_order_cancel, preventing
+                    # a race with the engine's concurrent step() tick.
+                    cancelled = eng.cancel_paper_order(row.id)
                     if not cancelled:
                         err_msg = "paper engine no longer tracking"
                 except Exception as e:

@@ -80,6 +80,7 @@
    *   chase?:      boolean | undefined,
    *   chaseAgg?:   'low' | 'med' | 'high' | undefined,
    *   modeChaseHidden?: boolean,
+   *   suspended?: boolean,
    * }} */
   let {
     symbol,
@@ -200,6 +201,10 @@
     // NIFTY26JUNFUT), we surface inline pickers that build the full
     // tradingsymbol. ALL = no constraint (legacy behaviour).
     symType = /** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'),
+    // When true the ticket is mounted but not visible (e.g. Chain tab
+    // is active in SymbolPanel). Preflight effects early-return to
+    // avoid firing /api/orders/preflight while the tab is hidden.
+    suspended = false,
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -920,6 +925,9 @@
     // Skip when the ticket is incomplete — no point hitting Kite with
     // a half-typed form. Also skip drafts (no broker; cost is the limit
     // × qty multiplication which the operator can already see).
+    if (suspended) {
+      return;
+    }
     if (_isDemo || !_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
       _marginPreview = null;
       _marginLoading = false;
@@ -1548,6 +1556,7 @@
       symbol={_resolvedSymbol || symbol}
       exchange={_resolvedExchange || exchange || 'NFO'}
       {refreshKey}
+      paused={suspended}
       onQuote={onDepthQuote} />
 
     <!-- Mode selector + chase — only relevant when *placing* a new

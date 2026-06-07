@@ -1251,6 +1251,7 @@
       <div class="oes-ticket-body"
            style:display={_activeTab === 'ticket' ? null : 'none'}>
           <OrderTicket
+            suspended={_activeTab !== 'ticket'}
             symbol={_ticketProps.symbol || _localSymbol}
             exchange={_ticketProps.exchange ?? _pickedExchange ?? exchange}
             side={_ticketProps.side ?? (showCommonActions ? _modalSide : side)}

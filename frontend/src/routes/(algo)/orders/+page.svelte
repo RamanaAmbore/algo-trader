@@ -95,6 +95,13 @@
   // Per-card collapse + fullscreen state. No persistence (no cardId
   // on CollapseButton) so every page load opens both cards expanded
   // — matches the dashboard pattern.
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _loadOrdersTimer = null;
+  function _debouncedLoadOrders() {
+    if (_loadOrdersTimer) clearTimeout(_loadOrdersTimer);
+    _loadOrdersTimer = setTimeout(loadOrders, 250);
+  }
+
   let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
@@ -179,8 +186,6 @@
       product:   o.product,
       account:   String(o.account || ''),
       accounts:  [],
-      defaultMode:    'paper',
-      availableModes: ['paper'],
     };
   }
 
@@ -225,7 +230,7 @@
       // mean "re-fetch the order book." The card grid auto-updates from
       // the new `orders` state.
       if (msg.event === 'order_update' || msg.event === 'performance_updated') {
-        loadOrders();
+        _debouncedLoadOrders();
       }
     });
   });
@@ -437,7 +442,7 @@
           <OrderCard
             order={o}
             onCardClick={() => { selectedOrder = (selectedOrder?.order_id === o.order_id ? null : o); }}
-            onSymbolClick={(ord, _e) => { orderTicketProps = { symbol: ord.tradingsymbol, exchange: ord.exchange || '' }; }}
+            onSymbolClick={(ord, _e) => { orderTicketProps = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', defaultTab: 'ticket' }; }}
             onSymbolContext={(ord, ev) => { _ctxMenu = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', x: ev.clientX, y: ev.clientY }; }}>
             {#snippet actions(ord)}
               {#if isOpenStatus(ord.status)}
@@ -490,11 +495,6 @@
       product:   ord.product,
       account:   String(ord.account || ''),
       accounts:  [],
-      // Modify path doesn't touch /api/orders/ticket — mode pills
-      // are hidden by the ticket when action='modify' anyway, so
-      // the values here are inert. Pass paper-only to be tidy.
-      defaultMode:    'paper',
-      availableModes: ['paper'],
     };
   }}
 />

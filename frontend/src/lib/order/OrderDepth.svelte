@@ -17,8 +17,9 @@
    *   exchange?: string,
    *   onQuote?: (q: any) => void,
    *   refreshKey?: number,
+   *   paused?: boolean,
    * }} */
-  let { symbol, exchange = 'NFO', onQuote = null, refreshKey = 0 } = $props();
+  let { symbol, exchange = 'NFO', onQuote = null, refreshKey = 0, paused = false } = $props();
 
   /** @type {{ ltp: number, bid: number|null, ask: number|null, depth_buy: any[], depth_sell: any[], ohlc?: { close?: number } | null } | null} */
   let q = $state(null);
@@ -53,8 +54,10 @@
   }
 
   onMount(() => {
-    poll();
-    timer = setInterval(poll, 2000);
+    if (!paused) {
+      poll();
+      timer = setInterval(poll, 2000);
+    }
     document.addEventListener('visibilitychange', _onVisibilityChange);
   });
   onDestroy(() => {
