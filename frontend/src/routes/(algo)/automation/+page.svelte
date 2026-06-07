@@ -497,10 +497,25 @@
       type: "close_position",
       params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO", product: "NRML" },
     },
+    // place_order — entry-only. No template attached; the agent
+    // places the order and nothing else. Use this when the agent's
+    // condition is the entry trigger and you don't want auto-TP/SL.
     place_order: {
       type: "place_order",
       params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO",
-                side: "SELL", qty: 50, order_type: "LIMIT" },
+                side: "SELL", qty: 50, order_type: "LIMIT",
+                template_slug: "none" },
+    },
+    // place_order_templated — entry + default template attach. The
+    // chosen template (default-bull / default-short-vol) fans out
+    // TP/SL GTTs (and Wing for sell options) automatically when the
+    // entry fills. Operator can swap template_slug for any other
+    // template or override individual fields (tp_pct_override etc).
+    place_order_templated: {
+      type: "place_order",
+      params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO",
+                side: "BUY", qty: 50, order_type: "LIMIT",
+                template_slug: "default-bull" },
     },
     chase_close_positions: {
       type: "chase_close_positions",
@@ -959,7 +974,10 @@
                 </div>
                 <div>
                   <div class="flex items-center justify-between flex-wrap gap-1">
-                    <label class="field-label">Actions (JSON)</label>
+                    <label class="field-label">
+                      Actions (JSON)
+                      <InfoHint popup text="Each <code>place_order</code> action can attach an <b>Order Template</b> (TP/SL/Wing exit rules) via <code>template_slug</code> on its params. Use <b>+ place_order (templated)</b> for entries with auto-exit attach; use <b>+ place_order</b> for entry-only. The template runs on fill — sim path goes through SimGttBook; live path through broker GTT (when fill-postback wiring lands). Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
+                    </label>
                     <!-- Quick-add pills — click appends a skeleton action
                          entry so operators don't have to remember the
                          exact shape. Params are templated to legal values;
@@ -968,7 +986,9 @@
                       <button type="button" onclick={() => addAction('close_position')}
                         class="action-add-pill action-add-close">+ close_position</button>
                       <button type="button" onclick={() => addAction('place_order')}
-                        class="action-add-pill action-add-place">+ place_order</button>
+                        class="action-add-pill action-add-place" title="Entry only — no auto-exit attached">+ place_order</button>
+                      <button type="button" onclick={() => addAction('place_order_templated')}
+                        class="action-add-pill action-add-place-tpl" title="Entry + default template — auto TP/SL/Wing on fill">+ place_order (templated)</button>
                       <button type="button" onclick={() => addAction('chase_close_positions')}
                         class="action-add-pill action-add-chase">+ chase_close</button>
                       <button type="button" onclick={() => addAction('cancel_all_orders')}
@@ -1639,6 +1659,11 @@
   .action-add-close:hover  { background: rgba(251,113,133,0.25); border-color: #fb7185; }
   .action-add-place  { background: rgba(16,185,129,0.12);  color: #6ee7b7; border-color: rgba(16,185,129,0.4); }
   .action-add-place:hover  { background: rgba(16,185,129,0.25); border-color: #10b981; }
+  /* "+ place_order (templated)" — same emerald family but stronger
+     gradient + ★ accent so operators see it as the recommended
+     variant for new agents. Untemplated stays for explicit opt-out. */
+  .action-add-place-tpl  { background: linear-gradient(135deg, rgba(16,185,129,0.18), rgba(192,132,252,0.14)); color: #6ee7b7; border-color: rgba(16,185,129,0.55); font-weight: 700; }
+  .action-add-place-tpl:hover { background: linear-gradient(135deg, rgba(16,185,129,0.28), rgba(192,132,252,0.22)); border-color: #10b981; }
   .action-add-chase  { background: rgba(251,191,36,0.12);  color: #fbbf24; border-color: rgba(251,191,36,0.4); }
   .action-add-chase:hover  { background: rgba(251,191,36,0.25); border-color: #fbbf24; }
   .action-add-cancel { background: rgba(148,163,184,0.12); color: var(--algo-slate); border-color: rgba(148,163,184,0.35); }
