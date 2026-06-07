@@ -362,13 +362,33 @@ export const startSim             = (scenario, rate_ms = 2000, opts = {}) =>
           pct_overrides:           opts.pct_overrides           || null,
           symbols:                 opts.symbols                 || null,
           spread_pct:              opts.spread_pct              ?? null,
-          custom_positions:        opts.custom_positions        || null },
+          custom_positions:        opts.custom_positions        || null,
+          record_mode:             !!opts.record_mode,
+          recording_label:         opts.recording_label || null },
         { auth: true });
 export const stopSim              = () => _post('/simulator/stop', {}, { auth: true });
 export const stepSim              = () => _post('/simulator/step', {}, { auth: true });
 export const runSimCycle          = () => _post('/simulator/run-cycle', {}, { auth: true });
 export const clearSimArtefacts    = () => _post('/simulator/clear', {}, { auth: true });
 export const seedSimLive          = () => _post('/simulator/seed-live', {}, { auth: true });
+
+// Sim recordings — deterministic event log per run. Phase 2c will add
+// the replay driver that consumes a recording row.
+export const fetchSimRecordings   = (limit = 50) =>
+  _get(`/simulator/recordings?limit=${limit}`, { auth: true });
+export const fetchSimRecording    = (id) =>
+  _get(`/simulator/recordings/${id}`, { auth: true });
+export const deleteSimRecording   = (id) =>
+  _del(`/simulator/recordings/${id}`, { auth: true });
+
+// Sim GTT book — place / list / cancel template-driven triggers inside
+// the active sim. The orchestrator path (OrderTicket template fan-out)
+// reaches this via the same endpoints used by integration tests.
+export const fetchSimGtts         = () => _get('/simulator/gtt', { auth: true });
+export const placeSimGtt          = (payload) =>
+  _post('/simulator/gtt', payload, { auth: true });
+export const cancelSimGtt         = (gttId) =>
+  _del(`/simulator/gtt/${encodeURIComponent(gttId)}`, { auth: true });
 
 // Agent-generated orders from the algo_orders table. Returns live + sim
 // by default; pass `mode='live'` or `'sim'` to scope. Used by the Order

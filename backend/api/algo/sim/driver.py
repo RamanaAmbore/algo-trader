@@ -557,6 +557,16 @@ class SimDriver:
         from backend.api.algo.sim.gtt_book import SimGttBook
         self._gtt_book = SimGttBook(on_trigger=self._on_gtt_trigger)
 
+        # Recording — flipped on at start() when record_mode=True.
+        # Buffer + metadata reset on every start() so a fresh run begins
+        # with no inherited events. Stayed Out-of-init means a stop()
+        # call before any start() can't crash on missing attrs.
+        self._recording_active:     bool                  = False
+        self._recording_label:      str                   = ""
+        self._recording_owner_id:   int | None            = None
+        self._recording_events:     list[dict]            = []
+        self._recording_started_at: Optional[datetime]    = None
+
     @classmethod
     def instance(cls) -> "SimDriver":
         if cls._instance is None:
@@ -767,7 +777,10 @@ class SimDriver:
               walk_seed: int | None = None,
               chase_max_attempts: int | None = None,
               inputs: list[str] | None = None,
-              accounts: list[str] | None = None) -> dict:
+              accounts: list[str] | None = None,
+              record_mode: bool = False,
+              recording_label: str | None = None,
+              recording_owner_user_id: int | None = None) -> dict:
         """
         Start the sim against a named scenario from scenarios.yaml, or an
         `inline_scenario` dict (same shape) built at call time by the
@@ -852,6 +865,28 @@ class SimDriver:
         self._paper.reset()
         # Wipe the GTT book — a fresh sim run starts with no triggers.
         self._gtt_book.reset()
+
+        # Recording — fresh buffer for this run. If record_mode is on
+        # we wire SimGttBook's on_record hook to append into _recording_events
+        # for the lifetime of this run; on stop() the buffer flushes to
+        # sim_recordings. Recording is per-run state: it never carries
+        # across stop()→start() boundaries.
+        self._recording_active:    bool = bool(record_mode)
+        self._recording_label:     str  = (recording_label or "").strip()[:160]
+        self._recording_owner_id:  int | None = recording_owner_user_id
+        self._recording_events:    list[dict] = []
+        self._recording_started_at = self.started_at if self._recording_active else None
+        # Re-wire the GTT book's on_record to point at our buffer. When
+        # record_mode is off we leave it as a no-op so the book's per-event
+        # callback stays cheap.
+        self._gtt_book._on_record = self._record if self._recording_active else None
+        if self._recording_active:
+            self._record("sim_start", {
+                "scenario":  scenario_slug,
+                "seed_mode": seed_mode,
+                "rate_ms":   self.rate_ms,
+                "label":     self._recording_label,
+            })
 
         # Reset the rate-history bucket so consecutive sim runs don't
         # inherit stale samples — the rate evaluator otherwise sees
@@ -1082,8 +1117,74 @@ class SimDriver:
             kind="stopped", moves=[], changes=[],
             note=f"Stopped after {self.tick_index} ticks",
         )
+        # Recording — emit a terminal sim_stop event with summary numbers
+        # before the buffer flushes. The flush itself is fire-and-forget
+        # via asyncio.create_task because stop() is sync and the DB
+        # writer is async; we don't want to block the operator's UI on
+        # a JSONB insert.
+        if self._recording_active:
+            self._record("sim_stop", {
+                "tick_index":     self.tick_index,
+                "positions_left": len(self._positions_rows),
+                "open_orders":    len(self._paper.open_order_details()),
+            })
+            try:
+                import asyncio
+                asyncio.create_task(self._flush_recording())
+            except Exception as e:
+                logger.error(f"[SIM] could not schedule recording flush: {e}")
         logger.warning(f"[SIM] Stopped after {self.tick_index} ticks")
         return self.snapshot()
+
+    async def _flush_recording(self) -> None:
+        """Persist the in-memory recording buffer as one SimRecording row.
+        Called from _internal_stop when record_mode was set at start().
+        Buffer is captured here (not from instance state) so a fast-follow
+        start() doesn't race the flush with a fresh buffer."""
+        if not self._recording_events:
+            self._recording_active = False
+            return
+        events = self._recording_events
+        label  = self._recording_label
+        owner  = self._recording_owner_id
+        scen   = self.scenario_slug
+        seed   = self.seed_mode
+        started = self._recording_started_at
+        ended   = datetime.now()
+        # Wipe instance buffer immediately so a follow-on start() begins
+        # with a clean recording state.
+        self._recording_active     = False
+        self._recording_events     = []
+        self._recording_label      = ""
+        self._recording_owner_id   = None
+        self._recording_started_at = None
+
+        try:
+            from backend.api.database import async_session
+            from backend.api.models import SimRecording
+            duration = (ended - started).total_seconds() if started else 0.0
+            row = SimRecording(
+                label=label or f"{scen or 'sim'} @ {started.isoformat(timespec='seconds') if started else ''}",
+                scenario=scen,
+                seed_mode=seed,
+                started_at=started or ended,
+                ended_at=ended,
+                duration_sec=round(duration, 3),
+                tick_count=self.tick_index,
+                event_count=len(events),
+                payload={"events": events},
+                owner_user_id=owner,
+            )
+            async with async_session() as s:
+                s.add(row)
+                await s.commit()
+                await s.refresh(row)
+            logger.info(
+                f"[SIM] Recording flushed — id={row.id} events={len(events)} "
+                f"duration={duration:.1f}s label={label!r}"
+            )
+        except Exception as e:
+            logger.error(f"[SIM] Recording flush failed: {e}")
 
     def step(self) -> dict:
         """Apply one tick (for deterministic debugging)."""
@@ -1610,6 +1711,16 @@ class SimDriver:
         # the chase step so a fill that removes the row from `_positions_rows`
         # still leaves its last LTP in the history.
         self._capture_price_history()
+        # Recording — log the tick (relative t auto-derived). Cheap when
+        # recording is off (single bool check inside _record).
+        self._record("tick", {
+            "tick_index": self.tick_index,
+            "moves":      moves,
+            "changes":    [
+                {k: v for k, v in c.items() if k != "row"}
+                for c in (changes or [])
+            ],
+        })
         # Check every active GTT for trigger crossing against the
         # newly-updated LTPs. Crossings fire through _on_gtt_trigger,
         # which dispatches the matched leg into the same paper engine
@@ -2277,6 +2388,34 @@ class SimDriver:
                 row["day_change"]            = lp - close
                 row["day_change_percentage"] = (lp - close) / close
 
+    # ── Recording layer ───────────────────────────────────────────────
+
+    def _record(self, kind: str, payload: dict) -> None:
+        """Append one event to the recording buffer with a `t` offset
+        measured in seconds from `_recording_started_at`. Called from
+        every state-mutating path when record_mode is on. Silent no-op
+        when not recording so the per-event cost stays at one bool check.
+
+        Called from:
+          - SimGttBook lifecycle (placed / triggered / cancelled / expired)
+          - SimDriver._apply_next_tick (every tick)
+          - _on_gtt_trigger (when a GTT dispatches a leg)
+          - _forward_chase_event (when chase fills / unfills / modifies)
+          - external hooks for agent fires + actions (added in Phase 2c)
+
+        Payload is stored as-is in the buffer; recipients should keep
+        it serialisable (primitives, lists, dicts of the same).
+        """
+        if not self._recording_active or self._recording_started_at is None:
+            return
+        from datetime import datetime as _dt
+        t = (_dt.now() - self._recording_started_at).total_seconds()
+        self._recording_events.append({
+            "t":       round(t, 3),
+            "kind":    kind,
+            "payload": payload,
+        })
+
     # ── Sim GTT book — template-driven TP / SL triggers ───────────────
 
     def place_sim_gtt(self, **kwargs) -> dict:
@@ -2387,6 +2526,14 @@ class SimDriver:
             "changes":    [],
             "note":       evt.get("note"),
             "order":      order,
+        })
+        # Recording — capture chase lifecycle events (placed / filled /
+        # modified / unfilled). The downstream replay driver re-emits
+        # these into the same tick log so the operator sees identical
+        # chase pills + Activity log entries during playback.
+        self._record(f"chase_{evt.get('kind') or 'event'}", {
+            "order": order,
+            "note":  evt.get("note"),
         })
 
     def _check_auto_complete(self) -> None:

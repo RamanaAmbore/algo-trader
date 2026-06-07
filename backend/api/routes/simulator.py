@@ -42,7 +42,7 @@ from backend.api.algo.sim.driver import (
 from backend.api.algo.sim.synthesize import synthesize_for_agent, SynthesizeError
 from backend.api.auth_guard import admin_guard, auth_or_demo_guard
 from backend.api.database import async_session
-from backend.api.models import Agent, AgentEvent, AlgoOrder
+from backend.api.models import Agent, AgentEvent, AlgoOrder, SimRecording
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -100,6 +100,13 @@ class SimStartRequest(msgspec.Struct):
     # fall back to the DB setting `simulator.chase_max_attempts`.
     # Clamped to [1, 50] server-side.
     chase_max_attempts: Optional[int] = None
+    # Recording — when True, every state-mutating event (tick, GTT
+    # lifecycle, chase fill, agent fire) is appended to an in-memory
+    # buffer with a relative timestamp. On stop() the buffer flushes
+    # to one `sim_recordings` row. SimReplayDriver consumes that row
+    # to re-emit the events at configurable speed.
+    record_mode:     bool = False
+    recording_label: Optional[str] = None
 
 
 class SimRunRequest(msgspec.Struct):
@@ -369,6 +376,8 @@ class SimulatorController(Controller):
                 walk_vol=data.walk_vol,
                 walk_seed=data.walk_seed,
                 chase_max_attempts=data.chase_max_attempts,
+                record_mode=bool(data.record_mode),
+                recording_label=data.recording_label,
             )
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -506,6 +515,79 @@ class SimulatorController(Controller):
                 detail=f"sim GTT {gtt_id!r} not found or already terminal",
             )
         return gtt
+
+    # ── Recordings — "play it later" capability ──────────────────────────
+    #
+    # When a sim runs with record_mode=true, every state-mutating event
+    # lands in an in-memory buffer; on stop() the buffer flushes to one
+    # SimRecording row. These routes expose the saved recordings list so
+    # the Replays tab can show / play / delete them. The replay driver
+    # itself lands in Phase 2c.
+
+    @get("/recordings")
+    async def list_recordings(self, limit: Optional[int] = 50) -> list[dict]:
+        """Recent recordings, newest first. Excludes the event payload
+        for a compact list response — operators fetch payload via
+        /recordings/{id} when they actually want to play one back."""
+        limit = max(1, min(int(limit or 50), 200))
+        async with async_session() as s:
+            rows = (await s.execute(
+                select(SimRecording)
+                .order_by(desc(SimRecording.id))
+                .limit(limit)
+            )).scalars().all()
+        return [
+            {
+                "id":            r.id,
+                "label":         r.label,
+                "scenario":      r.scenario,
+                "seed_mode":     r.seed_mode,
+                "started_at":    r.started_at.isoformat() if r.started_at else None,
+                "ended_at":      r.ended_at.isoformat() if r.ended_at else None,
+                "duration_sec":  r.duration_sec,
+                "tick_count":    r.tick_count,
+                "event_count":   r.event_count,
+                "owner_user_id": r.owner_user_id,
+            }
+            for r in rows
+        ]
+
+    @get("/recordings/{recording_id:int}")
+    async def get_recording(self, recording_id: int) -> dict:
+        """One recording with its full event payload — used by the
+        SimReplayDriver to consume + re-emit events."""
+        async with async_session() as s:
+            row = await s.get(SimRecording, recording_id)
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"sim_recording id={recording_id} not found",
+            )
+        return {
+            "id":            row.id,
+            "label":         row.label,
+            "scenario":      row.scenario,
+            "seed_mode":     row.seed_mode,
+            "started_at":    row.started_at.isoformat() if row.started_at else None,
+            "ended_at":      row.ended_at.isoformat() if row.ended_at else None,
+            "duration_sec":  row.duration_sec,
+            "tick_count":    row.tick_count,
+            "event_count":   row.event_count,
+            "events":        (row.payload or {}).get("events", []),
+        }
+
+    @delete("/recordings/{recording_id:int}", status_code=200)
+    async def delete_recording(self, recording_id: int) -> dict:
+        async with async_session() as s:
+            row = await s.get(SimRecording, recording_id)
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"sim_recording id={recording_id} not found",
+                )
+            await s.delete(row)
+            await s.commit()
+        return {"deleted": True, "id": recording_id}
 
     @post("/clear")
     async def clear_sim_rows(self) -> dict:

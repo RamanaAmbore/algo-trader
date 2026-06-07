@@ -544,6 +544,54 @@ class AgentEvent(Base):
 # detailed event/order rows.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Sim recording — deterministic event log for "replay this sim run later".
+#
+# When the operator runs a sim with record_mode=true, SimDriver buffers
+# every state-mutating event (tick, position add/close, GTT lifecycle,
+# chase fill, agent fire) with a relative timestamp. On sim stop the
+# buffer flushes to one row here. SimReplayDriver consumes the row to
+# re-emit the events at configurable speed — the operator's screen
+# looks identical to the original run.
+#
+# Industry analogue: NinjaTrader Market Replay binary, IBKR session log
+# replay. Event-stream recording (not input-only) keeps replay
+# deterministic regardless of code changes between record + replay.
+# ---------------------------------------------------------------------------
+
+class SimRecording(Base):
+    __tablename__ = "sim_recordings"
+
+    id: Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    # Operator-supplied free-form label ("NIFTY -3% with Default-Bull").
+    label: Mapped[str]         = mapped_column(String(160), nullable=False, default="")
+    scenario: Mapped[Optional[str]]   = mapped_column(String(64), nullable=True)
+    seed_mode: Mapped[Optional[str]]  = mapped_column(String(32), nullable=True)
+    # Wall-clock timestamps of the recording window. duration_sec is
+    # ended_at - started_at; surfaced as a column so the Replays tab
+    # doesn't have to compute it client-side.
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    duration_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    tick_count: Mapped[int]    = mapped_column(Integer, nullable=False, default=0)
+    event_count: Mapped[int]   = mapped_column(Integer, nullable=False, default=0)
+    # Event log — list of {t, kind, payload} dicts. Compact at ~150 KB
+    # per ~10-min sim; bounded by SimDriver's tick rate * duration.
+    payload: Mapped[dict]      = mapped_column(JSONB, nullable=False, default=dict)
+    owner_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class SimIteration(Base):
     __tablename__ = "sim_iterations"
 
