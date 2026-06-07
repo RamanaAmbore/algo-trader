@@ -170,17 +170,28 @@
        ? breakevens.filter(b => b != null)
        : (breakeven != null ? [breakeven] : [])));
 
-  // BE label pin positions — horizontal text just above the chart baseline,
-  // inside the plot area so they don't compete with σ-tick price labels below.
-  /** @type {Array<{be:number,label:string,pinY:number}>} */
+  // BE label pin positions — vertical text just above the chart baseline,
+  // alternating sides per BE so adjacent labels never overlap each other
+  // or the central spot marker. Inside the plot area, doesn't compete
+  // with σ-tick price labels in the bottom padding band.
+  /** @type {Array<{be:number,label:string,pinY:number,dx:number,anchor:string}>} */
   const bePins = $derived.by(() => {
-    return breakevenList.map((be) => {
+    return breakevenList.map((be, i) => {
       const label = priceFmt(be);
-      // 6px above the chart baseline — sits inside the plot area
-      // just above the x-axis line. Operator: "horizontal a little
-      // above x axis".
+      // All labels share the same Y baseline. Operator: "verticals
+      // at the same position for breakeven lines the first label
+      // before the line and the next label after the line".
+      // Alternate side per BE — even-index labels sit BEFORE the
+      // vertical line (left side), odd-index labels sit AFTER it
+      // (right side). For the typical 2-BE iron condor / vertical
+      // spread shape that's first BE on left, second BE on right
+      // so the two labels never overlap each other or the chart's
+      // central spot marker.
+      const side = i % 2 === 0 ? 'left' : 'right';
+      const dx = side === 'left' ? -4 : 4;
       const pinY = (height - PAD_B) - 6;
-      return { be, label, pinY };
+      const anchor = 'start';
+      return { be, label, pinY, dx, anchor };
     });
   });
 
@@ -834,14 +845,15 @@
                   fill="#fbbf24" stroke="#0c1830" stroke-width="0.75"
                   fill-opacity="0.85"
                   pointer-events="none"/>
-          <!-- Operator: "show breakeven x axis labels horizontal a
-               little above x axis". Plain horizontal text sitting
-               6px above the chart baseline, inside the plot area
-               (NOT in the bottom padding band where the σ-tick
-               labels live). Navy stroke outline keeps the text
-               readable when it sits over a curve or σ grid line. -->
-          <text x={bx} y={pin.pinY}
-                text-anchor="middle"
+          <!-- BE label — vertical (reads bottom-to-top), pivot 4px
+               left/right of the BE line so adjacent BEs alternate
+               sides and never collide with each other or with the
+               spot marker between them. text-anchor="start" + a
+               -90° rotation around the pivot makes the text grow
+               UPWARD from pinY into the plot area. -->
+          <text x={bx + pin.dx} y={pin.pinY}
+                text-anchor={pin.anchor}
+                transform="rotate(-90 {bx + pin.dx} {pin.pinY})"
                 fill="#fbbf24"
                 stroke="#0c1830"
                 stroke-width="3"
