@@ -188,7 +188,14 @@
       // so the two labels never overlap each other or the chart's
       // central spot marker.
       const side = i % 2 === 0 ? 'left' : 'right';
-      const dx = side === 'left' ? -4 : 4;
+      // Right-side labels nudged further out (+10 vs -4 on the
+      // left). Operator: "the right side label move towards right
+      // a little bit". The asymmetry is intentional — left labels
+      // sit close to their line because the chart's left padding
+      // gives them room; right labels need extra breathing room
+      // so they don't crowd into the chart's right edge / spot
+      // marker area.
+      const dx = side === 'left' ? -4 : 10;
       const pinY = (height - PAD_B) - 6;
       const anchor = 'start';
       return { be, label, pinY, dx, anchor };
