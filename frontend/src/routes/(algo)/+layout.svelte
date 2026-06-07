@@ -245,12 +245,19 @@
   // LogPanel.svelte and the .algo-mode-* badges below. SIM uses
   // pink/rose (#fb7185), PAPER sky-blue (#7dd3fc), LIVE emerald
   // (#4ade80) — NOT alt-Tailwind variants.
+  // LIVE shifted from emerald-400 to red-400 (#f87171). The old
+  // palette put LIVE and REPLAY both on green, indistinguishable at
+  // a glance — operationally a footgun since LIVE is the only mode
+  // that moves real money. RED is the universal trading-platform
+  // convention for "real broker". Aligns with the LIVE banner red
+  // and keeps the safe modes (paper sky, replay green, sim rose,
+  // shadow orange) visually distinct from the dangerous one.
   const MODE_COLOR = {
-    sim:    '#fb7185',   // rose-400 — matches .algo-mode-sim
-    replay: '#4ade80',   // pos-green — matches .algo-mode-replay
-    paper:  '#7dd3fc',   // info-sky — matches .algo-mode-paper
-    shadow: '#fb923c',   // short-orange — matches .algo-mode-shadow
-    live:   '#4ade80',   // emerald-400 — matches .algo-mode-live [data-mode='live']
+    sim:    '#fb7185',   // rose-400
+    replay: '#4ade80',   // pos-green
+    paper:  '#7dd3fc',   // info-sky
+    shadow: '#fb923c',   // short-orange
+    live:   '#f87171',   // red-400 — danger / real broker
   };
   async function loadMode() {
     try {
@@ -768,6 +775,31 @@
       </div>
     {/if}
 
+    {#if $executionMode === 'live' && paperStatus?.branch === 'main'}
+      <!-- LIVE banner — red, always visible when in LIVE mode. Phase A
+           of the navbar-only-mode rollout: operator MUST see at a
+           glance that orders go to the real broker. No per-ticket
+           mode override exists; mode is set ONLY from the navbar
+           dropdown. -->
+      <div class="live-banner" role="status" aria-live="polite">
+        <span class="live-banner-dot"></span>
+        <span class="live-banner-label">LIVE</span>
+        <span class="live-banner-sep">·</span>
+        <span class="live-banner-meta">orders go to broker · real money</span>
+      </div>
+    {/if}
+    {#if $executionMode === 'shadow' && paperStatus?.branch === 'main'}
+      <!-- SHADOW banner — orange, always visible when in SHADOW mode.
+           Shadow logs the Kite payload + runs basket_margin without
+           executing. Pre-Live sanity check. -->
+      <div class="shadow-banner" role="status" aria-live="polite">
+        <span class="shadow-banner-dot"></span>
+        <span class="shadow-banner-label">SHADOW</span>
+        <span class="shadow-banner-sep">·</span>
+        <span class="shadow-banner-meta">payload logged · no execution</span>
+      </div>
+    {/if}
+
     {#if replayStatus?.active}
       <div class="replay-banner" role="status" aria-live="polite">
         <span class="replay-banner-dot"></span>
@@ -1007,17 +1039,22 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    height: 1.4rem;
-    padding: 0 0.6rem;
+    height: 1.55rem;
+    padding: 0 0.75rem;
     border-radius: 9999px;
     font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.10em;
     line-height: 1;
     flex: 0 0 auto;
     margin-right: 0.35rem;
-    border: 1px solid currentColor;
+    border: 1.5px solid currentColor;
+  }
+  /* LIVE gets a halo so it reads as the urgent / pay-attention pill
+     even at a glance — matches the live-banner-pulse rhythm. */
+  .algo-mode-badge[data-mode='live'] {
+    box-shadow: 0 0 8px rgba(248, 113, 113, 0.45);
   }
   .algo-mode-badge::before {
     content: '';
@@ -1330,6 +1367,94 @@
   }
   .paper-banner-sep  { color: rgba(125,211,252,0.5); }
   .paper-banner-meta { color: #bae6fd; opacity: 0.8; }
+
+  /* ── LIVE banner ───────────────────────────────────────────────────
+     Red palette. The most operationally dangerous mode — operator
+     MUST see at a glance that orders go to the broker. Always sticky
+     under the navbar when executionMode='live'. Subtle pulse so it
+     reads as "ALIVE" without being seizure-inducing. */
+  .live-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.25rem 0.85rem;
+    background-color: #0a1020;
+    background-image: linear-gradient(90deg,
+                      rgba(248,113,113,0.26) 0%,
+                      rgba(239,68,68,0.20) 100%);
+    border-top: 1px solid rgba(248,113,113,0.55);
+    border-bottom: 1px solid rgba(248,113,113,0.55);
+    color: #fecaca;
+    font-family: ui-monospace, monospace;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    position: sticky;
+    top: 3rem;
+    z-index: 49;
+    animation: live-banner-pulse 2.4s ease-in-out infinite;
+  }
+  .live-banner-dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: #f87171;
+    box-shadow: 0 0 6px rgba(248,113,113,0.85);
+    flex-shrink: 0;
+  }
+  .live-banner-label {
+    color: #fecaca;
+    letter-spacing: 0.12em;
+    font-size: 0.66rem;
+    font-weight: 800;
+  }
+  .live-banner-sep  { color: rgba(248,113,113,0.55); }
+  .live-banner-meta { color: #fee2e2; opacity: 0.85; }
+  @keyframes live-banner-pulse {
+    0%, 100% { box-shadow: inset 0 0 0 0 rgba(248,113,113,0);     }
+    50%      { box-shadow: inset 0 0 12px 0 rgba(248,113,113,0.30); }
+  }
+
+  /* ── SHADOW banner ────────────────────────────────────────────────
+     Orange palette. Always sticky when executionMode='shadow'.
+     Shadow logs the broker payload + validates margin without
+     executing — operator's pre-Live sanity-check mode. */
+  .shadow-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.22rem 0.85rem;
+    background-color: #0a1020;
+    background-image: linear-gradient(90deg,
+                      rgba(251,146,60,0.22) 0%,
+                      rgba(249,115,22,0.18) 100%);
+    border-top: 1px solid rgba(251,146,60,0.48);
+    border-bottom: 1px solid rgba(251,146,60,0.48);
+    color: #fed7aa;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    position: sticky;
+    top: 3rem;
+    z-index: 49;
+  }
+  .shadow-banner-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #fb923c;
+    box-shadow: 0 0 5px rgba(251,146,60,0.85);
+    flex-shrink: 0;
+  }
+  .shadow-banner-label {
+    color: #fb923c;
+    letter-spacing: 0.1em;
+    font-size: 0.6rem;
+    font-weight: 800;
+  }
+  .shadow-banner-sep  { color: rgba(251,146,60,0.5); }
+  .shadow-banner-meta { color: #fed7aa; opacity: 0.85; }
 
   /* ── Replay banner ───────────────────────────────────────────────────── */
   .replay-banner {
@@ -1699,7 +1824,9 @@
   /* Per-mode colour override via data-mode attribute so the trigger
      matches the colour scheme previously applied via inline style. */
   .algo-mode-badge[data-mode='paper']  { color:#38bdf8; background:rgba(56,189,248,0.10);  border-color:#38bdf8; }
-  .algo-mode-badge[data-mode='live']   { color:#4ade80; background:rgba(74,222,128,0.15);  border-color:rgba(74,222,128,0.4); }
+  /* LIVE: red palette — see MODE_COLOR comment. Heavier fill alpha
+     than the safer modes so the pill reads as ALARMED on a glance. */
+  .algo-mode-badge[data-mode='live']   { color:#f87171; background:rgba(248,113,113,0.22); border-color:#f87171; }
   .algo-mode-badge[data-mode='shadow'] { color:#fb923c; background:rgba(251,146,60,0.10);  border-color:#fb923c; }
   .algo-mode-badge[data-mode='sim']    { color:#fb7185; background:rgba(251,113,133,0.10); border-color:#fb7185; }
   .algo-mode-badge[data-mode='replay'] { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }

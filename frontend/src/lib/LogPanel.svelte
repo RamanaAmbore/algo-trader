@@ -1090,10 +1090,14 @@
     color: #fbbf24;
     border-color: rgba(251,191,36,0.45);
   }
+  /* LIVE pill — red to match the navbar LIVE badge + LIVE banner.
+     Reads as "this row hit the real broker" at a glance. Earlier
+     palette put LIVE on emerald which collided with REPLAY (also
+     emerald), making the two indistinguishable on a quick scan. */
   :global(.mode-pill-live) {
-    background: rgba(74,222,128,0.14);
-    color: #4ade80;
-    border-color: rgba(74,222,128,0.45);
+    background: rgba(248,113,113,0.14);
+    color: #f87171;
+    border-color: rgba(248,113,113,0.45);
   }
   /* Mode-2 paper rows — sky-blue tint, distinct from amber sim and
      emerald live so the operator never confuses a paper fill with a
@@ -1163,7 +1167,10 @@
   .om-chip.om-on.om-chip-all    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
   .om-chip.om-on.om-chip-paper  { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
   /* Canonical green (#4ade80) for live — replaces off-palette emerald #10b981 */
-  .om-chip.om-on.om-chip-live   { background: rgba(74,222,128,0.14); color: #6ee7b7; border-color: rgba(74,222,128,0.45); }
+  /* LIVE chip on the Order-tab mode filter — red to match LIVE pill
+     + LIVE banner. Operator selects "Live" → red glow signals "I'm
+     about to look at real-broker orders". */
+  .om-chip.om-on.om-chip-live   { background: rgba(248,113,113,0.14); color: #f87171; border-color: rgba(248,113,113,0.45); }
   .om-chip.om-on.om-chip-sim    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
   /* Shadow — orange #fb923c, matching the mode pill palette */
   .om-chip.om-on.om-chip-shadow { background: rgba(251,146,60,0.14); color: #fb923c; border-color: rgba(251,146,60,0.45); }
