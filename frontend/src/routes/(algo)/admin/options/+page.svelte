@@ -1808,6 +1808,22 @@
       strategy = null; strategyErr = ''; _stratFails = 0;
       return;
     }
+    // Detect underlying change between the previous strategy fetch
+    // and this one. When the operator switches from GOLDM to
+    // CRUDEOIL (or any other inter-underlying flip), the previous
+    // response carries the OLD underlying's spot_anchor_contract,
+    // spot value, payoff curve x-range and the OptionsPayoff
+    // component renders all of that until the new fetch resolves
+    // — operator sees GOLDM anchor chip + GOLDM spot marker on a
+    // CRUDEOIL-titled card for the duration of the request.
+    // Clear strategy immediately so the chart goes blank
+    // (loading state) instead of lying about the underlying.
+    const _underlyingOf = (sym) => /^([A-Z]+?)(?=\d|FUT|CE|PE|$)/.exec(sym || '')?.[1] || '';
+    const newU = _underlyingOf(cleanLegs[0].symbol);
+    const oldU = strategy?.legs?.length ? _underlyingOf(strategy.legs[0].symbol) : '';
+    if (newU && oldU && newU !== oldU) {
+      strategy = null;
+    }
     loading = true;
     try {
       strategy = await fetchStrategyAnalytics(cleanLegs);
