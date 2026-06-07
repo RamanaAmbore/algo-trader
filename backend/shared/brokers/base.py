@@ -12,6 +12,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from backend.shared.brokers.capabilities import (
+    BrokerCapabilities,
+    capabilities_for_broker_id,
+)
+
 
 class Broker(ABC):
     """
@@ -52,6 +57,15 @@ class Broker(ABC):
         """Canonical broker vendor identifier (e.g. "zerodha_kite").
         Must match the value stored in broker_accounts.broker_id and
         the key registered in registry._ADAPTERS."""
+
+    @property
+    def capabilities(self) -> BrokerCapabilities:
+        """What this broker can do natively. Looked up from the
+        capability matrix via `broker_id` — adapters override only
+        when they need to declare something different per-account
+        (e.g. a tier-restricted Dhan account that doesn't have the
+        full Forever-OCO quota). Default reads the matrix verbatim."""
+        return capabilities_for_broker_id(self.broker_id)
 
     # ── Account state ─────────────────────────────────────────────────
 
@@ -125,6 +139,66 @@ class Broker(ABC):
 
     @abstractmethod
     def cancel_order(self, order_id: str, **kwargs: Any) -> str: ...
+
+    # ── GTT / trigger orders ──────────────────────────────────────────
+    #
+    # Templates (see backend/api/algo/templates.py — Phase 3) translate
+    # a TP/SL choice into one of these calls. Adapters whose vendor
+    # doesn't natively support a feature (e.g. Groww + OCO) MUST raise
+    # NotImplementedError from this layer — the orchestrator above
+    # reads BrokerCapabilities BEFORE dispatching, so this method only
+    # fires when capabilities say it should.
+
+    def place_gtt(
+        self,
+        *,
+        trigger_type: str,   # "single" | "two-leg" (OCO)
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],  # one dict per leg: {transaction_type, quantity, price, order_type, product}
+        trigger_values: list[float],  # one float per leg
+        tag: str | None = None,
+    ) -> str:
+        """Place a GTT (broker-native trigger order). Returns the broker
+        GTT id. Default raises so unimplemented adapters surface a
+        clear error instead of silently no-op'ing."""
+        raise NotImplementedError(
+            f"{self.broker_id} adapter has not implemented place_gtt"
+        )
+
+    def modify_gtt(
+        self,
+        gtt_id: str,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+    ) -> str:
+        """Modify an existing GTT. Returns the (possibly new) broker GTT
+        id — vendors that cancel+replace under the hood may return a
+        different id; callers must use the return value, not the input."""
+        raise NotImplementedError(
+            f"{self.broker_id} adapter has not implemented modify_gtt"
+        )
+
+    def cancel_gtt(self, gtt_id: str) -> str:
+        """Cancel a GTT. Returns the cancelled GTT id."""
+        raise NotImplementedError(
+            f"{self.broker_id} adapter has not implemented cancel_gtt"
+        )
+
+    def get_gtts(self) -> list[dict]:
+        """List every active GTT on this account. Each row carries at
+        minimum: gtt_id, status (active/triggered/cancelled),
+        trigger_type, tradingsymbol, exchange, trigger_values,
+        last_price, orders (list of leg dicts), created_at."""
+        raise NotImplementedError(
+            f"{self.broker_id} adapter has not implemented get_gtts"
+        )
 
     # ── Per-broker qty translation ────────────────────────────────────
 

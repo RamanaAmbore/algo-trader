@@ -1128,7 +1128,7 @@
    icon. Add `class:fs-card-on={isFullscreen}` to the card root.
 
    The CSS is intentionally global (not scoped to one component) so any
-   card on /dashboard, /agents, /admin/options, /admin/execution, etc.
+   card on /dashboard, /automation, /admin/derivatives, /admin/execution, etc.
    can opt in by setting the class — no per-card CSS duplication.
 
    Modal chrome:
@@ -1329,7 +1329,7 @@
 }
 
 /* ── Canonical .act-events-toggle (ActionEventsToggle) ───────────────────── */
-/* Shared toggle strip for "include action events" — used on /agents/activity
+/* Shared toggle strip for "include action events" — used on /automation/activity
    and /dashboard agent-activity card. Single source replaces two near-identical
    scoped implementations (.filter-btn / .dash-agent-filter-btn). */
 .act-events-row {

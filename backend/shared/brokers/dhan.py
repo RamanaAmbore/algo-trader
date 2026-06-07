@@ -343,6 +343,50 @@ class DhanBroker(Broker):
             raise RuntimeError(f"Dhan cancel_order rejected: {resp}")
         return order_id
 
+    # ── GTT (Forever Orders) ──────────────────────────────────────────
+    #
+    # Dhan calls these "Forever Orders" (effectively GTT). SDK exposes:
+    #   d.place_forever(...)   d.modify_forever(...)   d.cancel_forever(...)
+    #   d.get_forever_orders()
+    # Capability matrix declares gtt_single + gtt_oco both True. Live
+    # wiring deferred until a sandbox token is available for testing —
+    # the request/response shape is documented at
+    # https://dhanhq.co/docs/api-reference/v2/forever-orders/
+
+    def place_gtt(
+        self,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+        tag: str | None = None,
+    ) -> str:
+        raise NotImplementedError(
+            "DhanBroker.place_gtt not yet wired. Map to d.place_forever() — "
+            "Dhan Forever Order shape carries securityId + exchangeSegment "
+            "+ orderFlag (SINGLE / OCO). Needs sandbox token to validate."
+        )
+
+    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
+        raise NotImplementedError(
+            "DhanBroker.modify_gtt not yet wired. Map to d.modify_forever()."
+        )
+
+    def cancel_gtt(self, gtt_id: str) -> str:
+        raise NotImplementedError(
+            "DhanBroker.cancel_gtt not yet wired. Map to d.cancel_forever()."
+        )
+
+    def get_gtts(self) -> list[dict]:
+        raise NotImplementedError(
+            "DhanBroker.get_gtts not yet wired. Map to d.get_forever_orders() "
+            "and normalise to the Kite gtt shape (trigger_id, status, "
+            "trigger_type, tradingsymbol, exchange, trigger_values, orders)."
+        )
+
     # ── Qty translation ───────────────────────────────────────────────
 
     def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:

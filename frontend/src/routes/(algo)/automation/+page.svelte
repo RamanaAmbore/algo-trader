@@ -12,7 +12,7 @@
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
   import Select   from '$lib/Select.svelte';
-  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
 
@@ -150,7 +150,7 @@
       // immediately, not on the next 30-second refresh tick.
       if (was !== simActive) loadAgentLog();
       // While the sim is running, refresh the Simulator tab's tick stream
-      // on every status poll (4s) so /agents shows the same up-to-date
+      // on every status poll (4s) so /automation shows the same up-to-date
       // stream as /admin/simulator. Without this, simLog only updated on
       // the 30-second loadAll cycle — the Simulator tab looked stale.
       if (simActive) loadSimLog();
@@ -589,7 +589,7 @@
   </span>
 </div>
 
-<AgentWorkspaceTabs />
+<AutomationTabs />
 
 <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
 
@@ -907,7 +907,7 @@
               </div>
 
               <!-- Tags + Blackout windows — operator-facing labels for
-                   filtering on /agents (tags) and IST quiet hours
+                   filtering on /automation (tags) and IST quiet hours
                    (blackout windows). Industry analogue: Datadog tags +
                    Grafana silences / PagerDuty maintenance windows. -->
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">

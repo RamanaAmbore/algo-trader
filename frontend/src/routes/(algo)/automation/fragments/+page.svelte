@@ -1,5 +1,5 @@
 <!--
-  /agents/fragments — reusable notify / condition saved sub-trees.
+  /automation/fragments — reusable notify / condition saved sub-trees.
 
   Operator workflow:
     - Browse all fragments (filter by kind via the segmented control)
@@ -22,7 +22,7 @@
     fetchAgentFragments, createAgentFragment,
     patchAgentFragment, deleteAgentFragment, reloadFragments,
   } from '$lib/api';
-  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron  from '$lib/DisclosureChevron.svelte';
   import ConfirmModal       from '$lib/ConfirmModal.svelte';
   import Select             from '$lib/Select.svelte';
@@ -187,7 +187,7 @@
   </span>
 </div>
 
-<AgentWorkspaceTabs />
+<AutomationTabs />
 
 <section class="algo-status-card p-3 mb-3">
   <div class="filter-row">

@@ -1,17 +1,17 @@
 <!--
-  /agents/activity — recent agent fires + action events.
+  /automation/activity — recent agent fires + action events.
 
   Surfaces the same UnifiedLog the dashboard renders, but lifted out
-  of the P&L-focused dashboard into a dedicated tab inside the agent
-  workspace. Operator going "what fired today?" lands here directly
-  instead of scrolling past P&L analysis on /dashboard.
+  of the P&L-focused dashboard into a dedicated tab inside the
+  Automation workspace. Operator going "what fired today?" lands here
+  directly instead of scrolling past P&L analysis on /dashboard.
 -->
 <script>
   import { nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
-  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
 
   // Match the dashboard's default — fires only, with an opt-in to
@@ -41,7 +41,7 @@
   </span>
 </div>
 
-<AgentWorkspaceTabs />
+<AutomationTabs />
 
 <section class="bucket-card bucket-card-activity">
   <span class="mp-section-label">Agent Activity</span>

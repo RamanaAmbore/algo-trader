@@ -120,7 +120,7 @@
 <span class="pha-wrap">
   <!-- Tooltips + aria-labels mirror the modal titles ("Orders" /
        "Charts" / "Activity"), which in turn mirror the page-route
-       names (/orders, /charts, /agents/activity). Earlier the order
+       names (/orders, /charts, /automation/activity). Earlier the order
        button said "Place order" and the chart button said "Chart —
        …", which read as a different surface from the modal that
        actually opens. -->

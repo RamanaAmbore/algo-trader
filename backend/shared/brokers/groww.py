@@ -537,6 +537,57 @@ class GrowwBroker(Broker):
         self.groww.cancel_order(segment=seg, groww_order_id=order_id)
         return order_id
 
+    # ── GTT ───────────────────────────────────────────────────────────
+    #
+    # Groww supports single-trigger GTT only (no OCO). The capability
+    # matrix flags gtt_oco=False so the orchestrator emulates OCO via
+    # two single GTTs + a pair-watcher in our chase engine — those
+    # don't pass through this method at all. Live wiring deferred until
+    # the Groww OAuth + GTT flow is exercised against a real account.
+
+    def place_gtt(
+        self,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+        tag: str | None = None,
+    ) -> str:
+        if trigger_type == "two-leg":
+            # Defensive — capability matrix already prevents this, but
+            # belt-and-suspenders: any caller bypassing the matrix gets a
+            # clear error pointing at the right path.
+            raise NotImplementedError(
+                "GrowwBroker.place_gtt: Groww has no native OCO. The "
+                "orchestrator must emulate via two single GTTs + a "
+                "pair-watcher in our chase engine. Use trigger_type='single' "
+                "twice with paired cancellation logic."
+            )
+        raise NotImplementedError(
+            "GrowwBroker.place_gtt not yet wired. Single-trigger only — "
+            "Groww SDK exposes a `create_gtt` method; needs sandbox token."
+        )
+
+    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
+        raise NotImplementedError(
+            "GrowwBroker.modify_gtt not yet wired."
+        )
+
+    def cancel_gtt(self, gtt_id: str) -> str:
+        raise NotImplementedError(
+            "GrowwBroker.cancel_gtt not yet wired."
+        )
+
+    def get_gtts(self) -> list[dict]:
+        raise NotImplementedError(
+            "GrowwBroker.get_gtts not yet wired. Normalise Groww's "
+            "single-trigger GTT shape into the Kite-shape this codebase "
+            "expects (trigger_type='single', single-element trigger_values)."
+        )
+
     # ── Qty translation ───────────────────────────────────────────────
 
     def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:

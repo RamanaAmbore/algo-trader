@@ -39,7 +39,7 @@
   let loading       = $state(true);
   let error         = $state('');
   // Default the status filter to ALL — matches every other LogPanel
-  // mount (Activity modal, Order modal bottom panel, /console, /agents)
+  // mount (Activity modal, Order modal bottom panel, /console, /automation)
   // where the Orders tab opens un-filtered ("All" chip clicked). Earlier
   // /orders defaulted to OPEN, which made it the only surface where
   // landing on the Orders tab hid every non-open row.
@@ -107,7 +107,7 @@
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other
   // surface (Activity modal, Order modal bottom panel, /console,
-  // /agents). Agent Log (UnifiedLog of recent events) is one click
+  // /automation). Agent Log (UnifiedLog of recent events) is one click
   // away. Earlier 'log' was the default but that left the operator
   // landing on a different visual format than every other Orders
   // surface uses.

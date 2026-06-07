@@ -17,7 +17,7 @@
     deleteGrammarToken, reloadGrammarRegistry,
   } from '$lib/api';
   import Select   from '$lib/Select.svelte';
-  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   // Agent Tokens page — read + is_active toggle for every token in the
@@ -212,7 +212,7 @@
   </span>
 </div>
 
-<AgentWorkspaceTabs />
+<AutomationTabs />
 
 {#if isDemo}
   <!-- Demo read-only banner. The catalog is shown verbatim — operators

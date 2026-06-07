@@ -62,7 +62,7 @@
         'Schedule-aware: market-hours agents skip when no segment is open',
         'Telegram + email + WebSocket + log channels, per-agent opt-in',
       ],
-      link: { href: '/agents', label: 'Browse agents' },
+      link: { href: '/automation', label: 'Browse agents' },
     },
     {
       title: 'Derivatives analytics with σ-driven payoff',
@@ -115,7 +115,7 @@
         'Default-mode trio: Collapse → Default → Fullscreen (DefaultSize hidden when not maximized)',
         'Fullscreen mode reverses to Refresh + Default — Collapse is hidden, OrderNotif + AgentNotif bells lift to viewport top-right',
         'Page-header Orders / Charts / Activity modals share one frame (.canonical-modal-overlay/-panel) — same position, same close affordance, same Esc behaviour',
-        'Activity modal reuses the same 6-tab log surface (Orders / Agents / Terminal / Ticks / System / News) the Order-modal bottom panel and /console + /agents pages mount — single LogPanel, every callsite',
+        'Activity modal reuses the same 6-tab log surface (Orders / Agents / Terminal / Ticks / System / News) the Order-modal bottom panel and /console + /automation pages mount — single LogPanel, every callsite',
         'Symbol anchors auto-resolve to the tradeable contract (NIFTY 50 → NIFTY26JUNFUT, CRUDEOIL → CRUDEOILM26JUNFUT) so chart + order modals open with the real future / option, not the spot key',
         'Connection badge on Refresh: green (all broker accounts loaded), amber (partial), red (none) — single 15 s global poll, every Refresh icon subscribes',
         'Charts scale to viewport in fullscreen mode (OptionsPayoff, PriceChart, dashboard equity curve)',
@@ -133,7 +133,7 @@
         'Sound autoplays cleanly after the first user interaction; silently no-ops on cold-load per browser policy',
         'Telegram + email + WebSocket + log channels all wire through the same agent grammar — alert routing is per-agent opt-in',
       ],
-      link: { href: '/agents/activity', label: 'View activity feed' },
+      link: { href: '/automation/activity', label: 'View activity feed' },
     },
     {
       title: 'Production deployment',

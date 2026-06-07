@@ -52,7 +52,7 @@
   } = $props();
 
   let logTab = $state(defaultTab);
-  // Re-sync logTab whenever the parent updates defaultTab (e.g. /agents
+  // Re-sync logTab whenever the parent updates defaultTab (e.g. /automation
   // calling runInSim flips defaultTab to 'simulator'). Read logTab via
   // untrack() so the operator's own tab clicks (setTab → logTab = id)
   // don't re-trigger this effect — without untrack the comparison sees
@@ -754,7 +754,7 @@
     // sits flush against the last log-chip, keeping the right-edge
     // cluster compact.
     const agentChip = o.agent_id
-      ? `<a class="log-agent-chip" href="/agents?focus=${o.agent_id}">agent #${o.agent_id}</a>`
+      ? `<a class="log-agent-chip" href="/automation?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
     const chipsBlock = chips ? ' ' + chips : '';
     // Symbol as a clickable/right-clickable span. data-sym / data-exch drive

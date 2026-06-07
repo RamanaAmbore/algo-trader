@@ -150,6 +150,80 @@ class KiteBroker(Broker):
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
         return self.kite.cancel_order(order_id=order_id, **kwargs)
 
+    # ── GTT / trigger orders ──────────────────────────────────────────
+    #
+    # Kite GTT shape (from kiteconnect SDK):
+    #   trigger_type : "single" | "two-leg"
+    #   orders       : list of {transaction_type, quantity, price,
+    #                            order_type, product, exchange,
+    #                            tradingsymbol}
+    #   trigger_values: list[float]; len==1 for single, len==2 for OCO
+    # See: https://kite.trade/docs/connect/v3/gtt/
+
+    def place_gtt(
+        self,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+        tag: str | None = None,
+    ) -> str:
+        # Kite's place_gtt requires every order dict to carry exchange +
+        # tradingsymbol on the leg itself. Inject them so callers can
+        # keep the order dict broker-agnostic (Dhan uses different keys).
+        enriched_orders = [
+            {**o, "exchange": exchange, "tradingsymbol": tradingsymbol}
+            for o in orders
+        ]
+        resp = self.kite.place_gtt(
+            trigger_type=trigger_type,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            trigger_values=trigger_values,
+            last_price=last_price,
+            orders=enriched_orders,
+        )
+        # SDK returns {"trigger_id": <int>}; coerce to string for
+        # consistency with the rest of the Broker interface.
+        return str(resp.get("trigger_id", "") if isinstance(resp, dict) else resp)
+
+    def modify_gtt(
+        self,
+        gtt_id: str,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+    ) -> str:
+        enriched_orders = [
+            {**o, "exchange": exchange, "tradingsymbol": tradingsymbol}
+            for o in orders
+        ]
+        resp = self.kite.modify_gtt(
+            trigger_id=int(gtt_id),
+            trigger_type=trigger_type,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            trigger_values=trigger_values,
+            last_price=last_price,
+            orders=enriched_orders,
+        )
+        return str(resp.get("trigger_id", gtt_id) if isinstance(resp, dict) else gtt_id)
+
+    def cancel_gtt(self, gtt_id: str) -> str:
+        # Kite SDK method is `delete_gtt`, not cancel — wrap for ABC consistency.
+        resp = self.kite.delete_gtt(trigger_id=int(gtt_id))
+        return str(resp.get("trigger_id", gtt_id) if isinstance(resp, dict) else gtt_id)
+
+    def get_gtts(self) -> list[dict]:
+        return self.kite.get_gtts()
+
     # ── Qty translation ───────────────────────────────────────────────
 
     def normalise_qty(self, exchange: str, raw_qty: int,

@@ -1991,7 +1991,7 @@
   /* All card-shaped sections on this page (hero row, row1 cols, wl
      tiles, news strip, collapsible summaries) inherit the canonical
      algo-status-card chrome — gradient bg + 1.5px border + box-shadow.
-     Match the visual depth of /agents, /admin/options, /admin/execution
+     Match the visual depth of /automation, /admin/derivatives, /admin/execution
      so the dashboard doesn't read as one-generation-back. */
   /* Hero strip CSS retired alongside its markup — the three pnl
      stat classes the stat overlay consumes (`hero-pnl-up`,

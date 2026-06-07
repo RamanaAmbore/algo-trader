@@ -103,11 +103,11 @@
     { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
-    { href: '/agents',           label: 'Agents',    group: 'monitor' },
+    { href: '/automation',       label: 'Automation', group: 'monitor' },
     // /admin/alerts is reachable from the 🔔 History link in the
-    // /agents page header. Dropped from the top nav to slim the
-    // monitor cluster — alert history naturally lives under Agents
-    // (Agents = rules, Alerts = fires).
+    // /automation page header. Dropped from the top nav to slim the
+    // monitor cluster — alert history naturally lives inside the
+    // Automation workspace (Agents = rules, Activity = fires).
     // ── Analyze ──
     // P&L lives as a tab inside /dashboard — no standalone nav entry.
     // ── Lab ──

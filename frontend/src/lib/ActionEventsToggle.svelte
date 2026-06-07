@@ -3,7 +3,7 @@
    * ActionEventsToggle — shared "include action events" pill strip.
    *
    * Replaces the duplicate .filter-btn / .dash-agent-filter-btn
-   * implementations on /agents/activity and /dashboard. Palette and
+   * implementations on /automation/activity and /dashboard. Palette and
    * layout are the same; CSS lives in app.css as .act-events-*.
    *
    * Usage:

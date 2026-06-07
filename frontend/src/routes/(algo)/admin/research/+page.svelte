@@ -27,7 +27,7 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   /** @type {any[]} */
@@ -41,7 +41,7 @@
 
   /** Joined-view rows from GET /api/research/drafts — one per
    *  research thread with a linked inactive Agent. Activating the
-   *  agent on /agents naturally graduates it out of this list. */
+   *  agent on /automation naturally graduates it out of this list. */
   /** @type {any[]} */
   let drafts = $state([]);
 
@@ -409,7 +409,7 @@
   </span>
 </div>
 
-<AgentWorkspaceTabs />
+<AutomationTabs />
 
 {#if error}
   <div class="err-banner">{error}</div>
@@ -520,7 +520,7 @@
       Draft agents promoted from a research thread via the
       <code>save_agent_draft</code> MCP tool. Every draft ships
       <b>status=inactive</b> + <b>trade_mode=paper</b> — operator's
-      next step is "Run in Simulator" on /agents. Activating a draft
+      next step is "Run in Simulator" on /automation. Activating a draft
       graduates it out of this list.
     </p>
     {#if drafts.length === 0}
@@ -567,7 +567,7 @@
               <td>{d.agent_schedule || '—'}</td>
               <td>{d.agent_cooldown ?? '—'} min</td>
               <td><span class="mode-pill">{(d.agent_trade_mode || 'paper').toUpperCase()}</span></td>
-              <td><a class="drafts-edit" href={`/agents`}>Open ›</a></td>
+              <td><a class="drafts-edit" href={`/automation`}>Open ›</a></td>
             </tr>
           {/each}
         </tbody>
@@ -805,7 +805,7 @@
       <ul class="safety-list">
         <li>No order placement from MCP yet. The server cannot move money.</li>
         <li><code>save_agent_draft</code> creates agents that ship <b>status=inactive</b> + <b>trade_mode=paper</b>. The endpoint cannot create an active or live agent.</li>
-        <li>Operator's next step on every draft: <b>Run in Simulator</b> on /agents to validate the condition tree before activating.</li>
+        <li>Operator's next step on every draft: <b>Run in Simulator</b> on /automation to validate the condition tree before activating.</li>
         <li>The JWT inherits your admin role. Don't paste it into untrusted MCP servers.</li>
         <li>Industry convention (Composer / IBKR TraderGPT): every LLM-initiated order requires explicit human confirm. Phase 3 will match.</li>
       </ul>

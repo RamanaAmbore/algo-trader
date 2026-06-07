@@ -2,7 +2,7 @@
   /**
    * OrderCard — single-source order-row card used by /orders (Order
    * Activity book grid) AND every LogPanel Orders-tab surface
-   * (Activity modal, Order modal bottom panel, /console, /agents).
+   * (Activity modal, Order modal bottom panel, /console, /automation).
    *
    * Earlier the two surfaces rendered orders differently: /orders
    * drew bordered cards (algo-status-card / order-card); LogPanel

@@ -57,7 +57,7 @@
 
   function openAgent() {
     if (fire?.slug) {
-      goto(`/agents?q=${encodeURIComponent(fire.slug)}`);
+      goto(`/automation?q=${encodeURIComponent(fire.slug)}`);
       onClose();
     }
   }
@@ -116,7 +116,7 @@
     <div class="afm-actions">
       <button type="button" class="afm-btn afm-btn-primary" onclick={openAgent}
               disabled={!fire?.slug}>
-        Open in /agents
+        Open in /automation
       </button>
       <button type="button" class="afm-btn" onclick={onClose}>Acknowledge</button>
     </div>

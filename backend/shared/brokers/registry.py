@@ -301,6 +301,30 @@ class PriceBroker(Broker):
             "PriceBroker.cancel_order() not supported — use get_broker(account).cancel_order()."
         )
 
+    # GTT calls are account-specific (a GTT belongs to one Kite account)
+    # so the failover wrapper has nothing meaningful to do here. Force
+    # the caller to target a specific account.
+
+    def place_gtt(self, **kwargs: Any) -> str:
+        raise NotImplementedError(
+            "PriceBroker.place_gtt() not supported — use get_broker(account).place_gtt()."
+        )
+
+    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
+        raise NotImplementedError(
+            "PriceBroker.modify_gtt() not supported — use get_broker(account).modify_gtt()."
+        )
+
+    def cancel_gtt(self, gtt_id: str) -> str:
+        raise NotImplementedError(
+            "PriceBroker.cancel_gtt() not supported — use get_broker(account).cancel_gtt()."
+        )
+
+    def get_gtts(self) -> list[dict]:
+        raise NotImplementedError(
+            "PriceBroker.get_gtts() is account-specific — use get_broker(account).get_gtts()."
+        )
+
 
 def _account_priority(account: str) -> int:
     """Per-account priority hint for PriceBroker fallback ordering.
