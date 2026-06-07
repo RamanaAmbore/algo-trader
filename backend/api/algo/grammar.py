@@ -833,6 +833,24 @@ SYSTEM_TOKENS: list[dict] = [
                            'required': False, 'default': 'regular'},
          'tag':           {'type': 'string',  'required': False,
                            'description': 'Free-form tag propagated into the broker order id and AlgoOrder row.'},
+         # ── Template attachment (v2.1+) ─────────────────────────────
+         # When set, the unified template-attach pipeline runs after
+         # the parent order persists. TP / SL → broker GTT (or sim
+         # SimGttBook); Wing → spread basket leg for SELL options.
+         # Picking template_slug="none" or leaving everything null
+         # places the entry without any follow-on attachments.
+         'template_id':   {'type': 'number', 'required': False,
+                           'description': 'OrderTemplate row id. Mutually exclusive with template_slug.'},
+         'template_slug': {'type': 'string', 'required': False,
+                           'description': 'OrderTemplate stable slug (e.g. "default-bull", "default-short-vol", "none").'},
+         'tp_pct_override':             {'type': 'number', 'required': False,
+                           'description': 'Per-action TP% override (e.g. 25.0 = +25%). Wins over template default.'},
+         'sl_pct_override':             {'type': 'number', 'required': False,
+                           'description': 'Per-action SL% override (e.g. 15.0 = -15%). Wins over template default.'},
+         'wing_premium_pct_override':   {'type': 'number', 'required': False,
+                           'description': 'Per-action wing premium % override (sell_option only).'},
+         'wing_strike_offset_override': {'type': 'number', 'required': False,
+                           'description': 'Per-action wing strike offset override (e.g. 500 → wing at +500 strike).'},
      }},
 
     {'grammar_kind': 'action', 'token_kind': 'action_type', 'token': 'modify_order',

@@ -52,6 +52,8 @@ from backend.api.schemas import (
     PlaceOrderResponse,
     TicketOrderRequest,
     TicketOrderResponse,
+    TicketPreviewRequest,
+    TicketPreviewResponse,
 )
 from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -414,6 +416,64 @@ def _resolve_target_pct(override: float | None) -> float:
         return max(0.0, float(override))
     from backend.shared.helpers.settings import get_float
     return max(0.0, get_float("algo.default_target_pct", 0.30))
+
+
+def _ticket_overrides_dict(data) -> dict:
+    """Pack the override fields from a TicketOrderRequest /
+    TicketPreviewRequest into the dict shape apply_template_to_order
+    expects.
+
+    Includes the legacy `target_pct` → `tp_pct` shim:
+      - target_pct is fractional (0.30 = +30%) for v1 callers
+      - tp_pct on the override dict is % units (30.0 = +30%) to match
+        templates_seed / OrderTemplate columns
+      - When both are set, the explicit tp_pct_override wins
+    """
+    overrides: dict = {
+        "tp_pct":             data.tp_pct_override,
+        "sl_pct":             data.sl_pct_override,
+        "wing_premium_pct":   data.wing_premium_pct_override,
+        "wing_strike_offset": data.wing_strike_offset_override,
+    }
+    if overrides["tp_pct"] is None and getattr(data, "target_pct", None) is not None:
+        try:
+            overrides["tp_pct"] = float(data.target_pct) * 100.0
+        except (TypeError, ValueError):
+            pass
+    return overrides
+
+
+async def _maybe_attach_template_to_ticket(
+    data, account: str, sym: str, side: str, qty: int,
+    algo_order_id: int | None,
+) -> dict | None:
+    """Run the unified template-attach pipeline for a ticket order.
+    Returns the AttachResult dict (for the response) or None when
+    neither a template nor an override was supplied."""
+    if algo_order_id is None:
+        return None
+    from backend.api.algo.template_attach import apply_template_to_order
+    try:
+        result = await apply_template_to_order(
+            template_id=data.template_id,
+            template_slug=None,
+            overrides=_ticket_overrides_dict(data),
+            parent_account=account,
+            parent_symbol=sym,
+            parent_side=side,
+            parent_qty=qty,
+            parent_exchange=(data.exchange or "NFO"),
+            parent_fill_price=float(data.price or 0.0),
+            parent_product=(data.product or "NRML"),
+            parent_order_id=algo_order_id,
+            apply_path="auto",
+        )
+    except Exception as e:
+        logger.error(f"[TICKET-TEMPLATE] attach failed for #{algo_order_id}: {e}")
+        return None
+    if result is None:
+        return None
+    return result.to_dict()
 
 
 async def _arm_take_profit(
@@ -1167,6 +1227,55 @@ class OrdersController(Controller):
                 pass
             raise HTTPException(status_code=400, detail=str(e))
 
+    @post("/ticket/preview")
+    async def ticket_preview(self, data: TicketPreviewRequest, request: Request) -> TicketPreviewResponse:
+        """
+        Preview what the ticket WILL place — resolves the chosen
+        template + overrides into a concrete TemplatePlan WITHOUT
+        making any broker / DB writes. OrderTicket calls this on
+        every relevant field change so the operator sees the planned
+        TP / SL / Wing artefacts inline before they hit Submit.
+
+        Returns the plan as a plain dict — see template_attach.TemplatePlan
+        for the shape. Empty plan (no gtts + no wing) when neither a
+        template nor overrides were supplied.
+        """
+        from backend.api.algo.template_attach import apply_template_to_order
+
+        result = await apply_template_to_order(
+            template_id=data.template_id,
+            template_slug=None,
+            overrides=_ticket_overrides_dict(data),
+            parent_account=(data.account or ""),
+            parent_symbol=(data.tradingsymbol or "").upper(),
+            parent_side=(data.side or "").upper(),
+            parent_qty=int(data.quantity or 0),
+            parent_exchange=(data.exchange or "NFO"),
+            parent_fill_price=float(data.reference_price or 0.0),
+            parent_product=(data.product or "NRML"),
+            apply_path="preview",
+        )
+        if result is None:
+            # No template selected + no overrides — return a stub plan
+            # so the UI can still display "no exit attachments planned"
+            # without special-casing None.
+            empty = {
+                "template_id":   None,
+                "template_name": "(none)",
+                "template_slug": None,
+                "parent_account":    data.account,
+                "parent_symbol":     (data.tradingsymbol or "").upper(),
+                "parent_side":       (data.side or "").upper(),
+                "parent_qty":        data.quantity,
+                "parent_exchange":   data.exchange,
+                "parent_fill_price": float(data.reference_price or 0.0),
+                "gtts": [],
+                "wing": None,
+                "notes": [],
+            }
+            return TicketPreviewResponse(plan=empty)
+        return TicketPreviewResponse(plan=result.plan.to_dict())
+
     @post("/ticket")
     async def ticket_order(self, data: TicketOrderRequest, request: Request) -> TicketOrderResponse:
         """
@@ -1684,11 +1793,21 @@ class OrdersController(Controller):
                 ))
             except Exception:
                 pass
+
+        # ── Template attachment ──────────────────────────────────────────
+        # Apply TP/SL/Wing per the chosen template (or ad-hoc overrides /
+        # legacy target_pct shim). When sim is active, GTTs land in
+        # SimGttBook + wing fans into SimDriver._paper; otherwise the
+        # apply call returns the plan structure but defers actual GTT
+        # placement until live broker fill-postback wiring lands.
+        attachment_dict = await _maybe_attach_template_to_ticket(data, account, sym, side, qty, algo_order_id)
+
         return TicketOrderResponse(
             order_id=str(algo_order_id),
             mode="paper",
             status="OPEN",
             detail=f"Paper order #{algo_order_id} placed — chase loop will fill it on the next bid/ask cross.",
+            template_attachment=attachment_dict,
         )
 
     @put("/{order_id:str}")

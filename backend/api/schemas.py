@@ -382,10 +382,25 @@ class TicketOrderRequest(msgspec.Struct):
     # so existing callers need no change; chain/command tabs can pass
     # "chain" or "command" to distinguish in agent_events.
     source: str = "ticket"
-    # Auto take-profit — fractional override (e.g. 0.30 = +30%).  None
-    # means "use algo.default_target_pct from DB settings".  0.0 disables
-    # TP for this specific order regardless of the default.
+    # ── Legacy single-TP path ─────────────────────────────────────────
+    # `target_pct` is the v1 take-profit field — fractional (0.30 =
+    # +30%). DEPRECATED in v2.1 — prefer `template_id` (rich) or
+    # `tp_pct_override` (single-field shim). When present and no
+    # template is supplied, the handler auto-maps it to
+    # tp_pct_override so the same downstream attach pipeline fires.
+    # Will be removed in v2.2 after the OrderTicket UI fully migrates.
     target_pct: Optional[float] = None
+    # ── v2 template attachment ────────────────────────────────────────
+    # `template_id` references an OrderTemplate row. When set, the
+    # handler resolves the template + applies its TP/SL/Wing via
+    # backend.api.algo.template_attach. Override fields below let the
+    # operator tune the chosen template for THIS order without saving;
+    # template defaults supply anything left None.
+    template_id:                  Optional[int]   = None
+    tp_pct_override:              Optional[float] = None   # % (30.0 = +30%)
+    sl_pct_override:              Optional[float] = None
+    wing_premium_pct_override:    Optional[float] = None
+    wing_strike_offset_override:  Optional[int]   = None
 
 
 class TicketOrderResponse(msgspec.Struct):
@@ -393,6 +408,41 @@ class TicketOrderResponse(msgspec.Struct):
     mode: str
     status: str
     detail: str
+    # When a template was attached, the resolved plan + any placed GTT
+    # ids / wing order id flow back here so the UI can show "TP @ ₹X
+    # placed (gtt #42), Wing @ ₹Y placed (#43)" in the success line.
+    # None when no template was attached.
+    template_attachment: Optional[dict] = None
+
+
+class TicketPreviewRequest(msgspec.Struct):
+    """Same shape as TicketOrderRequest — what would happen if this
+    were submitted. No side effects. Returns the resolved TemplatePlan
+    so the OrderTicket can show "Will place TP @ ₹X · SL @ ₹Y · Wing
+    -500CE" inline before the operator hits Submit."""
+    mode: str
+    side: str
+    tradingsymbol: str
+    quantity: int
+    exchange: str = "NFO"
+    product: str = "NRML"
+    account: str = ""
+    # The preview needs a reference price — UI passes the current LTP
+    # or the operator's typed limit. Defaults to 0 (preview returns
+    # only the structural plan; numeric trigger values come back as 0).
+    reference_price: float = 0.0
+    template_id:                  Optional[int]   = None
+    tp_pct_override:              Optional[float] = None
+    sl_pct_override:              Optional[float] = None
+    wing_premium_pct_override:    Optional[float] = None
+    wing_strike_offset_override:  Optional[int]   = None
+    # Backward compat — legacy target_pct (fractional) also accepted
+    # here so OrderTicket can preview without separating the two paths.
+    target_pct:                   Optional[float] = None
+
+
+class TicketPreviewResponse(msgspec.Struct):
+    plan: dict     # TemplatePlan.to_dict()
 
 
 class ModifyOrderRequest(msgspec.Struct):

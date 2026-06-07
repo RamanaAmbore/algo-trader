@@ -427,6 +427,84 @@ async def _write_sim_order(agent, action_type: str, resolved: dict):
     except Exception as e:
         logger.debug(f"[SIM] could not record order in tick_log: {e}")
 
+    return algo_order_id
+
+
+async def _maybe_attach_template_from_action(
+    agent, action_type: str, params: dict,
+    *, algo_order_id: int | None,
+    parent_account: str, parent_symbol: str, parent_side: str,
+    parent_qty: int, parent_exchange: str, parent_price: float,
+    apply_path: str = "auto",
+) -> dict | None:
+    """Run the unified template-attach pipeline for an agent action.
+    Mirrors the OrderTicket path so OrderTicket-driven and agent-driven
+    placements behave identically.
+
+    Action params can carry:
+      template_id            int  | null
+      template_slug          str  | null    (e.g. "default-bull")
+      tp_pct_override        float | null
+      sl_pct_override        float | null
+      wing_premium_pct_override   float | null
+      wing_strike_offset_override int   | null
+
+    Backward compat: when `target_pct` (legacy v1 fractional) is set and
+    no tp_pct_override is, we map it to tp_pct (% units).
+
+    Returns the AttachResult dict for the agent_events.detail line, or
+    None when neither a template nor an override was supplied.
+    """
+    if algo_order_id is None:
+        return None
+
+    overrides = {
+        "tp_pct":             params.get("tp_pct_override"),
+        "sl_pct":             params.get("sl_pct_override"),
+        "wing_premium_pct":   params.get("wing_premium_pct_override"),
+        "wing_strike_offset": params.get("wing_strike_offset_override"),
+    }
+    if overrides["tp_pct"] is None and params.get("target_pct") is not None:
+        try:
+            overrides["tp_pct"] = float(params["target_pct"]) * 100.0
+        except (TypeError, ValueError):
+            pass
+
+    template_id   = params.get("template_id")
+    template_slug = params.get("template_slug")
+
+    if template_id is None and not template_slug and not any(
+        v is not None for v in overrides.values()
+    ):
+        return None
+
+    try:
+        from backend.api.algo.template_attach import apply_template_to_order
+        result = await apply_template_to_order(
+            template_id=int(template_id) if template_id is not None else None,
+            template_slug=str(template_slug) if template_slug else None,
+            overrides=overrides,
+            parent_account=parent_account,
+            parent_symbol=parent_symbol,
+            parent_side=parent_side,
+            parent_qty=parent_qty,
+            parent_exchange=parent_exchange,
+            parent_fill_price=parent_price,
+            parent_product=str(params.get("product") or "NRML"),
+            parent_order_id=algo_order_id,
+            apply_path=apply_path,
+        )
+    except Exception as e:
+        logger.error(
+            f"[ACTION-TEMPLATE] attach failed for agent={agent.slug} "
+            f"order=#{algo_order_id}: {e}"
+        )
+        return None
+
+    if result is None:
+        return None
+    return result.to_dict()
+
 
 async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict):
     """
@@ -536,7 +614,7 @@ async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict)
         price = side_price if side_price is not None else (
             ltp if ltp is not None else params.get("price")
         )
-        await _write_sim_order(agent, action_type, {
+        algo_order_id = await _write_sim_order(agent, action_type, {
             "account":  account,
             "symbol":   symbol,
             "side":     side,
@@ -544,6 +622,18 @@ async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict)
             "price":    price,
             "exchange": str(params.get("exchange") or "NFO"),
         })
+        # Template attach — when the action's params carry template_id /
+        # template_slug / *_override fields, fan out TP/SL GTTs + wing
+        # into SimGttBook + SimDriver._paper. Mirrors the OrderTicket flow.
+        await _maybe_attach_template_from_action(
+            agent, action_type, params,
+            algo_order_id=algo_order_id,
+            parent_account=account, parent_symbol=symbol,
+            parent_side=side, parent_qty=qty,
+            parent_exchange=str(params.get("exchange") or "NFO"),
+            parent_price=float(price) if price is not None else 0.0,
+            apply_path="sim",
+        )
         return
 
     # Non-order action — no paper row. The log_event call in execute()
