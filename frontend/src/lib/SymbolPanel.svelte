@@ -44,7 +44,7 @@
   import Select            from '$lib/Select.svelte';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
-  import { loadAccounts, getDefaultAccount, recentSymbolStore } from '$lib/data/accounts';
+  import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
 
@@ -570,11 +570,7 @@
   function _onAccountChange(/** @type {string} */ a) {
     _sharedAccount = a;
     // Persist the operator's pick so /orders defaults to it next time.
-    if (a) {
-      import('$lib/data/accounts')
-        .then(m => m.setRecentAccount(a))
-        .catch(() => {});
-    }
+    if (a) setRecentAccount(a);
   }
 
   // Persist whatever symbol / account the modal opened with (caller
@@ -586,10 +582,8 @@
     const sym  = _localSymbol;
     const acct = _sharedAccount;
     if (!sym && !acct) return;
-    import('$lib/data/accounts').then(m => {
-      if (sym)  m.setRecentSymbol(String(sym));
-      if (acct) m.setRecentAccount(String(acct));
-    }).catch(() => {});
+    if (sym)  setRecentSymbol(String(sym));
+    if (acct) setRecentAccount(String(acct));
   });
 
   // Modal-level common action footer — visible across all tabs when

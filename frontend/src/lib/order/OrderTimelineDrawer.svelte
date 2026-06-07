@@ -45,18 +45,12 @@
     return events.some(e => TERMINAL_KINDS.has(e.kind));
   }
 
-  /** Mode pill color — matches the LogPanel + CLAUDE.md palette. */
-  function modeColor(mode) {
-    if (mode === 'sim')   return '#fbbf24';
-    if (mode === 'paper') return '#38bdf8';
-    if (mode === 'live')  return '#4ade80';
-    return '#94a3b8';
-  }
-  function modeBg(mode) {
-    if (mode === 'sim')   return 'rgba(251,191,36,0.15)';
-    if (mode === 'paper') return 'rgba(56,189,248,0.15)';
-    if (mode === 'live')  return 'rgba(74,222,128,0.15)';
-    return 'rgba(148,163,184,0.15)';
+  /** CSS class suffix for the mode pill — matches LogPanel + CLAUDE.md palette. */
+  function modeCls(/** @type {string} */ mode) {
+    if (mode === 'sim')   return 'otd-mode-sim';
+    if (mode === 'paper') return 'otd-mode-paper';
+    if (mode === 'live')  return 'otd-mode-live';
+    return 'otd-mode-unknown';
   }
 
   // Order events are trading-critical — fill time matters per second
@@ -163,12 +157,10 @@
             <!-- Order header -->
             <div class="otd-order-header">
               <span class="otd-symbol">{section.symbol}</span>
-              <span class="otd-side"
-                    style="color: {section.side?.toUpperCase() === 'SELL' ? '#f87171' : '#4ade80'}"
+              <span class="otd-side {section.side?.toUpperCase() === 'SELL' ? 'otd-side-sell' : 'otd-side-buy'}"
               >{section.side?.toUpperCase() ?? ''}</span>
               <span class="otd-qty">{section.qty}</span>
-              <span class="otd-mode-pill"
-                    style="color:{modeColor(section.mode)};background:{modeBg(section.mode)};border-color:{modeColor(section.mode)}"
+              <span class="otd-mode-pill {modeCls(section.mode)}"
               >{(section.mode ?? '').toUpperCase()}</span>
             </div>
             <!-- Event rows — reverse-chronological -->
@@ -361,4 +353,14 @@
     font-variant-numeric: tabular-nums;
     margin-left: auto;
   }
+
+  /* Side colors — matches ChaseCard .cc-side-buy / .cc-side-sell */
+  .otd-side-buy  { color: var(--algo-green, #4ade80); }
+  .otd-side-sell { color: var(--algo-red,   #f87171); }
+
+  /* Mode pill colors — matches LogPanel + CLAUDE.md palette */
+  .otd-mode-sim     { color: #fbbf24; background: rgba(251,191,36,0.15);  border-color: #fbbf24; }
+  .otd-mode-paper   { color: #38bdf8; background: rgba(56,189,248,0.15);  border-color: #38bdf8; }
+  .otd-mode-live    { color: #4ade80; background: rgba(74,222,128,0.15);  border-color: #4ade80; }
+  .otd-mode-unknown { color: #94a3b8; background: rgba(148,163,184,0.15); border-color: #94a3b8; }
 </style>

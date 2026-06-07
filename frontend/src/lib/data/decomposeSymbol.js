@@ -16,6 +16,9 @@
  *   }
  */
 
+/** Short month names, Jan-indexed. Use `MONTHS_SHORT[date.getMonth()]`. */
+export const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
 // Monthly options:  NIFTY25APR22000CE, RELIANCE25APR2800CE
 const _OPT_MONTHLY = /^([A-Z]+?)(\d{2})([A-Z]{3})(\d+(?:\.\d+)?)(CE|PE)$/;
 

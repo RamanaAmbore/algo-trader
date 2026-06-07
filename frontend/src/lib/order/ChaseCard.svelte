@@ -158,49 +158,47 @@
     </button>
   </div>
 
-  {#if true}
-    <div class="cc-grid" role="grid">
-      <div class="cc-row cc-row-h" role="row">
-        <span class="cc-col cc-col-acct">Account</span>
-        <span class="cc-col cc-col-side">Side</span>
-        <span class="cc-col cc-col-qty">Qty</span>
-        <span class="cc-col cc-col-sym">Symbol</span>
-        <span class="cc-col cc-col-limit">Limit</span>
-        <span class="cc-col cc-col-att">Attempts</span>
-        {#if !compact}
-          <span class="cc-col cc-col-age">Age</span>
-          <span class="cc-col cc-col-mode">Mode</span>
-        {/if}
-        <span class="cc-col cc-col-actions"></span>
-      </div>
-      {#each _chases as row (row.id)}
-        <div class="cc-row" role="row">
-          <span class="cc-col cc-col-acct" title="Account">{row.account}</span>
-          <span class="cc-col cc-col-side cc-side-{(row.transaction_type || '').toLowerCase()}">
-            {row.transaction_type}
-          </span>
-          <span class="cc-col cc-col-qty">{row.quantity}</span>
-          <span class="cc-col cc-col-sym" title={row.symbol}>{row.symbol}</span>
-          <span class="cc-col cc-col-limit">
-            {row.initial_price != null ? '₹' + priceFmt(row.initial_price) : '—'}
-          </span>
-          <span class="cc-col cc-col-att">{row.attempts || 0}</span>
-          {#if !compact}
-            <span class="cc-col cc-col-age">{_age(row.created_at)}</span>
-            <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
-          {/if}
-          <span class="cc-col cc-col-actions">
-            <button type="button" class="cc-kill"
-              disabled={_killing.has(row.id)}
-              title="Cancel this chase"
-              onclick={() => _kill(row)}>
-              {_killing.has(row.id) ? '…' : 'Kill'}
-            </button>
-          </span>
-        </div>
-      {/each}
+  <div class="cc-grid" role="grid">
+    <div class="cc-row cc-row-h" role="row">
+      <span class="cc-col cc-col-acct">Account</span>
+      <span class="cc-col cc-col-side">Side</span>
+      <span class="cc-col cc-col-qty">Qty</span>
+      <span class="cc-col cc-col-sym">Symbol</span>
+      <span class="cc-col cc-col-limit">Limit</span>
+      <span class="cc-col cc-col-att">Attempts</span>
+      {#if !compact}
+        <span class="cc-col cc-col-age">Age</span>
+        <span class="cc-col cc-col-mode">Mode</span>
+      {/if}
+      <span class="cc-col cc-col-actions"></span>
     </div>
-  {/if}
+    {#each _chases as row (row.id)}
+      <div class="cc-row" role="row">
+        <span class="cc-col cc-col-acct" title="Account">{row.account}</span>
+        <span class="cc-col cc-col-side cc-side-{(row.transaction_type || '').toLowerCase()}">
+          {row.transaction_type}
+        </span>
+        <span class="cc-col cc-col-qty">{row.quantity}</span>
+        <span class="cc-col cc-col-sym" title={row.symbol}>{row.symbol}</span>
+        <span class="cc-col cc-col-limit">
+          {row.initial_price != null ? '₹' + priceFmt(row.initial_price) : '—'}
+        </span>
+        <span class="cc-col cc-col-att">{row.attempts || 0}</span>
+        {#if !compact}
+          <span class="cc-col cc-col-age">{_age(row.created_at)}</span>
+          <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
+        {/if}
+        <span class="cc-col cc-col-actions">
+          <button type="button" class="cc-kill"
+            disabled={_killing.has(row.id)}
+            title="Cancel this chase"
+            onclick={() => _kill(row)}>
+            {_killing.has(row.id) ? '…' : 'Kill'}
+          </button>
+        </span>
+      </div>
+    {/each}
+  </div>
 </div>
 {/if}
 
@@ -271,12 +269,6 @@
     color: #bae6fd;
   }
   .cc-reconcile:disabled { opacity: 0.45; cursor: progress; }
-  .cc-empty {
-    color: var(--algo-muted);
-    font-size: 0.65rem;
-    padding: 0.4rem 0.2rem;
-    font-style: italic;
-  }
   .cc-grid {
     display: flex;
     flex-direction: column;

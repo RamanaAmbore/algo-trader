@@ -43,8 +43,6 @@
     hideOrder = /** @type {boolean} */ (false),
     /** When true, the Chart icon is hidden (caller is on the charts page). */
     hideChart = /** @type {boolean} */ (false),
-    /** When false, the Log icon is hidden. Defaults to shown. */
-    showLog   = /** @type {boolean} */ (true),
   } = $props();
 
   // Universal default falls back to the operator-configured
@@ -71,9 +69,6 @@
   const _anchorSymbol = $derived(
     String(symbol || _recentSymbol || '').toUpperCase()
   );
-  // Reference to silence unused-warning while keeping the import for
-  // future store-aware refactors.
-  void _accountsReady;
   const _effectiveExchange = $derived(String(exchange || (symbol ? '' : 'NSE')));
 
   // Effective symbol passes through verbatim — no underlying-to-future
@@ -167,8 +162,7 @@
     </button>
   {/if}
 
-  {#if showLog !== false}
-    <button type="button" class="pha-btn pha-log"
+  <button type="button" class="pha-btn pha-log"
             onclick={_openLog}
             title="Activity"
             aria-label="Open Activity">
@@ -177,7 +171,6 @@
            that was duplicated across PageHeaderActions + ActivityLogModal. -->
       <BellIcon width="14" height="14" />
     </button>
-  {/if}
 </span>
 
 <!-- ── Modals ──────────────────────────────────────────────────────── -->

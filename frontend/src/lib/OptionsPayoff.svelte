@@ -170,15 +170,8 @@
        ? breakevens.filter(b => b != null)
        : (breakeven != null ? [breakeven] : [])));
 
-  // BE label pin positions — operator: "keep breakeven text under the
-  // x axis instead of showing at the top with the curve". Labels now
-  // Operator: "show breakeven x axis labels horizontal a little
-  // above x axis". BE labels render as plain horizontal text just
-  // above the chart baseline (inside the plot area) — same font
-  // size as σ-tick labels so the two label families read at the
-  // same weight, and the labels are positioned in the chart
-  // proper rather than below the baseline where they'd compete
-  // with σ-tick price text.
+  // BE label pin positions — horizontal text just above the chart baseline,
+  // inside the plot area so they don't compete with σ-tick price labels below.
   /** @type {Array<{be:number,label:string,pinY:number}>} */
   const bePins = $derived.by(() => {
     return breakevenList.map((be) => {

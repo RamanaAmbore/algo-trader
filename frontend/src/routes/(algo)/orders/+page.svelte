@@ -27,9 +27,6 @@
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
   import OrderCard from '$lib/order/OrderCard.svelte';
-  // Row-level chart modal state.
-  let _rowChartModalSym  = $state('');
-  let _rowChartModalExch = $state('');
 
   // Activity-card tab definitions — id drives class-based colour
   // (oc-tab--log = sky, oc-tab--book = green) instead of inline style.
@@ -163,16 +160,9 @@
     });
   });
 
-  // Inline-action handlers — Cancel hits the broker directly; Modify
-  // and Repeat open the orderTicketProps modal pre-filled.
-  async function inlineCancel(/** @type {any} */ o, /** @type {Event} */ e) {
-    e?.stopPropagation();
-    try { await cancelOrder(o.order_id, o.account); await loadOrders(); }
-    catch (err) { error = err.message || String(err); }
-  }
-  function inlineModify(/** @type {any} */ o, /** @type {Event} */ e) {
-    e?.stopPropagation();
-    orderTicketProps = {
+  // Shared helper — builds the orderTicketProps shape for a modify action.
+  function _buildModifyProps(/** @type {any} */ o) {
+    return {
       symbol:    String(o.tradingsymbol || '').toUpperCase(),
       exchange:  o.exchange || 'NFO',
       side:      o.transaction_type,
@@ -187,6 +177,18 @@
       account:   String(o.account || ''),
       accounts:  [],
     };
+  }
+
+  // Inline-action handlers — Cancel hits the broker directly; Modify
+  // and Repeat open the orderTicketProps modal pre-filled.
+  async function inlineCancel(/** @type {any} */ o, /** @type {Event} */ e) {
+    e?.stopPropagation();
+    try { await cancelOrder(o.order_id, o.account); await loadOrders(); }
+    catch (err) { error = err.message || String(err); }
+  }
+  function inlineModify(/** @type {any} */ o, /** @type {Event} */ e) {
+    e?.stopPropagation();
+    orderTicketProps = _buildModifyProps(o);
   }
 
   // Empty-state copy adapts to which filter is active so the operator
@@ -307,7 +309,7 @@
        OWN internal header strip (the duplicate "ORDER ENTRY" chip
        + close button) is suppressed — operator wanted just one
        row, not two stacked. -->
-  <div class="bucket-header oc-entry-header oc-entry-header-bare">
+  <div class="bucket-header oc-entry-header-bare">
     <span class="oc-entry-label">
       <svg class="oc-entry-icon" width="13" height="13" viewBox="0 0 16 16"
            fill="none" stroke="currentColor" stroke-width="1.5"
@@ -475,38 +477,12 @@
   onclose={() => selectedOrder = null}
   onchanged={async () => { await loadOrders(); if (selectedOrder) selectedOrder = orders.find(o => o.order_id === selectedOrder.order_id) || null; }}
   onmodify={(ord) => {
-    // Phase 3: Modify routes through the shared OrderTicket
-    // (action='modify'). Pre-fill from the existing order's
-    // fields. Symbol + side are locked inside the ticket; price /
-    // qty / type / trigger remain editable. Submit hits PUT
-    // /api/orders/{id} via modifyOrder().
     if (!ord) return;
-    orderTicketProps = {
-      symbol:    String(ord.tradingsymbol || '').toUpperCase(),
-      exchange:  ord.exchange || 'NFO',
-      side:      ord.transaction_type,
-      action:    'modify',
-      orderId:   String(ord.order_id || ''),
-      qty:       Number(ord.quantity) || 0,
-      lotSize:   1,
-      orderType: ord.order_type || 'LIMIT',
-      price:     ord.price > 0 ? ord.price : undefined,
-      trigger:   ord.trigger_price > 0 ? ord.trigger_price : undefined,
-      product:   ord.product,
-      account:   String(ord.account || ''),
-      accounts:  [],
-    };
+    orderTicketProps = _buildModifyProps(ord);
   }}
 />
 
 </div>
-
-{#if _rowChartModalSym}
-  <ChartModal
-    symbol={_rowChartModalSym}
-    exchange={_rowChartModalExch}
-    onClose={() => { _rowChartModalSym = ''; _rowChartModalExch = ''; }} />
-{/if}
 
 {#if orderTicketProps}
   <SymbolPanel
@@ -766,22 +742,22 @@
   /* Flat section header — only the card-control trio rides here
      now (Collapse / DefaultSize / Fullscreen). Section label +
      other decorations removed per operator request. */
-  .oc-entry-header {
+  /* Flat section header — display row matching every other bucket-card.
+     `.oc-entry-header` merged into this rule (same semantics, always
+     co-applied). Small inset padding so the label + collapse trio don't
+     slam against the bucket-card frame. */
+  .oc-entry-header-bare {
     display: flex;
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
-    margin-bottom: 0.4rem;
+    margin: 0;
+    min-height: 1.4rem;
+    padding: 0.35rem 0.5rem;
   }
   /* "ORDER ENTRY" label — matches the page's `.mp-section-label`
      convention used by Chase + Activity cards (0.6rem, weight 700,
-     amber-70%, 0.08em letter-spacing). Section identity comes from
-     the card's left-edge accent colour, not a header background.
-     Operator: "order entry card header has different background
-     colors. Other cards don't have a separate header background
-     color" — the amber gradient strip was a misstep importing the
-     modal's `.oes-header` chrome into a page card. Reverted to the
-     plain section-label convention. */
+     amber-70%, 0.08em letter-spacing). */
   .oc-entry-label {
     display: inline-flex;
     align-items: center;
@@ -800,12 +776,6 @@
      don't slam against the bucket-card frame (since
      `.bucket-card-entry` has its outer padding zeroed for the
      SymbolPanel content alignment). */
-  .oc-entry-header-bare {
-    margin: 0;
-    min-height: 1.4rem;
-    padding: 0.35rem 0.5rem;
-  }
-
   /* Status filter cards — polished chrome with richer gradients +
      inner highlight + soft outer shadow. Each card carries:
        • two-stop status-tinted gradient (richer than the previous

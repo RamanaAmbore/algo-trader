@@ -32,6 +32,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
+  import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -248,6 +249,12 @@
     'MENTHAOIL', 'COTTON', 'CASTORSEED', 'KAPAS',
   ]);
 
+  // Hoisted — used in the {#each} template; defining inside {#if} would
+  // allocate a new object on every render cycle.
+  const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
+  // Band sort order — shared by both equity + commodity sort comparators.
+  const BAND_ORDER = { close: 0, netted: 1, otm: 2 };
+
   const expiryCloseAnalysis = $derived.by(() => {
     // Each array now carries rows with _band ∈ {'close','netted','otm'}
     // plus _pairId (shared by both members of a netted pair),
@@ -459,14 +466,18 @@
     // Sort within each band independently so band order is preserved
     // in rendering (we'll render close → netted → otm).
     result.equity.sort((a, b) => {
-      const bandOrder = { close: 0, netted: 1, otm: 2 };
-      const bo = (bandOrder[a._band] ?? 9) - (bandOrder[b._band] ?? 9);
+      const bo = (BAND_ORDER[a._band] ?? 9) - (BAND_ORDER[b._band] ?? 9);
       if (bo !== 0) return bo;
+      // Within NETTED band, sort by pair id so paired rows sit adjacent.
+      if (a._band === 'netted' && b._band === 'netted') {
+        const ap = a._pairId || '';
+        const bp = b._pairId || '';
+        if (ap !== bp) return ap < bp ? -1 : 1;
+      }
       return acctSymSort(a, b);
     });
     result.commodity.sort((a, b) => {
-      const bandOrder = { close: 0, netted: 1, otm: 2 };
-      const bo = (bandOrder[a._band] ?? 9) - (bandOrder[b._band] ?? 9);
+      const bo = (BAND_ORDER[a._band] ?? 9) - (BAND_ORDER[b._band] ?? 9);
       if (bo !== 0) return bo;
       // Within NETTED band, sort by pair id so paired rows sit
       // adjacent — operator: "in netted, show the opposite
@@ -1984,9 +1995,8 @@
     // CRUDEOIL-titled card for the duration of the request.
     // Clear strategy immediately so the chart goes blank
     // (loading state) instead of lying about the underlying.
-    const _underlyingOf = (sym) => /^([A-Z]+?)(?=\d|FUT|CE|PE|$)/.exec(sym || '')?.[1] || '';
-    const newU = _underlyingOf(cleanLegs[0].symbol);
-    const oldU = strategy?.legs?.length ? _underlyingOf(strategy.legs[0].symbol) : '';
+    const newU = decomposeSymbol(cleanLegs[0].symbol).root;
+    const oldU = strategy?.legs?.length ? decomposeSymbol(strategy.legs[0].symbol).root : '';
     if (newU && oldU && newU !== oldU) {
       strategy = null;
     }
@@ -2607,9 +2617,8 @@
               _ci === 0 ||
               displayedCandidates[_ci - 1]?._band !== c._band
             )}
-              {@const _bandLabels = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' }}
               {@const _bandCount = displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
-              <div class="expiry-band-header expiry-band-header-{c._band}" aria-label="{_bandLabels[c._band] ?? c._band} — {c._segment}">
+              <div class="expiry-band-header expiry-band-header-{c._band}" aria-label="{BAND_LABELS[c._band] ?? c._band} — {c._segment}">
                 <!-- Pill — section identity in a single visual chunk:
                      dot glyph + label text + count badge. Operator:
                      "highlight heading to close, netted, out of the
@@ -2618,7 +2627,7 @@
                   <span class="expiry-band-dot" aria-hidden="true">
                     {#if c._band === 'close'}●{:else if c._band === 'netted'}⊗{:else}○{/if}
                   </span>
-                  <span class="expiry-band-label">{_bandLabels[c._band] ?? c._band}</span>
+                  <span class="expiry-band-label">{BAND_LABELS[c._band] ?? c._band}</span>
                   <span class="expiry-band-count">{_bandCount}</span>
                 </span>
                 {#if c._band === 'close'}<span class="expiry-band-hint">action required before expiry</span>

@@ -104,11 +104,10 @@
     // concept (PerformancePage row click) typically pass 'paper';
     // surfaces with a drafts panel (admin/options) keep 'draft'.
     defaultMode    = /** @type {'draft' | 'paper' | 'live' | 'shadow'} */ ('live'),
-    // Which mode pills the operator can see. PAPER is no longer a
-    // user-facing choice — on dev all orders are paper-only via the
-    // branch gate; on prod the per-action execution.live.* flags
-    // decide paper vs live for each action. Operators pick between
-    // DRAFT (page-local what-if) and LIVE (submit to backend).
+    // Which mode pills the operator can see. Default is DRAFT + LIVE.
+    // Callers that want PAPER as an explicit choice pass it here (e.g.
+    // admin surfaces that bypass the global execution.paper_trading_mode
+    // flag). The PAPER pill renders when 'paper' is in this array.
     availableModes = /** @type {Array<'draft'|'paper'|'live'|'shadow'>} */ (['draft', 'live']),
     // Signed qty of the operator's existing position when the ticket
     // is opened from a position-row click. Drives the side toggle's

@@ -1,7 +1,7 @@
 <script>
   // Top-of-book depth ladder for the order ticket.
   //
-  // Polls `GET /api/quote?exchange=…&tradingsymbol=…` every 1.2 s
+  // Polls `GET /api/quote?exchange=…&tradingsymbol=…` every 2 s
   // while mounted. Backend wraps `kite.quote()` and returns LTP +
   // top-5 buy/sell depth (already shipped before phase 2). When
   // the broker call fails (off-hours, illiquid), the row falls
