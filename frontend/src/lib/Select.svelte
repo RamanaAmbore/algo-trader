@@ -157,7 +157,16 @@
         </div>
       {/if}
       <ul class="rbq-select-options">
-        {#each filteredOptions as opt, i}
+        <!-- Keyed by opt.value so Svelte 5's keyed reconciliation
+             diffs by identity, not positional index. Without the
+             key, an async update that relabels an option in place
+             (e.g. MCX picker swapping CRUDEOIL → CRUDEOIL25JUNFUT
+             once instrumentsReady flips true) threw
+             `each_key_duplicate` and silently remounted the
+             dropdown subtree, leaving the picker button visually
+             present but unclickable. Same root cause behind the
+             navbar hamburger drawer hang on /admin/options. -->
+        {#each filteredOptions as opt, i (opt.value)}
           {@const selected = String(opt.value) === String(value)}
           <li role="option" aria-selected={selected}
               class="rbq-select-option
