@@ -2537,8 +2537,17 @@
               {@const _bandLabels = { close: 'TO CLOSE', netted: 'NETTED', otm: 'OUT OF THE MONEY' }}
               {@const _bandCount = displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
               <div class="expiry-band-header expiry-band-header-{c._band}" aria-label="{_bandLabels[c._band] ?? c._band} — {c._segment}">
-                <span class="expiry-band-label">{_bandLabels[c._band] ?? c._band}</span>
-                <span class="expiry-band-count">{_bandCount}</span>
+                <!-- Pill — section identity in a single visual chunk:
+                     dot glyph + label text + count badge. Operator:
+                     "highlight heading to close, netted, out of the
+                     money like a pill/chip for better visibility". -->
+                <span class="expiry-band-pill">
+                  <span class="expiry-band-dot" aria-hidden="true">
+                    {#if c._band === 'close'}●{:else if c._band === 'netted'}⊗{:else}○{/if}
+                  </span>
+                  <span class="expiry-band-label">{_bandLabels[c._band] ?? c._band}</span>
+                  <span class="expiry-band-count">{_bandCount}</span>
+                </span>
                 {#if c._band === 'close'}<span class="expiry-band-hint">action required before expiry</span>
                 {:else if c._band === 'netted'}<span class="expiry-band-hint">broker nets at settlement — no action needed</span>
                 {:else if c._band === 'otm'}<span class="expiry-band-hint">expires worthless — monitor only</span>
@@ -3577,60 +3586,99 @@
     box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
   }
 
-  /* Band section header — full-width separator between the three
-     expiry bands. Uses column-span on the grid subgrid. */
+  /* Band section header — full-width row containing the section
+     identity pill + a muted hint to the right. The pill itself
+     does the heavy visual work; the row chrome stays minimal. */
   .expiry-band-header {
     grid-column: 1 / -1;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.5rem 0.25rem;
-    margin-top: 0.5rem;
-    border-bottom: 1px solid rgba(200, 216, 240, 0.12);
+    gap: 0.55rem;
+    padding: 0.55rem 0.45rem 0.4rem;
+    margin-top: 0.6rem;
+    border-bottom: 1px solid rgba(200, 216, 240, 0.08);
   }
   .expiry-band-header:first-of-type,
   .expiry-band-header-close:first-child {
     margin-top: 0;
   }
-  .expiry-band-label {
+  /* Section pill — colored background + border + leading dot glyph
+     + label + count badge, all as a single inline-flex chunk so
+     the section identity reads at a glance. Each band gets its
+     own palette via the modifier rules below. */
+  .expiry-band-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.32rem 0.7rem 0.32rem 0.55rem;
+    border-radius: 9999px;
     font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.09em;
     line-height: 1;
+    border: 1px solid transparent;
+  }
+  .expiry-band-dot {
+    font-size: 0.7rem;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .expiry-band-label {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
   }
   .expiry-band-count {
     font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 600;
-    padding: 0.05rem 0.3rem;
-    border-radius: 999px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0.12rem 0.45rem;
+    border-radius: 9999px;
     line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
   .expiry-band-hint {
-    font-size: 0.57rem;
-    opacity: 0.65;
+    font-size: 0.58rem;
+    opacity: 0.55;
     font-style: italic;
     color: var(--algo-muted);
   }
-  /* Per-band colour overrides for header label + count chip. */
-  .expiry-band-header-close .expiry-band-label { color: #fbbf24; }
-  .expiry-band-header-close .expiry-band-count {
+  /* TO CLOSE — amber pill, glowing. Highest-attention band:
+     these positions need broker action before expiry. */
+  .expiry-band-header-close .expiry-band-pill {
     background: var(--algo-amber-bg-strong);
-    color: #fbbf24;
-    border: 1px solid var(--algo-amber-border-soft);
+    border-color: var(--algo-amber-border);
+    color: var(--algo-amber);
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.30);
   }
-  .expiry-band-header-netted .expiry-band-label { color: #94a3b8; }
+  .expiry-band-header-close .expiry-band-count {
+    background: rgba(251, 191, 36, 0.30);
+    color: #fed7aa;
+    border: 1px solid var(--algo-amber-border);
+  }
+  /* NETTED — slate pill, balanced. Mid-attention band: positions
+     cancel each other at settlement, operator should see the pair
+     structure but no action needed. */
+  .expiry-band-header-netted .expiry-band-pill {
+    background: rgba(125, 145, 184, 0.18);
+    border-color: rgba(125, 145, 184, 0.42);
+    color: #c8d8f0;
+  }
   .expiry-band-header-netted .expiry-band-count {
-    background: rgba(125, 145, 184, 0.15);
-    color: #94a3b8;
-    border: 1px solid rgba(125, 145, 184, 0.3);
+    background: rgba(125, 145, 184, 0.30);
+    color: #c8d8f0;
+    border: 1px solid rgba(125, 145, 184, 0.45);
   }
-  .expiry-band-header-otm .expiry-band-label { color: var(--algo-muted); }
-  .expiry-band-header-otm .expiry-band-count {
-    background: rgba(126, 151, 184, 0.12);
+  /* OUT OF THE MONEY — muted pill, lowest visual weight.
+     Traceability only; these expire worthless. */
+  .expiry-band-header-otm .expiry-band-pill {
+    background: rgba(126, 151, 184, 0.10);
+    border-color: rgba(126, 151, 184, 0.28);
     color: var(--algo-muted);
-    border: 1px solid rgba(126, 151, 184, 0.25);
+  }
+  .expiry-band-header-otm .expiry-band-count {
+    background: rgba(126, 151, 184, 0.22);
+    color: var(--algo-muted);
+    border: 1px solid rgba(126, 151, 184, 0.35);
   }
 
   /* Tag chip inside the symbol cell — #N1 / #C1. */
