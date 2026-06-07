@@ -309,6 +309,12 @@ export const patchOrderTemplate  = (id, payload) =>
 export const deleteOrderTemplate = (id) =>
   _del(`/admin/templates/${id}`, { auth: true });
 
+// Pre-submit preview: returns the TemplatePlan that would be applied if
+// this exact payload were submitted. Used by OrderTicket to show
+// "Will place TP @ ₹X · SL @ ₹Y · Wing -500CE" inline.
+export const previewTicketTemplate = (payload) =>
+  _post('/orders/ticket/preview', payload, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const updateSetting     = (key, value) =>

@@ -28,7 +28,7 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, fetchSettings } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, fetchSettings, fetchOrderTemplates, previewTicketTemplate } from '$lib/api';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
@@ -515,24 +515,83 @@
   let _price   = $state(price ?? '');
   let _trigger = $state(trigger ?? '');
 
-  // ── Target take-profit ───────────────────────────────────────────────
-  // Two modes: % (default) or ₹. Default pct seeded from the
-  // `algo.default_target_pct` setting fetched on mount. Operator
-  // can toggle via the pill next to the field.
-  // `_targetMode` drives which field is shown and which payload field
-  // is populated; the other is set to null.
+  // ── Target take-profit (legacy single-TP field; deprecated v2.1) ─────
+  // Kept as an alternate path when the operator hasn't picked a
+  // template + override fields are zero. New code should use the
+  // Template picker below — it builds the same payload from a richer
+  // (TP + SL + Wing) shape and routes through the unified attach
+  // pipeline.
   let _targetMode = $state(/** @type {'pct' | 'abs'} */ ('pct'));
   let _targetPct = $state(/** @type {number} */ (30));
   let _targetAbs = $state(/** @type {number|''} */ (''));
 
-  // Derived payload values — null when empty so the backend can
-  // distinguish "not set" from zero.
   const _targetPctVal = $derived(
     _targetMode === 'pct' && Number(_targetPct) > 0 ? Number(_targetPct) / 100 : null
   );
   const _targetAbsVal = $derived(
     _targetMode === 'abs' && Number(_targetAbs) > 0 ? Number(_targetAbs) : null
   );
+
+  // ── v2 template picker ──────────────────────────────────────────────
+  // Template state. `_templates` is the list fetched from
+  // /api/admin/templates on mount. `_templateId` is the selected row's
+  // id; null means "no template" (entry-only, no follow-on attach).
+  // Override fields default to '' (blank) — the picker shows the
+  // template's value as a placeholder so the operator sees what will
+  // run unless they tweak it. Submitting with a blank override sends
+  // null (= use template default).
+  let _templates = $state(/** @type {any[]} */ ([]));
+  let _templateId = $state(/** @type {number|null} */ (null));
+  let _tpOverride = $state(/** @type {number|''} */ (''));
+  let _slOverride = $state(/** @type {number|''} */ (''));
+  let _wingPremPctOverride = $state(/** @type {number|''} */ (''));
+  let _wingStrikeOffsetOverride = $state(/** @type {number|''} */ (''));
+
+  // Pre-submit preview state.
+  let _previewPlan = $state(/** @type {any} */ (null));
+  let _previewLoading = $state(false);
+  let _previewError = $state('');
+
+  const _selectedTemplate = $derived(
+    _templates.find(t => t.id === _templateId) || null
+  );
+
+  function _appliesToFor(side, sym) {
+    if (side === 'SELL' && /\d+(CE|PE)$/i.test(sym || '')) return 'sell_option';
+    if (side === 'BUY') return 'buy_any';
+    return 'both';
+  }
+
+  function _summariseTemplate(t) {
+    if (!t) return '';
+    const parts = [];
+    if (t.tp_pct != null) parts.push(`TP +${t.tp_pct}%`);
+    if (t.sl_pct != null) parts.push(`SL -${t.sl_pct}%`);
+    if (t.wing_strike_offset != null) parts.push(`Wing +${t.wing_strike_offset}`);
+    if (t.wing_premium_pct != null) parts.push(`Wing ${t.wing_premium_pct}% prem`);
+    return parts.length ? parts.join(' · ') : '(entry only)';
+  }
+
+  // Default template auto-selection by side + symbol kind. Runs once on
+  // mount AFTER templates are loaded so the dropdown opens with the
+  // right pick already highlighted.
+  function _autoSelectTemplate() {
+    if (_templateId !== null) return;        // operator already picked
+    if (_templates.length === 0) return;
+    const scope = _appliesToFor(_side, symbol);
+    // Prefer is_default within matching scope; fall back to 'both'.
+    const match = _templates.find(t =>
+      t.is_default && (t.applies_to === scope || t.applies_to === 'both')
+    );
+    if (match) {
+      _templateId = match.id;
+    } else {
+      // Last resort: the explicit "none" template so operator gets a
+      // sane pick rather than null + empty fields.
+      const none = _templates.find(t => t.slug === 'none');
+      if (none) _templateId = none.id;
+    }
+  }
   let _product = $state(productVal);
   // Initial mode:
   //   1. defaultMode prop wins when the caller explicitly picked one
@@ -1064,6 +1123,15 @@
           account:          _account,
           chase:                showLimit ? _chase : false,
           chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
+          // v2 template attachment — apply_template_to_order runs the
+          // unified pipeline (sim or live) after the entry persists.
+          // Legacy target_pct still flows for back-compat when no
+          // template is chosen.
+          template_id:                  _templateId,
+          tp_pct_override:              _tpOverride !== '' ? Number(_tpOverride) : null,
+          sl_pct_override:              _slOverride !== '' ? Number(_slOverride) : null,
+          wing_premium_pct_override:    _wingPremPctOverride !== '' ? Number(_wingPremPctOverride) : null,
+          wing_strike_offset_override:  _wingStrikeOffsetOverride !== '' ? Number(_wingStrikeOffsetOverride) : null,
         });
         // Show inline confirmation so the operator sees the order
         // landed; modal stays open until the operator clicks Exit.
@@ -1185,7 +1253,80 @@
         });
     }
 
+    // Load the OrderTemplate catalog so the picker has something to
+    // render. Demo sessions get the system rows (read-only); signed-in
+    // sessions get full CRUD on customs. Failure is silent — operator
+    // ends up with an empty picker but can still place an entry-only
+    // order via target_pct.
+    fetchOrderTemplates()
+      .then(/** @param {any} rows */ (rows) => {
+        _templates = Array.isArray(rows) ? rows.filter(t => t.is_active) : [];
+        _autoSelectTemplate();
+      })
+      .catch(() => { /* silent — picker stays empty */ });
+
     return () => _escCleanup?.();
+  });
+
+  // Re-run auto-select whenever the side or symbol changes so the
+  // picker stays aligned with what the operator is about to trade.
+  // Guarded so an operator's explicit pick (_templateId !== null) is
+  // never overridden mid-flight.
+  $effect(() => {
+    if (_templates.length === 0) return;
+    // Read the side + symbol so this effect tracks them.
+    const _ = `${_side}-${symbol}`;
+    untrack(() => {
+      // Only auto-pick when the operator hasn't already chosen.
+      // Side flip can legitimately change the right default — let it.
+      _autoSelectTemplate();
+    });
+  });
+
+  // Pre-submit preview — debounced fetch so an operator typing in the
+  // override fields doesn't fire a request per keystroke.
+  let _previewTimer = $state(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
+  $effect(() => {
+    // Track the inputs that affect the preview.
+    const inputs = [
+      _templateId, _tpOverride, _slOverride,
+      _wingPremPctOverride, _wingStrikeOffsetOverride,
+      _side, symbol, _qty, _price,
+    ];
+    // Skip preview when basics are incomplete.
+    if (!symbol || Number(_qty) <= 0 || (_templateId === null && !_tpOverride && !_slOverride)) {
+      _previewPlan = null;
+      _previewError = '';
+      return;
+    }
+    if (_previewTimer) clearTimeout(_previewTimer);
+    _previewTimer = setTimeout(async () => {
+      _previewLoading = true; _previewError = '';
+      try {
+        const refPx = Number(_price) > 0 ? Number(_price) : 0;
+        const res = await previewTicketTemplate({
+          mode:             _mode === 'draft' ? 'paper' : _mode,
+          side:             _side,
+          tradingsymbol:    symbol,
+          quantity:         Number(_qty),
+          exchange:         exchange || 'NFO',
+          product:          _product || 'NRML',
+          account:          _account || '',
+          reference_price:  refPx,
+          template_id:                  _templateId,
+          tp_pct_override:              _tpOverride !== '' ? Number(_tpOverride) : null,
+          sl_pct_override:              _slOverride !== '' ? Number(_slOverride) : null,
+          wing_premium_pct_override:    _wingPremPctOverride !== '' ? Number(_wingPremPctOverride) : null,
+          wing_strike_offset_override:  _wingStrikeOffsetOverride !== '' ? Number(_wingStrikeOffsetOverride) : null,
+        });
+        _previewPlan = res?.plan || null;
+      } catch (e) {
+        _previewError = e?.message || 'preview failed';
+        _previewPlan = null;
+      } finally {
+        _previewLoading = false;
+      }
+    }, 200);
   });
 
   function _refetchFunds() {
@@ -1501,40 +1642,79 @@
       </div>
     {/if}
 
-    <!-- Target take-profit — optional field. When set, the backend
-         creates a linked TP order on fill. Toggle between % and ₹
-         modes via the mode pill. Industry analogue: Kite GTT,
-         ToS bracket-order TP leg. Shown only for new orders. -->
+    <!-- Template attachment — exit-rule preset chosen at submit time.
+         Replaces the legacy "Target take-profit" row from v1. The
+         dropdown lists every active OrderTemplate; the inline override
+         fields let the operator tune one order without saving. On
+         submit, /api/orders/ticket runs the unified template-attach
+         pipeline (sim or live based on SimDriver.active). The preview
+         line below shows exactly what TP/SL/Wing will be placed.
+         Industry analogue: NinjaTrader ATM Strategy attachment. -->
     {#if action === 'open'}
-      <div class="ot-row ot-target-row">
+      <div class="ot-row ot-template-row">
         <div class="ot-label-block" style="flex: 1 1 0; min-width: 0">
-          <label class="ot-label" for="ot-target">
-            Target
-            <span class="ot-label-sub">(optional)</span>
-          </label>
-          <div class="ot-target-input-row">
-            <button type="button" class="ot-target-mode-pill"
-                    class:on={_targetMode === 'pct'}
-                    title="Percentage above entry price"
-                    onclick={() => { _targetMode = 'pct'; }}>%</button>
-            <button type="button" class="ot-target-mode-pill"
-                    class:on={_targetMode === 'abs'}
-                    title="Absolute ₹ above entry price"
-                    onclick={() => { _targetMode = 'abs'; }}>₹</button>
-            {#if _targetMode === 'pct'}
-              <input id="ot-target" type="number" class="ot-input ot-num ot-target-input"
-                     step="0.1" min="0" placeholder="e.g. 30"
-                     bind:value={_targetPct} />
-              {#if Number(_targetPct) > 0}
-                <span class="ot-target-hint">+{Number(_targetPct).toFixed(1)}%</span>
+          <label class="ot-label">Template <span class="ot-label-sub">(exit rules)</span></label>
+          <div class="ot-template-block">
+            <Select
+              options={[
+                { value: '', label: '— No template (entry only) —' },
+                ...(_templates.map(t => ({
+                  value: String(t.id),
+                  label: `${t.name}${t.is_default ? ' ★' : ''}${t.slug === 'none' ? '' : '  — ' + _summariseTemplate(t)}`,
+                })))
+              ]}
+              value={_templateId === null ? '' : String(_templateId)}
+              onValueChange={(v) => { _templateId = v === '' ? null : Number(v); }}
+            />
+            <div class="ot-template-overrides">
+              <label class="ot-tpl-field">
+                <span>TP%</span>
+                <input type="number" class="ot-input ot-num ot-tpl-input"
+                       step="0.5"
+                       placeholder={_selectedTemplate?.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
+                       bind:value={_tpOverride} />
+              </label>
+              <label class="ot-tpl-field">
+                <span>SL%</span>
+                <input type="number" class="ot-input ot-num ot-tpl-input"
+                       step="0.5"
+                       placeholder={_selectedTemplate?.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
+                       bind:value={_slOverride} />
+              </label>
+              {#if _appliesToFor(_side, symbol) === 'sell_option'}
+                <label class="ot-tpl-field">
+                  <span>Wing strike+</span>
+                  <input type="number" class="ot-input ot-num ot-tpl-input"
+                         step="50"
+                         placeholder={_selectedTemplate?.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
+                         bind:value={_wingStrikeOffsetOverride} />
+                </label>
               {/if}
-            {:else}
-              <input id="ot-target" type="number" class="ot-input ot-num ot-target-input"
-                     step="1" min="0" placeholder="₹ amount"
-                     bind:value={_targetAbs} />
-              {#if Number(_targetAbs) > 0}
-                <span class="ot-target-hint">+₹{Number(_targetAbs).toLocaleString('en-IN')}</span>
-              {/if}
+            </div>
+
+            <!-- Pre-submit preview chip — shows the artefacts that
+                 will be placed. Updates ~200ms after any field change. -->
+            {#if _previewError}
+              <div class="ot-tpl-preview-err">⚠ preview: {_previewError}</div>
+            {:else if _previewLoading}
+              <div class="ot-tpl-preview-loading">resolving plan…</div>
+            {:else if _previewPlan && (_previewPlan.gtts?.length > 0 || _previewPlan.wing)}
+              <div class="ot-tpl-preview">
+                <span class="ot-tpl-preview-label">on fill →</span>
+                {#each _previewPlan.gtts || [] as g}
+                  <span class="ot-tpl-preview-chip" class:tp={g.label === 'TP'} class:sl={g.label === 'SL'} class:both={g.label === 'TP+SL'}>
+                    {g.label} {g.trigger_values?.map(v => '₹' + Number(v).toLocaleString('en-IN')).join(' / ')}
+                  </span>
+                {/each}
+                {#if _previewPlan.wing}
+                  <span class="ot-tpl-preview-chip wing">
+                    Wing BUY {_previewPlan.wing.tradingsymbol}
+                  </span>
+                {/if}
+                {#each _previewPlan.notes || [] as n}
+                  <span class="ot-tpl-preview-note">· {n}</span>
+                {/each}
+              </div>
             {/if}
           </div>
         </div>
@@ -2476,6 +2656,105 @@
     color: #bae6fd;
   }
   .ot-target-mode-pill:hover:not(.on) { background: rgba(125,211,252,0.08); }
+
+  /* ── Template attachment card (v2.1) ─────────────────────────────── */
+  .ot-template-row { flex-wrap: nowrap; }
+  .ot-template-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    width: 100%;
+  }
+  .ot-template-overrides {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .ot-tpl-field {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.62rem;
+    color: rgba(180,200,230,0.75);
+    font-family: ui-monospace, monospace;
+  }
+  .ot-tpl-field span {
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .ot-tpl-input {
+    width: 4.2rem;
+    min-width: 4.2rem;
+  }
+
+  /* Preview line — explains what will fire after the entry fills */
+  .ot-tpl-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    align-items: center;
+    margin-top: 0.15rem;
+    padding: 0.3rem 0.45rem;
+    background: rgba(34,211,238,0.06);
+    border: 1px solid rgba(34,211,238,0.22);
+    border-radius: 3px;
+    font-size: 0.6rem;
+    line-height: 1.35;
+  }
+  .ot-tpl-preview-label {
+    color: rgba(180,200,230,0.85);
+    font-weight: 600;
+    margin-right: 0.15rem;
+    font-family: ui-monospace, monospace;
+  }
+  .ot-tpl-preview-chip {
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+    color: rgba(220,230,245,0.92);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(180,200,230,0.20);
+  }
+  .ot-tpl-preview-chip.tp {
+    color: #4ade80;
+    background: rgba(74,222,128,0.10);
+    border-color: rgba(74,222,128,0.40);
+  }
+  .ot-tpl-preview-chip.sl {
+    color: #f87171;
+    background: rgba(248,113,113,0.10);
+    border-color: rgba(248,113,113,0.40);
+  }
+  .ot-tpl-preview-chip.both {
+    color: #fbbf24;
+    background: rgba(251,191,36,0.10);
+    border-color: rgba(251,191,36,0.40);
+  }
+  .ot-tpl-preview-chip.wing {
+    color: #c084fc;
+    background: rgba(192,132,252,0.10);
+    border-color: rgba(192,132,252,0.40);
+  }
+  .ot-tpl-preview-note {
+    color: rgba(180,200,230,0.6);
+    font-style: italic;
+  }
+  .ot-tpl-preview-loading {
+    font-size: 0.6rem;
+    color: rgba(180,200,230,0.55);
+    font-family: ui-monospace, monospace;
+    padding-left: 0.45rem;
+  }
+  .ot-tpl-preview-err {
+    font-size: 0.6rem;
+    color: #fca5a5;
+    padding: 0.25rem 0.4rem;
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.30);
+    border-radius: 3px;
+  }
   .ot-target-input { width: 6rem; flex-shrink: 0; }
   .ot-target-hint {
     font-size: 0.6rem;
