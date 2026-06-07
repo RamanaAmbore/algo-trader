@@ -479,15 +479,30 @@
    *  + CRUDEOIL25JUL + CRUDEOIL25AUG option chains under the Expiry
    *  picker. */
   const underlyingOptionsForPicker = $derived.by(() => {
-    return underlyingChoicesFromBook.map(u => {
+    // Dedupe by value — `underlyingChoicesFromBook` can carry the
+    // same root twice during a transient state (e.g. positions
+    // reloading concurrent with `instrumentsReady` flipping true).
+    // Without this, Select.svelte's keyed each-block throws
+    // `each_key_duplicate` and silently remounts the dropdown,
+    // leaving the trigger button visually present but unclickable.
+    // Playwright caught the duplicate occurring during the MCX
+    // label-swap race window. Per-mount cost is O(N) over a list
+    // that's typically <30 entries — negligible.
+    const seen = new Set();
+    const out = [];
+    for (const u of underlyingChoicesFromBook) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
       if (_MCX_UNDERLYINGS.has(u) && instrumentsReady) {
         const futs = listFutures(u);
         if (futs.length > 0) {
-          return { value: u, label: futs[0].s };
+          out.push({ value: u, label: futs[0].s });
+          continue;
         }
       }
-      return { value: u, label: u };
-    });
+      out.push({ value: u, label: u });
+    }
+    return out;
   });
 
   // Auto-select the first underlying from the loaded book when the

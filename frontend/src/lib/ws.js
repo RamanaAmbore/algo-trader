@@ -36,6 +36,15 @@ export function createPerformanceSocket(onMessage) {
   let pingInterval = null;
   let closed = false;
   let reconnectTimer = null;
+  // Exponential back-off: start at 2s, double on each failure up
+  // to 60s. Resets to 2s after a successful `open`. Earlier code
+  // hard-coded 2s — when the server returned 405 (e.g. dev
+  // mistakenly orange-clouded behind Cloudflare which blocks raw
+  // WS upgrades), the close handler immediately re-fired every 2s,
+  // producing ~30 errors/min, constant console-noise, and steady
+  // background CPU. Backoff caps the storm without giving up on
+  // recovery.
+  let reconnectDelayMs = 2_000;
 
   function connect() {
     if (closed) return;
@@ -46,6 +55,7 @@ export function createPerformanceSocket(onMessage) {
       pingInterval = setInterval(() => {
         if (socket?.readyState === WebSocket.OPEN) socket.send('ping');
       }, 25_000);
+      reconnectDelayMs = 2_000;  // reset back-off on successful connect
     });
 
     socket.addEventListener('message', (e) => {
@@ -61,8 +71,9 @@ export function createPerformanceSocket(onMessage) {
     socket.addEventListener('close', () => {
       clearInterval(pingInterval);
       if (!closed) {
-        // Reconnect with exponential back-off (2 s)
-        reconnectTimer = setTimeout(connect, 2_000);
+        reconnectTimer = setTimeout(connect, reconnectDelayMs);
+        // Double for next attempt (cap 60s)
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 60_000);
       }
     });
 
@@ -102,6 +113,8 @@ export function createAlgoSocket(onMessage) {
   let pingInterval = null;
   let closed = false;
   let reconnectTimer = null;
+  // Exponential back-off — see comment above the primary subscriber.
+  let reconnectDelayMs = 2_000;
 
   function connect() {
     if (closed) return;
@@ -111,6 +124,7 @@ export function createAlgoSocket(onMessage) {
       pingInterval = setInterval(() => {
         if (socket?.readyState === WebSocket.OPEN) socket.send('ping');
       }, 25_000);
+      reconnectDelayMs = 2_000;
     });
 
     socket.addEventListener('message', (e) => {
@@ -123,7 +137,10 @@ export function createAlgoSocket(onMessage) {
 
     socket.addEventListener('close', () => {
       clearInterval(pingInterval);
-      if (!closed) reconnectTimer = setTimeout(connect, 2_000);
+      if (!closed) {
+        reconnectTimer = setTimeout(connect, reconnectDelayMs);
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 60_000);
+      }
     });
 
     socket.addEventListener('error', () => { socket?.close(); });
