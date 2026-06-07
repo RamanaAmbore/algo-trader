@@ -738,13 +738,77 @@
       {/if}
     </header>
 
-    <!-- Mode banners removed entirely. The colored navbar mode pill
-         (PAPER sky · LIVE red · SHADOW orange · SIM rose · REPLAY
-         green) is the single source of mode visibility. SIM and
-         REPLAY tick/iteration progress is visible inside the
-         /admin/execution mode page; no need to broadcast it across
-         every page. Operator: "remove banner for every mode
-         including shadow". -->
+    {#if simStatus?.active || simStatus?.run_active}
+      <div class="sim-banner" role="status" aria-live="polite">
+        <span class="sim-banner-dot"></span>
+        <span class="sim-banner-label">SIMULATOR</span>
+        {#if simStatus.iterations_total > 0}
+          <!-- Iteration-mode banner: surface "iter N/M · regime" -->
+          <span class="sim-banner-sep">·</span>
+          <span>iter <b class="sim-banner-scenario">{simStatus.iteration_index}/{simStatus.iterations_total}</b></span>
+          {#if simStatus.iteration_regime}
+            <span class="sim-banner-sep">·</span>
+            <span class="sim-banner-scenario">{simStatus.iteration_regime}</span>
+          {/if}
+        {:else}
+          <!-- Legacy single-shot banner -->
+          <span class="sim-banner-sep">·</span>
+          <span><b class="sim-banner-scenario">{simStatus.scenario || '—'}</b></span>
+        {/if}
+        {#if simStatus.seed_mode}
+          <span class="sim-banner-sep">·</span>
+          <span>seed {simStatus.seed_mode}</span>
+        {/if}
+        <span class="sim-banner-sep">·</span>
+        <span>tick {simStatus.tick_index}/{simStatus.total_ticks}</span>
+        {#if simStatus.only_agent_ids?.length}
+          <span class="sim-banner-sep">·</span>
+          <span>agents=[{simStatus.only_agent_ids.join(',')}]</span>
+        {/if}
+      </div>
+    {/if}
+    {#if paperStatus?.enabled && paperStatus.open_order_count > 0}
+      <!-- Paper-trade banner — fires when the prod paper engine has any
+           in-flight chase. Faded sky-blue tint to differentiate from
+           the red SIMULATOR banner; both can stack when both are live. -->
+      <div class="paper-banner" role="status" aria-live="polite">
+        <span class="paper-banner-dot"></span>
+        <span class="paper-banner-label">PAPER</span>
+        <span class="paper-banner-sep">·</span>
+        <span>{paperStatus.open_order_count} open chase order{paperStatus.open_order_count === 1 ? '' : 's'}</span>
+        <span class="paper-banner-sep">·</span>
+        <span class="paper-banner-meta">fake fills against live quotes</span>
+      </div>
+    {/if}
+
+    {#if $executionMode === 'shadow' && paperStatus?.branch === 'main'}
+      <!-- SHADOW banner — orange, always visible when in SHADOW mode.
+           Shadow logs the Kite payload + runs basket_margin without
+           executing. Pre-Live sanity check. -->
+      <div class="shadow-banner" role="status" aria-live="polite">
+        <span class="shadow-banner-dot"></span>
+        <span class="shadow-banner-label">SHADOW</span>
+        <span class="shadow-banner-sep">·</span>
+        <span class="shadow-banner-meta">payload logged · no execution</span>
+      </div>
+    {/if}
+
+    {#if replayStatus?.active}
+      <div class="replay-banner" role="status" aria-live="polite">
+        <span class="replay-banner-dot"></span>
+        <span class="replay-banner-label">REPLAY</span>
+        <span class="replay-banner-sep">·</span>
+        <span>tick {replayStatus.tick_index}/{replayStatus.total_ticks}</span>
+        {#if replayStatus.date_from && replayStatus.date_to}
+          <span class="replay-banner-sep">·</span>
+          <span>{replayStatus.date_from} → {replayStatus.date_to}</span>
+        {/if}
+        {#if replayStatus.interval}
+          <span class="replay-banner-sep">·</span>
+          <span>{replayStatus.interval}</span>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Glanceable position / holdings strip — pinned just under
          the navbar (and below SIM / PAPER banners when those are
@@ -1208,9 +1272,166 @@
     letter-spacing: 0.02em;
   }
 
-  /* Banner CSS retired with the mode-banner removal. The navbar
-     mode pill is the single mode indicator now. Operator: "remove
-     banner for every mode including shadow". */
+  /* ── Simulator banner — pinned under the nav when sim is active ──────────
+     Opaque background (solid over a tinted overlay) so page content
+     scrolling underneath never bleeds through. Compact padding so it
+     steals minimum vertical space. */
+  .sim-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.2rem 0.85rem;
+    background-color: #0a1020;   /* solid under the tint — prevents bleed */
+    background-image: linear-gradient(90deg,
+                      rgba(251,113,133,0.22) 0%,
+                      rgba(251,191,36,0.22) 100%);
+    border-top: 1px solid rgba(251,113,133,0.45);
+    border-bottom: 1px solid rgba(251,113,133,0.45);
+    color: #fecaca;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    position: sticky;
+    top: 3rem;                  /* sits just under the algo navbar (h-12) */
+    z-index: 49;
+    animation: sim-banner-pulse 2.2s ease-in-out infinite;
+  }
+  .sim-banner-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #fb7185;
+    box-shadow: 0 0 5px rgba(251,113,133,0.85);
+    flex-shrink: 0;
+  }
+  .sim-banner-label {
+    color: #fbbf24;
+    letter-spacing: 0.1em;
+    font-size: 0.6rem;
+    font-weight: 800;
+  }
+  .sim-banner-sep { color: rgba(251,191,36,0.5); }
+  .sim-banner-scenario { color: #fde68a; }
+  @keyframes sim-banner-pulse {
+    0%, 100% { box-shadow: inset 0 0 0 0 rgba(251,113,133,0);   }
+    50%      { box-shadow: inset 0 0 10px 0 rgba(251,113,133,0.30); }
+  }
+
+  /* Paper-trade banner — sky-blue palette so it visually distinct from
+     the red SIMULATOR banner. Stacks below it when both are active. */
+  .paper-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.2rem 0.85rem;
+    background-color: #0a1020;
+    background-image: linear-gradient(90deg,
+                      rgba(56,189,248,0.20) 0%,
+                      rgba(125,211,252,0.20) 100%);
+    border-top: 1px solid rgba(56,189,248,0.45);
+    border-bottom: 1px solid rgba(56,189,248,0.45);
+    color: #bae6fd;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    position: sticky;
+    top: 3rem;
+    /* Bumped 48 → 49 to match the sim-banner so the two banners
+       share a stacking context layer above .ps-strip. Below 49
+       the paper-banner was hidden by ps-strip when both pinned
+       at top:3rem (audit defect #5). */
+    z-index: 49;
+  }
+  .paper-banner-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #38bdf8;
+    box-shadow: 0 0 5px rgba(56,189,248,0.85);
+    flex-shrink: 0;
+  }
+  .paper-banner-label {
+    color: #7dd3fc;
+    letter-spacing: 0.1em;
+    font-size: 0.6rem;
+    font-weight: 800;
+  }
+  .paper-banner-sep  { color: rgba(125,211,252,0.5); }
+  .paper-banner-meta { color: #bae6fd; opacity: 0.8; }
+
+  /* ── SHADOW banner ────────────────────────────────────────────────
+     Orange palette. Always sticky when executionMode='shadow'.
+     Shadow logs the broker payload + validates margin without
+     executing — operator's pre-Live sanity-check mode. */
+  .shadow-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.22rem 0.85rem;
+    background-color: #0a1020;
+    background-image: linear-gradient(90deg,
+                      rgba(251,146,60,0.22) 0%,
+                      rgba(249,115,22,0.18) 100%);
+    border-top: 1px solid rgba(251,146,60,0.48);
+    border-bottom: 1px solid rgba(251,146,60,0.48);
+    color: #fed7aa;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    position: sticky;
+    top: 3rem;
+    z-index: 49;
+  }
+  .shadow-banner-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #fb923c;
+    box-shadow: 0 0 5px rgba(251,146,60,0.85);
+    flex-shrink: 0;
+  }
+  .shadow-banner-label {
+    color: #fb923c;
+    letter-spacing: 0.1em;
+    font-size: 0.6rem;
+    font-weight: 800;
+  }
+  .shadow-banner-sep  { color: rgba(251,146,60,0.5); }
+  .shadow-banner-meta { color: #fed7aa; opacity: 0.85; }
+
+  /* ── Replay banner ───────────────────────────────────────────────────── */
+  .replay-banner {
+    position: sticky;
+    top: 3rem;
+    /* Bumped 39 → 49 to share the banner layer with sim and paper
+       banners. Below 49 the replay banner sat behind the
+       page-header strip; audit defect #4. */
+    z-index: 49;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #4ade80;
+    background: rgba(22,101,52,0.25);
+    border-bottom: 1px solid rgba(74,222,128,0.2);
+  }
+  .replay-banner-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #4ade80;
+    animation: algo-mode-dot 2s ease-in-out infinite;
+  }
+  .replay-banner-label {
+    color: #4ade80;
+    letter-spacing: 0.1em;
+    font-size: 0.6rem;
+    font-weight: 800;
+  }
+  .replay-banner-sep { color: rgba(74,222,128,0.5); }
 
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
@@ -1222,10 +1443,12 @@
     color: #c8d8f0;
   }
   /* algo-content padding-top is always EXACTLY the page-header
-     strip height (1.8rem). The ps-strip is sticky-IN-FLOW so it
-     pushes .algo-content's natural top edge down — no need to
-     double-count it in padding-top. Only the page-header `top`
-     offset (rule below) needs to grow when the ps-strip is on. */
+     strip height (1.8rem). The other sticky strips (.ps-strip,
+     .sim-banner, .paper-banner) are sticky-IN-FLOW so they
+     already push .algo-content's natural top edge down — no
+     need to double-count them in padding-top. Only the page-
+     header `top` offset (rules below) needs to grow as more
+     strips appear. */
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
   .algo-footer {
@@ -1318,11 +1541,36 @@
     overflow: visible;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
   }
-  /* Strip-aware vertical offset — only the ps-strip
-     (PositionStrip, 1.5rem) can sit between the navbar and
-     .algo-content now that the mode banners are gone. */
+  /* Strip-aware vertical offset — four possible sticky strips can
+     sit between the navbar and .algo-content:
+       - .ps-strip      (PositionStrip, 1.5rem)
+       - .sim-banner    (1.65rem)
+       - .paper-banner  (1.65rem)
+       - .replay-banner (1.65rem) — added in audit pass; was
+         previously absent from this cascade so the page-header
+         overlay it during replay sessions.
+     Sim / paper / replay are operationally mutually-exclusive
+     (only one execution mode runs at a time) so combinations
+     beyond ps-strip + {one banner} are theoretical only — the
+     four "any-banner" rules cover what actually ships. */
   :global(.algo-viewport:has(.ps-strip) .page-header) {
     top: calc(3rem + 1.5rem);  /* 72px — flush with ps-strip's sticky bottom */
+  }
+  :global(.algo-viewport:has(.sim-banner) .page-header),
+  :global(.algo-viewport:has(.paper-banner) .page-header),
+  :global(.algo-viewport:has(.replay-banner) .page-header) {
+    top: calc(3rem + 1.65rem);  /* 74.4px — flush with banner sticky bottom */
+  }
+  :global(.algo-viewport:has(.ps-strip):has(.sim-banner) .page-header),
+  :global(.algo-viewport:has(.ps-strip):has(.paper-banner) .page-header),
+  :global(.algo-viewport:has(.ps-strip):has(.replay-banner) .page-header) {
+    top: calc(3rem + 1.5rem + 1.65rem);
+  }
+  :global(.algo-viewport:has(.sim-banner):has(.paper-banner) .page-header) {
+    top: calc(3rem + 3.3rem);
+  }
+  :global(.algo-viewport:has(.ps-strip):has(.sim-banner):has(.paper-banner) .page-header) {
+    top: calc(3rem + 1.5rem + 3.3rem);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
