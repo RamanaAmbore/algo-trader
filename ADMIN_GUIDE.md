@@ -371,6 +371,30 @@ This is the right move for "what-if" testing before you take a real trade — yo
 
 ---
 
+## Mode switching — single navbar dropdown
+
+**Execution mode is now set exclusively from the navbar dropdown** (top-right corner of every page). Every page shows a pill:
+
+| Mode | Navbar label | Colour | When to use |
+|---|---|---|---|
+| Simulator | SIM | rose | Fabricated price moves, full agent testing |
+| Paper | PAPER | sky-blue | Real quotes + paper engine, Kite margin validation |
+| Live | LIVE | red | Real broker orders (default on prod) |
+| Shadow | SHADOW | orange | Logs payload + margin validation, no execution |
+| Replay | REPLAY | green | Historical candles, backtesting |
+
+**Branch gate**: `main` (prod) allows any mode. Non-`main` (dev) forces PAPER regardless of dropdown selection.
+
+**Per-order mode toggle removed**: The OrderTicket `/orders` form no longer has a per-ticket mode selector. The navbar dropdown is the sole source of truth.
+
+**Confirm modal**: Switching from LIVE → PAPER or LIVE → SHADOW on prod fires a one-time confirm per session so the operator can't accidentally flip modes mid-trading.
+
+**Telegram tag**:
+- (no tag) = LIVE mode
+- `[PAPER]` = PAPER mode
+
+---
+
 ## Paper trading dashboard (`/admin/execution?mode=paper`)
 
 `/admin/execution?mode=paper` is the visual surface for what's actually happening in **mode 2** on prod — real Kite quotes feeding the paper trade engine. Same layout as the simulator page, but reading from the live engine instead of a sim driver.
@@ -388,6 +412,109 @@ You'll see:
 **When the page is most useful**: during the soak phase, after you've toggled into PAPER mode from the navbar and want to watch the chase against the live market without any order touching the broker. Every paper fire shows up here, and you can compare it to what the agent's `[PAPER]` Telegram alert said would happen. The seeded default on a fresh install is LIVE — flip to PAPER from the navbar (or `/admin/execution`) when you want to soak-test, then flip back to LIVE when you're ready for the real broker to take orders.
 
 ---
+
+## Multi-account basket orders — `/api/orders/basket`
+
+The **Orders** > **Ticket** tab now builds baskets where each leg can trade on a different account.
+
+### Workflow
+
+1. **Ticket tab** → fill Symbol / Qty / Side / Price / Type.
+2. **+ Basket** button → pills appear below, defaulting to all accounts.
+3. Per-pill, click the **Account dropdown** → pick which Kite account this leg uses.
+4. (Optional) **+ Add symbol** to add more legs.
+5. **Submit** → routes to `POST /api/orders/basket` (PAPER) or `POST /api/orders/basket/place` (LIVE).
+
+### Margin calculation
+
+**Margin strip** above the pills shows per-account:
+- **Required** — Kite's `basket_order_margins` verdict for all legs on this account
+- **Avail** — current available margin
+- **After** — available margin post-trade
+
+Computed per-account via `GET /api/orders/basket/margin` (PAPER + LIVE).
+
+### Backend routes
+
+| Route | Purpose |
+|---|---|
+| `GET /api/orders/basket/margin` | Validate margin for all legs across accounts; return per-account Required / Avail / After |
+| `POST /api/orders/basket` | PAPER mode: register each leg with PaperTradeEngine, return pill state |
+| `POST /api/orders/basket/place` | LIVE mode: place one `basket_order` per account via Kite |
+
+All legs inherit the navbar's `execution.paper_trading_mode` — they all go paper or live together.
+
+---
+
+## Auto profit target on every order
+
+The OrderTicket Entry form now carries a **Target** row with qty + price + side (automatically SET for auto-TP).
+
+### Defaults
+
+- **Default target %**: `algo.default_target_pct` in `/admin/settings` (ships at +30%)
+- **Override per-order**: operator can edit inline (% ↔ rupees toggle)
+
+### Backend wiring
+
+When an entry fill is confirmed:
+1. Backend calculates target price from entry fill + operator-specified `target_pct` / `target_rupees`
+2. Auto-places a LIMIT order (SELL for long, BUY for short) at the target price
+3. Both orders appear in Order Activity — entry is FILLED, target is OPEN
+
+The `algo.default_target_pct` setting applies only to new orders. Operator overrides on the ticket take precedence.
+
+---
+
+## Derivatives page redesign — `/admin/derivatives`
+
+Renamed from `/admin/options`. The **Close** tab now shows three sections with distinct visual treatment:
+
+### Section 1: ITM ON EXPIRY (amber pill)
+
+Positions that breach ITM threshold before expiry. NSE ITM = spot > call strike OR spot < put strike. MCX ITM = same rules but also considers NETTING (see below).
+
+**Rows** list account / symbol / qty / current P&L / spot vs strike. **Action**: broker delivers or operator closes manually before 15:30 IST (equity) / 23:30 IST (MCX).
+
+### Section 2: NETTED (slate pill, MCX only)
+
+**MCX commodity positions only.** When a CE/PE pair on the same underlying + expiry sums to zero qty, the broker auto-nets at settlement. These rows are informational — no operator action needed.
+
+**Visual grouping**: paired rows carry shared tint + numbered labels (N1, N2, etc.) so the operator can see "row A and row B form a pair."
+
+NSE equity options skip this section (no auto-netting rule at NSE).
+
+### Section 3: OUT OF THE MONEY (muted pill)
+
+Contracts that expire worthless. Informational; let them expire.
+
+### Candidates picker
+
+The **Underlying** dropdown now filters by the ones in your book. Picking an underlying loads every option + future on it as checkboxes. Add drafts with the `+` button (option-chain picker).
+
+### Pricing account setting
+
+`/admin/settings` → `connections.price_account` pins which Kite account the Greeks + margin + historical lookups use. Blank = auto-pick the first account.
+
+### Settings keys
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `algo.default_target_pct` | float | 30.0 | Default profit-target percentage on new orders |
+| `connections.price_account` | string | blank | Kite account to use for shared market data; blank = first available |
+
+---
+
+## Symbol identity — commodity root vs contract month
+
+Charts, Options/Derivatives pages, Watchlist, Positions, Orders all now display the **commodity root** (CRUDEOIL, GOLDM) as the primary identifier, with a small chip below showing the resolved **contract** (CRUDEOIL26JUNFUT).
+
+When ≤3 days until expiry, the contract chip flips **amber** so expiry dates are scannable at a glance.
+
+**Underlying anchor resolution** (auto-applied in Chart modals, Order modals):
+- `NIFTY 50` → `NIFTY26JUNFUT` (NSE)
+- `CRUDEOIL` → `CRUDEOILM26JUNFUT` (MCX)
+- equity symbol → `NSE:<SYMBOL>` for spot
 
 ## Options analytics (`/admin/derivatives`)
 

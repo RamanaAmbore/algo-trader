@@ -328,6 +328,10 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 `engine='sim'` + `mode='sim'` on the AlgoOrder row distinguish sim fills from real broker fills. The order-log Mode pill (SIM / PAPER / LIVE / SHADOW) makes it visual.
 
+### Profit target (TP) auto-attach
+
+When an agent fires `place_order`, the order's fill automatically attaches a profit-target order on the flip side. SELL order fills → auto-SELL TP at `fill_price × (1 + target_pct)`. Ratio set by `algo.default_target_pct` (default 0.30 = 30% above entry). Idempotent via `parent_order_id` guard — fill triggers once, TP attaches once, no retrigger on tick bump. Works in paper, live, and sim modes. OrderTicket Target row (% / ₹ toggle) seeds from the default at order-entry time.
+
 ---
 
 ## Common patterns — copy-paste starting points

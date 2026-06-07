@@ -215,6 +215,18 @@ You see this as a yellow `stale: <source>` chip on the pricing block, and a `·s
 
 ---
 
+## Mode switching — one navbar dropdown, no ticket overrides
+
+Mode is now set **only** from the navbar dropdown in the top-right corner. Every page shows a pill: **LIVE** (red, the default on prod), **PAPER** (sky-blue), **SHADOW** (orange), **SIM** (rose), or **REPLAY** (green). Click it → pick a mode. The switch takes effect immediately; the next agent fire routes through the new mode.
+
+- On prod (`main`), you can flip between LIVE ↔ PAPER at will. A confirm modal asks once per switch from LIVE to ensure it's intentional.
+- On dev (non-main branches), every action is forced to PAPER regardless of the dropdown. LIVE is greyed out.
+- Telegram alerts carry the mode tag: (no tag) = LIVE, `[PAPER]` = paper mode.
+
+The order ticket used to carry a per-order mode toggle. That's gone — the navbar pill is the sole source of truth. Simpler mental model, fewer mistakes.
+
+---
+
 ## Paper trading dashboard — `/admin/execution?mode=paper`
 
 The visual surface for what mode 2 is doing on prod. Same layout as the simulator but reading from the live paper engine. You'll see:
@@ -222,9 +234,57 @@ The visual surface for what mode 2 is doing on prod. Same layout as the simulato
 - **Status banner** — green when there are open paper chases, amber when idle, grey on dev (paper only runs on `main`)
 - **Open chase pills** — one per in-flight order with side / qty / current limit / attempt count
 - **Mini charts** — per symbol with markers
-- **Activity log panel** with the canonical 6-tab strip (Orders · Agents · Terminal · Ticks · System · News) — same component every other surface mounts so muscle memory carries
+- **Activity log panel** auto-filtered to PAPER mode only — Order tab shows `mode='paper'` rows; Agents / Terminal / Ticks / System / News tabs surface only mode-2 events
 
-The most useful page during the soak phase: when you've flipped one `execution.live.<action>` to true and want to watch the chase against the live market without an order touching the broker.
+The most useful page during the soak phase: when you've flipped the navbar to PAPER and want to watch the chase against the live market without an order touching the broker.
+
+---
+
+## Multi-account basket orders — one submit, parallel execution
+
+Open `/orders` → **Ticket** tab. The entry form now has a basket-building workflow:
+
+1. Fill a symbol / qty / side / price / type as normal.
+2. Click **+ Basket** — the order pills appear below, one per account.
+3. On each pill, click the account dropdown to pick which Kite account this leg trades on.
+4. (Optional) add more symbols by clicking **+ Add symbol** and repeating steps 1–3.
+5. Click **Submit** → one Kite `basket_order` call per account fires in parallel.
+
+You see a margin strip above the pills: Required / Avail / After (post-trade) for each account. Offset-aware via Kite's `kite.basket_order_margins` API. All legs go live or paper together — the navbar mode applies to the whole basket.
+
+Submit fails (400) with a clear message if any account has insufficient margin. Edit the basket and retry.
+
+---
+
+## Auto profit target on every order
+
+Every order on the Entry card has a new **Target** row. Default: **+30%** from the entry price (tunable at `/admin/settings` → `algo.default_target_pct`). The input toggles between % and rupees.
+
+When you submit (PAPER or LIVE), the backend auto-places a take-profit order after the entry fills. You see both orders in the Order Activity panel — the entry as OPEN, FILLED, or UNFILLED; the target as a separate LIMIT order set to close at the TP price.
+
+Use `/admin/settings` to change the default, or override per-order inline on the ticket.
+
+---
+
+## Derivatives page — 3-band Close layout
+
+`/admin/options` has been renamed to `/admin/derivatives`. The **Close** tab now surfaces three distinct buckets:
+
+| Section | What | When to act |
+|---|---|---|
+| **● ITM ON EXPIRY** (amber) | Positions that need broker action before expiry | Always before market close on expiry day |
+| **⊗ NETTED** (slate) | Positions that cancel at settlement — CE/PE pairs net to zero (MCX commodity only) | Monitor only; broker auto-nets at settlement |
+| **○ OUT OF THE MONEY** (muted) | Expires worthless | Monitor only; let them expire |
+
+Netted pairs on MCX carry shared colors (N1 / N2 / … labels) — a teal row and a pink row with the same number are a pair that cancels. NSE equity options skip the NETTED section (exchange has no netting rule).
+
+---
+
+## Symbol identity — commodity root vs contract
+
+In the Chart workspace (`/charts`), Derivatives Candidates grid, Watchlist, Positions, and Orders, symbols now show their **commodity root** as the primary label. A small chip below shows the resolved **contract month** (e.g. CRUDEOIL → `CRUDEOIL26JUNFUT`).
+
+When a contract has ≤3 days until expiry, the contract chip flips amber so you see expiry-day expirations at a glance. You trade the specific contract (the chip); the root commodity (the label) keeps related contracts grouped.
 
 ---
 

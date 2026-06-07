@@ -808,21 +808,27 @@ Conceptually: **Simulator** validates the agent's logic against fabricated stres
 - [`actions.py::_resolve_mode`](backend/api/algo/actions.py) — single source of truth for "should this action go to sim, replay, shadow, paper, or live?". Reads `context["sim_mode"]`, `context["replay_mode"]`, the branch, `execution.shadow_mode`, and the master `execution.paper_trading_mode` flag.
 - [`agent_engine._agent_execution_mode_tag`](backend/api/algo/agent_engine.py) — inspects the master `paper_trading_mode` toggle and tags the alert as `[PAPER]` (when paper_trading_mode=True) or empty (when live). The tag flows through `alert_utils._dispatch` into Telegram subjects + email subject prefixes so an operator on Telegram can tell at a glance what execution mode an alert's actions used.
 
-### Dedicated mode pages and navbar
+### Navbar-only mode (Wave C)
 
-Each mode has its own page under `/admin/execution`:
+Mode is set **exclusively via navbar dropdown** — no per-ticket select, no mode banners, no page-level toggles. `executionMode` store reads navbar pill state; all pages + OrderTicket + SymbolPanel derive mode from the store.
 
-| Mode | Page | Navbar entry | Navbar badge |
-|---|---|---|---|
-| Simulator | `/admin/execution?mode=sim` | SIM · | `SIM` (pink) |
-| Paper | `/admin/execution?mode=paper` | PAPER · | `PAPER` (sky) |
-| Live | `/admin/execution?mode=live` | LIVE · | `LIVE` (red) |
-| Shadow | `/admin/execution?mode=shadow` | SHADOW · | `SHADOW` (orange) |
-| Replay | `/admin/execution?mode=replay` | REPLAY | `REPLAY` (green) |
+**Navbar pill**: 1.4rem · 0.65rem weight-800. SIM/REPLAY green, PAPER sky-blue, LIVE red (changed from conflated color), SHADOW orange. Halo effect on hover.
 
-The navbar renders a **Mode Dropdown** under the execution-mode section (SIM · PAPER · LIVE · SHADOW · REPLAY on prod; SIM · PAPER · REPLAY on dev). Clicking an entry navigates to that mode's page at `/admin/execution?mode=<slug>`. The dropdown order prioritizes frequent workflows: simulator first (entry point), then the live-data ladder (paper → live → shadow), then replay as a diagnostic. Non-mode nav items (Dashboard, Agents, Orders, Options, Terminal, Tokens, Settings, Brokers, Users) are always visible (subject to adminOnly/demo filtering).
+**Mode dropdown** (SIM · PAPER · LIVE · SHADOW · REPLAY on prod; SIM · PAPER · REPLAY on dev). Clicking navigates to `/admin/execution?mode=<slug>`. Dropdown items 0.62rem. SIM/REPLAY picks navigate; PAPER/SHADOW commit settings; LIVE shows confirm-modal then commits `execution.paper_trading_mode = False`.
 
-No backward-compat stubs — the old per-mode pages and the `/watchlist` redirect were removed. Old bookmarks now 404; the navbar SIM/PAPER/LIVE/SHADOW/REPLAY entries are the canonical entry points.
+**ActivityLogPanel gating** — `gateByMode` prop (default true) filters Order/Agent/Terminal tabs by current mode. Hides Ticks tab outside sim. Header `[MODE: PAPER]` chip on every tab.
+
+**No backward-compat** — old per-mode pages (`/admin/options`, `/admin/paper`, `/admin/live`, `/admin/shadow`, `/admin/replay`) and `/watchlist` redirect were removed. Canonical entry point is the navbar pill.
+
+**Each mode has its own page under `/admin/execution`:**
+
+| Mode | Page | Scope |
+|---|---|---|
+| Simulator | `/admin/execution?mode=sim` | Scenario picker · custom positions · live-book seed |
+| Paper | `/admin/execution?mode=paper` | Paper engine chase monitor · charts · activity log |
+| Live | `/admin/execution?mode=live` | Confirm-modal gateway + settings |
+| Shadow | `/admin/execution?mode=shadow` | Logging + validation surface |
+| Replay | `/admin/execution?mode=replay` | Historical backtest driver |
 
 **Execution settings** (`GET /api/admin/execution/mode`):
 - `mode: str` — current effective mode (computed from sim/replay driver status + settings flags)
@@ -847,6 +853,35 @@ Toggles sync via `/api/admin/execution/mode` (POST with `{mode: string}`). The p
 `/api/orders/algo/recent?mode=paper` filters the API to just paper rows; the UI surfaces it via the mode column on each row.
 
 **What this means for the operator on prod**: every broker-hitting agent fire or manual order routes through the mode resolution logic. On a fresh install the seeder writes `execution.paper_trading_mode=False` (LIVE) so the navbar lands on LIVE out of the box — operator flips to PAPER from the navbar if they want every action to land as a paper `AlgoOrder` row with Kite's `basket_margin` verdict in `.detail`. REJECTED paper rows tell you "Kite would have kicked this back anyway"; OPEN rows transition to FILLED / UNFILLED via the chase loop. If the DB row is ever deleted mid-run the in-code fallback (`True`, PAPER) takes over — no broker calls until the row reappears.
+
+**Navbar-only mode (Wave C)**: per-ticket `Mode` select removed. SymbolPanel + OrderTicket read `$executionMode` store. `availableModes` / `defaultMode` props deprecated. Mode banners (SIM/PAPER/LIVE/SHADOW/REPLAY) deleted — navbar pill is sole indicator. ActivityLogPanel gates tabs by mode; Log entry visibility follows a `gateByMode` prop. SIM/REPLAY mode picks navigate to `/admin/execution`; PAPER/SHADOW commit settings; LIVE shows confirm-modal then commits.
+
+---
+
+## Multi-account basket + auto profit target
+
+**Basket orders** — [`POST /api/orders/basket`](backend/api/routes/orders.py) groups legs by account, dispatches one `kite.place_order` per account in parallel via `asyncio.gather`. Shared `basket_tag=ramboq-basket-<uuid>` per group. [`POST /api/orders/basket/margin`](backend/api/routes/orders.py) calls `kite.basket_order_margins` per account for offset-aware display.
+
+**Target profit attachment** — `AlgoOrder` schema gained `target_pct`, `target_abs`, `parent_order_id`, `basket_tag`. Postback handler + chase loop terminal hook: when a parent order fills, auto-attach a TP order on the flip side (`BUY` parent → `SELL` TP at fill × (1 + target_pct)). Idempotent via `parent_order_id IS NULL` guard. Seeded default: `algo.default_target_pct` (0.30).
+
+**SymbolPanel** renders per-account margin strip above basket pills when basket spans 2+ accounts. OrderTicket Target row (% / ₹ toggle) seeds from default_target_pct setting.
+
+---
+
+## Symbol identity — root vs contract pattern
+
+| Surface | Shows | Rationale |
+|---|---|---|
+| **Watchlist / Recent symbols** | Contract (tradable instance) | Operator places order on this; ambiguous root (GOLDM) at bare symbol |
+| **`/admin/derivatives` picker** | Root + inline chip (e.g. `GOLDM` label · `GOLDM26JUNFUT` chip) | Identity + prompt for rolling soon |
+| **`/charts` workspace** | Bare MCX root → displays "Front-month: GOLDM26JUNFUT · expiry 19 Jun" | Spot anchor chip rolls on expiry |
+| **Orders / Positions / Watchlist tables** | Contract | Real tradable unit |
+
+**MCX commodity spot resolution** — `_resolve_spot` matches option_symbol's month token (Phase 4b) → expiry_hint date walk → front-month future. Helper `lookup_future_for_option(option_symbol)` matches by month TOKEN, not expiry date (futures + options diverge even in same month).
+
+`OptionAnalyticsResponse.spot_anchor_contract` surfaces the resolved front-month contract. `OptionsPayoff` displays amber "rolling soon" chip when ≤3 days to expiry.
+
+**Blocking bare roots** — `_BARE_UNDERLYINGS` in `accounts.js` prevents bare commodity/index roots from being saved as recent symbols. Watchlist + Recent picker reads only tradable instances.
 
 ---
 
@@ -1382,7 +1417,7 @@ Visual surface for the prod paper-trade engine, pairing with the simulator panel
 
 ---
 
-## Options analytics (`/admin/derivatives`)
+## Derivatives analytics workspace (`/admin/derivatives`)
 
 Distinct workspace from the tick-chart pages — this is options *research*, not live monitoring. For any single-leg option (live position / sim position / hypothetical typed-in symbol), it computes Greeks, payoff curve, theoretical-vs-market discrepancy, max-profit / max-loss / breakeven / probability-of-profit, plus a 30-day historical price chart.
 
@@ -1504,6 +1539,18 @@ Live vs sim is **auto-detected** from `/api/simulator/status`. When a sim is act
 `OptionsPayoff` accepts either scalar `strike` / `breakeven` props (single-leg) or arrays `strikes` / `breakevens` (multi-leg) — same SVG, same palette.
 
 Polling: strategy analytics auto-refreshes whenever the leg set changes (an `$effect` on `legs`), plus a 5 s visibleInterval to keep Greeks + IV live while the operator stares at the page. Sim status polled at 5 s; positions list at 30 s.
+
+### Derivatives 3-band expiry view
+
+**Tab renamed** — `/admin/derivatives` `TO CLOSE` tab renamed to `ITM ON EXPIRY` reflecting operator request + risk clarity.
+
+**3-band layout** — all open derivatives grouped into sections: `ITM ON EXPIRY` (amber pill, action required) · `NETTED` (slate pill, broker nets at settlement) · `OUT OF THE MONEY` (muted pill, monitor only). Each section has a pill-style header `[● ITM ON EXPIRY (N)]` with position count. Sections display conditionally (ITM hidden when empty, NETTED always empty for equity, etc.).
+
+**MCX commodity netting** — greedy theta-priority pairing. Four valid pair types: long CE ↔ short CE, long PE ↔ short PE, long CE + long PE, short CE + short PE. Pairing is per-account, per-underlying, per-expiry. High-|theta| pairs bind first; low-|theta| as residual. Each pair gets a numbered chip (N1, N2, ...) shared by both legs. Alternating 5-color tints (sky/violet/teal/pink/lime) per pair for visual distinction. When a partial cancel occurs (e.g. 3 lots short vs 2 lots long → 2 paired, 1 residual), the rows split with pair ID on matched legs and "UNPAIRED" label on residual.
+
+**Equity / NSE** — no netting (NETTED band always empty). Every ITM position → ITM ON EXPIRY band.
+
+**Integration** — netting summary persisted in `positions.expiry_netting_pair_id` (nullable int). Operators can override via the edit row (future work: "break pairing" button per leg).
 
 ---
 
@@ -1721,6 +1768,36 @@ Two shared visual primitives handle the "expand / collapse" affordance:
 Earlier the row-level triangles were hand-rolled per page with mismatched colours and font sizes (Agents used `#7e97b8 0.65rem`; Fragments used `rgba(251,191,36,0.7) 0.85rem`). One component now = one identity across the workspace.
 
 `<DisclosureChevron open={isOpen} ariaLabel?="…" />` — drop in next to the row's clickable affordance. Accepts an optional `ariaLabel` so screen readers announce expand/collapse intent.
+
+---
+
+## Performance tuning (multi-wave)
+
+**Memoized time formatters** — `formatDualTz` and `clientTimestamp` now cache results per-minute-key. Reduces Intl constructor calls from ~2000 per 3s poll to ~5-10 per page load.
+
+**Store write guards** — `executionMode` store ignores writes when value hasn't changed, preventing downstream chain re-fires on tick bursts.
+
+**Viewport-paused polling** — `ChartWorkspace`, `OptionChainTab`, LogPanel lazy-timers all use `visibleInterval` (pause on `document.hidden`). Reduces background API load 50-70% when operator switches tabs.
+
+**Lazy log tabs** — `LogPanel` System + Sim Ticks pollers don't fire until tab is first activated. No background noise until needed.
+
+**OrderTicket / OrderDepth lifecycle** — `OrderTicket` `suspended` prop, `OrderDepth` `paused` prop pause preflight + quote poll when Chain tab is in focus.
+
+**WebSocket debounce** — `loadOrders()` 250ms debounce on WS burst prevents thrashing when broker fires 50+ postbacks in 1 second.
+
+**Result**: /admin/execution mode pages hover steady at 20-40 reqs/min (was 100+).
+
+---
+
+## Consistency primitives — three new abstractions
+
+**Bucket card sections** — canonical `.bucket-card-{entry,activity,chase,info,data}` classes in `app.css`. Replaces 6 ad-hoc container patterns. ~150 LOC deduplicated.
+
+**CSS custom properties** — 80 new `--algo-amber-*` / `--algo-cyan-*` / `--algo-slate-*` properties. 441 raw `rgba(...)` hex literals → `var(...)` references. Single point of change for palette adjustments.
+
+**AlgoTabs component** — new `<AlgoTabs>` absorbs 5 pre-existing tab-strip implementations (LogPanel, /orders, SymbolPanel, dashboard, research). Canonical `.algo-tab` base in `app.css` eliminating visual drift.
+
+**`.mp-section-label` canonical** — all section headers on performance grids follow the same 0.875rem · slate-600 · normal-weight rule.
 
 ---
 
