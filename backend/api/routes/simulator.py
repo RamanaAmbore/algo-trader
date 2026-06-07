@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Optional
 
 import msgspec
-from litestar import Controller, Request, get, post
+from litestar import Controller, Request, delete, get, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import delete as sql_delete, desc, select
 
@@ -448,6 +448,64 @@ class SimulatorController(Controller):
             return {"ok": True, "sim": drv.snapshot()}
         except SimGuardError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    # ── Sim GTT book — template-driven TP/SL triggers ─────────────────
+    #
+    # In production, an OrderTicket template submit places GTTs via the
+    # broker. In sim, those GTTs are tracked in SimDriver._gtt_book; a
+    # per-tick price-crossing check fires the leg through PaperTradeEngine
+    # exactly like a real broker trigger would. These routes let the
+    # frontend (and integration tests) place / cancel / list sim GTTs
+    # without going through the full OrderTicket flow.
+
+    @get("/gtt")
+    async def list_sim_gtts(self) -> list[dict]:
+        """All GTTs in the current sim's book (any state). Empty list
+        when the sim is stopped (the book reset()s on every start())."""
+        try:
+            return get_driver().list_sim_gtts()
+        except SimGuardError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @post("/gtt")
+    async def place_sim_gtt(self, data: dict) -> dict:
+        """Place a new GTT in the active sim's book. The trigger fires
+        on the next price-crossing of any `trigger_values` entry.
+
+        Required: account, tradingsymbol, exchange, trigger_type
+        ("single" | "two-leg"), trigger_values (list[float]), orders
+        (list[dict] of leg parameters), last_price (reference price at
+        place time).
+
+        Optional: pair_with (sibling GTT id — for Groww OCO emulation),
+        template_id, parent_order_id, tag.
+        """
+        try:
+            return get_driver().place_sim_gtt(
+                account=str(data["account"]),
+                tradingsymbol=str(data["tradingsymbol"]),
+                exchange=str(data["exchange"]),
+                trigger_type=str(data["trigger_type"]),
+                trigger_values=[float(v) for v in data["trigger_values"]],
+                orders=list(data["orders"]),
+                last_price=float(data["last_price"]),
+                pair_with=data.get("pair_with"),
+                template_id=data.get("template_id"),
+                parent_order_id=data.get("parent_order_id"),
+                tag=data.get("tag"),
+            )
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=f"invalid GTT payload: {e}")
+
+    @delete("/gtt/{gtt_id:str}", status_code=200)
+    async def cancel_sim_gtt(self, gtt_id: str) -> dict:
+        gtt = get_driver().cancel_sim_gtt(gtt_id, reason="operator")
+        if gtt is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"sim GTT {gtt_id!r} not found or already terminal",
+            )
+        return gtt
 
     @post("/clear")
     async def clear_sim_rows(self) -> dict:

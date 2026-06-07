@@ -548,6 +548,15 @@ class SimDriver:
             on_event=self._forward_chase_event,
         )
 
+        # GTT book — tracks template-driven take-profit / stop-loss
+        # triggers. Per-tick crossing check fires the matched leg
+        # through the same PaperTradeEngine above. Reset on every
+        # start() so a new run begins clean. The trigger handler
+        # closes over `self` so it can read positions + dispatch
+        # follow-on orders without round-tripping through globals.
+        from backend.api.algo.sim.gtt_book import SimGttBook
+        self._gtt_book = SimGttBook(on_trigger=self._on_gtt_trigger)
+
     @classmethod
     def instance(cls) -> "SimDriver":
         if cls._instance is None:
@@ -661,6 +670,10 @@ class SimDriver:
             "inputs":                  list(self.inputs),
             # Account scope for the run. Empty = all loaded accounts.
             "accounts":                list(self.accounts),
+            # GTT book snapshot — counts + per-GTT detail so the
+            # Simulator page can render placed / triggered / cancelled
+            # GTTs as a strip alongside the positions pills.
+            "gtt_book":                self._gtt_book.snapshot(),
         }
 
     def _summary_rows(self, kind: str) -> list[dict]:
@@ -837,6 +850,8 @@ class SimDriver:
         self.started_at     = datetime.now()
         self.only_agent_ids = list(only_agent_ids) if only_agent_ids else None
         self._paper.reset()
+        # Wipe the GTT book — a fresh sim run starts with no triggers.
+        self._gtt_book.reset()
 
         # Reset the rate-history bucket so consecutive sim runs don't
         # inherit stale samples — the rate evaluator otherwise sees
@@ -1595,6 +1610,12 @@ class SimDriver:
         # the chase step so a fill that removes the row from `_positions_rows`
         # still leaves its last LTP in the history.
         self._capture_price_history()
+        # Check every active GTT for trigger crossing against the
+        # newly-updated LTPs. Crossings fire through _on_gtt_trigger,
+        # which dispatches the matched leg into the same paper engine
+        # the chase step uses below — so a trigger placed THIS tick
+        # rides the very next chase iteration without an extra delay.
+        self._check_sim_gtts()
         # Run the chase engine against the new bid/ask state: fill any
         # orders whose limit crossed, otherwise re-quote them one step
         # closer to the opposite side.
@@ -2255,6 +2276,86 @@ class SimDriver:
             if close:
                 row["day_change"]            = lp - close
                 row["day_change_percentage"] = (lp - close) / close
+
+    # ── Sim GTT book — template-driven TP / SL triggers ───────────────
+
+    def place_sim_gtt(self, **kwargs) -> dict:
+        """Thin facade over SimGttBook.place — exposed at the SimDriver
+        level so route handlers + the OrderTicket fan-out path don't
+        need to reach into the book directly. Returns the new GTT as
+        a dict (matches the wire shape /api/simulator/gtt/* returns)."""
+        gtt = self._gtt_book.place(**kwargs)
+        return gtt.to_dict()
+
+    def cancel_sim_gtt(self, gtt_id: str, reason: str = "operator") -> dict | None:
+        gtt = self._gtt_book.cancel(gtt_id, reason=reason)
+        return gtt.to_dict() if gtt else None
+
+    def list_sim_gtts(self) -> list[dict]:
+        return [g.to_dict() for g in self._gtt_book.all_()]
+
+    def _check_sim_gtts(self) -> None:
+        """Build the per-tick LTP map and ask the book which GTTs
+        crossed. Called from `_apply_next_tick` AFTER positions
+        re-price but BEFORE the chase loop steps, so a newly-triggered
+        leg enters chase immediately on the same tick."""
+        if not self._gtt_book.all_active():
+            return
+        ltp_by_symbol: dict[tuple[str, str], float] = {}
+        for row in self._positions_rows:
+            acct = str(row.get("account") or "")
+            sym  = str(row.get("tradingsymbol") or "")
+            ltp  = row.get("last_price")
+            if not sym or ltp is None:
+                continue
+            ltp_by_symbol[(acct, sym)] = float(ltp)
+        self._gtt_book.check_triggers(ltp_by_symbol)
+
+    def _on_gtt_trigger(self, gtt, leg_index: int) -> None:
+        """SimGttBook.on_trigger callback — dispatch the matched leg
+        through PaperTradeEngine. The leg dict carries Kite-shape
+        order fields (transaction_type, quantity, price, order_type,
+        product). We wrap it into the AlgoOrder shape `register_open_order`
+        expects + persist a sim AlgoOrder row so the rest of the
+        engine surface (UnifiedLog, chase pills, agents) sees it.
+
+        Errors are logged but never re-raised — a failed dispatch
+        leaves the GTT in 'triggered' status without an associated
+        chase order; the operator can re-fire from the UI by placing
+        a fresh order manually. The book deliberately doesn't
+        re-arm the GTT after a failed dispatch — we don't want a
+        partial fill to silently loop a trigger.
+        """
+        leg = gtt.orders[leg_index]
+        from datetime import datetime as _dt, timezone as _tz
+        # Compose an AlgoOrder dict matching the existing `_sim_paper_trade`
+        # writer's shape. The PaperTradeEngine picks up the chase from here.
+        order_dict = {
+            "account":          gtt.account,
+            "symbol":           gtt.tradingsymbol,
+            "exchange":         gtt.exchange,
+            "transaction_type": str(leg.get("transaction_type") or "BUY"),
+            "quantity":         int(leg.get("quantity") or 0),
+            "initial_price":    float(leg.get("price") or gtt.last_seen_ltp or 0.0),
+            "status":           "OPEN",
+            "mode":             "sim",
+            "engine":           "sim",
+            "detail":           (
+                f"[SIM-GTT] {gtt.gtt_id} → {leg.get('transaction_type')} "
+                f"{leg.get('quantity')} {gtt.tradingsymbol} @ ₹"
+                f"{float(leg.get('price') or gtt.last_seen_ltp):.2f}"
+                + (f" (template #{gtt.template_id})" if gtt.template_id else "")
+            ),
+            "created_at":       _dt.now(_tz.utc),
+            "attempts":         0,
+            "broker_order_id":  gtt.gtt_id,
+        }
+        try:
+            self._paper.register_open_order(order_dict)
+        except Exception as e:
+            logger.error(
+                f"[SIM-GTT] dispatch failed for {gtt.gtt_id} leg={leg_index}: {e}"
+            )
 
     # ── Paper-trade chase engine (delegated to PaperTradeEngine) ─────
 
