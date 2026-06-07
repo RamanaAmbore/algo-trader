@@ -209,6 +209,53 @@ class GrammarTokenPatch(msgspec.Struct):
 
 
 # ---------------------------------------------------------------------------
+# OrderTemplate — TP/SL/Wing exit-rule preset attached at order entry
+# ---------------------------------------------------------------------------
+
+class OrderTemplateOut(msgspec.Struct):
+    id:                  int
+    slug:                str | None = None
+    name:                str = ""
+    description:         str = ""
+    applies_to:          str = "both"
+    tp_pct:              float | None = None
+    sl_pct:              float | None = None
+    wing_premium_pct:    float | None = None
+    wing_strike_offset:  int | None = None
+    is_default:          bool = False
+    is_system:           bool = False
+    is_active:           bool = True
+
+
+class OrderTemplateCreate(msgspec.Struct):
+    name:                str
+    description:         str = ""
+    applies_to:          str = "both"      # 'buy_any' / 'sell_option' / 'both'
+    tp_pct:              float | None = None
+    sl_pct:              float | None = None
+    wing_premium_pct:    float | None = None
+    wing_strike_offset:  int | None = None
+    is_default:          bool = False
+    is_active:           bool = True
+
+
+class OrderTemplatePatch(msgspec.Struct):
+    # All optional — only fields the caller sets are mutated. System
+    # templates accept these same field edits (operator tunes the
+    # numeric defaults from the UI); only `is_system` itself + delete
+    # are off-limits.
+    name:                str | None = None
+    description:         str | None = None
+    applies_to:          str | None = None
+    tp_pct:              float | None = None
+    sl_pct:              float | None = None
+    wing_premium_pct:    float | None = None
+    wing_strike_offset:  int | None = None
+    is_default:          bool | None = None
+    is_active:           bool | None = None
+
+
+# ---------------------------------------------------------------------------
 # Post / Insights
 # ---------------------------------------------------------------------------
 

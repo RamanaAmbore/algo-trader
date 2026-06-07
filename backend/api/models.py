@@ -744,6 +744,77 @@ class AgentFragment(Base):
 
 
 # ---------------------------------------------------------------------------
+# Order templates — exit-rule presets attached at OrderTicket submit time.
+#
+# An OrderTemplate carries the TP / SL / Wing config the operator wants
+# applied to every order using it. At submit:
+#   - the entry order goes to the broker
+#   - the template's TP / SL translate to a broker-native GTT
+#   - the template's Wing (SELL options only) becomes a paired basket leg
+#
+# The model is intentionally flat (one row per template) because templates
+# are a closed vocabulary — TP%, SL%, Wing%. Future fields (trailing-stop
+# rules, time-based exits) join as nullable columns.
+#
+# Industry analogue: NinjaTrader ATM Strategy template. Operator picks one
+# from a dropdown at order entry; saved templates are reusable + bulk-editable.
+# ---------------------------------------------------------------------------
+
+class OrderTemplate(Base):
+    __tablename__ = "order_templates"
+
+    id: Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    # Stable identifier — system templates use a short slug ("default-bull").
+    # Operator templates leave slug NULL and use `name` as the visible label.
+    slug: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
+    name: Mapped[str]          = mapped_column(String(128), nullable=False)
+    description: Mapped[str]   = mapped_column(Text, nullable=False, default="")
+    # 'buy_any'      — applies to BUY orders (any instrument)
+    # 'sell_option'  — applies to SELL option orders (CE / PE)
+    # 'both'         — applies to any order side
+    applies_to: Mapped[str]    = mapped_column(String(16), nullable=False, default="both")
+    # TP/SL/Wing — nullable so a "no TP, just SL" template is expressible.
+    # Values are signed percentages: +30.0 means tp at fill*1.30, -20.0
+    # means sl at fill*0.80.
+    tp_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
+    sl_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
+    # Two alternative ways to size a protective wing: by % of the SELL
+    # premium (e.g. 10.0 → buy a wing whose premium is ~10% of the short
+    # leg's premium) OR by strike offset (e.g. 500 → buy a wing at strike
+    # +500 for CE, -500 for PE). One of the two; never both.
+    wing_premium_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
+    wing_strike_offset: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    # Marks the operator's default pick — surfaced in OrderTicket as the
+    # pre-selected option. Only one default per applies_to scope; the
+    # seeder enforces a single is_default=True row for each scope.
+    is_default: Mapped[bool]  = mapped_column(Boolean, nullable=False, default=False)
+    # System templates ship from code on every boot. Operators can edit
+    # values (tp_pct / sl_pct / wing_*) but cannot delete them — same
+    # contract as AgentFragment system rows.
+    is_system: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=True)
+    # NULL for system templates (no owner). Operator-created templates
+    # carry their owner so /api/admin/templates filters per-user when
+    # the route layer cares.
+    owner_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint('owner_user_id', 'name', name='uq_order_template_per_owner'),
+    )
+
+
+# ---------------------------------------------------------------------------
 # News headlines — accumulated throughout the day, truncated at 07:00 IST
 # ---------------------------------------------------------------------------
 

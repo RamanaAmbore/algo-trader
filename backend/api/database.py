@@ -298,6 +298,12 @@ async def init_db() -> None:
     from backend.shared.helpers.settings import seed_settings
     await seed_settings()
 
+    # Seed system OrderTemplate rows (Default Bull / Default Bear /
+    # Default Short Vol / None). Refreshes mutable metadata on
+    # existing rows; preserves the operator's tuned numeric values.
+    from backend.api.algo.templates_seed import seed_templates
+    await seed_templates()
+
     # Seed the single shared 'Pinned' watchlist + migrate any per-user
     # Pinned/Default rows into it. Idempotent.
     from backend.api.routes.watchlist import seed_global_pinned

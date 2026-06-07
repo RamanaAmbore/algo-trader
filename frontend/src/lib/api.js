@@ -296,6 +296,19 @@ export const deleteAgentFragment = (id) =>
   _del(`/admin/fragments/${id}`, { auth: true });
 export const reloadFragments     = () => _post('/admin/fragments/reload', {}, { auth: true });
 
+// ── Order templates — TP/SL/Wing exit-rule presets attached at OrderTicket
+// submit time. System rows are toggle + tune; custom rows full CRUD.
+export const fetchOrderTemplates = () =>
+  _get('/admin/templates/', { auth: true });
+export const fetchOrderTemplate  = (id) =>
+  _get(`/admin/templates/${id}`, { auth: true });
+export const createOrderTemplate = (payload) =>
+  _post('/admin/templates/', payload, { auth: true });
+export const patchOrderTemplate  = (id, payload) =>
+  _patch(`/admin/templates/${id}`, payload, { auth: true });
+export const deleteOrderTemplate = (id) =>
+  _del(`/admin/templates/${id}`, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const updateSetting     = (key, value) =>

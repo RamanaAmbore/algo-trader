@@ -40,6 +40,7 @@ from backend.api.routes.market import MarketController
 from backend.api.routes.news import NewsController
 from backend.api.routes.grammar import GrammarTokenController
 from backend.api.routes.fragments import AgentFragmentController
+from backend.api.routes.templates import OrderTemplateController
 from backend.api.routes.instruments import InstrumentsController
 from backend.api.routes.orders import AccountsController, OrdersController
 from backend.api.routes.quote import QuoteController, SparklineController
@@ -180,6 +181,7 @@ _route_handlers = [
     NewsController,
     GrammarTokenController,
     AgentFragmentController,
+    OrderTemplateController,
     OrdersController,
     AccountsController,
     InstrumentsController,
