@@ -273,14 +273,22 @@
     if (allowedModes.length === 0) {
       // Fallback so the chip is selectable even when the API is unreachable.
       allowedModes = paperStatus?.branch === 'main'
-        ? ['paper', 'shadow', 'live']
-        : ['sim', 'replay', 'paper'];
+        ? ['paper', 'live', 'shadow', 'sim', 'replay']
+        : ['paper', 'sim', 'replay'];
     }
   }
 
   async function pickMode(/** @type {string} */ mode) {
     modeOpen  = false;
     modeError = '';
+    // SIM + REPLAY aren't settings toggles — they need a driver to
+    // be started. Navigate to the dedicated page where the operator
+    // configures + starts the driver. The chip auto-flips when the
+    // driver becomes active (poller picks it up via _get_current_mode).
+    if (mode === 'sim' || mode === 'replay') {
+      await goto(`/admin/execution?mode=${mode}`);
+      return;
+    }
     if (mode === 'live') {
       // LIVE keeps the confirm modal — real broker calls deserve a
       // dress-rehearsal click. Confirmed via ConfirmModal (danger variant).
@@ -296,9 +304,7 @@
       return;
     }
     // PAPER / SHADOW: master-toggle only. Commit the flag, optimistically
-    // flip the chip, stay on the current page. SIM and REPLAY are not in
-    // the dropdown any more — they live as tabs on /admin/execution and
-    // surface as banners under the navbar when active.
+    // flip the chip, stay on the current page.
     executionMode.set(/** @type {any} */ (mode));
     await _commitMode(mode);
   }
@@ -775,19 +781,6 @@
       </div>
     {/if}
 
-    {#if $executionMode === 'live' && paperStatus?.branch === 'main'}
-      <!-- LIVE banner — red, always visible when in LIVE mode. Phase A
-           of the navbar-only-mode rollout: operator MUST see at a
-           glance that orders go to the real broker. No per-ticket
-           mode override exists; mode is set ONLY from the navbar
-           dropdown. -->
-      <div class="live-banner" role="status" aria-live="polite">
-        <span class="live-banner-dot"></span>
-        <span class="live-banner-label">LIVE</span>
-        <span class="live-banner-sep">·</span>
-        <span class="live-banner-meta">orders go to broker · real money</span>
-      </div>
-    {/if}
     {#if $executionMode === 'shadow' && paperStatus?.branch === 'main'}
       <!-- SHADOW banner — orange, always visible when in SHADOW mode.
            Shadow logs the Kite payload + runs basket_margin without
@@ -1367,53 +1360,6 @@
   }
   .paper-banner-sep  { color: rgba(125,211,252,0.5); }
   .paper-banner-meta { color: #bae6fd; opacity: 0.8; }
-
-  /* ── LIVE banner ───────────────────────────────────────────────────
-     Red palette. The most operationally dangerous mode — operator
-     MUST see at a glance that orders go to the broker. Always sticky
-     under the navbar when executionMode='live'. Subtle pulse so it
-     reads as "ALIVE" without being seizure-inducing. */
-  .live-banner {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.25rem 0.85rem;
-    background-color: #0a1020;
-    background-image: linear-gradient(90deg,
-                      rgba(248,113,113,0.26) 0%,
-                      rgba(239,68,68,0.20) 100%);
-    border-top: 1px solid rgba(248,113,113,0.55);
-    border-bottom: 1px solid rgba(248,113,113,0.55);
-    color: #fecaca;
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    position: sticky;
-    top: 3rem;
-    z-index: 49;
-    animation: live-banner-pulse 2.4s ease-in-out infinite;
-  }
-  .live-banner-dot {
-    width: 0.55rem;
-    height: 0.55rem;
-    border-radius: 50%;
-    background: #f87171;
-    box-shadow: 0 0 6px rgba(248,113,113,0.85);
-    flex-shrink: 0;
-  }
-  .live-banner-label {
-    color: #fecaca;
-    letter-spacing: 0.12em;
-    font-size: 0.66rem;
-    font-weight: 800;
-  }
-  .live-banner-sep  { color: rgba(248,113,113,0.55); }
-  .live-banner-meta { color: #fee2e2; opacity: 0.85; }
-  @keyframes live-banner-pulse {
-    0%, 100% { box-shadow: inset 0 0 0 0 rgba(248,113,113,0);     }
-    50%      { box-shadow: inset 0 0 12px 0 rgba(248,113,113,0.30); }
-  }
 
   /* ── SHADOW banner ────────────────────────────────────────────────
      Orange palette. Always sticky when executionMode='shadow'.

@@ -36,14 +36,16 @@ logger = get_logger(__name__)
 # drivers are active so the chip auto-flips to a read-only indicator
 # during a run — operators see what's running without it cluttering
 # the picker.
-_DEV_MODES  = ["paper"]
-# SHADOW removed from the navbar dropdown to prevent accidental
-# clicks reverting the master toggle from LIVE. SHADOW is a rarely-
-# used diagnostic — toggle via /admin/settings → execution.shadow_mode
-# when actually needed. The chip still RENDERS 'shadow' if the flag
-# is on (so the operator sees it), but it's no longer pickable from
-# the dropdown.
-_PROD_MODES = ["paper", "live"]
+# Every mode the operator can navigate to from the navbar dropdown.
+# Settings-toggle modes (paper/live/shadow) commit the corresponding
+# setting via setExecutionMode; driver-active modes (sim/replay)
+# don't toggle a setting — clicking them navigates to
+# /admin/execution?mode=<slug> where the operator starts the driver.
+# Dev branch forces paper for any settings-toggle pick, so LIVE and
+# SHADOW are excluded from the dev list (clicking them would be a
+# silent no-op).
+_DEV_MODES  = ["paper", "sim", "replay"]
+_PROD_MODES = ["paper", "live", "shadow", "sim", "replay"]
 
 
 class ExecutionModeResponse(msgspec.Struct):
