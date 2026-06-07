@@ -1105,20 +1105,11 @@
     </svg>
     </div>
     <div class="payoff-legend">
-      {#if legSymbols.length > 0}
-        <span class="legend-legs">
-          <!-- Keyed by symbol + index. A multi-leg strategy can carry
-               the same option tradingsymbol twice (e.g. long 1 lot +
-               short 1 lot at the same strike). The bare-symbol key
-               then collides and Svelte 5 throws each_key_duplicate
-               into the pageerror channel. Index makes it always-unique-
-               by-position regardless of symbol repeats. -->
-          {#each legSymbols as sym, i (sym + '|' + i)}
-            <LegLabel {sym} />
-          {/each}
-        </span>
-        <span class="legend-sep" aria-hidden="true"></span>
-      {/if}
+      <!-- Legend leg-label list retired per operator request — the
+           per-leg breakdown is already in the Candidates panel below
+           the chart; surfacing the same list inside the chart card
+           was duplication. The Today / Expiry / BE / Spot key items
+           below are the only legend pieces the chart needs. -->
       <span class="legend-item">
         <span class="legend-line legend-today"></span>
         Today (BS)

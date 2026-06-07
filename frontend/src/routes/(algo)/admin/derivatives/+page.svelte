@@ -592,6 +592,29 @@
     });
   });
 
+  // Clear strategy IMMEDIATELY on underlying change. Operator:
+  // "for a brief moment, the payoff showed wrong info for spot
+  // price and making payoff chart invalid". The loadStrategy
+  // underlying-mismatch check inside the function already clears
+  // strategy when it detects a switch — BUT the loadStrategy
+  // $effect runs AFTER legs is recomputed, which happens AFTER
+  // candidatePositions re-derives off selectedUnderlying. During
+  // those few frames the OLD strategy (with old spot, old anchor,
+  // old payoff curve) is still on screen, briefly mismatched
+  // against the new underlying label. Clearing here flips the
+  // chart to its loading/empty state on the SAME frame as the
+  // underlying change — no transient flash of wrong-spot.
+  let _lastUnderlyingForChart = $state('');
+  $effect(() => {
+    const u = selectedUnderlying;
+    untrack(() => {
+      if (u && _lastUnderlyingForChart && u !== _lastUnderlyingForChart) {
+        strategy = null;
+      }
+      _lastUnderlyingForChart = u;
+    });
+  });
+
   /** Distinct expiries (YYYY-MM-DD) available on the chosen
    *  underlying — derived by looking up each loaded position's
    *  symbol in the instruments cache. Drafts contribute too. */
