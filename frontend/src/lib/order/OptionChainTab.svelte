@@ -9,6 +9,7 @@
   // via placeTicketOrder() without a new backend route.
 
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { visibleInterval } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchOptionsSpot, fetchChainQuotes,
@@ -345,15 +346,15 @@
   $effect(() => {
     void chainUnderlying; void chainExpiry;
     untrack(() => {
-      if (chainQuotesPoll) { clearInterval(chainQuotesPoll); chainQuotesPoll = null; }
+      if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }
       if (!chainUnderlying || !chainExpiry) { chainQuotesMap = null; chainQuotesKey = ''; return; }
       const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }
       _refreshChainQuotes();
-      chainQuotesPoll = setInterval(_refreshChainQuotes, 5000);
+      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 5000);
     });
   });
-  onDestroy(() => { if (chainQuotesPoll) clearInterval(chainQuotesPoll); });
+  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } });
 
   // Host-triggered refresh — invalidate the spot + quotes cache keys
   // and re-fire the fetchers so a tab activation always lands on fresh

@@ -202,10 +202,12 @@
     return PAD_T + (1 - (price - yMin) / ySpan) * innerH;
   }
 
-  // Path for the LTP line.
+  // Path for the LTP line — use only visible ticks when zoomed so
+  // path-build work is O(visible) not O(all 600) on every zoom change.
   const ltpPath = $derived.by(() => {
-    if (!ticks.length) return '';
-    return ticks.map((t, i) =>
+    const src = visibleTicks.length ? visibleTicks : ticks;
+    if (!src.length) return '';
+    return src.map((t, i) =>
       `${i === 0 ? 'M' : 'L'}${xOf(t.ts).toFixed(1)},${yOf(t.ltp).toFixed(1)}`
     ).join(' ');
   });
@@ -231,7 +233,11 @@
     // rides through the middle of the chart, never clipping the frame.
     const top = PAD_T + 0.10 * innerH;
     const bot = PAD_T + 0.90 * innerH;
-    return underlyingTicks.map((t, i) => {
+    // Filter to visible time range when zoomed — same 30× reduction as ltpPath.
+    const src = visibleTicks.length
+      ? underlyingTicks.filter(t => { const ms = +new Date(t.ts); return ms >= tMin && ms <= tMax; })
+      : underlyingTicks;
+    return (src.length ? src : underlyingTicks).map((t, i) => {
       const norm = (t.ltp - lo) / span;
       const y    = bot - norm * (bot - top);
       return `${i === 0 ? 'M' : 'L'}${xOf(t.ts).toFixed(1)},${y.toFixed(1)}`;
@@ -241,10 +247,12 @@
   // Bid/ask shaded band (faint cyan area between bid and ask paths) —
   // only drawn when both sides are populated, so live/paper mode shows
   // the spread band but pure-LTP-only ticks (rare) skip it cleanly.
+  // Uses visible ticks when zoomed for the same 30× speedup as ltpPath.
   const bandPath = $derived.by(() => {
-    if (!ticks.length) return '';
-    const top = ticks.filter(t => t.ask != null);
-    const bot = ticks.filter(t => t.bid != null);
+    const src = visibleTicks.length ? visibleTicks : ticks;
+    if (!src.length) return '';
+    const top = src.filter(t => t.ask != null);
+    const bot = src.filter(t => t.bid != null);
     if (!top.length || !bot.length) return '';
     const up = top.map(t => `${xOf(t.ts).toFixed(1)},${yOf(/**@type{number}*/(t.ask)).toFixed(1)}`);
     const dn = bot.slice().reverse().map(t => `${xOf(t.ts).toFixed(1)},${yOf(/**@type{number}*/(t.bid)).toFixed(1)}`);

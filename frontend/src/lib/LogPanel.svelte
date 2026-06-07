@@ -231,16 +231,34 @@
     } catch (_) { /* keep last-good */ }
   }
 
+  // Deferred poll flags — system and sim ticks are low-traffic tabs that
+  // most operators never visit in a session. Don't start their pollers on
+  // mount; start them on first tab activation instead.
+  let _sysPollStarted  = false;
+  let _simPollStarted  = false;
+
   onMount(() => {
-    if (tabs.includes('agent'))     _every(_loadAgents);
-    if (tabs.includes('system'))    _every(_loadSystem);
-    if (tabs.includes('simulator')) _every(_loadSim);
+    if (tabs.includes('agent')) _every(_loadAgents);
     // Orders + Terminal tabs both consume orderRows; load whenever
     // either one is in the visible set.
     if (tabs.includes('order') || tabs.includes('terminal'))
       _every(_loadOrders);
+    // system + simulator polls are deferred — started in the $effect below
+    // on first tab click so idle sessions pay zero cost for tabs never visited.
   });
   onDestroy(() => { for (const id of _intervals) clearInterval(id); });
+
+  // Lazy-start deferred tab pollers on first activation.
+  $effect(() => {
+    if (logTab === 'system' && !_sysPollStarted && tabs.includes('system')) {
+      _sysPollStarted = true;
+      _every(_loadSystem);
+    }
+    if (logTab === 'simulator' && !_simPollStarted && tabs.includes('simulator')) {
+      _simPollStarted = true;
+      _every(_loadSim);
+    }
+  });
 
   // ── Chart modal state (Order tab) ────────────────────────────────────────
   let _chartModalSym  = $state('');

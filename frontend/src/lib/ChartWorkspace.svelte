@@ -556,10 +556,10 @@
 
   function _startTickPoll() {
     _stopTickPoll();
-    _tickTimer = setInterval(_loadIntraday, 3000);
+    _tickTimer = visibleInterval(_loadIntraday, 3000);
   }
   function _stopTickPoll() {
-    if (_tickTimer) { clearInterval(_tickTimer); _tickTimer = null; }
+    if (_tickTimer) { _tickTimer(); _tickTimer = null; }
   }
 
   // ── Greeks strip (options only) ───────────────────────────────────

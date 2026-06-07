@@ -17,7 +17,7 @@
  * call opens a fresh connection.
  */
 
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
 
 /** Map of tradingsymbol → live LTP, updated as SSE ticks arrive. */
@@ -58,7 +58,7 @@ export function startQuoteStream() {
       // and the snapshot becomes a no-op.
       if (snap && typeof snap === 'object') {
         liveLtp.update(prev => ({ ...prev, ...snap }));
-        streamOpen.set(true);
+        if (!get(streamOpen)) streamOpen.set(true);
       }
     } catch (_) { /* malformed JSON — ignore */ }
   });
@@ -73,7 +73,7 @@ export function startQuoteStream() {
           if (prev[t.sym] === t.ltp) return prev;
           return { ...prev, [t.sym]: t.ltp };
         });
-        streamOpen.set(true);
+        if (!get(streamOpen)) streamOpen.set(true);
       }
     } catch (_) { /* malformed JSON — ignore */ }
   });

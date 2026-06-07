@@ -1978,6 +1978,7 @@
       filter={{ kinds: _agentLogKinds }}
       excludeSim={true}
       maxRows={30}
+      pollMs={15000}
       emptyMessage="No agent fires yet today." />
   </div>
 </section>
