@@ -581,30 +581,56 @@
    *  + CRUDEOIL25JUL + CRUDEOIL25AUG option chains under the Expiry
    *  picker. */
   const underlyingOptionsForPicker = $derived.by(() => {
-    // Dedupe by value — `underlyingChoicesFromBook` can carry the
-    // same root twice during a transient state (e.g. positions
-    // reloading concurrent with `instrumentsReady` flipping true).
-    // Without this, Select.svelte's keyed each-block throws
-    // `each_key_duplicate` and silently remounts the dropdown,
-    // leaving the trigger button visually present but unclickable.
-    // Playwright caught the duplicate occurring during the MCX
-    // label-swap race window. Per-mount cost is O(N) over a list
-    // that's typically <30 entries — negligible.
+    // Dedupe by value — see commit history. Operator: "I want
+    // everything to be consistent". Label is now ALWAYS the root
+    // (GOLDM, NIFTY, CRUDEOIL etc.) — same identity the
+    // ChartWorkspace title shows. The resolved front-month contract
+    // is surfaced as a separate chip beside the picker (see
+    // _frontMonthChip below + .opt-front-month-chip in the
+    // template) so the operator still sees WHICH contract month is
+    // currently in scope without the dropdown label having to
+    // carry it. Splits commodity identity (root, persistent) from
+    // contract identity (which contract is in scope this month).
     const seen = new Set();
     const out = [];
     for (const u of underlyingChoicesFromBook) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      if (_MCX_UNDERLYINGS.has(u) && instrumentsReady) {
-        const futs = listFutures(u);
-        if (futs.length > 0) {
-          out.push({ value: u, label: futs[0].s });
-          continue;
-        }
-      }
       out.push({ value: u, label: u });
     }
     return out;
+  });
+
+  // Front-month contract chip — shown next to the underlying picker
+  // when the current selectedUnderlying is an MCX root and a future
+  // is resolved. Mirrors ChartWorkspace's .cw-frontmonth-bar so the
+  // two surfaces present commodity identity the same way.
+  const _frontMonthChip = $derived.by(() => {
+    if (!selectedUnderlying || !_MCX_UNDERLYINGS.has(selectedUnderlying) || !instrumentsReady) {
+      return null;
+    }
+    const futs = listFutures(selectedUnderlying);
+    if (!futs || !futs.length) return null;
+    const f = futs[0];
+    const expiryISO = f?.x || '';
+    // Days-to-expiry → amber when ≤ 3 days so the operator sees
+    // the imminent roll, mirroring the same DTE warning shape used
+    // on ChartWorkspace + OptionChainTab.
+    let dte = null;
+    if (expiryISO) {
+      const exp = new Date(expiryISO + 'T15:30:00+05:30').getTime();
+      dte = Math.max(0, Math.floor((exp - Date.now()) / 86_400_000));
+    }
+    const expiryLabel = expiryISO
+      ? (() => {
+          const d = new Date(expiryISO + 'T00:00:00Z');
+          if (Number.isNaN(d.getTime())) return '';
+          const day = d.getUTCDate();
+          const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+          return `${day} ${mon}`;
+        })()
+      : '';
+    return { contract: f.s, expiryLabel, dte, rollingSoon: dte != null && dte <= 3 };
   });
 
   // Auto-select the first underlying from the loaded book when the
@@ -2219,10 +2245,27 @@
   </div>
   <div class="opt-field opt-field-grow">
     <label class="field-label" for="opt-und">Underlying</label>
-    <Select id="opt-und"
-      bind:value={selectedUnderlying}
-      options={underlyingOptionsForPicker}
-      placeholder={underlyingChoicesFromBook.length ? 'Pick underlying…' : 'No options in book'} />
+    <div class="opt-und-row">
+      <Select id="opt-und"
+        bind:value={selectedUnderlying}
+        options={underlyingOptionsForPicker}
+        placeholder={underlyingChoicesFromBook.length ? 'Pick underlying…' : 'No options in book'} />
+      <!-- Front-month chip — only renders for MCX commodities once
+           the instruments cache hydrates. Mirrors ChartWorkspace's
+           cw-frontmonth-bar so the operator sees the same root +
+           contract pattern across the two surfaces. Amber when
+           ≤ 3 days to expiry as the imminent-roll warning. -->
+      {#if _frontMonthChip}
+        <span class="opt-front-month-chip"
+              class:opt-front-month-chip-rolling={_frontMonthChip.rollingSoon}
+              title={_frontMonthChip.rollingSoon
+                ? `${_frontMonthChip.contract} · rolls in ${_frontMonthChip.dte} day${_frontMonthChip.dte === 1 ? '' : 's'}`
+                : `${_frontMonthChip.contract} · expiry ${_frontMonthChip.expiryLabel}`}>
+          {_frontMonthChip.contract}
+          {#if _frontMonthChip.rollingSoon}<span class="opt-front-month-warn">⚠ {_frontMonthChip.dte}d</span>{/if}
+        </span>
+      {/if}
+    </div>
   </div>
   <div class="opt-field">
     <label class="field-label" for="opt-exp">Expiry</label>
@@ -3015,6 +3058,44 @@
      Per canonical picker rule: every field is `flex: 0 0 auto` so
      the cluster sits flush-left at natural widths and empty space
      trails on the right. */
+  /* Underlying picker row — Select + front-month chip side by side.
+     Chip mirrors ChartWorkspace's commodity-identity treatment so
+     "GOLDM [GOLDM26JUNFUT · 19 Jun]" reads the same on both pages. */
+  .opt-und-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .opt-und-row :global(.rbq-select-wrap) { flex: 1 1 auto; min-width: 0; }
+  .opt-front-month-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0.22rem 0.5rem;
+    background: rgba(125, 145, 184, 0.10);
+    border: 1px solid rgba(125, 145, 184, 0.30);
+    color: var(--algo-muted);
+    border-radius: 4px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .opt-front-month-chip-rolling {
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border);
+    color: var(--algo-amber);
+  }
+  .opt-front-month-warn {
+    font-weight: 800;
+    font-size: 0.55rem;
+  }
+
   .opt-picker {
     display: flex;
     flex-wrap: nowrap;
