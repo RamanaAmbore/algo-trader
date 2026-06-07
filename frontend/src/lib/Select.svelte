@@ -52,11 +52,32 @@
   // Filtered option list — when search is active and the term has
   // ≥searchMinChars characters, filter by case-insensitive substring
   // match against label OR value. Otherwise show every option.
+  // Defensive de-dup. Even though parent callers should send unique
+  // values, a transient race (e.g. underlyingOptionsForPicker on
+  // /admin/derivatives during the instrumentsReady flip) can pass
+  // duplicates through for a single Svelte flush. The keyed each-
+  // block then throws `each_key_duplicate` and aborts the reactive
+  // microtask, swallowing other state assignments — most visibly
+  // the strategy=null → strategy=<response> transition that gates
+  // the payoff chart. Defending here means every caller is safe by
+  // construction without needing to coordinate timing themselves.
+  function _dedupByValue(/** @type {any[]} */ src) {
+    const seen = new Set();
+    const out = [];
+    for (const o of src || []) {
+      const k = String(o?.value ?? '');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(o);
+    }
+    return out;
+  }
   const filteredOptions = $derived.by(() => {
-    if (!searchable) return options;
+    const base = _dedupByValue(options);
+    if (!searchable) return base;
     const q = searchTerm.trim().toUpperCase();
-    if (q.length < searchMinChars) return options;
-    return options.filter(o => {
+    if (q.length < searchMinChars) return base;
+    return base.filter(o => {
       const l = String(o.label ?? '').toUpperCase();
       const v = String(o.value ?? '').toUpperCase();
       return l.includes(q) || v.includes(q);
