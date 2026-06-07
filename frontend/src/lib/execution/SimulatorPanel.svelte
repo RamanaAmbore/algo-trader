@@ -26,6 +26,7 @@
   import ConfirmModal  from '$lib/ConfirmModal.svelte';
   import StaleBanner   from '$lib/StaleBanner.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
+  import RecordingsPanel from '$lib/execution/RecordingsPanel.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
 
   let scenarios = $state(/** @type {any[]} */ ([]));
@@ -61,6 +62,11 @@
   // the DB setting `simulator.chase_max_attempts` (default 5).
   let chaseMaxAttempts = $state(/** @type {number | ''} */ (''));
   let customRows = $state(/** @type {Array<{tradingsymbol:string, quantity:string|number, last_price:string|number, account:string}>} */ ([]));
+  // Recording — when true, the next sim run captures every
+  // state-mutating event into a sim_recordings row (flushed on stop).
+  // Label is operator-supplied; blank → auto-generated from scenario.
+  let recordMode     = $state(false);
+  let recordingLabel = $state(/** @type {string} */ (''));
 
   function addCustomRow() {
     customRows = [...customRows, { tradingsymbol: '', quantity: '', last_price: '', account: '' }];
@@ -436,6 +442,14 @@
         }))
         .filter(r => r.tradingsymbol && r.quantity != null && r.last_price != null);
       if (customClean.length) opts.custom_positions = customClean;
+      // Recording — when the operator ticked Record, capture every
+      // state-mutating event into sim_recordings on stop. The default
+      // label encodes scenario + timestamp; operator can override.
+      if (recordMode) {
+        opts.record_mode     = true;
+        opts.recording_label = (recordingLabel || '').trim()
+                                 || `${pickedSlug} @ ${new Date().toISOString().slice(0,16).replace('T', ' ')}`;
+      }
       status = await startSim(pickedSlug, rateMs, opts);
       const tag = agentId ? ` (agent #${agentId} only)` : '';
       const cadTag = ` · P:${status.positions_every_n_ticks}`;
@@ -1052,6 +1066,12 @@
   {/if}
   </section>
 
+<!-- Recordings panel — saved deterministic event logs for replay.
+     Inline at the bottom of the Scenario tab so operators see saved
+     recordings RIGHT below the past-runs list. Self-polls for fresh
+     status; controls live inside the component. -->
+<RecordingsPanel />
+
 <!-- Side column wrapper. Holds the three operator-action cards (iter
      / Run controls / custom positions) so the grid has exactly two
      direct children (one per column). Earlier each card was a direct
@@ -1219,6 +1239,22 @@
                class="field-input sim-pct-input"
                placeholder="(default)" bind:value={chaseMaxAttempts} />
       </div>
+    </div>
+    <!-- Recording — when checked, the run captures every state event
+         and persists a sim_recordings row on stop. Label is optional;
+         a default ("scenario @ timestamp") is generated when blank.
+         The Recordings panel below the past-runs list shows saved
+         recordings with play/pause/step controls. -->
+    <div class="sim-field sim-field-record">
+      <label class="field-label sim-record-label" title="Capture every tick / GTT / chase / agent event during this sim run. On stop, the event log persists as a sim_recordings row that can be replayed later.">
+        <input type="checkbox" bind:checked={recordMode} class="sim-record-cb" />
+        Record
+      </label>
+      {#if recordMode}
+        <input type="text" class="field-input sim-record-label-input"
+               placeholder="recording label (auto if blank)"
+               bind:value={recordingLabel} />
+      {/if}
     </div>
     {#if pctOverrides.length > 0}
       <div class="sim-field sim-field-pcts">
@@ -1565,6 +1601,34 @@
   .sim-field-spread {
     flex: 1 1 0;
     min-width: 70px;
+  }
+  /* Recording toggle — single-row checkbox + optional label input.
+     Wider than the numeric fields because the label input expects
+     a sentence-length value. */
+  .sim-field-record {
+    flex: 3 1 0;
+    min-width: 200px;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .sim-record-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.62rem;
+    cursor: pointer;
+    color: #c084fc;
+    font-weight: 700;
+  }
+  .sim-record-cb {
+    margin: 0;
+    accent-color: #c084fc;
+  }
+  .sim-record-label-input {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.62rem;
   }
   .sim-field-pcts {
     flex: 3 1 0;

@@ -589,6 +589,49 @@ class SimulatorController(Controller):
             await s.commit()
         return {"deleted": True, "id": recording_id}
 
+    # ── Replay control plane — consume a saved recording and re-emit ──
+    #
+    # SimReplayDriver runs in parallel with SimDriver but only one can
+    # be active at a time (the SimDriver wipes its display state on
+    # replay start). UI offers play/pause/step/stop + a speed selector.
+
+    @get("/replay/status")
+    async def replay_status(self) -> dict:
+        from backend.api.algo.sim.replay_driver import get_replay_driver
+        return get_replay_driver().snapshot()
+
+    @post("/replay/start")
+    async def replay_start(self, data: dict) -> dict:
+        from backend.api.algo.sim.replay_driver import get_replay_driver
+        recording_id = int(data.get("recording_id") or 0)
+        speed = float(data.get("speed") or 1.0)
+        if recording_id <= 0:
+            raise HTTPException(status_code=400, detail="recording_id is required")
+        try:
+            return await get_replay_driver().start(recording_id, speed)
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @post("/replay/stop")
+    async def replay_stop(self) -> dict:
+        from backend.api.algo.sim.replay_driver import get_replay_driver
+        return await get_replay_driver().stop()
+
+    @post("/replay/pause")
+    async def replay_pause(self) -> dict:
+        from backend.api.algo.sim.replay_driver import get_replay_driver
+        return get_replay_driver().pause()
+
+    @post("/replay/resume")
+    async def replay_resume(self) -> dict:
+        from backend.api.algo.sim.replay_driver import get_replay_driver
+        return get_replay_driver().resume()
+
+    @post("/replay/step")
+    async def replay_step(self) -> dict:
+        from backend.api.algo.sim.replay_driver import get_replay_driver
+        return await get_replay_driver().step()
+
     @post("/clear")
     async def clear_sim_rows(self) -> dict:
         """Delete every sim_mode row from agent_events and algo_orders."""

@@ -387,14 +387,30 @@ export const runSimCycle          = () => _post('/simulator/run-cycle', {}, { au
 export const clearSimArtefacts    = () => _post('/simulator/clear', {}, { auth: true });
 export const seedSimLive          = () => _post('/simulator/seed-live', {}, { auth: true });
 
-// Sim recordings — deterministic event log per run. Phase 2c will add
-// the replay driver that consumes a recording row.
+// Sim recordings — deterministic event log per run. SimReplayDriver
+// (Phase 2c) consumes a recording row and re-emits the events into
+// the same SimDriver display buffers so the operator's screen during
+// playback is identical to the original run.
 export const fetchSimRecordings   = (limit = 50) =>
   _get(`/simulator/recordings?limit=${limit}`, { auth: true });
 export const fetchSimRecording    = (id) =>
   _get(`/simulator/recordings/${id}`, { auth: true });
 export const deleteSimRecording   = (id) =>
   _del(`/simulator/recordings/${id}`, { auth: true });
+// Sim-recording replay controls (distinct from /replay/* below which
+// drives the historical-OHLCV Backtest tab).
+export const fetchSimReplayStatus = () =>
+  _get('/simulator/replay/status', { auth: true });
+export const startSimReplay       = (recordingId, speed = 1.0) =>
+  _post('/simulator/replay/start', { recording_id: recordingId, speed }, { auth: true });
+export const stopSimReplay        = () =>
+  _post('/simulator/replay/stop', {}, { auth: true });
+export const pauseSimReplay       = () =>
+  _post('/simulator/replay/pause', {}, { auth: true });
+export const resumeSimReplay      = () =>
+  _post('/simulator/replay/resume', {}, { auth: true });
+export const stepSimReplay        = () =>
+  _post('/simulator/replay/step', {}, { auth: true });
 
 // Sim GTT book — place / list / cancel template-driven triggers inside
 // the active sim. The orchestrator path (OrderTicket template fan-out)
