@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
+  import { get } from 'svelte/store';
   import { authStore, visibleInterval, executionMode } from '$lib/stores';
   import {
     fetchSimStatus, fetchPaperStatus,
@@ -262,7 +263,7 @@
   async function loadMode() {
     try {
       const res = await fetchExecutionMode();
-      if (res?.mode)          executionMode.set(res.mode);
+      if (res?.mode && get(executionMode) !== res.mode) executionMode.set(res.mode);
       if (res?.allowed_modes && res.allowed_modes.length) {
         allowedModes = res.allowed_modes;
       }
@@ -312,7 +313,7 @@
   async function _commitMode(/** @type {string} */ mode) {
     try {
       const res = await setExecutionMode(mode);
-      if (res?.mode) executionMode.set(res.mode);
+      if (res?.mode && get(executionMode) !== res.mode) executionMode.set(res.mode);
     } catch (e) {
       modeError = /** @type {any} */ (e)?.message ?? 'Mode change failed.';
       setTimeout(() => { modeError = ''; }, 3000);

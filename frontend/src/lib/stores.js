@@ -9,7 +9,7 @@
  * immediately when navigating back.
  */
 
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { isMarketOpen } from '$lib/marketHours';
 
@@ -262,12 +262,19 @@ export function branchLabel(/** @type {string|null|undefined} */ name) {
   return name === 'main' ? 'prod' : name;
 }
 
-/** Dual-timezone format helper. Same shape as `clientTimestamp()` but
- *  accepts an arbitrary Date instead of `new Date()` — used for the
- *  "last refreshed at" line in the RefreshButton tooltip so the
- *  format matches the page-header wall clock exactly. */
-export function formatDualTz(/** @type {Date} */ date) {
-  const now = date instanceof Date ? date : new Date(date);
+// ---------------------------------------------------------------------------
+// Memoised Intl caches — keyed by minute epoch (Math.floor(ms / 60_000)).
+// The dual-tz format never shows seconds so minute-precision is exact.
+// Each cache is cleared every 60 s to prevent unbounded growth.
+// The setInterval guard keeps this SSR-safe (no global timer on the server).
+// ---------------------------------------------------------------------------
+const _fmtDualTzCache = new Map();
+const _fmtClientTsCache = new Map();
+if (typeof setInterval !== 'undefined') {
+  setInterval(() => { _fmtDualTzCache.clear(); _fmtClientTsCache.clear(); }, 60_000);
+}
+
+function _dualTzCore(/** @type {Date} */ now) {
   const parts = (tz) => {
     const arr = new Intl.DateTimeFormat('en-GB', {
       weekday: 'short', day: '2-digit', month: 'short',
@@ -288,46 +295,47 @@ export function formatDualTz(/** @type {Date} */ date) {
   const estTz = now.toLocaleTimeString('en-US', {
     timeZoneName: 'short', timeZone: 'America/New_York',
   }).split(' ').pop();
-  const istHead = `${ist.wd} ${ist.d} ${ist.m}`;
-  const istTime = `${ist.h}:${ist.mn} IST`;
-  const estHalf = `${est.h}:${est.mn} ${estTz}`;  // time-only — date carried by IST half
-  return `${istHead} · ${istTime} · ${estHalf}`;
+  return { ist, est, estTz };
+}
+
+/** Dual-timezone format helper. Same shape as `clientTimestamp()` but
+ *  accepts an arbitrary Date instead of `new Date()` — used for the
+ *  "last refreshed at" line in the RefreshButton tooltip so the
+ *  format matches the page-header wall clock exactly.
+ *  Memoised at minute granularity — the output format has no seconds. */
+export function formatDualTz(/** @type {Date} */ date) {
+  if (!date) return '';
+  const now = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(now.getTime())) return '';
+  const key = Math.floor(now.getTime() / 60_000);
+  const hit = _fmtDualTzCache.get(key);
+  if (hit !== undefined) return hit;
+  const { ist, est, estTz } = _dualTzCore(now);
+  const result = `${ist.wd} ${ist.d} ${ist.m} · ${ist.h}:${ist.mn} IST · ${est.h}:${est.mn} ${estTz}`;
+  _fmtDualTzCache.set(key, result);
+  return result;
 }
 
 export function clientTimestamp() {
   const now = new Date();
+  const key = Math.floor(now.getTime() / 60_000);
+  const hit = _fmtClientTsCache.get(key);
+  if (hit !== undefined) return hit;
   // Pull the structured parts once per zone so we can compare dates
   // and selectively elide the duplicate when both zones land on the
   // same calendar day (the common case during market hours). When
   // the dates differ (around UTC midnight) we keep the EST weekday
   // so the operator still sees the date delta — no info lost.
-  const parts = (tz) => {
-    const arr = new Intl.DateTimeFormat('en-GB', {
-      weekday: 'short', day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-      timeZone: tz,
-    }).formatToParts(now);
-    const pick = (t) => (arr.find(p => p.type === t) || {}).value || '';
-    return {
-      wd: pick('weekday'),
-      d:  pick('day'),
-      m:  pick('month'),
-      h:  pick('hour'),
-      mn: pick('minute'),
-    };
-  };
-  const ist = parts('Asia/Kolkata');
-  const est = parts('America/New_York');
-  const estTz = now.toLocaleTimeString('en-US', {
-    timeZoneName: 'short', timeZone: 'America/New_York',
-  }).split(' ').pop();   // "EST" / "EDT" by season
+  const { ist, est, estTz } = _dualTzCore(now);
   const istHead = `${ist.wd} ${ist.d} ${ist.m}`;
   const istTime = `${ist.h}:${ist.mn} IST`;
   // EDT half is time-only — weekday + date intentionally omitted
   // (IST side already carries the calendar context; duplicating it
   // on the EST side just bloats the page header).
   const estHalf = `${est.h}:${est.mn} ${estTz}`;
-  return `${istHead} · ${istTime} · ${estHalf}`;
+  const result = `${istHead} · ${istTime} · ${estHalf}`;
+  _fmtClientTsCache.set(key, result);
+  return result;
 }
 
 // Reactive ticking version of clientTimestamp(). Pages binding `{$nowStamp}`

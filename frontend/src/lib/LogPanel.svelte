@@ -336,6 +336,12 @@
   // The effective mode for gating: null means "show everything" (gateByMode
   // is false). When gateByMode is true, read the live store value.
   const _gatingMode = $derived(gateByMode ? $executionMode : null);
+  // _terminalHtmlDerived memoises the terminal tab's HTML so it only
+  // recomputes when its actual inputs change (cmdHistory, orderRows,
+  // agentLog, _gatingMode) — not on every reactivity cycle that touches
+  // the template. Without this, formatDualTz was called per-row on every
+  // 3 s poll across all mounted instances even when the data was unchanged.
+  const _terminalHtmlDerived = $derived.by(() => _terminalHtml());
 
   // Terminal mode prefix — maps execution mode to the [TAG] prefix used
   // in terminal detail strings. Events without any known prefix are global
@@ -934,7 +940,7 @@
      killing text selection inside the log). -->
 <div class="log-panel log-rows {heightClass}">
   {#if logTab === 'terminal'}
-    {@html _terminalHtml()}
+    {@html _terminalHtmlDerived}
   {:else if logTab === 'agent'}
     {#if _agentRows.length}
       {#each _agentRows as r (r.key)}{@html r.html}{/each}
