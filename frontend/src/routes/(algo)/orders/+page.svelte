@@ -20,8 +20,9 @@
     resolveSymbol, resolveAccount,
     setRecentSymbol, setRecentAccount,
   } from '$lib/data/accounts';
-  // executionMode store import retired with the page-level mode
-  // pills — SymbolPanel's shared toolbar owns _sharedMode now.
+  // executionMode is used to gate the Order Activity card's bespoke
+  // book tab (same as LogPanel's gateByMode behaviour).
+  import { executionMode } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
   import OrderCard from '$lib/order/OrderCard.svelte';
@@ -137,8 +138,9 @@
   const _availableExchanges = $derived([...new Set(orders.map(o => o.exchange).filter(Boolean))]);
 
   // Single source of truth for which orders the Book card shows.
-  // Combines status + account + exchange filters in one pass so the
-  // per-status count chips on the filter strip stay accurate.
+  // Combines status + account + exchange + executionMode filters.
+  // The mode gate mirrors LogPanel's gateByMode behaviour so the
+  // /orders page and the Activity modal show the same rows.
   const _filteredOrders = $derived.by(() => {
     return orders.filter(o => {
       const s = o.status;
@@ -146,6 +148,9 @@
       if (filterStatus !== 'all' && filterStatus !== 'open' && s !== filterStatus.toUpperCase()) return false;
       if (_accountFilter.length && !_accountFilter.includes(o.account)) return false;
       if (_exchangeFilter !== 'all' && o.exchange !== _exchangeFilter) return false;
+      // Mode gate: broker orders (no .mode field) count as 'live'.
+      const oMode = o.mode || 'live';
+      if ($executionMode && oMode !== $executionMode) return false;
       return true;
     });
   });
@@ -421,7 +426,7 @@
            divider, no left accent). -->
       <div class="oc-activity-log oc-act-scroll">
         <UnifiedLog
-          filter={{}}
+          filter={{ simMode: $executionMode === 'sim' ? true : undefined }}
           pollMs={3000}
           maxRows={50}
           heightClass=""

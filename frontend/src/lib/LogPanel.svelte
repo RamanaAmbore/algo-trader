@@ -1,6 +1,6 @@
 <script>
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz } from '$lib/stores';
+  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
@@ -29,6 +29,7 @@
    *   cmdHistory?: Array<{status: string, message: string, fields?: Record<string,string>, time: string}>,
    *   onTabChange?: (tab: string) => void,
    *   mode?: string | null,
+   *   gateByMode?: boolean,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -43,6 +44,10 @@
     cmdHistory  = [],
     onTabChange = () => {},
     mode        = /** @type {string | null} */ (null),
+    // When true (default), all activity tabs are scoped to the current
+    // executionMode from the global store. Set to false on surfaces that
+    // deliberately want a cross-mode view (e.g. dashboard UnifiedLog).
+    gateByMode  = true,
   } = $props();
 
   let logTab = $state(defaultTab);
@@ -165,10 +170,13 @@
 
   async function _loadAgents() {
     try {
-      // Sim-scoped surfaces (e.g. /admin/simulator) want the sim-only
-      // event stream; everywhere else gets the real-mode stream.
-      const data = simScope ? await fetchSimEvents(100)
-                            : await fetchRecentAgentEvents(100);
+      // Sim mode (via simScope prop OR gateByMode+executionMode=sim):
+      // use the sim-only event stream. All other modes share the
+      // real-mode stream (AgentEvent only has sim_mode bool, no
+      // paper/live/shadow field).
+      const wantSim = simScope || (gateByMode && $executionMode === 'sim');
+      const data = wantSim ? await fetchSimEvents(100)
+                           : await fetchRecentAgentEvents(100);
       agentLog = Array.isArray(data) ? data : [];
     } catch (_) { /* keep last-good */ }
   }
@@ -310,7 +318,48 @@
   ];
   // Filter to the per-page subset (defaults to all six). Lets /console
   // hide Order / Simulator / Agent that don't apply.
-  const VISIBLE_TABS = $derived(_ALL_TABS.filter(([id]) => tabs.includes(id)));
+  // Additionally, when gateByMode is active and the current mode is not
+  // sim, hide the Ticks (simulator) tab — ticks are sim-only by definition.
+  const VISIBLE_TABS = $derived(_ALL_TABS.filter(([id]) => {
+    if (!tabs.includes(id)) return false;
+    if (id === 'simulator' && _gatingMode && _gatingMode !== 'sim') return false;
+    return true;
+  }));
+
+  // ── Mode gating via executionMode store ──────────────────────────────
+  // When gateByMode is true, the global executionMode store is the
+  // implicit filter for Orders, Agent, and Terminal tabs. The mode chip
+  // strip (om-bar) is hidden — mode is already shown in the header chip.
+  // Ticks tab is hidden entirely when not in sim mode.
+
+  // The effective mode for gating: null means "show everything" (gateByMode
+  // is false). When gateByMode is true, read the live store value.
+  const _gatingMode = $derived(gateByMode ? $executionMode : null);
+
+  // Terminal mode prefix — maps execution mode to the [TAG] prefix used
+  // in terminal detail strings. Events without any known prefix are global
+  // and always shown.
+  const _TERMINAL_PREFIXES = ['[SIM]', '[PAPER]', '[LIVE]', '[SHADOW]', '[REPLAY]'];
+  /** @param {string} mode */
+  function _terminalPrefixFor(mode) {
+    const map = {
+      sim:    '[SIM]',
+      paper:  '[PAPER]',
+      live:   '[LIVE]',
+      shadow: '[SHADOW]',
+      replay: '[REPLAY]',
+    };
+    return map[mode] || null;
+  }
+
+  // Ticks tab: hide when gating is active and mode is not 'sim'.
+  // If the operator is on the ticks tab and the mode changes away from
+  // sim, auto-flip to 'order'.
+  $effect(() => {
+    if (_gatingMode && _gatingMode !== 'sim' && untrack(() => logTab) === 'simulator') {
+      logTab = 'order';
+    }
+  });
 
   // ── Order-tab mode filter ───────────────────────────────────────────
   // [All] uses the unified merged feed (orders + agent fires); the
@@ -345,7 +394,12 @@
   });
   const filteredOrderRows = $derived.by(() => {
     let rows = orderRows || [];
-    if (orderModeFilter !== 'all') {
+    // When gateByMode is active, filter by executionMode directly.
+    // The om-bar chip strip is hidden in this state so orderModeFilter
+    // is not applicable — the store is the filter.
+    if (_gatingMode) {
+      rows = rows.filter(o => (o?.mode || 'live') === _gatingMode);
+    } else if (orderModeFilter !== 'all') {
       rows = rows.filter(o => (o?.mode || 'live') === orderModeFilter);
     }
     if (orderAccountFilter.length > 0) {
@@ -697,6 +751,17 @@
     return lines.length ? lines.join('\n') : '<span class="log-debug">No order events.</span>';
   }
 
+  // Terminal tab mode filter — when gateByMode is active, only show events
+  // whose detail text starts with the mode's [TAG] prefix OR has no known
+  // mode prefix (global/system events are always shown).
+  function _terminalMatchesMode(/** @type {string} */ detail) {
+    if (!_gatingMode) return true;
+    const prefix = _terminalPrefixFor(_gatingMode);
+    const hasKnownPrefix = _TERMINAL_PREFIXES.some(p => detail.startsWith(p));
+    if (!hasKnownPrefix) return true; // global event — always show
+    return prefix ? detail.startsWith(prefix) : true;
+  }
+
   function _terminalHtml() {
     // Each source contributes a row in the unified News-style grid
     // (time · message · tag). Tag is the source family — CMD / ORDER /
@@ -713,27 +778,40 @@
       const content = `${h.status || ''} ${h.message || ''} ${chips}`.trim();
       return { ts: h.time, html: _logRow(h.time, content, 'CMD', cls) };
     });
-    const orderLines = (orderRows || []).map(o => {
-      const status = (o.status || '').toUpperCase();
-      let cls = 'log-info';
-      if      (status === 'FILLED')          cls = 'log-agent-success';
-      else if (status === 'UNFILLED')        cls = 'log-agent-failed';
-      else if (status === 'OPEN')            cls = 'log-agent-alert';
-      else if (o.transaction_type === 'BUY') cls = 'log-agent-success';
-      const fillPrice = (o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null;
-      const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
-      const price     = fillPrice || initPrice;
-      const sym = o.symbol
-        ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
-        : '';
-      const content = `◆ ${o.transaction_type || '?'} ${o.quantity ?? '?'} ${sym} ${price} · ${o.account || '?'}`;
-      const ts = o.created_at || o.order_timestamp;
-      return { ts, html: _logRow(ts, content, 'ORDER', cls) };
-    });
-    const agentLines = (agentLog || []).map(e => {
-      const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
-      return { ts: e.timestamp, html: _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default') };
-    });
+    // Order lines — filter by mode when gateByMode is active.
+    const orderLines = (orderRows || [])
+      .filter(o => {
+        if (!_gatingMode) return true;
+        return (o?.mode || 'live') === _gatingMode;
+      })
+      .map(o => {
+        const status = (o.status || '').toUpperCase();
+        let cls = 'log-info';
+        if      (status === 'FILLED')          cls = 'log-agent-success';
+        else if (status === 'UNFILLED')        cls = 'log-agent-failed';
+        else if (status === 'OPEN')            cls = 'log-agent-alert';
+        else if (o.transaction_type === 'BUY') cls = 'log-agent-success';
+        const fillPrice = (o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null;
+        const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
+        const price     = fillPrice || initPrice;
+        const sym = o.symbol
+          ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
+          : '';
+        const content = `◆ ${o.transaction_type || '?'} ${o.quantity ?? '?'} ${sym} ${price} · ${o.account || '?'}`;
+        const ts = o.created_at || o.order_timestamp;
+        return { ts, html: _logRow(ts, content, 'ORDER', cls) };
+      });
+    // Agent lines — in sim mode show simLog entries; in real modes show agentLog.
+    // detail text is used for terminal gating (substring match on [TAG] prefix).
+    const agentLines = (agentLog || [])
+      .filter(e => {
+        const detail = String(e.trigger_condition || e.detail || '');
+        return _terminalMatchesMode(detail);
+      })
+      .map(e => {
+        const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
+        return { ts: e.timestamp, html: _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default') };
+      });
     const all = [...cmdLines, ...orderLines, ...agentLines]
       .sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
     return all.length ? all.map(x => x.html).join('') : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
@@ -752,6 +830,13 @@
         {logTab === id ? 'border-[#d97706] text-[#fbbf24]' : 'border-transparent text-[#b4c8e6] hover:text-[#fbbf24]'}"
     >{label}</button>
   {/each}
+  {#if gateByMode && _gatingMode}
+    <span class="lp-mode-chip mode-pill mode-pill-{_gatingMode}"
+          title="Activity filtered to current execution mode"
+          style="margin-left:auto;align-self:center;">
+      {_gatingMode.toUpperCase()}
+    </span>
+  {/if}
 </div>
 
 {#if logTab === 'news'}
@@ -774,12 +859,16 @@
        through UnifiedLog (which merged agent fires in) and the
        mode-specific branches rendered text spans inside a <pre>. -->
   <div class="om-bar">
-    {#each _ORDER_MODE_TABS as [val, label]}
-      <button class="om-chip {orderModeFilter === val ? 'om-on' : ''} om-chip-{val}"
-              onclick={() => orderModeFilter = /** @type {any} */ (val)}>
-        {label}
-      </button>
-    {/each}
+    {#if !_gatingMode}
+      <!-- Mode chip strip is hidden when gateByMode is active — the header
+           chip already shows the active mode and the filter is implicit. -->
+      {#each _ORDER_MODE_TABS as [val, label]}
+        <button class="om-chip {orderModeFilter === val ? 'om-on' : ''} om-chip-{val}"
+                onclick={() => orderModeFilter = /** @type {any} */ (val)}>
+          {label}
+        </button>
+      {/each}
+    {/if}
     {#if _availableAccounts.length > 1}
       <span class="om-acct-wrap">
         <AccountMultiSelect
@@ -832,7 +921,7 @@
         {/if}
       </div>
     {:else}
-      <div class="log-debug py-2 text-center">No {orderModeFilter} orders yet.</div>
+      <div class="log-debug py-2 text-center">No {_gatingMode || orderModeFilter} orders yet.</div>
     {/if}
   </div>
 {:else}
@@ -928,6 +1017,17 @@
   /* Tab row — another +30% on the previous 0.48rem → 0.62rem. Padding
      scaled proportionally. Still no inter-tab gap so mobile fit holds. */
   .log-tab-row { gap: 0; }
+
+  /* Mode gate chip — right-aligned in the tab row, shows which execution
+     mode is currently scoping all activity tabs. Reuses .mode-pill base;
+     extra horizontal padding so it reads as a header label, not an inline
+     order pill. Tooltip explains the filtering behaviour. */
+  .lp-mode-chip {
+    padding: 0.1rem 0.55rem !important;
+    font-size: 0.52rem !important;
+    letter-spacing: 0.07em;
+    cursor: help;
+  }
 
   /* Unified row layout for Agents · Terminal · Ticks · System tabs.
      Mirrors the News tab's `.newslist-row` grid so every log row reads
