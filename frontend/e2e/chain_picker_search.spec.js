@@ -2,7 +2,7 @@
  * Smoke spec: Chain-tab Underlying dropdown filter on prod.
  *
  * Verifies the chain-picker fix:
- *  1. Clicking "Chain" on /admin/options opens the OrderTicket modal
+ *  1. Clicking "Chain" on /admin/derivatives opens the OrderTicket modal
  *     on its Chain tab.
  *  2. Underlying dropdown defaults to the active underlying (auto-seeded
  *     from the page's `selectedUnderlying`), not blank or NIFTY.
@@ -92,7 +92,7 @@ test.describe('Chain picker Underlying dropdown', () => {
   test('search finds RELIANCE after typing "rel"', async ({ page }) => {
     await authOnce(page);
 
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await page.waitForLoadState('domcontentloaded');
     // Instruments cache loads on mount — wait for the page picker bar
     // to populate before any clicks.
@@ -136,7 +136,7 @@ test.describe('Chain picker Underlying dropdown', () => {
   test('chain underlying defaults to the page underlying', async ({ page }) => {
     await authOnce(page);
 
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await page.waitForLoadState('domcontentloaded');
     await expect(page.locator('button#opt-acct')).toBeVisible({ timeout: 10_000 });
     await page.waitForTimeout(1500);

@@ -1,5 +1,5 @@
 /**
- * Order placement from /admin/options — the multi-leg strategy
+ * Order placement from /admin/derivatives — the multi-leg strategy
  * workspace.
  *
  * The chain picker (where +CE / +PE / +FUT pills land legs) is gated
@@ -21,11 +21,11 @@ import { loginAsAdmin }  from './fixtures/auth.js';
 
 const TIMEOUT = 30_000;
 
-test.describe('Order placement · /admin/options', () => {
+test.describe('Order placement · /admin/derivatives', () => {
 
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await expect(page.locator('#opt-und')).toBeVisible({ timeout: TIMEOUT });
     // fetchAccounts() runs after onMount; allow time so the
     // MultiSelect option list is populated before any test clicks it.

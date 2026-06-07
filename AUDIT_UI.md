@@ -6,7 +6,7 @@
 
 - [`frontend/src/lib/PnlPanel.svelte:334–335`] introduces `pnl-pos` / `pnl-neg` — a third P&L colouring family alongside the documented `pnl-gain/pnl-loss/pnl-zero` (PerformancePage) and `cell-pos/cell-neg/cell-flat` (MarketPulse). Same hex values (`#4ade80` / `#f87171`) but a distinct class name living in a separate scoped `<style>`. CLAUDE.md notes only two families as "known debt"; PnlPanel adds a third.
 
-- [`frontend/src/routes/(algo)/admin/options/+page.svelte:3408–3414`] `cand-pnl-pos` / `cand-pnl-neg` — a fourth P&L variant (`#4ade80` / `#f87171` again). Same colours, different class names. The documented debt is now four families, not two.
+- [`frontend/src/routes/(algo)/admin/derivatives/+page.svelte:3408–3414`] `cand-pnl-pos` / `cand-pnl-neg` — a fourth P&L variant (`#4ade80` / `#f87171` again). Same colours, different class names. The documented debt is now four families, not two.
 
 - [`frontend/src/routes/(algo)/+layout.svelte:1663`] `.mode-combo-error { background: #1a0a0a }` — a near-black-red not present in any documented palette token. The canonical error surface on dark backgrounds is `rgba(248,113,113,0.12)` with `#f87171` text (as used throughout). This one-off creates a visually inconsistent error chip in the mode dropdown.
 
@@ -22,13 +22,13 @@
 
 - [`frontend/src/routes/(algo)/agents/activity/+page.svelte:29–38`] **Agent Activity page missing RefreshButton.** Page delegates all loading to `<UnifiedLog>` which self-polls at 3 s. But CLAUDE.md's rule is unconditional: "every page that fetches data dynamically MUST have a page-header RefreshButton." The RefreshButton also drives the `lastRefreshAt` tooltip; without it operators have no manual refresh affordance.
 
-- [`frontend/src/routes/(algo)/admin/options/+page.svelte:2123,2204`] **RefreshButton placed inside card header in non-fullscreen mode.** At lines 2123 (Payoff card) and 2204 (Legs card) the `{#if _fsPayoff}` / `{#if _fsLegs}` guards are correct — RefreshButton only renders in fullscreen. But the page header's RefreshButton at line 1909 wraps all three loaders (`loadPositions + loadSimStatus + loadStrategy`). That's fine for the page header. The card-level placements are canonical per CLAUDE.md, no violation — flagged as double-check only.
+- [`frontend/src/routes/(algo)/admin/derivatives/+page.svelte:2123,2204`] **RefreshButton placed inside card header in non-fullscreen mode.** At lines 2123 (Payoff card) and 2204 (Legs card) the `{#if _fsPayoff}` / `{#if _fsLegs}` guards are correct — RefreshButton only renders in fullscreen. But the page header's RefreshButton at line 1909 wraps all three loaders (`loadPositions + loadSimStatus + loadStrategy`). That's fine for the page header. The card-level placements are canonical per CLAUDE.md, no violation — flagged as double-check only.
 
 ### Component drift / one-off implementations
 
 - [`frontend/src/lib/OrderDetail.svelte:47`] uses `window.confirm()` for cancel confirmation. The project has `<ConfirmModal>` specifically replacing `window.confirm()` (it fails silently on iOS PWA). Same issue at [`execution/ReplayPanel.svelte:166`] (`confirm('Delete all replay orders and events?')`), [`admin/brokers/+page.svelte:267`], [`admin/tokens/+page.svelte:165`], [`agents/fragments/+page.svelte:143`], and [`execution/SimulatorPanel.svelte:1026`]. Six callsites still on `window.confirm()` / bare `confirm()`.
 
-- [`frontend/src/routes/(algo)/admin/settings/+page.svelte:274–309`] Hand-rolled `.info-btn` + `.info-popout` duplicates the canonical `<InfoHint popup>` component exactly (same amber `(i)` chip, same flat slate-blue popout, same border colours). CLAUDE.md documents that InfoHint was "implemented across `/admin/brokers`, `/admin/options`, `/admin/execution`, `/admin/settings`" — but the settings page didn't actually adopt the component; it re-implemented it inline per-row.
+- [`frontend/src/routes/(algo)/admin/settings/+page.svelte:274–309`] Hand-rolled `.info-btn` + `.info-popout` duplicates the canonical `<InfoHint popup>` component exactly (same amber `(i)` chip, same flat slate-blue popout, same border colours). CLAUDE.md documents that InfoHint was "implemented across `/admin/brokers`, `/admin/derivatives`, `/admin/execution`, `/admin/settings`" — but the settings page didn't actually adopt the component; it re-implemented it inline per-row.
 
 - [`frontend/src/routes/(algo)/+layout.svelte:721–736`] and [`agents/+page.svelte:1688–1707`] each contain a bespoke live-mode confirmation modal (`live-confirm-modal` / `lc-modal`) with their own overlay/body/button markup. `<ConfirmModal>` (which already handles this exact pattern) is available and used elsewhere. Two separate one-off modal implementations for the same "confirm destructive/live action" UX.
 

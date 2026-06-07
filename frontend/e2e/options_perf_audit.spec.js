@@ -1,5 +1,5 @@
 /**
- * /admin/options performance audit
+ * /admin/derivatives performance audit
  * Run with: PLAYWRIGHT_BASE_URL=https://dev.ramboq.com npx playwright test e2e/options_perf_audit.spec.js --project=chromium-desktop --workers=1
  */
 
@@ -8,7 +8,7 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
-test.describe('/admin/options perf audit', () => {
+test.describe('/admin/derivatives perf audit', () => {
   test.setTimeout(180_000);
 
   test('cold load + idle + interaction + nav stress', async ({ page, context }) => {
@@ -57,7 +57,7 @@ test.describe('/admin/options perf audit', () => {
     const t0 = Date.now();
     consoleMsgs.length = 0; pageErrors.length = 0; netLog.length = 0;
 
-    await page.goto('/admin/options', {
+    await page.goto('/admin/derivatives', {
       waitUntil: 'load',
       timeout: 90_000,
     });
@@ -295,7 +295,7 @@ test.describe('/admin/options perf audit', () => {
       const toOrdersMs = Date.now() - tToOrders;
 
       const tToOptions = Date.now();
-      await page.goto('/admin/options', { waitUntil: 'load', timeout: 30_000 }).catch(() => {});
+      await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 30_000 }).catch(() => {});
       const toOptionsMs = Date.now() - tToOptions;
 
       // Picker still works?

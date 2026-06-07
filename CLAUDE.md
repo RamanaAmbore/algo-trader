@@ -654,7 +654,7 @@ The `<span class="page-header-actions">` wrapper keeps all icons together as a s
 - **Log** — vivid violet (`#a855f7 → #7e22ce`). Opens `ActivityLogModal` (Order Book + Agent Log tabs). Always shown.
 
 Pass `symbol` when the page has a contextual symbol in scope:
-- `/admin/options` → `symbol={selectedUnderlying}`
+- `/admin/derivatives` → `symbol={selectedUnderlying}`
 - `/orders` → `symbol={_entrySymbol}` (+ `hideOrder={true}`)
 - `/admin/research` → `symbol={selected?.symbol ?? ''}`
 - `/charts` → `hideOrder={true} hideChart={true}` (page has its own order button; chart is the page itself)
@@ -719,7 +719,7 @@ Existing implementations to copy from:
 
 ### Picker / control bars on pages (Account · Underlying · Expiry · trailing buttons)
 
-Every page-level picker bar (e.g. /admin/options `.opt-picker`) follows this rule:
+Every page-level picker bar (e.g. /admin/derivatives `.opt-picker`) follows this rule:
 
 - **All fields LEFT-aligned at natural widths.** No single field uses `flex: 1 1 0` to stretch across the page.
 - **Empty space on the right.** No flex-grow consumer at the trailing edge; the right side stays empty so the leftmost field doesn't visually drift away from the next.
@@ -1319,7 +1319,7 @@ where the chase fired" without any new persistent state.
 - [`PriceChart.svelte`](frontend/src/lib/PriceChart.svelte) — hand-rolled SVG line + bid/ask shaded band + lifecycle markers (placed=amber / filled=emerald / unfilled=red). Polls `/api/charts/price-history` every 3 s. No chart library — keeps the bundle thin.
 - `/admin/execution?mode=sim` embeds one mini chart per symbol returned by `GET /charts/symbols?mode=sim` directly under the position pills, so the operator sees the trajectory + chase markers live.
 - The LogPanel **News** tab is the operator's headline feed inside the algo dark UI. Pulled out of the shared `<pre>` (where every other tab still lives) and rendered as a proper `<ul class="log-news-list">` with one `<li class="log-news-row">` per headline: `[HH:MM]  [<a> title <span> · source </span></a> flexes]`. The source label sits inside the title link as a trailing tag (subtle leading "·" separator, sky-cyan small-caps) so the row is a single clickable element instead of three loose pieces. Carries a `Refreshed at <ts>` heading line above the list, matching the public `/market` and `/performance` Market News card layout. `loadNews()` captures `refreshed_at` from the `/api/news` payload; heading hides on cold-start. The dual-zone presentational `timestamp` is parsed by a news-specific `_newsTime()` helper (extracts the first `HH:MM` run) — `_shortTime()` only knows ISO/`HH:MM:SS` and was dumping the whole 60-char dual-zone string into the time column. CSS lives in [`app.css`](frontend/src/app.css) alongside the rest of the log palette.
-- The standalone **Chart** tab inside LogPanel was retired — never had a clear use case (the pages that need charts already render them inline alongside their own controls, see `/admin/execution`, `/admin/options`). Removed the tab + the `chartMode` / `chartSymbols` / `chartsBySymbol` props from LogPanel's API. The pages that were feeding those props for the tab dropped the dead fetch chain.
+- The standalone **Chart** tab inside LogPanel was retired — never had a clear use case (the pages that need charts already render them inline alongside their own controls, see `/admin/execution`, `/admin/derivatives`). Removed the tab + the `chartMode` / `chartSymbols` / `chartsBySymbol` props from LogPanel's API. The pages that were feeding those props for the tab dropped the dead fetch chain.
 
 **Cleanup**: deque `maxlen=600` is the only retention mechanism — at the default tick rates (2 s sim / 5 s paper) that's ~20 min of history per symbol. Restart loses the history; operator monitoring the chase live doesn't need cross-restart continuity. If post-mortem replay becomes valuable, swap to a `price_ticks` table here.
 
@@ -1382,7 +1382,7 @@ Visual surface for the prod paper-trade engine, pairing with the simulator panel
 
 ---
 
-## Options analytics (`/admin/options`)
+## Options analytics (`/admin/derivatives`)
 
 Distinct workspace from the tick-chart pages — this is options *research*, not live monitoring. For any single-leg option (live position / sim position / hypothetical typed-in symbol), it computes Greeks, payoff curve, theoretical-vs-market discrepancy, max-profit / max-loss / breakeven / probability-of-profit, plus a 30-day historical price chart.
 
@@ -1447,7 +1447,7 @@ Both endpoints surface position-level expected value and R:R alongside the exist
 
 **Why this matters operationally** — POP alone is misleading. A 95 %-POP credit spread that risks ₹50k to make ₹500 has positive expectancy but a single loss takes 100 winners to recover; EV captures the magnitude side and tells you whether the trade is actually worth taking. R:R does the same for the asymmetric clip-size aspect.
 
-**Option-chain picker** — `/admin/options` Strategy mode now has a third leg-input alongside "Add from book" and "+ Add row": an option-chain table that lets the operator browse strikes for any underlying / expiry and click `+ CE` / `+ PE` to drop a leg. Sourced from the existing instruments cache ([`frontend/src/lib/data/instruments.js`](frontend/src/lib/data/instruments.js); IndexedDB-backed, ~90k contracts) so no new API. Default qty = `lot_size` for the contract, side toggle (Long / Short) flips the sign. A **Futures quick-add row** sits above the strike grid — clicking a futures pill drops the contract into the basket as a Long or Short leg per the side toggle, useful for delta-hedged options structures (covered call / collar / synthetic long) and pure futures plays.
+**Option-chain picker** — `/admin/derivatives` Strategy mode now has a third leg-input alongside "Add from book" and "+ Add row": an option-chain table that lets the operator browse strikes for any underlying / expiry and click `+ CE` / `+ PE` to drop a leg. Sourced from the existing instruments cache ([`frontend/src/lib/data/instruments.js`](frontend/src/lib/data/instruments.js); IndexedDB-backed, ~90k contracts) so no new API. Default qty = `lot_size` for the contract, side toggle (Long / Short) flips the sign. A **Futures quick-add row** sits above the strike grid — clicking a futures pill drops the contract into the basket as a Long or Short leg per the side toggle, useful for delta-hedged options structures (covered call / collar / synthetic long) and pure futures plays.
 
 **Futures legs in strategy** — `multileg_payoff_curve` and `multileg_greeks` accept `kind: "fut"` legs. Futures are linear in spot (today's value tracks spot 1:1 over the sim window; expiry settles to spot), so they contribute pure delta (1 per share, signed by qty) and zero everywhere else. The strategy endpoint resolves a futures-leg LTP through the same broker.quote / avg_cost / spot fallback chain options use, but skips IV calibration entirely. Cost basis defaults to LTP for "what would buying this NOW look like" semantics. Smoke-tested on the canonical covered call (long fut + short ATM call): delta ≈ +29 (lot of 50 fut + short ATM call −21), positive theta, negative vega, max profit capped at strike+premium, max loss bounded by spot-floor.
 
@@ -1459,7 +1459,7 @@ Both endpoints surface position-level expected value and R:R alongside the exist
 - `multileg_pop(curve, S, T, σ_proxy)` — walks the expiry curve, identifies contiguous profit segments, integrates the lognormal `prob_above` over each. Open-ended endpoints (curve runs off-screen still in the money) use the analytical limits so we don't artificially clip POP. `σ_proxy` is the qty-weighted IV across legs — defensible single number from the data we have.
 - `multileg_extremes(curve)` — numerical max profit / max loss from the expiry curve. As wide as the spot range; unlimited-payoff legs (long calls, short puts) need the operator to widen `span_pct` if the realistic upside isn't covered.
 
-**Pricing-account setting** — `connections.price_account` (string, default blank) lets the operator pin which Kite account to use for shared market-data fetches (underlying spots in `PaperTradeEngine._capture_underlyings`, instrument lookup + LTP + historical for `/admin/options`). Implemented in [`backend/shared/brokers/registry.py::get_price_broker()`](backend/shared/brokers/registry.py); falls back to the first available account when the setting is blank.
+**Pricing-account setting** — `connections.price_account` (string, default blank) lets the operator pin which Kite account to use for shared market-data fetches (underlying spots in `PaperTradeEngine._capture_underlyings`, instrument lookup + LTP + historical for `/admin/derivatives`). Implemented in [`backend/shared/brokers/registry.py::get_price_broker()`](backend/shared/brokers/registry.py); falls back to the first available account when the setting is blank.
 
 **PriceBroker rate-limit cool-off** (`backend/shared/brokers/registry.py`) — `PriceBroker._try()` detects Kite's "Too many requests" error (case-insensitive substring match) and marks that broker as rate-limited for 30 s (`_RATE_LIMIT_COOLOFF_SECONDS`). Subsequent calls within the cool-off window skip the rate-limited broker immediately (no network round-trip) and fall over to the next broker in the preference chain. The cool-off map (`_RATE_LIMIT_COOLOFF`) is module-level with a `threading.Lock`; the state clears automatically when the cool-off expires. This prevents a Kite rate-limit event from generating an amplifying storm of retries against the same host.
 
@@ -1521,7 +1521,7 @@ A consolidated, reusable chart component that renders historical OHLCV + optiona
 
 **Navbar:** `Charts` entry in `monitor` group, between Orders and Agents. Demo-visible (no `adminOnly`).
 
-**Chart-icon button — canonical pattern across surfaces:** Glyph: line-chart SVG path (14×14 in headers, 12×12 in rows). Palette: cyan-400 (`#22d3ee` resting, `#67e8f9` hover, bg α 0.12 → 0.22 on hover, border α 0.45 → 0.65). Title: `"Open chart for {symbol}"`. Used in SymbolPanel header, `/orders` entry header, `/orders` row symbol cells (via `.row-chart-btn` global), `/admin/options` Candidates rows, `/performance` symbol cells (ag-Grid cellRenderer).
+**Chart-icon button — canonical pattern across surfaces:** Glyph: line-chart SVG path (14×14 in headers, 12×12 in rows). Palette: cyan-400 (`#22d3ee` resting, `#67e8f9` hover, bg α 0.12 → 0.22 on hover, border α 0.45 → 0.65). Title: `"Open chart for {symbol}"`. Used in SymbolPanel header, `/orders` entry header, `/orders` row symbol cells (via `.row-chart-btn` global), `/admin/derivatives` Candidates rows, `/performance` symbol cells (ag-Grid cellRenderer).
 
 **Symbol-kind handling:** ChartWorkspace auto-detects symbol type (underlying via `parseUnderlying()`, derivative via `parseTrading Symbol()`, equity fallback). Renders appropriate historical interval + Greeks conditionally.
 
@@ -1565,7 +1565,7 @@ The deviations are deliberate:
 - **Avg next to LTP** — operators scan "where am I vs entry" first, before reference prices.
 - **P&L % before P&L** — normalised return reads first when scanning across symbols at different price scales (Bloomberg / IBKR MarketWatch convention).
 
-Other surfaces (PerformancePage Holdings + Positions, the `/admin/options` Candidates panel) keep the canonical cluster order. PerformancePage is the canonical-cluster reference grid.
+Other surfaces (PerformancePage Holdings + Positions, the `/admin/derivatives` Candidates panel) keep the canonical cluster order. PerformancePage is the canonical-cluster reference grid.
 
 **Hidden-by-default columns:** Open, Bid, Ask, Vol, OI, Expiry. Operator can re-show via the ag-Grid column tool panel; visibility persists via `pulse.gridColumnState.v2` localStorage. The `v` suffix bumps when the column set is reshuffled so prior persisted state is discarded cleanly.
 
@@ -1609,9 +1609,9 @@ To make the bars symbol-only, [`PerformancePage.svelte`](frontend/src/lib/Perfor
 
 **Responsive width.** `min-width: min(13rem, 88vw)` and `max-width: min(32rem, 92vw)` — viewport-clamped so the popup never overflows on a narrow phone (88 vw cap) and never gets unreadably wide on a desktop (32 rem cap). `align="right"` on the wrapper flips the popup to anchor on the right edge of its trigger when a left-anchored popup would clip off-screen.
 
-**Content delivery — `text` prop preferred over children snippet.** The component supports two ways of supplying the popout body: `text="…"` (string, may include HTML — rendered via `{@html}`) and a children snippet (`<InfoHint popup>…</InfoHint>`). The `text` prop wins when both are present. **Always prefer `text`** — children snippets occasionally lose their content during the SSR → CSR handoff in this codebase, leaving the chip clickable but the popout empty. Every InfoHint on `/admin/options` (and the simulator / paper / settings / brokers admin pages) was migrated to the `text` form for that reason.
+**Content delivery — `text` prop preferred over children snippet.** The component supports two ways of supplying the popout body: `text="…"` (string, may include HTML — rendered via `{@html}`) and a children snippet (`<InfoHint popup>…</InfoHint>`). The `text` prop wins when both are present. **Always prefer `text`** — children snippets occasionally lose their content during the SSR → CSR handoff in this codebase, leaving the chip clickable but the popout empty. Every InfoHint on `/admin/derivatives` (and the simulator / paper / settings / brokers admin pages) was migrated to the `text` form for that reason.
 
-Used liberally on `/admin/options` to gloss every Greek (Δ Γ Θ V ρ) and every risk/EV metric (max profit, max loss, R:R, breakeven, POP, EV, EV/cost) — operators new to options analytics get the explanation one click away without giving up screen real estate to verbose helper text. The same `(i)` chip + amber-accent palette as the inline variant, so the affordance is consistent.
+Used liberally on `/admin/derivatives` to gloss every Greek (Δ Γ Θ V ρ) and every risk/EV metric (max profit, max loss, R:R, breakeven, POP, EV, EV/cost) — operators new to options analytics get the explanation one click away without giving up screen real estate to verbose helper text. The same `(i)` chip + amber-accent palette as the inline variant, so the affordance is consistent.
 
 ---
 
@@ -1703,7 +1703,7 @@ Cross-link aggressively — every page on the platform should be findable via at
 
 ## InfoHint pattern
 
-Most algo admin pages used to ship a long descriptive paragraph at the top — fine for first-time onboarding but pure noise once the operator knows what the page does. [`frontend/src/lib/InfoHint.svelte`](frontend/src/lib/InfoHint.svelte) replaces those with a small amber `(i)` chip next to the page title; click to toggle an inline popover with the same gradient + amber accent the Settings row info uses. Implemented across `/admin/brokers`, `/admin/options`, `/admin/execution` (all five mode panels), `/admin/settings`. ~30-40 vh saved per page; help text is one click away when needed.
+Most algo admin pages used to ship a long descriptive paragraph at the top — fine for first-time onboarding but pure noise once the operator knows what the page does. [`frontend/src/lib/InfoHint.svelte`](frontend/src/lib/InfoHint.svelte) replaces those with a small amber `(i)` chip next to the page title; click to toggle an inline popover with the same gradient + amber accent the Settings row info uses. Implemented across `/admin/brokers`, `/admin/derivatives`, `/admin/execution` (all five mode panels), `/admin/settings`. ~30-40 vh saved per page; help text is one click away when needed.
 
 `<InfoHint>` accepts a children snippet so the popover can include HTML / Svelte content. Default `label='i'`; `align='right'` available for header-bar use cases. Component is theme-aligned (no extra CSS in callers).
 
@@ -1752,11 +1752,11 @@ A single Svelte component handles every order op the platform needs (open / clos
 
 | Mode | What happens |
 |---|---|
-| **DRAFT** | Caller's `onSubmit` callback (no API hit). Caller appends to its local drafts array — typically the [`/admin/options`](frontend/src/routes/(algo)/admin/options/+page.svelte) page's `drafts[]`. |
+| **DRAFT** | Caller's `onSubmit` callback (no API hit). Caller appends to its local drafts array — typically the [`/admin/derivatives`](frontend/src/routes/(algo)/admin/derivatives/+page.svelte) page's `drafts[]`. |
 | **PAPER** | `POST /api/orders/ticket` with `mode: "paper"`. Backend persists an `AlgoOrder` row + registers the order with the prod paper engine via `register_open_order`. The engine's 5-second tick runs the same fill / modify / unfilled lifecycle that agent fires use, driven by real bid/ask via `LiveQuoteSource`. |
 | **LIVE** | Same endpoint with `mode: "live"`. Two backend gates fire before any broker call: (1) `is_prod_branch()` — non-prod returns 403; (2) `get_bool('execution.paper_trading_mode', True)` must be `False` — set via the navbar mode dropdown (LIVE entry) which targets `/admin/execution?mode=live`. Both gates pass → `kite.place_order()` tagged `ramboq-ticket`. **No confirm dialog** — the pre-submit margin/cost row above the Submit button already shows exactly what's being committed to; an extra modal just slowed the fast-trading workflow. Backend gates are the only safety net. |
 
-**Account selector** — required for PAPER + LIVE so the operator picks which Kite handle the order routes through; never relying on the backend's silent "first available" fallback. The ticket renders a readonly account display when there's exactly one available, a `<select>` dropdown when there's more than one, and refuses to submit if `_account` is blank. Pre-filled from the calling page's account state when an obvious choice exists (e.g. the operator already filtered to one account in `/admin/options`). The backend enforces the same rule: ticket route returns 400 when account is blank or unknown to it, with no silent first-account fallback.
+**Account selector** — required for PAPER + LIVE so the operator picks which Kite handle the order routes through; never relying on the backend's silent "first available" fallback. The ticket renders a readonly account display when there's exactly one available, a `<select>` dropdown when there's more than one, and refuses to submit if `_account` is blank. Pre-filled from the calling page's account state when an obvious choice exists (e.g. the operator already filtered to one account in `/admin/derivatives`). The backend enforces the same rule: ticket route returns 400 when account is blank or unknown to it, with no silent first-account fallback.
 
 **Validation** — before any backend call: qty must be a positive multiple of `lotSize` when known (NIFTY 50, BANKNIFTY 15, …), price ≥ 0, trigger ≥ 0, account picked. Backend additionally validates the enum fields (variety / exchange / product / order_type) up-front so Kite's cryptic "Invalid input — 400" never reaches the operator.
 
@@ -1769,7 +1769,7 @@ A single Svelte component handles every order op the platform needs (open / clos
 | `POST /api/orders/ticket` | Operator-initiated order. `{mode, side, tradingsymbol, qty, exchange, product, order_type, variety, price, trigger_price, account?}`. Routes by mode. |
 
 **Where the ticket gets opened today**:
-- `/admin/options` chain `+CE` / `+PE` / futures pill clicks → ticket pre-filled (DRAFT default).
+- `/admin/derivatives` chain `+CE` / `+PE` / futures pill clicks → ticket pre-filled (DRAFT default).
 
 **Migration plan for other surfaces** (each is now just "add `<OrderTicket>` import + open it on the relevant click"):
 - `/orders` row Edit / Cancel / Repeat
@@ -2035,7 +2035,7 @@ The earlier `api_short_*` tail files were retired — the handler rewrote them i
 | Change deploy branch routing | `webhook/dispatch.sh` — the `if/elif/else`; copy to server after changes: `sudo cp /opt/ramboq/webhook/dispatch.sh /etc/webhook/dispatch.sh` |
 | Change browser tab title or SEO meta tags | `frontend/src/app.html` and per-route `<svelte:head>` sections |
 | Change footer text | `backend/config/frontend_config.yaml` — `footer_name`, `footer_text2`, `footer_mobile_text3`, `footer_desktop_text3` |
-| Open the chart for any symbol from any surface | Click the cyan chart-icon button — opens `<ChartModal>` via the unified `/charts` workspace. Available on `/orders` entry + rows, `/admin/options` Candidates, `/performance` symbol cells (ag-Grid cellRenderer). |
+| Open the chart for any symbol from any surface | Click the cyan chart-icon button — opens `<ChartModal>` via the unified `/charts` workspace. Available on `/orders` entry + rows, `/admin/derivatives` Candidates, `/performance` symbol cells (ag-Grid cellRenderer). |
 | Change a loss threshold | Edit the corresponding `loss-*` agent from the `/agents` page (its condition tree's `value` is the threshold). Engine-wide knobs stay in `backend/config/backend_config.yaml` under `alert_cooldown_minutes`, `alert_rate_window_min`, `alert_baseline_offset_min`, `alert_suppress_delta_abs/_pct`. |
 | Change alert recipients | `backend/config/secrets.yaml` on server — `alert_emails`, `telegram_chat_id` |
 | Enable/disable deploy notification | `backend/config/backend_config.yaml` on server — `notify_on_startup` (True=dev, False=prod) |

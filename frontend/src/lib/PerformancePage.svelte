@@ -384,7 +384,7 @@
       span.className = 'perf-sym-cell';
       // Options deep-link (admin dashboard only)
       if (enableOptionsLink && /(?:CE|PE|FUT)$/.test(sym)) {
-        const href = `/admin/options?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;
+        const href = `/admin/derivatives?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;
         const a = document.createElement('a');
         a.href = href;
         a.className = 'perf-opts-link';

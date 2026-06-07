@@ -62,7 +62,7 @@ test.describe('Chain Place-mode toggle', () => {
 
   test('toggle visible at the top of the chain tab', async ({ page }) => {
     await authOnce(page);
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await page.waitForLoadState('domcontentloaded');
     await openChain(page);
 
@@ -78,7 +78,7 @@ test.describe('Chain Place-mode toggle', () => {
 
   test('Place mode opens Ticket tab pre-filled instead of basket-adding', async ({ page }) => {
     await authOnce(page);
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await page.waitForLoadState('domcontentloaded');
     await openChain(page);
 
@@ -108,7 +108,7 @@ test.describe('Chain Place-mode toggle', () => {
 
   test('Ticket tab Submit footer is visible (not hidden by bottom panel)', async ({ page }) => {
     await authOnce(page);
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await page.waitForLoadState('domcontentloaded');
     await openChain(page);
 

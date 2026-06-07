@@ -61,7 +61,7 @@
       //                /performance)
       //   anyone else → /pulse fallback
       if (data.role === 'designated') {
-        goto('/admin/options');
+        goto('/admin/derivatives');
       } else {
         goto('/pulse');
       }

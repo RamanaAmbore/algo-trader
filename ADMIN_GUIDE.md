@@ -389,7 +389,7 @@ You'll see:
 
 ---
 
-## Options analytics (`/admin/options`)
+## Options analytics (`/admin/derivatives`)
 
 A separate workspace from the tick-chart pages — this is for **options research**: pick an underlying, see the aggregated payoff for everything you hold on it, plus the Greeks and risk metrics on the side. One leg or twenty — same view; the page doesn't distinguish single-leg from multi-leg.
 
@@ -735,14 +735,14 @@ The `<OrderTicket>` modal in [`frontend/src/lib/order/`](frontend/src/lib/order/
 
 Three submit modes:
 
-- **DRAFT** — appends to the caller's local drafts array. No API hit. Used today by `/admin/options` chain `+CE` / `+PE` clicks.
+- **DRAFT** — appends to the caller's local drafts array. No API hit. Used today by `/admin/derivatives` chain `+CE` / `+PE` clicks.
 - **PAPER** — `POST /api/orders/ticket` with `mode=paper`. Creates an `AlgoOrder` row + registers with the prod paper engine; the chase loop fills it from real bid/ask via `LiveQuoteSource`. Same lifecycle agent fires use.
 - **LIVE** — same endpoint with `mode=live`. Two backend gates:
   1. Branch must be `main` (non-prod returns 403).
   2. `execution.paper_trading_mode` must be `False` (set from the navbar mode dropdown).
   Then `kite.place_order()` with the operator's payload, tagged `ramboq-ticket`. UI fires a `window.confirm()` with the exact order line before any broker call.
 
-Today the ticket opens from `/admin/options` chain clicks and from the **page-header Order icon** (amber `+` glyph) present on every algo page — alongside the **Chart icon** (cyan line glyph) and **Activity icon** (violet 3-line glyph). The three icons open canonical modals at a consistent viewport position (.canonical-modal-overlay/-panel) so muscle memory carries across pages. Symbol anchors are auto-resolved to the tradeable contract before the modals open — `NIFTY 50` → `NIFTY26JUNFUT`, `CRUDEOIL` → `CRUDEOILM26JUNFUT`. Future migration of click-targets: `/orders` row Edit / Cancel / Repeat, `/agents` fire-confirm, `/performance` row "Square off" / "Sell", `/console` `place …` command.
+Today the ticket opens from `/admin/derivatives` chain clicks and from the **page-header Order icon** (amber `+` glyph) present on every algo page — alongside the **Chart icon** (cyan line glyph) and **Activity icon** (violet 3-line glyph). The three icons open canonical modals at a consistent viewport position (.canonical-modal-overlay/-panel) so muscle memory carries across pages. Symbol anchors are auto-resolved to the tradeable contract before the modals open — `NIFTY 50` → `NIFTY26JUNFUT`, `CRUDEOIL` → `CRUDEOILM26JUNFUT`. Future migration of click-targets: `/orders` row Edit / Cancel / Repeat, `/agents` fire-confirm, `/performance` row "Square off" / "Sell", `/console` `place …` command.
 
 ---
 

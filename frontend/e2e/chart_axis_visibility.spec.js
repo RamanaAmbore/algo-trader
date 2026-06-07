@@ -52,7 +52,7 @@ test('dashboard chart text + grid is legible', async ({ page }) => {
 test('derivatives payoff chart has bright sigma + axis labels', async ({ page }) => {
   await _login(page);
   await page.setViewportSize({ width: 1440, height: 1200 });
-  await page.goto('https://ramboq.com/admin/options', { waitUntil: 'networkidle' });
+  await page.goto('https://ramboq.com/admin/derivatives', { waitUntil: 'networkidle' });
   await page.waitForTimeout(4000);
 
   // The payoff SVG renders only when there's data; capture whatever's there.

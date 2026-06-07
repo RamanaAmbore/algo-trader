@@ -1,4 +1,4 @@
-// The page-header clock on /admin/options (and 7 other pages) was
+// The page-header clock on /admin/derivatives (and 7 other pages) was
 // previously bound via {clientTimestamp()} which captured the string at
 // first render and stayed frozen. Replaced with a reactive {$nowStamp}
 // store ticked by a shared 60s setInterval. Verify the displayed
@@ -23,9 +23,9 @@ async function signIn(page) {
   }
 }
 
-test('/admin/options page-header timestamp ticks forward', async ({ page }) => {
+test('/admin/derivatives page-header timestamp ticks forward', async ({ page }) => {
   await signIn(page);
-  await page.goto('/admin/options', { waitUntil: 'domcontentloaded' });
+  await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 
   const ts = page.locator('.algo-ts').first();
   await ts.waitFor({ timeout: 15000 });
@@ -37,6 +37,6 @@ test('/admin/options page-header timestamp ticks forward', async ({ page }) => {
   await page.waitForTimeout(70000);
 
   const after = (await ts.textContent())?.trim() || '';
-  console.log(`[/admin/options] initial="${initial}" after="${after}"`);
+  console.log(`[/admin/derivatives] initial="${initial}" after="${after}"`);
   expect(after).not.toBe(initial);
 });

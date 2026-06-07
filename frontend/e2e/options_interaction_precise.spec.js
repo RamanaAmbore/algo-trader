@@ -1,12 +1,12 @@
 /**
- * Precise interaction test for /admin/options using discovered selectors.
+ * Precise interaction test for /admin/derivatives using discovered selectors.
  * Uses #opt-und (.rbq-select-trigger) for underlying picker.
  */
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
-test.describe('/admin/options precise interaction', () => {
+test.describe('/admin/derivatives precise interaction', () => {
   test.setTimeout(180_000);
 
   test('underlying picker + payoff chart render timing', async ({ page }) => {
@@ -35,7 +35,7 @@ test.describe('/admin/options precise interaction', () => {
 
     // ── Load page ────────────────────────────────────────────────────────────
     const t0 = Date.now();
-    await page.goto('/admin/options', { waitUntil: 'networkidle', timeout: 90_000 });
+    await page.goto('/admin/derivatives', { waitUntil: 'networkidle', timeout: 90_000 });
     const loadMs = Date.now() - t0;
     console.log(`\n  Load to networkidle: ${loadMs}ms`);
 

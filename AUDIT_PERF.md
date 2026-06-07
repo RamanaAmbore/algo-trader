@@ -16,7 +16,7 @@
 
 - **[backend/api/routes/watchlist.py:374-383](backend/api/routes/watchlist.py)** — `_ensure_default_watchlists` runs a no-op `UPDATE WatchlistItem SET tradingsymbol='NIFTY SMLCAP 100'` + `COMMIT` on every watchlist endpoint hit (list/get/quotes/add-item). One-off migration guard for a renamed symbol; the rename has completed. Remove the UPDATE after verifying zero stale rows.
 
-- **[frontend/src/lib/SymbolPanel.svelte:541](frontend/src/lib/SymbolPanel.svelte) + [frontend/src/lib/order/OptionChainTab.svelte:290](frontend/src/lib/order/OptionChainTab.svelte) + [frontend/src/routes/(algo)/admin/options/+page.svelte:1122](frontend/src/routes/(algo)/admin/options/+page.svelte)** — Three separate `setInterval(...refreshChainQuotes, 5000)` / `setInterval(...loadOrdersData, 3000)` calls without visibility gating. OptionChainTab fires 12 Kite quote calls/min per mounted instance even when the browser tab is backgrounded.
+- **[frontend/src/lib/SymbolPanel.svelte:541](frontend/src/lib/SymbolPanel.svelte) + [frontend/src/lib/order/OptionChainTab.svelte:290](frontend/src/lib/order/OptionChainTab.svelte) + [frontend/src/routes/(algo)/admin/derivatives/+page.svelte:1122](frontend/src/routes/(algo)/admin/derivatives/+page.svelte)** — Three separate `setInterval(...refreshChainQuotes, 5000)` / `setInterval(...loadOrdersData, 3000)` calls without visibility gating. OptionChainTab fires 12 Kite quote calls/min per mounted instance even when the browser tab is backgrounded.
 
 ## P2 (nice-to-have)
 

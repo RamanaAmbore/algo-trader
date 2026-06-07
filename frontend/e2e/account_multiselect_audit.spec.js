@@ -2,7 +2,7 @@
 //   /pulse           — MarketPulse toolbar
 //   /performance     — PerformancePage toolbar
 //   /dashboard       — Equity card header
-//   /admin/options   — already had it before this sprint
+//   /admin/derivatives   — already had it before this sprint
 import { test, expect } from '@playwright/test';
 
 const USER = 'rambo';
@@ -46,8 +46,8 @@ test('every positions/holdings surface has account MultiSelect', async ({ page }
   await expect(perfAcct).toBeVisible();
   console.log('[/performance] MultiSelect placeholder:', await perfAcct.textContent());
 
-  // /admin/options — already had it
-  await page.goto('/admin/options', { waitUntil: 'networkidle' });
+  // /admin/derivatives — already had it
+  await page.goto('/admin/derivatives', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   const optsAcct = page.locator('.rbq-multi-trigger').first();
   await expect(optsAcct).toBeVisible();

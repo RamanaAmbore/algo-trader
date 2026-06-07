@@ -6,7 +6,7 @@
  * and runs through its chase loop.
  *
  * Hybrid approach:
- *   1. UI anchor — load /admin/options, verify the chain page mounts
+ *   1. UI anchor — load /admin/derivatives, verify the chain page mounts
  *      and the "i" button (which opens OrderTicket) is in the DOM.
  *      Catches regressions in the page where the ticket affordance
  *      goes missing.
@@ -120,9 +120,9 @@ test.setTimeout(120_000);
 
 test.describe('Paper order placement', () => {
 
-  test('1: /admin/options chain page mounts with ticket affordances', async ({ page }) => {
+  test('1: /admin/derivatives chain page mounts with ticket affordances', async ({ page }) => {
     await authOnce(page);
-    await page.goto('/admin/options');
+    await page.goto('/admin/derivatives');
     await page.waitForLoadState('domcontentloaded');
 
     // Page header is the cheapest "page hydrated" marker.
@@ -133,7 +133,7 @@ test.describe('Paper order placement', () => {
     // drive the ticket). The button is unconditionally rendered.
     const chainBtn = page.locator('button:has-text("Chain")').first();
     await expect(chainBtn).toBeVisible({ timeout: 8_000 });
-    console.log('[paper_order_placement] /admin/options page mounted + Chain button present');
+    console.log('[paper_order_placement] /admin/derivatives page mounted + Chain button present');
   });
 
   test('2: POST /api/orders/ticket mode=paper → AlgoOrder(mode=paper) row appears', async ({ page }) => {

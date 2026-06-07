@@ -1,12 +1,12 @@
 /**
- * DOM probe for /admin/options — discover actual picker structure
+ * DOM probe for /admin/derivatives — discover actual picker structure
  * and measure strategy-analytics timing precisely.
  */
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
-test.describe('/admin/options DOM probe', () => {
+test.describe('/admin/derivatives DOM probe', () => {
   test.setTimeout(120_000);
 
   test('discover picker DOM and measure analytics timing', async ({ page }) => {
@@ -32,7 +32,7 @@ test.describe('/admin/options DOM probe', () => {
 
     netLog.length = 0; consoleMsgs.length = 0; pageErrors.length = 0;
 
-    await page.goto('/admin/options', { waitUntil: 'networkidle', timeout: 60_000 });
+    await page.goto('/admin/derivatives', { waitUntil: 'networkidle', timeout: 60_000 });
 
     // ── 1. Discover actual DOM structure of picker area ────────────────────
     const pickerHtml = await page.locator('.opt-picker, .page-picker, .picker-bar, [class*="picker"], [class*="opt-"]').first()

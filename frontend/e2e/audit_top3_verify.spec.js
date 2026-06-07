@@ -3,7 +3,7 @@
 //   2. Dashboard movers use ohlc.close fallback (no zero-pct rows
 //      silently disappearing) — soft assertion: at least one
 //      bucket has rows or the section is collapsed cleanly.
-//   3. /admin/options accountChoices unions broker registry, so the
+//   3. /admin/derivatives accountChoices unions broker registry, so the
 //      account picker has entries even when positions[] is empty.
 //
 // Run:
@@ -73,7 +73,7 @@ test(`dashboard W/L tabs carry count chips [${BASE}]`, async ({ page }) => {
 test(`admin/options account picker populates from broker registry [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/options`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(4500);
 
   const slug = BASE.includes('dev') ? 'dev' : 'prod';

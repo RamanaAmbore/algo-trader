@@ -3694,7 +3694,7 @@
   function ctxOpenOptions(row) {
     closeContextMenu();
     const sym = encodeURIComponent(row.tradingsymbol || '');
-    window.location.href = `/admin/options?symbol=${sym}`;
+    window.location.href = `/admin/derivatives?symbol=${sym}`;
   }
   function ctxOpenTicket(row) {
     closeContextMenu();

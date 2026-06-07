@@ -100,7 +100,7 @@
     // Agents — operators reach for the option payoff / Greeks far
     // more often than Agents config, so the chain entry sits one
     // click earlier in the navbar.
-    { href: '/admin/options',    label: 'Derivatives', group: 'monitor' },
+    { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/agents',           label: 'Agents',    group: 'monitor' },

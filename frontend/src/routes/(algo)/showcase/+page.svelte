@@ -74,7 +74,7 @@
         'R:R ratio for bounded structures, ∞ rendered correctly for unbounded legs',
         'Coherent underlying re-pricing — one "NIFTY −1%" tick cascades through every contract',
       ],
-      link: { href: '/admin/options', label: 'Open Derivatives' },
+      link: { href: '/admin/derivatives', label: 'Open Derivatives' },
     },
     {
       title: 'Multi-broker abstraction + IPv6 binding',
@@ -116,7 +116,7 @@
         'Connection badge on Refresh: green (all broker accounts loaded), amber (partial), red (none) — single 15 s global poll, every Refresh icon subscribes',
         'Charts scale to viewport in fullscreen mode (OptionsPayoff, PriceChart, dashboard equity curve)',
       ],
-      link: { href: '/admin/options', label: 'See it on Derivatives' },
+      link: { href: '/admin/derivatives', label: 'See it on Derivatives' },
     },
     {
       title: 'Real-time alerting with tier-aware audio',

@@ -2,7 +2,7 @@
  * Smoke spec: shell-level basket bar renders per-leg pills.
  *
  * Verifies commit 43afe36:
- *  1. Open /admin/options → pick an account → click Chain.
+ *  1. Open /admin/derivatives → pick an account → click Chain.
  *  2. Add a leg via one of the strike-grid + buttons inside the
  *     OrderTicket chain tab.
  *  3. Switch to a non-Chain tab (Log) so only the shell-level basket
@@ -59,7 +59,7 @@ test.describe('Shell basket pills', () => {
 
 test('basket pills render in the shell bottom bar', async ({ page }) => {
   await authOnce(page);
-  await page.goto('/admin/options');
+  await page.goto('/admin/derivatives');
   await page.waitForLoadState('domcontentloaded');
   // Wait until the account list has actually loaded (placeholder text
   // flips away from "No accounts loaded"). Without this, the test
@@ -106,7 +106,7 @@ test('basket pills render in the shell bottom bar', async ({ page }) => {
 
 test('command line + chain legs both surface as pills', async ({ page }) => {
   await authOnce(page);
-  await page.goto('/admin/options');
+  await page.goto('/admin/derivatives');
   await page.waitForLoadState('domcontentloaded');
   // Wait until the account list has actually loaded (placeholder text
   // flips away from "No accounts loaded"). Without this, the test
