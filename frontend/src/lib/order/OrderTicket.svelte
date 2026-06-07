@@ -1285,7 +1285,16 @@
 
   // Pre-submit preview — debounced fetch so an operator typing in the
   // override fields doesn't fire a request per keystroke.
-  let _previewTimer = $state(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
+  //
+  // CRITICAL: `_previewTimer` MUST be a plain `let`, NOT `$state`. The
+  // $effect below reads it (`if (_previewTimer) clearTimeout(...)`) AND
+  // writes it (`_previewTimer = setTimeout(...)`); declaring it as
+  // $state creates a read+write loop inside the same effect that
+  // re-queues itself every 200 ms, saturating the scheduler and
+  // hanging the entire modal. Timer handles are internal cleanup
+  // state, not reactive UI state.
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _previewTimer = null;
   $effect(() => {
     // Track the inputs that affect the preview.
     const inputs = [
@@ -1738,43 +1747,31 @@
       paused={suspended}
       onQuote={onDepthQuote} />
 
-    <!-- Mode selector + chase — only relevant when *placing* a new
-         order. action='modify' bypasses the place-pipeline entirely
-         (PUT /api/orders/{id} hits the broker directly), so neither
-         mode nor chase apply there; the whole row is hidden.
+    <!-- Chase row — only relevant when *placing* a new order.
+         action='modify' bypasses the place-pipeline entirely
+         (PUT /api/orders/{id} hits the broker directly).
          Suppressed when `modeChaseHidden` is true — the host
          (SymbolPanel) renders the same controls in its shared
-         toolbar so Chain + Ticket both read from one toolkit. -->
+         toolbar so Chain + Ticket both read from one toolkit.
+
+         MODE PILLS REMOVED (Wave C): execution mode is set
+         EXCLUSIVELY via the navbar dropdown. The ticket reads
+         `_mode` from `$executionMode` store via _resolveInitialMode
+         (normalised sim/replay → paper for surfaces that only
+         expose draft/paper/live pills). Per-ticket pill picking
+         contradicted the "one mode chooser" UX rule and let the
+         operator submit in a mode different from the navbar
+         pill — bug surface. Submit derives mode from the store
+         at click time. -->
     {#if action !== 'modify' && !modeChaseHidden}
     <div class="ot-mode-row">
-      <!-- Mode pills only render when there's an actual choice. With
-           only one mode available (e.g. ['live']) there's nothing to
-           pick — the operator just clicks Submit. The row stays
-           rendered for the chase / aggressiveness controls below. -->
-      {#if availableModes.length > 1}
-        <span class="ot-label">Mode</span>
-        <div class="ot-mode-pills">
-          {#if availableModes.includes('draft')}
-            <button type="button" class="ot-mode-pill ot-mode-draft" class:on={_mode === 'draft'}
-                    onclick={() => _setMode('draft')}>DRAFT</button>
-          {/if}
-          <!-- PAPER pill not in default availableModes — dev is paper-
-               only via the branch gate; on prod the per-action
-               execution.live.* flags decide. Calling sites that need
-               PAPER as an explicit choice can still pass it via
-               availableModes. -->
-          {#if availableModes.includes('paper')}
-            <button type="button" class="ot-mode-pill ot-mode-paper" class:on={_mode === 'paper'}
-                    title="Routes through the prod paper engine — real bid/ask, no broker hit"
-                    onclick={() => _setMode('paper')}>PAPER</button>
-          {/if}
-          {#if availableModes.includes('live')}
-            <button type="button" class="ot-mode-pill ot-mode-live" class:on={_mode === 'live'}
-                    title="Submit to backend. On dev always routes to paper. On prod, routed to LIVE only when the per-action execution.live.* flag is on."
-                    onclick={() => _setMode('live')}>LIVE</button>
-          {/if}
-        </div>
-      {/if}
+      <!-- Read-only mode hint so the operator can see at-a-glance
+           what mode the ticket will submit in. Source of truth is
+           the navbar pill; click it to change mode. -->
+      <span class="ot-mode-hint" title="Execution mode is set via the navbar dropdown. Submit will route through this mode.">
+        Mode <span class="ot-mode-hint-val ot-mode-hint-{_mode}">{_mode.toUpperCase()}</span>
+        <span class="ot-mode-hint-src">(navbar)</span>
+      </span>
 
       <!-- Chase toggle — only meaningful for limit-bearing orders.
            When ON, the engine re-quotes the limit each tick until
@@ -2383,6 +2380,33 @@
   .ot-mode-draft.on { background: rgba(192,132,252,0.18); border-color: rgba(192,132,252,0.55); color: #c084fc; }
   .ot-mode-paper.on { background: rgba(125,211,252,0.18); border-color: rgba(125,211,252,0.55); color: #7dd3fc; }
   .ot-mode-live.on  { background: rgba(74,222,128,0.18);  border-color: rgba(74,222,128,0.55);  color: #4ade80; }
+
+  /* Wave C — read-only mode hint replaces the legacy mode pills.
+     Operator clicks the navbar dropdown to change mode; this row
+     just shows what the ticket will submit in. Color tag mirrors
+     the navbar MODE_COLOR palette so visual identity is stable
+     across surfaces. */
+  .ot-mode-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.62rem;
+    color: rgba(180,200,230,0.7);
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+  .ot-mode-hint-val {
+    padding: 0.10rem 0.45rem;
+    border-radius: 3px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(180,200,230,0.20);
+  }
+  .ot-mode-hint-paper  { color: #7dd3fc; border-color: rgba(125,211,252,0.50); background: rgba(125,211,252,0.10); }
+  .ot-mode-hint-live   { color: #f87171; border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.10); }
+  .ot-mode-hint-draft  { color: #c084fc; border-color: rgba(192,132,252,0.50); background: rgba(192,132,252,0.10); }
+  .ot-mode-hint-shadow { color: #fb923c; border-color: rgba(251,146,60,0.50);  background: rgba(251,146,60,0.10); }
+  .ot-mode-hint-src    { color: rgba(180,200,230,0.45); font-size: 0.55rem; }
 
   /* Chase toggle — pushed to the row's far right (margin-left: auto)
      so it sits opposite the mode pills. Native checkbox + label
