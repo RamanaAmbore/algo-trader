@@ -172,27 +172,23 @@
 
   // BE label pin positions — operator: "keep breakeven text under the
   // x axis instead of showing at the top with the curve". Labels now
-  // sit BELOW the chart's plot baseline (height - PAD_B), in the same
-  // band as the σ-tick price labels but offset further down so the
-  // two row-types don't collide. Level-0 is the lower band; level-1
-  // stacks ABOVE level-0 (closer to the baseline) so two close-
-  // together BEs each have their own row without colliding.
-  /** @type {Array<{be:number,label:string,pinY:number,chipW:number}>} */
+  // Operator: "show break even x axis label vertically along the
+  // breakeven lines above x axis so that they don't overlap sigma
+  // x axis text. use the same sigma text font size". BE labels
+  // now render rotated 90° (reads bottom-to-top), positioned just
+  // above the x-axis baseline so they trace UP the breakeven
+  // vertical line into the chart area instead of competing with
+  // σ-tick text in the bottom padding band.
+  /** @type {Array<{be:number,label:string,pinY:number}>} */
   const bePins = $derived.by(() => {
-    return breakevenList.map((be, i) => {
+    return breakevenList.map((be) => {
       const label = priceFmt(be);
-      const chipW = label.length * 7 + 14;
-      let stackLevel = 0;
-      for (let j = 0; j < i; j++) {
-        if (Math.abs(xOf(breakevenList[j]) - xOf(be)) < 60) {
-          stackLevel = Math.max(stackLevel, 1);
-        }
-      }
-      // Sit in the bottom padding region, below the σ-tick labels
-      // (which occupy +12 to +25 below the baseline on milestone
-      // ticks). Level 0 at baseline + 28; level 1 stacks at + 14.
-      const pinY = (height - PAD_B) + 28 - stackLevel * 14;
-      return { be, label, pinY, chipW };
+      // Anchor 4px above the chart baseline. The rotated text grows
+      // UPWARD from this point (text-anchor='end' + rotate(-90)
+      // makes the text's END sit at pinY, so the readable text
+      // extends UP into the plot area).
+      const pinY = (height - PAD_B) - 4;
+      return { be, label, pinY };
     });
   });
 
@@ -846,20 +842,22 @@
                   fill="#fbbf24" stroke="#0c1830" stroke-width="0.75"
                   fill-opacity="0.85"
                   pointer-events="none"/>
-          <!-- Operator: "keep breakeven text under the x axis instead
-               of showing at the top with the curve". Plain amber
-               text rendered in the bottom padding band, anchored at
-               pin.pinY (= chart baseline + 28, stacked above when
-               two BEs are close horizontally). Navy stroke outline
-               (paint-order: stroke fill) so the label stays readable
-               when it sits beside a σ-tick price label. -->
+          <!-- Operator: "show break even x axis label vertically
+               along the breakeven lines above x axis so that they
+               don't overlap sigma x axis text. use the same sigma
+               text font size". Rotated -90° so the text reads
+               bottom-to-top along the BE line, sits just above the
+               x-axis baseline, tracks UP the BE vertical into the
+               chart area. Matches σ-tick font-size (10) so the
+               two label families read at the same visual weight. -->
           <text x={bx} y={pin.pinY}
-                text-anchor="middle"
+                text-anchor="end"
+                transform="rotate(-90 {bx} {pin.pinY})"
                 fill="#fbbf24"
                 stroke="#0c1830"
                 stroke-width="3"
                 paint-order="stroke fill"
-                font-size="12" font-weight="700"
+                font-size="10" font-weight="700"
                 font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
             {pin.label}
           </text>
