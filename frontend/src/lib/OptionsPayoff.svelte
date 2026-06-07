@@ -1107,7 +1107,13 @@
     <div class="payoff-legend">
       {#if legSymbols.length > 0}
         <span class="legend-legs">
-          {#each legSymbols as sym (sym)}
+          <!-- Keyed by symbol + index. A multi-leg strategy can carry
+               the same option tradingsymbol twice (e.g. long 1 lot +
+               short 1 lot at the same strike). The bare-symbol key
+               then collides and Svelte 5 throws each_key_duplicate
+               into the pageerror channel. Index makes it always-unique-
+               by-position regardless of symbol repeats. -->
+          {#each legSymbols as sym, i (sym + '|' + i)}
             <LegLabel {sym} />
           {/each}
         </span>

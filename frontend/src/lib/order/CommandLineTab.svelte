@@ -418,7 +418,7 @@
   <!-- Scrollable output history -->
   {#if cmdHistory.length}
     <div class="clt-history">
-      {#each cmdHistory as row (row.time + row.cmd)}
+      {#each cmdHistory as row, i (row.time + '|' + row.cmd + '|' + i)}
         <div class="clt-row">
           <span class="clt-time">{row.time}</span>
           <span class="clt-cmd">&gt; {row.cmd}</span>
