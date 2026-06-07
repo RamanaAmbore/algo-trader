@@ -135,7 +135,7 @@
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.05em;
-    color: #7e97b8;
+    color: var(--algo-muted);
     cursor: pointer;
     text-transform: uppercase;
     transition: color 0.1s, border-color 0.1s;
@@ -144,7 +144,7 @@
     gap: 0.45rem;
     margin-bottom: -1px;
   }
-  .exec-tab:hover { color: #c8d8f0; }
+  .exec-tab:hover { color: var(--algo-slate); }
   .exec-tab-active {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
@@ -152,7 +152,7 @@
   .exec-tab-subtitle {
     font-size: 0.55rem;
     font-weight: 500;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: none;
     letter-spacing: 0.02em;
   }
@@ -163,7 +163,7 @@
   .lab-loading {
     font-family: ui-monospace, monospace;
     font-size: 0.65rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     padding: 1rem;
     text-align: center;
   }

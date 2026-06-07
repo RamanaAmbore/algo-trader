@@ -274,7 +274,7 @@
     outline: none;
   }
   .ssi-input:focus {
-    border-color: rgba(251, 191, 36, 0.55);
+    border-color: var(--algo-amber-border);
     background: rgba(251, 191, 36, 0.06);
   }
   .ssi-input::placeholder {
@@ -304,7 +304,7 @@
     font-family: monospace;
     font-size: 0.55rem;
     font-weight: 800;
-    color: #7e97b8;
+    color: var(--algo-muted);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     padding: 0.3rem 0.55rem 0.15rem;
@@ -315,7 +315,7 @@
     padding: 0.3rem 0.55rem 0.4rem;
     font-family: monospace;
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     border-top: 1px solid rgba(255, 255, 255, 0.05);
   }
 
@@ -326,7 +326,7 @@
     padding: 0.2rem 0.4rem;
     background: transparent;
     border: 0;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.65rem;
     font-family: ui-monospace, monospace;
     cursor: pointer;
@@ -348,7 +348,7 @@
     letter-spacing: 0.03em;
   }
   .ssi-row-meta {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     letter-spacing: 0.06em;
   }

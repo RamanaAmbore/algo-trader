@@ -210,7 +210,7 @@
     z-index: 201;
     width: min(360px, 100vw);
     background: #0d1829;
-    border-left: 1px solid rgba(251, 191, 36, 0.3);
+    border-left: 1px solid var(--algo-amber-border-soft);
     display: flex;
     flex-direction: column;
     box-shadow: -4px 0 24px rgba(0, 0, 0, 0.6);
@@ -296,7 +296,7 @@
     font-family: ui-monospace, monospace;
     font-size: 0.68rem;
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
@@ -357,7 +357,7 @@
   .otd-ev-price {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
     margin-left: auto;
   }

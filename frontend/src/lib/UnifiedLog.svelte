@@ -207,7 +207,7 @@
   }
 
   .ul-empty {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     padding: 0.3rem 0.5rem;
   }
@@ -227,10 +227,10 @@
     display: flex;
     flex-direction: column;
     gap: 0.08rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .ul-time {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.5rem;
     letter-spacing: 0.02em;
@@ -248,7 +248,7 @@
     font-size: 0.55rem;
     flex-shrink: 0;
   }
-  .ul-msg { color: #c8d8f0; }
+  .ul-msg { color: var(--algo-slate); }
 
   /* ── Order-event kind chips ─────────────────────────────────── */
   .ul-kind-placed          { color: #38bdf8; }
@@ -269,7 +269,7 @@
   .ul-kind-agent_action_success   { color: #a855f7; }
   .ul-kind-agent_action_error     { color: #f472b6; }
   .ul-kind-agent_skipped          { color: #94a3b8; }
-  .ul-kind-agent_paused           { color: #7e97b8; }
+  .ul-kind-agent_paused           { color: var(--algo-muted); }
 
   /* Fallback for any unknown kind */
   .ul-kind:not([class*="ul-kind-"]) { color: #7dd3fc; }
@@ -335,7 +335,7 @@
     flex-shrink: 0;
   }
   .ul-card-ref {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
     padding: 0 0.35rem;
@@ -346,13 +346,13 @@
   }
   .ul-card-time {
     margin-left: auto;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.58rem;
     flex-shrink: 0;
   }
   .ul-card-msg {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.7rem;
     line-height: 1.4;
     padding-left: 0.1rem;

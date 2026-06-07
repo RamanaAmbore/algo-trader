@@ -169,7 +169,7 @@
     border-radius: 9999px;
     border: 1px solid rgba(125,151,184,0.32);
     background: rgba(125,151,184,0.06);
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.45rem;
     font-style: italic;
     font-weight: 600;
@@ -206,7 +206,7 @@
     border: 1px solid rgba(125,211,252,0.18);
     background: rgba(15, 25, 45, 0.95);
     font-size: 0.72rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     line-height: 1.5;
     flex: 1 1 100%;
   }

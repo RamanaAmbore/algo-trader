@@ -287,8 +287,8 @@
     height: 1.4rem;
     color: #22d3ee;
     border-radius: 3px;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: var(--algo-cyan-bg);
+    border: 1px solid var(--algo-cyan-border);
   }
   /* Refresh-state icon rotates while a fetch is in flight; static
      otherwise. Replaces the prior `cm-title-icon-loading` rotation

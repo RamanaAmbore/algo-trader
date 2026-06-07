@@ -659,7 +659,7 @@
     opacity: 0.8;
   }
   .chart-status {
-    color: #7e97b8;
+    color: var(--algo-muted);
     margin-left: auto;
     font-family: monospace;
   }
@@ -695,7 +695,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.6rem;
     font-family: monospace;
     text-align: center;

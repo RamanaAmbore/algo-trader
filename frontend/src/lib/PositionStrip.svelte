@@ -249,7 +249,7 @@
     padding: 0 0.85rem;
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
     border-bottom: 1px solid rgba(251,191,36,0.18);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.6rem;
     letter-spacing: 0.04em;
@@ -267,7 +267,7 @@
     gap: 0.3rem;
   }
   .ps-agg-k {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.5rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -280,7 +280,7 @@
 
   .ps-pos  { color: #4ade80; }
   .ps-neg  { color: #f87171; }
-  .ps-flat { color: #c8d8f0; }
+  .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
 

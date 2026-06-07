@@ -304,7 +304,7 @@
   .filter-label {
     font-size: 0.55rem;
     font-weight: 700;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.07em;
   }
@@ -325,7 +325,7 @@
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.15);
     background: transparent;
-    color: #7e97b8;
+    color: var(--algo-muted);
     cursor: pointer;
     letter-spacing: 0.03em;
     transition: background 0.1s, border-color 0.1s, color 0.1s;
@@ -335,7 +335,7 @@
   .ev-pill-active.chip-green  { background: rgba(74,222,128,0.14); border-color: rgba(74,222,128,0.5); color: #4ade80; }
   .ev-pill-active.chip-red    { background: rgba(248,113,113,0.14); border-color: rgba(248,113,113,0.5); color: #f87171; }
   .ev-pill-active.chip-grey   { background: rgba(148,163,184,0.14); border-color: rgba(148,163,184,0.4); color: #94a3b8; }
-  .ev-pill-active:not([class*="chip-"]) { background: rgba(200,216,240,0.12); border-color: rgba(200,216,240,0.35); color: #c8d8f0; }
+  .ev-pill-active:not([class*="chip-"]) { background: rgba(200,216,240,0.12); border-color: rgba(200,216,240,0.35); color: var(--algo-slate); }
 
   /* Sim toggle */
   .toggle-btn {
@@ -346,7 +346,7 @@
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.15);
     background: transparent;
-    color: #7e97b8;
+    color: var(--algo-muted);
     cursor: pointer;
     transition: background 0.1s, border-color 0.1s, color 0.1s;
   }
@@ -388,7 +388,7 @@
   .alerts-table th:last-child { border-right: none; }
   .alerts-table td {
     padding: 0.28rem 0.5rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-bottom: 1px solid rgba(255,255,255,0.06);
     border-right: 1px solid rgba(255,255,255,0.06);
     vertical-align: top;
@@ -431,7 +431,7 @@
   }
   .agent-name {
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 400;
   }
 

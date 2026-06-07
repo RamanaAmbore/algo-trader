@@ -113,7 +113,7 @@
     font-size: 0.6rem;
   }
   .rs-title {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 700;
@@ -136,7 +136,7 @@
     color: #fbbf24;
   }
   .rs-pos {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
   }
   .rs-ts {
@@ -153,7 +153,7 @@
     padding: 0.15rem 0.45rem;
     border: 1px solid rgba(126, 151, 184, 0.32);
     background: transparent;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, monospace;
     font-size: 0.55rem;
     font-weight: 700;

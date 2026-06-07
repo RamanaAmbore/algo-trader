@@ -122,7 +122,7 @@
     display: block;
     width: 100%;
     font-family: ui-monospace, monospace;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
 
   .rbq-multi-trigger {
@@ -136,7 +136,7 @@
     background-color: #1d2a44;
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.62rem;
     font-family: inherit;
     cursor: pointer;
@@ -193,7 +193,7 @@
     max-height: 14rem;
     overflow-y: auto;
     font-size: 0.62rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
 
   .rbq-multi-option {

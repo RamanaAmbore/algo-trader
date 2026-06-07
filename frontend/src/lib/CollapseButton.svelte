@@ -127,8 +127,8 @@
     height: 1.4rem;
     padding: 0;
     margin: 0 0 0 auto;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: var(--algo-cyan-bg);
+    border: 1px solid var(--algo-cyan-border);
     border-radius: 3px;
     color: #22d3ee;
     cursor: pointer;

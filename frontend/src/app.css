@@ -6,6 +6,83 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Canonical algo palette — CSS custom properties
+   All rgba() literals in component <style> blocks that match these palette
+   colors at the listed alpha levels SHOULD use the var() below so drift is
+   mechanical to spot. Off-by-0.01 alphas, gradients, box-shadows, and inline
+   style= attributes are intentionally left as raw literals.
+   ─────────────────────────────────────────────────────────────────────────────
+   Naming convention:
+     --algo-<color>               solid hex
+     --algo-<color>-text          lighter tint for text on colored bg
+     --algo-<color>-bg-soft       α 0.06–0.08  (very subtle tint)
+     --algo-<color>-bg            α 0.10–0.14  (standard bg tint)
+     --algo-<color>-bg-strong     α 0.20–0.22  (prominent bg tint)
+     --algo-<color>-border-soft   α 0.28–0.30  (subtle border)
+     --algo-<color>-border        α 0.55       (standard border)
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Solid color tokens */
+  --algo-amber:        #fbbf24;
+  --algo-amber-text:   #fde68a;
+  --algo-cyan:         #22d3ee;
+  --algo-cyan-text:    #67e8f9;
+  --algo-sky:          #7dd3fc;
+  --algo-sky-text:     #bae6fd;
+  --algo-green:        #4ade80;
+  --algo-green-text:   #6ee7b7;
+  --algo-red:          #f87171;
+  --algo-red-text:     #fecaca;
+  --algo-rose:         #fb7185;
+  --algo-rose-text:    #fda4af;
+  --algo-orange:       #fb923c;
+  --algo-orange-text:  #fed7aa;
+
+  --algo-slate:        #c8d8f0;   /* primary text on dark surfaces */
+  --algo-muted:        #7e97b8;   /* secondary / label text */
+  --algo-dim:          #94a3b8;   /* tertiary text */
+
+  /* Surface tokens */
+  --algo-page-bg:      #0a1020;
+  --algo-card-border:  rgba(255, 255, 255, 0.10);
+
+  /* Amber alpha variants */
+  --algo-amber-bg-soft:    rgba(251, 191, 36, 0.08);
+  --algo-amber-bg:         rgba(251, 191, 36, 0.14);
+  --algo-amber-bg-strong:  rgba(251, 191, 36, 0.22);
+  --algo-amber-border-soft:rgba(251, 191, 36, 0.30);
+  --algo-amber-border:     rgba(251, 191, 36, 0.55);
+
+  /* Cyan alpha variants */
+  --algo-cyan-bg-soft:     rgba(34, 211, 238, 0.08);
+  --algo-cyan-bg:          rgba(34, 211, 238, 0.14);
+  --algo-cyan-bg-strong:   rgba(34, 211, 238, 0.22);
+  --algo-cyan-border-soft: rgba(34, 211, 238, 0.30);
+  --algo-cyan-border:      rgba(34, 211, 238, 0.55);
+
+  /* Sky alpha variants */
+  --algo-sky-bg-soft:      rgba(125, 211, 252, 0.08);
+  --algo-sky-bg:           rgba(125, 211, 252, 0.12);
+  --algo-sky-bg-strong:    rgba(125, 211, 252, 0.22);
+  --algo-sky-border-soft:  rgba(125, 211, 252, 0.30);
+  --algo-sky-border:       rgba(125, 211, 252, 0.55);
+
+  /* Green alpha variants */
+  --algo-green-bg-soft:    rgba(74, 222, 128, 0.06);
+  --algo-green-bg:         rgba(74, 222, 128, 0.10);
+  --algo-green-bg-strong:  rgba(74, 222, 128, 0.22);
+  --algo-green-border-soft:rgba(74, 222, 128, 0.30);
+  --algo-green-border:     rgba(74, 222, 128, 0.55);
+
+  /* Red alpha variants */
+  --algo-red-bg-soft:      rgba(248, 113, 113, 0.06);
+  --algo-red-bg:           rgba(248, 113, 113, 0.10);
+  --algo-red-bg-strong:    rgba(248, 113, 113, 0.22);
+  --algo-red-border-soft:  rgba(248, 113, 113, 0.30);
+  --algo-red-border:       rgba(248, 113, 113, 0.55);
+}
+
 /* ── Global reset — kill browser blue focus rings and tap highlights ──────── */
 @layer base {
   *,
@@ -57,7 +134,7 @@
   background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
   border: 1px solid rgba(251, 191, 36, 0.40);
   border-radius: 6px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(251, 191, 36, 0.08);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--algo-amber-bg-soft);
   width: min(78vw, 980px);
   height: min(82vh, 760px);
   display: flex;
@@ -454,7 +531,7 @@
   --ag-header-foreground-color: #fbbf24;
   --ag-header-font-weight: 700;
   --ag-header-font-size: 0.6875rem;
-  --ag-foreground-color: #c8d8f0;
+  --ag-foreground-color: var(--algo-slate);
   --ag-background-color: #1d2a44;
   --ag-odd-row-background-color: #273552;
   --ag-row-hover-color: rgba(251,191,36,0.14);
@@ -515,7 +592,7 @@
 .ag-theme-algo .ag-cell {
   padding-left: 4px !important;
   padding-right: 4px !important;
-  color: #c8d8f0 !important;
+  color: var(--algo-slate) !important;
   border-right: 1px solid rgba(255,255,255,0.06) !important;
   /* Tabular figures so digit widths don't jitter as values update —
      applied at the cell level so every numeric column on every algo
@@ -526,7 +603,7 @@
 .ag-theme-algo .ag-row {
   font-size: 0.72rem !important;
   font-weight: 500;
-  color: #c8d8f0 !important;
+  color: var(--algo-slate) !important;
   letter-spacing: 0.01em;
   border-bottom: 1px solid rgba(255,255,255,0.06) !important;
   background-color: transparent !important;
@@ -548,13 +625,13 @@
 .ag-theme-algo .ag-paging-panel,
 .ag-theme-algo .ag-status-bar {
   background-color: #0a1020 !important;
-  color: #c8d8f0 !important;
+  color: var(--algo-slate) !important;
   border-top: 1px solid rgba(251,191,36,0.25) !important;
 }
 .ag-theme-algo .ag-overlay-no-rows-wrapper { padding: 8px; }
 .ag-theme-algo .ag-overlay-no-rows-center {
   font-size: 0.7rem;
-  color: #7e97b8;
+  color: var(--algo-muted);
 }
 
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
@@ -582,11 +659,11 @@
   white-space: nowrap;
 }
 .log-ts-ist {
-  color: #c8d8f0;
+  color: var(--algo-slate);
   font-size: 0.6rem;
 }
 .log-ts-edt {
-  color: #7e97b8;
+  color: var(--algo-muted);
   font-size: 0.5rem;
   opacity: 0.75;
 }
@@ -609,7 +686,7 @@
   margin-right: 0.45rem;
 }
 .log-ts-empty {
-  color: #7e97b8;
+  color: var(--algo-muted);
   opacity: 0.6;
   font-style: italic;
 }
@@ -622,7 +699,7 @@
   gap: 0.25rem;
 }
 .log-ts-inline .log-ts-edt { font-size: 0.55rem; }
-.log-ts-sep { color: #7e97b8; opacity: 0.5; }
+.log-ts-sep { color: var(--algo-muted); opacity: 0.5; }
 
 /* ── Log panel styles ────────────────────────────────────────────────────── */
 .log-panel {
@@ -641,7 +718,7 @@
 .log-panel .log-info    { color: #e2e8f0; }
 .log-panel .log-debug   { color: #94a3b8; }
 .log-panel .log-news-head {
-  color: #c8d8f0;
+  color: var(--algo-slate);
   font-weight: 600;
   letter-spacing: 0.02em;
   display: block;
@@ -1210,7 +1287,7 @@
   flex-shrink: 0;
 }
 .row-chart-btn:hover {
-  background: rgba(34, 211, 238, 0.22);
+  background: var(--algo-cyan-bg-strong);
   color: #67e8f9;
   border-color: rgba(103, 232, 249, 0.65);
 }
@@ -1277,12 +1354,12 @@
   transition: background-color 0.06s, color 0.06s, border-color 0.06s;
 }
 .act-events-btn:hover {
-  background: rgba(251, 191, 36, 0.08);
+  background: var(--algo-amber-bg-soft);
   color: #fbbf24;
-  border-color: rgba(251, 191, 36, 0.3);
+  border-color: var(--algo-amber-border-soft);
 }
 .act-events-btn-on {
-  background: rgba(251, 191, 36, 0.14);
+  background: var(--algo-amber-bg);
   color: #fbbf24;
   border-color: rgba(251, 191, 36, 0.5);
 }
@@ -1311,7 +1388,7 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  color: #c8d8f0;
+  color: var(--algo-slate);
 }
 /* Semantic accent variants — override only the left border colour. */
 .bucket-card-entry    { border-left-color: rgba(251, 191, 36, 0.70); } /* amber  — primary/data-entry */
@@ -1342,7 +1419,7 @@
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 .algo-tab--compact { padding: 0.22rem 0.6rem; }
-.algo-tab:hover { color: #c8d8f0; }
+.algo-tab:hover { color: var(--algo-slate); }
 .algo-tab[aria-selected="true"] { font-weight: 800; }
 .algo-tab[aria-selected="true"].algo-tab-c-amber {
   color: #fbbf24; border-bottom-color: #fbbf24;

@@ -246,7 +246,7 @@
        gap above the H1; trimming to 0.25rem here lets the hero
        breathe at its own natural top-padding. */
     padding: 0.25rem 0.5rem 2rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     /* FOUC gate — hidden until onMount sets .show-ready. Stops the
        brief flash of plain-text hero + bullet lists between the
        JS bundle landing and the scoped CSS chunk applying. */
@@ -308,7 +308,7 @@
   .show-fact-lbl {
     font-size: 0.65rem;
     font-weight: 700;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-top: 0.2rem;
@@ -353,7 +353,7 @@
   .show-card-num {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     letter-spacing: 0.05em;
   }
   .show-card-title {
@@ -377,7 +377,7 @@
   }
   .show-card-bullets li {
     font-size: 0.82rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     line-height: 1.45;
     padding: 0.18rem 0 0.18rem 1rem;
     position: relative;
@@ -461,7 +461,7 @@
   }
   .show-footer-btn-alt:hover {
     background: rgba(126, 151, 184, 0.10);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-color: rgba(126, 151, 184, 0.55);
   }
 </style>

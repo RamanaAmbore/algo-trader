@@ -683,7 +683,7 @@
     letter-spacing: 0.12em;
     color: #fbbf24;
     background: rgba(251, 191, 36, 0.16);
-    border: 1px solid rgba(251, 191, 36, 0.55);
+    border: 1px solid var(--algo-amber-border);
     padding: 0.22rem 0.55rem;
     border-radius: 4px;
     box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
@@ -837,7 +837,7 @@
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.06) inset,
       0 2px 4px rgba(0, 0, 0, 0.25);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, monospace;
     cursor: pointer;
     transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
@@ -864,7 +864,7 @@
     background:
       linear-gradient(180deg,
         rgba(74, 222, 128, 0.18) 0%,
-        rgba(74, 222, 128, 0.06) 60%,
+        var(--algo-green-bg-soft) 60%,
         rgba(0, 0, 0, 0.08) 100%),
       linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
     border-color: rgba(74, 222, 128, 0.60);
@@ -873,10 +873,10 @@
     background:
       linear-gradient(180deg,
         rgba(248, 113, 113, 0.18) 0%,
-        rgba(248, 113, 113, 0.06) 60%,
+        var(--algo-red-bg-soft) 60%,
         rgba(0, 0, 0, 0.08) 100%),
       linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border-color: rgba(248, 113, 113, 0.55);
+    border-color: var(--algo-red-border);
   }
   /* Cancelled stays in the orange family — distinct from rejected
      red so the operator can tell the two terminal-error buckets
@@ -913,7 +913,7 @@
     font-weight: 800;
     font-size: 1.3rem;
     line-height: 1;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   }
@@ -927,7 +927,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
 
   /* oc-count retired with the standalone Order Book card header. */
@@ -944,10 +944,10 @@
   }
   .oc-chip {
     padding: 0.05rem 0.4rem;
-    background: rgba(34, 211, 238, 0.08);
-    border: 1px solid rgba(34, 211, 238, 0.30);
+    background: var(--algo-cyan-bg-soft);
+    border: 1px solid var(--algo-cyan-border-soft);
     border-radius: 8px;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     font-weight: 700;
     font-family: ui-monospace, monospace;
@@ -958,8 +958,8 @@
   }
   .oc-chip:hover {
     background: rgba(34, 211, 238, 0.16);
-    color: #c8d8f0;
-    border-color: rgba(34, 211, 238, 0.55);
+    color: var(--algo-slate);
+    border-color: var(--algo-cyan-border);
   }
   .oc-chip-on {
     background: rgba(34, 211, 238, 0.26);
@@ -975,7 +975,7 @@
 
   /* Symbol text as a clickable affordance — underline on hover so
      the operator knows it's interactive. Colour stays the same
-     sky-blue (#c8d8f0) as the surrounding text; underline is the
+     sky-blue (var(--algo-slate)) as the surrounding text; underline is the
      only extra cue so the row stays scan-tight. */
   :global(.oc-sym-btn) {
     cursor: pointer;
@@ -1004,8 +1004,8 @@
     width: 1.2rem;
     height: 1.2rem;
     padding: 0;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: var(--algo-cyan-bg);
+    border: 1px solid var(--algo-cyan-border);
     border-radius: 3px;
     color: #22d3ee;
     cursor: pointer;
@@ -1022,7 +1022,7 @@
      pattern, only the hue changes. */
   .oc-act-cancel {
     background: rgba(248, 113, 113, 0.14);
-    border-color: rgba(248, 113, 113, 0.55);
+    border-color: var(--algo-red-border);
     color: #f87171;
   }
   .oc-act-cancel:hover {

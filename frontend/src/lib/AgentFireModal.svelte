@@ -142,7 +142,7 @@
     width: min(30rem, calc(100vw - 2rem));
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, monospace;
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
   }
@@ -206,7 +206,7 @@
   .afm-close {
     background: transparent;
     border: 1px solid rgba(255,255,255,0.15);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     width: 1.55rem;
     height: 1.55rem;
     border-radius: 3px;
@@ -253,7 +253,7 @@
   .afm-btn {
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.18);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.35rem 0.7rem;
     border-radius: 3px;
     font-size: 0.7rem;

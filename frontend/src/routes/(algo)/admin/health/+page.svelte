@@ -285,13 +285,13 @@
   .kv-row:last-child { border-bottom: none; }
   .kv-key {
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 500;
     flex: 0 0 auto;
   }
   .kv-val {
     font-size: 0.68rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     text-align: right;
     flex: 1 1 auto;
     font-variant-numeric: tabular-nums;
@@ -313,7 +313,7 @@
   .broker-row:last-child { border-bottom: none; }
   .broker-key {
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     flex: 1 1 auto;
   }
   .broker-ip {

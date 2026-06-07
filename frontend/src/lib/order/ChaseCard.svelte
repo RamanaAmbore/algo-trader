@@ -267,12 +267,12 @@
     text-transform: uppercase;
   }
   .cc-reconcile:hover:not(:disabled) {
-    background: rgba(125, 211, 252, 0.12);
+    background: var(--algo-sky-bg);
     color: #bae6fd;
   }
   .cc-reconcile:disabled { opacity: 0.45; cursor: progress; }
   .cc-empty {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.65rem;
     padding: 0.4rem 0.2rem;
     font-style: italic;
@@ -310,7 +310,7 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     font-size: 0.62rem;
     font-family: ui-monospace, monospace;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     min-width: 0;
   }
   .cc-compact .cc-row {
@@ -320,7 +320,7 @@
       minmax(2.6rem, auto);
   }
   .cc-row-h {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;

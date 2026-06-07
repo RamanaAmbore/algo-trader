@@ -2066,7 +2066,7 @@
   }
   .eq-chip-swatch { display: block; flex-shrink: 0; }
   .eq-chip-label  { display: inline-block; }
-  .eq-chip:hover { background: rgba(255, 255, 255, 0.06); color: #c8d8f0; }
+  .eq-chip:hover { background: rgba(255, 255, 255, 0.06); color: var(--algo-slate); }
   /* Off state — swatch fades so the operator scans 'what's drawn' by
      chip brightness alone. */
   .eq-chip:not(.eq-chip-on) .eq-chip-swatch { opacity: 0.35; }
@@ -2078,29 +2078,29 @@
   .eq-chip-H.eq-chip-on,
   .eq-chip-dH.eq-chip-on {
     background: rgba(125, 211, 252, 0.14);
-    border-color: rgba(125, 211, 252, 0.55);
+    border-color: var(--algo-sky-border);
     color: #7dd3fc;
   }
   .eq-chip-H.eq-chip-on:hover,
-  .eq-chip-dH.eq-chip-on:hover { background: rgba(125, 211, 252, 0.22); }
+  .eq-chip-dH.eq-chip-on:hover { background: var(--algo-sky-bg-strong); }
 
   .eq-chip-P.eq-chip-on,
   .eq-chip-dP.eq-chip-on {
-    background: rgba(251, 191, 36, 0.14);
-    border-color: rgba(251, 191, 36, 0.55);
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border);
     color: #fbbf24;
   }
   .eq-chip-P.eq-chip-on:hover,
-  .eq-chip-dP.eq-chip-on:hover { background: rgba(251, 191, 36, 0.22); }
+  .eq-chip-dP.eq-chip-on:hover { background: var(--algo-amber-bg-strong); }
 
   .eq-chip-comb.eq-chip-on,
   .eq-chip-dComb.eq-chip-on {
     background: rgba(74, 222, 128, 0.14);
-    border-color: rgba(74, 222, 128, 0.55);
+    border-color: var(--algo-green-border);
     color: #4ade80;
   }
   .eq-chip-comb.eq-chip-on:hover,
-  .eq-chip-dComb.eq-chip-on:hover { background: rgba(74, 222, 128, 0.22); }
+  .eq-chip-dComb.eq-chip-on:hover { background: var(--algo-green-bg-strong); }
 
   /* Chart frame — positioned wrapper around the SVG so the
      `.eq-stats` absolute overlay anchors to the chart area, not the
@@ -2173,7 +2173,7 @@
     font-size: 0.72rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .eq-stat-v.hero-pnl-up   { color: #4ade80; }
   .eq-stat-v.hero-pnl-down { color: #f87171; }
@@ -2190,7 +2190,7 @@
        single-line message and lets the rest of the dashboard pull
        up. The curve grows back to 220 px once data lands. */
     height: 3rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
     letter-spacing: 0.04em;
@@ -2230,7 +2230,7 @@
   .bucket-subheader {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2267,7 +2267,7 @@
     margin-left: 0.35rem;
     border-radius: 8px;
     background: rgba(126, 151, 184, 0.18);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.55rem;
     font-weight: 800;
     letter-spacing: 0;
@@ -2337,7 +2337,7 @@
     font-variant-numeric: tabular-nums;
   }
   .dash-agent-label {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2409,20 +2409,20 @@
   }
   .oo-pill:hover { filter: brightness(1.15); }
   .oo-pill-buy {
-    background: rgba(74, 222, 128, 0.10);
-    border-color: rgba(74, 222, 128, 0.30);
+    background: var(--algo-green-bg);
+    border-color: var(--algo-green-border-soft);
     color: #a7f3c0;
   }
   .oo-pill-sell {
-    background: rgba(248, 113, 113, 0.10);
-    border-color: rgba(248, 113, 113, 0.30);
+    background: var(--algo-red-bg);
+    border-color: var(--algo-red-border-soft);
     color: #fca5a5;
   }
   .oo-side   { font-weight: 800; font-size: 0.58rem; letter-spacing: 0.06em; }
   .oo-qty    { font-weight: 700; }
   .oo-sym    { font-weight: 700; }
-  .oo-price  { color: #c8d8f0; }
-  .oo-attempts { color: #7e97b8; font-size: 0.58rem; }
+  .oo-price  { color: var(--algo-slate); }
+  .oo-attempts { color: var(--algo-muted); font-size: 0.58rem; }
 
   /* .dash-row2 + .wl-tile* family retired — Winners / Losers cards
      moved to /pulse where they sit in the 6-grid layout alongside
@@ -2460,7 +2460,7 @@
     background: none;
     border: none;
     padding: 0.22rem 0.4rem 0.24rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     font-weight: 700;
@@ -2470,7 +2470,7 @@
     margin-bottom: -1px;
     transition: color 0.12s, border-color 0.12s;
   }
-  .wl-tab:hover { color: #c8d8f0; }
+  .wl-tab:hover { color: var(--algo-slate); }
   .wl-tab-on {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
@@ -2595,7 +2595,7 @@
     border-radius: 3px;
   }
   .wl-rows::-webkit-scrollbar-thumb:hover {
-    background: rgba(251, 191, 36, 0.55);
+    background: var(--algo-amber-border);
   }
   /* Fullscreen mode lifts the height cap so the operator can scan
      the full top-10 (or top-50 in the future) without scrolling. */
@@ -2638,7 +2638,7 @@
   .wl-pnl-down { color: #f87171; }
   .wl-pct {
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
   }
@@ -2698,7 +2698,7 @@
   }
   .dash-pnl-toggle {
     margin-left: auto;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     letter-spacing: 0.04em;

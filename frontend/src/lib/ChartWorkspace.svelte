@@ -1750,7 +1750,7 @@
     min-height: 0;
     box-sizing: border-box;
     background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border: 1px solid rgba(251, 191, 36, 0.30);
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(251, 191, 36, 0.05) inset;
     overflow: hidden;
@@ -1807,7 +1807,7 @@
     background: transparent;
     border: 0;
     border-right: 1px solid rgba(255, 255, 255, 0.06);
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     font-weight: 700;
@@ -1815,7 +1815,7 @@
     cursor: pointer;
   }
   .cw-range-btn:last-child { border-right: 0; }
-  .cw-range-btn:hover { background: rgba(125, 211, 252, 0.10); color: #c8d8f0; }
+  .cw-range-btn:hover { background: rgba(125, 211, 252, 0.10); color: var(--algo-slate); }
   .cw-range-btn.active {
     background: rgba(251, 191, 36, 0.18);
     color: #fbbf24;
@@ -1830,7 +1830,7 @@
   }
   .cw-intraday-btn.active {
     background: rgba(125, 211, 252, 0.18);
-    border-color: rgba(125, 211, 252, 0.55);
+    border-color: var(--algo-sky-border);
     color: #7dd3fc;
   }
 
@@ -1859,7 +1859,7 @@
   .cw-overlay-panel :global(.rbq-multi-trigger) {
     background: transparent;
     border: 0;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.6rem;
     padding: 0.18rem 0.4rem;
     min-height: 1.2rem;
@@ -1889,7 +1889,7 @@
     padding: 0.3rem 0.45rem;
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     z-index: 10;
     min-width: 9rem;
@@ -1936,13 +1936,13 @@
     margin-top: 0.12rem;
   }
   .cw-hp-label {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 700;
     min-width: 1.2rem;
     flex-shrink: 0;
   }
   .cw-hp-val {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
   }
   .cw-hp-val.up   { color: #4ade80; }
@@ -2020,7 +2020,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.65rem;
     font-family: monospace;
     padding: 0 1rem;
@@ -2047,7 +2047,7 @@
     gap: 0.4rem;
     padding: 0.3rem 0.75rem;
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: monospace;
     flex-shrink: 0;
   }
@@ -2066,7 +2066,7 @@
     font-size: 0.5rem;
     padding: 1px 5px;
     border-radius: 2px;
-    border: 1px solid rgba(251, 191, 36, 0.55);
+    border: 1px solid var(--algo-amber-border);
     color: #fbbf24;
     letter-spacing: 0.04em;
   }
@@ -2090,12 +2090,12 @@
     flex-shrink: 0;
   }
   .cw-info-sym   { color: #7dd3fc; font-weight: 700; }
-  .cw-info-close { color: #c8d8f0; font-variant-numeric: tabular-nums; }
+  .cw-info-close { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
   .cw-info-pct   { font-variant-numeric: tabular-nums; font-weight: 700; }
   .cw-pos { color: #4ade80; }
   .cw-neg { color: #f87171; }
-  .cw-info-meta { color: #7e97b8; }
-  .cw-meta-text { color: #7e97b8; font-size: 0.55rem; font-family: monospace; }
+  .cw-info-meta { color: var(--algo-muted); }
+  .cw-meta-text { color: var(--algo-muted); font-size: 0.55rem; font-family: monospace; }
   .cw-info-root {
     color: #4a5a7a;
     font-size: 0.55rem;
@@ -2126,7 +2126,7 @@
     font-size: 0.58rem;
     font-weight: 600;
     letter-spacing: 0.02em;
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: rgba(125, 145, 184, 0.08);
     border: 1px solid rgba(125, 145, 184, 0.22);
     border-radius: 3px;
@@ -2138,7 +2138,7 @@
   /* Amber roll-warning variant — expiry ≤ 3 days */
   .cw-fm-chip.cw-fm-rolling {
     color: #fbbf24;
-    background: rgba(251, 191, 36, 0.14);
+    background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
   @media (max-width: 600px) {
@@ -2169,7 +2169,7 @@
     font-family: monospace;
     font-size: 0.55rem;
     font-weight: 700;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
@@ -2188,13 +2188,13 @@
     font-family: monospace;
     font-size: 0.6rem;
     font-weight: 700;
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
   .cw-gk-val {
     font-family: monospace;
     font-size: 0.65rem;
     font-variant-numeric: tabular-nums;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .cw-gk-amber { color: #fbbf24; }
   .cw-gk-sky   { color: #7dd3fc; }

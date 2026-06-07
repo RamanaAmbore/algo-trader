@@ -134,7 +134,7 @@
     padding: 0.5rem 0.6rem;
     width: min(20rem, 80vw);
     text-align: left;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, monospace;
     box-shadow: 0 8px 24px rgba(0,0,0,0.55);
     cursor: pointer;

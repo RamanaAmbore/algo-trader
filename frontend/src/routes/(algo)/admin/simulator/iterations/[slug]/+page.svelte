@@ -195,7 +195,7 @@
   .loading, .empty {
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     padding: 1rem;
     text-align: center;
   }
@@ -229,7 +229,7 @@
   }
   .kv th {
     text-align: left;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 500;
     padding: 0.18rem 0.5rem 0.18rem 0;
     width: 9rem;
@@ -238,7 +238,7 @@
     font-size: 0.55rem;
   }
   .kv td {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.18rem 0;
     font-variant-numeric: tabular-nums;
   }
@@ -259,7 +259,7 @@
   .empty-inline {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     padding: 0.45rem 0;
   }
@@ -285,7 +285,7 @@
   .replay-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .hint {
     font-size: 0.55rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     margin-top: 0.35rem;
     text-align: center;

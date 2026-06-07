@@ -38,7 +38,7 @@
     align-items: center;
     justify-content: center;
     padding: 0.65rem 0.5rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.68rem;
     letter-spacing: 0.05em;

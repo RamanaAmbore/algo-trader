@@ -1064,7 +1064,7 @@
        should be equal to news tab text size of the data". News
        row is 0.72rem; matching here. */
     font-size: 0.72rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-left: none;
     background: transparent;
   }
@@ -1085,7 +1085,7 @@
     opacity: 0.85;
   }
   :global(.log-panel.log-rows .log-row-time-empty) {
-    color: #7e97b8;
+    color: var(--algo-muted);
     opacity: 0.55;
     font-style: italic;
   }
@@ -1096,7 +1096,7 @@
     /* Bumped with the message size — same proportion as
        .newslist-src on the news tab. */
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
     padding: 0 5px;
@@ -1210,7 +1210,7 @@
      CANCELLED: muted slate — the order is gone but not an error.
      REJECTED: stronger red than UNFILLED — broker hard-rejected.
      SHADOW_OK: orange — matches the SHADOW mode pill, not a fill. */
-  :global(.log-order-cancelled) { color: #7e97b8; }
+  :global(.log-order-cancelled) { color: var(--algo-muted); }
   :global(.log-order-rejected)  { color: #f87171; }
   :global(.log-order-shadow-ok) { color: #fb923c; }
 
@@ -1249,7 +1249,7 @@
   }
   .om-chip:first-child { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
   .om-chip:last-child  { border-right-width: 1px; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
-  .om-chip:hover { color: #c8d8f0; }
+  .om-chip:hover { color: var(--algo-slate); }
   .om-chip.om-on.om-chip-all    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
   .om-chip.om-on.om-chip-paper  { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
   /* Canonical green (#4ade80) for live — replaces off-palette emerald #10b981 */
@@ -1302,7 +1302,7 @@
     line-height: 1;
   }
   :global(.log-chart-btn:hover) {
-    background: rgba(34, 211, 238, 0.22);
+    background: var(--algo-cyan-bg-strong);
     border-color: rgba(103, 232, 249, 0.65);
     color: #67e8f9;
   }

@@ -1262,7 +1262,7 @@
      heading tiers (page title amber → section label muted blue →
      section heading light blue) read as distinct strata. Previously
      all three tiers rendered in #fbbf24 and the hierarchy collapsed. */
-  .perf-dark :global(.section-heading) { color: #c8d8f0; }
+  .perf-dark :global(.section-heading) { color: var(--algo-slate); }
 
   /* Tabs — active gets an amber tint + slight top-corner round so the
      selected tab reads as a panel header, not just an underlined word.
@@ -1284,7 +1284,7 @@
 
   /* Refresh button */
   .perf-dark :global(.btn-secondary) {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-color: #2a4060;
     background: transparent;
   }

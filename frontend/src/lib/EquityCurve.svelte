@@ -268,7 +268,7 @@
   .eq-header {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     flex: 1 1 auto;
@@ -282,14 +282,14 @@
   }
   .eq-final-up   { color: #4ade80; }
   .eq-final-down { color: #f87171; }
-  .eq-final-flat { color: #c8d8f0; }
+  .eq-final-flat { color: var(--algo-slate); }
   .eq-svg {
     width: 100%;
     display: block;
     cursor: crosshair;
   }
   .eq-empty {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     text-align: center;

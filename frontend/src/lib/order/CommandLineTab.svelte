@@ -477,7 +477,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
   .clt-chip-val {
     color: #f1f7ff;
@@ -485,12 +485,12 @@
     font-variant-numeric: tabular-nums;
   }
   .clt-chip-sym {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 600;
   }
   .clt-chip-ltp {
-    background: rgba(125, 211, 252, 0.08);
-    border-color: rgba(125, 211, 252, 0.30);
+    background: var(--algo-sky-bg-soft);
+    border-color: var(--algo-sky-border-soft);
   }
   .clt-chip-ltp .clt-chip-label { color: #7dd3fc; }
   .clt-chip-margin {
@@ -500,9 +500,9 @@
   .clt-chip-margin .clt-chip-label { color: #fbbf24; }
   .clt-chip-ok      { border-color: rgba(74, 222, 128, 0.45); }
   .clt-chip-ok .clt-chip-val      { color: #4ade80; }
-  .clt-chip-warn    { border-color: rgba(251, 191, 36, 0.55); }
+  .clt-chip-warn    { border-color: var(--algo-amber-border); }
   .clt-chip-warn .clt-chip-val    { color: #fbbf24; }
-  .clt-chip-err     { border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.06); }
+  .clt-chip-err     { border-color: var(--algo-red-border); background: var(--algo-red-bg-soft); }
   .clt-chip-err .clt-chip-val     { color: #f87171; }
   .clt-chip-loading .clt-chip-val { color: #94a3b8; }
 
@@ -526,7 +526,7 @@
   }
   .clt-clear-btn:hover {
     background: rgba(126, 151, 184, 0.18);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-color: rgba(126, 151, 184, 0.55);
   }
 
@@ -560,7 +560,7 @@
   .clt-time {
     font-family: monospace;
     font-size: 0.55rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     margin-right: 0.4rem;
   }
   .clt-cmd {
@@ -572,7 +572,7 @@
   .clt-result {
     font-family: monospace;
     font-size: 0.62rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     white-space: pre-wrap;
     word-break: break-all;
     margin: 0.2rem 0 0;
@@ -582,7 +582,7 @@
   }
   .clt-empty {
     font-size: 0.62rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     margin-top: 0.5rem;
   }

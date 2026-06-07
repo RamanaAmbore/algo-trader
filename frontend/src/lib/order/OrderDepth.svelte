@@ -127,13 +127,13 @@
     justify-content: space-between;
     gap: 0.4rem;
     font-size: 0.55rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     margin-bottom: 0.3rem;
   }
   .ot-depth-meta {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     font-size: 0.5rem;
     text-transform: none;
@@ -167,14 +167,14 @@
   }
   .ot-depth-label {
     font-size: 0.5rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     text-align: right;
   }
   .ot-depth-cell {
     text-align: right;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .ot-depth-bid     { color: #4ade80; }
   .ot-depth-bid-qty { color: #4ade80; opacity: 0.7; }

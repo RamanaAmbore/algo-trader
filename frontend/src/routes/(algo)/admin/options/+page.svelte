@@ -3101,7 +3101,7 @@
     flex-wrap: nowrap;
   }
   .kv-v {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.7rem;
     font-weight: 600;
     margin-left: auto;          /* push value to the right of pair */
@@ -3116,7 +3116,7 @@
   .kv-k-greek {
     font-size: 0.7rem;
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   /* Greeks card — all five pairs in a single row. The narrow
      `max-content auto` per slot lets each pair size to its own
@@ -3323,7 +3323,7 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     font-weight: 700;
@@ -3337,7 +3337,7 @@
     gap: 0.3rem;
     transition: color 0.12s, border-color 0.12s;
   }
-  .legs-tab:hover { color: #c8d8f0; }
+  .legs-tab:hover { color: var(--algo-slate); }
   .legs-tab-on {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
@@ -3351,13 +3351,13 @@
     color: rgba(200, 216, 240, 0.85);
   }
   .legs-tab-on .legs-tab-count {
-    background: rgba(251, 191, 36, 0.22);
+    background: var(--algo-amber-bg-strong);
     color: #fbbf24;
   }
   /* Alert badge when expiry-close has 1+ rows — red so the
      operator's eye lands on it when contracts need closing. */
   .legs-tab-count-alert {
-    background: rgba(248, 113, 113, 0.22);
+    background: var(--algo-red-bg-strong);
     color: #f87171;
   }
 
@@ -3369,8 +3369,8 @@
   .legs-underlying-chip {
     padding: 0.15rem 0.5rem;
     border-radius: 3px;
-    background: rgba(251, 191, 36, 0.22);
-    border: 1px solid rgba(251, 191, 36, 0.55);
+    background: var(--algo-amber-bg-strong);
+    border: 1px solid var(--algo-amber-border);
     color: #fbbf24;
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
@@ -3398,7 +3398,7 @@
      Specificity has to outrank cand-row-long / cand-row-short
      so the close tint reads on the existing dir-coloured rows. */
   .cand-row.cand-row-equity-close {
-    background-color: rgba(248, 113, 113, 0.10) !important;
+    background-color: var(--algo-red-bg) !important;
     box-shadow: inset 3px 0 0 rgba(248, 113, 113, 0.65);
   }
   .cand-row.cand-row-commodity-close {
@@ -3487,7 +3487,7 @@
      text) so the operator sees the roll-up at a glance. The two pnl
      columns sum to the strip's P + P∆ chips for the same accounts. */
   .cand-row.cand-row-total {
-    border-top: 2px solid rgba(251, 191, 36, 0.55);
+    border-top: 2px solid var(--algo-amber-border);
     background: rgba(251, 191, 36, 0.05);
     font-weight: 700;
     margin-top: 0.2rem;
@@ -3514,12 +3514,12 @@
   }
   .cand-split-closed {
     color: #f87171;
-    background: rgba(248, 113, 113, 0.10);
+    background: var(--algo-red-bg);
     border: 1px solid rgba(248, 113, 113, 0.45);
   }
   .cand-split-open {
     color: #4ade80;
-    background: rgba(74, 222, 128, 0.10);
+    background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.45);
   }
   /* Cell-level truncation so numeric tracks can shrink below their
@@ -3845,7 +3845,7 @@
     font-size: 0.65rem;
   }
   .chain-fut-sym {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-weight: 700;
     letter-spacing: 0.04em;
     white-space: nowrap;
@@ -3901,7 +3901,7 @@
   }
   .chain-th-ce     { text-align: left; color: #4ade80; }
   .chain-th-pe     { text-align: right; color: #f87171; }
-  .chain-th-strike { text-align: center; color: #c8d8f0; }
+  .chain-th-strike { text-align: center; color: var(--algo-slate); }
   .chain-grid td {
     padding: 0.18rem 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -3921,7 +3921,7 @@
     gap: 0.4rem;
     width: 100%;
   }
-  .chain-td-strike  { text-align: center; color: #c8d8f0; font-weight: 700; }
+  .chain-td-strike  { text-align: center; color: var(--algo-slate); font-weight: 700; }
   /* ATM strike — bold amber numeral substitutes for the dropped
      "ATM" pill; the row's amber background + borders carry the rest
      of the highlight, so this stays compact (no extra width). */
@@ -3949,7 +3949,7 @@
   .chain-cell-bid { color: #4ade80; }   /* same green as CE header */
   .chain-cell-ask { color: #f87171; }   /* same red as PE header */
   .chain-cell-sep {
-    color: #7e97b8;
+    color: var(--algo-muted);
     opacity: 0.7;
     margin: 0 0.18rem;
   }
@@ -4124,7 +4124,7 @@
     letter-spacing: 0.04em;
   }
   .chain-basket-sym {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-weight: 600;
   }
   .chain-basket-qty {
@@ -4280,7 +4280,7 @@
     border-radius: 3px;
     border: 1px solid rgba(126,151,184,0.35);
     background: rgba(13,21,38,0.6);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: monospace;
     font-size: 0.65rem;
     box-sizing: border-box;
@@ -4338,7 +4338,7 @@
     font-size: 0.55rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     opacity: 0.85;
     margin-bottom: 0.25rem;
   }
@@ -4381,7 +4381,7 @@
   .order-toast-side-sell { color: #f87171; }
   .order-toast-qty { color: #fbbf24; }
   .order-toast-sym { color: #e5edf7; }
-  .order-toast-px  { color: #c8d8f0; opacity: 0.9; }
+  .order-toast-px  { color: var(--algo-slate); opacity: 0.9; }
 
   .order-toast-foot {
     margin-top: 0.2rem;

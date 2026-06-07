@@ -135,7 +135,7 @@
     padding: 0.4rem 0;
     border-bottom: 1px solid rgba(126, 151, 184, 0.12);
     font-size: 0.72rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     line-height: 1.45;
     /* Keep each headline row intact inside a column — without this
        the column algorithm can split a row's time chip into one
@@ -155,7 +155,7 @@
   }
 
   .newslist-title {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     text-decoration: none;
     font-weight: 500;
     min-width: 0;
@@ -171,7 +171,7 @@
   .newslist-src {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
     padding: 1px 6px;
@@ -185,7 +185,7 @@
   .newslist-refreshed {
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     letter-spacing: 0.03em;
     margin-bottom: 0.35rem;
     /* Operator: "the line with the text refreshed at has new line
@@ -201,7 +201,7 @@
   .newslist-empty {
     font-family: ui-monospace, monospace;
     font-size: 0.65rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
 
   @media (max-width: 600px) {

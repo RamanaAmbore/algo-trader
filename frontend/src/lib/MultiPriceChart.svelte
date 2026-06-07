@@ -329,7 +329,7 @@
   .mpc-header {
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     flex: 1 1 auto;
@@ -364,7 +364,7 @@
     cursor: crosshair;
   }
   .mpc-empty {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     text-align: center;
@@ -403,7 +403,7 @@
     font-weight: 700;
   }
   .mpc-acct {
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
   .mpc-val {
     margin-left: 0.2rem;
@@ -413,7 +413,7 @@
   .mpc-val-up   { color: #4ade80; }
   .mpc-val-down { color: #f87171; }
   .mpc-raw {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
   }
 </style>

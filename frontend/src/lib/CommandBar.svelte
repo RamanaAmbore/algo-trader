@@ -433,7 +433,7 @@
     background: transparent !important;
     resize: none;
     padding: 0.35rem 0.5rem 1.5rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     width: 100%;
     display: block;
     overflow-y: auto;
@@ -461,7 +461,7 @@
     padding: 0.2rem 0.7rem;
     background: transparent;
     border: none;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     cursor: pointer;
     white-space: nowrap;
@@ -510,7 +510,7 @@
     font-size: 0.5rem;
   }
   .pair-val {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-weight: 500;
   }
   .pair-cursor {

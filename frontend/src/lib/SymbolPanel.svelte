@@ -1658,7 +1658,7 @@
   .oes-overlay {
     /* Modal-mode-only: scrollable body inside the fixed-height
        canonical-modal-panel. */
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, monospace;
   }
   /* Inline mode strips the modal chrome — used by /console which hosts
@@ -1787,7 +1787,7 @@
     font-family: ui-monospace, monospace;
     font-size: 0.65rem;
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.18rem 0.45rem;
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.10);
@@ -1813,7 +1813,7 @@
        input shows only its own amber border — was stacking as a
        2 px outer outline + 1 px inner border. */
     outline: none !important;
-    border-color: rgba(251, 191, 36, 0.55);
+    border-color: var(--algo-amber-border);
     background: rgba(251, 191, 36, 0.06);
   }
   .oes-sym-input::placeholder {
@@ -1843,7 +1843,7 @@
     padding: 0.2rem 0.4rem;
     background: transparent;
     border: 0;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.65rem;
     font-family: ui-monospace, monospace;
     cursor: pointer;
@@ -1859,13 +1859,13 @@
     letter-spacing: 0.03em;
   }
   .oes-sym-row-meta {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     letter-spacing: 0.06em;
   }
   /* Exchange tag — small, muted, matches the LogPanel chip palette. */
   .oes-exch {
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: rgba(126, 151, 184, 0.15);
     border: 1px solid rgba(126, 151, 184, 0.32);
     padding: 0.06rem 0.32rem;
@@ -2033,7 +2033,7 @@
   .oes-basket-result {
     font-family: monospace;
     font-size: 0.62rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     margin-right: 0.4rem;
   }
   .oes-basket-meta {
@@ -2121,7 +2121,7 @@
     height: 1.2rem;
     padding: 0 0.25rem;
     background: rgba(255,255,255,0.06);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border: 1px solid rgba(125,211,252,0.32);
     border-radius: 2px;
     font-family: ui-monospace, monospace;
@@ -2168,7 +2168,7 @@
     background: rgba(15,25,45,0.7);
     border: 1px solid rgba(125,211,252,0.3);
     border-radius: 3px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: 'Roboto Mono', monospace;
     font-variant-numeric: tabular-nums;
     font-size: 0.7rem;
@@ -2285,7 +2285,7 @@
     border-top: 1px solid rgba(255,255,255,0.07);
   }
   .oes-orders-head {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     letter-spacing: 0.08em;
     font-weight: 700;
@@ -2311,7 +2311,7 @@
     font-variant-numeric: tabular-nums;
   }
   .oes-orders-empty {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     padding: 0.3rem 0;
   }
@@ -2327,10 +2327,10 @@
     display: flex;
     flex-direction: column;
     gap: 0.08rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-event-time {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.5rem;
     letter-spacing: 0.02em;
@@ -2364,8 +2364,8 @@
   .oes-event-kind-agent_action_success { color: #a855f7; }
   .oes-event-kind-agent_action_error  { color: #f472b6; }
   .oes-event-kind-agent_skipped       { color: #94a3b8; }
-  .oes-event-kind-agent_paused        { color: #7e97b8; }
-  .oes-event-msg { color: #c8d8f0; }
+  .oes-event-kind-agent_paused        { color: var(--algo-muted); }
+  .oes-event-msg { color: var(--algo-slate); }
 
   /* Order cards */
   .oes-order-card {
@@ -2389,12 +2389,12 @@
   .oes-card-meta {
     margin-top: 0.2rem;
     font-size: 0.58rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
   }
-  .oes-card-sym  { color: #c8d8f0; font-weight: 800; }
-  .oes-card-qty  { color: #c8d8f0; font-variant-numeric: tabular-nums; }
-  .oes-card-px   { color: #c8d8f0; font-variant-numeric: tabular-nums; }
+  .oes-card-sym  { color: var(--algo-slate); font-weight: 800; }
+  .oes-card-qty  { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
+  .oes-card-px   { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
   .oes-card-chase {
     font-size: 0.55rem;
     color: #fbbf24;
@@ -2477,7 +2477,7 @@
     gap: 0.4rem;
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-common-mode-label {
     color: #fbbf24;
@@ -2507,11 +2507,11 @@
   .oes-common-mode-change {
     font-family: ui-monospace, monospace;
     font-size: 0.55rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-decoration: none;
     padding: 0 0.25rem;
   }
-  .oes-common-mode-change:hover { color: #c8d8f0; text-decoration: underline; }
+  .oes-common-mode-change:hover { color: var(--algo-slate); text-decoration: underline; }
 
   .oes-common-chase-toggle {
     display: inline-flex;
@@ -2630,14 +2630,14 @@
     padding: 0.25rem 0.35rem 0.35rem;
     font-family: monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-funds-line-low { color: #f87171; }
   .oes-funds-k {
     text-transform: uppercase;
     font-weight: 700;
     letter-spacing: 0.05em;
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
   /* TOTAL prefix gets the amber accent that ties to the modal title. */
   .oes-funds-line .oes-funds-k:first-child:is(:nth-child(1)) {
@@ -2666,7 +2666,7 @@
     font-weight: 600;
     border: 1px solid transparent;
     background: rgba(126, 151, 184, 0.10);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     white-space: nowrap;
   }
   /* Stacked variant — two rows (Req / Avail) one above the other.
@@ -2711,13 +2711,13 @@
   }
   .oes-margin-pill-err {
     background: rgba(248, 113, 113, 0.18);
-    border-color: rgba(248, 113, 113, 0.55);
+    border-color: var(--algo-red-border);
     color: #f87171;
   }
   .oes-margin-pill-neutral {
     background: rgba(126, 151, 184, 0.12);
     border-color: rgba(126, 151, 184, 0.35);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-common-basket,
   .oes-common-side,
@@ -2760,7 +2760,7 @@
     letter-spacing: 0.04em;
   }
   .oes-common-clear-inline:hover { background: rgba(248, 113, 133, 0.10); }
-  .oes-common-basket:hover:not(.is-disabled) { background: rgba(125, 211, 252, 0.12); }
+  .oes-common-basket:hover:not(.is-disabled) { background: var(--algo-sky-bg); }
   /* Grayed-out +Basket on Chain tab — affordance stays visible so
      the operator knows the basket flow exists; clicking it would
      do nothing on Chain (per-row +CE / +PE is the path there). */
@@ -2768,8 +2768,8 @@
     cursor: not-allowed;
     opacity: 0.45;
   }
-  .oes-common-side-buy  { border-color: rgba(74, 222, 128, 0.55); color: #4ade80; }
-  .oes-common-side-sell { border-color: rgba(248, 113, 113, 0.55); color: #f87171; }
+  .oes-common-side-buy  { border-color: var(--algo-green-border); color: #4ade80; }
+  .oes-common-side-sell { border-color: var(--algo-red-border); color: #f87171; }
   .oes-common-side-buy:hover  { background: rgba(74, 222, 128, 0.12); }
   .oes-common-side-sell:hover { background: rgba(248, 113, 113, 0.12); }
   .oes-common-submit-buy {
@@ -2803,12 +2803,12 @@
     cursor: pointer;
     background: transparent;
     border: 1px solid rgba(126, 151, 184, 0.45);
-    color: #7e97b8;
+    color: var(--algo-muted);
     transition: background 0.12s, color 0.12s;
   }
   .oes-common-clear:hover:not(:disabled) {
     background: rgba(126, 151, 184, 0.12);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-common-clear:disabled { opacity: 0.45; cursor: progress; }
 
@@ -2866,7 +2866,7 @@
     border-bottom-color: #c084fc;
     font-weight: 800;
   }
-  .oes-bottom-tab:hover:not(.active) { color: #c8d8f0; }
+  .oes-bottom-tab:hover:not(.active) { color: var(--algo-slate); }
   .oes-bottom-badge {
     display: inline-flex;
     align-items: center;

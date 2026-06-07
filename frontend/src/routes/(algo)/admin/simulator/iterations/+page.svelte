@@ -194,7 +194,7 @@
   .loading, .empty {
     font-family: ui-monospace, monospace;
     font-size: 0.7rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     padding: 1rem;
     text-align: center;
   }
@@ -218,8 +218,8 @@
     font-size: 0.62rem;
   }
   .run-id { color: #fbbf24; font-weight: 700; letter-spacing: 0.05em; }
-  .run-meta { color: #c8d8f0; }
-  .run-started { color: #7e97b8; margin-left: auto; }
+  .run-meta { color: var(--algo-slate); }
+  .run-started { color: var(--algo-muted); margin-left: auto; }
 
   .iter-table {
     width: 100%;
@@ -229,7 +229,7 @@
   }
   .iter-table th {
     text-align: left;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 600;
     padding: 0.3rem 0.55rem;
     border-bottom: 1px solid rgba(251,191,36,0.10);
@@ -248,7 +248,7 @@
   .iter-row:hover { background: rgba(251,191,36,0.08); }
   .iter-row td {
     padding: 0.3rem 0.55rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }
   .slug { color: #fbbf24; }

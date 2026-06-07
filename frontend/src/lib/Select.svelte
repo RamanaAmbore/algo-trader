@@ -183,7 +183,7 @@
     display: block;
     width: 100%;
     font-family: ui-monospace, monospace;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
 
   /* Trigger looks like .field-input but with the popup gradient so it
@@ -200,7 +200,7 @@
     background-color: #1d2a44;
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.62rem;
     font-family: inherit;
     cursor: pointer;
@@ -244,7 +244,7 @@
     border-radius: 4px;
     box-shadow: 0 10px 28px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
     font-size: 0.62rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     display: flex;
     flex-direction: column;
     max-height: 16rem;
@@ -265,7 +265,7 @@
     border: 1px solid rgba(251,191,36,0.22);
     border-radius: 3px;
     padding: 0.25rem 0.45rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: inherit;
     font-size: 0.62rem;
     outline: none;

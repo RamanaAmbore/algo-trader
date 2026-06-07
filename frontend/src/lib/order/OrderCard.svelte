@@ -174,7 +174,7 @@
   :global(.tag-manual)       { color: #67e8f9; background: rgba(34, 211, 238, 0.10); }
   :global(.tag-agent)        { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
   /* TP / parent / basket linkage chips */
-  :global(.log-chip-tp)      { color: #4ade80; background: rgba(74, 222, 128, 0.10); }
+  :global(.log-chip-tp)      { color: #4ade80; background: var(--algo-green-bg); }
   :global(.log-chip-parent)  { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   :global(.log-chip-basket)  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
 </style>

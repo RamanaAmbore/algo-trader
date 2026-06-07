@@ -918,7 +918,7 @@
     gap: 0.5rem;
     margin-bottom: 0.25rem;
   }
-  .oct-acct-hint { font-size: 0.62rem; color: #7e97b8; font-style: italic; }
+  .oct-acct-hint { font-size: 0.62rem; color: var(--algo-muted); font-style: italic; }
   /* Subtle inline warn line shown when no broker account is loaded
      and none was supplied via the modal header. The legacy
      .oct-account-row wrapper is gone; this stand-alone div replaces
@@ -926,7 +926,7 @@
   .oct-acct-warn {
     font-size: 0.62rem;
     color: #fbbf24;
-    background: rgba(251, 191, 36, 0.08);
+    background: var(--algo-amber-bg-soft);
     border: 1px solid rgba(251, 191, 36, 0.28);
     border-radius: 3px;
     padding: 0.28rem 0.5rem;
@@ -959,7 +959,7 @@
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
     font-weight: 700;
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: rgba(125, 145, 184, 0.08);
     border: 1px solid rgba(125, 145, 184, 0.22);
     border-radius: 3px;
@@ -968,14 +968,14 @@
   }
   .oct-expiry-dte-warn {
     color: #fbbf24;
-    background: rgba(251, 191, 36, 0.14);
+    background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
   .oct-acct-single {
     font-family: monospace;
     font-size: 0.72rem;
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.2rem 0.4rem;
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.12);
@@ -1090,7 +1090,7 @@
   .chain-col-pe     { width: 42%; }
   .chain-th-ce      { text-align: left;   color: #4ade80; padding: 0.2rem 0.5rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-th-pe      { text-align: right;  color: #f87171; padding: 0.2rem 0.5rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
-  .chain-th-strike  { text-align: center; color: #c8d8f0; padding: 0.2rem 0.3rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.3rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1111,7 +1111,7 @@
     gap: 0.4rem;
     width: 100%;
   }
-  .chain-td-strike  { text-align: center; color: #c8d8f0; font-weight: 700; }
+  .chain-td-strike  { text-align: center; color: var(--algo-slate); font-weight: 700; }
   .chain-td-strike-atm { color: #fbbf24; font-weight: 800; letter-spacing: 0.04em; }
   .chain-cell-quote {
     display: inline-flex;
@@ -1125,7 +1125,7 @@
   }
   .chain-cell-bid { color: #4ade80; }
   .chain-cell-ask { color: #f87171; }
-  .chain-cell-sep { color: #7e97b8; opacity: 0.7; margin: 0 0.18rem; }
+  .chain-cell-sep { color: var(--algo-muted); opacity: 0.7; margin: 0 0.18rem; }
   .chain-side-action { display: inline-flex; align-items: center; }
   .chain-row-itm-call > td { background: rgba(56,189,248,0.05); }
   .chain-row-itm-put  > td { background: rgba(251,146,60,0.05); }
@@ -1217,7 +1217,7 @@
   .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
   .chain-basket-leg-type-eq  { border-left-color: #fbbf24; }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
-  .chain-basket-sym { color: #c8d8f0; font-weight: 600; }
+  .chain-basket-sym { color: var(--algo-slate); font-weight: 600; }
   .chain-basket-qty { color: #a3b9d0; font-size: 0.58rem; opacity: 0.85; font-variant-numeric: tabular-nums; }
   .chain-basket-step {
     width: 1.05rem; height: 1.05rem; padding: 0; border-radius: 2px;

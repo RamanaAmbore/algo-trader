@@ -1280,7 +1280,7 @@
     padding-top: 0.4rem;
     font-size: 0.65rem;
     font-family: monospace;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-top: 1px solid rgba(255,255,255,0.05);
     margin-top: 0.3rem;
   }
@@ -1379,7 +1379,7 @@
     text-align: right;
     font-weight: 700;
     font-size: 10px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
   }
   .ps-v.ps-spot { color: #7dd3fc; }
@@ -1394,7 +1394,7 @@
   /* PREV row sits between SPOT and TDAY; neutral cyan so the eye
      reads SPOT (directional colour) → PREV (anchor) without
      re-tinting itself. */
-  .ps-v.ps-flat { color: #c8d8f0; }
+  .ps-v.ps-flat { color: var(--algo-slate); }
   .payoff-multi-expiry-note {
     margin: 0.25rem 0 0;
     font-size: 0.6rem;
@@ -1416,7 +1416,7 @@
     padding: 1px 6px;
     font-size: 0.58rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: rgba(125, 145, 184, 0.08);
     border: 1px solid rgba(125, 145, 184, 0.22);
     border-radius: 3px;
@@ -1429,7 +1429,7 @@
   /* Amber roll-warning state */
   .payoff-anchor-chip--amber {
     color: #fbbf24;
-    background: rgba(251, 191, 36, 0.14);
+    background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
 </style>

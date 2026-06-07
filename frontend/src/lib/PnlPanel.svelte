@@ -247,7 +247,7 @@
   .filter-label {
     font-size: 0.55rem;
     font-weight: 700;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.07em;
     white-space: nowrap;
@@ -264,7 +264,7 @@
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.15);
     background: transparent;
-    color: #7e97b8;
+    color: var(--algo-muted);
     cursor: pointer;
     letter-spacing: 0.03em;
     transition: background 0.1s, border-color 0.1s, color 0.1s;
@@ -310,7 +310,7 @@
   .pnl-table th:last-child { border-right: none; }
   .pnl-table td {
     padding: 0.28rem 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-bottom: 1px solid rgba(255,255,255,0.06);
     border-right: 1px solid rgba(255,255,255,0.06);
     vertical-align: middle;

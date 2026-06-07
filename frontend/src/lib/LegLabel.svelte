@@ -43,12 +43,12 @@
   }
 
   .leg-root {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-weight: 600;
   }
 
   .leg-month {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 400;
   }
 

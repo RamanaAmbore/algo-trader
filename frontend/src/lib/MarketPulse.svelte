@@ -4529,7 +4529,7 @@
      positions tells calls from puts at a glance. */
   :global(.sym-main.sym-ce) { color: #4ade80; }
   :global(.sym-main.sym-pe) { color: #f87171; }
-  :global(.sym-alias) { color: #7e97b8; font-size: 0.55rem; }
+  :global(.sym-alias) { color: var(--algo-muted); font-size: 0.55rem; }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
   :global(.sym-badges) {
@@ -4658,7 +4658,7 @@
   :global(.ag-theme-algo .ag-row.major-divider),
   :global(.ag-theme-algo .ag-row.mover-direction-divider),
   :global(.ag-theme-algo .ag-row.mover-group-divider) {
-    border-top: 1px solid rgba(251, 191, 36, 0.30);
+    border-top: 1px solid var(--algo-amber-border-soft);
     box-shadow: none;
   }
   /* Per-row left-edge accent on the movers sub-groups — kept faint
@@ -4803,7 +4803,7 @@
     padding: 0.15rem 0.35rem;
     margin-bottom: 0.2rem;
     border-left: 3px solid currentColor;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .mp-bucket-label-pinned    { color: rgba(251, 191, 36, 0.85); }
   .mp-bucket-label-watch     { color: rgba(251, 191, 36, 0.65); }
@@ -4868,7 +4868,7 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     font-weight: 700;
@@ -4879,7 +4879,7 @@
     line-height: 1;
     transition: color 0.12s, border-color 0.12s;
   }
-  .mp-toptab:hover { color: #c8d8f0; }
+  .mp-toptab:hover { color: var(--algo-slate); }
   .mp-toptab-on.mp-toptab-pinned {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
@@ -4906,7 +4906,7 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     font-size: 0.55rem;
     font-weight: 700;
@@ -4920,7 +4920,7 @@
     gap: 0.25rem;
     transition: color 0.12s, border-color 0.12s;
   }
-  .mp-wl-tab:hover { color: #c8d8f0; }
+  .mp-wl-tab:hover { color: var(--algo-slate); }
   .mp-wl-tab-on {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
@@ -4934,7 +4934,7 @@
     color: rgba(200, 216, 240, 0.85);
   }
   .mp-wl-tab-on .mp-wl-tab-count {
-    background: rgba(251, 191, 36, 0.22);
+    background: var(--algo-amber-bg-strong);
     color: #fbbf24;
   }
 
@@ -4982,7 +4982,7 @@
      the header row sits visually consistent with the section
      stripes below it. */
   :global(.mp-bucket-wrap .ag-theme-algo .ag-header-row) {
-    border-bottom: 1px solid rgba(251, 191, 36, 0.30) !important;
+    border-bottom: 1px solid var(--algo-amber-border-soft) !important;
   }
   /* Winners / Losers ROW background tint — completes the "every
      section has a row-tint" rhythm. Same 0.06 alpha as Holdings
@@ -4990,10 +4990,10 @@
      family. Tinted on every row (not just first/last), matching
      pos-long / pos-short / row-watch. */
   :global(.mp-bucket-winners .ag-theme-algo .ag-row) {
-    background-color: rgba(74, 222, 128, 0.06) !important;
+    background-color: var(--algo-green-bg-soft) !important;
   }
   :global(.mp-bucket-losers .ag-theme-algo .ag-row) {
-    background-color: rgba(248, 113, 113, 0.06) !important;
+    background-color: var(--algo-red-bg-soft) !important;
   }
   /* Per the symbol-cell simplification pass: Winners / Losers no
      longer paint inset bars on the symbol cell. The per-bucket row
@@ -5023,7 +5023,7 @@
   :global(.ag-theme-algo .mp-total-row) {
     font-weight: 700;
     background: rgba(251, 191, 36, 0.12) !important;
-    border-top: 1px solid rgba(251, 191, 36, 0.55) !important;
+    border-top: 1px solid var(--algo-amber-border) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.25) !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
@@ -5256,7 +5256,7 @@
   :global(.search-close) {
     font-size: 1.05rem;
     line-height: 1;
-    color: #7e97b8;
+    color: var(--algo-muted);
     background: transparent;
     border: none;
     padding: 0 0.25rem;
@@ -5294,7 +5294,7 @@
   :global(.search-typeahead-item:hover) { background: rgba(251, 191, 36, 0.1); }
   :global(.search-hint) {
     font-size: 0.6rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     line-height: 1.4;
   }
 </style>

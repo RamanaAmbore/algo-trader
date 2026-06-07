@@ -245,7 +245,7 @@
      "commodities only", a partial-session state). */
   .rf-mkt-mcx {
     background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
+    border-color: var(--algo-amber-border);
     color: #fbbf24;
   }
   .rf-mkt-mcx:hover:not(:disabled) {
@@ -266,7 +266,7 @@
   .rf-mkt-closed:hover:not(:disabled) {
     background: rgba(126, 151, 184, 0.26);
     border-color: rgba(126, 151, 184, 0.85);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .rf-mkt-closed:focus-visible {
     outline: 2px solid rgba(126, 151, 184, 0.65);

@@ -1029,7 +1029,7 @@
     gap: 0.3rem;
     font-size: 0.65rem;
     font-weight: 500;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.18rem 0.5rem;
     border-radius: 3px;
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
@@ -1219,7 +1219,7 @@
        small". Padding = strip height (2rem) + 0.6rem breathing
        room = 2.6rem. Content sits ~0.6rem below strip bottom. */
     padding: 2.6rem 0.5rem 1.5rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   /* algo-content padding-top is always EXACTLY the page-header
      strip height (1.8rem). The ps-strip is sticky-IN-FLOW so it
@@ -1316,7 +1316,7 @@
     min-height: 2rem;
     box-sizing: border-box;
     overflow: visible;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.30);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
   }
   /* Strip-aware vertical offset — only the ps-strip
      (PositionStrip, 1.5rem) can sit between the navbar and
@@ -1399,12 +1399,12 @@
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */
-  :global(.algo-content .text-muted) { color: #7e97b8; }
-  :global(.algo-content .field-label) { color: #7e97b8; }
+  :global(.algo-content .text-muted) { color: var(--algo-muted); }
+  :global(.algo-content .field-label) { color: var(--algo-muted); }
   :global(.algo-content .field-input) {
     background: #152033;
     border-color: rgba(255,255,255,0.12);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     color-scheme: dark;
     accent-color: #fbbf24;
   }
@@ -1456,7 +1456,7 @@
   :global(.algo-content select.field-input option),
   :global(.algo-content select option) {
     background-color: #1d2a44;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.35rem 0.5rem;
   }
   :global(.algo-content select.field-input option:checked),
@@ -1484,7 +1484,7 @@
     line-height: 1.1;
   }
   :global(.algo-content .btn-secondary) {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-color: rgba(255,255,255,0.2);
     background: transparent;
   }
@@ -1493,7 +1493,7 @@
     border-color: rgba(251,191,36,0.5);
     color: #fbbf24;
   }
-  :global(.algo-content .btn-tertiary) { color: #c8d8f0; }
+  :global(.algo-content .btn-tertiary) { color: var(--algo-slate); }
   :global(.algo-content .btn-tertiary:hover) { background: rgba(251,191,36,0.1); color: #fbbf24; }
   :global(.algo-content .btn-tertiary.active) { color: #fbbf24; background: rgba(251,191,36,0.15); }
 
@@ -1608,7 +1608,7 @@
     animation: algo-mode-dot 2s ease-in-out infinite;
   }
   .chase-chip:hover {
-    background: rgba(251, 191, 36, 0.22);
+    background: var(--algo-amber-bg-strong);
     filter: brightness(1.1);
   }
   .chase-chip-arrow { opacity: 0.7; }
@@ -1631,7 +1631,7 @@
     border-radius: 6px;
     padding: 0.75rem;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     transition: border-color 0.15s, border-left-color 0.15s, box-shadow 0.15s, background 0.15s;
   }
   :global(.algo-status-card[data-status="active"]) {

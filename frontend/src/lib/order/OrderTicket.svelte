@@ -1726,7 +1726,7 @@
     width: min(28rem, calc(100vw - 2rem));
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-monospace, monospace;
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
   }
@@ -1754,7 +1754,7 @@
   .ot-symbol-text {
     font-size: 0.78rem;
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     display: block;
   }
   .ot-symbol-meta {
@@ -1766,7 +1766,7 @@
   .ot-close {
     background: transparent;
     border: 1px solid rgba(255,255,255,0.15);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     width: 1.55rem;
     height: 1.55rem;
     border-radius: 3px;
@@ -2062,7 +2062,7 @@
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
     padding: 0.3rem 0.45rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: 0.7rem;
     font-family: monospace;
   }
@@ -2166,8 +2166,8 @@
     cursor: pointer;
     transition: background 0.12s, color 0.12s;
   }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: rgba(74, 222, 128, 0.22); color: #4ade80; }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: rgba(248, 113, 113, 0.22); color: #f87171; }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: var(--algo-green-bg-strong); color: #4ade80; }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: var(--algo-red-bg-strong); color: #f87171; }
   .ot-side-toggle-compact .ot-side-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* Mode row */
@@ -2262,7 +2262,7 @@
     transition: background 0.1s, color 0.1s, border-color 0.1s;
   }
   .ot-chase-agg-pill:last-child { border-right: 0; }
-  .ot-chase-agg-pill:hover { color: #c8d8f0; background: rgba(255,255,255,0.08); }
+  .ot-chase-agg-pill:hover { color: var(--algo-slate); background: rgba(255,255,255,0.08); }
   .ot-chase-agg-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; }
   .ot-chase-agg-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; }
   .ot-chase-agg-high.on { background: rgba(248,113,113,0.20); color: #f87171; }
@@ -2311,7 +2311,7 @@
      the same height. Cursor: default keeps it visually distinct from
      editable inputs. */
   .ot-account-readonly {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(255,255,255,0.04);
     cursor: default;
     min-height: 1.55rem;
@@ -2344,7 +2344,7 @@
     text-transform: uppercase;
   }
   .ot-funds-v {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }

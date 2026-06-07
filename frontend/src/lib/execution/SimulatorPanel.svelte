@@ -1512,7 +1512,7 @@
   }
   :global(.sim-collapsible-hint) {
     margin-left: auto;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.55rem;
     letter-spacing: 0.04em;
   }
@@ -1654,7 +1654,7 @@
   }
   :global(.sim-btn-secondary) {
     background: rgba(148,163,184,0.12);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-color: rgba(148,163,184,0.45);
   }
   :global(.sim-btn-secondary:hover:not(:disabled)) {
@@ -1708,7 +1708,7 @@
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.12);
     background: rgba(13,22,42,0.55);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     white-space: nowrap;
   }
   .sim-pill-side {
@@ -1727,7 +1727,7 @@
   .sim-pill-side-buy  { background: rgba(110,231,183,0.22); color: #6ee7b7; }
   .sim-pill-side-sell { background: rgba(248,113,113,0.22);  color: #fda4af; }
   .sim-pill-sym { color: #fde68a; font-weight: 600; }
-  .sim-pill-qty { color: #c8d8f0; }
+  .sim-pill-qty { color: var(--algo-slate); }
   .sim-pill-limit { color: #7dd3fc; }
   .sim-pill-attempts {
     color: #fbbf24;
@@ -1764,7 +1764,7 @@
     letter-spacing: 0.05em;
     font-size: 0.7rem;
   }
-  .sim-payoff-meta { color: #7e97b8; }
+  .sim-payoff-meta { color: var(--algo-muted); }
   .sim-payoff-spot {
     color: #fde68a;
     font-variant-numeric: tabular-nums;
@@ -1776,8 +1776,8 @@
     padding: 0 0.35rem;
     border-radius: 3px;
   }
-  .sim-payoff-pnl.pos { color: #4ade80; background: rgba(74, 222, 128, 0.10); }
-  .sim-payoff-pnl.neg { color: #f87171; background: rgba(248, 113, 113, 0.10); }
+  .sim-payoff-pnl.pos { color: #4ade80; background: var(--algo-green-bg); }
+  .sim-payoff-pnl.neg { color: #f87171; background: var(--algo-red-bg); }
 
   /* SCRUB tag next to the spot value — surfaces that the displayed
      spot/PnL are historical at the scrubbed timestamp, not live. */
@@ -1806,7 +1806,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #7e97b8;
+    color: var(--algo-muted);
   }
   /* Per-leg chart stack — single column on mobile, side-by-side
      auto-fit grid on desktop so the leg charts use horizontal space
@@ -1855,7 +1855,7 @@
     gap: 0.4rem;
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .sim-leg-swatch {
     display: inline-block;
@@ -1873,15 +1873,15 @@
     min-width: 3.2rem;
     text-align: center;
   }
-  .sim-leg-side-long  { color: #7dd3fc; background: rgba(125, 211, 252, 0.12); }
+  .sim-leg-side-long  { color: #7dd3fc; background: var(--algo-sky-bg); }
   .sim-leg-side-short { color: #fb923c; background: rgba(251, 146, 60, 0.12);  }
   .sim-leg-qty    { color: #fde68a; font-variant-numeric: tabular-nums; }
-  .sim-leg-symbol { color: #c8d8f0; font-weight: 700; }
+  .sim-leg-symbol { color: var(--algo-slate); font-weight: 700; }
   .sim-leg-price  {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
   }
-  .sim-leg-acct   { color: #7e97b8; font-size: 0.55rem; }
+  .sim-leg-acct   { color: var(--algo-muted); font-size: 0.55rem; }
   .sim-pill-pnl.pos { color: #4ade80; }
   .sim-charts {
     margin-top: 0.4rem;
@@ -1960,9 +1960,9 @@
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
     border-radius: 4px;
-    background: rgba(125, 211, 252, 0.08);
+    background: var(--algo-sky-bg-soft);
     border: 1px solid rgba(125, 211, 252, 0.25);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .sim-index-pill.up   { border-color: rgba(74, 222, 128, 0.45); }
   .sim-index-pill.down { border-color: rgba(248, 113, 113, 0.45); }
@@ -1971,7 +1971,7 @@
   .sim-index-pct  {
     font-variant-numeric: tabular-nums;
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .sim-index-pill.up   .sim-index-pct { color: #4ade80; }
   .sim-index-pill.down .sim-index-pct { color: #f87171; }
@@ -1983,11 +1983,11 @@
     border-collapse: collapse;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .sim-summary-grid th {
     text-align: left;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 600;
     padding: 0.3rem 0.55rem;
     border-bottom: 1px solid rgba(251,191,36,0.18);
@@ -2016,7 +2016,7 @@
   .sim-empty {
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     padding: 0.4rem 0.65rem;
     background: rgba(126, 151, 184, 0.05);
@@ -2047,7 +2047,7 @@
   }
   .sim-activity-row:last-child { border-bottom: none; }
   .sim-activity-ts {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.55rem;
     white-space: nowrap;
@@ -2078,7 +2078,7 @@
     white-space: nowrap;
   }
   .sim-activity-detail {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2106,7 +2106,7 @@
   .sim-past-action { text-align: right; }
   .sim-past-rerun {
     appearance: none;
-    background: rgba(74, 222, 128, 0.10);
+    background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.40);
     color: #4ade80;
     font-family: ui-monospace, monospace;
@@ -2165,7 +2165,7 @@
   .custom-pos-headrow {
     font-family: monospace;
     font-size: 0.55rem;
-    color: #7e97b8;
+    color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding-bottom: 0.15rem;
@@ -2237,7 +2237,7 @@
     gap: 0.35rem;
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(124, 58, 237, 0.10);
     border: 1px solid rgba(124, 58, 237, 0.35);
     padding: 0.15rem 0.45rem;
@@ -2253,7 +2253,7 @@
     letter-spacing: 0.04em;
   }
   .iter-corr-pairs {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2284,7 +2284,7 @@
     display: inline-flex;
     align-items: center;
     background: rgba(13, 21, 38, 0.6);
-    border: 1px solid rgba(251, 191, 36, 0.30);
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 4px;
     overflow: hidden;
     height: 1.6rem;
@@ -2313,8 +2313,8 @@
     font-size: 0.7rem;
     color: #fde68a;
     font-variant-numeric: tabular-nums;
-    border-left: 1px solid rgba(251, 191, 36, 0.30);
-    border-right: 1px solid rgba(251, 191, 36, 0.30);
+    border-left: 1px solid var(--algo-amber-border-soft);
+    border-right: 1px solid var(--algo-amber-border-soft);
     padding: 0 0.35rem;
   }
   .iter-field-toggle {

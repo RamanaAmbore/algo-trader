@@ -563,7 +563,7 @@
   .brokers-table td:nth-child(9) { width: 1%; white-space: nowrap; }   /* test, actions */
   .brokers-table th {
     text-align: left;
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 700;
     padding: 0.25rem 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -573,7 +573,7 @@
   }
   .brokers-table td {
     padding: 0.3rem 0.4rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border-bottom: 1px solid rgba(255,255,255,0.04);
   }
   .brokers-table tr.row-inactive td { opacity: 0.5; }
@@ -584,7 +584,7 @@
     white-space: nowrap;
   }
   .notes {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     max-width: 200px;
     overflow: hidden;
@@ -609,7 +609,7 @@
   }
   .status-loaded   { color: #4ade80; background: rgba(74,222,128,0.10); }
   .status-pending  { color: #fbbf24; background: rgba(251,191,36,0.10); }
-  .status-inactive { color: #7e97b8; background: rgba(126,151,184,0.10); }
+  .status-inactive { color: var(--algo-muted); background: rgba(126,151,184,0.10); }
 
   .brokers-hist-cell { text-align: center; }
   .brokers-hist-pill {
@@ -622,7 +622,7 @@
     letter-spacing: 0.06em;
   }
   .brokers-hist-pill.hist-on  { background: rgba(34,211,238,0.18); border: 1px solid rgba(103,232,249,0.55); color: #22d3ee; }
-  .brokers-hist-pill.hist-off { background: rgba(126,151,184,0.10); border: 1px solid rgba(126,151,184,0.30); color: #7e97b8; }
+  .brokers-hist-pill.hist-off { background: rgba(126,151,184,0.10); border: 1px solid rgba(126,151,184,0.30); color: var(--algo-muted); }
 
   .brokers-form-toggle {
     padding: 0.25rem 0.6rem;
@@ -638,7 +638,7 @@
   }
   .brokers-form-toggle:hover  { background: rgba(34,211,238,0.20); }
   .brokers-form-toggle.active { background: rgba(34,211,238,0.25); color: #67e8f9; border-color: rgba(103,232,249,0.75); }
-  .brokers-form-toggle:not(.active) { color: #7e97b8; border-color: rgba(126,151,184,0.30); background: rgba(126,151,184,0.08); }
+  .brokers-form-toggle:not(.active) { color: var(--algo-muted); border-color: rgba(126,151,184,0.30); background: rgba(126,151,184,0.08); }
 
   .bf-hint-block {
     display: block;
@@ -691,10 +691,10 @@
     gap: 0.3rem;
     font-size: 0.62rem;
     font-family: monospace;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .bf-hint {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-size: 0.5rem;
     font-weight: 400;
     margin-left: 0.3rem;

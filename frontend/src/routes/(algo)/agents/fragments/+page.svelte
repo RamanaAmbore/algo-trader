@@ -371,7 +371,7 @@
   }
   .frag-row:hover { border-color: rgba(251,191,36,0.25); }
   .frag-row-open { border-color: rgba(251,191,36,0.4); }
-  .frag-row-system .frag-name { color: #c8d8f0; }
+  .frag-row-system .frag-name { color: var(--algo-slate); }
   .frag-row-inactive { opacity: 0.55; }
 
   .frag-head {
@@ -432,7 +432,7 @@
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 0.25rem;
     font-size: 0.65rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     max-height: 18rem;
     overflow: auto;
   }
@@ -512,7 +512,7 @@
   .form-input {
     padding: 0.3rem 0.55rem;
     font-size: 0.7rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(0,0,0,0.3);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 0.25rem;
@@ -529,7 +529,7 @@
   .form-body-area {
     padding: 0.5rem 0.7rem;
     font-size: 0.65rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(0,0,0,0.35);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 0.25rem;
