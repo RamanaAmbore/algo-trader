@@ -502,8 +502,11 @@
         <nav class="flex items-center justify-center gap-0.5 flex-1">
           <!-- Inline section — Monitor + Analyze + Modes groups always
                visible (high-frequency surfaces). Group separators
-               match the original flat-bar look. -->
-          {#each groupedLinks.inline as link, i}
+               match the original flat-bar look. Keyed by link.href
+               so Svelte 5's reconciler diffs by identity when the
+               algoLinks list updates in place (e.g. when
+               executionMode changes filter the visible items). -->
+          {#each groupedLinks.inline as link, i (link.href)}
             {#if i > 0 && link.group !== groupedLinks.inline[i - 1].group}
               <span class="algo-nav-sep" aria-hidden="true"></span>
             {/if}
@@ -714,11 +717,11 @@
            layout (Monitor → Analyze → Modes → Build → Config). -->
       {#if menuOpen}
         <nav class="algo-mobile-dropdown">
-          {#each Object.keys(GROUP_LABELS) as g}
+          {#each Object.keys(GROUP_LABELS) as g (g)}
             {@const items = algoLinks.filter(l => l.group === g)}
             {#if items.length > 0}
               <div class="algo-mobile-group-label">{GROUP_LABELS[g]}</div>
-              {#each items as link}
+              {#each items as link (link.href)}
                 <button
                   onclick={() => { goto(link.href); closeMenu(); }}
                   class="algo-mobile-item {isActive(link.href) ? 'algo-mobile-active' : ''}"
