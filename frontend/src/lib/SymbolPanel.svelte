@@ -46,6 +46,7 @@
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore } from '$lib/data/accounts';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
   // _autoLoadPins() fires when no `pins` prop is supplied and loads
@@ -1207,35 +1208,20 @@
          (tabsExternal). Operator clicks still flow back via the
          two-way bound `activeTab` either way. -->
     {#if !tabsExternal}
-    <div class="oes-tabs" role="tablist">
-      {#each TABS as tab}
-        {@const disabled   = tab.id === 'chain' && chainDisabled}
-        {@const isActive   = _activeTab === tab.id}
-        {@const badgeCount = tab.id === 'chain' ? basketLegs.length : 0}
-        <!-- Tab styling unified with LogPanel + every other algo-side
-             tab strip: amber underline + amber text on active, slate
-             text + transparent underline otherwise. Drops the colored
-             background tint + per-tab colored dot prefix; the
-             underline is the single active-state indicator across the
-             platform. -->
-        <button
-          type="button"
-          role="tab"
-          class="oes-tab"
-          class:oes-tab-active={isActive}
-          class:oes-tab-disabled={disabled}
-          disabled={disabled}
-          title={disabled ? 'Option chain only applies to F&O instruments' : undefined}
-          aria-selected={isActive}
-          aria-disabled={disabled}
-          onclick={() => { if (!disabled) _setActiveTab(/** @type {any} */ (tab.id)); }}
-        >
-          {tab.label}
-          {#if tab.id === 'chain' && badgeCount > 0}
-            <span class="oes-tab-badge">{badgeCount}</span>
-          {/if}
-        </button>
-      {/each}
+    <div class="oes-tabs" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+      <AlgoTabs
+        tabs={TABS.map(t => ({
+          id: t.id,
+          label: t.label,
+          badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
+          color: t.id === 'chain' ? 'green' : t.id === 'ticket' ? 'amber' : 'sky',
+        }))}
+        value={_activeTab}
+        onChange={(id) => {
+          if (id === 'chain' && chainDisabled) return;
+          _setActiveTab(/** @type {any} */ (id));
+        }}
+      />
     </div>
     {/if}
 
@@ -1989,70 +1975,13 @@
   }
   .oes-close:hover { background: rgba(248, 113, 113, 0.15); }
 
-  /* Tab strip — bottom-border underline active tab; each tab has its own
-     accent colour via inline style (applied from the TABS metadata).     */
+  /* Tab strip wrapper — padding + flex-shrink only; AlgoTabs renders the
+     button row via the global .algo-tab rules in app.css. */
   .oes-tabs {
     display: flex;
     gap: 0;
     padding: 0 0.4rem;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
     flex-shrink: 0;
-  }
-  /* Tab style — underline-only active state, matches LogPanel +
-     /admin/tokens + every other algo-side tab strip. */
-  .oes-tab {
-    /* Tabs match the /orders page .oc-tab compact scale — the
-       container header carries the prominence, the tabs read as
-       section identifiers, not a loud CTA. */
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3rem 0.7rem;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #b4c8e6;
-    cursor: pointer;
-    transition: color 0.12s, border-color 0.12s, background 0.12s,
-                box-shadow 0.12s;
-    white-space: nowrap;
-  }
-  .oes-tab:hover:not(.oes-tab-disabled):not(.oes-tab-active) {
-    color: #fbbf24;
-    background: rgba(255, 255, 255, 0.04);
-  }
-  .oes-tab-active {
-    border-bottom-color: #fbbf24;
-    color: #fbbf24;
-    font-weight: 800;
-    background: rgba(251, 191, 36, 0.10);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
-  }
-  .oes-tab-disabled {
-    cursor: not-allowed !important;
-    opacity: 0.5;
-  }
-  /* Count badge on Chain tab */
-  .oes-tab-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.1rem;
-    height: 1.1rem;
-    padding: 0 0.25rem;
-    border-radius: 999px;
-    background: rgba(74,222,128,0.25);
-    border: 1px solid rgba(74,222,128,0.6);
-    color: #4ade80;
-    font-size: 0.55rem;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */

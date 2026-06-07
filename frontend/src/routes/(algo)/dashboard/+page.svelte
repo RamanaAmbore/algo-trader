@@ -14,6 +14,7 @@
   import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
     fetchFunds, fetchBrokerAccounts, fetchIntradayEquity,
@@ -1602,16 +1603,11 @@
     class:fs-card-on={_fsCapital || _fsEquity}
     class:is-collapsed={_colCapital && _colEquity}>
     <div class="bucket-header">
-      <div class="cap-eq-tabs" role="tablist">
-        <button type="button" role="tab"
-          class="cap-eq-tab" class:cap-eq-tab-on={_capEqTab === 'capital'}
-          aria-selected={_capEqTab === 'capital'}
-          onclick={() => _capEqTab = 'capital'}>Capital</button>
-        <button type="button" role="tab"
-          class="cap-eq-tab" class:cap-eq-tab-on={_capEqTab === 'equity'}
-          aria-selected={_capEqTab === 'equity'}
-          onclick={() => _capEqTab = 'equity'}>Equity</button>
-      </div>
+      <AlgoTabs
+        tabs={[{ id: 'capital', label: 'Capital' }, { id: 'equity', label: 'Equity' }]}
+        bind:value={_capEqTab}
+        compact={true}
+      />
       <!-- Single shared account picker visible on BOTH tabs (filter
            applies to whichever tab is active — Margin + Funds on
            Capital; Positions + Holdings Summary on Equity). Operator
@@ -1718,16 +1714,11 @@
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
-      <div class="cap-eq-tabs" role="tablist">
-        <button type="button" role="tab"
-          class="cap-eq-tab" class:cap-eq-tab-on={_chartTab === 'intraday'}
-          aria-selected={_chartTab === 'intraday'}
-          onclick={() => _chartTab = 'intraday'}>Intraday</button>
-        <button type="button" role="tab"
-          class="cap-eq-tab" class:cap-eq-tab-on={_chartTab === 'performance'}
-          aria-selected={_chartTab === 'performance'}
-          onclick={() => _chartTab = 'performance'}>Performance</button>
-      </div>
+      <AlgoTabs
+        tabs={[{ id: 'intraday', label: 'Intraday' }, { id: 'performance', label: 'Performance' }]}
+        bind:value={_chartTab}
+        compact={true}
+      />
       {#if _fsEquityCurve}
         <RefreshButton onClick={_refreshAll} loading={_refreshing} label="chart" />
       {/if}
@@ -2039,37 +2030,9 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
-  /* Tabbed Capital | Equity card — uses the bucket-card chrome but
-     swaps the section label for a tab strip. Shares the same
-     underline-tab styling as every other algo sub-tab (mp-toptab,
-     legs-tab, lab-tab, exec-tab) so the four card-control palettes
-     stay one consistent family. */
+  /* Tabbed Capital | Equity card — tab buttons now rendered by AlgoTabs
+     (global .algo-tab rules in app.css). */
   .cap-eq-tabbed { display: flex; flex-direction: column; }
-  .cap-eq-tabs {
-    display: inline-flex;
-    gap: 0;
-    margin-right: 0.5rem;
-  }
-  .cap-eq-tab {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 0.22rem 0.6rem 0.2rem;
-    cursor: pointer;
-    line-height: 1;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .cap-eq-tab:hover { color: #c8d8f0; }
-  .cap-eq-tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
 
   /* Equity curve */
   /* Series-toggle legend — sits above the SVG, narrow row of chips with

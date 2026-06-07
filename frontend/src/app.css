@@ -1292,3 +1292,107 @@
   font-family: ui-monospace, monospace;
   letter-spacing: 0.02em;
 }
+
+/* ── Canonical .bucket-card chrome ───────────────────────────────────────── */
+/* Dark navy gradient card — same visual identity as algo-status-card but with
+   per-semantic color accent variants. Canonical home: all new page-level
+   sections use .bucket-card + one of the accent modifiers below. Existing
+   local definitions in /orders and /dashboard stay as-is (don't touch). */
+.bucket-card {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.65rem 0.6rem 0.8rem;
+  background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+  border: 1.5px solid rgba(255, 255, 255, 0.10);
+  border-left: 3px solid rgba(251, 191, 36, 0.70);   /* amber default */
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+              inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  color: #c8d8f0;
+}
+/* Semantic accent variants — override only the left border colour. */
+.bucket-card-entry    { border-left-color: rgba(251, 191, 36, 0.70); } /* amber  — primary/data-entry */
+.bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); } /* cyan   — activity/log/events */
+.bucket-card-chase    { border-left-color: rgba(248, 113, 133, 0.70); } /* rose   — destructive/action */
+.bucket-card-info     { border-left-color: rgba(125, 211, 252, 0.70); } /* sky    — info/status/charts */
+.bucket-card-data     { border-left-color: rgba(200, 216, 240, 0.45); } /* slate  — neutral data display */
+
+/* ── AlgoTabs — canonical tab-strip base shared across all algo pages ── */
+/* See frontend/src/lib/AlgoTabs.svelte for the component. */
+.algo-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.7rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.algo-tab--compact { padding: 0.22rem 0.6rem; }
+.algo-tab:hover { color: #c8d8f0; }
+.algo-tab[aria-selected="true"] { font-weight: 800; }
+.algo-tab[aria-selected="true"].algo-tab-c-amber {
+  color: #fbbf24; border-bottom-color: #fbbf24;
+  background: rgba(251,191,36,0.10);
+}
+.algo-tab[aria-selected="true"].algo-tab-c-cyan {
+  color: #22d3ee; border-bottom-color: #22d3ee;
+  background: rgba(34,211,238,0.10);
+}
+.algo-tab[aria-selected="true"].algo-tab-c-green {
+  color: #4ade80; border-bottom-color: #4ade80;
+  background: rgba(74,222,128,0.10);
+}
+.algo-tab[aria-selected="true"].algo-tab-c-sky {
+  color: #7dd3fc; border-bottom-color: #7dd3fc;
+  background: rgba(125,211,252,0.10);
+}
+.algo-tab[aria-selected="true"].algo-tab-c-rose {
+  color: #fb7185; border-bottom-color: #fb7185;
+  background: rgba(251,113,133,0.10);
+}
+/* Badge chip inside a tab label */
+.algo-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  font-size: 0.55rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  background: rgba(126,151,184,0.18);
+  border: 1px solid rgba(126,151,184,0.35);
+  color: #94a3b8;
+}
+.algo-tab[aria-selected="true"] .algo-tab-badge-c-amber {
+  background: rgba(251,191,36,0.18); border-color: rgba(251,191,36,0.45); color: #fbbf24;
+}
+.algo-tab[aria-selected="true"] .algo-tab-badge-c-cyan {
+  background: rgba(34,211,238,0.18); border-color: rgba(34,211,238,0.45); color: #22d3ee;
+}
+.algo-tab[aria-selected="true"] .algo-tab-badge-c-green {
+  background: rgba(74,222,128,0.25); border-color: rgba(74,222,128,0.6); color: #4ade80;
+}
+.algo-tab[aria-selected="true"] .algo-tab-badge-c-sky {
+  background: rgba(125,211,252,0.18); border-color: rgba(125,211,252,0.45); color: #7dd3fc;
+}
+.algo-tab[aria-selected="true"] .algo-tab-badge-c-rose {
+  background: rgba(251,113,133,0.18); border-color: rgba(251,113,133,0.45); color: #fb7185;
+}

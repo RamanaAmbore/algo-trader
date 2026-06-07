@@ -43,7 +43,8 @@
 
 <AgentWorkspaceTabs />
 
-<section class="algo-status-card p-3">
+<section class="bucket-card bucket-card-activity">
+  <span class="mp-section-label">Agent Activity</span>
   <ActionEventsToggle bind:value={showActions} />
   <UnifiedLog
     filter={{ kinds }}

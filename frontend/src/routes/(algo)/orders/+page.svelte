@@ -15,6 +15,7 @@
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { loadInstruments } from '$lib/data/instruments';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
     loadAccounts,
     resolveSymbol, resolveAccount,
@@ -377,20 +378,15 @@
   class:is-collapsed={_colActivity}>
   <div class="bucket-header">
     <span class="mp-section-label">Order Activity</span>
-    <div class="oc-tabs" role="tablist">
-      {#each ACT_TABS as tab}
-        {@const isActive = _activityTab === tab.id}
-        <button type="button" role="tab"
-          class="oc-tab oc-tab--{tab.id}"
-          aria-selected={isActive}
-          onclick={() => _activityTab = /** @type {any} */ (tab.id)}>
-          {tab.label}
-          {#if tab.id === 'book' && _filteredOrders.length > 0}
-            <span class="oc-act-badge">{_filteredOrders.length}</span>
-          {/if}
-        </button>
-      {/each}
-    </div>
+    <AlgoTabs
+      tabs={ACT_TABS.map(t => ({
+        id: t.id,
+        label: t.label,
+        badge: t.id === 'book' && _filteredOrders.length > 0 ? _filteredOrders.length : undefined,
+        color: t.id === 'log' ? 'sky' : 'green',
+      }))}
+      bind:value={_activityTab}
+    />
     {#if _activityTab === 'book'}
       <!-- Book-only filters — Account multi-select + Exchange chips.
            Lifted from the retired Order Book card's header. -->
@@ -693,23 +689,6 @@
     box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
   }
 
-  /* Activity-card tabs now use the same `.oc-tab` class as the
-     Entry-card tabs above — single visual vocabulary for both
-     strips on the page. Only the badge style remains here. */
-  .oc-act-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0 0.32rem;
-    margin-left: 0.3rem;
-    border-radius: 8px;
-    background: rgba(251, 191, 36, 0.18);
-    border: 1px solid rgba(251, 191, 36, 0.45);
-    color: #fbbf24;
-    font-size: 0.5rem;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-  }
-
   /* History list — retired with the History tab. Style block kept
      empty for callsite stability but no element uses it. */
 
@@ -826,70 +805,6 @@
     min-height: 1.4rem;
     padding: 0.35rem 0.5rem;
   }
-
-  /* Tab strip — Activity card Agents / Orders tabs. Compact horizontal
-     scroller; each pill carries the same colour dot SymbolPanel
-     used internally so the operator's mental model carries
-     ("CHART = sky", "TICKET = amber", "CHAIN = green", "COMMAND =
-     sky-cyan"). */
-  .oc-tabs {
-    display: inline-flex;
-    align-items: center;
-    gap: 0;
-  }
-  .oc-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    /* Operator: "make chain order ticket text in tabs smaller size
-       and make them consistent with other text. having them in
-       separate line already made the tabs prominent." Back to the
-       compact section-label scale (0.6rem / weight 700) — matches
-       .mp-section-label and the LogPanel tab-row sizing. The
-       dedicated tab-row line is what attracts attention now. */
-    padding: 0.3rem 0.7rem;
-    background: transparent;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    color: #94a3b8;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-family: ui-monospace, monospace;
-    cursor: pointer;
-    transition: color 0.12s, background 0.12s, border-color 0.12s,
-                box-shadow 0.12s;
-  }
-  .oc-tab:hover:not(.oc-tab-disabled) {
-    color: #c8d8f0;
-    background: rgba(255, 255, 255, 0.04);
-  }
-  /* Active-state base — box-shadow + weight. Per-variant colour rules
-     below supply color, background, and border-bottom-color. */
-  .oc-tab[aria-selected="true"] {
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.30);
-    font-weight: 800;
-  }
-  /* sky variant — Activity Agents tab */
-  .oc-tab--log[aria-selected="true"] {
-    color: #7dd3fc;
-    background: rgba(125, 211, 252, 0.14);
-    border-bottom-color: #7dd3fc;
-  }
-  /* green variant — Activity Orders tab */
-  .oc-tab--book[aria-selected="true"] {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.14);
-    border-bottom-color: #4ade80;
-  }
-  .oc-tab-disabled {
-    cursor: not-allowed;
-  }
-  /* Tab dots dropped — none of the other tab strips on the platform
-     use them (Dashboard Cap|Eq, AgentWorkspaceTabs, /admin/tokens,
-     /admin/execution, /pulse). The colored bottom-border on the
-     active tab already carries the identity colour. */
 
   /* Status filter cards — polished chrome with richer gradients +
      inner highlight + soft outer shadow. Each card carries:

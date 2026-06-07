@@ -16,6 +16,7 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -817,19 +818,15 @@
     return all.length ? all.map(x => x.html).join('') : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
   }
 
-  function setTab(id) {
-    logTab = id;
-    onTabChange(id);
-  }
 </script>
 
-<div class="flex items-stretch mb-2 log-tab-row">
-  {#each VISIBLE_TABS as [id, label]}
-    <button onclick={() => setTab(id)}
-      class="log-tab-btn border-b-2 transition-colors
-        {logTab === id ? 'border-[#d97706] text-[#fbbf24]' : 'border-transparent text-[#b4c8e6] hover:text-[#fbbf24]'}"
-    >{label}</button>
-  {/each}
+<div class="flex items-stretch mb-2 log-tab-row" style="border-bottom: 1px solid rgba(255,255,255,0.07);">
+  <AlgoTabs
+    tabs={VISIBLE_TABS.map(([id, label]) => ({ id, label }))}
+    bind:value={logTab}
+    onChange={onTabChange}
+    compact={true}
+  />
   {#if gateByMode && _gatingMode}
     <span class="lp-mode-chip mode-pill mode-pill-{_gatingMode}"
           title="Activity filtered to current execution mode"
@@ -1150,17 +1147,6 @@
   }
   @media (min-width: 1024px) {
     .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  }
-  :global(.log-tab-btn) {
-    /* Matches .oc-tab / .oes-tab — single-axis 0.02rem audit drift
-       (was 0.62rem). All compact tab strips now read at the same
-       size across the platform. */
-    font-size: 0.6rem;
-    font-weight: 600;
-    padding: 0.18rem 0.44rem;
-    white-space: nowrap;
-    letter-spacing: 0.02em;
-    font-family: ui-monospace, monospace;
   }
 
   /* Unified-log container inside the LogPanel — matches the <pre>

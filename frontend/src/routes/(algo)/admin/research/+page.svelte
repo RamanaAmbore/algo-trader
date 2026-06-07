@@ -28,6 +28,7 @@
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AgentWorkspaceTabs from '$lib/AgentWorkspaceTabs.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -414,23 +415,16 @@
   <div class="err-banner">{error}</div>
 {/if}
 
-<div class="lab-tabs" role="tablist">
-  <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'research'}
-          aria-selected={activeTab === 'research'} onclick={() => activeTab = 'research'}>
-    Research <span class="lab-tab-count">{threads.length}</span>
-  </button>
-  <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'drafts'}
-          aria-selected={activeTab === 'drafts'} onclick={() => activeTab = 'drafts'}>
-    Drafts <span class="lab-tab-count">{drafts.length}</span>
-  </button>
-  <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'audit'}
-          aria-selected={activeTab === 'audit'} onclick={() => activeTab = 'audit'}>
-    Audit
-  </button>
-  <button type="button" role="tab" class="lab-tab" class:lab-tab-on={activeTab === 'settings'}
-          aria-selected={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
-    Settings
-  </button>
+<div class="lab-tabs-wrap">
+  <AlgoTabs
+    tabs={[
+      { id: 'research', label: 'Research', badge: threads.length || undefined },
+      { id: 'drafts',   label: 'Drafts',   badge: drafts.length  || undefined },
+      { id: 'audit',    label: 'Audit' },
+      { id: 'settings', label: 'Settings' },
+    ]}
+    bind:value={activeTab}
+  />
 </div>
 
 {#if activeTab === 'research'}
@@ -825,42 +819,12 @@
 
 <style>
   /* ── Tab strip ────────────────────────────────────────────────── */
-  .lab-tabs {
+  /* Tab buttons rendered by AlgoTabs via global .algo-tab in app.css. */
+  .lab-tabs-wrap {
     display: flex;
-    gap: 0;
     margin: 0.8rem 0 0.4rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.18);
-    padding-bottom: 0;
   }
-  .lab-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: none;
-    border: none;
-    padding: 0.34rem 0.8rem 0.36rem;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .lab-tab:hover { color: #c8d8f0; }
-  .lab-tab-on   { color: #fbbf24; border-bottom-color: #fbbf24; }
-  .lab-tab-count {
-    display: inline-block;
-    padding: 0 0.32rem;
-    border-radius: 0.5rem;
-    background: rgba(126, 151, 184, 0.18);
-    font-size: 0.6rem;
-    line-height: 1.2rem;
-    font-weight: 700;
-  }
-  .lab-tab-on .lab-tab-count { background: rgba(251, 191, 36, 0.18); }
 
   /* ── Research tab: two-column rail + main ─────────────────────── */
   .lab-split {
