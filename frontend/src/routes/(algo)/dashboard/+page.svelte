@@ -13,6 +13,7 @@
   import EmptyState from '$lib/EmptyState.svelte';
   import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus } from '$lib/stores';
   import NewsList from '$lib/NewsList.svelte';
+  import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
   import {
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
     fetchFunds, fetchBrokerAccounts, fetchIntradayEquity,
@@ -1557,7 +1558,7 @@
 {#if _openOrders.length > 0}
   <div class="dash-open-orders">
     <div class="oo-header">
-      <span class="mp-section-label">OPEN ORDERS</span>
+      <span class="mp-section-label mp-section-label--bar">OPEN ORDERS</span>
       <span class="oo-count">
         <span class="oo-dot" aria-hidden="true"></span>
         {_openOrders.length} chasing
@@ -1928,7 +1929,7 @@
   class:fs-card-on={_fsNews}
   class:is-collapsed={_colNews}>
   <div class="row3-header">
-    <span class="mp-section-label">MARKET NEWS</span>
+    <span class="mp-section-label mp-section-label--bar">MARKET NEWS</span>
     {#if _fsNews}
       <RefreshButton onClick={_refreshAll} loading={_refreshing} label="news" />
     {/if}
@@ -1965,7 +1966,7 @@
   class:fs-card-on={_fsAgent}
   class:is-collapsed={_colAgent}>
   <div class="card-header-row dash-agent-summary">
-    <span class="mp-section-label">AGENT ACTIVITY</span>
+    <span class="mp-section-label mp-section-label--bar">AGENT ACTIVITY</span>
     <span class="dash-agent-chip">
       <span class="dash-agent-count">{_firesToday}</span>
       <span class="dash-agent-label">fires today</span>
@@ -1981,20 +1982,7 @@
     <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
   </div>
   <div class="card-body" hidden={_colAgent}>
-    <div class="dash-agent-filter">
-      <button
-        type="button"
-        class="dash-agent-filter-btn"
-        class:dash-agent-filter-btn-on={_agentLogShowActions}
-        onclick={() => _agentLogShowActions = !_agentLogShowActions}>
-        {_agentLogShowActions ? '✓' : ''} include action events
-      </button>
-      <span class="dash-agent-filter-hint">
-        {_agentLogShowActions
-          ? 'showing fires + action successes/errors'
-          : 'showing fires only — toggle to include actions'}
-      </span>
-    </div>
+    <ActionEventsToggle bind:value={_agentLogShowActions} />
     <UnifiedLog
       filter={{ kinds: _agentLogKinds }}
       excludeSim={true}
@@ -2004,35 +1992,8 @@
 </section>
 
 <style>
-  /* Section labels — used as the heading inside every dashboard card
-     (Intraday Equity Curve, Margin Utilisation, Top Winners, Top
-     Losers, Market News, P&L Analysis, Agent activity, OPEN ORDERS).
-     Treatment: amber accent bar on the left + amber small-caps text.
-     Reads as a classic trader-platform "section tag" — distinct from
-     the body but tasteful, not shouting. */
-  .mp-section-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.68rem;
-    font-family: ui-monospace, monospace;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: #fbbf24;
-    margin-bottom: 0.45rem;
-    padding: 0.05rem 0;
-  }
-  .mp-section-label::before {
-    content: '';
-    display: inline-block;
-    width: 3px;
-    height: 0.85rem;
-    background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
-    border-radius: 1px;
-    flex-shrink: 0;
-    box-shadow: 0 0 6px rgba(251, 191, 36, 0.45);
-  }
+  /* .mp-section-label is defined globally in app.css.
+     Dashboard uses the --bar modifier for the amber left-edge accent. */
 
   /* ── Hero row ────────────────────────────────────────────────────── */
   /* All card-shaped sections on this page (hero row, row1 cols, wl
@@ -2421,43 +2382,7 @@
   /* .dash-agent-toggle retired — toggleable "fires today" chip
      replaced by the standalone Agent Activity card header. */
 
-  /* Inline filter strip inside the expanded agent-activity log.
-     The chip on the left is a toggleable pill; the hint on the
-     right just describes what the operator is currently looking at. */
-  .dash-agent-filter {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.35rem 0.5rem;
-    margin-top: 0.35rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.15);
-    font-family: ui-monospace, monospace;
-  }
-  .dash-agent-filter-btn {
-    background: rgba(126, 151, 184, 0.10);
-    border: 1px solid rgba(126, 151, 184, 0.25);
-    color: #c8d8f0;
-    font-family: inherit;
-    font-size: 0.6rem;
-    padding: 0.18rem 0.5rem;
-    border-radius: 3px;
-    cursor: pointer;
-    transition: background-color 0.15s, color 0.15s;
-  }
-  .dash-agent-filter-btn:hover {
-    background: rgba(251, 191, 36, 0.10);
-    color: #fbbf24;
-  }
-  .dash-agent-filter-btn-on {
-    background: rgba(251, 191, 36, 0.18);
-    border-color: rgba(251, 191, 36, 0.55);
-    color: #fbbf24;
-  }
-  .dash-agent-filter-hint {
-    color: rgba(126, 151, 184, 0.65);
-    font-size: 0.56rem;
-    letter-spacing: 0.02em;
-  }
+  /* Filter strip CSS lives in app.css as .act-events-* (ActionEventsToggle). */
   .pnl-section-label {
     margin-top: 0.75rem;
     margin-bottom: 0.3rem;

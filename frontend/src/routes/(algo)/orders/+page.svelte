@@ -672,14 +672,7 @@
   /* bucket-card-book retired (Order Book merged into Activity card). */
 
   .bucket-header { margin-bottom: 0.35rem; }
-  .mp-section-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(251, 191, 36, 0.7);
-  }
+  /* .mp-section-label is defined globally in app.css. */
   /* Match each card's section-label colour to its left-edge accent. */
   .bucket-card-activity .mp-section-label { color: rgba(34, 211, 238, 0.85); }
   /* Operator: "order entry card header in order page and modal should
@@ -756,8 +749,6 @@
     margin-right: 0.35rem;
   }
   :global(.oc-activity-log .ul-card-time) {
-    color: #fde68a;
-    font-weight: 700;
     font-size: 0.6rem;
     letter-spacing: 0.02em;
     margin-left: 0;

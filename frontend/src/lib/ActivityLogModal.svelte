@@ -121,19 +121,16 @@
     gap: 0.5rem;
     padding: 0.35rem 0.85rem;
     background: linear-gradient(180deg,
-                  rgba(251, 146, 60, 0.18) 0%,
-                  rgba(251, 146, 60, 0.06) 100%);
+                  rgba(251, 191, 36, 0.18) 0%,
+                  rgba(251, 191, 36, 0.06) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-shrink: 0;
   }
-  /* Plain orange text — matches the new bell + page-header button
-     palette. Activity / notification family across the app reads
-     in warm orange now. */
   .alm-title {
     font-family: ui-monospace, monospace;
     font-size: 0.72rem;
-    color: #fdba74;
+    color: #fbbf24;
     font-weight: 800;
     letter-spacing: 0.10em;
     text-transform: uppercase;
@@ -144,7 +141,7 @@
   /* Matches the page-header Activity button's new orange resting
      colour (#fb923c = orange-400) so the modal title icon is the
      exact same shade as the button that opened it. */
-  .alm-title-icon { color: #fb923c; flex-shrink: 0; }
+  .alm-title-icon { color: #fbbf24; flex-shrink: 0; }
   /* 3D bell variant — colour comes from the inline SVG gradient, so
      the base `color` is irrelevant; small vertical lift so the bell
      reads as a dimensional pin sitting on the chip rather than text. */

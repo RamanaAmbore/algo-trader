@@ -1214,3 +1214,81 @@
   color: #67e8f9;
   border-color: rgba(103, 232, 249, 0.65);
 }
+
+/* ── Canonical .mp-section-label ─────────────────────────────────────────── */
+/* Shared across MarketPulse · orders · dashboard · any card that needs a
+   small amber section heading. Single source replaces three near-identical
+   scoped definitions. Use .mp-section-label--bar to opt into the amber
+   left-edge accent bar (dashboard card headers). */
+.mp-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.6rem;
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(251, 191, 36, 0.7);
+  margin-bottom: 0.25rem;
+}
+/* Bespoke dashboard decoration — amber left-edge bar. Opt-in via modifier
+   so other surfaces (MarketPulse · orders) stay flat. */
+.mp-section-label--bar {
+  color: #fbbf24;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.45rem;
+  padding: 0.05rem 0;
+}
+.mp-section-label--bar::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 0.85rem;
+  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+  border-radius: 1px;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.45);
+}
+
+/* ── Canonical .act-events-toggle (ActionEventsToggle) ───────────────────── */
+/* Shared toggle strip for "include action events" — used on /agents/activity
+   and /dashboard agent-activity card. Single source replaces two near-identical
+   scoped implementations (.filter-btn / .dash-agent-filter-btn). */
+.act-events-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.25rem 0.5rem 0.45rem;
+  flex-wrap: wrap;
+  font-family: ui-monospace, monospace;
+}
+.act-events-btn {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.6rem;
+  font-weight: 500;
+  font-family: inherit;
+  color: rgba(180, 200, 230, 0.75);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: background-color 0.06s, color 0.06s, border-color 0.06s;
+}
+.act-events-btn:hover {
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.3);
+}
+.act-events-btn-on {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.5);
+}
+.act-events-hint {
+  font-size: 0.56rem;
+  color: rgba(180, 200, 230, 0.55);
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.02em;
+}

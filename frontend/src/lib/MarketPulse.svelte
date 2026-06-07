@@ -5081,18 +5081,7 @@
     min-height: 40px;
   }
 
-  /* Section labels above each grid in dashboard mode. Small muted
-     amber so they read as section headings without competing with
-     the data rows or the toolbar. */
-  .mp-section-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(251,191,36,0.7);
-    margin-bottom: 0.25rem;
-  }
+  /* .mp-section-label is defined globally in app.css. */
 
   /* Per-source subtotals strip retired — the block was commented
      out in the template; CSS family (.subtotals-strip, .st-group,

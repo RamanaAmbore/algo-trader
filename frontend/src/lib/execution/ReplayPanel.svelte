@@ -365,6 +365,7 @@
 <LogPanel
   heightClass="h-[40vh]"
   defaultTab="order"
+  mode="replay"
 />
 
 <style>

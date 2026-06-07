@@ -828,11 +828,11 @@
           </OrderCard>
         {/each}
         {#if _cancelErr}
-          <div class="log-row log-debug" style="color:#f87171">{_cancelErr}</div>
+          <div class="log-row log-agent-failed">{_cancelErr}</div>
         {/if}
       </div>
     {:else}
-      <div class="log-debug py-2 text-center">No {orderModeFilter} orders.</div>
+      <div class="log-debug py-2 text-center">No {orderModeFilter} orders yet.</div>
     {/if}
   </div>
 {:else}
@@ -853,19 +853,19 @@
     {#if _agentRows.length}
       {#each _agentRows as r (r.key)}{@html r.html}{/each}
     {:else}
-      <div class="log-row log-debug"><span class="log-row-msg">No agent events.</span></div>
+      <div class="log-row log-debug"><span class="log-row-msg">No agent events yet.</span></div>
     {/if}
   {:else if logTab === 'simulator'}
     {#if _simRows.length}
       {#each _simRows as r (r.key)}{@html r.html}{/each}
     {:else}
-      <div class="log-row log-debug"><span class="log-row-msg">No simulator ticks. Start a scenario at /admin/simulator to stream price changes here.</span></div>
+      <div class="log-row log-debug"><span class="log-row-msg">No simulator ticks yet.</span></div>
     {/if}
   {:else}
     {#if _sysRows.length}
       {#each _sysRows as r (r.key)}{@html r.html}{/each}
     {:else}
-      <div class="log-row log-debug"><span class="log-row-msg">No log entries.</span></div>
+      <div class="log-row log-debug"><span class="log-row-msg">No system entries yet.</span></div>
     {/if}
   {/if}
 </div>
@@ -1091,9 +1091,9 @@
     border-color: rgba(251,191,36,0.45);
   }
   :global(.mode-pill-live) {
-    background: rgba(16,185,129,0.14);
-    color: #6ee7b7;
-    border-color: rgba(16,185,129,0.45);
+    background: rgba(74,222,128,0.14);
+    color: #4ade80;
+    border-color: rgba(74,222,128,0.45);
   }
   /* Mode-2 paper rows — sky-blue tint, distinct from amber sim and
      emerald live so the operator never confuses a paper fill with a
