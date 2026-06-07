@@ -193,3 +193,126 @@ async def test_index_unaffected_by_expiry_hint():
     assert abs(spot - nifty_ltp) < 0.01
     # Index path never returns a resolved contract
     assert anchor is None, f"Expected anchor=None for index, got {anchor!r}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4b tests — month-token based resolution via lookup_future_for_option
+# ---------------------------------------------------------------------------
+
+def _inst_nfo(tradingsymbol: str, underlying: str, expiry: str) -> MagicMock:
+    """Fake NFO future instrument."""
+    inst = MagicMock()
+    inst.s = tradingsymbol
+    inst.u = underlying
+    inst.e = "NFO"
+    inst.t = "FUT"
+    inst.x = expiry
+    return inst
+
+
+@pytest.mark.asyncio
+async def test_option_symbol_matches_same_month_future():
+    """CRUDEOIL25JUN5800CE resolves to CRUDEOIL25JUNFUT even though the
+    option expires before the future (MCX options expire ~2 days before
+    the future within the same contract month)."""
+    jun_inst = _inst("CRUDEOIL25JUNFUT", "CRUDEOIL", "2025-06-19")
+    items = [jun_inst]
+
+    ltp_map = {"MCX:CRUDEOIL25JUNFUT": 5750.0}
+
+    from backend.api.routes.options import _resolve_spot
+
+    with _patch_no_sim(), \
+         _patch_instruments(items), \
+         _patch_broker_quote(ltp_map):
+        spot, src, prev_close, anchor = await _resolve_spot(
+            "CRUDEOIL", None,
+            expiry_hint=date(2025, 6, 17),       # option expires 17-Jun
+            option_symbol="CRUDEOIL25JUN5800CE",  # same month token → JUN future
+        )
+
+    assert src == "futures"
+    assert abs(spot - 5750.0) < 0.01
+    assert anchor == "CRUDEOIL25JUNFUT", \
+        f"Expected CRUDEOIL25JUNFUT (month-token match), got {anchor!r}"
+
+
+@pytest.mark.asyncio
+async def test_weekly_option_falls_back_to_front_month():
+    """NIFTY2762422000CE is a weekly option (no 3-letter MON token).
+    lookup_future_for_option detects it as weekly → falls back to the
+    front-month NFO future (NIFTY27JUNFUT)."""
+    # Use a future date so the "expiry > today" filter passes
+    jun_inst = _inst_nfo("NIFTY27JUNFUT", "NIFTY", "2027-06-24")
+    items = [jun_inst]
+
+    # NSE:NIFTY 50 spot also available — but since we supply option_symbol,
+    # the commodity branch is NOT triggered for NIFTY (is_mcx_underlying=False).
+    # The weekly test exercises lookup_future_for_option directly via unit test.
+    from backend.api.algo.derivatives import lookup_future_for_option
+
+    with _patch_instruments(items):
+        result = await lookup_future_for_option("NIFTY2762422000CE")
+
+    assert result == "NIFTY27JUNFUT", \
+        f"Expected NIFTY27JUNFUT for weekly NIFTY option, got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_option_symbol_with_unlisted_future_falls_through():
+    """When the month-token future isn't in the cache yet, lookup_future_for_option
+    returns None, and _resolve_spot falls through to expiry_hint, then
+    front-month if needed."""
+    # Only JUL listed, no JUN future.
+    jul_inst = _inst("CRUDEOIL25JULFUT", "CRUDEOIL", "2025-07-18")
+    items = [jul_inst]
+
+    ltp_map = {"MCX:CRUDEOIL25JULFUT": 5800.0}
+
+    from backend.api.routes.options import _resolve_spot
+
+    with _patch_no_sim(), \
+         _patch_instruments(items), \
+         _patch_broker_quote(ltp_map):
+        spot, src, prev_close, anchor = await _resolve_spot(
+            "CRUDEOIL", None,
+            expiry_hint=date(2025, 7, 18),        # JUL expiry hint
+            option_symbol="CRUDEOIL25JUN5800CE",   # JUN not in cache → falls through
+        )
+
+    # lookup_future_for_option misses (no JUN future), expiry_hint=JUL resolves JULFUT
+    assert src == "futures"
+    assert anchor == "CRUDEOIL25JULFUT", \
+        f"Expected CRUDEOIL25JULFUT via expiry_hint fallback, got {anchor!r}"
+
+
+@pytest.mark.asyncio
+async def test_option_symbol_takes_priority_over_expiry_hint():
+    """When both option_symbol and expiry_hint are provided, the month-token
+    match from option_symbol wins over the date-based expiry_hint lookup."""
+    jun_inst = _inst("CRUDEOIL25JUNFUT", "CRUDEOIL", "2025-06-19")
+    sep_inst = _inst("CRUDEOIL25SEPFUT", "CRUDEOIL", "2025-09-18")
+    items = [jun_inst, sep_inst]
+
+    ltp_map = {
+        "MCX:CRUDEOIL25JUNFUT": 5750.0,
+        "MCX:CRUDEOIL25SEPFUT": 5900.0,
+    }
+
+    from backend.api.routes.options import _resolve_spot
+
+    with _patch_no_sim(), \
+         _patch_instruments(items), \
+         _patch_broker_quote(ltp_map):
+        spot, src, prev_close, anchor = await _resolve_spot(
+            "CRUDEOIL", None,
+            expiry_hint=date(2025, 9, 18),        # SEP hint
+            option_symbol="CRUDEOIL25JUN5800CE",   # JUN token — must win
+        )
+
+    # option_symbol month-token (JUN) must take priority over expiry_hint (SEP)
+    assert src == "futures"
+    assert anchor == "CRUDEOIL25JUNFUT", \
+        f"Expected CRUDEOIL25JUNFUT (option_symbol priority), got {anchor!r}"
+    assert abs(spot - 5750.0) < 0.01, \
+        f"Expected JUN LTP 5750, got {spot}"

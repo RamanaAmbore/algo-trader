@@ -459,6 +459,87 @@ async def lookup_mcx_front_month_future(underlying: str) -> str | None:
     return candidates[0].s
 
 
+async def lookup_future_for_option(option_symbol: str) -> str | None:
+    """Return the futures tradingsymbol matching this option's month token,
+    e.g. NIFTY26JUN22000CE → NIFTY26JUNFUT, CRUDEOIL25JUN5800CE → CRUDEOIL25JUNFUT.
+
+    For weekly options (no extractable monthly token — the Kite weekly format
+    uses a single-digit month code + 2-digit day with no 3-letter MON string),
+    falls back to the front-month future via lookup_mcx_front_month_future (MCX)
+    or the first listed NFO future (NSE F&O). Weekly options share the same
+    front-month future as their underlying index contract.
+
+    Returns None when the option symbol can't be parsed or no matching future
+    is in the instruments cache.
+    """
+    if not option_symbol:
+        return None
+
+    sym = option_symbol.upper().strip()
+
+    # Try to extract a monthly token from the symbol.
+    # Monthly options match: <ROOT><YY><MON><STRIKE><CE|PE>
+    # e.g. CRUDEOIL25JUN5800CE, NIFTY26JUN22000CE
+    m_monthly = _OPT_MONTHLY.match(sym)
+    if m_monthly:
+        root, yy, mon, _strike, _opt = m_monthly.groups()
+        fut_sym = f"{root}{yy}{mon}FUT"
+        # Verify it exists in the instruments cache before returning.
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        try:
+            resp = await get_or_fetch("instruments", _fetch_instruments,
+                                      ttl_seconds=_TTL_SECONDS)
+            items = resp.items if resp else []
+        except Exception:
+            items = []
+        if items:
+            fut_sym_upper = fut_sym.upper()
+            for inst in items:
+                if (inst.s or "").upper() == fut_sym_upper:
+                    return inst.s
+        # Cache miss — the future for this month isn't listed yet.
+        return None
+
+    # Weekly option — no monthly token extractable. Fall back to front-month.
+    m_weekly = _OPT_WEEKLY.match(sym)
+    if m_weekly:
+        root = m_weekly.group(1)
+        if is_mcx_underlying(root):
+            return await lookup_mcx_front_month_future(root)
+        # NSE/NFO weekly: find the first listed NFO future for this underlying.
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        try:
+            resp = await get_or_fetch("instruments", _fetch_instruments,
+                                      ttl_seconds=_TTL_SECONDS)
+            items = resp.items if resp else []
+        except Exception:
+            items = []
+        if not items:
+            return None
+        root_upper = root.upper()
+        from datetime import datetime as _dt
+        try:
+            _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+        except Exception:
+            _ist_today_iso = _dt.utcnow().date().isoformat()
+        candidates = [
+            inst for inst in items
+            if (inst.e in ("NFO", "NSE")
+                and inst.t == "FUT"
+                and (inst.u or "").upper() == root_upper
+                and inst.x
+                and inst.x > _ist_today_iso)
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda i: i.x or "")
+        return candidates[0].s
+
+    return None
+
+
 async def lookup_mcx_future_for_expiry(underlying: str,
                                        target_expiry: date) -> str | None:
     """Return the MCX FUT tradingsymbol for *underlying* whose expiry is the

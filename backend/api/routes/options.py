@@ -40,6 +40,7 @@ from backend.api.algo.derivatives import (
     greeks,
     implied_vol,
     is_mcx_underlying,
+    lookup_future_for_option,
     lookup_mcx_front_month_future,
     lookup_mcx_future_for_expiry,
     multileg_extremes,
@@ -588,7 +589,8 @@ async def _lookup_mcx_future(underlying: str,
 
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
-                        expiry_hint: Optional[date] = None
+                        expiry_hint: Optional[date] = None,
+                        option_symbol: Optional[str] = None
                         ) -> tuple[float, str, Optional[float], Optional[str]]:
     """Spot for the underlying. Returns `(spot, source, prev_close, anchor_contract)`
     so the UI can flag stale data and color the spot value against
@@ -662,9 +664,11 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     #    front-month when expiry_hint is None or no match is found.
     if is_commodity:
         resolved_sym: Optional[str] = None
-        if expiry_hint is not None:
+        if option_symbol:
+            resolved_sym = await lookup_future_for_option(option_symbol)
+        if not resolved_sym and expiry_hint is not None:
             resolved_sym = await lookup_mcx_future_for_expiry(underlying, expiry_hint)
-        if resolved_sym is None:
+        if not resolved_sym:
             resolved_sym = await lookup_mcx_front_month_future(underlying)
         if resolved_sym:
             full_key = f"MCX:{resolved_sym}"
@@ -890,7 +894,8 @@ class OptionsController(Controller):
         S, spot_src, spot_prev_close, _spot_anchor_single = await _resolve_spot(
             parsed["underlying"], spot,
             fallback=parsed["strike"],
-            expiry_hint=parsed["expiry"])
+            expiry_hint=parsed["expiry"],
+            option_symbol=sym)
         _close_time = (23, 30) if is_mcx_underlying(parsed["underlying"]) else (15, 30)
         T_yrs = days_to_expiry(parsed["expiry"], close_time=_close_time) / 365.0
         # Pass avg_cost AND estimated-BS inputs as last-resort fallbacks
@@ -1610,7 +1615,8 @@ class OptionsController(Controller):
         S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
             underlying, data.spot,
             fallback=median_strike,
-            expiry_hint=expiry_hint)
+            expiry_hint=expiry_hint,
+            option_symbol=data.legs[0].symbol if data.legs else None)
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
         # Pre-compute per-option T_years list so eval_T (near expiry) and
