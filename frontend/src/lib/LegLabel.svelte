@@ -7,29 +7,23 @@
   //   compact  — when true, omits [ ] brackets around the month token;
   //              intended for narrow basket-pill contexts.
 
-  import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
+  import { decomposeSymbol, composeMonthToken } from '$lib/data/decomposeSymbol.js';
+  import { getInstrument } from '$lib/data/instruments.js';
 
   /** @type {{ sym: string, compact?: boolean }} */
   let { sym, compact = false } = $props();
 
   const parsed = $derived(decomposeSymbol(sym));
 
-  // Month token rendered in the compact, no-spaces form to match
-  // formatSymbol() across the platform. Without this, Legs read
-  // "NIFTY-26 JUN-22000-CE" while every other surface read
-  // "NIFTY-26JUN-22000-CE" because the two formatters used
-  // different shape calculations (LegLabel was reading
-  // `monthLabel` = "26 JUN" / "25 APR 24"; formatSymbol uses the
-  // raw `month` token = "26JUN" / "25APR24").
-  //   Monthly: "26JUN"   (5 chars YYMON, render as-is)
-  //   Weekly : "25APR24" (rebuilt from monthLabel by stripping spaces)
-  const monthDisplay = $derived.by(() => {
-    if (!parsed.month) return '';
-    if (parsed.month.length === 5 && /^\d{2}[A-Z]{3}$/.test(parsed.month)) {
-      return parsed.month;
-    }
-    return (parsed.monthLabel || parsed.month).replace(/\s+/g, '');
-  });
+  // Month token — single source of truth lives in `composeMonthToken`
+  // (decomposeSymbol.js). Shared with formatSymbol() so the two
+  // formatters can never drift apart again:
+  //   Monthly: "26JUN26"  (year + month + EXPIRY DAY from instruments cache)
+  //   Weekly : "25APR24"  (day already encoded in the tradingsymbol)
+  //   Cold cache fallback: bare "26JUN" until instruments load
+  const monthDisplay = $derived(
+    composeMonthToken(parsed, getInstrument(sym)?.x || null),
+  );
 </script>
 
 <!--

@@ -1,3 +1,5 @@
+import { _setExpiryLookup } from './decomposeSymbol.js';
+
 // Instrument universe — loaded once per trading day, cached in IndexedDB.
 // Exposes prefix search, symbol lookup, and option-chain helpers for the
 // command-line autocomplete.
@@ -97,6 +99,16 @@ function _buildIndexes(items) {
     }
   }
   _underlyingsSorted = Array.from(_underlyings).sort();
+  // Register the expiry lookup with decomposeSymbol so formatSymbol()
+  // can append the DD to monthly contracts (e.g. NIFTY-26JUN26-22000-CE
+  // instead of NIFTY-26JUN-22000-CE). Reads `inst.x` (YYYY-MM-DD).
+  // Module-bound by reference — every formatSymbol call after this point
+  // sees the expiry day, regardless of whether the caller is on Pulse /
+  // Legs / Performance / etc.
+  _setExpiryLookup((sym) => {
+    const inst = _byTradingsymbol?.get(String(sym || '').toUpperCase());
+    return inst?.x || null;
+  });
 }
 
 function _todayIST() {
