@@ -15,19 +15,31 @@
   const parsed = $derived(decomposeSymbol(sym));
 </script>
 
+<!--
+  Hyphen-separated Dhan-style display:
+    NIFTY-26JUN-22000-CE      (monthly option)
+    NIFTY-25APR24-22000-CE    (weekly option)
+    NIFTY-26JUN-FUT           (future)
+  The component still renders each token in its own colored <span> so
+  the strike + CE/PE accents survive — only the inter-token visual
+  cue switches from "[brackets]" / spaces to a "-" delimiter for
+  parity with how Dhan + the broker app show F&O tradingsymbols.
+-->
 <span class="leg-label">
   <span class="leg-root">{parsed.root}</span>
   {#if parsed.month}
-    <span class="leg-month">
-      {#if compact}{parsed.monthLabel}{:else}[{parsed.monthLabel}]{/if}
-    </span>
+    <span class="leg-sep">-</span>
+    <span class="leg-month">{parsed.monthLabel}</span>
   {/if}
   {#if parsed.strike != null}
+    <span class="leg-sep">-</span>
     <span class="leg-strike">{Number.isInteger(parsed.strike) ? parsed.strike.toLocaleString('en-IN') : parsed.strike}</span>
   {/if}
   {#if parsed.optType}
+    <span class="leg-sep">-</span>
     <span class="leg-type leg-type-{parsed.optType.toLowerCase()}">{parsed.optType}</span>
   {:else if parsed.kind === 'fut'}
+    <span class="leg-sep">-</span>
     <span class="leg-type leg-type-fut">FUT</span>
   {/if}
 </span>
@@ -36,10 +48,15 @@
   .leg-label {
     display: inline-flex;
     align-items: baseline;
-    gap: 0.25rem;
+    gap: 0;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: inherit;
     line-height: inherit;
+  }
+  .leg-sep {
+    color: var(--algo-muted);
+    opacity: 0.55;
+    margin: 0 0.1rem;
   }
 
   .leg-root {

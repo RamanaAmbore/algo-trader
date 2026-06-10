@@ -7,6 +7,22 @@
   import { dataCache, authStore } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
+
+  // Module-scope cache for hyphenated display strings. ag-Grid
+  // re-runs cellRenderer on every redraw — a Map cache avoids
+  // re-parsing each symbol N×rows×renders. Cleared on grid teardown
+  // via onDestroy below.
+  const _symFmtCache = new Map();
+  function _fmtSymCached(sym) {
+    if (!sym) return '';
+    let v = _symFmtCache.get(sym);
+    if (v === undefined) {
+      v = formatSymbol(sym);
+      _symFmtCache.set(sym, v);
+    }
+    return v;
+  }
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
@@ -353,9 +369,11 @@
     const wrap  = document.createElement('span');
     wrap.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
     const txt = document.createElement('span');
-    txt.textContent = sym;
+    // Display Dhan-style hyphenated form; data-sym keeps the raw
+    // Kite tradingsymbol so context-menu / chart deep-links still
+    // resolve correctly.
+    txt.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym);
     if (sym && sym !== 'TOTAL') {
-      // data attrs for context menu delegation
       txt.setAttribute('data-sym',  sym);
       txt.setAttribute('data-exch', exch);
       txt.className = 'perf-sym-cell';
@@ -376,7 +394,7 @@
     const exch = String(params.data?.exchange || 'NFO');
     const span = document.createElement('span');
     span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
-    span.textContent = sym;
+    span.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym);
     if (sym && sym !== 'TOTAL') {
       // data attrs for context menu delegation
       span.setAttribute('data-sym',  sym);

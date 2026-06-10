@@ -33,7 +33,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
-  import { decomposeSymbol } from '$lib/data/decomposeSymbol';
+  import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -3081,10 +3081,10 @@
                 {#if alt.close_legs?.length || alt.open_legs?.length}
                   <div class="optimize-alt-legs">
                     {#each alt.close_legs as l}
-                      <span class="optimize-leg optimize-leg-close">CLOSE {l.side} {l.qty} {l.symbol}</span>
+                      <span class="optimize-leg optimize-leg-close">CLOSE {l.side} {l.qty} {formatSymbol(l.symbol)}</span>
                     {/each}
                     {#each alt.open_legs as l}
-                      <span class="optimize-leg optimize-leg-open">OPEN {l.side} {l.qty} {l.symbol}</span>
+                      <span class="optimize-leg optimize-leg-open">OPEN {l.side} {l.qty} {formatSymbol(l.symbol)}</span>
                     {/each}
                   </div>
                 {/if}

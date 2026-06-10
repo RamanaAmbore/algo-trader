@@ -130,3 +130,47 @@ export function decomposeSymbol(sym) {
     raw,
   };
 }
+
+
+/**
+ * Format a Kite-style F&O tradingsymbol with hyphens for readability,
+ * matching Dhan's display convention. Pure display transform —
+ * underlying storage stays Kite-format so backend / broker calls
+ * keep working. Equity / index symbols pass through unchanged.
+ *
+ * Examples:
+ *   NIFTY26JUN22000CE         → NIFTY-26JUN-22000-CE
+ *   NIFTY2542422000CE         → NIFTY-25APR24-22000-CE   (weekly)
+ *   NIFTY26JUNFUT             → NIFTY-26JUN-FUT
+ *   RELIANCE                  → RELIANCE
+ *   NIFTY 50                  → NIFTY 50
+ *
+ * @param {string} sym  Kite tradingsymbol (or any string — non-F&O
+ *                      symbols return as-is).
+ * @returns {string}    Hyphenated display form, or original on parse failure.
+ */
+export function formatSymbol(sym) {
+  if (!sym || typeof sym !== 'string') return sym || '';
+  const d = decomposeSymbol(sym);
+  if (d.kind === 'opt' && d.root && d.month && d.strike != null && d.optType) {
+    // Monthly form (YYMON e.g. 26JUN) vs weekly form (YYMonCodeDD e.g.
+    // 25424 → 25APR24). The monthLabel already does the heavy lifting
+    // for weeklies; we reuse it when it's compact, otherwise the
+    // raw `month` field is fine for monthly contracts.
+    const middle = (d.month.length === 5) ? d.month  // 26JUN
+                                          : d.monthLabel || d.month;
+    // Render strike as integer when it's whole-number to avoid ".0"
+    // tails (22000.0 → 22000). Some Indian F&O contracts carry
+    // half-point strikes (banknifty intraweek) — those need the ".5".
+    const strikeStr = Number.isInteger(d.strike) ? String(d.strike)
+                                                  : String(d.strike);
+    return `${d.root}-${middle}-${strikeStr}-${d.optType}`;
+  }
+  if (d.kind === 'fut' && d.root && d.month) {
+    return `${d.root}-${d.month}-FUT`;
+  }
+  // Equity / index / unrecognised — pass through unchanged so the
+  // caller can swap formatSymbol() in without breaking non-derivative
+  // displays.
+  return sym;
+}

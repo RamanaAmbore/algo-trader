@@ -26,6 +26,7 @@
   import { priceFmt, qtyFmt } from '$lib/format';
   import { formatDualTz } from '$lib/stores';
   import { longPress } from '$lib/actions/longPress.js';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
 
   let {
     /** @type {any} */                                   order,
@@ -72,7 +73,11 @@
   // / `initial_price` / `fill_price` / `created_at`. The same OrderCard
   // renders both shapes so the /orders Order Activity book and every
   // LogPanel Orders-tab surface look identical.
-  const _sym       = $derived(order?.tradingsymbol || order?.symbol || '');
+  const _symRaw    = $derived(order?.tradingsymbol || order?.symbol || '');
+  // Display-only — `_sym` is what shows in the UI (Dhan-style hyphenated
+  // for F&O, unchanged for cash equity). Storage / API calls keep using
+  // _symRaw which is the Kite tradingsymbol.
+  const _sym       = $derived(formatSymbol(_symRaw));
   const _limit     = $derived(order?.price ?? order?.initial_price ?? null);
   const _filled    = $derived(order?.average_price ?? order?.fill_price ?? null);
   const _ts        = $derived(order?.order_timestamp || order?.created_at || null);
