@@ -81,6 +81,53 @@ _HIST_CACHE_TTL_OK    = 60    # seconds — fresh bars
 _HIST_CACHE_TTL_EMPTY = 10    # seconds — empty bars (transient rate-limit failure)
 _HIST_CACHE_MAX_SIZE  = 200   # LRU cap — prevent unbounded growth from chain-picker
 
+# Process-wide token-resolution cache for the historical-bars endpoint.
+# Key: (broker_account, exchange). Value: dict[tradingsymbol_upper, int_token].
+#
+# Why: the historical endpoint used to call `kite.instruments(EX)` afresh
+# per request, walking up to 5 exchanges per broker per symbol. With a
+# typical option-chain pull (~20 strikes opened simultaneously), this
+# blew past Kite's instruments-endpoint rate limit (the operator saw the
+# 17:56:03 storm of "ZG0790 rate-limited" warnings followed by all
+# brokers falling through and the chart panel reporting "not found" for
+# symbols that DO exist in the MCX dump).
+#
+# The dump itself is stable for 24 h (Kite refreshes nightly), so we
+# cache the resolved {tradingsymbol → token} dict per (account, exchange)
+# for 6 h. First miss does the network fetch and populates the cache
+# with EVERY symbol in the exchange dump (~15k for MCX, ~75k for NFO);
+# all subsequent O(1) lookups are token-only and never re-hit Kite.
+#
+# 6 h covers operator's full session including the open/close summary
+# window without straddling a Kite contract refresh. A separate startup
+# warm task could push this to "warm at boot" later if needed.
+_INSTRUMENTS_CACHE: dict[tuple[str, str], tuple[float, dict[str, int]]] = {}
+_INSTRUMENTS_LOCK  = _threading.Lock()
+_INSTRUMENTS_TTL   = 21600   # 6 h
+
+
+def _instruments_cache_get(account: str, exchange: str) -> dict[str, int] | None:
+    """Return cached {tradingsymbol → token} for the (account, exchange)
+    pair if present and unexpired, else None. Empty dicts cache too —
+    a known-empty result still saves the network walk."""
+    with _INSTRUMENTS_LOCK:
+        entry = _INSTRUMENTS_CACHE.get((account, exchange))
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            _INSTRUMENTS_CACHE.pop((account, exchange), None)
+            return None
+        return value
+
+
+def _instruments_cache_put(account: str, exchange: str,
+                            token_map: dict[str, int]) -> None:
+    with _INSTRUMENTS_LOCK:
+        _INSTRUMENTS_CACHE[(account, exchange)] = (
+            time.monotonic() + _INSTRUMENTS_TTL, token_map,
+        )
+
 
 def _hist_cache_get(key: tuple) -> object | None:
     """Return cached value for *key* if present and unexpired, else None.
@@ -1427,13 +1474,28 @@ class OptionsController(Controller):
                 # for commodity pins, "NSE" for underlying spot) we only
                 # try that one exchange — no need to walk 6 arms.  An
                 # empty exchange falls back to the full walk for discovery.
+                #
+                # Cached path: _INSTRUMENTS_CACHE holds {sym → token} per
+                # (broker_account, exchange) for 6 h. First miss does the
+                # full dump fetch; subsequent O(1) lookups skip Kite entirely
+                # and avoid the rate-limit storm that was killing chain-pulls.
                 for ex in exchange_arms:
-                    insts = await asyncio.to_thread(broker.instruments, ex) or []
-                    for inst in insts:
-                        if str(inst.get("tradingsymbol") or "").upper() == sym:
-                            token = int(inst.get("instrument_token"))
-                            break
-                    if token:
+                    token_map = _instruments_cache_get(broker.account, ex)
+                    if token_map is None:
+                        insts = await asyncio.to_thread(broker.instruments, ex) or []
+                        # Build the FULL exchange-wide token map in one pass
+                        # so every subsequent option/future lookup in that
+                        # exchange hits cache.
+                        token_map = {}
+                        for inst in insts:
+                            ts = str(inst.get("tradingsymbol") or "").upper()
+                            tk = inst.get("instrument_token")
+                            if ts and tk:
+                                token_map[ts] = int(tk)
+                        _instruments_cache_put(broker.account, ex, token_map)
+                    tk = token_map.get(sym)
+                    if tk is not None:
+                        token = tk
                         break
 
                 if not token:
