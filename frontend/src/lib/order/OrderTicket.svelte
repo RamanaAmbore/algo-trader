@@ -1338,8 +1338,15 @@
       _wingPremPctOverride, _wingStrikeOffsetOverride,
       _side, symbol, _qty, _price,
     ];
-    // Skip preview when basics are incomplete.
-    if (!symbol || Number(_qty) <= 0 || (_templateId === null && !_tpOverride && !_slOverride)) {
+    // Skip preview when basics are incomplete. Critically — guard on
+    // empty `_account` too: an operator who opens the modal before
+    // an account is picked would otherwise generate one 400 every
+    // time they tweak the override fields (the backend rejects an
+    // empty account upfront). The catalog + auto-select still run
+    // on mount; only the preview API call is debounced behind a
+    // valid account.
+    if (!symbol || Number(_qty) <= 0 || !_account
+        || (_templateId === null && !_tpOverride && !_slOverride)) {
       _previewPlan = null;
       _previewError = '';
       return;

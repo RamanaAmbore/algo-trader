@@ -19,6 +19,7 @@
   import { onMount, onDestroy } from 'svelte';
   import Select from '$lib/Select.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import { visibleInterval } from '$lib/stores';
   import {
     fetchSimRecordings, deleteSimRecording,
     fetchSimReplayStatus, startSimReplay, stopSimReplay,
@@ -36,8 +37,8 @@
   let _selectedRecordingId = $state(/** @type {number|null} */ (null));
   let _speed = $state(1.0);
 
-  /** @type {number | null} */
-  let _pollHandle = null;
+  /** @type {(() => void) | null} */
+  let _pollStop = null;
 
   async function _loadRecordings() {
     try {
@@ -64,17 +65,22 @@
 
   onMount(() => {
     _refresh();
-    // Poll every 4s when a replay is active (cursor moves), 10s otherwise.
-    _pollHandle = /** @type {any} */ (setInterval(() => {
+    // 5 s cadence wrapped in visibleInterval so background tabs don't
+    // burn requests when the operator switches away from
+    // /admin/execution. When a replay is active we always refresh
+    // status (cursor advances visibly). When idle we throttle
+    // recordings list refresh to every 3rd tick (~15 s) since the
+    // list doesn't change without operator action.
+    let _tick = 0;
+    _pollStop = visibleInterval(() => {
+      _tick += 1;
       _loadStatus();
-      // Only re-list recordings if no replay is running (recordings
-      // don't change during playback).
-      if (!replayStatus?.active) _loadRecordings();
-    }, 4000));
+      if (!replayStatus?.active && (_tick % 3 === 0)) _loadRecordings();
+    }, 5000);
   });
 
   onDestroy(() => {
-    if (_pollHandle) clearInterval(_pollHandle);
+    _pollStop?.();
   });
 
   async function _play() {
