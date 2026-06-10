@@ -1,7 +1,8 @@
 /**
  * Order-template catalog cache — memoised module-level loader for
  * /api/admin/templates/. Three surfaces currently fetch the catalog
- * on mount (OrderTicket, TemplateAttachPanel, /automation/templates);
+ * on mount (OrderTicket, /admin/derivatives Optimize tab, and
+ * /automation/templates);
  * without this cache, opening the order modal hits the DB once per
  * mount + once per nav to the templates page.
  *

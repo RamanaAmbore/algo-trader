@@ -497,21 +497,17 @@
       type: "close_position",
       params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO", product: "NRML" },
     },
-    // place_order — entry-only. No template attached; the agent
-    // places the order and nothing else. Use this when the agent's
-    // condition is the entry trigger and you don't want auto-TP/SL.
+    // place_order — entry + template_slug. The agent places the order
+    // and the standard template-attach pipeline kicks in on fill
+    // (TP/SL GTTs + wing on SELL options). The skeleton ships with
+    // template_slug="default-bull" as a sensible default for a BUY
+    // entry; operator changes the slug to "default-short-vol" for a
+    // SELL-side credit-spread strategy, or "none" to opt out of
+    // auto-attachments. The earlier split into place_order +
+    // place_order_templated buttons confused the operator (two
+    // pills doing essentially the same thing); consolidated in
+    // audit pass 6 to one pill + an editable slug field.
     place_order: {
-      type: "place_order",
-      params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO",
-                side: "SELL", qty: 50, order_type: "LIMIT",
-                template_slug: "none" },
-    },
-    // place_order_templated — entry + default template attach. The
-    // chosen template (default-bull / default-short-vol) fans out
-    // TP/SL GTTs (and Wing for sell options) automatically when the
-    // entry fills. Operator can swap template_slug for any other
-    // template or override individual fields (tp_pct_override etc).
-    place_order_templated: {
       type: "place_order",
       params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO",
                 side: "BUY", qty: 50, order_type: "LIMIT",
@@ -986,9 +982,7 @@
                       <button type="button" onclick={() => addAction('close_position')}
                         class="action-add-pill action-add-close">+ close_position</button>
                       <button type="button" onclick={() => addAction('place_order')}
-                        class="action-add-pill action-add-place" title="Entry only — no auto-exit attached">+ place_order</button>
-                      <button type="button" onclick={() => addAction('place_order_templated')}
-                        class="action-add-pill action-add-place-tpl" title="Entry + default template — auto TP/SL/Wing on fill">+ place_order (templated)</button>
+                        class="action-add-pill action-add-place" title="Entry + template_slug (default-bull). Change slug to default-short-vol for SELL, or 'none' to opt out of auto-attachments.">+ place_order</button>
                       <button type="button" onclick={() => addAction('chase_close_positions')}
                         class="action-add-pill action-add-chase">+ chase_close</button>
                       <button type="button" onclick={() => addAction('cancel_all_orders')}
@@ -1659,11 +1653,9 @@
   .action-add-close:hover  { background: rgba(251,113,133,0.25); border-color: #fb7185; }
   .action-add-place  { background: rgba(16,185,129,0.12);  color: #6ee7b7; border-color: rgba(16,185,129,0.4); }
   .action-add-place:hover  { background: rgba(16,185,129,0.25); border-color: #10b981; }
-  /* "+ place_order (templated)" — same emerald family but stronger
-     gradient + ★ accent so operators see it as the recommended
-     variant for new agents. Untemplated stays for explicit opt-out. */
-  .action-add-place-tpl  { background: linear-gradient(135deg, rgba(16,185,129,0.18), rgba(192,132,252,0.14)); color: #6ee7b7; border-color: rgba(16,185,129,0.55); font-weight: 700; }
-  .action-add-place-tpl:hover { background: linear-gradient(135deg, rgba(16,185,129,0.28), rgba(192,132,252,0.22)); border-color: #10b981; }
+  /* `.action-add-place-tpl` removed in audit pass 6 — the
+     +place_order pill now ships with template_slug="default-bull" in
+     the skeleton so a separate "templated" variant was redundant. */
   .action-add-chase  { background: rgba(251,191,36,0.12);  color: #fbbf24; border-color: rgba(251,191,36,0.4); }
   .action-add-chase:hover  { background: rgba(251,191,36,0.25); border-color: #fbbf24; }
   .action-add-cancel { background: rgba(148,163,184,0.12); color: var(--algo-slate); border-color: rgba(148,163,184,0.35); }

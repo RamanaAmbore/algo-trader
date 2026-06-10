@@ -28,7 +28,7 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, fetchSettings, previewTicketTemplate } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, previewTicketTemplate } from '$lib/api';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { aggFmt } from '$lib/format';
@@ -516,22 +516,13 @@
   let _price   = $state(price ?? '');
   let _trigger = $state(trigger ?? '');
 
-  // ── Target take-profit (legacy single-TP field; deprecated v2.1) ─────
-  // Kept as an alternate path when the operator hasn't picked a
-  // template + override fields are zero. New code should use the
-  // Template picker below — it builds the same payload from a richer
-  // (TP + SL + Wing) shape and routes through the unified attach
-  // pipeline.
-  let _targetMode = $state(/** @type {'pct' | 'abs'} */ ('pct'));
-  let _targetPct = $state(/** @type {number} */ (30));
-  let _targetAbs = $state(/** @type {number|''} */ (''));
-
-  const _targetPctVal = $derived(
-    _targetMode === 'pct' && Number(_targetPct) > 0 ? Number(_targetPct) / 100 : null
-  );
-  const _targetAbsVal = $derived(
-    _targetMode === 'abs' && Number(_targetAbs) > 0 ? Number(_targetAbs) : null
-  );
+  // Legacy `_targetMode / _targetPct / _targetAbs` state + the matching
+  // `_targetPctVal / _targetAbsVal` derived fields removed in audit
+  // pass 6. The Template picker (added Phase 4c) supersedes them —
+  // operator picks a template for TP/SL/Wing instead of typing a
+  // single TP %. The backend's _ticket_overrides_dict still accepts
+  // legacy `target_pct` from external callers (Lab MCP scripts) via
+  // a shim, so this removal is UI-surface-only.
 
   // ── v2 template picker ──────────────────────────────────────────────
   // Template state. `_templates` is the list fetched from
@@ -885,8 +876,6 @@
       product:    _product,
       limit:      showLimit ? Number(_roundToTick(_price)) || 0 : 0,
       chaseAgg:   showLimit && _chase ? _chaseAgg : 'low',
-      target_pct: _targetPctVal,
-      target_abs: _targetAbsVal,
     };
   }
 
@@ -1134,8 +1123,6 @@
       // so the AlgoOrder row records the intent for replay.
       chase:               showLimit ? _chase : false,
       chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
-      target_pct:          _targetPctVal,
-      target_abs:          _targetAbsVal,
     };
     submitting = true; submitErr = ''; submitOk = '';
     /** @type {any} */
@@ -1267,27 +1254,10 @@
     _refetchFunds();
 
     // Seed default target pct from the `algo.default_target_pct` setting.
-    // Silent fallback — if the setting is absent the field stays empty.
-    if (!_isDemo) {
-      fetchSettings()
-        .then(/** @param {any} r */ (r) => {
-          // fetchSettings returns a raw array (list of SettingInfo objects),
-          // not a {settings: [...]} wrapper.
-          const row = (Array.isArray(r) ? r : []).find(
-            /** @param {any} s */ (s) => s.key === 'algo.default_target_pct'
-          );
-          const v = row ? Number(row.value) : NaN;
-          // DB stores as fraction (0.30); UI displays as percent (30).
-          // Fallback to 30 if setting is missing or zero.
-          const pct = v > 0 ? +(v * 100).toFixed(2) : 30;
-          // Always apply the DB value — it's authoritative.
-          // The initial state of 30 is just a synchronous default.
-          _targetPct = /** @type {number} */ (pct);
-        })
-        .catch(() => {
-          // Silent fetch failure — initial default of 30 already set; no-op.
-        });
-    }
+    // Legacy `algo.default_target_pct` setting fetch removed in audit
+    // pass 6 alongside the _targetPct state field. The Template picker
+    // is the canonical TP/SL surface now; setting is preserved server-
+    // side for back-compat but the modal no longer reads it.
 
     // Load the OrderTemplate catalog from the module-level cache so
     // repeated modal opens don't re-hit the DB. The cache kicks in
@@ -2417,23 +2387,6 @@
     padding-top: 0.5rem;
     border-top: 1px solid rgba(255,255,255,0.08);
   }
-  .ot-mode-pills { display: flex; gap: 0.25rem; }
-  .ot-mode-pill {
-    padding: 0.2rem 0.55rem;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 3px;
-    color: #a3b9d0;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-  }
-  .ot-mode-pill:disabled { opacity: 0.4; cursor: not-allowed; }
-  .ot-mode-draft.on { background: rgba(192,132,252,0.18); border-color: rgba(192,132,252,0.55); color: #c084fc; }
-  .ot-mode-paper.on { background: rgba(125,211,252,0.18); border-color: rgba(125,211,252,0.55); color: #7dd3fc; }
-  .ot-mode-live.on  { background: rgba(74,222,128,0.18);  border-color: rgba(74,222,128,0.55);  color: #4ade80; }
-
   /* Wave C — read-only mode hint replaces the legacy mode pills.
      Operator clicks the navbar dropdown to change mode; this row
      just shows what the ticket will submit in. Color tag mirrors
@@ -2707,32 +2660,14 @@
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
   .ot-submit-basket-mode:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  /* Target take-profit row */
-  .ot-target-row { flex-wrap: nowrap; }
+  /* `.ot-label-sub` kept — used by the Template card "(exit rules)"
+     hint and other secondary-text spans across the ticket. */
   .ot-label-sub { opacity: 0.5; font-weight: 400; font-size: 0.55rem; margin-left: 0.2rem; }
-  .ot-target-input-row {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    flex-wrap: nowrap;
-  }
-  .ot-target-mode-pill {
-    padding: 0.15rem 0.4rem;
-    border-radius: 3px;
-    border: 1px solid rgba(125,211,252,0.35);
-    background: transparent;
-    color: #7dd3fc;
-    font-size: 0.6rem;
-    cursor: pointer;
-    font-family: inherit;
-    transition: background 0.15s;
-  }
-  .ot-target-mode-pill.on {
-    background: rgba(125,211,252,0.18);
-    border-color: rgba(125,211,252,0.65);
-    color: #bae6fd;
-  }
-  .ot-target-mode-pill:hover:not(.on) { background: rgba(125,211,252,0.08); }
+  /* `.ot-target-row` / `.ot-target-input-row` / `.ot-target-mode-pill`
+     / `.ot-target-input` / `.ot-target-hint` CSS rules removed in
+     audit pass 6 — the Target row markup was replaced by the
+     Template card in Phase 4c so these selectors had no markup left
+     to style. */
 
   /* ── Template attachment card (v2.1) ─────────────────────────────── */
   .ot-template-row { flex-wrap: nowrap; }
@@ -2831,12 +2766,5 @@
     background: rgba(248,113,113,0.08);
     border: 1px solid rgba(248,113,113,0.30);
     border-radius: 3px;
-  }
-  .ot-target-input { width: 6rem; flex-shrink: 0; }
-  .ot-target-hint {
-    font-size: 0.6rem;
-    color: #4ade80;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
   }
 </style>
