@@ -483,8 +483,14 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
     m_monthly = _OPT_MONTHLY.match(sym)
     if m_monthly:
         root, yy, mon, _strike, _opt = m_monthly.groups()
+        # Construct the BARE constructed form (e.g. CRUDEOIL26JULFUT).
         fut_sym = f"{root}{yy}{mon}FUT"
-        # Verify it exists in the instruments cache before returning.
+        # MCX commodities — Kite's actual tradingsymbol carries a
+        # day-of-month suffix (CRUDEOIL26JUL19FUT, GOLDM26AUG05FUT)
+        # that the constructed bare form doesn't capture. Match by
+        # PREFIX so the suffix variants resolve to the right contract.
+        # NSE / NFO futures use the bare form (NIFTY26JUNFUT) and
+        # match exactly, so the prefix logic is a superset.
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
         try:
@@ -495,8 +501,20 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
             items = []
         if items:
             fut_sym_upper = fut_sym.upper()
+            prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
+            # Pass 1: exact match (covers NSE/NFO).
             for inst in items:
                 if (inst.s or "").upper() == fut_sym_upper:
+                    return inst.s
+            # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
+            # When multiple matches exist (rare — e.g. CRUDEOIL26JUL19FUT
+            # vs an extension) we pick the FIRST in instrument-cache
+            # order, which is typically the front contract listed
+            # closest to the canonical month.
+            for inst in items:
+                s = (inst.s or "").upper()
+                if (s.startswith(prefix) and s.endswith("FUT")
+                        and s != fut_sym_upper):
                     return inst.s
         # Cache miss — the future for this month isn't listed yet.
         return None
