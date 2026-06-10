@@ -16,6 +16,7 @@
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, addWatchlistItem,
+    optimizeMargin,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -224,8 +225,76 @@
   // expiry day (equity rules: every ITM contract; commodity rules:
   // only unhedged ITM legs where CE qty + PE qty per
   // (underlying, expiry) doesn't net to zero).
-  /** @typedef {'legs' | 'expiry'} LegsTab */
+  /** @typedef {'legs' | 'expiry' | 'optimize'} LegsTab */
   let legsTab = $state(/** @type {LegsTab} */ ('legs'));
+
+  // ── Margin Optimizer state ─────────────────────────────────────────
+  // Per (account, underlying) result. Held outside legsTab so opening
+  // the Optimize tab doesn't lose the last computation; the operator
+  // can flip away and back without recomputing.
+  let optimizeResult = $state(/** @type {any} */ (null));
+  let optimizeLoading = $state(false);
+  let optimizeError = $state('');
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _optimizeDebounce = null;
+
+  async function _runOptimize(/** @type {boolean} */ forceRefresh = false) {
+    optimizeError = '';
+    // Need: exactly one selected account + underlying + open legs + spot.
+    // The optimizer is per (account, underlying) — when multiple accounts
+    // are selected we refuse cleanly (margin math only makes sense
+    // per-account because basket_margins is account-scoped).
+    const acct = (selectedAccounts.length === 1 ? String(selectedAccounts[0]) : '').trim();
+    const und  = String(selectedUnderlying || '').trim().toUpperCase();
+    const spotPx = Number(strategy?.spot || 0);
+    const legPayload = (legs || [])
+      .filter(l => l && l.symbol && Number(l.qty) !== 0)
+      .map(l => {
+        const q = Number(l.qty);
+        return {
+          symbol:   String(l.symbol).toUpperCase(),
+          qty:      Math.abs(q),
+          // Leg objects in this page carry signed qty (+long / -short)
+          // and don't have an explicit `side` field. Derive from sign.
+          side:     q < 0 ? 'SELL' : 'BUY',
+          avg_cost: Number(l.avg_cost || 0),
+          ltp:      Number(l.ltp || 0),
+          exchange: 'NFO',
+        };
+      });
+    if (!acct || !und || !spotPx || legPayload.length === 0) {
+      optimizeResult = null;
+      return;
+    }
+    optimizeLoading = true;
+    try {
+      const res = await optimizeMargin({
+        account:       acct,
+        underlying:    und,
+        legs:          legPayload,
+        spot:          spotPx,
+        force_refresh: forceRefresh,
+      });
+      optimizeResult = res;
+    } catch (e) {
+      optimizeError = e?.message || 'optimize failed';
+      optimizeResult = null;
+    } finally {
+      optimizeLoading = false;
+    }
+  }
+
+  // Auto-refresh on legs / underlying / account change (debounced 600ms).
+  // The 30-min server cache makes this cheap — only the first call in a
+  // window does the heavy Kite basket_margin work.
+  $effect(() => {
+    // Track the legs fingerprint + scope so changes trigger.
+    const _ = (legs || []).map(l => `${l?.symbol}:${l?.qty}`).join('|')
+            + `@${selectedAccounts.join(',')}|${selectedUnderlying}`;
+    if (legsTab !== 'optimize') return;
+    if (_optimizeDebounce) clearTimeout(_optimizeDebounce);
+    _optimizeDebounce = setTimeout(() => { _runOptimize(false); }, 600);
+  });
 
   // Expiry-close analysis. Derived from candidatePositions + the
   // strategy spot price. Splits by exchange: NFO (equity) drops
@@ -2553,6 +2622,17 @@
               <span class="legs-tab-count legs-tab-count-alert">{expiryCloseTotal}</span>
             {/if}
           </button>
+          <button type="button" role="tab"
+                  class="legs-tab"
+                  class:legs-tab-on={legsTab === 'optimize'}
+                  aria-selected={legsTab === 'optimize'}
+                  title="Margin-optimizer alternatives for this (account, underlying) combo — cached 30 min"
+                  onclick={() => legsTab = 'optimize'}>
+            Optimize
+            {#if optimizeResult?.alternatives?.length > 0}
+              <span class="legs-tab-count legs-tab-count-violet">{optimizeResult.alternatives.length}</span>
+            {/if}
+          </button>
         </div>
       </div>
       {#if _fsLegs}
@@ -2816,11 +2896,94 @@
       <div class="text-[0.6rem] text-[#7e97b8] italic">
         {#if legsTab === 'expiry'}
           No ITM options in the current candidate set.
+        {:else if legsTab === 'optimize'}
+          <!-- Empty state handled inside the Optimize panel below. -->
         {:else}
           No options or futures on <b>{selectedUnderlying}</b> in
           {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
           Try a different underlying / account, or click <b>+</b> to drop a
           draft strike into the payoff.
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Optimize tab — margin-saving alternatives for the current
+         (account, underlying) combo. Backend caches results for 30
+         minutes per fingerprint; Refresh forces a fresh kite
+         basket_order_margins round-trip per alternative. -->
+    {#if !_colLegs && legsTab === 'optimize'}
+      <div class="optimize-panel">
+        <div class="optimize-header">
+          <span class="optimize-summary">
+            {#if optimizeLoading}
+              Computing alternatives…
+            {:else if optimizeError}
+              <span class="optimize-err">⚠ {optimizeError}</span>
+            {:else if !optimizeResult}
+              Pick an account + underlying with open legs to see margin-saving alternatives.
+            {:else if optimizeResult.alternatives.length === 0}
+              No actionable alternatives — current book is already well-structured.
+              {#if optimizeResult.notes?.length}
+                <span class="optimize-notes">· {optimizeResult.notes.join(' · ')}</span>
+              {/if}
+            {:else}
+              <b>{optimizeResult.alternatives.length}</b> alternative{optimizeResult.alternatives.length === 1 ? '' : 's'} found
+              · Cached <b>{Math.floor((optimizeResult.ttl_remaining_seconds || 0) / 60)} min</b> left
+              · Current margin: <b class="optimize-num">₹{Math.round(optimizeResult.current?.margin_required || 0).toLocaleString('en-IN')}</b>
+            {/if}
+          </span>
+          <button type="button" class="optimize-refresh"
+                  disabled={optimizeLoading || !selectedUnderlying || selectedAccounts.length !== 1}
+                  title={selectedAccounts.length !== 1 ? 'Pick exactly one account to optimize' : ''}
+                  onclick={() => _runOptimize(true)}>
+            {optimizeLoading ? '…' : '↻ Refresh'}
+          </button>
+        </div>
+
+        {#if optimizeResult?.alternatives?.length}
+          <div class="optimize-list">
+            {#each optimizeResult.alternatives as alt, i}
+              <div class="optimize-alt" class:optimize-alt-best={i === 0 && alt.score > 0}>
+                <div class="optimize-alt-head">
+                  <span class="optimize-alt-name">{alt.name.replace(/_/g, ' ').toUpperCase()}</span>
+                  {#if alt.score > 0}
+                    <span class="optimize-alt-score">score {alt.score.toFixed(1)}</span>
+                  {:else}
+                    <span class="optimize-alt-score optimize-alt-score-bad">outside tolerance</span>
+                  {/if}
+                </div>
+                <div class="optimize-alt-desc">{alt.description}</div>
+                <div class="optimize-alt-metrics">
+                  <span class="optimize-metric optimize-metric-margin" class:optimize-metric-pos={alt.margin_delta > 0}>
+                    Δ Margin: <b>{alt.margin_delta >= 0 ? '−' : '+'}₹{Math.abs(Math.round(alt.margin_delta)).toLocaleString('en-IN')}</b>
+                    ({(alt.margin_delta_pct * 100).toFixed(1)}%)
+                  </span>
+                  <span class="optimize-metric" class:optimize-metric-pos={alt.ev_delta > 0} class:optimize-metric-neg={alt.ev_delta < 0}>
+                    Δ EV: {alt.ev_delta >= 0 ? '+' : ''}₹{Math.round(alt.ev_delta).toLocaleString('en-IN')}
+                  </span>
+                  <span class="optimize-metric" class:optimize-metric-pos={alt.pop_delta > 0} class:optimize-metric-neg={alt.pop_delta < 0}>
+                    Δ POP: {alt.pop_delta >= 0 ? '+' : ''}{alt.pop_delta.toFixed(1)}pp
+                  </span>
+                  <span class="optimize-metric" class:optimize-metric-neg={alt.max_loss_delta < 0}>
+                    Δ MaxLoss: {alt.max_loss_delta >= 0 ? '+' : ''}₹{Math.round(alt.max_loss_delta).toLocaleString('en-IN')}
+                  </span>
+                </div>
+                {#if alt.close_legs?.length || alt.open_legs?.length}
+                  <div class="optimize-alt-legs">
+                    {#each alt.close_legs as l}
+                      <span class="optimize-leg optimize-leg-close">CLOSE {l.side} {l.qty} {l.symbol}</span>
+                    {/each}
+                    {#each alt.open_legs as l}
+                      <span class="optimize-leg optimize-leg-open">OPEN {l.side} {l.qty} {l.symbol}</span>
+                    {/each}
+                  </div>
+                {/if}
+                {#if alt.notes?.length}
+                  <div class="optimize-alt-notes">{alt.notes.join(' · ')}</div>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
       </div>
     {/if}
@@ -3641,6 +3804,152 @@
     background: var(--algo-amber-bg-strong);
     color: #fbbf24;
   }
+  /* Violet badge for the Optimize tab — distinct from amber (active)
+     and red (alert) so the operator's eye reads "this is a different
+     KIND of count". */
+  .legs-tab-count-violet {
+    background: rgba(192, 132, 252, 0.18);
+    color: #c084fc;
+  }
+
+  /* ── Optimize tab ───────────────────────────────────────────── */
+  .optimize-panel {
+    padding: 0.5rem 0.6rem;
+    background: rgba(15, 23, 41, 0.6);
+    border: 1px solid rgba(192, 132, 252, 0.20);
+    border-radius: 5px;
+    margin-top: 0.4rem;
+  }
+  .optimize-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.45rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(192, 132, 252, 0.18);
+  }
+  .optimize-summary {
+    font-size: 0.62rem;
+    color: rgba(200, 216, 240, 0.85);
+    font-family: ui-monospace, monospace;
+  }
+  .optimize-num { color: #fbbf24; }
+  .optimize-err { color: #f87171; }
+  .optimize-notes { color: rgba(200,216,240,0.55); font-style: italic; }
+  .optimize-refresh {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: #c084fc;
+    background: rgba(192, 132, 252, 0.12);
+    border: 1px solid rgba(192, 132, 252, 0.55);
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+  }
+  .optimize-refresh:hover:not(:disabled) {
+    background: rgba(192, 132, 252, 0.22);
+    color: #d8b4fe;
+  }
+  .optimize-refresh:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .optimize-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .optimize-alt {
+    padding: 0.45rem 0.6rem;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(180, 200, 230, 0.12);
+    border-radius: 4px;
+    font-size: 0.62rem;
+  }
+  .optimize-alt-best {
+    border-color: rgba(74, 222, 128, 0.45);
+    background: rgba(74, 222, 128, 0.06);
+  }
+  .optimize-alt-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+  .optimize-alt-name {
+    font-weight: 700;
+    color: #c084fc;
+    letter-spacing: 0.04em;
+    font-family: ui-monospace, monospace;
+  }
+  .optimize-alt-score {
+    margin-left: auto;
+    font-size: 0.55rem;
+    color: #4ade80;
+    font-weight: 700;
+    padding: 0.08rem 0.4rem;
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.40);
+    border-radius: 3px;
+  }
+  .optimize-alt-score-bad {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.40);
+  }
+  .optimize-alt-desc {
+    color: rgba(200, 216, 240, 0.85);
+    margin-bottom: 0.3rem;
+    line-height: 1.4;
+  }
+  .optimize-alt-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.25rem;
+  }
+  .optimize-metric {
+    padding: 0.10rem 0.45rem;
+    border-radius: 3px;
+    font-size: 0.58rem;
+    font-family: ui-monospace, monospace;
+    color: rgba(180, 200, 230, 0.85);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(180, 200, 230, 0.18);
+  }
+  .optimize-metric-margin { color: #c084fc; }
+  .optimize-metric-pos { color: #4ade80; }
+  .optimize-metric-neg { color: #f87171; }
+  .optimize-alt-legs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.25rem;
+  }
+  .optimize-leg {
+    padding: 0.08rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.56rem;
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+  }
+  .optimize-leg-close {
+    color: #fb7185;
+    background: rgba(251, 113, 133, 0.10);
+    border: 1px solid rgba(251, 113, 133, 0.35);
+  }
+  .optimize-leg-open {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.10);
+    border: 1px solid rgba(74, 222, 128, 0.35);
+  }
+  .optimize-alt-notes {
+    margin-top: 0.25rem;
+    color: rgba(180, 200, 230, 0.55);
+    font-style: italic;
+    font-size: 0.55rem;
+  }
+
   /* Alert badge when expiry-close has 1+ rows — red so the
      operator's eye lands on it when contracts need closing. */
   .legs-tab-count-alert {
