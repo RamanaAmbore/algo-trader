@@ -277,9 +277,21 @@
         force_refresh: forceRefresh,
       });
       optimizeResult = res;
+      // Auto-select the top-ranked alternative when its score is
+      // positive (= passed EV + max-loss tolerance gates). Operator
+      // sees the payoff overlay populated immediately on first compute
+      // so they don't have to click around to discover the recommended
+      // pick. Operator can still tap any other row to compare.
+      const best = res?.alternatives?.[0];
+      if (best && best.score > 0) {
+        selectedAltIdx = 0;
+      } else {
+        selectedAltIdx = null;
+      }
     } catch (e) {
       optimizeError = e?.message || 'optimize failed';
       optimizeResult = null;
+      selectedAltIdx = null;
     } finally {
       optimizeLoading = false;
     }
@@ -2766,8 +2778,10 @@
                    checked={allCandidatesOn}
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
+            <!-- Symbol header — hyphenated form below carries the
+                 expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
+                 separate Expiry column would be redundant. -->
             <span>Symbol</span>
-            <span class="num">Expiry</span>
             {#if !hideAcct}<span>Acct</span>{/if}
             <span class="num">Qty</span>
             <span class="num">LTP</span>
@@ -2940,7 +2954,7 @@
                   {/if}
                 {/if}
               </span>
-              <span class="num font-mono text-[0.55rem]">{_expiryStr ? _expiryStr.slice(5) : '—'}</span>
+              <!-- Expiry cell removed — the hyphenated symbol shows it. -->
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
               <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
@@ -2969,7 +2983,6 @@
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
-              <span class="num">—</span>
               {#if !hideAcct}<span>—</span>{/if}
               <span class="num">—</span>
               <span class="num">—</span>
@@ -4375,10 +4388,13 @@
        card; on wide viewports the grid leaves trailing whitespace
        inside the scroll container (acceptable; preserves dense
        column packing). */
+    /* Expiry column REMOVED — the hyphenated symbol (e.g.
+       NIFTY-26JUN-22000-CE) already encodes the expiry month inline
+       via formatSymbol(). Operator no longer needs a separate column;
+       saves ~58 px of horizontal real estate per row. */
     grid-template-columns:
       auto                                 /* checkbox */
-      minmax(max-content, max-content)     /* symbol */
-      minmax(50px, max-content)            /* expiry (MM-DD slice) */
+      minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(max-content, max-content)     /* account */
       minmax(48px, max-content)            /* qty */
       minmax(62px, max-content)            /* ltp */
@@ -4399,10 +4415,10 @@
      column is implicit (every row carries the same value) — drop
      the column entirely. */
   .cand-grid-noacct {
+    /* Expiry column also removed in the no-account-column variant. */
     grid-template-columns:
       auto                                 /* checkbox */
-      minmax(max-content, max-content)     /* symbol */
-      minmax(50px, max-content)            /* expiry */
+      minmax(max-content, max-content)     /* symbol (carries expiry) */
       minmax(48px, max-content)            /* qty */
       minmax(62px, max-content)            /* ltp */
       minmax(62px, max-content)            /* prev close */

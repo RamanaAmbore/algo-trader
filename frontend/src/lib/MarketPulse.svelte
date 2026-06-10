@@ -30,6 +30,21 @@
     INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
   import { visibleInterval, connStatus, authStore } from '$lib/stores';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
+
+  // Module-scope cache for hyphenated symbol display. The cellRenderer
+  // re-runs for every row × redraw; parsing each symbol once per session
+  // keeps the render hot path O(1).
+  const _pulseSymFmtCache = new Map();
+  function _pulseFmtSym(/** @type {string} */ s) {
+    if (!s) return '';
+    let v = _pulseSymFmtCache.get(s);
+    if (v === undefined) {
+      v = formatSymbol(s);
+      _pulseSymFmtCache.set(s, v);
+    }
+    return v;
+  }
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
@@ -2972,7 +2987,14 @@
     //   - row.alias — quote-key vs tradingsymbol shim ("NIFTY 50"
     //     spot keyed off "NIFTY"). Shown as a "→ raw symbol" hint.
     const opAlias = row.display_name ? String(row.display_name) : '';
-    const main    = opAlias || row.alias || row.tradingsymbol || '';
+    // When the row's `main` is the raw tradingsymbol (no operator alias,
+    // no quote-key alias), apply the Dhan-style hyphenated transform
+    // so the cell reads as NIFTY-26JUN-22000-CE not NIFTY26JUN22000CE.
+    // Aliases (display_name / quote-key) are operator-visible labels —
+    // those bypass the formatter.
+    const main    = opAlias
+                    || row.alias
+                    || _pulseFmtSym(row.tradingsymbol || '');
     // Always surface the raw tradingsymbol after the main when an alias
     // is in play so the operator can still see what the row really is.
     const aliasTail = (opAlias || row.alias)
