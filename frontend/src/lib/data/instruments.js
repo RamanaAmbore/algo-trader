@@ -1,4 +1,21 @@
+import { writable } from 'svelte/store';
 import { _setExpiryLookup } from './decomposeSymbol.js';
+
+/**
+ * Reactive signal bumped once each time `_buildIndexes` finishes — i.e.
+ * the instruments cache has just been (re)populated and `getInstrument`
+ * is now ready to serve expiry / lot-size / exchange lookups.
+ *
+ * Why: Svelte 5 `$derived` only re-fires when its reactive dependencies
+ * change. The legacy plain-let `_byTradingsymbol` is invisible to Svelte,
+ * so `<LegLabel>` rendering before the cache loaded would compute
+ * `getInstrument(sym) → null → bare "26JUN"` and NEVER re-render once
+ * the cache populated (the operator saw CRUDEOIL options stuck at
+ * "26JUN" with no day after my expiry-day fix landed). Components that
+ * read instrument metadata inside a derivation now subscribe to this
+ * store; the bump triggers their re-evaluation.
+ */
+export const instrumentsCacheVersion = writable(0);
 
 // Instrument universe — loaded once per trading day, cached in IndexedDB.
 // Exposes prefix search, symbol lookup, and option-chain helpers for the
@@ -109,6 +126,9 @@ function _buildIndexes(items) {
     const inst = _byTradingsymbol?.get(String(sym || '').toUpperCase());
     return inst?.x || null;
   });
+  // Bump the cache-ready signal so subscribed `$derived` blocks re-fire
+  // and pick up the now-available expiry / lot-size / exchange data.
+  instrumentsCacheVersion.update((n) => n + 1);
 }
 
 function _todayIST() {

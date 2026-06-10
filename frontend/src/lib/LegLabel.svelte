@@ -8,7 +8,7 @@
   //              intended for narrow basket-pill contexts.
 
   import { decomposeSymbol, composeMonthToken } from '$lib/data/decomposeSymbol.js';
-  import { getInstrument } from '$lib/data/instruments.js';
+  import { getInstrument, instrumentsCacheVersion } from '$lib/data/instruments.js';
 
   /** @type {{ sym: string, compact?: boolean }} */
   let { sym, compact = false } = $props();
@@ -21,9 +21,18 @@
   //   Monthly: "26JUN26"  (year + month + EXPIRY DAY from instruments cache)
   //   Weekly : "25APR24"  (day already encoded in the tradingsymbol)
   //   Cold cache fallback: bare "26JUN" until instruments load
-  const monthDisplay = $derived(
-    composeMonthToken(parsed, getInstrument(sym)?.x || null),
-  );
+  //
+  // Reactive trigger: `getInstrument` reads a plain module-level Map
+  // that Svelte can't see. Without subscribing to a signal that bumps
+  // when the cache populates, this `$derived` would compute once
+  // pre-cache (→ bare "26JUN") and never re-fire. The cache-version
+  // read inside the derivation pulls that signal in as a dependency.
+  const monthDisplay = $derived.by(() => {
+    // Read the store value — the line below is intentionally a dep, not dead code.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
+    return composeMonthToken(parsed, getInstrument(sym)?.x || null);
+  });
 </script>
 
 <!--
