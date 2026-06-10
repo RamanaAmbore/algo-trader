@@ -249,13 +249,16 @@ function _bootMode() {
     if (typeof window !== 'undefined') {
       const host = String(window.location?.hostname ?? '');
       if (host.startsWith('dev.') || host === 'localhost' || host === '127.0.0.1') {
-        return 'paper';
+        // Dev defaults to IDLE — engine kill-switch is off until the
+        // operator picks PAPER/SIM/REPLAY from the navbar. The API
+        // confirms (or upgrades) the value on the first poll cycle.
+        return 'idle';
       }
     }
   } catch { /* SSR / non-browser context */ }
   return 'live';
 }
-export const executionMode = writable(/** @type {'sim'|'replay'|'paper'|'shadow'|'live'} */ (_bootMode()));
+export const executionMode = writable(/** @type {'idle'|'sim'|'replay'|'paper'|'shadow'|'live'} */ (_bootMode()));
 
 export function branchLabel(/** @type {string|null|undefined} */ name) {
   if (!name) return '';

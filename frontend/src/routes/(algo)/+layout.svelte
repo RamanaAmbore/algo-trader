@@ -254,6 +254,7 @@
   // and keeps the safe modes (paper sky, replay green, sim rose,
   // shadow orange) visually distinct from the dangerous one.
   const MODE_COLOR = {
+    idle:   '#94a3b8',   // slate-400 — engine dormant (dev only)
     sim:    '#fb7185',   // rose-400
     replay: '#4ade80',   // pos-green
     paper:  '#7dd3fc',   // info-sky
@@ -282,6 +283,15 @@
   async function pickMode(/** @type {string} */ mode) {
     modeOpen  = false;
     modeError = '';
+    // IDLE — dev-only kill-switch. Backend sets execution.dev_active=False
+    // + stops the KiteTicker; the chip flips immediately so the operator
+    // sees the change. No navigation, no confirm — toggling IDLE is
+    // cheap (the only side-effect is stopping broker calls).
+    if (mode === 'idle') {
+      executionMode.set(/** @type {any} */ ('idle'));
+      await _commitMode('idle');
+      return;
+    }
     // SIM + REPLAY aren't settings toggles — they need a driver to
     // be started. Navigate to the dedicated page where the operator
     // configures + starts the driver. The chip auto-flips when the
