@@ -13,6 +13,23 @@
   let { sym, compact = false } = $props();
 
   const parsed = $derived(decomposeSymbol(sym));
+
+  // Month token rendered in the compact, no-spaces form to match
+  // formatSymbol() across the platform. Without this, Legs read
+  // "NIFTY-26 JUN-22000-CE" while every other surface read
+  // "NIFTY-26JUN-22000-CE" because the two formatters used
+  // different shape calculations (LegLabel was reading
+  // `monthLabel` = "26 JUN" / "25 APR 24"; formatSymbol uses the
+  // raw `month` token = "26JUN" / "25APR24").
+  //   Monthly: "26JUN"   (5 chars YYMON, render as-is)
+  //   Weekly : "25APR24" (rebuilt from monthLabel by stripping spaces)
+  const monthDisplay = $derived.by(() => {
+    if (!parsed.month) return '';
+    if (parsed.month.length === 5 && /^\d{2}[A-Z]{3}$/.test(parsed.month)) {
+      return parsed.month;
+    }
+    return (parsed.monthLabel || parsed.month).replace(/\s+/g, '');
+  });
 </script>
 
 <!--
@@ -27,9 +44,9 @@
 -->
 <span class="leg-label">
   <span class="leg-root">{parsed.root}</span>
-  {#if parsed.month}
+  {#if monthDisplay}
     <span class="leg-sep">-</span>
-    <span class="leg-month">{parsed.monthLabel}</span>
+    <span class="leg-month">{monthDisplay}</span>
   {/if}
   {#if parsed.strike != null}
     <span class="leg-sep">-</span>
