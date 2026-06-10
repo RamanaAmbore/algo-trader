@@ -528,8 +528,15 @@ class SparklineController(Controller):
                 logger.warning(f"sparkline: token lookup for ticker subs failed: {_exc}")
 
         # Push all resolved tokens to the ticker (idempotent, non-blocking).
+        # CRITICAL: use subscribe_with_sym so the ticker's _token_to_sym
+        # map is populated. Without it, SSE tick payloads carry sym="" and
+        # the frontend's quoteStream filter (`if (t && t.sym && ...)`)
+        # silently drops every tick — pinned data + sparklines stop
+        # refreshing live even though Kite is sending ticks.
         if token_map:
-            ticker.subscribe(token_map.values())
+            ticker.subscribe_with_sym(
+                [(tok, sym) for sym, tok in token_map.items()]
+            )
 
         # Build reverse map: quote_key (EXCHANGE:SYMBOL) → instrument_token.
         key_to_token: dict[str, int] = {
@@ -792,7 +799,13 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
                             break
                 except Exception as exc:
                     logger.warning(f"sparkline warm: deferred ticker start failed: {exc}")
-            ticker.subscribe(token_map.values())
+            # Use subscribe_with_sym so SSE ticks carry the right sym
+            # — same fix as batch_sparkline above. Without this, the
+            # ~100 sparkline-warm tokens publish with sym="" and the
+            # frontend silently drops every tick.
+            ticker.subscribe_with_sym(
+                [(tok, sym) for sym, tok in token_map.items()]
+            )
             logger.info(
                 f"sparkline warm: pushed {len(token_map)} token(s) to TickerManager"
             )

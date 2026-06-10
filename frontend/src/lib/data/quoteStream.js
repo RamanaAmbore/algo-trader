@@ -51,13 +51,24 @@ export function startQuoteStream() {
   _es.addEventListener('snapshot', (e) => {
     try {
       const snap = JSON.parse(e.data);
-      // The snapshot event is keyed by tradingsymbol directly (backend
-      // includes sym alongside token in tick events; snapshot uses the
-      // same sym-keyed shape). If the backend sends {token: ltp} instead,
-      // the individual tick events will still populate liveLtp correctly
-      // and the snapshot becomes a no-op.
+      // Backend ticker.snapshot() returns `{token: {ltp, sym}}` keyed
+      // by integer token. Earlier code assumed the snap was already
+      // `{sym: ltp}` and merged it directly, which polluted liveLtp
+      // with stringified-token keys and the actual sym → ltp pairs
+      // never landed (operator saw stale "—" on every cell until a
+      // later tick caught up). Transform to `{sym: ltp}` so ag-Grid
+      // can read `$liveLtp[sym]` and paint immediately on first load.
       if (snap && typeof snap === 'object') {
-        liveLtp.update(prev => ({ ...prev, ...snap }));
+        /** @type {Record<string, number>} */
+        const symMap = {};
+        for (const v of Object.values(snap)) {
+          if (v && typeof v === 'object' && v.sym && v.ltp != null) {
+            symMap[v.sym] = v.ltp;
+          }
+        }
+        if (Object.keys(symMap).length) {
+          liveLtp.update(prev => ({ ...prev, ...symMap }));
+        }
         if (!get(streamOpen)) streamOpen.set(true);
       }
     } catch (_) { /* malformed JSON — ignore */ }
