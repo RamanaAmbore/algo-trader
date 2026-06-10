@@ -210,6 +210,16 @@ class ExecutionController(Controller):
                             description="Set by /api/admin/execution/mode (navbar mode chip).",
                         ))
                 await s.commit()
+            # Rehydrate the KiteTicker when leaving IDLE on dev — the
+            # ticker was either skipped at boot (engine was idle) or
+            # explicitly stopped when the operator picked IDLE earlier.
+            # The set_mode handler now also brings it back up so the
+            # operator gets live LTPs the moment they pick a working
+            # mode (no service restart needed). Prod's ticker is
+            # already up from boot; this short-circuits there because
+            # is_engine_idle() returns False before our call.
+            if not is_prod and target in ("paper", "sim", "replay"):
+                await _maybe_rehydrate_ticker()
             # Await the reload synchronously — invalidate_cache schedules
             # a background task, but _get_current_mode below reads the
             # cache and would race against the reload.
@@ -260,3 +270,34 @@ def _stop_ticker_if_running() -> None:
             logger.info("[execution] KiteTicker stopped (idle pick)")
     except Exception as e:
         logger.warning(f"[execution] could not stop ticker: {e}")
+
+
+async def _maybe_rehydrate_ticker() -> None:
+    """Start the KiteTicker if it isn't already running.
+
+    Used by set_mode when the operator picks PAPER/SIM/REPLAY on dev —
+    the boot-time _start_kite_ticker call may have skipped because the
+    engine was idle, OR the operator may have explicitly toggled IDLE
+    earlier in the session. Picking a working mode after that should
+    bring the ticker back up without requiring a service restart.
+
+    Idempotent: when the ticker is already up, this is a no-op. Errors
+    are logged but never re-raised — set_mode's primary job (flipping
+    the settings flags) shouldn't fail because of a transient
+    sparkline-broker outage.
+    """
+    try:
+        from backend.shared.helpers.kite_ticker import get_ticker
+        ticker = get_ticker()
+        if getattr(ticker, "_started", False):
+            return  # already up
+        # Re-run the same boot-time startup function — it handles broker
+        # selection (sparkline_broker), token resolution, and the
+        # ensure_started() guard internally. The is_engine_idle() gate
+        # at the top of _start_kite_ticker will pass now because dev_active
+        # was set to True earlier in set_mode.
+        from backend.api.app import _start_kite_ticker
+        await _start_kite_ticker()
+        logger.info("[execution] KiteTicker rehydrated after mode change")
+    except Exception as e:
+        logger.warning(f"[execution] ticker rehydrate failed: {e}")

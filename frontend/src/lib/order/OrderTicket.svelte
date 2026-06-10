@@ -1061,6 +1061,15 @@
 
   async function submit() {
     _submitTried = true;
+    // Engine-idle guard — when the navbar mode is IDLE (dev only), the
+    // backend's set_mode hasn't activated dev_active=True yet, so submit
+    // would land but no broker calls would fire (background tasks all
+    // short-circuit). Refuse with a clear hint instead of letting the
+    // operator click into a silent black hole.
+    if (get(executionMode) === 'idle') {
+      submitErr = 'Engine is idle — pick PAPER / SIM / REPLAY from the navbar before placing orders.';
+      return;
+    }
     if (validationErr) return;
     // ── action='modify' branch ─────────────────────────────────
     // Modifying an existing working order — bypass the
@@ -1904,9 +1913,10 @@
             <button type="button" class="ot-submit"
                     class:ot-submit-buy={_side === 'BUY'}
                     class:ot-submit-sell={_side === 'SELL'}
-                    disabled={!!validationErr || submitting}
+                    disabled={!!validationErr || submitting || $executionMode === 'idle'}
+                    title={$executionMode === 'idle' ? 'Engine is idle — pick PAPER / SIM / REPLAY from the navbar to enable order placement' : ''}
                     onclick={submit}>
-              {#if submitting}…{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
+              {#if submitting}…{:else if $executionMode === 'idle'}Idle — pick a mode{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
             </button>
           {/if}
         {/if}
