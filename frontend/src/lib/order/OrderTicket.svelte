@@ -28,7 +28,8 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, fetchSettings, fetchOrderTemplates, previewTicketTemplate } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, fetchSettings, previewTicketTemplate } from '$lib/api';
+  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
@@ -593,23 +594,31 @@
     }
   }
   let _product = $state(productVal);
-  // Initial mode:
-  //   1. defaultMode prop wins when the caller explicitly picked one
-  //      AND it's in availableModes.
-  //   2. Otherwise fall back to the global executionMode store
-  //      (operator's last-used mode — synced from /admin/live toggle
-  //      in a follow-up). The store normalises shadow/sim/replay to
-  //      'paper' for surfaces that only expose draft/paper/live pills.
-  //   3. Last resort: first available mode.
+  // Wave C: _mode is READ from $executionMode store unconditionally.
+  // The store is the single source of truth for execution mode (set
+  // by the navbar dropdown). Earlier this resolver filtered against
+  // availableModes — defaulting to ['draft', 'live'] — which silently
+  // forced the ticket into draft mode when the navbar said PAPER
+  // (because 'paper' wasn't in ['draft', 'live']), making Submit
+  // save a local draft instead of placing the order. CRITICAL BUG:
+  // operator clicks Place, nothing visible happens.
+  //
+  // The new derivation normalises sim/replay/shadow → 'paper' (those
+  // modes route through the paper engine on the backend; the backend
+  // then decides whether they actually hit a broker based on
+  // SimDriver.active / execution.shadow_mode / etc). 'paper' and
+  // 'live' pass through unchanged. We never resolve to 'draft' from
+  // the store — drafts are a deliberate operator choice that requires
+  // an explicit `mode='draft'` prop from the caller.
   function _resolveInitialMode() {
-    const normalise = (/** @type {string} */ m) => {
-      if (m === 'sim' || m === 'replay') return 'paper';
-      return /** @type {'draft'|'paper'|'live'|'shadow'} */ (m);
-    };
-    if (availableModes.includes(/** @type {any} */ (defaultMode))) return defaultMode;
-    const fromStore = normalise(get(executionMode) || 'paper');
-    if (availableModes.includes(/** @type {any} */ (fromStore))) return fromStore;
-    return availableModes[0] || 'draft';
+    const explicit = defaultMode;
+    if (explicit === 'draft' || explicit === 'paper' || explicit === 'live' || explicit === 'shadow') {
+      return explicit;
+    }
+    const fromStore = get(executionMode) || 'paper';
+    if (fromStore === 'sim' || fromStore === 'replay' || fromStore === 'shadow') return 'paper';
+    if (fromStore === 'paper' || fromStore === 'live') return fromStore;
+    return 'paper';
   }
   // Mode/chase/chaseAgg state. Host (SymbolPanel) may supply the
   // matching bindable props to lift the controls into a shared
@@ -620,6 +629,24 @@
   let _modeInternal     = $state(/** @type {'draft'|'paper'|'live'} */ (untrack(_resolveInitialMode)));
   let _chaseInternal    = $state(true);
   let _chaseAggInternal = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  // Live-track the navbar mode store. When operator changes the
+  // navbar pill while the modal is open, the ticket's mode reflects
+  // the new choice immediately — submit will route through whatever
+  // mode is visibly shown in the read-only hint above the Submit
+  // button. Earlier the initial mode was latched at mount and never
+  // updated, so a stale 'draft' (from the old availableModes filter
+  // bug) lingered for the entire modal lifetime.
+  $effect(() => {
+    const m = $executionMode || 'paper';
+    const normalised = (m === 'sim' || m === 'replay' || m === 'shadow') ? 'paper'
+                     : (m === 'paper' || m === 'live') ? m
+                     : 'paper';
+    untrack(() => {
+      if (mode === undefined && _modeInternal !== normalised && _modeInternal !== 'draft') {
+        _modeInternal = normalised;
+      }
+    });
+  });
   const _mode     = $derived(mode      !== undefined ? mode      : _modeInternal);
   const _chase    = $derived(chase     !== undefined ? chase     : _chaseInternal);
   const _chaseAgg = $derived(chaseAgg  !== undefined ? chaseAgg  : _chaseAggInternal);
@@ -1253,19 +1280,28 @@
         });
     }
 
-    // Load the OrderTemplate catalog so the picker has something to
-    // render. Demo sessions get the system rows (read-only); signed-in
-    // sessions get full CRUD on customs. Failure is silent — operator
-    // ends up with an empty picker but can still place an entry-only
-    // order via target_pct.
-    fetchOrderTemplates()
-      .then(/** @param {any} rows */ (rows) => {
-        _templates = Array.isArray(rows) ? rows.filter(t => t.is_active) : [];
+    // Load the OrderTemplate catalog from the module-level cache so
+    // repeated modal opens don't re-hit the DB. The cache kicks in
+    // its first fetch at module-evaluation time, so by the time the
+    // first modal opens the rows are usually already warm.
+    loadOrderTemplates()
+      .then(/** @param {any[]} rows */ (rows) => {
+        _templates = rows.filter(t => t.is_active);
         _autoSelectTemplate();
       })
       .catch(() => { /* silent — picker stays empty */ });
 
     return () => _escCleanup?.();
+  });
+
+  // Re-sync when the catalog mutates elsewhere (e.g. operator edits a
+  // template on /automation/templates while the modal is open). Pure
+  // subscription — no network cost.
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows && rows.length) {
+      _templates = rows.filter(t => t.is_active);
+    }
   });
 
   // Re-run auto-select whenever the side or symbol changes so the

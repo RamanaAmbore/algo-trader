@@ -29,7 +29,7 @@
 <script>
   import { onMount, untrack } from 'svelte';
   import Select from '$lib/Select.svelte';
-  import { fetchOrderTemplates } from '$lib/api';
+  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
 
   let {
     // Bindable — operator's current selection (null = no template /
@@ -97,11 +97,20 @@
 
   onMount(async () => {
     try {
-      const rows = await fetchOrderTemplates();
-      _templates = Array.isArray(rows) ? rows.filter(t => t.is_active) : [];
+      const rows = await loadOrderTemplates();
+      _templates = rows.filter(t => t.is_active);
       _autoSelect();
     } catch (e) {
       _loadError = e?.message || 'failed to load templates';
+    }
+  });
+
+  // Re-sync when /automation/templates edits the catalog while this
+  // picker is mounted — no extra fetch, the store push is enough.
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows && rows.length) {
+      _templates = rows.filter(t => t.is_active);
     }
   });
 

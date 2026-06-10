@@ -28,11 +28,11 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import Select from '$lib/Select.svelte';
   import {
-    fetchOrderTemplates,
     createOrderTemplate,
     patchOrderTemplate,
     deleteOrderTemplate,
   } from '$lib/api';
+  import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 
   let templates = $state(/** @type {any[]} */ ([]));
   let loading = $state(true);
@@ -67,7 +67,10 @@
   async function load() {
     loading = true; error = '';
     try {
-      templates = await fetchOrderTemplates();
+      // First open uses the module-level cache; the explicit reload
+      // after a CRUD mutation re-hits the API + broadcasts to other
+      // open modals via the store.
+      templates = await loadOrderTemplates();
     } catch (e) {
       error = e.message || 'failed to load templates';
     } finally {
@@ -162,7 +165,7 @@
     try {
       const payload = _payloadFromForm();
       await patchOrderTemplate(t.id, payload);
-      await load();
+      templates = await reloadOrderTemplates();
       resetForm();
     } catch (e) {
       formError = e.message || 'save failed';
@@ -179,7 +182,7 @@
       const payload = _payloadFromForm();
       // tp_pct + sl_pct + wing_* default to null when blank — that's fine
       await createOrderTemplate(payload);
-      await load();
+      templates = await reloadOrderTemplates();
       resetForm();
     } catch (e) {
       formError = e.message || 'create failed';
@@ -200,7 +203,7 @@
     if (!ok) return;
     try {
       await deleteOrderTemplate(t.id);
-      await load();
+      templates = await reloadOrderTemplates();
     } catch (e) {
       error = e.message || 'delete failed';
     }
