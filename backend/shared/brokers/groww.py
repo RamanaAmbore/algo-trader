@@ -274,7 +274,16 @@ class GrowwBroker(Broker):
                         out[kite_key] = {"last_price": float(v or 0)}
             return out
         except Exception as e:
-            raise RuntimeError(f"Groww ltp failed: {e}") from e
+            # Common failure modes on dev/prod: "Access forbidden" when
+            # the Groww token is stale or the account lacks the segment
+            # entitlement. Earlier this raised RuntimeError which
+            # bubbled up through PriceBroker._try as a WARNING per
+            # failover hop, generating log spam on every quote loop.
+            # Empty dict lets the chain fall through to the next
+            # adapter (Kite) silently — the failure is real but it's
+            # already been logged once at adapter scope.
+            logger.debug(f"Groww ltp returned empty: {e}")
+            return {}
 
     @_retry_groww_auth
     def quote(self, symbols: list[str]) -> dict:
@@ -398,10 +407,14 @@ class GrowwBroker(Broker):
               "close": …, "volume": …}, …]
         """
         if not trading_symbol or not exchange:
-            raise ValueError(
-                "GrowwBroker.historical_data requires trading_symbol + "
-                "exchange kwargs (Groww has no token→symbol lookup)."
-            )
+            # PriceBroker / get_historical_brokers call this signature
+            # by position with just an instrument_token — Groww has no
+            # token→symbol lookup parallel to Kite's. Return empty
+            # bars silently so the fallback chain walks to the next
+            # adapter without raising. Earlier this raised ValueError,
+            # generating WARNING-level log spam every time a quote /
+            # historical lookup went through the failover chain.
+            return []
         ex, seg = _groww_exchange_and_segment(exchange)
         seg = segment or seg
         groww_interval = _INTERVAL_TO_GROWW.get(interval.lower())
@@ -446,12 +459,9 @@ class GrowwBroker(Broker):
         return out
 
     def holidays(self, exchange: str) -> set[str]:
-        """Groww doesn't publish a holidays endpoint. PriceBroker
-        falls back to Kite."""
-        raise NotImplementedError(
-            "GrowwBroker.holidays not available; Groww doesn't publish "
-            "a holidays endpoint. PriceBroker falls back to Kite."
-        )
+        """Groww doesn't publish a holidays endpoint. Empty set so
+        PriceBroker falls over to Kite without an exception trace."""
+        return set()
 
     # ── Order entry ───────────────────────────────────────────────────
 

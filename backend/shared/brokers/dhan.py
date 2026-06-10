@@ -213,31 +213,26 @@ class DhanBroker(Broker):
     # ── Market data ───────────────────────────────────────────────────
 
     def ltp(self, symbols: list[str]) -> dict:
-        """Dhan's `ltp_data()` takes `{exchange_segment: [security_id, ...]}`.
-        The codebase passes Kite-style `"NSE:RELIANCE"` strings; we'd
-        need an instruments-cache lookup to map symbol → security_id.
-        Not wired yet — raise so PriceBroker fails over to Kite cleanly."""
-        raise NotImplementedError(
-            "DhanBroker.ltp not yet wired. Needs instruments-cache "
-            "lookup from tradingsymbol → Dhan security_id. PriceBroker "
-            "will fall over to Kite in the meantime."
-        )
+        """Not wired yet — returns empty dict so PriceBroker walks to
+        the next adapter. Earlier this raised NotImplementedError on
+        every iteration, generating WARNING-level log spam. Wiring
+        needs tradingsymbol → Dhan security_id mapping via the
+        instruments cache."""
+        return {}
 
     def quote(self, symbols: list[str]) -> dict:
-        raise NotImplementedError(
-            "DhanBroker.quote not yet wired. Needs instruments-cache "
-            "lookup from tradingsymbol → Dhan security_id. PriceBroker "
-            "will fall over to Kite in the meantime."
-        )
+        """Empty dict for the same reason as ltp() above."""
+        return {}
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
         """Dhan publishes a master CSV (api.dhan.co/v2/instruments) but
-        the SDK doesn't have a one-shot loader. Defer until needed —
-        most callers use Kite's `instruments()` which is fully populated."""
-        raise NotImplementedError(
-            "DhanBroker.instruments not yet wired. Use the Kite adapter "
-            "for instruments lookup; PriceBroker falls back automatically."
-        )
+        the SDK doesn't have a one-shot loader. Returns an empty list
+        so PriceBroker / get_historical_brokers loops fall through to
+        the next adapter without log spam. Earlier this raised
+        NotImplementedError on every iteration of every historical
+        request, generating WARNING-level noise. Empty list is the
+        graceful degradation contract callers already handle."""
+        return []
 
     def historical_data(
         self,
@@ -246,20 +241,17 @@ class DhanBroker(Broker):
         to_date: Any,
         interval: str = "day",
     ) -> list[dict]:
-        raise NotImplementedError(
-            "DhanBroker.historical_data not yet wired. Dhan SDK exposes "
-            "historical_daily_data / historical_minute_charts but uses "
-            "different parameter names; needs symbol/segment mapping. "
-            "PriceBroker falls back to Kite."
-        )
+        """Not wired yet — returns empty bars. PriceBroker fallback
+        chain moves on to the next adapter (typically Kite). Same
+        rationale as instruments() above: silent empty beats noisy
+        NotImplementedError when the adapter is intentionally
+        partial."""
+        return []
 
     def holidays(self, exchange: str) -> set[str]:
-        """Dhan doesn't publish a holidays endpoint. Return empty set so
-        PriceBroker falls over to Kite."""
-        raise NotImplementedError(
-            "DhanBroker.holidays not available; Dhan doesn't publish "
-            "a holidays endpoint. PriceBroker falls back to Kite."
-        )
+        """Dhan doesn't publish a holidays endpoint. Empty set so
+        PriceBroker falls over to Kite without an exception trace."""
+        return set()
 
     # ── Order entry ───────────────────────────────────────────────────
 
