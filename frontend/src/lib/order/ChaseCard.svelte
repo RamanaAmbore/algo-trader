@@ -17,6 +17,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
 
   let {
     pollMs   = 3000,
@@ -179,7 +180,7 @@
           {row.transaction_type}
         </span>
         <span class="cc-col cc-col-qty">{row.quantity}</span>
-        <span class="cc-col cc-col-sym" title={row.symbol}>{row.symbol}</span>
+        <span class="cc-col cc-col-sym" title={row.symbol}>{formatSymbol(row.symbol)}</span>
         <span class="cc-col cc-col-limit">
           {row.initial_price != null ? '₹' + priceFmt(row.initial_price) : '—'}
         </span>

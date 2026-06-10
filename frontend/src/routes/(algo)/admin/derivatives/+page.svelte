@@ -3365,7 +3365,7 @@
         <div class="order-toast-body">
           <span class="order-toast-side order-toast-side-{t.side.toLowerCase()}">{t.side}</span>
           <span class="order-toast-qty">{t.qty}</span>
-          <span class="order-toast-sym">{t.symbol}</span>
+          <span class="order-toast-sym">{formatSymbol(t.symbol)}</span>
           <span class="order-toast-px">{t.price}</span>
         </div>
         <div class="order-toast-foot">

@@ -21,6 +21,7 @@
     batchQuote,
   } from '$lib/api';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import {
     classifyByIndex,
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
@@ -1574,7 +1575,7 @@
         >
           <span class="oo-side">{isBuy ? 'BUY' : 'SELL'}</span>
           <span class="oo-qty">{ord.qty ?? ord.quantity ?? ''}</span>
-          <span class="oo-sym">{ord.symbol ?? ord.tradingsymbol ?? ''}</span>
+          <span class="oo-sym">{formatSymbol(ord.symbol ?? ord.tradingsymbol ?? '')}</span>
           <span class="oo-price">@ ₹{priceFmt(ord.limit_price ?? ord.price ?? 0)}</span>
           {#if (ord.attempts ?? 0) > 0}
             <span class="oo-attempts">({ord.attempts})</span>

@@ -26,6 +26,7 @@
   import ConfirmModal  from '$lib/ConfirmModal.svelte';
   import StaleBanner   from '$lib/StaleBanner.svelte';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import RecordingsPanel from '$lib/execution/RecordingsPanel.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
 
@@ -854,7 +855,7 @@
             <span class="sim-leg-swatch" style="background:{_legColor(p, i)}"></span>
             <span class="sim-leg-side sim-leg-side-long">LONG</span>
             <span class="sim-leg-qty">{qtyFmt(Math.abs(p.quantity ?? 0))}×</span>
-            <span class="sim-leg-symbol">{p.symbol}</span>
+            <span class="sim-leg-symbol">{formatSymbol(p.symbol)}</span>
             <span class="sim-leg-price">@₹{priceFmt(p.average_price ?? p.last_price)}</span>
             <span class="sim-leg-acct">· {p.account}</span>
           </div>
@@ -864,7 +865,7 @@
             <span class="sim-leg-swatch" style="background:{_legColor(p, i)}"></span>
             <span class="sim-leg-side sim-leg-side-short">SHORT</span>
             <span class="sim-leg-qty">{qtyFmt(Math.abs(p.quantity ?? 0))}×</span>
-            <span class="sim-leg-symbol">{p.symbol}</span>
+            <span class="sim-leg-symbol">{formatSymbol(p.symbol)}</span>
             <span class="sim-leg-price">@₹{priceFmt(p.average_price ?? p.last_price)}</span>
             <span class="sim-leg-acct">· {p.account}</span>
           </div>
@@ -892,7 +893,7 @@
       {#each status.open_order_details as o}
         <span class="sim-pill sim-pill-chase">
           <span class="sim-pill-side sim-pill-side-{o.side === 'BUY' ? 'buy' : 'sell'}">{o.side}</span>
-          <span class="sim-pill-sym">{o.symbol}</span>
+          <span class="sim-pill-sym">{formatSymbol(o.symbol)}</span>
           <span class="sim-pill-qty">{qtyFmt(o.qty)}</span>
           <span class="sim-pill-limit">@₹{priceFmt(o.limit_price)}</span>
           <span class="sim-pill-attempts">#{o.attempts}</span>
@@ -940,7 +941,7 @@
               <span class="sim-activity-detail">{row.type || ''} · {row.detail}</span>
             {:else}
               <span class="sim-activity-chip sim-activity-chip-order">ORDER</span>
-              <span class="sim-activity-slug">{row.side} {qtyFmt(row.qty)} {row.symbol}</span>
+              <span class="sim-activity-slug">{row.side} {qtyFmt(row.qty)} {formatSymbol(row.symbol)}</span>
               <span class="sim-activity-detail">@₹{priceFmt(row.price)} · {row.status} {row.detail ? '· ' + row.detail : ''}</span>
             {/if}
           </div>

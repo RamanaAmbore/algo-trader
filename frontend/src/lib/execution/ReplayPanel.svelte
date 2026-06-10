@@ -12,6 +12,7 @@
     fetchAgents,
   } from '$lib/api';
   import LogPanel       from '$lib/LogPanel.svelte';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import ConfirmModal   from '$lib/ConfirmModal.svelte';
   import PriceChart  from '$lib/PriceChart.svelte';
   import InfoHint    from '$lib/InfoHint.svelte';
@@ -333,7 +334,7 @@
           {#each orders as o}
             <tr>
               <td>{o.id}</td>
-              <td>{o.symbol}</td>
+              <td>{formatSymbol(o.symbol)}</td>
               <td class={o.side === 'BUY' ? 'sim-buy' : 'sim-sell'}>{o.side}</td>
               <td>{o.quantity}</td>
               <td class="sim-td-mono">{o.initial_price != null ? `₹${o.initial_price.toLocaleString()}` : '—'}</td>

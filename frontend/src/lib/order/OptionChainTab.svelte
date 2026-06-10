@@ -17,6 +17,7 @@
     fetchAccounts,
   } from '$lib/api';
   import Select from '$lib/Select.svelte';
+  import LegLabel from '$lib/LegLabel.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -847,7 +848,7 @@
                   }
                 }}>
             <span class="chain-basket-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
-            <span class="chain-basket-sym">{leg.sym}</span>
+            <span class="chain-basket-sym"><LegLabel sym={leg.sym} compact={true} /></span>
             <button type="button" class="chain-basket-step" title="Decrease lots"
                     disabled={basketPlacing || leg.lots <= 1}
                     onclick={(e) => { e.stopPropagation(); basketStepLots(leg.key, -1); }}>−</button>

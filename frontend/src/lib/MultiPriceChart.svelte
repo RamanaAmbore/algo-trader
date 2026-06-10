@@ -19,6 +19,7 @@
    *   emptyMsg?:   string,
    *   scrubbedTs?: string | null,
    * }} */
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   const { series = [], height = 240, title = '',
           emptyMsg = 'No ticks captured yet for any leg.',
           scrubbedTs = null } = $props();
@@ -292,7 +293,7 @@
         <span class="mpc-legend-row">
           <span class="mpc-swatch" style="background:{s.color}"></span>
           {#if s.side}<span class="mpc-side mpc-side-{s.side.toLowerCase()}">{s.side}</span>{/if}
-          <span class="mpc-sym">{s.symbol}</span>
+          <span class="mpc-sym">{formatSymbol(s.symbol)}</span>
           {#if s.account}<span class="mpc-acct">{s.account}</span>{/if}
           {#if hover}
             {@const row = hover.rows.find((r) => r.symbol === s.symbol)}

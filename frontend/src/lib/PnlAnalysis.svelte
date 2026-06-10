@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { aggCompact, pctFmt } from '$lib/format.js';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { fetchPnlBenchmarks } from '$lib/api.js';
   import PnlPanel from '$lib/PnlPanel.svelte';
   import Select   from '$lib/Select.svelte';
@@ -718,7 +719,7 @@
             <tbody>
               {#each visibleSymbols as row}
                 <tr>
-                  <td class="mono sym">{row.symbol}</td>
+                  <td class="mono sym">{formatSymbol(row.symbol)}</td>
                   <td><span class="seg-pill">{row.segment}</span></td>
                   <td class="num {pnlClass(row.total_pnl)}">{fmt(row.total_pnl)}</td>
                   <td class="num {pnlClass(row.day_pnl)}">{fmt(row.day_pnl)}</td>
@@ -837,7 +838,7 @@
             <tbody>
               {#each csvResult.sample as r}
                 <tr>
-                  <td class="mono sym">{r.symbol}</td>
+                  <td class="mono sym">{formatSymbol(r.symbol)}</td>
                   <td><span class="seg-pill">{r.segment}</span></td>
                   <td class="num">{r.qty}</td>
                   <td class="num {pnlClass(r.total_pnl)}">{fmt(r.total_pnl)}</td>

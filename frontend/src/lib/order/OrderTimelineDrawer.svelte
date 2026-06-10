@@ -11,6 +11,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { priceFmt } from '$lib/format';
   import { logTime } from '$lib/stores';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
 
   const { open = false, orders = [], onClose } = $props();
 
@@ -156,7 +157,7 @@
           <div class="otd-section {terminal ? 'otd-section-terminal' : ''}">
             <!-- Order header -->
             <div class="otd-order-header">
-              <span class="otd-symbol">{section.symbol}</span>
+              <span class="otd-symbol">{formatSymbol(section.symbol)}</span>
               <span class="otd-side {section.side?.toUpperCase() === 'SELL' ? 'otd-side-sell' : 'otd-side-buy'}"
               >{section.side?.toUpperCase() ?? ''}</span>
               <span class="otd-qty">{section.qty}</span>
