@@ -37,6 +37,7 @@
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import ChartModal from '$lib/ChartModal.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -281,6 +282,94 @@
       optimizeResult = null;
     } finally {
       optimizeLoading = false;
+    }
+  }
+
+  // ── Selected alternative (for chart overlay + execute) ────────────
+  let selectedAltIdx = $state(/** @type {number|null} */ (null));
+  const selectedAlt = $derived(
+    selectedAltIdx !== null && optimizeResult?.alternatives
+      ? optimizeResult.alternatives[selectedAltIdx] : null
+  );
+  /** Proposed-structure expiry curve points for OptionsPayoff overlay.
+   *  Optimizer emits {s, t, e}; payoff component reads {s, e}. */
+  const proposedCurve = $derived(
+    selectedAlt?.metrics?.payoff_curve || []
+  );
+
+  // ── Execute alternative as basket ─────────────────────────────────
+  let executeBusy = $state(false);
+  let executeMsg  = $state('');
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _executeConfirmRef = $state(null);
+
+  async function _executeAlternative(/** @type {any} */ alt) {
+    if (!alt || executeBusy) return;
+    if (!_executeConfirmRef) return;
+    const acct = selectedAccounts.length === 1 ? String(selectedAccounts[0]) : '';
+    if (!acct) {
+      executeMsg = '⚠ Pick exactly one account to execute';
+      return;
+    }
+    const closes = alt.close_legs || [];
+    const opens  = alt.open_legs  || [];
+    const summary = `
+      <b>${closes.length} close leg(s)</b> + <b>${opens.length} open leg(s)</b>
+      will be placed in sequence on <b>${acct}</b>.<br/>
+      Closes: ${closes.map((l) => l.symbol).join(', ') || '—'}<br/>
+      Opens: ${opens.map((l) => l.symbol).join(', ') || '—'}<br/><br/>
+      Margin delta: <b>${alt.margin_delta >= 0 ? '−' : '+'}₹${Math.abs(Math.round(alt.margin_delta || 0)).toLocaleString('en-IN')}</b>
+    `;
+    const ok = await _executeConfirmRef.ask({
+      title: `Execute ${alt.name.replace(/_/g, ' ')}?`,
+      message: summary,
+      confirmLabel: 'Place basket',
+      cancelLabel: 'Cancel',
+      destructive: true,
+    });
+    if (!ok) return;
+
+    executeBusy = true;
+    executeMsg  = '';
+    // Resolve current execution mode (paper / live) the same way
+    // placeBasket does so the optimizer execution honours the navbar
+    // pill instead of silently dropping into paper.
+    let mode = 'paper';
+    try {
+      const live = await fetchLiveStatus();
+      if (live && live.paper_trading_mode === false && live.branch === 'main') {
+        mode = 'live';
+      }
+    } catch { /* default paper */ }
+
+    /** @type {string[]} */ const fails = [];
+    const allLegs = [...closes, ...opens];
+    for (const leg of allLegs) {
+      try {
+        await placeTicketOrder({
+          mode,
+          side:          String(leg.side || 'BUY').toUpperCase(),
+          tradingsymbol: String(leg.symbol).toUpperCase(),
+          exchange:      String(leg.exchange || 'NFO'),
+          quantity:      Math.abs(Number(leg.qty)),
+          product:       'NRML',
+          order_type:    'MARKET',
+          variety:       'regular',
+          account:       acct,
+          chase:         false,
+        });
+      } catch (e) {
+        fails.push(`${leg.symbol}: ${e?.message || 'error'}`);
+      }
+    }
+    executeBusy = false;
+    if (fails.length) {
+      executeMsg = `⚠ ${fails.length} leg(s) failed: ${fails.slice(0, 2).join(' · ')}${fails.length > 2 ? ' …' : ''}`;
+    } else {
+      executeMsg = `✓ ${allLegs.length} leg(s) placed in ${mode.toUpperCase()} mode`;
+      // Force-refresh the optimizer cache so the next view reflects the
+      // new book (don't wait for the 30-min window).
+      setTimeout(() => { _runOptimize(true); }, 1500);
     }
   }
 
@@ -2551,10 +2640,19 @@
     <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
          mounted across collapse cycles — same pattern as dashboard
          cards (avoids re-mounting + state loss). -->
+    <!--
+      When the backend says spot_source='fallback' (e.g. CRUDEOIL
+      future not found in any broker's instruments cache → strike-
+      as-degenerate-spot), suppress the value entirely so the chart
+      doesn't briefly show a wrong number (150000 for GOLDM, 9000
+      for CRUDEOIL) before correcting on the next poll. Force
+      loading=true instead — operator sees an explicit loading
+      state, not a misleading number.
+    -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
         payoff={strategy.payoff}
-        spot={strategy.spot}
+        spot={strategy.spot_source === 'fallback' ? null : strategy.spot}
         prevClose={strategy.spot_prev_close}
         breakevens={strategy.risk.breakevens}
         intermediateCurves={strategy.intermediate_curves || []}
@@ -2569,7 +2667,9 @@
         spotAnchor={strategy.spot_anchor_contract
           ? { contract: strategy.spot_anchor_contract, source: 'futures', expiryISO: strategy.expiry ?? '' }
           : null}
-        loading={loading}
+        proposedCurve={proposedCurve}
+        proposedLabel={selectedAlt?.name || ''}
+        loading={loading || strategy.spot_source === 'fallback'}
         height={320} />
     </div>
   </div>
@@ -2941,9 +3041,19 @@
         </div>
 
         {#if optimizeResult?.alternatives?.length}
+          {#if executeMsg}
+            <div class="optimize-exec-msg" class:optimize-exec-err={executeMsg.startsWith('⚠')}>
+              {executeMsg}
+            </div>
+          {/if}
           <div class="optimize-list">
             {#each optimizeResult.alternatives as alt, i}
-              <div class="optimize-alt" class:optimize-alt-best={i === 0 && alt.score > 0}>
+              <div class="optimize-alt"
+                   class:optimize-alt-best={i === 0 && alt.score > 0}
+                   class:optimize-alt-selected={selectedAltIdx === i}
+                   role="button" tabindex="0"
+                   onclick={() => { selectedAltIdx = selectedAltIdx === i ? null : i; }}
+                   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedAltIdx = selectedAltIdx === i ? null : i; } }}>
                 <div class="optimize-alt-head">
                   <span class="optimize-alt-name">{alt.name.replace(/_/g, ' ').toUpperCase()}</span>
                   {#if alt.score > 0}
@@ -2981,11 +3091,26 @@
                 {#if alt.notes?.length}
                   <div class="optimize-alt-notes">{alt.notes.join(' · ')}</div>
                 {/if}
+                {#if alt.score > 0}
+                  <div class="optimize-alt-actions">
+                    <button type="button" class="optimize-exec-btn"
+                            disabled={executeBusy || selectedAccounts.length !== 1}
+                            onclick={(e) => { e.stopPropagation(); _executeAlternative(alt); }}>
+                      {executeBusy ? 'Placing…' : '▶ Execute basket'}
+                    </button>
+                    {#if selectedAltIdx === i}
+                      <span class="optimize-alt-hint">↑ Chart shows this alternative</span>
+                    {:else}
+                      <span class="optimize-alt-hint">Click card to preview on chart</span>
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>
         {/if}
       </div>
+      <ConfirmModal bind:this={_executeConfirmRef} />
     {/if}
   </div>
 {/if}
@@ -3948,6 +4073,56 @@
     color: rgba(180, 200, 230, 0.55);
     font-style: italic;
     font-size: 0.55rem;
+  }
+  .optimize-alt-selected {
+    border-color: rgba(192, 132, 252, 0.65);
+    background: rgba(192, 132, 252, 0.08);
+    box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.25);
+  }
+  .optimize-alt-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid rgba(180, 200, 230, 0.10);
+  }
+  .optimize-exec-btn {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.10);
+    border: 1px solid rgba(74, 222, 128, 0.55);
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+  .optimize-exec-btn:hover:not(:disabled) {
+    background: rgba(74, 222, 128, 0.20);
+    color: #86efac;
+  }
+  .optimize-exec-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .optimize-alt-hint {
+    font-size: 0.55rem;
+    color: rgba(180, 200, 230, 0.55);
+    font-style: italic;
+  }
+  .optimize-exec-msg {
+    padding: 0.35rem 0.5rem;
+    margin-bottom: 0.45rem;
+    font-size: 0.62rem;
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.08);
+    border: 1px solid rgba(74, 222, 128, 0.40);
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+  }
+  .optimize-exec-err {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.40);
   }
 
   /* Alert badge when expiry-close has 1+ rows — red so the

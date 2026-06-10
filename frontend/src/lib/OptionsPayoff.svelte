@@ -31,6 +31,8 @@
    *   multiExpiry?: boolean,
    *   legSymbols?:  string[],
    *   spotAnchor?:  {contract:string, source:string, expiryISO?:string} | null,
+   *   proposedCurve?: Array<{s:number, e:number}>,
+   *   proposedLabel?: string,
    * }} */
   let {
     payoff = [],
@@ -66,6 +68,14 @@
     // rather than an index tick, this carries the contract symbol
     // and its expiry so the chip + roll warning can render.
     spotAnchor = /** @type {{contract:string, source:string, expiryISO?:string} | null} */ (null),
+    // Margin-optimizer proposed-structure overlay. When supplied, the
+    // expiry curve of the proposed alternative is drawn as a cyan
+    // dashed line on top of the existing today/expiry curves so the
+    // operator can compare side by side without leaving the chart.
+    // Same compact shape the optimizer emits: {s: spot, e: expiry_value}.
+    // Empty / null → no overlay (default).
+    proposedCurve = /** @type {Array<{s:number, e:number}>} */ ([]),
+    proposedLabel = /** @type {string} */ (''),
   } = $props();
 
   // Days until the anchor contract expires — used to decide whether
@@ -280,6 +290,30 @@
   const pathExpiry = $derived.by(() => {
     if (!adjustedPayoff.length) return '';
     return adjustedPayoff.map((p, i) => `${i === 0 ? 'M' : 'L'}${xOf(p.spot).toFixed(1)},${yOf(p.expiry_value).toFixed(1)}`).join(' ');
+  });
+
+  // Proposed-structure overlay path. Compact shape ({s, e}) emitted
+  // by the margin optimizer. We re-derive yDomain from the COMBINED
+  // current + proposed values so the proposed curve isn't clipped at
+  // the edges — earlier the existing yDomain was sized only to the
+  // current legs, and a proposed alt with steeper max-loss got cropped.
+  const proposedExpiryDomain = $derived.by(() => {
+    if (!proposedCurve?.length) return [0, 0];
+    let lo = Infinity, hi = -Infinity;
+    for (const p of proposedCurve) {
+      const v = Number(p.e ?? 0) + realizedPnl;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    return [lo, hi];
+  });
+  const pathProposed = $derived.by(() => {
+    if (!proposedCurve?.length || !proposedCurve[0]) return '';
+    return proposedCurve.map((p, i) => {
+      const s = Number(p.s ?? 0);
+      const e = Number(p.e ?? 0) + realizedPnl;
+      return `${i === 0 ? 'M' : 'L'}${xOf(s).toFixed(1)},${yOf(e).toFixed(1)}`;
+    }).join(' ');
   });
 
   // Time-slice curves — one path per intermediate slice, parallel-
@@ -595,7 +629,15 @@
 </script>
 
 <div class="payoff-chart" style="--chart-h: {height}px">
-  {#if !payoff.length}
+  {#if loading && (!payoff.length || spot == null)}
+    <!-- Loading state — shown while the backend is still resolving
+         a real spot price. Suppresses the brief "fallback strike"
+         flash for MCX commodities when the instruments cache is
+         cold and the spot resolver falls back to the strike. -->
+    <div class="payoff-empty">
+      Resolving spot…
+    </div>
+  {:else if !payoff.length}
     <div class="payoff-empty">
       No payoff data.
     </div>
@@ -885,6 +927,13 @@
       <!-- Expiry curve (dashed sky) -->
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
+      <!-- Margin-optimizer proposed-structure overlay. Violet dashed
+           so it reads as "alternative" against the sky-cyan current
+           expiry. Only renders when an alternative is selected. -->
+      {#if pathProposed}
+        <path d={pathProposed} fill="none" stroke="#c084fc"
+              stroke-width="1.5" stroke-dasharray="6 4" stroke-opacity="0.92"/>
+      {/if}
       <!-- Today curve (solid amber, primary) -->
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
 
@@ -1083,6 +1132,10 @@
       {/each}
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
+      {#if pathProposed}
+        <path d={pathProposed} fill="none" stroke="#c084fc"
+              stroke-width="1.5" stroke-dasharray="6 4" stroke-opacity="0.92"/>
+      {/if}
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
       <!-- Foreground spot × today-curve dart — amber (today curve hue).
            Re-painted on the fg layer so the marker sits cleanly on
