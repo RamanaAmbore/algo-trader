@@ -8,6 +8,7 @@
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import OrderCard from '$lib/order/OrderCard.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
@@ -820,7 +821,7 @@
         const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
         const price     = fillPrice || initPrice;
         const sym = o.symbol
-          ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
+          ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(formatSymbol(o.symbol))}</span>`
           : '';
         const content = `◆ ${o.transaction_type || '?'} ${o.quantity ?? '?'} ${sym} ${price} · ${o.account || '?'}`;
         const ts = o.created_at || o.order_timestamp;

@@ -18,6 +18,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { portal } from '$lib/portal';
   import { goto } from '$app/navigation';
+  import LegLabel from '$lib/LegLabel.svelte';
 
   /** @type {{
    *   symbol: string,
@@ -85,7 +86,7 @@
   role="menu"
   aria-label="Symbol actions for {symbol}">
 
-  <div class="scm-header">{symbol}</div>
+  <div class="scm-header"><LegLabel sym={symbol} /></div>
   <div class="ctx-sep"></div>
 
   <button class="ctx-item" role="menuitem" onclick={() => _fire('place-order')}>

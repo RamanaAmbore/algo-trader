@@ -6,6 +6,7 @@
   import { onMount, onDestroy } from 'svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import { portal } from '$lib/portal';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
 
   let {
     /** @type {string} */ symbol = '',
@@ -89,7 +90,7 @@
      operator uses × button or Esc. tabindex retained for screen readers. -->
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
      use:portal role="dialog" aria-modal="true"
-     aria-label="Chart — {symbol}" tabindex="-1">
+     aria-label="Chart — {formatSymbol(symbol)}" tabindex="-1">
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,

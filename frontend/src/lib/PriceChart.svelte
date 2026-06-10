@@ -8,6 +8,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { fetchChartPriceHistory } from '$lib/api';
   import { priceFmt } from '$lib/format';
+  import LegLabel from '$lib/LegLabel.svelte';
 
   let {
     /** @type {'sim'|'paper'|'live'} */ mode,
@@ -433,7 +434,7 @@
 
   {#if !loading && !ticks.length}
     <div class="chart-empty">
-      No price ticks captured yet for <span class="font-mono">{symbol}</span>.
+      No price ticks captured yet for <span class="font-mono"><LegLabel sym={symbol} /></span>.
       Ticks are recorded once an order is open against the symbol{mode === 'sim' ? ' or the simulator is running' : ''}.
     </div>
   {:else if ticks.length}

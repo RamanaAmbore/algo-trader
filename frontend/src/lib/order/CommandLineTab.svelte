@@ -13,6 +13,7 @@
   import { get as getStore } from 'svelte/store';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
   import { loadAccounts } from '$lib/data/accounts';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { interpretAgent, placeTicketOrder, previewOrderMargin } from '$lib/api';
   import CommandBar from '$lib/CommandBar.svelte';
   import { aggFmt } from '$lib/format';
@@ -268,7 +269,7 @@
             limit:    hasPrice ? Number(payload.price) : 0,
             chaseAgg: /** @type {'low'|'med'|'high'} */ ('low'),
           };
-          addResult(raw, `Added to basket: ${leg.side} ${leg.lots * leg.lotSize} ${sym}`);
+          addResult(raw, `Added to basket: ${leg.side} ${leg.lots * leg.lotSize} ${formatSymbol(sym)}`);
           cmdBar?.clear(); cmdVerb = '';
           running = false;
           onAddToBasket(leg);
@@ -306,7 +307,7 @@
           const oid = resp?.order_id || resp?.id || '';
           addResult(
             raw,
-            `✓ ${payload.transaction_type} ${payload.quantity} ${sym} placed${oid ? ' · #' + oid : ''}`,
+            `✓ ${payload.transaction_type} ${payload.quantity} ${formatSymbol(sym)} placed${oid ? ' · #' + oid : ''}`,
           );
         } catch (e) {
           addResult(raw, `✗ ${/** @type {any} */ (e)?.message || 'place failed'}`);

@@ -2998,7 +2998,7 @@
     // Always surface the raw tradingsymbol after the main when an alias
     // is in play so the operator can still see what the row really is.
     const aliasTail = (opAlias || row.alias)
-      ? `<span class="sym-alias" title="Tradingsymbol"> → ${row.tradingsymbol || ''}</span>`
+      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '')}</span>`
       : '';
     // CE / PE tint on the symbol text — Sensibull / Streak convention.
     // Green = Call (right to BUY the underlying), red = Put (right to

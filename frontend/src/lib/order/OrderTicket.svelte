@@ -28,6 +28,8 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
+  import LegLabel from '$lib/LegLabel.svelte';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, previewTicketTemplate } from '$lib/api';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { getDefaultAccount } from '$lib/data/accounts';
@@ -846,7 +848,7 @@
   // for non-multiple quantities (NIFTY lot 50, BANKNIFTY 15, etc.).
   const validationErr = $derived.by(() => {
     if (!Number(_qty) || Number(_qty) <= 0) {
-      if (_lotSize > 0) return `Qty required (1 lot = ${_lotSize} for ${symbol})`;
+      if (_lotSize > 0) return `Qty required (1 lot = ${_lotSize} for ${formatSymbol(symbol)})`;
       return 'Qty required';
     }
     if (_lotSize > 0 && Number(_qty) % _lotSize !== 0) {
@@ -1163,7 +1165,7 @@
         const oid   = brokerResp?.order_id || '?';
         const px    = showLimit && _price ? `@₹${_roundToTick(_price)}` : '@MKT';
         submitOk = (
-          `${(_mode || '').toUpperCase()} ${_side} ${_qty} ${symbol} ${px} · ` +
+          `${(_mode || '').toUpperCase()} ${_side} ${_qty} ${formatSymbol(symbol)} ${px} · ` +
           `#${oid}`
         );
       }
@@ -1383,7 +1385,7 @@
   <div class="ot-modal" role="document" onclick={(e) => e.stopPropagation()}>
     <div class="ot-header">
       <div class="ot-symbol">
-        <span class="ot-symbol-text">{symbol}</span>
+        <span class="ot-symbol-text"><LegLabel sym={symbol} /></span>
         <span class="ot-symbol-meta">
           {exchange ? exchange + ' · ' : ''}
           {kind}{_lotSize ? ' · lot ' + _lotSize : ''}
@@ -1739,7 +1741,7 @@
                 {/each}
                 {#if _previewPlan.wing}
                   <span class="ot-tpl-preview-chip wing">
-                    Wing BUY {_previewPlan.wing.tradingsymbol}
+                    Wing BUY <LegLabel sym={_previewPlan.wing.tradingsymbol} compact={true} />
                   </span>
                 {/if}
                 {#each _previewPlan.notes || [] as n}

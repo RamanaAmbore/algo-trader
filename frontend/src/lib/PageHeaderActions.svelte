@@ -16,6 +16,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
   // Symbol-resolver imports retired — operators pick tradeable
   // symbols directly (no NIFTY 50 → NIFTY26JUNFUT mapping). Operator:
   // "we don't have symbol and resolver concept now."
@@ -127,7 +128,7 @@
   {#if !hideOrder}
     <button type="button" class="pha-btn pha-order"
             onclick={_openOrder}
-            title="Orders{symbol ? ` — ${symbol}` : ''}"
+            title="Orders{symbol ? ` — ${formatSymbol(symbol)}` : ''}"
             aria-label="Open Orders">
       <!-- Order-slip / receipt glyph — a small rectangle with order
            lines inside. Reads as "open the order entry form" without
@@ -152,7 +153,7 @@
             onclick={_openChart}
             onmouseenter={() => { if (_effectiveSymbol) prefetchChartBars(_effectiveSymbol, _effectiveExchange); }}
             onfocus={() => { if (_effectiveSymbol) prefetchChartBars(_effectiveSymbol, _effectiveExchange); }}
-            title="Charts{symbol ? ` — ${symbol}` : ''}"
+            title="Charts{symbol ? ` — ${formatSymbol(symbol)}` : ''}"
             aria-label="Open Charts">
       <!-- Polyline chart glyph -->
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">

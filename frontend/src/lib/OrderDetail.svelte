@@ -11,6 +11,8 @@
 
   import { cancelOrder } from '$lib/api';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import LegLabel from '$lib/LegLabel.svelte';
+  import { formatSymbol } from '$lib/data/decomposeSymbol';
 
   /** @type {{
    *   order:     any|null,
@@ -50,7 +52,7 @@
     // order id + symbol + qty in the prompt and accepts / declines.
     const ok = await _confirmRef?.ask({
       title: 'Cancel order?',
-      message: `#${order.order_id} · ${order.transaction_type} ${order.quantity} ${order.tradingsymbol}<br>Account: ${order.account}`,
+      message: `#${order.order_id} · ${order.transaction_type} ${order.quantity} ${formatSymbol(order.tradingsymbol)}<br>Account: ${order.account}`,
       danger: true,
       confirmLabel: 'Cancel Order',
     });
@@ -79,7 +81,7 @@
   <div class="order-detail rounded-lg border border-gray-300 bg-white p-3 mb-3">
     <div class="flex items-start justify-between mb-2">
       <div>
-        <div class="text-xs font-bold text-primary">{order.tradingsymbol}
+        <div class="text-xs font-bold text-primary"><LegLabel sym={order.tradingsymbol} />
           <span class="ml-2 text-[0.6rem] font-medium {order.transaction_type === 'BUY' ? 'text-green-600' : 'text-red-600'}">{order.transaction_type} {order.quantity}</span>
           <span class="ml-2 text-[0.55rem] px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 uppercase">{order.status}</span>
         </div>
