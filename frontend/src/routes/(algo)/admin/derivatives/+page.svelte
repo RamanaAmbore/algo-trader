@@ -2062,6 +2062,15 @@
       // halves as different rows.
       _splitTag: 'closed',
     };
+    // Broker net quantity reflects what's CURRENTLY held. When
+    // overnight=4 and operator sold all 4 today, broker reports
+    // quantity=0 — the closed row alone fully describes the day and
+    // there is no actual "open" portion. Emitting an OPEN-tagged row
+    // with qty=0 misled the operator into thinking there was still
+    // something on the book to act on. Suppress it.
+    const brokerQty = Math.abs(Number(p.qty || 0));
+    if (brokerQty === 0) return [closedRow];
+
     const openRow = {
       ...p,
       // Re-attribute total leg P&L: closed row gets the realised
