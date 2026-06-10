@@ -327,6 +327,24 @@ SEEDS: list[tuple] = [
      "Existing agents keep their per-row trade_mode.",
      None, {"enum": ["paper", "live"]}),
 
+    # execution.dev_active — engine kill-switch on non-main branches.
+    # When False (default on dev), background tasks (_task_performance,
+    # _task_close, _task_sparkline_warm, _task_ticker_watchdog) and the
+    # KiteTicker WebSocket all stay idle — no broker hits, no live LTPs,
+    # no agent fires. The navbar mode dropdown flips it to True when the
+    # operator picks PAPER / SIM / REPLAY. Prod (main branch) IGNORES this
+    # value — is_engine_idle() short-circuits to False on prod so prod
+    # tasks always run. Seeded False; operator can also flip it manually
+    # from /admin/settings if they want to keep dev active continuously
+    # (e.g. for an integration test loop).
+    ("execution",   "execution.dev_active",      "bool",   "false",
+     "Engine kill-switch on non-main branches. When OFF (default), dev "
+     "background tasks + KiteTicker stay idle so dev never hammers broker "
+     "APIs. Picking PAPER/SIM/REPLAY from the navbar flips this ON; "
+     "picking IDLE flips it back OFF. Prod (main branch) ignores this — "
+     "engine always runs on prod.",
+     None, None),
+
     # ── Orders ───────────────────────────────────────────────────────────
     # Default broker account the order modal / OrderTicket pre-selects when
     # the host page doesn't supply context-specific account. Empty string

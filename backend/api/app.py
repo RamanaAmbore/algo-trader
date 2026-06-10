@@ -253,6 +253,22 @@ async def _start_kite_ticker() -> None:
         from backend.shared.helpers.kite_ticker import get_ticker
         from backend.shared.helpers.connections import Connections
         from backend.shared.brokers.kite import KiteBroker
+        from backend.shared.helpers.utils import is_engine_idle
+
+        # Dev-idle gate — on dev, when execution.dev_active=False AND
+        # no sim/replay running, skip starting the KiteTicker. Saves
+        # the WebSocket subscription budget against Kite for sessions
+        # where no operator is actively trading. Picking PAPER/SIM/
+        # REPLAY in the navbar flips dev_active=True; the operator
+        # needs to restart the service OR hit the future "rehydrate"
+        # endpoint to bring the ticker up. Prod (main) never short-
+        # circuits here — ticker always starts.
+        if is_engine_idle():
+            logger.info(
+                "KiteTicker: skipped startup — engine idle (dev). "
+                "Pick PAPER/SIM/REPLAY from navbar to activate."
+            )
+            return
 
         spark_broker = get_sparkline_broker()
         # PriceBroker wraps a list of underlying Broker adapters. Walk

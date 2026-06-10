@@ -44,7 +44,7 @@ logger = get_logger(__name__)
 # Dev branch forces paper for any settings-toggle pick, so LIVE and
 # SHADOW are excluded from the dev list (clicking them would be a
 # silent no-op).
-_DEV_MODES  = ["paper", "sim", "replay"]
+_DEV_MODES  = ["idle", "paper", "sim", "replay"]
 _PROD_MODES = ["paper", "live", "shadow", "sim", "replay"]
 
 
@@ -80,7 +80,11 @@ def _get_current_mode(is_prod: bool) -> str:
         pass
 
     if not is_prod:
-        # Dev always forces paper regardless of the master toggle.
+        # Dev: IDLE when the engine kill-switch is off (default state on
+        # boot); PAPER once the operator picks PAPER from the navbar.
+        # Sim/replay drivers were already short-circuited above.
+        if not get_bool("execution.dev_active", False):
+            return "idle"
         return "paper"
 
     if get_bool("execution.shadow_mode", False):
@@ -147,9 +151,21 @@ class ExecutionController(Controller):
         # Apply flags based on target mode.
         updates: dict[str, str] = {}
 
-        if target == "paper":
+        # Dev-only target — turn the engine OFF. KiteTicker (if running)
+        # stops; background tasks short-circuit; no broker calls until
+        # operator picks another mode. Prod can't reach this branch
+        # (target validated against _PROD_MODES which excludes 'idle').
+        if target == "idle":
+            updates["execution.dev_active"] = "false"
+            _stop_drivers()
+            _stop_ticker_if_running()
+
+        elif target == "paper":
             updates["execution.paper_trading_mode"] = "true"
             updates["execution.shadow_mode"]        = "false"
+            # On dev, picking paper also flips the engine ON.
+            if not is_prod:
+                updates["execution.dev_active"] = "true"
             # Stop any running sim/replay.
             _stop_drivers()
 
@@ -165,7 +181,11 @@ class ExecutionController(Controller):
 
         elif target in ("sim", "replay"):
             # The driver is started separately; we just validate and
-            # return.  Stop the opposite driver if it is running.
+            # return. Stop the opposite driver if it is running.
+            # On dev, also flip the engine ON so SimDriver writes flow
+            # through the same code paths the live engine uses.
+            if not is_prod:
+                updates["execution.dev_active"] = "true"
             _stop_drivers(exclude=target)
 
         if updates:
@@ -225,3 +245,18 @@ def _stop_drivers(exclude: str | None = None) -> None:
                 drv.stop()
         except Exception:
             pass
+
+
+def _stop_ticker_if_running() -> None:
+    """Best-effort KiteTicker shutdown — used by the navbar IDLE
+    pick on dev. Wraps the per-instance teardown so a callsite that
+    doesn't care about the underlying socket state can request "stop
+    if up" without exception bookkeeping."""
+    try:
+        from backend.shared.helpers.kite_ticker import get_ticker
+        ticker = get_ticker()
+        if getattr(ticker, "_started", False):
+            ticker.stop()
+            logger.info("[execution] KiteTicker stopped (idle pick)")
+    except Exception as e:
+        logger.warning(f"[execution] could not stop ticker: {e}")

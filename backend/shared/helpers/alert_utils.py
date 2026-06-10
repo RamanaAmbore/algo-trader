@@ -164,6 +164,20 @@ _MSG_TYPES = {
 def _send_telegram(message: str):
     import logging
     _log = logging.getLogger('backend.api.background')
+    # Dev-idle suppression — when dev's engine is idle (no operator
+    # picked a mode), no market alerts should fire. Deploy notifications
+    # are sent by webhook/notify_deploy.py which doesn't go through this
+    # path, so they keep working. Prod (main branch) never enters idle
+    # so prod alerts are unaffected.
+    try:
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            _log.info("Telegram skipped — engine idle (dev)")
+            return
+    except Exception:
+        # Helper not importable yet (startup race) — fall through to
+        # the existing is_enabled gate.
+        pass
     if not is_enabled('telegram'):
         _log.info("Telegram skipped — disabled for this environment")
         return

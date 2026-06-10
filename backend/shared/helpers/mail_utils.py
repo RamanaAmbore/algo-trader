@@ -43,6 +43,17 @@ def send_email(name, email_id, subject, html_body):
     "as" the brand address (alias on the auth mailbox).
     """
 
+    # Dev-idle suppression — same contract as _send_telegram. When
+    # dev's engine is idle, no operator-facing alerts fire. Contact-form
+    # submissions DO still send (they go via send_email but only from
+    # the public website route, not from dev's background tasks).
+    try:
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            return True, "Email skipped — engine idle (dev)"
+    except Exception:
+        pass
+
     smtp_server = secrets['smtp_server']
     smtp_port = secrets['smtp_port']
     smtp_user = secrets['smtp_user']

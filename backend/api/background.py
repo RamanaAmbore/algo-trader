@@ -348,6 +348,16 @@ async def _task_performance(state: dict) -> None:
         open_offset = _open_offset()
         await asyncio.sleep(interval * 60)
 
+        # Dev-idle gate — on non-main branches, when execution.dev_active
+        # is False AND no sim/replay driver is running, skip the broker
+        # fetch entirely. Picking PAPER/SIM/REPLAY from the navbar flips
+        # dev_active=True; picking IDLE flips it back. Prod (main) always
+        # passes this check. Stops dev from hammering broker APIs when no
+        # operator is actively trading.
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            continue
+
         now   = timestamp_indian()
         today = now.date()
 
@@ -619,6 +629,12 @@ async def _task_close(state: dict) -> None:
     holiday_cache: dict = {}
 
     while True:
+        # Dev-idle gate (see _task_performance comment) — also skip the
+        # close-summary task on dev when no operator activity.
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            await asyncio.sleep(60)
+            continue
         interval     = _interval_close()
         close_offset = _close_offset()
         await asyncio.sleep(interval * 60)
@@ -1014,8 +1030,16 @@ async def _task_sparkline_warm(state: dict) -> None:
         except Exception as e:
             logger.error(f"sparkline warm: {label} failed: {e}")
 
+    # Dev-idle gate (see _task_performance) — skip the startup warm on
+    # dev when engine is idle so dev doesn't burn historical_data calls
+    # before any operator has picked a mode.
+    from backend.shared.helpers.utils import is_engine_idle
+
     # ── Fire immediately at startup ──────────────────────────────────────────
-    await _do_warm("startup")
+    if not is_engine_idle():
+        await _do_warm("startup")
+    else:
+        logger.info("sparkline warm: skipped startup — engine idle (dev)")
 
     # ── Then at each market-segment open boundary ────────────────────────────
     segments = _build_segments()
@@ -1067,6 +1091,9 @@ async def _task_sparkline_warm(state: dict) -> None:
             )
             if now >= open_dt:
                 seg_warm_dates[seg['name']] = today
+                if is_engine_idle():
+                    logger.info(f"sparkline warm: skipped {seg['name']}-open — engine idle (dev)")
+                    continue
                 await _do_warm(f"{seg['name']}-open")
 
 
@@ -1102,6 +1129,14 @@ async def _task_ticker_watchdog(state: dict) -> None:
     while True:
         try:
             await asyncio.sleep(CHECK_INTERVAL_S)
+            # Dev-idle gate — skip ticker watchdog on dev when engine is
+            # idle. The ticker isn't started either (per app.py gate) so
+            # there's nothing to watch; this short-circuit prevents the
+            # alert state machine from misfiring when the operator
+            # toggles dev_active off mid-session.
+            from backend.shared.helpers.utils import is_engine_idle
+            if is_engine_idle():
+                continue
             ticker = get_ticker()
             status = ticker.status()
             # Watchdog applies only to a ticker that's STARTED but has

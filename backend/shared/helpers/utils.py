@@ -56,6 +56,48 @@ def is_prod_branch() -> bool:
     return config.get("deploy_branch") == "main"
 
 
+def is_engine_idle() -> bool:
+    """
+    Should the running engine sit idle, skipping background tasks +
+    broker calls? Returns True on non-main branches when
+    `execution.dev_active` setting is False AND no sim/replay driver is
+    running.
+
+    Used by background tasks (_task_performance, _task_close,
+    _task_sparkline_warm, _task_ticker_watchdog) and the KiteTicker
+    auto-start gate to stop dev environments from hammering broker
+    APIs when no operator is actively trading.
+
+    Prod (main branch) always returns False so prod is unaffected —
+    market data flows continuously as before.
+    """
+    if config.get("deploy_branch") == "main":
+        return False
+
+    # Sim / replay drivers running mean the operator is actively
+    # working — keep engine awake regardless of dev_active. Use lazy
+    # imports to avoid a circular import at module load time.
+    try:
+        from backend.api.algo.sim.driver import get_driver as _sim_drv
+        if _sim_drv().active:
+            return False
+    except Exception:
+        pass
+    try:
+        from backend.api.algo.replay.driver import get_replay_driver as _replay_drv
+        if _replay_drv().active:
+            return False
+    except Exception:
+        pass
+
+    # Read the dev_active setting. Missing / unparseable → False (idle).
+    try:
+        from backend.shared.helpers import settings as _settings
+        return not _settings.get_bool("execution.dev_active", False)
+    except Exception:
+        return True   # safest default — stay idle if we can't read
+
+
 def is_enabled(cap: str) -> bool:
     """
     Is capability `cap` (e.g., 'genai', 'telegram', 'mail', 'notify_on_deploy',
