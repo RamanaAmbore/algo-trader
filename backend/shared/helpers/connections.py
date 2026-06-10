@@ -520,6 +520,13 @@ class DhanConnection:
         self._dhan         = None
         self._import_error = None
         self._login_lock   = threading.Lock()
+        # Login-rate-limit cool-off — Dhan's `generate_token` endpoint
+        # caps at one call per 2 minutes per account; when we hit that
+        # cap, every subsequent call within the window also fails. We
+        # gate re-login attempts behind this timestamp so a burst of
+        # auth-fail callers from broker_apis don't hammer the rate
+        # limit. Set after a failed _do_login; checked before retrying.
+        self._login_blocked_until: float = 0.0
         # Try to restore from on-disk cache so a restart within the
         # 23 h window doesn't re-run the login dance.
         self._try_restore_token()
@@ -679,7 +686,43 @@ class DhanConnection:
             if self._access_token and self._dhan is not None and not test_conn:
                 return self._dhan
 
-            access_token = self._do_login()
+            # Login-rate-limit cool-off — Dhan's auth endpoint
+            # rejects a second call within 2 minutes of the first.
+            # When the previous _do_login raised because of that, we
+            # set _login_blocked_until = now + 130s (2 min + 10s
+            # safety). Re-login attempts within that window short-
+            # circuit and either return the LAST KNOWN client
+            # (possibly stale but better than nothing) or raise so
+            # the broker layer can degrade gracefully.
+            import time as _time_mod
+            if _time_mod.time() < self._login_blocked_until:
+                wait_s = int(self._login_blocked_until - _time_mod.time())
+                if self._dhan is not None:
+                    logger.warning(
+                        f"Dhan login blocked for {self.account!r} "
+                        f"({wait_s}s left in rate-limit window); "
+                        f"returning last-known client"
+                    )
+                    return self._dhan
+                raise RuntimeError(
+                    f"Dhan login rate-limited for {self.account!r} — "
+                    f"wait {wait_s}s before retrying"
+                )
+
+            try:
+                access_token = self._do_login()
+            except RuntimeError as e:
+                # _do_login failed — set the cool-off so subsequent
+                # callers don't pile up. 130s = Dhan's 2-min limit +
+                # a 10s safety margin against clock drift.
+                self._login_blocked_until = _time_mod.time() + 130.0
+                logger.error(
+                    f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
+                    f"blocking re-login attempts for 130 s"
+                )
+                raise
+            # Success path — clear any prior cool-off.
+            self._login_blocked_until = 0.0
             self._access_token   = access_token
             self._conn_created_at = timestamp_indian()
             self._save_token(access_token)

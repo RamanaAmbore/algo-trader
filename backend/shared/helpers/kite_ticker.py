@@ -338,6 +338,19 @@ class TickerManager:
             except Exception:
                 pass
         self._started   = False
+        # CRITICAL: synchronise _last_disconnected_at when this method
+        # transitions us out of the connected state. Earlier, stop()
+        # set _connected=False WITHOUT touching _last_disconnected_at;
+        # when restart_with_account() called stop()→start() but the
+        # new start failed to actually connect (network blip, token
+        # invalidation), _on_close was never called and the disconnect
+        # timestamp stayed at its previous value. seconds_since_disconnect()
+        # then reported wildly stale durations (200,000+ s — i.e. 55 h
+        # past the LAST genuine _on_close). The watchdog read those as
+        # "disconnected forever" and kept failover-thrashing between
+        # accounts every 5 minutes (the failover cool-off window).
+        if self._connected:
+            self._last_disconnected_at = time.time()
         self._connected = False
         self._kws       = None
         logger.info("KiteTicker: stopped (clean)")
@@ -424,6 +437,13 @@ class TickerManager:
         with self._lock:
             self._connected = True
             self._last_connected_at = time.time()
+            # Defensive: reset the stale disconnect timestamp so
+            # seconds_since_disconnect() can never report a value
+            # from before the current connection. Combined with the
+            # stop()-side fix above, this guarantees the watchdog's
+            # disconnect math always reflects the CURRENT connection's
+            # lifecycle, not a 55-hour-old ghost.
+            self._last_disconnected_at = 0.0
             pending = set(self._pending)
             self._pending.clear()
 
