@@ -1534,6 +1534,23 @@ class OptionsController(Controller):
                 status_code=400,
                 detail="account, underlying, legs, spot all required",
             )
+        # Resolve the operator's chosen OrderTemplate (if any) so the
+        # optimizer can suppress strategies whose protection overlaps
+        # with the template. e.g. template_slug='default-short-vol'
+        # ships a +500 strike wing — the add_wing strategy is a no-op
+        # on top of that.
+        template_dict = None
+        template_id   = data.get("template_id")
+        template_slug = data.get("template_slug")
+        if template_id is not None or template_slug:
+            try:
+                from backend.api.algo.template_attach import load_template_for_slug_or_id
+                template_dict = await load_template_for_slug_or_id(
+                    template_id=int(template_id) if template_id is not None else None,
+                    template_slug=str(template_slug) if template_slug else None,
+                )
+            except Exception as e:
+                logger.warning(f"optimize_margin template lookup failed: {e}")
         try:
             result = await optimize(
                 account=account,
@@ -1544,6 +1561,7 @@ class OptionsController(Controller):
                 max_loss_drift_pct=float(data.get("max_loss_drift_pct") or 25.0),
                 strategies=list(data["strategies"]) if data.get("strategies") else None,
                 force_refresh=bool(data.get("force_refresh")),
+                template=template_dict,
             )
         except Exception as e:
             logger.exception(f"optimize_margin failed: {e}")

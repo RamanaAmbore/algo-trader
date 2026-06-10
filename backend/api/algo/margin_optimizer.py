@@ -441,6 +441,7 @@ async def optimize(
     max_loss_drift_pct: float = DEFAULT_MAX_LOSS_DRIFT_PCT,
     strategies: Optional[list[str]] = None,
     force_refresh: bool = False,
+    template: Optional[dict] = None,
 ) -> OptimizeResult:
     """Top-level orchestrator — scoped to one (account, underlying)
     pair. The caller passes only legs that belong to that
@@ -473,6 +474,24 @@ async def optimize(
 
     strats = strategies or list(_GENERATORS.keys())
     notes: list[str] = []
+
+    # Template-driven strategy suppression. When the operator's chosen
+    # template carries wing config (either wing_strike_offset or
+    # wing_premium_pct), it ALREADY provides protective-wing legs at
+    # order-attach time. Layering the optimizer's add_wing strategy on
+    # top would double-hedge — burns margin without improving the risk
+    # profile. Suppress with an operator-visible note so the choice is
+    # transparent.
+    if template:
+        has_wing = (template.get("wing_strike_offset") is not None
+                    or template.get("wing_premium_pct")   is not None)
+        if has_wing and "add_wing" in strats:
+            strats = [s for s in strats if s != "add_wing"]
+            tname = template.get("name") or template.get("slug") or "(template)"
+            notes.append(
+                f"Template '{tname}' includes protective wings — "
+                f"add_wing strategy suppressed (no double-hedge)."
+            )
 
     # Current metrics + margin
     current_metrics = _compute_metrics(legs, spot)

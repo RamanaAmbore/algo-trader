@@ -34,6 +34,7 @@
     listFutures, getInstrument,
   } from '$lib/data/instruments';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
+  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -275,6 +276,11 @@
         legs:          legPayload,
         spot:          spotPx,
         force_refresh: forceRefresh,
+        // Pass the operator's chosen template so the backend can
+        // suppress strategies that would double up on the template's
+        // built-in protection (e.g. add_wing when template already
+        // has wing_strike_offset).
+        template_id:   optimizeTemplateId,
       });
       optimizeResult = res;
       // Auto-select the top-ranked alternative when its score is
@@ -296,6 +302,29 @@
       optimizeLoading = false;
     }
   }
+
+  // ── Optimizer template attachment ─────────────────────────────────
+  // Operator picks an OrderTemplate; the optimizer respects it two ways:
+  //   1. Suppresses any strategy whose protection overlaps the template
+  //      (template with wing → add_wing strategy off).
+  //   2. Passes template_id on each OPEN leg of an executed basket so
+  //      the standard template-attach pipeline runs (TP/SL GTT + wing).
+  //   Close legs don't get a template — they're flat-out closing an
+  //   existing position; no follow-on attachments needed.
+  let optimizeTemplates = $state(/** @type {any[]} */ ([]));
+  let optimizeTemplateId = $state(/** @type {number|null} */ (null));
+  const optimizeSelectedTemplate = $derived(
+    optimizeTemplates.find(t => t.id === optimizeTemplateId) || null
+  );
+  $effect(() => {
+    loadOrderTemplates()
+      .then(rows => { optimizeTemplates = rows.filter(t => t.is_active); })
+      .catch(() => { /* silent — picker stays empty */ });
+  });
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows?.length) optimizeTemplates = rows.filter(t => t.is_active);
+  });
 
   // ── Selected alternative (for chart overlay + execute) ────────────
   let selectedAltIdx = $state(/** @type {number|null} */ (null));
@@ -355,8 +384,15 @@
     } catch { /* default paper */ }
 
     /** @type {string[]} */ const fails = [];
-    const allLegs = [...closes, ...opens];
-    for (const leg of allLegs) {
+    // Tag each leg with whether it's a close (just unwinding) or an
+    // open (new position that may want template attachment). The
+    // template_id rides ONLY on open legs — closes are flat exits
+    // and don't need TP/SL/wing attachments piled on top.
+    const taggedLegs = [
+      ...closes.map(l => ({ ...l, _kind: 'close' })),
+      ...opens.map( l => ({ ...l, _kind: 'open'  })),
+    ];
+    for (const leg of taggedLegs) {
       try {
         await placeTicketOrder({
           mode,
@@ -369,6 +405,7 @@
           variety:       'regular',
           account:       acct,
           chase:         false,
+          template_id:   leg._kind === 'open' ? optimizeTemplateId : null,
         });
       } catch (e) {
         fails.push(`${leg.symbol}: ${e?.message || 'error'}`);
@@ -378,7 +415,7 @@
     if (fails.length) {
       executeMsg = `⚠ ${fails.length} leg(s) failed: ${fails.slice(0, 2).join(' · ')}${fails.length > 2 ? ' …' : ''}`;
     } else {
-      executeMsg = `✓ ${allLegs.length} leg(s) placed in ${mode.toUpperCase()} mode`;
+      executeMsg = `✓ ${taggedLegs.length} leg(s) placed in ${mode.toUpperCase()} mode`;
       // Force-refresh the optimizer cache so the next view reflects the
       // new book (don't wait for the 30-min window).
       setTimeout(() => { _runOptimize(true); }, 1500);
@@ -3045,6 +3082,27 @@
               · Current margin: <b class="optimize-num">₹{Math.round(optimizeResult.current?.margin_required || 0).toLocaleString('en-IN')}</b>
             {/if}
           </span>
+          <!-- Template picker — drives both the strategy-suppression
+               hint and the template_id passed on each OPEN leg of an
+               executed basket. "(none)" keeps the legacy entry-only
+               flow. Templates load from the cached module-level
+               store so the picker is warm on every modal open. -->
+          <label class="optimize-template-label">
+            Template:
+            <select class="optimize-template-sel"
+                    value={optimizeTemplateId === null ? '' : String(optimizeTemplateId)}
+                    onchange={(e) => {
+                      const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
+                      optimizeTemplateId = v === '' ? null : Number(v);
+                    }}>
+              <option value="">(none)</option>
+              {#each optimizeTemplates as t}
+                <option value={String(t.id)}>
+                  {t.name}{t.is_default ? ' ★' : ''}
+                </option>
+              {/each}
+            </select>
+          </label>
           <button type="button" class="optimize-refresh"
                   disabled={optimizeLoading || !selectedUnderlying || selectedAccounts.length !== 1}
                   title={selectedAccounts.length !== 1 ? 'Pick exactly one account to optimize' : ''}
@@ -3975,6 +4033,29 @@
   .optimize-num { color: #fbbf24; }
   .optimize-err { color: #f87171; }
   .optimize-notes { color: rgba(200,216,240,0.55); font-style: italic; }
+  .optimize-template-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.6rem;
+    color: rgba(180, 200, 230, 0.75);
+    font-family: ui-monospace, monospace;
+    margin-right: 0.4rem;
+  }
+  .optimize-template-sel {
+    padding: 0.18rem 0.4rem;
+    font-size: 0.6rem;
+    color: rgba(220, 230, 245, 0.92);
+    background: rgba(20, 30, 55, 0.7);
+    border: 1px solid rgba(180, 200, 230, 0.25);
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+  }
+  .optimize-template-sel:focus {
+    outline: none;
+    border-color: rgba(192, 132, 252, 0.55);
+  }
   .optimize-refresh {
     padding: 0.25rem 0.7rem;
     font-size: 0.62rem;
