@@ -478,30 +478,50 @@ class KiteConnection:
 
 
 class DhanConnection:
-    """Dhan client wrapper with Partner-API auto-login.
+    """Dhan client wrapper with headless TOTP-based auto-login.
 
     Mirrors KiteConnection's lifecycle: long-lived credentials
-    (`api_key + api_secret + pin + totp_token + client_id`, all
-    ~1-year valid) are persisted in `broker_accounts`; this class
-    runs Dhan's Partner-API login flow on first use and re-runs it
-    every `CONN_RESET_HOURS` (default 23 h) — no daily token paste.
+    (`client_id + pin + totp_token`, all ~1-year valid) are
+    persisted in `broker_accounts`; this class mints a Dhan access
+    token on first use and re-mints when the token expires.
 
-    Login dance (DhanLogin SDK):
-      1. `generate_login_session(api_key, api_secret)` → token_id
-      2. `generate_token(pin, totp)` — PIN + TOTP authenticate the
-         session
-      3. `consume_token_id(token_id, api_key, api_secret)` → 24h
-         access_token
+    Login flow (one SDK call, no browser, no SMS/email OTP):
+
+      DhanLogin(client_id).generate_token(pin, totp_code)
+      → {"data": {"accessToken": "..."}}
+
+      where `totp_code = pyotp.TOTP(totp_seed).now()` from the stored
+      base32 seed. The token's validity is whatever the operator has
+      set in the Dhan dashboard's "Token validity" dropdown (default
+      24 h; settable 5 min / 1 hr / 24 hr / 30 d / 1 yr at Settings
+      → DhanHQ Trading APIs → Token validity).
+
+    The Partner-API consent flow (generate_login_session →
+    consume_token_id) is intentionally NOT used — Dhan v2 moved that
+    behind browser-based SMS/email-OTP + PIN consent which kills any
+    unattended automation. The direct `generate_token` endpoint above
+    is the only headless path.
 
     Access tokens are cached to `dhan_tokens.json` (next to
-    `kite_tokens.json`) so a restart within the 23 h window skips
-    the login dance entirely. Cross-process lock (same pattern as
-    Kite) prevents prod + dev from racing two parallel logins for
-    the same Partner-API app.
+    `kite_tokens.json`) so a restart within the validity window skips
+    the login flow entirely. Cross-process lock (same pattern as
+    Kite) prevents prod + dev from racing two parallel logins.
 
-    No IPv6 source-binding here; Dhan doesn't enforce per-IP
+    Rate-limit guard: Dhan's `generate_token` caps at one call per
+    2 minutes per account. After a failed login we set
+    `_login_blocked_until = now + 130 s` so a burst of auth-fail
+    callers doesn't hammer the limit; the cool-off check sits in
+    `get_dhan_conn()`.
+
+    No IPv6 source-binding here — Dhan doesn't enforce per-IP
     whitelisting the way Kite does. `source_ip` is accepted on the
     constructor for future symmetry but unused today.
+
+    `api_key` / `api_secret` are also accepted on the constructor for
+    historical compatibility with the retired Partner-API flow; the
+    direct TOTP path doesn't read them. Future code paths that need
+    them (e.g. Partner-API-only endpoints) can still pull them from
+    `self._api_key` / `self._api_secret`.
     """
 
     def __init__(self, account: str, *,
