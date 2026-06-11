@@ -911,6 +911,32 @@ def _normalise_positions(resp: Any) -> dict:
         # dict because the qty is now already in contracts — the
         # broker_apis day-PnL formula doesn't need to re-multiply.
         _mult = int(p.get("multiplier", 1) or 1) or 1
+        # Convert Dhan's lot-based qty fields to contracts.
+        qty_contracts = int(p.get("netQty",      0) or 0) * _mult
+        ovn_contracts = int(p.get("carryFwdQty", 0) or 0) * _mult
+        dbq_contracts = int(p.get("dayBuyQty",   0) or 0) * _mult
+        dsq_contracts = int(p.get("daySellQty",  0) or 0) * _mult
+
+        # Compute P&L ourselves — don't trust Dhan's pre-computed
+        # unrealisedProfit / realisedProfit fields, which have shown a
+        # ~100× off-by-lot-size discrepancy on F&O contracts (Dhan
+        # appears to compute these in LOTS while we display CONTRACTS,
+        # and there's no way to flip the convention from the API).
+        # Operator: "the entry price and current price difference is
+        # P&L. from yesterday's closing price and today's price is day
+        # P&L."
+        # Formulas (signed; long qty>0, short qty<0):
+        #   pnl            = (LTP - avg_price)   × qty   (lifetime / unrealised)
+        #   day_change_val = (LTP - close_price) × qty   (today's change)
+        avg = float(p.get("netAvgPrice",     0) or 0)
+        ltp = float(p.get("lastTradedPrice", 0) or 0)
+        close = float(p.get("previousClose", p.get("closePrice", 0)) or 0)
+        pnl_calc = (ltp - avg)   * qty_contracts if (ltp > 0 and avg > 0) else 0.0
+        dcv_calc = (ltp - close) * qty_contracts if (ltp > 0 and close > 0) else 0.0
+        # Keep Dhan's realisedProfit verbatim — that's a closed-book
+        # figure they're authoritative on.
+        realised = float(p.get("realisedProfit", 0) or 0)
+
         net.append({
             "tradingsymbol":   ts,
             "exchange":        p.get("exchange")     or "NFO",
@@ -919,38 +945,39 @@ def _normalise_positions(resp: Any) -> dict:
                                 "MARGIN":   "NRML",
                                 "CNC":      "CNC"}.get(p.get("productType", ""),
                                                         "NRML"),
-            "quantity":           int(p.get("netQty",       0) or 0) * _mult,
-            "overnight_quantity": int(p.get("carryFwdQty",  0) or 0) * _mult,
-            "day_buy_quantity":   int(p.get("dayBuyQty",    0) or 0) * _mult,
-            "day_sell_quantity":  int(p.get("daySellQty",   0) or 0) * _mult,
+            "quantity":           qty_contracts,
+            "overnight_quantity": ovn_contracts,
+            "day_buy_quantity":   dbq_contracts,
+            "day_sell_quantity":  dsq_contracts,
             # Day-trade cash values — used by broker_apis' split P∆
-            # formula. Derive from price × qty when Dhan doesn't carry
-            # the value field directly. Stored in ₹ (cash) — Dhan's
-            # dayBuy/SellValue is already a ₹ figure, never rescaled.
-            # For the derived path we use the qty IN CONTRACTS (after
-            # _mult) so dayBuyAvg × qty_in_contracts = correct ₹ value.
+            # formula. Derive from price × qty (in contracts) when Dhan
+            # doesn't carry the value field directly.
             "day_buy_value":      float(p.get("dayBuyValue",  0) or 0)
-                                  or (float(p.get("dayBuyAvg", 0) or 0)
-                                      * int(p.get("dayBuyQty", 0) or 0) * _mult),
+                                  or (float(p.get("dayBuyAvg", 0) or 0) * dbq_contracts),
             "day_sell_value":     float(p.get("daySellValue", 0) or 0)
-                                  or (float(p.get("daySellAvg", 0) or 0)
-                                      * int(p.get("daySellQty", 0) or 0) * _mult),
+                                  or (float(p.get("daySellAvg", 0) or 0) * dsq_contracts),
             # Multiplier=1 on the normalised row — qty is now in contracts
             # so the broker_apis day_change_val formula treats it the same
             # as Kite's contract-qty (no extra multiplication needed).
             "multiplier":      1,
-            "close_price":     float(p.get("previousClose",
-                                           p.get("closePrice", 0)) or 0),
-            "average_price":   float(p.get("netAvgPrice",  0) or 0),
-            "last_price":      float(p.get("lastTradedPrice", 0) or 0),
+            "close_price":     close,
+            "average_price":   avg,
+            "last_price":      ltp,
             "buy_price":       float(p.get("buyAvg",       0) or 0),
             "sell_price":      float(p.get("sellAvg",      0) or 0),
-            "buy_quantity":    int(p.get("buyQty",         0) or 0),
-            "sell_quantity":   int(p.get("sellQty",        0) or 0),
-            "pnl":             float(p.get("unrealisedProfit", 0) or 0),
-            "realised":        float(p.get("realisedProfit",   0) or 0),
-            "unrealised":      float(p.get("unrealisedProfit", 0) or 0),
-            "_raw":            p,
+            "buy_quantity":    int(p.get("buyQty",         0) or 0) * _mult,
+            "sell_quantity":   int(p.get("sellQty",        0) or 0) * _mult,
+            # Pre-computed pnl + day_change_val from our own formulas;
+            # broker_apis still recomputes day_change_val using the split-
+            # formula for accuracy on intraday reversals, but having
+            # day_change_val populated here means /api/positions returns
+            # a sensible value even on routes that don't run the full
+            # split (e.g. raw-broker views, demo serialisation).
+            "pnl":               pnl_calc,
+            "realised":          realised,
+            "unrealised":        pnl_calc,
+            "day_change_val":    dcv_calc,
+            "_raw":              p,
         })
     return {"net": net, "day": []}
 

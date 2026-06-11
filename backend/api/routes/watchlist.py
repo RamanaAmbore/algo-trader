@@ -1128,9 +1128,21 @@ class WatchlistController(Controller):
             username = _actor_sub(request)
             async with async_session() as session:
                 user_id = await _resolve_user_id(session, username)
+                # CRITICAL: include `is_global == True` so the operator-
+                # facing pinned watchlist (user_id = NULL) matches. Every
+                # other route in this file uses `((user_id == user) |
+                # (is_global == True))` for this same reason; the /quotes
+                # endpoint was the lone holdout — pinned + global lists
+                # 404'd from this route silently, so operators saw the
+                # pinned grid LTP/values frozen even though the watchlist
+                # itself rendered fine (the LIST endpoint correctly
+                # matches global). Movers updated because they use a
+                # totally separate /watchlist/movers path.
                 wl_row = await session.execute(
                     select(Watchlist).where(
-                        Watchlist.id == wl_id, Watchlist.user_id == user_id,
+                        Watchlist.id == wl_id,
+                        ((Watchlist.user_id == user_id)
+                         | (Watchlist.is_global == True)),
                     )
                 )
                 wl = wl_row.scalar_one_or_none()
