@@ -3358,21 +3358,62 @@
     ]);
 
     // ─── Right grid: Positions / Holdings ────────────────────────
-    // Full operator-spec column set plus Account at the trailing
-    // edge. Account column intentionally LAST so the eye reads
-    // "Symbol → numbers → Account" — the operator's natural scan
-    // order is "what is this row / how is it doing / whose book".
+    // Column order mirrors PerformancePage's positions + holdings grids
+    // (operator request: "keep the columns of performance page positions
+    // and holdings in positions and holdings grids of pulse"):
+    //
+    //   Account → Symbol → Sparkline → LTP → Prev Close → Avg →
+    //   Day P&L → Day % → P&L → P&L % → Qty → Invested → Value
+    //
+    // Account pinned left so it lands in the first column the operator's
+    // eye reads, same as PerformancePage. Sparkline + Day P&L % +
+    // Open / Vol / OI are Pulse-specific keep-overs (the operator can
+    // hide them via the ag-Grid column tool panel).
+    const _acctColLeft = {
+      field: '_acct_display', headerName: 'Account', colId: 'account',
+      width: 86, minWidth: 70, maxWidth: 110,
+      pinned: 'left',
+      cellClass: 'mp-acct-cell',
+      cellStyle: (p) => {
+        if (p.data?._isTotal) return {};
+        const color = p.data?._acctColor ?? null;
+        if (!color) return {};
+        return { color };
+      },
+      valueGetter: (p) => {
+        if (p.data?._isTotal) return '';
+        const accts = p.data?.accounts;
+        if (!accts) return '';
+        const list = accts instanceof Set ? Array.from(accts) : Array.isArray(accts) ? accts : [];
+        if (list.length === 0) return '';
+        if (list.length === 1) return list[0];
+        return `${list[0]} +${list.length - 1}`;
+      },
+    };
     const rightColDefs = /** @type {any[]} */ ([
+      _acctColLeft,
       _symColRight,
       _sparkCol,
       _ltpCol,
+      _prevCol,
+      // Avg — weighted entry price across positions + holdings on the row.
+      { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
+        width: 68, minWidth: 60, maxWidth: 90,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: `${RA} cell-muted`,
+        valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
+        headerTooltip: 'Weighted average entry across positions + holdings.' },
+      { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
+        valueFormatter: aggFmtGrid },
       // Day P&L % — one-day return on yesterday's market value (close × qty).
       // NOT cost basis: dividing by cost over-states day % for a long-held
       // stock — INFY held 10 yrs at ₹100 cost / ₹2000 today posts a real
       // 1 % day move as 20 % when normalised against cost. close × qty is
       // the honest denominator: per-symbol this collapses to change_pct;
       // TOTAL gets a market-value-weighted day return.
-      { field: 'day_pnl_pct', headerName: 'Day P&L %', colId: 'day_pnl_pct',
+      { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueGetter: (p) => {
@@ -3387,13 +3428,21 @@
         },
         valueFormatter: pctFmtGrid,
         headerTooltip: 'Day P&L as % of yesterday’s market value (close × qty).' },
-      { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
-        width: 68, minWidth: 60, maxWidth: 90,
+      { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
-        headerTooltip: 'Weighted average entry across positions + holdings.' },
-      _prevCol,
+        cellClass: dirCellClass,
+        valueFormatter: aggFmtGrid },
+      { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
+        width: 64, type: 'numericColumn', headerClass: numericHdr,
+        cellClass: dirCellClass,
+        valueGetter: (p) => {
+          const pnl  = Number(p.data?.pnl);
+          const cost = Number(p.data?._cost_basis);
+          if (!Number.isFinite(pnl) || !(cost > 0)) return null;
+          return (pnl / cost) * 100;
+        },
+        valueFormatter: pctFmtGrid,
+        headerTooltip: 'P&L as % of cost basis.' },
       { field: 'qty_net', headerName: 'Qty', width: 56, colId: 'qty_net',
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
@@ -3407,10 +3456,6 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      { field: 'day_pnl', headerName: 'Day P&L', width: 54, minWidth: 54, maxWidth: 70,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
-        valueFormatter: aggFmtGrid },
       // Investment + Current value — holdings only. The user wants both
       // values per row plus a TOTAL footer; aggregator sums them when
       // present (positions rows carry null inv/cur and skip the sum).
@@ -3424,46 +3469,9 @@
         cellClass: RA,
         valueFormatter: aggFmtGrid,
         headerTooltip: 'Live LTP × held qty — current market value of this holding.' },
-      { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
-        width: 60, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
-        valueGetter: (p) => {
-          const pnl  = Number(p.data?.pnl);
-          const cost = Number(p.data?._cost_basis);
-          if (!Number.isFinite(pnl) || !(cost > 0)) return null;
-          return (pnl / cost) * 100;
-        },
-        valueFormatter: pctFmtGrid,
-        headerTooltip: 'P&L as % of cost basis.' },
-      { field: 'pnl', headerName: 'P&L', width: 64,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
-        valueFormatter: aggFmtGrid },
       _openCol,
       _volCol,
       _oiCol,
-      // Account at trailing edge — shows the lead account (or "Mixed"
-      // when a position spans 2 accounts). Tinted to match the
-      // symbol cell's left-edge stripe via the same hash palette.
-      { field: '_acct_display', headerName: 'Account', colId: 'acct_trailing',
-        width: 96, minWidth: 78, maxWidth: 124,
-        cellClass: 'mp-acct-cell',
-        cellStyle: (p) => {
-          if (p.data?._isTotal) return {};
-          const color = p.data?._acctColor ?? null;
-          if (!color) return {};
-          return { color };
-        },
-        valueGetter: (p) => {
-          if (p.data?._isTotal) return '';
-          const accts = p.data?.accounts;
-          if (!accts) return '';
-          const list = accts instanceof Set ? Array.from(accts) : Array.isArray(accts) ? accts : [];
-          if (list.length === 0) return '';
-          if (list.length === 1) return list[0];
-          return `${list[0]} +${list.length - 1}`;
-        },
-      },
     ]);
 
     // Factory: every per-bucket grid shares the same shape (height
