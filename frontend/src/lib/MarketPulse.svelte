@@ -1050,6 +1050,14 @@
     // the layout's startConnStatusPoller) — no separate fetch needed here.
     await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
     loadSparklines();
+    // The first loadSparklines call races with `unifiedRows` deriving —
+    // `loadQuotes` finishes loading the watchQuotes map AFTER the
+    // Promise.all above, so the very first call can fire with an empty
+    // or partial pairs list and silently return (no sparklines on any
+    // grid until the 60 s _TICK_SPARK tick). Re-fire 2 s later to cover
+    // the race; the second call dedups by exchange:sym so it's cheap
+    // even when the first call already populated everything.
+    setTimeout(() => { loadSparklines(); }, 2000);
 
     // Unified pulse tick — one visibleInterval drives every refresh.
     // pulse.tick_interval_ms (default 5000) is the base cadence; heavier

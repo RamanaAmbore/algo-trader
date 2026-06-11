@@ -740,17 +740,30 @@ class DhanBroker(Broker):
     # ── Qty translation ───────────────────────────────────────────────
 
     def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        """Dhan accepts quantity in contracts for every segment including
-        MCX (unlike Kite's qty=lots quirk for MCX/NCO). The operator
-        types 50 for 1 NIFTY lot and Dhan expects 50; the operator
-        types 1 for 1 CRUDEOIL lot and Dhan also expects 1 (Dhan uses
-        contracts throughout). No translation required — identity.
+        """Convert canonical-contract qty (the unit our routes + position
+        normalisers use internally) to Dhan's wire format.
 
-        ASSUMPTION: verified against Dhan v2 API docs and SDK examples
-        at https://dhanhq.co/docs/api-reference/v2/ — Dhan's `quantity`
-        field is consistently in contracts across NSE_EQ, NSE_FNO, and
-        MCX_COMM. If future accounts show rejection on MCX lot sizing,
-        add MCX-specific logic here matching Kite's `// lot_size` path."""
+        Dhan's API takes quantity IN LOTS for MCX/NCO and IN CONTRACTS
+        for NSE/BSE F&O — same convention Kite uses. The position-data
+        normaliser (`_normalise_positions`) multiplies netQty × multiplier
+        to convert Dhan's lot-based read response back to contracts so
+        every downstream surface (Legs grid, day_change_val formula,
+        analytics, paper engine) treats Dhan + Kite rows uniformly. This
+        method undoes that for the OUTBOUND order: contract qty → lots
+        on MCX/NCO, identity on NSE/BSE F&O.
+
+        operator on /admin/derivatives: Dhan CRUDEOIL position was
+        showing qty=1 while Kite showed qty=300 for the same 3 lots —
+        because the read path stayed in lots while Kite read in contracts.
+        The fix normalises BOTH read + write to contracts internally."""
+        if exchange in ("MCX", "NCO") and lot_size > 0 and raw_qty >= lot_size:
+            translated = max(1, raw_qty // lot_size)
+            if translated != raw_qty:
+                logger.info(
+                    f"[DHAN-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
+                    f"(lot_size={lot_size})"
+                )
+            return translated
         return raw_qty
 
     def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
@@ -885,6 +898,19 @@ def _normalise_positions(resp: Any) -> dict:
         # option or futures contract" above the payoff chart.
         raw_ts = str(p.get("tradingSymbol") or "")
         ts = _dhan_to_kite_symbol(raw_ts)
+        # Dhan returns netQty / dayBuy/SellQty in LOTS, not contracts.
+        # Kite returns positions already in CONTRACTS — and every
+        # downstream surface (Legs grid display qty, day_change_val
+        # formula in broker_apis.py, options strategy analytics, sim
+        # paper-trade engine, agent rules referring to qty) expects
+        # the CONTRACTS convention. Multiply by Dhan's `multiplier`
+        # (lot size for the contract) to align both adapters before
+        # the row hits broker_apis. Order placement re-divides via
+        # `DhanBroker.translate_qty` (contracts → lots) so the SDK call
+        # still sees Dhan's expected unit. `multiplier=1` in the output
+        # dict because the qty is now already in contracts — the
+        # broker_apis day-PnL formula doesn't need to re-multiply.
+        _mult = int(p.get("multiplier", 1) or 1) or 1
         net.append({
             "tradingsymbol":   ts,
             "exchange":        p.get("exchange")     or "NFO",
@@ -893,28 +919,25 @@ def _normalise_positions(resp: Any) -> dict:
                                 "MARGIN":   "NRML",
                                 "CNC":      "CNC"}.get(p.get("productType", ""),
                                                         "NRML"),
-            "quantity":        int(p.get("netQty",         0) or 0),
-            "overnight_quantity": int(p.get("carryFwdQty", 0) or 0),
-            "day_buy_quantity":   int(p.get("dayBuyQty",   0) or 0),
-            "day_sell_quantity":  int(p.get("daySellQty",  0) or 0),
+            "quantity":           int(p.get("netQty",       0) or 0) * _mult,
+            "overnight_quantity": int(p.get("carryFwdQty",  0) or 0) * _mult,
+            "day_buy_quantity":   int(p.get("dayBuyQty",    0) or 0) * _mult,
+            "day_sell_quantity":  int(p.get("daySellQty",   0) or 0) * _mult,
             # Day-trade cash values — used by broker_apis' split P∆
             # formula. Derive from price × qty when Dhan doesn't carry
-            # the value field directly. Stored in ₹ (cash) to match
-            # the Kite convention; never rescaled by multiplier.
+            # the value field directly. Stored in ₹ (cash) — Dhan's
+            # dayBuy/SellValue is already a ₹ figure, never rescaled.
+            # For the derived path we use the qty IN CONTRACTS (after
+            # _mult) so dayBuyAvg × qty_in_contracts = correct ₹ value.
             "day_buy_value":      float(p.get("dayBuyValue",  0) or 0)
                                   or (float(p.get("dayBuyAvg", 0) or 0)
-                                      * int(p.get("dayBuyQty", 0) or 0)),
+                                      * int(p.get("dayBuyQty", 0) or 0) * _mult),
             "day_sell_value":     float(p.get("daySellValue", 0) or 0)
                                   or (float(p.get("daySellAvg", 0) or 0)
-                                      * int(p.get("daySellQty", 0) or 0)),
-            # NOTE: deliberately set to 1, not Dhan's `multiplier` field.
-            # Dhan's API returns `netQty` and `dayBuy/SellQty` already in
-            # CONTRACTS (not lots). Kite's `multiplier` semantics expect
-            # qty in LOTS and use the multiplier to convert to contracts.
-            # If we pass Dhan's multiplier through, the day_change_val
-            # formula in broker_apis.py multiplies a CONTRACTS qty by the
-            # lot-size multiplier → 100× over-statement (operator saw
-            # CRUDEOIL day P&L of ₹-72k when actual was ₹-720).
+                                      * int(p.get("daySellQty", 0) or 0) * _mult),
+            # Multiplier=1 on the normalised row — qty is now in contracts
+            # so the broker_apis day_change_val formula treats it the same
+            # as Kite's contract-qty (no extra multiplication needed).
             "multiplier":      1,
             "close_price":     float(p.get("previousClose",
                                            p.get("closePrice", 0)) or 0),

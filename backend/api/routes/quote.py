@@ -52,7 +52,7 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
 
     sym  = tradingsymbol.upper().strip()
     exch = exchange.upper().strip()
-    order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
+    order = [exch] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch]
 
     # Fast path: day-cached token map (built once per IST day by batch_sparkline).
     try:
@@ -436,7 +436,7 @@ class SparklineController(Controller):
                     for sym_obj in to_fetch:
                         if sym_obj.tradingsymbol in token_map:
                             continue
-                        pref = [sym_obj.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
+                        pref = [sym_obj.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
                         for ex in pref:
                             tok = _full_map.get((sym_obj.tradingsymbol, ex))
                             if tok is not None:
@@ -533,7 +533,7 @@ class SparklineController(Controller):
                 for s in norm_syms:
                     if s.tradingsymbol in token_map:
                         continue
-                    pref = [s.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != s.exchange]
+                    pref = [s.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != s.exchange]
                     for _ex in pref:
                         tok = _full_map.get((s.tradingsymbol, _ex))
                         if tok is not None:
@@ -731,7 +731,7 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         for sym_obj in to_fetch:
             if sym_obj.tradingsymbol in token_map:
                 continue
-            pref = [sym_obj.exchange] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
+            pref = [sym_obj.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
             for ex in pref:
                 tok = _full_map.get((sym_obj.tradingsymbol, ex))
                 if tok is not None:
