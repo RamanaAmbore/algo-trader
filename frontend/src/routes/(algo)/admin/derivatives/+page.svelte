@@ -16,7 +16,6 @@
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, addWatchlistItem,
-    optimizeMargin,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -35,7 +34,6 @@
   } from '$lib/data/instruments';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
-  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -228,212 +226,8 @@
   // expiry day (equity rules: every ITM contract; commodity rules:
   // only unhedged ITM legs where CE qty + PE qty per
   // (underlying, expiry) doesn't net to zero).
-  /** @typedef {'legs' | 'expiry' | 'optimize'} LegsTab */
+  /** @typedef {'legs' | 'expiry'} LegsTab */
   let legsTab = $state(/** @type {LegsTab} */ ('legs'));
-
-  // ── Margin Optimizer state ─────────────────────────────────────────
-  // Per (account, underlying) result. Held outside legsTab so opening
-  // the Optimize tab doesn't lose the last computation; the operator
-  // can flip away and back without recomputing.
-  let optimizeResult = $state(/** @type {any} */ (null));
-  let optimizeLoading = $state(false);
-  let optimizeError = $state('');
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _optimizeDebounce = null;
-
-  async function _runOptimize(/** @type {boolean} */ forceRefresh = false) {
-    optimizeError = '';
-    // Need: exactly one selected account + underlying + open legs + spot.
-    // The optimizer is per (account, underlying) — when multiple accounts
-    // are selected we refuse cleanly (margin math only makes sense
-    // per-account because basket_margins is account-scoped).
-    const acct = (selectedAccounts.length === 1 ? String(selectedAccounts[0]) : '').trim();
-    const und  = String(selectedUnderlying || '').trim().toUpperCase();
-    const spotPx = Number(strategy?.spot || 0);
-    const legPayload = (legs || [])
-      .filter(l => l && l.symbol && Number(l.qty) !== 0)
-      .map(l => {
-        const q = Number(l.qty);
-        return {
-          symbol:   String(l.symbol).toUpperCase(),
-          qty:      Math.abs(q),
-          // Leg objects in this page carry signed qty (+long / -short)
-          // and don't have an explicit `side` field. Derive from sign.
-          side:     q < 0 ? 'SELL' : 'BUY',
-          avg_cost: Number(l.avg_cost || 0),
-          ltp:      Number(l.ltp || 0),
-          exchange: 'NFO',
-        };
-      });
-    if (!acct || !und || !spotPx || legPayload.length === 0) {
-      optimizeResult = null;
-      return;
-    }
-    optimizeLoading = true;
-    try {
-      const res = await optimizeMargin({
-        account:       acct,
-        underlying:    und,
-        legs:          legPayload,
-        spot:          spotPx,
-        force_refresh: forceRefresh,
-        // Pass the operator's chosen template so the backend can
-        // suppress strategies that would double up on the template's
-        // built-in protection (e.g. add_wing when template already
-        // has wing_strike_offset).
-        template_id:   optimizeTemplateId,
-      });
-      optimizeResult = res;
-      // Auto-select the top-ranked alternative when its score is
-      // positive (= passed EV + max-loss tolerance gates). Operator
-      // sees the payoff overlay populated immediately on first compute
-      // so they don't have to click around to discover the recommended
-      // pick. Operator can still tap any other row to compare.
-      const best = res?.alternatives?.[0];
-      if (best && best.score > 0) {
-        selectedAltIdx = 0;
-      } else {
-        selectedAltIdx = null;
-      }
-    } catch (e) {
-      optimizeError = e?.message || 'optimize failed';
-      optimizeResult = null;
-      selectedAltIdx = null;
-    } finally {
-      optimizeLoading = false;
-    }
-  }
-
-  // ── Optimizer template attachment ─────────────────────────────────
-  // Operator picks an OrderTemplate; the optimizer respects it two ways:
-  //   1. Suppresses any strategy whose protection overlaps the template
-  //      (template with wing → add_wing strategy off).
-  //   2. Passes template_id on each OPEN leg of an executed basket so
-  //      the standard template-attach pipeline runs (TP/SL GTT + wing).
-  //   Close legs don't get a template — they're flat-out closing an
-  //   existing position; no follow-on attachments needed.
-  let optimizeTemplates = $state(/** @type {any[]} */ ([]));
-  let optimizeTemplateId = $state(/** @type {number|null} */ (null));
-  const optimizeSelectedTemplate = $derived(
-    optimizeTemplates.find(t => t.id === optimizeTemplateId) || null
-  );
-  $effect(() => {
-    loadOrderTemplates()
-      .then(rows => { optimizeTemplates = rows.filter(t => t.is_active); })
-      .catch(() => { /* silent — picker stays empty */ });
-  });
-  $effect(() => {
-    const rows = $orderTemplatesStore;
-    if (rows?.length) optimizeTemplates = rows.filter(t => t.is_active);
-  });
-
-  // ── Selected alternative (for chart overlay + execute) ────────────
-  let selectedAltIdx = $state(/** @type {number|null} */ (null));
-  const selectedAlt = $derived(
-    selectedAltIdx !== null && optimizeResult?.alternatives
-      ? optimizeResult.alternatives[selectedAltIdx] : null
-  );
-  /** Proposed-structure expiry curve points for OptionsPayoff overlay.
-   *  Optimizer emits {s, t, e}; payoff component reads {s, e}. */
-  const proposedCurve = $derived(
-    selectedAlt?.metrics?.payoff_curve || []
-  );
-
-  // ── Execute alternative as basket ─────────────────────────────────
-  let executeBusy = $state(false);
-  let executeMsg  = $state('');
-  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
-  let _executeConfirmRef = $state(null);
-
-  async function _executeAlternative(/** @type {any} */ alt) {
-    if (!alt || executeBusy) return;
-    if (!_executeConfirmRef) return;
-    const acct = selectedAccounts.length === 1 ? String(selectedAccounts[0]) : '';
-    if (!acct) {
-      executeMsg = '⚠ Pick exactly one account to execute';
-      return;
-    }
-    const closes = alt.close_legs || [];
-    const opens  = alt.open_legs  || [];
-    const summary = `
-      <b>${closes.length} close leg(s)</b> + <b>${opens.length} open leg(s)</b>
-      will be placed in sequence on <b>${acct}</b>.<br/>
-      Closes: ${closes.map((l) => l.symbol).join(', ') || '—'}<br/>
-      Opens: ${opens.map((l) => l.symbol).join(', ') || '—'}<br/><br/>
-      Margin delta: <b>${alt.margin_delta >= 0 ? '−' : '+'}₹${Math.abs(Math.round(alt.margin_delta || 0)).toLocaleString('en-IN')}</b>
-    `;
-    const ok = await _executeConfirmRef.ask({
-      title: `Execute ${alt.name.replace(/_/g, ' ')}?`,
-      message: summary,
-      confirmLabel: 'Place basket',
-      cancelLabel: 'Cancel',
-      destructive: true,
-    });
-    if (!ok) return;
-
-    executeBusy = true;
-    executeMsg  = '';
-    // Resolve current execution mode (paper / live) the same way
-    // placeBasket does so the optimizer execution honours the navbar
-    // pill instead of silently dropping into paper.
-    let mode = 'paper';
-    try {
-      const live = await fetchLiveStatus();
-      if (live && live.paper_trading_mode === false && live.branch === 'main') {
-        mode = 'live';
-      }
-    } catch { /* default paper */ }
-
-    /** @type {string[]} */ const fails = [];
-    // Tag each leg with whether it's a close (just unwinding) or an
-    // open (new position that may want template attachment). The
-    // template_id rides ONLY on open legs — closes are flat exits
-    // and don't need TP/SL/wing attachments piled on top.
-    const taggedLegs = [
-      ...closes.map(l => ({ ...l, _kind: 'close' })),
-      ...opens.map( l => ({ ...l, _kind: 'open'  })),
-    ];
-    for (const leg of taggedLegs) {
-      try {
-        await placeTicketOrder({
-          mode,
-          side:          String(leg.side || 'BUY').toUpperCase(),
-          tradingsymbol: String(leg.symbol).toUpperCase(),
-          exchange:      String(leg.exchange || 'NFO'),
-          quantity:      Math.abs(Number(leg.qty)),
-          product:       'NRML',
-          order_type:    'MARKET',
-          variety:       'regular',
-          account:       acct,
-          chase:         false,
-          template_id:   leg._kind === 'open' ? optimizeTemplateId : null,
-        });
-      } catch (e) {
-        fails.push(`${leg.symbol}: ${e?.message || 'error'}`);
-      }
-    }
-    executeBusy = false;
-    if (fails.length) {
-      executeMsg = `⚠ ${fails.length} leg(s) failed: ${fails.slice(0, 2).join(' · ')}${fails.length > 2 ? ' …' : ''}`;
-    } else {
-      executeMsg = `✓ ${taggedLegs.length} leg(s) placed in ${mode.toUpperCase()} mode`;
-      // Force-refresh the optimizer cache so the next view reflects the
-      // new book (don't wait for the 30-min window).
-      setTimeout(() => { _runOptimize(true); }, 1500);
-    }
-  }
-
-  // Auto-refresh on legs / underlying / account change (debounced 600ms).
-  // The 30-min server cache makes this cheap — only the first call in a
-  // window does the heavy Kite basket_margin work.
-  $effect(() => {
-    // Track the legs fingerprint + scope so changes trigger.
-    const _ = (legs || []).map(l => `${l?.symbol}:${l?.qty}`).join('|')
-            + `@${selectedAccounts.join(',')}|${selectedUnderlying}`;
-    if (legsTab !== 'optimize') return;
-    if (_optimizeDebounce) clearTimeout(_optimizeDebounce);
-    _optimizeDebounce = setTimeout(() => { _runOptimize(false); }, 600);
-  });
 
   // Expiry-close analysis. Derived from candidatePositions + the
   // strategy spot price. Splits by exchange: NFO (equity) drops
@@ -2726,8 +2520,6 @@
         spotAnchor={strategy.spot_anchor_contract
           ? { contract: strategy.spot_anchor_contract, source: 'futures', expiryISO: strategy.expiry ?? '' }
           : null}
-        proposedCurve={proposedCurve}
-        proposedLabel={selectedAlt?.name || ''}
         loading={loading || strategy.spot_source === 'fallback'}
         height={320} />
     </div>
@@ -2781,17 +2573,6 @@
               <span class="legs-tab-count legs-tab-count-alert">{expiryCloseTotal}</span>
             {/if}
           </button>
-          <button type="button" role="tab"
-                  class="legs-tab"
-                  class:legs-tab-on={legsTab === 'optimize'}
-                  aria-selected={legsTab === 'optimize'}
-                  title="Margin-optimizer alternatives for this (account, underlying) combo — cached 30 min"
-                  onclick={() => legsTab = 'optimize'}>
-            Optimize
-            {#if optimizeResult?.alternatives?.length > 0}
-              <span class="legs-tab-count legs-tab-count-violet">{optimizeResult.alternatives.length}</span>
-            {/if}
-          </button>
         </div>
       </div>
       {#if _fsLegs}
@@ -2840,7 +2621,7 @@
             </span>
             <span class="num"
                   title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
-              Day P&amp;L Δ
+              Day P&amp;L
             </span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
@@ -3062,8 +2843,6 @@
       <div class="text-[0.6rem] text-[#7e97b8] italic">
         {#if legsTab === 'expiry'}
           No ITM options in the current candidate set.
-        {:else if legsTab === 'optimize'}
-          <!-- Empty state handled inside the Optimize panel below. -->
         {:else}
           No options or futures on <b>{selectedUnderlying}</b> in
           {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
@@ -3071,133 +2850,6 @@
           draft strike into the payoff.
         {/if}
       </div>
-    {/if}
-
-    <!-- Optimize tab — margin-saving alternatives for the current
-         (account, underlying) combo. Backend caches results for 30
-         minutes per fingerprint; Refresh forces a fresh kite
-         basket_order_margins round-trip per alternative. -->
-    {#if !_colLegs && legsTab === 'optimize'}
-      <div class="optimize-panel">
-        <div class="optimize-header">
-          <span class="optimize-summary">
-            {#if optimizeLoading}
-              Computing alternatives…
-            {:else if optimizeError}
-              <span class="optimize-err">⚠ {optimizeError}</span>
-            {:else if !optimizeResult}
-              Pick an account + underlying with open legs to see margin-saving alternatives.
-            {:else if optimizeResult.alternatives.length === 0}
-              No actionable alternatives — current book is already well-structured.
-              {#if optimizeResult.notes?.length}
-                <span class="optimize-notes">· {optimizeResult.notes.join(' · ')}</span>
-              {/if}
-            {:else}
-              <b>{optimizeResult.alternatives.length}</b> alternative{optimizeResult.alternatives.length === 1 ? '' : 's'} found
-              · Cached <b>{Math.floor((optimizeResult.ttl_remaining_seconds || 0) / 60)} min</b> left
-              · Current margin: <b class="optimize-num">₹{Math.round(optimizeResult.current?.margin_required || 0).toLocaleString('en-IN')}</b>
-            {/if}
-          </span>
-          <!-- Template picker — drives both the strategy-suppression
-               hint and the template_id passed on each OPEN leg of an
-               executed basket. "(none)" keeps the legacy entry-only
-               flow. Templates load from the cached module-level
-               store so the picker is warm on every modal open. -->
-          <label class="optimize-template-label">
-            Template:
-            <select class="optimize-template-sel"
-                    value={optimizeTemplateId === null ? '' : String(optimizeTemplateId)}
-                    onchange={(e) => {
-                      const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
-                      optimizeTemplateId = v === '' ? null : Number(v);
-                    }}>
-              <option value="">(none)</option>
-              {#each optimizeTemplates as t}
-                <option value={String(t.id)}>
-                  {t.name}{t.is_default ? ' ★' : ''}
-                </option>
-              {/each}
-            </select>
-          </label>
-          <button type="button" class="optimize-refresh"
-                  disabled={optimizeLoading || !selectedUnderlying || selectedAccounts.length !== 1}
-                  title={selectedAccounts.length !== 1 ? 'Pick exactly one account to optimize' : ''}
-                  onclick={() => _runOptimize(true)}>
-            {optimizeLoading ? '…' : '↻ Refresh'}
-          </button>
-        </div>
-
-        {#if optimizeResult?.alternatives?.length}
-          {#if executeMsg}
-            <div class="optimize-exec-msg" class:optimize-exec-err={executeMsg.startsWith('⚠')}>
-              {executeMsg}
-            </div>
-          {/if}
-          <div class="optimize-list">
-            {#each optimizeResult.alternatives as alt, i}
-              <div class="optimize-alt"
-                   class:optimize-alt-best={i === 0 && alt.score > 0}
-                   class:optimize-alt-selected={selectedAltIdx === i}
-                   role="button" tabindex="0"
-                   onclick={() => { selectedAltIdx = selectedAltIdx === i ? null : i; }}
-                   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedAltIdx = selectedAltIdx === i ? null : i; } }}>
-                <div class="optimize-alt-head">
-                  <span class="optimize-alt-name">{alt.name.replace(/_/g, ' ').toUpperCase()}</span>
-                  {#if alt.score > 0}
-                    <span class="optimize-alt-score">score {alt.score.toFixed(1)}</span>
-                  {:else}
-                    <span class="optimize-alt-score optimize-alt-score-bad">outside tolerance</span>
-                  {/if}
-                </div>
-                <div class="optimize-alt-desc">{alt.description}</div>
-                <div class="optimize-alt-metrics">
-                  <span class="optimize-metric optimize-metric-margin" class:optimize-metric-pos={alt.margin_delta > 0}>
-                    Δ Margin: <b>{alt.margin_delta >= 0 ? '−' : '+'}₹{Math.abs(Math.round(alt.margin_delta)).toLocaleString('en-IN')}</b>
-                    ({(alt.margin_delta_pct * 100).toFixed(1)}%)
-                  </span>
-                  <span class="optimize-metric" class:optimize-metric-pos={alt.ev_delta > 0} class:optimize-metric-neg={alt.ev_delta < 0}>
-                    Δ EV: {alt.ev_delta >= 0 ? '+' : ''}₹{Math.round(alt.ev_delta).toLocaleString('en-IN')}
-                  </span>
-                  <span class="optimize-metric" class:optimize-metric-pos={alt.pop_delta > 0} class:optimize-metric-neg={alt.pop_delta < 0}>
-                    Δ POP: {alt.pop_delta >= 0 ? '+' : ''}{alt.pop_delta.toFixed(1)}pp
-                  </span>
-                  <span class="optimize-metric" class:optimize-metric-neg={alt.max_loss_delta < 0}>
-                    Δ MaxLoss: {alt.max_loss_delta >= 0 ? '+' : ''}₹{Math.round(alt.max_loss_delta).toLocaleString('en-IN')}
-                  </span>
-                </div>
-                {#if alt.close_legs?.length || alt.open_legs?.length}
-                  <div class="optimize-alt-legs">
-                    {#each alt.close_legs as l}
-                      <span class="optimize-leg optimize-leg-close">CLOSE {l.side} {l.qty} {formatSymbol(l.symbol)}</span>
-                    {/each}
-                    {#each alt.open_legs as l}
-                      <span class="optimize-leg optimize-leg-open">OPEN {l.side} {l.qty} {formatSymbol(l.symbol)}</span>
-                    {/each}
-                  </div>
-                {/if}
-                {#if alt.notes?.length}
-                  <div class="optimize-alt-notes">{alt.notes.join(' · ')}</div>
-                {/if}
-                {#if alt.score > 0}
-                  <div class="optimize-alt-actions">
-                    <button type="button" class="optimize-exec-btn"
-                            disabled={executeBusy || selectedAccounts.length !== 1}
-                            onclick={(e) => { e.stopPropagation(); _executeAlternative(alt); }}>
-                      {executeBusy ? 'Placing…' : '▶ Execute basket'}
-                    </button>
-                    {#if selectedAltIdx === i}
-                      <span class="optimize-alt-hint">↑ Chart shows this alternative</span>
-                    {:else}
-                      <span class="optimize-alt-hint">Click card to preview on chart</span>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-      <ConfirmModal bind:this={_executeConfirmRef} />
     {/if}
   </div>
 {/if}
@@ -4016,225 +3668,6 @@
     background: var(--algo-amber-bg-strong);
     color: #fbbf24;
   }
-  /* Violet badge for the Optimize tab — distinct from amber (active)
-     and red (alert) so the operator's eye reads "this is a different
-     KIND of count". */
-  .legs-tab-count-violet {
-    background: rgba(192, 132, 252, 0.18);
-    color: #c084fc;
-  }
-
-  /* ── Optimize tab ───────────────────────────────────────────── */
-  .optimize-panel {
-    padding: 0.5rem 0.6rem;
-    background: rgba(15, 23, 41, 0.6);
-    border: 1px solid rgba(192, 132, 252, 0.20);
-    border-radius: 5px;
-    margin-top: 0.4rem;
-  }
-  .optimize-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    margin-bottom: 0.45rem;
-    padding-bottom: 0.4rem;
-    border-bottom: 1px solid rgba(192, 132, 252, 0.18);
-  }
-  .optimize-summary {
-    font-size: 0.62rem;
-    color: rgba(200, 216, 240, 0.85);
-    font-family: ui-monospace, monospace;
-  }
-  .optimize-num { color: #fbbf24; }
-  .optimize-err { color: #f87171; }
-  .optimize-notes { color: rgba(200,216,240,0.55); font-style: italic; }
-  .optimize-template-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: 0.6rem;
-    color: rgba(180, 200, 230, 0.75);
-    font-family: ui-monospace, monospace;
-    margin-right: 0.4rem;
-  }
-  .optimize-template-sel {
-    padding: 0.18rem 0.4rem;
-    font-size: 0.6rem;
-    color: rgba(220, 230, 245, 0.92);
-    background: rgba(20, 30, 55, 0.7);
-    border: 1px solid rgba(180, 200, 230, 0.25);
-    border-radius: 3px;
-    font-family: ui-monospace, monospace;
-    cursor: pointer;
-  }
-  .optimize-template-sel:focus {
-    outline: none;
-    border-color: rgba(192, 132, 252, 0.55);
-  }
-  .optimize-refresh {
-    padding: 0.25rem 0.7rem;
-    font-size: 0.62rem;
-    font-weight: 700;
-    color: #c084fc;
-    background: rgba(192, 132, 252, 0.12);
-    border: 1px solid rgba(192, 132, 252, 0.55);
-    border-radius: 3px;
-    cursor: pointer;
-    font-family: ui-monospace, monospace;
-  }
-  .optimize-refresh:hover:not(:disabled) {
-    background: rgba(192, 132, 252, 0.22);
-    color: #d8b4fe;
-  }
-  .optimize-refresh:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .optimize-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-  }
-  .optimize-alt {
-    padding: 0.45rem 0.6rem;
-    background: rgba(255, 255, 255, 0.025);
-    border: 1px solid rgba(180, 200, 230, 0.12);
-    border-radius: 4px;
-    font-size: 0.62rem;
-  }
-  .optimize-alt-best {
-    border-color: rgba(74, 222, 128, 0.45);
-    background: rgba(74, 222, 128, 0.06);
-  }
-  .optimize-alt-head {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
-  }
-  .optimize-alt-name {
-    font-weight: 700;
-    color: #c084fc;
-    letter-spacing: 0.04em;
-    font-family: ui-monospace, monospace;
-  }
-  .optimize-alt-score {
-    margin-left: auto;
-    font-size: 0.55rem;
-    color: #4ade80;
-    font-weight: 700;
-    padding: 0.08rem 0.4rem;
-    background: rgba(74, 222, 128, 0.12);
-    border: 1px solid rgba(74, 222, 128, 0.40);
-    border-radius: 3px;
-  }
-  .optimize-alt-score-bad {
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.10);
-    border-color: rgba(248, 113, 113, 0.40);
-  }
-  .optimize-alt-desc {
-    color: rgba(200, 216, 240, 0.85);
-    margin-bottom: 0.3rem;
-    line-height: 1.4;
-  }
-  .optimize-alt-metrics {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin-bottom: 0.25rem;
-  }
-  .optimize-metric {
-    padding: 0.10rem 0.45rem;
-    border-radius: 3px;
-    font-size: 0.58rem;
-    font-family: ui-monospace, monospace;
-    color: rgba(180, 200, 230, 0.85);
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(180, 200, 230, 0.18);
-  }
-  .optimize-metric-margin { color: #c084fc; }
-  .optimize-metric-pos { color: #4ade80; }
-  .optimize-metric-neg { color: #f87171; }
-  .optimize-alt-legs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin-top: 0.25rem;
-  }
-  .optimize-leg {
-    padding: 0.08rem 0.4rem;
-    border-radius: 3px;
-    font-size: 0.56rem;
-    font-family: ui-monospace, monospace;
-    font-weight: 600;
-  }
-  .optimize-leg-close {
-    color: #fb7185;
-    background: rgba(251, 113, 133, 0.10);
-    border: 1px solid rgba(251, 113, 133, 0.35);
-  }
-  .optimize-leg-open {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.10);
-    border: 1px solid rgba(74, 222, 128, 0.35);
-  }
-  .optimize-alt-notes {
-    margin-top: 0.25rem;
-    color: rgba(180, 200, 230, 0.55);
-    font-style: italic;
-    font-size: 0.55rem;
-  }
-  .optimize-alt-selected {
-    border-color: rgba(192, 132, 252, 0.65);
-    background: rgba(192, 132, 252, 0.08);
-    box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.25);
-  }
-  .optimize-alt-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.4rem;
-    padding-top: 0.35rem;
-    border-top: 1px solid rgba(180, 200, 230, 0.10);
-  }
-  .optimize-exec-btn {
-    padding: 0.25rem 0.7rem;
-    font-size: 0.6rem;
-    font-weight: 700;
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.10);
-    border: 1px solid rgba(74, 222, 128, 0.55);
-    border-radius: 3px;
-    cursor: pointer;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-  }
-  .optimize-exec-btn:hover:not(:disabled) {
-    background: rgba(74, 222, 128, 0.20);
-    color: #86efac;
-  }
-  .optimize-exec-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .optimize-alt-hint {
-    font-size: 0.55rem;
-    color: rgba(180, 200, 230, 0.55);
-    font-style: italic;
-  }
-  .optimize-exec-msg {
-    padding: 0.35rem 0.5rem;
-    margin-bottom: 0.45rem;
-    font-size: 0.62rem;
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.08);
-    border: 1px solid rgba(74, 222, 128, 0.40);
-    border-radius: 3px;
-    font-family: ui-monospace, monospace;
-  }
-  .optimize-exec-err {
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.08);
-    border-color: rgba(248, 113, 113, 0.40);
-  }
-
   /* Alert badge when expiry-close has 1+ rows — red so the
      operator's eye lands on it when contracts need closing. */
   .legs-tab-count-alert {
@@ -4741,8 +4174,8 @@
      via formatSymbol (no structured LegLabel chips), CE/PE text
      tinting, account-tint background. ONE vertical right border per
      symbol cell encoding TODAY's P&L direction (day-pnl mini-bar) —
-     this border applies across all three tabs (legs / exp close /
-     optimize). Account identity stays in the trailing Account column
+     this border applies across both tabs (legs / exp close).
+     Account identity stays in the trailing Account column
      so we don't need a second right border for it.
      `--cand-acct-color` is set per-row via inline style from the
      account's hash colour (acctColor from $lib/account). */
@@ -4762,7 +4195,7 @@
      (flat) — same idiom Pulse Positions uses. Operator: "I want the
      gray border to go away" — flat rows now render with no right
      border at all. Applies in every tab the cand-row renders in
-     (legs / exp close — the optimize tab has its own chip styling). */
+     (legs / exp close). */
   .cand-row.cand-row-long  .cand-sym-acct::after,
   .cand-row.cand-row-short .cand-sym-acct::after {
     content: '';
