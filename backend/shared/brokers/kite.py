@@ -66,6 +66,28 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     return 1
 
 
+# Kite rejects orders with `tag` > 20 chars: "invalid tags - maximum
+# allowed length is 20". Defensive truncation at the adapter layer so
+# no caller (including a future one that forgets the limit) can bypass
+# it. Operator may see a slightly clipped tag in their Kite order
+# history, but the order goes through instead of being rejected.
+_KITE_TAG_MAX = 20
+
+def _truncate_tag(kwargs: dict[str, Any]) -> None:
+    """In-place truncation of a Kite-bound order kwargs dict's `tag`
+    field. No-op when `tag` is absent or None."""
+    tag = kwargs.get("tag")
+    if tag is None:
+        return
+    s = str(tag)
+    if len(s) > _KITE_TAG_MAX:
+        kwargs["tag"] = s[:_KITE_TAG_MAX]
+        logger.warning(
+            f"[KITE-TAG] tag truncated from {len(s)} → {_KITE_TAG_MAX} chars: "
+            f"{s!r} → {kwargs['tag']!r}"
+        )
+
+
 class KiteBroker(Broker):
 
     def __init__(self, conn: KiteConnection) -> None:
@@ -142,9 +164,11 @@ class KiteBroker(Broker):
         return self.kite.basket_order_margins(orders)
 
     def place_order(self, **kwargs: Any) -> str:
+        _truncate_tag(kwargs)
         return self.kite.place_order(**kwargs)
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
+        _truncate_tag(kwargs)
         return self.kite.modify_order(order_id=order_id, **kwargs)
 
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:

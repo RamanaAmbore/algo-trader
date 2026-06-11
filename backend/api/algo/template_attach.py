@@ -454,7 +454,10 @@ def apply_plan_live(
                 last_price=plan.parent_fill_price,
                 orders=list(spec.orders),
                 trigger_values=list(spec.trigger_values),
-                tag=f"tpl-{plan.template_slug or plan.template_id}-{spec.label}",
+                # Kite tag cap: 20 chars. Use template_id (compact int)
+                # instead of slug so the tag fits even for long slugs
+                # like "default-short-vol". Labels are 2-5 chars.
+                tag=f"tpl-{plan.template_id}-{spec.label}",
             )
             spec.placed_id = str(gtt_id)
             result.gtt_ids.append(spec.placed_id)
@@ -477,7 +480,7 @@ def apply_plan_live(
                 order_type=plan.wing.order_type,
                 product=plan.wing.product,
                 variety="regular",
-                tag=f"tpl-{plan.template_slug or plan.template_id}-wing",
+                tag=f"tpl-{plan.template_id}-wing",  # Kite tag cap: 20 chars
             )
             plan.wing.placed_id = str(order_id)
             result.wing_order_id = plan.wing.placed_id

@@ -605,7 +605,7 @@ async def _arm_take_profit(
                     order_type="LIMIT",
                     price=tp_price,
                     validity="DAY",
-                    tag=f"ramboq-tp-{parent_row_id}",
+                    tag=f"rb-tp-{parent_row_id}",  # Kite tag cap: 20 chars
                 )
                 # Link the broker order id back to the child row.
                 from backend.api.database import async_session as _async_session2
@@ -2180,7 +2180,11 @@ class OrdersController(Controller):
                              for i in range(len(grp.legs))],
                 )
 
-            basket_id = f"ramboq-basket-{_uuid.uuid4().hex[:12]}"
+            # Kite's `tag` field is hard-capped at 20 chars (the broker
+            # rejects anything longer with "invalid tags - maximum
+            # allowed length is 20"). `rb-bk-` + 12 hex = 18 chars,
+            # leaves 2 chars of headroom for any future suffix.
+            basket_id = f"rb-bk-{_uuid.uuid4().hex[:12]}"
             leg_results: list[BasketLegResult] = []
 
             for i, leg in enumerate(grp.legs):

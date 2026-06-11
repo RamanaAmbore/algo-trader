@@ -565,14 +565,49 @@
     }
     return Array.from(accts).sort();
   });
+  // MCX mini-variant → parent root mapping. Operator: "it should show
+  // just the root for MCX options". CRUDEOIL + CRUDEOILM both render as
+  // "CRUDEOIL" in the picker; picking CRUDEOIL surfaces positions in
+  // BOTH the full-size and mini contracts under the same chain so the
+  // payoff / Greeks roll up across the operator's full crude exposure.
+  // Per-contract lot size + tick differences are still resolved via the
+  // instruments cache on each leg.
+  const _MCX_ROOT_NORMALIZE = {
+    CRUDEOILM: 'CRUDEOIL',
+    GOLDM:     'GOLD',
+    GOLDPETAL: 'GOLD',
+    GOLDTEN:   'GOLD',
+    GOLDGUINEA:'GOLD',
+    SILVERM:   'SILVER',
+    SILVERMIC: 'SILVER',
+    SILVER100: 'SILVER',
+    NATGASMINI:'NATURALGAS',
+    ZINCMINI:  'ZINC',
+    LEADMINI:  'LEAD',
+    ALUMINI:   'ALUMINIUM',
+  };
+  /** All known prefixes that should match when filtering by the given
+   *  canonical root. Used by candidatePositions' prefix regex so picking
+   *  "CRUDEOIL" matches CRUDEOIL26JUN... AND CRUDEOILM26JUN... */
+  const _mcxPrefixesForRoot = (root) => {
+    const variants = [root];
+    for (const [variant, canonical] of Object.entries(_MCX_ROOT_NORMALIZE)) {
+      if (canonical === root) variants.push(variant);
+    }
+    return variants;
+  };
+
   const underlyingChoicesFromBook = $derived.by(() => {
     const set = new Set();
     for (const p of positions) {
       if (!/(CE|PE|FUT)$/i.test(p.symbol)) continue;
       // Strip everything from the first digit on — that's where the
       // YY-month-strike block starts. Works for monthly + weekly.
-      const u = p.symbol.replace(/\d.*$/, '');
-      if (u) set.add(u);
+      const raw = p.symbol.replace(/\d.*$/, '');
+      if (!raw) continue;
+      // Collapse MCX mini variants to their parent root.
+      const u = _MCX_ROOT_NORMALIZE[raw] || raw;
+      set.add(u);
     }
     return Array.from(set).sort();
   });
@@ -655,7 +690,11 @@
     const target = selectedUnderlying.toUpperCase();
     // Construct the symbol-prefix regex once per re-derivation; the
     // closure below would otherwise rebuild it for every position/draft.
-    const prefixRe = new RegExp(`^${target}\\d`, 'i');
+    // Include MCX mini-variant prefixes so picking CRUDEOIL matches
+    // both CRUDEOIL26JUN... and CRUDEOILM26JUN... (same commodity,
+    // different lot size). Non-MCX roots resolve to a single-element
+    // list — regex behavior unchanged.
+    const prefixRe = new RegExp(`^(${_mcxPrefixesForRoot(target).join('|')})\\d`, 'i');
     const set = new Set();
     const consider = /** @param {string} sym */ (sym) => {
       const upper = String(sym || '').toUpperCase();
@@ -697,7 +736,11 @@
     // once per position/draft. The literal /FUT$/ and /(CE|PE)$/ are
     // already cached at parse time; the dynamic prefix regex is the
     // only one that needs hoisting.
-    const prefixRe = new RegExp(`^${target}\\d`, 'i');
+    // Include MCX mini-variant prefixes so picking CRUDEOIL matches
+    // both CRUDEOIL26JUN... and CRUDEOILM26JUN... (same commodity,
+    // different lot size). Non-MCX roots resolve to a single-element
+    // list — regex behavior unchanged.
+    const prefixRe = new RegExp(`^(${_mcxPrefixesForRoot(target).join('|')})\\d`, 'i');
     /** @type {any[]} */
     const out = [];
     // Source filter — when a sim is active, work off the sim book only;
