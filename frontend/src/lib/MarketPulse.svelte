@@ -576,6 +576,18 @@
   // fetch resolved — prevents re-seeding from clobbering operator
   // toggles on later loadPulse polls.
   let _seededFromBrokers = false;
+  // Per-session record of every account we've ever observed in
+  // `availableAccounts`. Loaded from sessionStorage on mount so a tab
+  // refresh retains the "have we seen this account before?" state.
+  // Critical for late-arriving brokers (e.g. Dhan rebuilt via
+  // /admin/brokers AFTER the first Kite-only Pulse load): a previously
+  // unseen account is auto-unioned into BOTH positionsAccounts and
+  // holdingsAccounts the first time it surfaces, even when the latch
+  // (`_seededFromBrokers`) has already fired. Without this, Dhan
+  // accounts stay invisible until the operator manually opens each
+  // multi-select and toggles them on.
+  /** @type {Set<string>} */
+  let _seenAccounts = new Set();
 
   // Persist per-card account selections to sessionStorage on change so
   // the filters survive a tab refresh; cleared per session.
@@ -997,6 +1009,17 @@
         const cachedH = sessionStorage.getItem('mp.holdingsAccounts');
         if (cachedH) holdingsAccounts = JSON.parse(cachedH) || [];
       } catch (_) { holdingsAccounts = []; }
+      // Restore the "seen accounts" ledger so the auto-add-new-broker
+      // logic below knows which accounts were known last time. Without
+      // it, every tab refresh would treat every account as "new" and
+      // re-add everything (clobbering the operator's manual exclusions).
+      try {
+        const cachedSeen = sessionStorage.getItem('mp.seenAccounts');
+        if (cachedSeen) {
+          const parsed = JSON.parse(cachedSeen);
+          if (Array.isArray(parsed)) _seenAccounts = new Set(parsed.map(String));
+        }
+      } catch (_) { _seenAccounts = new Set(); }
     }
     // Restore the Show filter (sources + watchlists). The eager seed
     // at $state declaration acts as fallback when no persisted value
@@ -2070,50 +2093,121 @@
         for (const a of _knownBrokerAccounts) accts.add(String(a));
         const sorted = [...accts].sort();
         availableAccounts = sorted;
-        // First-load seed of BOTH per-card pickers. Each card's
-        // selection = union of (whatever's been seeded so far) +
-        // (newly-discovered accounts) — auto-extends to include
-        // broker accounts that fetchBrokerAccounts() returned AFTER
-        // the first loadPulse fired (e.g., empty-holdings Dhan /
-        // Groww accounts that wouldn't surface from positions /
-        // holdings rows). Operator toggles never get clobbered
-        // because we only ADD, never REMOVE, and we stop adding
-        // once a persisted state on either card has been restored.
-        if (sorted.length > 0 && !_seededFromBrokers) {
-          let restoredP = false;
-          let restoredH = false;
-          try {
-            const cP = sessionStorage.getItem('mp.positionsAccounts');
-            if (cP) {
-              const parsed = JSON.parse(cP);
-              if (Array.isArray(parsed) && parsed.length > 0) restoredP = true;
+        // Two-stage seeding:
+        //   (a) FIRST-LOAD seed (latched by `_seededFromBrokers`) — when
+        //       no persisted state exists in sessionStorage, populate
+        //       each picker with EVERY known account so positions /
+        //       holdings render immediately on a fresh session.
+        //   (b) LATE-ARRIVAL union (runs every poll) — accounts that
+        //       were NOT in `_seenAccounts` before but appear in `sorted`
+        //       now are unioned into BOTH pickers UNCONDITIONALLY. Fixes
+        //       the Dhan-not-visible bug: when an admin rebuilds
+        //       Connections to add Dhan after the operator's Pulse tab
+        //       is already running, the Dhan account code arrives in
+        //       `_knownBrokerAccounts` and `positions` rows but the
+        //       persisted positionsAccounts set doesn't include it — the
+        //       latch (a) would never re-seed. Stage (b) closes that gap
+        //       while still preserving operator manual exclusions on
+        //       previously-known accounts.
+        if (sorted.length > 0) {
+          // Stage (b): late-arrival accounts ALWAYS union in.
+          const newAccts = sorted.filter(a => !_seenAccounts.has(a));
+          if (newAccts.length > 0) {
+            // Skip stage (b) only on the very first sighting (when
+            // `_seenAccounts` is empty AND no persisted state exists) —
+            // stage (a) below handles that case with the same union.
+            const hasPersistedP = (() => {
+              try {
+                const cP = sessionStorage.getItem('mp.positionsAccounts');
+                if (cP) {
+                  const parsed = JSON.parse(cP);
+                  return Array.isArray(parsed) && parsed.length > 0;
+                }
+              } catch (_) {}
+              return false;
+            })();
+            const hasPersistedH = (() => {
+              try {
+                const cH = sessionStorage.getItem('mp.holdingsAccounts');
+                if (cH) {
+                  const parsed = JSON.parse(cH);
+                  return Array.isArray(parsed) && parsed.length > 0;
+                }
+              } catch (_) {}
+              return false;
+            })();
+            const seenAny = _seenAccounts.size > 0;
+            // Run the union when EITHER (i) we've seen accounts before
+            // (so this is a genuine late-arrival), OR (ii) there's
+            // persisted state (so the operator's session is mid-stream
+            // and a new account is joining).
+            if (seenAny || hasPersistedP || hasPersistedH) {
+              if (hasPersistedP || positionsAccounts.length > 0) {
+                const cur = new Set(positionsAccounts);
+                for (const a of newAccts) cur.add(a);
+                positionsAccounts = [...cur].sort();
+              }
+              if (hasPersistedH || holdingsAccounts.length > 0) {
+                const cur = new Set(holdingsAccounts);
+                for (const a of newAccts) cur.add(a);
+                holdingsAccounts = [...cur].sort();
+              }
             }
-            const cH = sessionStorage.getItem('mp.holdingsAccounts');
-            if (cH) {
-              const parsed = JSON.parse(cH);
-              if (Array.isArray(parsed) && parsed.length > 0) restoredH = true;
-            }
-          } catch (_) {}
-          if (!restoredP) {
-            const cur = new Set(positionsAccounts);
-            let changed = false;
-            for (const a of sorted) {
-              if (!cur.has(a)) { cur.add(a); changed = true; }
-            }
-            if (changed) positionsAccounts = [...cur].sort();
+            // Mark every account in `sorted` (incl. the new arrivals)
+            // as seen, and persist the ledger so it survives a tab
+            // refresh. Done BEFORE stage (a) so stage (a)'s ADD-all
+            // path doesn't trip on the same accounts as "new" later.
+            for (const a of sorted) _seenAccounts.add(a);
+            try {
+              sessionStorage.setItem(
+                'mp.seenAccounts', JSON.stringify([..._seenAccounts]));
+            } catch (_) {}
           }
-          if (!restoredH) {
-            const cur = new Set(holdingsAccounts);
-            let changed = false;
-            for (const a of sorted) {
-              if (!cur.has(a)) { cur.add(a); changed = true; }
+          // Stage (a): first-load seed. Behaviour preserved from the
+          // prior implementation — adds EVERY known account when no
+          // persisted state exists, then latches.
+          if (!_seededFromBrokers) {
+            let restoredP = false;
+            let restoredH = false;
+            try {
+              const cP = sessionStorage.getItem('mp.positionsAccounts');
+              if (cP) {
+                const parsed = JSON.parse(cP);
+                if (Array.isArray(parsed) && parsed.length > 0) restoredP = true;
+              }
+              const cH = sessionStorage.getItem('mp.holdingsAccounts');
+              if (cH) {
+                const parsed = JSON.parse(cH);
+                if (Array.isArray(parsed) && parsed.length > 0) restoredH = true;
+              }
+            } catch (_) {}
+            if (!restoredP) {
+              const cur = new Set(positionsAccounts);
+              let changed = false;
+              for (const a of sorted) {
+                if (!cur.has(a)) { cur.add(a); changed = true; }
+              }
+              if (changed) positionsAccounts = [...cur].sort();
             }
-            if (changed) holdingsAccounts = [...cur].sort();
+            if (!restoredH) {
+              const cur = new Set(holdingsAccounts);
+              let changed = false;
+              for (const a of sorted) {
+                if (!cur.has(a)) { cur.add(a); changed = true; }
+              }
+              if (changed) holdingsAccounts = [...cur].sort();
+            }
+            // Mark every account as seen so subsequent stage (b)
+            // iterations don't try to re-add them on later polls.
+            for (const a of sorted) _seenAccounts.add(a);
+            try {
+              sessionStorage.setItem(
+                'mp.seenAccounts', JSON.stringify([..._seenAccounts]));
+            } catch (_) {}
+            // Mark as seeded once the broker fetch has confirmed —
+            // subsequent loadPulse polls run stage (b) only.
+            if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
           }
-          // Mark as seeded once the broker fetch has confirmed —
-          // subsequent loadPulse polls won't try to re-seed either
-          // picker (persistence layer takes over).
-          if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
         }
       }
       const underlyingInfos = /** @type {Map<string, any>} */ (new Map());

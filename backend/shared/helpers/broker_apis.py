@@ -45,12 +45,45 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
 
     if {"average_price", "opening_quantity"}.issubset(df_holdings.columns):
         df_holdings["inv_val"] = df_holdings["average_price"] * df_holdings["opening_quantity"]
+    # Universal P&L recompute — operator's formula:
+    #   pnl       = (LTP   − avg)   × qty
+    #   day_change= (LTP   − close)        (per-share, then × qty for the val)
+    # Apply at the central chokepoint so every broker (Kite, Dhan, Groww)
+    # surfaces consistent numbers. Falls back to broker-reported pnl
+    # when last_price hasn't ticked yet (pre-open, broker glitch) so the
+    # column doesn't go blank during early-session warm-up.
+    if {"last_price", "average_price", "opening_quantity"}.issubset(df_holdings.columns):
+        _ltp_h = pd.to_numeric(df_holdings["last_price"], errors="coerce").fillna(0)
+        _avg_h = pd.to_numeric(df_holdings["average_price"], errors="coerce").fillna(0)
+        _qty_h = pd.to_numeric(df_holdings["opening_quantity"], errors="coerce").fillna(0)
+        _pnl_calc = (_ltp_h - _avg_h) * _qty_h
+        # Only overwrite when LTP + avg are both positive (a quoted, real
+        # position). For pre-open rows where LTP=0 the recompute would
+        # post a phantom −avg×qty loss; keep broker's pnl in that case.
+        _valid = (_ltp_h > 0) & (_avg_h > 0)
+        if "pnl" in df_holdings.columns:
+            df_holdings["pnl"] = _pnl_calc.where(_valid, df_holdings["pnl"])
+        else:
+            df_holdings["pnl"] = _pnl_calc.where(_valid, 0.0)
     if "pnl" in df_holdings.columns and "inv_val" in df_holdings.columns:
         df_holdings["cur_val"] = df_holdings["inv_val"] + df_holdings["pnl"]
         df_holdings["pnl_percentage"] = df_holdings["pnl"] / df_holdings["inv_val"] * 100
     if {"close_price", "average_price"}.issubset(df_holdings.columns):
         df_holdings["price_change"] = df_holdings["close_price"] - df_holdings["average_price"]
-    if {"day_change", "opening_quantity"}.issubset(df_holdings.columns):
+    # day_change_val = (LTP − close) × qty — recompute from LTP first
+    # (matches operator's spec). Broker-reported `day_change` (delta per
+    # share) is a fallback only when last_price is missing.
+    if {"last_price", "close_price", "opening_quantity"}.issubset(df_holdings.columns):
+        _ltp_h2 = pd.to_numeric(df_holdings["last_price"], errors="coerce").fillna(0)
+        _cls_h  = pd.to_numeric(df_holdings["close_price"], errors="coerce").fillna(0)
+        _qty_h2 = pd.to_numeric(df_holdings["opening_quantity"], errors="coerce").fillna(0)
+        _dcv_calc = (_ltp_h2 - _cls_h) * _qty_h2
+        _valid_d = (_ltp_h2 > 0) & (_cls_h > 0)
+        if "day_change_val" in df_holdings.columns:
+            df_holdings["day_change_val"] = _dcv_calc.where(_valid_d, df_holdings["day_change_val"])
+        else:
+            df_holdings["day_change_val"] = _dcv_calc.where(_valid_d, 0.0)
+    elif {"day_change", "opening_quantity"}.issubset(df_holdings.columns):
         df_holdings["day_change_val"] = df_holdings["day_change"] * df_holdings["opening_quantity"]
     if "authorised_date" in df_holdings.columns:
         df_holdings["authorised_date"] = pd.to_datetime(
@@ -95,51 +128,45 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
         return df_positions
 
     # ── P∆ (day change in P&L on positions) ─────────────────────────────
-    # Operator: "p delta change in profit/loss change from begin of the
-    # day, after open of the position, after close of the position".
-    # Legacy (last − close) × qty form only works for purely overnight
-    # legs; double-counts the (close − avg) gap on legs opened today and
-    # mis-attributes today's realised on closeouts.
+    # Operator-stated formula, applied universally across every broker
+    # adapter:
     #
-    # Generic split formula (derived from value-change + cash-flow
-    # accounting, broker-agnostic):
+    #   pnl            = (LTP − avg)   × qty           ← lifetime / unrealised
+    #   day_change_val = (LTP − close) × qty           ← today's change
     #
-    #     P∆_row = (last − close) × overnight_qty            ← MTM on held overnight
-    #            + last × (day_buy_qty − day_sell_qty)       ← MTM on intraday net qty
-    #            + (day_sell_value − day_buy_value)          ← realised cash today
+    # Falls back to the broker-reported value only when LTP / avg / close
+    # is zero or missing (pre-open warm-up, broker glitch) — keeps the
+    # column non-blank during early session while still letting our
+    # formula take over the moment a real quote lands.
     #
-    # Reduces correctly for every case:
-    #   • held overnight, no trades         → (last − close) × qty
-    #   • opened today (one side only)      → (last − avg) × qty
-    #   • closed today (covered overnight)  → realised on closeout
-    #   • round-trip in one session         → realised cash flow
-    #   • partially closed                  → mark on remainder + realised
-    #   • added more today                  → mark on overnight + paper on new
-    #
-    # Multiplier: applied to qty-shape fields only (raw lots → shares-
-    # equiv); `day_buy_value` / `day_sell_value` are already ₹ cash per
-    # Kite API spec and MUST NOT be rescaled (earlier patch did, inflating
-    # MCX legs ~100×). Falls back to legacy form when the adapter omits
-    # the split fields. P, unrealised, realised, pnl_percentage are left
-    # entirely on the broker's pass-through value to preserve lifetime
-    # cumulative semantics for the P chip.
+    # NOTE: an earlier revision used a "split" formula that combined
+    # overnight MTM + intraday MTM + realised cash flow to correctly
+    # attribute partial-closeout P&L. That gave numerically different
+    # values from (LTP − avg) × qty when a leg was partially closed
+    # today, which the operator reported as wrong. The simple formula
+    # above matches the operator's mental model ("entry price and
+    # current price difference is P&L; from yesterday's closing price
+    # and today's price is day P&L") and is now the source of truth
+    # across Kite, Dhan, and Groww.
     df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
-    _split_cols = ('overnight_quantity', 'day_buy_quantity',
-                   'day_sell_quantity', 'day_buy_value', 'day_sell_value')
-    if all(c in df_positions.columns for c in _split_cols):
-        _mult = (df_positions['multiplier'].fillna(1).replace(0, 1)
-                 if 'multiplier' in df_positions.columns
-                 else 1)
-        _oq  = df_positions['overnight_quantity'] * _mult
-        _dbq = df_positions['day_buy_quantity']   * _mult
-        _dsq = df_positions['day_sell_quantity']  * _mult
-        df_positions['day_change_val'] = (
-            (df_positions['last_price'] - df_positions['close_price']) * _oq
-            + df_positions['last_price'] * (_dbq - _dsq)
-            + (df_positions['day_sell_value'] - df_positions['day_buy_value'])
-        )
+    _ltp = pd.to_numeric(df_positions['last_price'],    errors='coerce').fillna(0)
+    _avg = pd.to_numeric(df_positions['average_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(df_positions['close_price'],   errors='coerce').fillna(0)
+    _qty = pd.to_numeric(df_positions['quantity'],      errors='coerce').fillna(0)
+    _pnl_calc = (_ltp - _avg) * _qty
+    _dcv_calc = (_ltp - _cls) * _qty
+    _pnl_valid = (_ltp > 0) & (_avg > 0)
+    _dcv_valid = (_ltp > 0) & (_cls > 0)
+    if 'pnl' in df_positions.columns:
+        df_positions['pnl'] = _pnl_calc.where(_pnl_valid, df_positions['pnl'])
     else:
-        df_positions['day_change_val'] = df_positions['day_change'] * df_positions['quantity']
+        df_positions['pnl'] = _pnl_calc.where(_pnl_valid, 0.0)
+    df_positions['day_change_val'] = _dcv_calc.where(
+        _dcv_valid,
+        df_positions.get('day_change_val', 0.0)
+        if 'day_change_val' in df_positions.columns
+        else 0.0,
+    )
     prev_val = (df_positions['close_price'] * df_positions['quantity']).abs()
     df_positions['day_change_percentage'] = (
         df_positions['day_change_val'] / prev_val.replace(0, pd.NA) * 100
