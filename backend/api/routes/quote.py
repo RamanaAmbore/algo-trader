@@ -36,9 +36,13 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
     instrument_token. Used by the watchlist add-item hook to subscribe the
     new symbol to the TickerManager immediately after DB insert.
 
-    Walks exchange → NFO → BFO → NSE → BSE in order, same as the sparkline
-    instrument-lookup. Returns None on any failure so callers can treat the
-    subscription as best-effort.
+    Consults the day-cached token map (_get_today_token_map) first so the
+    vast majority of calls return immediately without a broker.instruments()
+    HTTP round-trip. Only falls back to a live broker call when the day-cache
+    is cold (once per IST day, typically pre-warmed by batch_sparkline).
+
+    Walks exchange → NFO → BFO → NSE → BSE in order. Returns None on any
+    failure so callers can treat the subscription as best-effort.
     """
     try:
         from backend.shared.brokers.registry import get_sparkline_broker
@@ -50,6 +54,17 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
     exch = exchange.upper().strip()
     order = [exch] + [e for e in ("NFO", "BFO", "NSE", "BSE") if e != exch]
 
+    # Fast path: day-cached token map (built once per IST day by batch_sparkline).
+    try:
+        token_map = await asyncio.to_thread(_get_today_token_map, broker)
+        for ex in order:
+            tok = token_map.get((sym, ex))
+            if tok is not None:
+                return int(tok)
+    except Exception:
+        pass  # cache miss or broker unavailable — fall through to live walk
+
+    # Slow path: live broker.instruments() walk (cache was cold or empty).
     for ex in order:
         try:
             insts = await asyncio.to_thread(broker.instruments, ex) or []

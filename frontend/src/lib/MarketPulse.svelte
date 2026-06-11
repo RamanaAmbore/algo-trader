@@ -615,9 +615,22 @@
   // without importing a store subscription into every call-site. Updated
   // by a single $effect below so Svelte 5's reactivity chain stays intact.
   let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
+  let _liveLtpFlushTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  let _liveLtpPending = /** @type {Record<string, number>|null} */ (null);
   $effect(() => {
-    const unsub = liveLtp.subscribe(v => { _liveLtpSnap = v; });
-    return unsub;
+    const unsub = liveLtp.subscribe(v => {
+      _liveLtpPending = v;
+      if (_liveLtpFlushTimer) return;
+      _liveLtpFlushTimer = setTimeout(() => {
+        _liveLtpSnap = /** @type {Record<string, number>} */ (_liveLtpPending ?? {});
+        _liveLtpPending = null;
+        _liveLtpFlushTimer = null;
+      }, 50);  // 20Hz max — well below human perception, far below 90Hz tick rate
+    });
+    return () => {
+      unsub();
+      if (_liveLtpFlushTimer) { clearTimeout(_liveLtpFlushTimer); _liveLtpFlushTimer = null; }
+    };
   });
   let stopWS;
 
@@ -2751,6 +2764,11 @@
       row._prev_market_value = closeVal > 0
         ? closeVal * (Math.abs(row.qty_pos) + Math.abs(row.qty_hold))
         : 0;
+      // Pre-compute account colour once per row so cellStyle reads the
+      // cached value directly instead of re-running the djb2 hash on
+      // every ag-Grid cell paint (can fire 100s of times per second).
+      const _lead = leadAccount(row);
+      row._acctColor = _lead ? acctColor(_lead) : null;
     }
 
     // Sort: index groups first, then positions/holdings, watchlist,
@@ -3247,8 +3265,7 @@
       cellClass: 'ag-col-sym ag-col-fill mp-sym-acct',
       cellStyle: (p) => {
         if (p.data?._isTotal) return {};
-        const acct = leadAccount(p.data);
-        const color = acct ? acctColor(acct) : null;
+        const color = p.data?._acctColor ?? null;
         if (!color) return {};
         return {
           '--mp-sym-acct-color': color,
@@ -3425,8 +3442,7 @@
         cellClass: 'mp-acct-cell',
         cellStyle: (p) => {
           if (p.data?._isTotal) return {};
-          const acct = leadAccount(p.data);
-          const color = acct ? acctColor(acct) : null;
+          const color = p.data?._acctColor ?? null;
           if (!color) return {};
           return { color };
         },

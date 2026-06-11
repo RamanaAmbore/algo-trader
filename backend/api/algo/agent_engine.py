@@ -521,8 +521,10 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     subject    = f"Agent {agent.slug}"
     mode_tag   = '' if sim_mode else _agent_execution_mode_tag(agent)
     try:
-        _dispatch('alert', timestamp_display(), tg_body, email_html, subject,
-                  sim_mode=sim_mode, mode_tag=mode_tag)
+        await asyncio.to_thread(
+            _dispatch, 'alert', timestamp_display(), tg_body, email_html, subject,
+            sim_mode=sim_mode, mode_tag=mode_tag,
+        )
     except Exception as e:
         logger.error(f"Agent [{agent.slug}] rich alert send failed: {e}")
         return False
@@ -1302,6 +1304,11 @@ async def run_cycle(context: dict, broadcast_fn=None,
     mcx_open_flag = bool(base_ctx.get("mcx_open"))
     any_market_open = nse_open_flag or mcx_open_flag
 
+    # Hoist _v2_cfg() outside the per-agent loop — it reads global Settings
+    # rows and has no per-agent dependency. Avoids 15 redundant dict lookups
+    # per run_cycle tick.
+    cfg = _v2_cfg()
+
     for agent in agents:
         # Lifespan deadline — auto-complete `until_date` agents whose
         # expiry has passed. Done before any other gates so a stale
@@ -1372,7 +1379,6 @@ async def run_cycle(context: dict, broadcast_fn=None,
         # can't be confused in the logs or the group chat.
         sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
         _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
-        cfg = _v2_cfg()
         triggered = False
 
         # Baseline gate: skip every rate-based agent for the first N min

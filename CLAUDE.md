@@ -120,8 +120,6 @@ cap_in_dev:
 
 **Gate helper**: `is_enabled('<cap>')` in `backend/shared/helpers/utils.py` returns `True` on the `main` branch unconditionally, otherwise reads `cap_in_dev.<cap>`.
 
-**`is_prod_capable()`** is kept as a back-compat shim (True on prod or when any flag is truthy on dev). New code should prefer `is_enabled('<cap>')`.
-
 **Adding a new production capability**:
 1. Append `new_cap: True` under `cap_in_dev` in `backend_config.yaml`.
 2. Gate usage with `is_enabled('new_cap')`.

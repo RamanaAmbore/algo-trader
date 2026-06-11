@@ -577,11 +577,9 @@ async def _task_performance(state: dict) -> None:
                 # Batch into one exchange→instruments call per unique exchange.
                 _need_resolve = [
                     (sym, exch) for sym, exch in _book_pairs
-                    # A token is already subscribed if get_ltp() returns
-                    # non-None — proxy check without exposing _subscribed.
-                    # We use a simple "not in _token_to_sym by sym" proxy: if
-                    # we don't have a sym mapping we haven't subscribed it.
-                    if sym not in {v for v in _ticker._token_to_sym.values()}
+                    # O(1) check via has_sym() — avoids rebuilding the full
+                    # {v for v in _token_to_sym.values()} set on every cycle.
+                    if not _ticker.has_sym(sym)
                 ]
                 if _need_resolve:
                     for _sym, _exch in _need_resolve[:50]:  # cap 50 per cycle
@@ -989,10 +987,10 @@ async def _task_sparkline_warm(state: dict) -> None:
             import pandas as pd
             df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
             if not df_h.empty and "tradingsymbol" in df_h.columns:
-                exch_col = df_h.get("exchange") if hasattr(df_h, "get") else None
-                for _, row in df_h.iterrows():
-                    sym  = str(row.get("tradingsymbol") or "").upper().strip()
-                    exch = str(row.get("exchange") or "NSE").upper().strip()
+                _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
+                for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
+                    sym  = str(sym_raw or "").upper().strip()
+                    exch = str(exch_raw or "NSE").upper().strip()
                     if sym:
                         key = (sym, exch)
                         if key not in seen:
@@ -1008,9 +1006,10 @@ async def _task_sparkline_warm(state: dict) -> None:
             import pandas as pd
             df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
             if not df_p.empty and "tradingsymbol" in df_p.columns:
-                for _, row in df_p.iterrows():
-                    sym  = str(row.get("tradingsymbol") or "").upper().strip()
-                    exch = str(row.get("exchange") or "NFO").upper().strip()
+                _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
+                for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
+                    sym  = str(sym_raw or "").upper().strip()
+                    exch = str(exch_raw or "NFO").upper().strip()
                     if sym:
                         key = (sym, exch)
                         if key not in seen:

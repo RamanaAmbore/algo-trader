@@ -7,7 +7,7 @@
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, nowStamp, marketAwareInterval } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, visibleInterval } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
@@ -1277,7 +1277,7 @@
     void chainUnderlying; void chainExpiry; void showAddPanel;
     untrack(() => {
       if (chainQuotesPoll) {
-        clearInterval(chainQuotesPoll);
+        chainQuotesPoll();
         chainQuotesPoll = null;
       }
       if (!showAddPanel || !chainUnderlying || !chainExpiry) {
@@ -1291,11 +1291,11 @@
         chainQuotesKey = key;
       }
       _refreshChainQuotes();
-      chainQuotesPoll = setInterval(_refreshChainQuotes, 5000);
+      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 5000);
     });
   });
   onDestroy(() => {
-    if (chainQuotesPoll) clearInterval(chainQuotesPoll);
+    if (chainQuotesPoll) chainQuotesPoll();
   });
   const _fmtLtp = priceFmt;
 
@@ -3042,9 +3042,7 @@
      Per canonical picker rule: every field is `flex: 0 0 auto` so
      the cluster sits flush-left at natural widths and empty space
      trails on the right. */
-  /* Underlying picker row — Select + front-month chip side by side.
-     Chip mirrors ChartWorkspace's commodity-identity treatment so
-     "GOLDM [GOLDM26JUNFUT · 19 Jun]" reads the same on both pages. */
+  /* Underlying picker row — Select laid out flush-left at natural width. */
   .opt-und-row {
     display: flex;
     align-items: center;

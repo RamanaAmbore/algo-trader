@@ -701,13 +701,6 @@ export const sendPartnerEmail = (body) =>
 export const fetchEmailEvents = (n = 25) =>
   _get(`/admin/email-events?n=${n}`, { auth: true });
 
-/** POST /api/options/optimize-margin — generate margin-saving alternatives
- *  for one (account, underlying) combo. 30-min cache per (account,
- *  underlying, legs_fingerprint); force_refresh bypasses the cache.
- *  Response: see margin_optimizer.OptimizeResult.to_dict() shape. */
-export const optimizeMargin = (payload) =>
-  _post('/options/optimize-margin', payload, { auth: true });
-
 /** POST /api/options/strategy-analytics — multi-leg aggregate analytics. */
 export async function fetchStrategyAnalytics(legs, opts = {}) {
   return _post('/options/strategy-analytics',

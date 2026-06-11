@@ -148,6 +148,7 @@ class TickerManager:
         self._kws = None                          # KiteTicker instance
         self._tick_map: dict[int, float] = {}     # token → last_price
         self._token_to_sym: dict[int, str] = {}   # token → tradingsymbol (for SSE payload)
+        self._sym_to_token: dict[str, int] = {}   # tradingsymbol (upper) → token (for O(1) has_sym)
         self._lock = threading.Lock()
         self._subscribed: set[int] = set()        # tokens live on the socket
         self._pending: set[int] = set()           # tokens queued pre-connect
@@ -207,12 +208,25 @@ class TickerManager:
         Like subscribe() but also records the tradingsymbol for each token so
         the SSE tick payload can include `sym` without a reverse-lookup table
         on the client side.
+
+        Also maintains _sym_to_token (upper-cased sym → token) so has_sym()
+        can do an O(1) membership check instead of iterating _token_to_sym values.
         """
         pairs = [(int(t), sym) for t, sym in token_sym_pairs]
         with self._lock:
             for tok, sym in pairs:
                 self._token_to_sym[tok] = sym
+                self._sym_to_token[sym.upper()] = tok
         self.subscribe(tok for tok, _ in pairs)
+
+    def has_sym(self, sym: str) -> bool:
+        """Return True if `sym` (case-insensitive) is already subscribed.
+
+        O(1) lookup via the inverted _sym_to_token dict maintained by
+        subscribe_with_sym(). Lock-guarded for thread safety.
+        """
+        with self._lock:
+            return sym.upper() in self._sym_to_token
 
     def snapshot(self) -> dict[int, dict]:
         """
