@@ -395,11 +395,35 @@ class SparklineController(Controller):
         with _spark_lock:
             _evict_stale(today)
 
-        # Normalise symbol list and partition into past-cached vs. need-fetch.
+        # Normalise symbol list. Bare MCX commodity names ("CRUDEOIL",
+        # "GOLDM") + CDS currency names ("USDINR") aren't real Kite
+        # instruments — the tradable contract is the front-month future
+        # (CRUDEOIL26JUNFUT). The watchlist quotes endpoint already
+        # resolves these via `_resolve_mcx_commodity` /
+        # `_resolve_cds_currency`; the sparkline endpoint must do the
+        # same or the token-lookup misses, the symbol is silently
+        # dropped, and the operator sees an empty 5d sparkline column
+        # on pinned MCX/CDS rows even when the rest of the row data
+        # arrives via the watchlist REST poll.
+        from backend.api.routes.watchlist import (
+            _resolve_mcx_commodity,
+            _resolve_cds_currency,
+        )
         norm_syms: list[SparklineSymbol] = []
         for sym_obj in syms:
             sym  = sym_obj.tradingsymbol.upper().strip()
             exch = (sym_obj.exchange or "NSE").upper().strip()
+            # Bare-commodity heuristic (matches `_build_quote_key` in
+            # watchlist.py): MCX/CDS + all-alpha + ≤ 12 chars. Real
+            # futures ("CRUDEOIL26JUNFUT") carry digits → pass through.
+            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_mcx_commodity(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_cds_currency(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
             norm_syms.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
 
         past_result: dict[str, list[float]] = {}

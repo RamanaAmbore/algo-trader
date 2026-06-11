@@ -3355,24 +3355,24 @@
       _openCol,
       _volCol,
       _oiCol,
-    ]);
+    ]);  // ← left grid (Pinned / Watchlist / Movers) — no Account col
 
     // ─── Right grid: Positions / Holdings ────────────────────────
-    // Column order mirrors PerformancePage's positions + holdings grids
-    // (operator request: "keep the columns of performance page positions
-    // and holdings in positions and holdings grids of pulse"):
+    // Column order — action-first: numbers leading, Account trailing.
+    // Operator: "i am more interested in ltp, avg, day p&l, p&l, etc
+    // for taking action."
     //
-    //   Account → Symbol → Sparkline → LTP → Prev Close → Avg →
-    //   Day P&L → Day % → P&L → P&L % → Qty → Invested → Value
+    //   Symbol → Sparkline → LTP → Prev Close → Avg → Day P&L →
+    //   Day % → P&L → P&L % → Qty → Invested → Value → Open → Vol →
+    //   OI → Account (trailing)
     //
-    // Account pinned left so it lands in the first column the operator's
-    // eye reads, same as PerformancePage. Sparkline + Day P&L % +
-    // Open / Vol / OI are Pulse-specific keep-overs (the operator can
-    // hide them via the ag-Grid column tool panel).
-    const _acctColLeft = {
+    // The trailing Account column keeps the lead-account-or-"+N"
+    // valueGetter + per-account tint so colour-spotting still works,
+    // but it sits at the end of the row where it doesn't compete with
+    // the action-relevant numbers.
+    const _acctColTrailing = {
       field: '_acct_display', headerName: 'Account', colId: 'account',
       width: 86, minWidth: 70, maxWidth: 110,
-      pinned: 'left',
       cellClass: 'mp-acct-cell',
       cellStyle: (p) => {
         if (p.data?._isTotal) return {};
@@ -3391,7 +3391,6 @@
       },
     };
     const rightColDefs = /** @type {any[]} */ ([
-      _acctColLeft,
       _symColRight,
       _sparkCol,
       _ltpCol,
@@ -3472,6 +3471,7 @@
       _openCol,
       _volCol,
       _oiCol,
+      _acctColTrailing,
     ]);
 
     // Factory: every per-bucket grid shares the same shape (height

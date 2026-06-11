@@ -634,6 +634,48 @@ async def _lookup_mcx_future(underlying: str,
 # breadcrumb for anyone grep'ing the old name.
 
 
+# Per-underlying last-known-spot cache. 24 h TTL so a transient broker
+# failure (rate limit, network blip, instruments cache cold) doesn't
+# poison the payoff chart by falling through to the median-strike value
+# of the operator's option book. Tuple shape:
+#   (expires_at_monotonic, spot_px, source, prev_close, anchor_contract)
+# Source carries 'cached' when read back so the UI knows the data is
+# stale-but-real (vs 'fallback' which means synthetic strike anchor).
+_LAST_KNOWN_SPOT: dict[str, tuple[float, float, str, Optional[float], Optional[str]]] = {}
+_LAST_KNOWN_SPOT_LOCK = _threading.Lock()
+_LAST_KNOWN_SPOT_TTL = 86400  # 24 h
+
+
+def _spot_cache_get(underlying: str) -> tuple[float, str, Optional[float], Optional[str]] | None:
+    """Return (spot, 'cached', prev_close, anchor) if a non-expired cache
+    entry exists for the underlying, else None. Always relabels the
+    source as 'cached' so the UI distinguishes stale-but-real data
+    from a fresh broker fetch."""
+    with _LAST_KNOWN_SPOT_LOCK:
+        entry = _LAST_KNOWN_SPOT.get(underlying)
+        if entry is None:
+            return None
+        expires_at, px, _orig_src, prev_close, anchor = entry
+        if time.monotonic() >= expires_at:
+            _LAST_KNOWN_SPOT.pop(underlying, None)
+            return None
+        return (px, "cached", prev_close, anchor)
+
+
+def _spot_cache_put(underlying: str, px: float, src: str,
+                     prev_close: Optional[float], anchor: Optional[str]) -> None:
+    """Write a fresh broker-sourced spot into the cache. Never called
+    with 'fallback' source — only real broker data gets cached, so
+    a cache read can never reconstruct the median-strike anchor."""
+    if px <= 0 or src in ("fallback", "cached"):
+        return
+    with _LAST_KNOWN_SPOT_LOCK:
+        _LAST_KNOWN_SPOT[underlying] = (
+            time.monotonic() + _LAST_KNOWN_SPOT_TTL,
+            float(px), src, prev_close, anchor,
+        )
+
+
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
                         expiry_hint: Optional[date] = None,
@@ -689,7 +731,9 @@ async def _resolve_spot(underlying: str, override: Optional[float],
             quote_dict = resp.get(key) or {}
             px, src = _ltp_from_quote(quote_dict)
             if px is not None:
-                return (px, src, _prev_close_from_quote(quote_dict), None)
+                prev = _prev_close_from_quote(quote_dict)
+                _spot_cache_put(underlying, px, src, prev, None)
+                return (px, src, prev, None)
         except Exception as e:
             logger.warning(f"options spot quote for {underlying} failed: {e}")
 
@@ -724,8 +768,9 @@ async def _resolve_spot(underlying: str, override: Optional[float],
                 quote_dict = resp.get(full_key) or {}
                 px, _src = _ltp_from_quote(quote_dict)
                 if px is not None:
-                    return (px, "futures", _prev_close_from_quote(quote_dict),
-                            resolved_sym)
+                    prev = _prev_close_from_quote(quote_dict)
+                    _spot_cache_put(underlying, px, "futures", prev, resolved_sym)
+                    return (px, "futures", prev, resolved_sym)
             except Exception as e:
                 logger.warning(
                     f"options MCX spot for {underlying} "
@@ -753,9 +798,10 @@ async def _resolve_spot(underlying: str, override: Optional[float],
                         # leg of the quote produced the value — the UI
                         # just needs to know the spot came from the
                         # futures proxy, not the index.
-                        return (px, "futures",
-                                _prev_close_from_quote(quote_dict),
-                                fut_sym if is_commodity else None)
+                        prev = _prev_close_from_quote(quote_dict)
+                        anchor = fut_sym if is_commodity else None
+                        _spot_cache_put(underlying, px, "futures", prev, anchor)
+                        return (px, "futures", prev, anchor)
                 except Exception as e:
                     logger.warning(
                         f"options futures-spot quote for {underlying} "
@@ -764,6 +810,17 @@ async def _resolve_spot(underlying: str, override: Optional[float],
             # Walk to the first day of the following month so the YY
             # rolls correctly across year boundaries.
             cursor = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+
+    # Last-known-spot cache — broker-data succeeded earlier in the
+    # session, then a later request lost the futures lookup (rate
+    # limit / cache cold / Kite blip). The cached value is the most
+    # recent real broker reading for this underlying, fresh within
+    # 24 h. Operator-preferred to the median-strike synthetic, which
+    # paints a misleading 9000 spot for a CRUDEOIL book whose actual
+    # underlying is ~7000.
+    cached = _spot_cache_get(underlying)
+    if cached is not None:
+        return cached  # (px, "cached", prev_close, anchor)
 
     if fallback is not None and fallback > 0:
         # Last resort: use the option's strike as a degenerate spot. The

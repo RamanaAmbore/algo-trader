@@ -1217,12 +1217,8 @@
       // funds-grid behaviour.
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
-        // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
-        // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92, pinned: 'left',
-          cellClass: 'ag-col-fill' },
+        // Action-first ordering: numeric figures lead, Account trails so the
+        // operator's eye lands on cash / margin numbers first (per /pulse rule).
         { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
@@ -1239,6 +1235,8 @@
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
           valueFormatter: _agAggFmt },
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1256,12 +1254,7 @@
       // amber-accent styling — mirrors the Funds grid pattern.
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
-        // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
-        // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92, pinned: 'left',
-          cellClass: 'ag-col-fill' },
+        // Action-first ordering: util/margin figures lead, Account trails.
         { field: 'used', headerName: 'Used Margin', minWidth: 90, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
@@ -1285,6 +1278,8 @@
             return `ag-right-aligned-cell ${cls}`;
           },
           valueFormatter: _agUtilFmt },
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1352,18 +1347,15 @@
       ..._baseGridOpts,
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
-        // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
-        // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92, pinned: 'left',
-          cellClass: 'ag-col-fill' },
+        // Action-first ordering: P&L figures lead, Account trails.
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
         { field: 'pnl', headerName: 'P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1379,12 +1371,7 @@
       ..._baseGridOpts,
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Account codes are short (ZG0790 / ZJ6294 / TOTAL — 6 chars).
-        // 32 px (≈30 % narrower than the previous 46 px tightest fit) per operator request
-        // + 4 px cell padding. Operator preferred a narrower column even at the cost of slight truncation on long codes; ag-Grid's overflow ellipsis kicks in
-        // the earlier 58 px so numeric columns get more flex room.
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92, pinned: 'left',
-          cellClass: 'ag-col-fill' },
+        // Action-first ordering: P&L + value figures lead, Account trails.
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
@@ -1394,6 +1381,8 @@
         { field: 'cur_val', headerName: 'Value', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell', valueFormatter: _agAggFmt },
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
