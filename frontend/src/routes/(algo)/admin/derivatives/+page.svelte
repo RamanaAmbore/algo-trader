@@ -3057,10 +3057,11 @@
   .opt-picker {
     display: flex;
     flex-wrap: nowrap;
-    /* Operator: "the space between account and underlying is not
-       removed". Inter-field gap reduced to 1px so the fields read
-       as one tight strip with just a hairline divider. */
-    gap: 1px;
+    /* Operator: "leave gap between account, underlying, expiry and
+       chip". Re-spaced from the prior 1 px hairline strip back to
+       a comfortable inter-field gap so each picker reads as its own
+       control rather than blending into the next. */
+    gap: 0.6rem;
     align-items: flex-end;
   }
   /* AccountMultiSelect wraps MultiSelect in an extra `.ams` div with
