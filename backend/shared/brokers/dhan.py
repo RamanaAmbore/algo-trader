@@ -125,7 +125,13 @@ def _load_dhan_instruments() -> None:
             kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(seg_raw)
             if not kite_exch:
                 continue
-            ts = parts[col["SEM_TRADING_SYMBOL"]].strip()
+            # Normalise to Kite-style canonical form (no dashes / spaces)
+            # so security_id lookup works for operators submitting Kite-
+            # shape symbols. Dhan publishes some MCX rows with embedded
+            # dashes (e.g. "CRUDEOIL-26JUL...") which would never match
+            # the Kite "CRUDEOIL26JUL..." that the route layer passes.
+            ts_raw = parts[col["SEM_TRADING_SYMBOL"]].strip()
+            ts = ts_raw.replace("-", "").replace(" ", "").strip()
             sid = parts[col["SEM_SMST_SECURITY_ID"]].strip()
             if not ts or not sid:
                 continue
@@ -782,8 +788,11 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         else:
             day_change_pct = float(day_change_pct_raw)
 
+        # Strip Dhan-style dash/space separators (see _normalise_positions)
+        # so the tradingsymbol is consistent across all broker adapters.
+        _raw_ts_h = str(h.get("tradingSymbol") or h.get("symbol") or "")
         out.append({
-            "tradingsymbol":   h.get("tradingSymbol")  or h.get("symbol")   or "",
+            "tradingsymbol":   _raw_ts_h.replace("-", "").replace(" ", "").strip(),
             "exchange":        h.get("exchange")       or "NSE",
             "instrument_token": inst_tok,
             "isin":             h.get("isin"),
@@ -816,8 +825,16 @@ def _normalise_positions(resp: Any) -> dict:
             inst_tok = int(p.get("securityId") or 0)
         except (TypeError, ValueError):
             inst_tok = 0
+        # Dhan's tradingSymbol can carry trailing dashes / spaces (e.g.
+        # `CRUDEOIL-` for the MCX synthetic spot, or `CRUDEOIL-26JUL...`
+        # with dash separator). Normalise to the Kite-style canonical
+        # form (no dashes, no spaces) so the frontend root-extraction
+        # regex + the underlying picker dedupe see one consistent
+        # symbol shape across all broker adapters.
+        raw_ts = str(p.get("tradingSymbol") or "")
+        ts = raw_ts.replace("-", "").replace(" ", "").strip()
         net.append({
-            "tradingsymbol":   p.get("tradingSymbol") or "",
+            "tradingsymbol":   ts,
             "exchange":        p.get("exchange")     or "NFO",
             "instrument_token": inst_tok,
             "product":         {"INTRADAY": "MIS",
@@ -838,7 +855,15 @@ def _normalise_positions(resp: Any) -> dict:
             "day_sell_value":     float(p.get("daySellValue", 0) or 0)
                                   or (float(p.get("daySellAvg", 0) or 0)
                                       * int(p.get("daySellQty", 0) or 0)),
-            "multiplier":      int(p.get("multiplier", 1) or 1),
+            # NOTE: deliberately set to 1, not Dhan's `multiplier` field.
+            # Dhan's API returns `netQty` and `dayBuy/SellQty` already in
+            # CONTRACTS (not lots). Kite's `multiplier` semantics expect
+            # qty in LOTS and use the multiplier to convert to contracts.
+            # If we pass Dhan's multiplier through, the day_change_val
+            # formula in broker_apis.py multiplies a CONTRACTS qty by the
+            # lot-size multiplier → 100× over-statement (operator saw
+            # CRUDEOIL day P&L of ₹-72k when actual was ₹-720).
+            "multiplier":      1,
             "close_price":     float(p.get("previousClose",
                                            p.get("closePrice", 0)) or 0),
             "average_price":   float(p.get("netAvgPrice",  0) or 0),
@@ -900,9 +925,13 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
 def _normalise_orders(resp: Any) -> list[dict]:
     out: list[dict] = []
     for o in _unwrap(resp):
+        # Strip dash/space separators (same pattern as
+        # _normalise_positions) so orders + positions display under one
+        # canonical tradingsymbol shape.
+        _raw_ts_o = str(o.get("tradingSymbol") or "")
         out.append({
             "order_id":         str(o.get("orderId") or ""),
-            "tradingsymbol":    o.get("tradingSymbol") or "",
+            "tradingsymbol":    _raw_ts_o.replace("-", "").replace(" ", "").strip(),
             "exchange":         o.get("exchange") or "",
             "status":           (o.get("orderStatus") or "").upper(),
             "transaction_type": o.get("transactionType") or "BUY",
@@ -928,10 +957,11 @@ def _normalise_orders(resp: Any) -> list[dict]:
 def _normalise_trades(resp: Any) -> list[dict]:
     out: list[dict] = []
     for t in _unwrap(resp):
+        _raw_ts_t = str(t.get("tradingSymbol") or "")
         out.append({
             "trade_id":         str(t.get("tradeId")   or ""),
             "order_id":         str(t.get("orderId")   or ""),
-            "tradingsymbol":    t.get("tradingSymbol") or "",
+            "tradingsymbol":    _raw_ts_t.replace("-", "").replace(" ", "").strip(),
             "exchange":         t.get("exchange")      or "",
             "transaction_type": t.get("transactionType") or "BUY",
             "quantity":         int(t.get("tradedQuantity", 0) or 0),
