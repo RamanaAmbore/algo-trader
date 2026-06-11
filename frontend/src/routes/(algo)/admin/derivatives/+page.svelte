@@ -2909,12 +2909,8 @@
             {@const _optClass = _decomp.optType === 'CE' ? 'sym-ce'
                               : _decomp.optType === 'PE' ? 'sym-pe'
                               : ''}
-            {@const _dpnlVal = Number(c.day_change_val ?? 0)}
-            {@const _dpnlClass = _dpnlVal > 0 ? 'cand-day-pnl-up'
-                              : _dpnlVal < 0 ? 'cand-day-pnl-down'
-                              : 'cand-day-pnl-flat'}
             {@const _acctColor = c.account ? acctColor(c.account) : null}
-            <div class="cand-row cand-row-{dir} {_dpnlClass}"
+            <div class="cand-row cand-row-{dir}"
                  style={_acctColor ? `--cand-acct-color: ${_acctColor};` : ''}
                  class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
@@ -4760,16 +4756,15 @@
   :global(.cand-sym .sym-main.sym-ce) { color: #4ade80; }
   :global(.cand-sym .sym-main.sym-pe) { color: #f87171; }
   /* SINGLE vertical right border on the symbol cell, encoding
-     TODAY's P&L direction. 2 px wide, flush against the right edge
-     (right: 0) so it reads as a clean cell border. Green when
-     day_change_val > 0, red < 0, slate = 0. Same palette Pulse uses
-     for its day-pnl mini-bar. Applies in every tab the cand-row
-     renders in (legs / exp close — and on the optimize tab the
-     cand-row treatment doesn't apply, the alternatives panel has its
-     own styling). */
-  .cand-row.cand-day-pnl-up   .cand-sym-acct::after,
-  .cand-row.cand-day-pnl-down .cand-sym-acct::after,
-  .cand-row.cand-day-pnl-flat .cand-sym-acct::after {
+     POSITION DIRECTION (long vs short). 2 px wide, flush against the
+     right edge so it reads as a clean cell-edge border. Green when
+     qty > 0 (long), red when qty < 0 (short), NO border when qty = 0
+     (flat) — same idiom Pulse Positions uses. Operator: "I want the
+     gray border to go away" — flat rows now render with no right
+     border at all. Applies in every tab the cand-row renders in
+     (legs / exp close — the optimize tab has its own chip styling). */
+  .cand-row.cand-row-long  .cand-sym-acct::after,
+  .cand-row.cand-row-short .cand-sym-acct::after {
     content: '';
     position: absolute;
     right: 0;
@@ -4778,9 +4773,8 @@
     width: 2px;
     pointer-events: none;
   }
-  .cand-row.cand-day-pnl-up   .cand-sym-acct::after { background: rgba(74, 222, 128, 0.85); }
-  .cand-row.cand-day-pnl-down .cand-sym-acct::after { background: rgba(248, 113, 113, 0.85); }
-  .cand-row.cand-day-pnl-flat .cand-sym-acct::after { background: rgba(148, 163, 184, 0.5); }
+  .cand-row.cand-row-long  .cand-sym-acct::after { background: rgba(74, 222, 128, 0.85); }
+  .cand-row.cand-row-short .cand-sym-acct::after { background: rgba(248, 113, 113, 0.85); }
 
   .cand-row input[type="checkbox"] {
     accent-color: #fbbf24;

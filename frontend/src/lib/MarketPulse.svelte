@@ -3202,19 +3202,13 @@
       else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
       else classes.push('row-hold-flat');
     }
-    // Day P&L indicator — Positions + Holdings carry today-only profit
-    // information that's distinct from cumulative P&L. Surface it as
-    // a second mini-bar inside the symbol cell, painted JUST BEFORE
-    // the right inset border. Same green/red/slate palette as the
-    // cumulative tint, so the operator can compare "lifetime vs today"
-    // direction at a glance without reading the Day P&L column.
-    if (s.p || s.h) {
-      const dpnl = Number(r.day_pnl);
-      if (Number.isFinite(dpnl) && dpnl > 0) classes.push('day-pnl-up');
-      else if (Number.isFinite(dpnl) && dpnl < 0) classes.push('day-pnl-down');
-      else classes.push('day-pnl-flat');
-    }
-    else if (s.w) classes.push('row-watch');
+    // Day-P&L indicator deprecated — the symbol-cell right border now
+    // encodes POSITION direction (pos-long/pos-short) or HOLDING
+    // direction (row-hold-up/-down) instead of today's P&L sign.
+    // Operator preferred the position-direction encoding so the cell
+    // border tells "am I long or short?" at a glance, without grey
+    // for flat rows. See app.css :: ".ag-row.pos-long .ag-col-sym".
+    if (s.w && !s.p && !s.h) classes.push('row-watch');
     else if (s.u) classes.push('row-und');
     return classes.join(' ');
   }

@@ -338,30 +338,34 @@
 .ag-theme-algo .ag-row.row-pos .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
 }
-/* Day P&L indicator bar — SINGLE vertical right border on the
-   symbol cell. Encodes TODAY's profit/loss direction (independent of
-   the cumulative-P&L direction tinted on the cell BACKGROUND). Pushed
-   by MarketPulse.getRowClass for every Positions + Holdings row.
-     day-pnl-up    → green   (operator made money today)
-     day-pnl-down  → red     (lost money today)
-     day-pnl-flat  → slate   (zero / unknown — neutral indicator)
+/* Right-border indicator on symbol cells — encodes POSITION DIRECTION
+   (long vs short) on Positions, or HOLDING DIRECTION (up vs down P&L)
+   on Holdings. Single 2 px-wide vertical line flush against the cell's
+   right edge so it reads as a clean cell-edge border.
 
-   Position: `right: 0` flush against the cell's right edge so it
-   reads as a clean cell-edge border (matches the same treatment
-   the Legs grid on /admin/derivatives uses). Previously this was
-   `right: 6 px` (interior stripe) to avoid merging with a now-
-   removed cumulative-tint border at the right edge — that border
-   was dropped in the Pulse-cell simplification pass, leaving the
-   mini-bar floating 6 px inside the cell, which the operator
-   wanted re-anchored to the edge. */
-.ag-theme-algo .ag-row.day-pnl-up .ag-col-sym,
-.ag-theme-algo .ag-row.day-pnl-down .ag-col-sym,
-.ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym {
+     pos-long      → GREEN  (long position — qty > 0)
+     pos-short     → RED    (short position — qty < 0)
+     row-hold-up   → GREEN  (holding P&L > 0)
+     row-hold-down → RED    (holding P&L < 0)
+     flat (qty 0 / P&L 0) → no border (let the cell read clean)
+
+   Operator: "I want the gray border to go away and red or green
+   right border based on short or long position or holding. The
+   border should be at the fag end of the cell on right side."
+
+   No slate / grey case — flat rows don't get a border, so the cell
+   reads completely clean when the operator has no directional
+   exposure. */
+.ag-theme-algo .ag-row.pos-long .ag-col-sym,
+.ag-theme-algo .ag-row.pos-short .ag-col-sym,
+.ag-theme-algo .ag-row.row-hold-up .ag-col-sym,
+.ag-theme-algo .ag-row.row-hold-down .ag-col-sym {
   position: relative;
 }
-.ag-theme-algo .ag-row.day-pnl-up .ag-col-sym::after,
-.ag-theme-algo .ag-row.day-pnl-down .ag-col-sym::after,
-.ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after {
+.ag-theme-algo .ag-row.pos-long .ag-col-sym::after,
+.ag-theme-algo .ag-row.pos-short .ag-col-sym::after,
+.ag-theme-algo .ag-row.row-hold-up .ag-col-sym::after,
+.ag-theme-algo .ag-row.row-hold-down .ag-col-sym::after {
   content: '';
   position: absolute;
   right: 0;
@@ -370,9 +374,14 @@
   width: 2px;
   pointer-events: none;
 }
-.ag-theme-algo .ag-row.day-pnl-up .ag-col-sym::after   { background: rgba(74, 222, 128, 0.85); }
-.ag-theme-algo .ag-row.day-pnl-down .ag-col-sym::after { background: rgba(248, 113, 113, 0.85); }
-.ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after { background: rgba(148, 163, 184, 0.5); }
+.ag-theme-algo .ag-row.pos-long .ag-col-sym::after,
+.ag-theme-algo .ag-row.row-hold-up .ag-col-sym::after {
+  background: rgba(74, 222, 128, 0.85);
+}
+.ag-theme-algo .ag-row.pos-short .ag-col-sym::after,
+.ag-theme-algo .ag-row.row-hold-down .ag-col-sym::after {
+  background: rgba(248, 113, 113, 0.85);
+}
 
 /* Directional cell colour classes — used across every algo grid (Pulse,
    Performance, Legs / Derivatives, Dashboard, Simulator, Replay) to
