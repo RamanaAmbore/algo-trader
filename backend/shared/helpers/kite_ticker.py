@@ -174,12 +174,17 @@ class TickerManager:
         handles drops; we only ever call connect() once.
         """
         if self._started:
+            logger.info(f"KiteTicker: start() called but already _started=True — skipping (account={self._current_account or '?'})")
             return
+        logger.info(f"KiteTicker: start() entered (account={account or '?'}, prior_started={self._started})")
         self._started = True
         self._current_account = account or self._current_account
         try:
+            logger.info("KiteTicker: importing kiteconnect.KiteTicker ...")
             from kiteconnect import KiteTicker
+            logger.info("KiteTicker: constructing KiteTicker(api_key, access_token) ...")
             self._kws = KiteTicker(api_key, access_token)
+            logger.info("KiteTicker: installing callbacks ...")
             self._kws.on_connect   = self._on_connect
             self._kws.on_ticks     = self._on_ticks
             self._kws.on_close     = self._on_close
@@ -187,10 +192,11 @@ class TickerManager:
             self._kws.on_reconnect = self._on_reconnect
             # threaded=True runs Twisted's reactor in a daemon thread so
             # the asyncio event loop is never blocked.
+            logger.info("KiteTicker: about to call kws.connect(threaded=True) ...")
             self._kws.connect(threaded=True)
-            logger.info(f"KiteTicker: connect() initiated (account={self._current_account or '?'})")
-        except Exception:
-            logger.exception("KiteTicker: connect() failed — ticker disabled")
+            logger.info(f"KiteTicker: connect() returned — initiated (account={self._current_account or '?'})")
+        except Exception as e:
+            logger.exception(f"KiteTicker: connect() failed — ticker disabled · {type(e).__name__}: {e}")
             self._started = False
 
     @property
