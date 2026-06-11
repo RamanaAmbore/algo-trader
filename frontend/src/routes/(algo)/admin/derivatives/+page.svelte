@@ -2775,7 +2775,7 @@
                   aria-selected={legsTab === 'expiry'}
                   title="Positions identified for close before expiry day"
                   onclick={() => legsTab = 'expiry'}>
-            Close
+            Exp close
             {#if expiryCloseTotal > 0}
               <span class="legs-tab-count legs-tab-count-alert">{expiryCloseTotal}</span>
             {/if}
@@ -2835,7 +2835,7 @@
             <span class="num">Avg</span>
             <span class="num"
                   title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip.">
-              Day P&amp;L
+              P&amp;L
             </span>
             <span class="num"
                   title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
@@ -3006,10 +3006,10 @@
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
-              <span class="num cand-pnl {pnl == null ? '' : pnl >= 0 ? 'cell-pos' : 'cell-neg'}">
+              <span class="num cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
-              <span class="num cand-pnl {Number(c.day_change_val ?? 0) === 0 ? '' : Number(c.day_change_val ?? 0) > 0 ? 'cell-pos' : 'cell-neg'}">
+              <span class="num cand-pnl {Number(c.day_change_val ?? 0) > 0 ? 'cell-pos' : Number(c.day_change_val ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
                 {Number(c.day_change_val ?? 0) === 0 ? '—' : aggCompact(Number(c.day_change_val ?? 0))}
               </span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
@@ -3034,11 +3034,11 @@
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
-              <span class="num cand-pnl {_totalPnl >= 0 ? 'cell-pos' : 'cell-neg'}"
-                    title="Σ Day P&L across every visible row = strip's P chip for these accounts">
+              <span class="num cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="Σ P&L across every visible row = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
               </span>
-              <span class="num cand-pnl {_totalDcv >= 0 ? 'cell-pos' : 'cell-neg'}"
+              <span class="num cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Day P&L Δ across every visible row = strip's P∆ chip for these accounts">
                 {aggCompact(_totalDcv)}
               </span>
@@ -4724,9 +4724,10 @@
     font-weight: 700;
   }
   /* Background tint for P&L cells in the Candidates grid (colour comes
-     from the global cell-pos / cell-neg rules in MarketPulse). */
-  :global(.cand-pnl.cell-pos) { background-color: rgba(74,222,128,0.10); }
-  :global(.cand-pnl.cell-neg) { background-color: rgba(248,113,113,0.10); }
+     from the global cell-pos / cell-neg / cell-flat rules in MarketPulse). */
+  :global(.cand-pnl.cell-pos)  { background-color: rgba(74,222,128,0.10); }
+  :global(.cand-pnl.cell-neg)  { background-color: rgba(248,113,113,0.10); }
+  :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.08); }
 
   .cand-row input[type="checkbox"] {
     accent-color: #fbbf24;
