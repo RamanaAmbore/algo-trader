@@ -133,13 +133,19 @@ export function decomposeSymbol(sym) {
 
 
 /**
- * Compose the display month token. Mirrors the platform convention:
- *   Monthly contracts → "YYMONDD"  (e.g. "26JUN26") when the instruments
- *                       cache supplies an expiry date for the symbol;
- *                       falls back to "YYMON" (e.g. "26JUN") when the
- *                       cache is cold or the symbol isn't in it.
- *   Weekly contracts  → "YYMONDD"  (e.g. "25APR24") — the day is already
- *                       encoded in the tradingsymbol, no lookup needed.
+ * Compose the display month token in DD-Mon-YY order (the convention
+ * TastyTrade / IBKR / Sensibull use):
+ *
+ *   Monthly + expiry known  → "DDMONYY"  (e.g. "16JUN26")
+ *   Monthly + cold cache    → "MONYY"    (e.g. "JUN26")  — drop day
+ *   Weekly                  → "DDMONYY"  (e.g. "24APR25") rebuilt from monthLabel
+ *
+ * Why DD-Mon-YY (not the earlier YY-Mon-DD): with YY-Mon-DD the year
+ * suffix and the day suffix can collide on dates where DD == YY (e.g.
+ * GOLDM26JUN26 — year 26, June, day 26). Operator can't tell at a glance
+ * which "26" is which. DD-Mon-YY removes the ambiguity by always
+ * placing the year LAST, matching how every Indian options broker
+ * formats expiry dates outside the raw tradingsymbol.
  *
  * Pure helper — accepts the decomposed shape and a YYYY-MM-DD expiry
  * hint (e.g. from getInstrument(sym).x). Lookup happens at the caller.
@@ -150,23 +156,29 @@ export function decomposeSymbol(sym) {
  */
 export function composeMonthToken(d, expiryYmd) {
   if (!d?.month) return '';
-  // Weekly token (e.g. "25624" raw → "25APR24" display) already has the
-  // day baked into the symbol — strip spaces from monthLabel for the
-  // compact display, no cache lookup needed.
+  // Weekly token (e.g. "25624" raw → label "25 APR 24") already has the
+  // day baked into the symbol — split the YY-Mon-DD label and rebuild
+  // as DD-Mon-YY. No cache lookup needed.
   const isMonthly5 = d.month.length === 5 && /^\d{2}[A-Z]{3}$/.test(d.month);
   if (!isMonthly5) {
+    const parts = (d.monthLabel || '').split(/\s+/);  // ["25","APR","24"]
+    if (parts.length === 3) {
+      return `${parts[2]}${parts[1]}${parts[0]}`;  // "24APR25"
+    }
     return (d.monthLabel || d.month).replace(/\s+/g, '');
   }
-  // Monthly form: append DD from the expiry hint when supplied. The
-  // tradingsymbol itself omits the day for monthlies (e.g.
-  // "NIFTY26JUN22000CE" doesn't tell you it expires on 26-Jun), so we
-  // look it up via the instruments cache at the call site and pass it
-  // in. Falls back to bare "YYMON" when the cache is cold.
+  // Monthly form: d.month = "YYMon" (e.g. "26JUN"). Split into YY + Mon.
+  const yy  = d.month.slice(0, 2);
+  const mon = d.month.slice(2);
+  // With expiry from the instruments cache → "DDMonYY"
   if (expiryYmd && /^\d{4}-\d{2}-\d{2}$/.test(expiryYmd)) {
     const dd = expiryYmd.slice(8, 10);
-    return `${d.month}${dd}`;
+    return `${dd}${mon}${yy}`;
   }
-  return d.month;
+  // Cold-cache fallback: drop the day, render "MonYY" so the operator
+  // can still tell the year. Once the cache populates, derivations
+  // re-fire and the full "DDMonYY" replaces this.
+  return `${mon}${yy}`;
 }
 
 /**
@@ -176,14 +188,16 @@ export function composeMonthToken(d, expiryYmd) {
  * keep working. Equity / index symbols pass through unchanged.
  *
  * Examples (when instruments cache supplies expiry):
- *   NIFTY26JUN22000CE         → NIFTY-26JUN26-22000-CE   (monthly + DD)
- *   NIFTY2542422000CE         → NIFTY-25APR24-22000-CE   (weekly)
- *   NIFTY26JUNFUT             → NIFTY-26JUN26-FUT        (monthly + DD)
+ *   NIFTY26JUN22000CE         → NIFTY-30JUN26-22000-CE   (monthly, DD-Mon-YY)
+ *   NIFTY2542422000CE         → NIFTY-24APR25-22000-CE   (weekly, DD-Mon-YY)
+ *   NIFTY26JUNFUT             → NIFTY-30JUN26-FUT        (monthly, DD-Mon-YY)
+ *   CRUDEOIL26JUN8500PE       → CRUDEOIL-16JUN26-8500-PE (commodity opt)
+ *   CRUDEOIL26JUNFUT          → CRUDEOIL-18JUN26-FUT     (commodity fut)
  *   RELIANCE                  → RELIANCE
  *   NIFTY 50                  → NIFTY 50
  *
  * Cold-cache fallback (no instruments loaded yet):
- *   NIFTY26JUN22000CE         → NIFTY-26JUN-22000-CE     (no DD)
+ *   NIFTY26JUN22000CE         → NIFTY-JUN26-22000-CE     (Mon-YY, no day yet)
  *
  * @param {string} sym  Kite tradingsymbol (or any string — non-F&O
  *                      symbols return as-is).

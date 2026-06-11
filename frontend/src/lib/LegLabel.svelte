@@ -17,10 +17,11 @@
 
   // Month token — single source of truth lives in `composeMonthToken`
   // (decomposeSymbol.js). Shared with formatSymbol() so the two
-  // formatters can never drift apart again:
-  //   Monthly: "26JUN26"  (year + month + EXPIRY DAY from instruments cache)
-  //   Weekly : "25APR24"  (day already encoded in the tradingsymbol)
-  //   Cold cache fallback: bare "26JUN" until instruments load
+  // formatters can never drift apart again. DD-Mon-YY format
+  // (TastyTrade / IBKR / Sensibull convention — year always last):
+  //   Monthly:    "16JUN26"  (DD + Mon + YY, day from instruments cache)
+  //   Weekly :    "24APR25"  (DD-Mon-YY from baked-in symbol)
+  //   Cold cache: "JUN26"    (Mon-YY, no day until cache loads)
   //
   // Reactive trigger: `getInstrument` reads a plain module-level Map
   // that Svelte can't see. Without subscribing to a signal that bumps
