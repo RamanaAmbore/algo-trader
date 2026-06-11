@@ -706,6 +706,38 @@ class DhanConnection:
             if self._access_token and self._dhan is not None and not test_conn:
                 return self._dhan
 
+            # ── Recency guard for test_conn=True ─────────────────────
+            # When `_safe_call` detects a DH-906 / "Invalid Token" it
+            # calls us with `test_conn=True` to force a re-mint. But
+            # multiple concurrent broker calls (background polling +
+            # frontend polling + agent ticks) routinely fail in lockstep
+            # against the same invalidated token — without this guard
+            # each one walks past the cache check above and mints its
+            # own NEW token via `generate_token`. Every Dhan
+            # `generate_token` call invalidates the previously-issued
+            # token, so the parade of fresh logins ends with only the
+            # LAST token valid, all earlier tokens (already cached + in
+            # use by other callers) silently invalidated. Operator saw
+            # this as a 6-minute "Login complete → DH-906 → Login
+            # complete" loop in the api log.
+            #
+            # If the cached token was minted in the last 60 s (by THIS
+            # process via a peer thread, or by another process whose
+            # write we read from disk), assume it's the freshest and
+            # return it. The caller that triggered `test_conn=True`
+            # already retried once via _safe_call so a brief return of
+            # a known-recent token is the right tradeoff.
+            if (test_conn
+                    and self._access_token
+                    and self._conn_created_at is not None
+                    and self._dhan is not None
+                    and (now - self._conn_created_at) < timedelta(seconds=60)):
+                logger.info(
+                    f"Dhan {self.account!r}: test_conn=True but token minted "
+                    f"<60 s ago — skipping re-mint to avoid invalidation race"
+                )
+                return self._dhan
+
             # Login-rate-limit cool-off — Dhan's auth endpoint
             # rejects a second call within 2 minutes of the first.
             # When the previous _do_login raised because of that, we
@@ -729,20 +761,42 @@ class DhanConnection:
                     f"wait {wait_s}s before retrying"
                 )
 
-            try:
-                access_token = self._do_login()
-            except RuntimeError as e:
-                # _do_login failed — set the cool-off so subsequent
-                # callers don't pile up. 130s = Dhan's 2-min limit +
-                # a 10s safety margin against clock drift.
-                self._login_blocked_until = _time_mod.time() + 130.0
-                logger.error(
-                    f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
-                    f"blocking re-login attempts for 130 s"
-                )
-                raise
-            # Success path — clear any prior cool-off.
-            self._login_blocked_until = 0.0
+            # ── Renewal-first path ──────────────────────────────────
+            # When the current token is STILL VALID (didn't raise
+            # DH-906; just routine refresh as we approach
+            # CONN_RESET_HOURS), prefer `renew_token` over
+            # `generate_token`. `renew_token` extends the existing
+            # token's validity without minting a new one, so other
+            # threads / processes still holding the old token keep
+            # working. `generate_token` always mints a fresh token AND
+            # invalidates the prior — that's the right call for an
+            # initial login or after a DH-906, but wrong for routine
+            # rolling refreshes. test_conn=True (after auth failure)
+            # skips this path because the existing token is dead.
+            access_token: str | None = None
+            if not test_conn and self._access_token:
+                access_token = self._try_renew()
+                if access_token:
+                    logger.info(
+                        f"Dhan {self.account!r}: token renewed (no re-mint, "
+                        f"previous token stays valid)"
+                    )
+
+            if access_token is None:
+                try:
+                    access_token = self._do_login()
+                except RuntimeError as e:
+                    # _do_login failed — set the cool-off so subsequent
+                    # callers don't pile up. 130s = Dhan's 2-min limit +
+                    # a 10s safety margin against clock drift.
+                    self._login_blocked_until = _time_mod.time() + 130.0
+                    logger.error(
+                        f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
+                        f"blocking re-login attempts for 130 s"
+                    )
+                    raise
+                # Success path — clear any prior cool-off.
+                self._login_blocked_until = 0.0
             self._access_token   = access_token
             self._conn_created_at = timestamp_indian()
             self._save_token(access_token)
