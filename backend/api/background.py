@@ -963,17 +963,45 @@ async def _task_sparkline_warm(state: dict) -> None:
         pairs: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
 
-        # 1. Watchlist items.
+        # 1. Watchlist items. Bare MCX commodity names ("CRUDEOIL",
+        #    "GOLDM", etc.) and CDS currency names ("USDINR") aren't real
+        #    Kite instruments — the tradable contract is the near-month
+        #    future (CRUDEOIL26JUNFUT). Without this resolution the
+        #    sparkline-warm task tries to look up the bare name in the
+        #    instruments map, fails, and never subscribes the ticker —
+        #    operator sees pinned LTPs stuck at the 30 s REST-poll cadence
+        #    instead of the sub-second SSE stream. Resolve to the
+        #    front-month contract before adding to the warm set.
         try:
             from backend.api.database import async_session
             from backend.api.models import WatchlistItem
             from sqlalchemy import select as sa_select
+            from backend.api.routes.watchlist import (
+                _resolve_mcx_commodity,
+                _resolve_cds_currency,
+            )
             async with async_session() as sess:
                 rows = (await sess.execute(
                     sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
                 )).all()
             for row in rows:
-                key = (row.tradingsymbol.upper().strip(), (row.exchange or "NSE").upper().strip())
+                sym  = (row.tradingsymbol or "").upper().strip()
+                exch = (row.exchange or "NSE").upper().strip()
+                if not sym:
+                    continue
+                # Bare-commodity heuristic: MCX/CDS + all-alpha + <= 12 chars
+                # mirrors `_build_quote_key` in watchlist.py. Real futures
+                # carry digits in their tradingsymbol (CRUDEOIL26JUNFUT)
+                # and pass through untouched.
+                if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+                    resolved = await _resolve_mcx_commodity(sym)
+                    if resolved:
+                        sym = resolved.upper().strip()
+                elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+                    resolved = await _resolve_cds_currency(sym)
+                    if resolved:
+                        sym = resolved.upper().strip()
+                key = (sym, exch)
                 if key not in seen:
                     seen.add(key)
                     pairs.append(key)
