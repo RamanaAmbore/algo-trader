@@ -31,10 +31,14 @@
   } from '$lib/data/indexConstituents';
   import { visibleInterval, connStatus, authStore } from '$lib/stores';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { instrumentsCacheVersion } from '$lib/data/instruments';
 
   // Module-scope cache for hyphenated symbol display. The cellRenderer
   // re-runs for every row × redraw; parsing each symbol once per session
-  // keeps the render hot path O(1).
+  // keeps the render hot path O(1). Invalidated when the instruments
+  // cache populates (see effect below) — otherwise the first paint
+  // pins the cold-cache form (no expiry day) and never picks up the
+  // per-symbol day once the dump loads.
   const _pulseSymFmtCache = new Map();
   function _pulseFmtSym(/** @type {string} */ s) {
     if (!s) return '';
@@ -841,6 +845,29 @@
   let gridHoldingsReady   = $state(false);
   let gridWinReady        = $state(false);
   let gridLoseReady       = $state(false);
+
+  // Instruments cache populated / rebuilt → expiry-day lookup is now
+  // available. Drop the stale symbol-format cache (every entry was
+  // computed pre-cache so each one is missing the day suffix) and
+  // force every grid to re-paint its tradingsymbol column so the
+  // operator sees the day appear without having to wait for the next
+  // poll. Cheap: refreshCells is column-scoped and ag-Grid batches.
+  $effect(() => {
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
+    _pulseSymFmtCache.clear();
+    const cols = ['tradingsymbol'];
+    for (const [g, ready] of /** @type {Array<[any, boolean]>} */ ([
+      [gridPinned,    gridPinnedReady],
+      [gridWatch,     gridWatchReady],
+      [gridPositions, gridPositionsReady],
+      [gridHoldings,  gridHoldingsReady],
+      [gridWin,       gridWinReady],
+      [gridLose,      gridLoseReady],
+    ])) {
+      if (ready && g) try { g.refreshCells({ columns: cols, force: true }); } catch (_) { /* grid not ready */ }
+    }
+  });
 
   // Per-bucket collapse state — driven by <CollapseButton> in each
   // header. Each bucket persists its toggle independently via

@@ -17,12 +17,12 @@
 
   // Month token — single source of truth lives in `composeMonthToken`
   // (decomposeSymbol.js). Shared with formatSymbol() so the two
-  // formatters can never drift apart again. Compact DD-Mon format
-  // (Sensibull / Dhan convention — year dropped from display since
-  // the underlying tradingsymbol still carries it):
-  //   Monthly:    "16JUN"  (DD + Mon, day from instruments cache)
-  //   Weekly :    "24APR"  (DD-Mon from baked-in symbol)
-  //   Cold cache: "JUN"    (Mon only, day pending cache load)
+  // formatters can never drift apart again. DD-Mon-YY format —
+  // year kept for upcoming US-options support (e.g. SPX 19DEC25 vs
+  // SPX 18DEC26 on the same chain):
+  //   Monthly:    "16JUN26"  (DD + Mon + YY, day from instruments cache)
+  //   Weekly :    "24APR25"  (DD-Mon-YY from baked-in symbol)
+  //   Cold cache: "JUN26"    (Mon-YY, day pending cache load)
   //
   // Reactive trigger: `getInstrument` reads a plain module-level Map
   // that Svelte can't see. Without subscribing to a signal that bumps

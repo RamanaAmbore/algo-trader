@@ -8,11 +8,16 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { instrumentsCacheVersion } from '$lib/data/instruments';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
   // re-runs cellRenderer on every redraw — a Map cache avoids
   // re-parsing each symbol N×rows×renders. Cleared on grid teardown
-  // via onDestroy below.
+  // via onDestroy below, AND on every instrumentsCacheVersion bump
+  // (see effect at bottom of <script>): the cache otherwise pins the
+  // cold-render value (no expiry-day appended) at first paint and
+  // never picks up the per-symbol expiry once the instruments
+  // dump finishes loading.
   const _symFmtCache = new Map();
   function _fmtSymCached(sym) {
     if (!sym) return '';
@@ -104,6 +109,23 @@
   // to 1 → OrderTicket displayed qty as the lot count).
   let _instrumentsReady = /** @type {Promise<unknown>} */ (Promise.resolve());
   onMount(() => { _instrumentsReady = loadInstruments().catch(() => {}); });
+
+  // When the instruments cache populates / rebuilds, the per-symbol
+  // expiry lookup is now available. Clear the symbol-format cache so
+  // subsequent _fmtSymCached calls re-run formatSymbol() against the
+  // newly-available expiry, and force every grid to re-paint its
+  // symbol + sym-with-chart cells so the operator immediately sees
+  // the day appear (e.g. CRUDEOIL-JUN → CRUDEOIL-16JUN).
+  $effect(() => {
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
+    _symFmtCache.clear();
+    const cols = ['tradingsymbol'];
+    for (const g of [holdingsAllGrid, positionsAllGrid,
+                     holdingsSummaryGrid, positionsSummaryGrid]) {
+      if (g) try { g.refreshCells({ columns: cols, force: true }); } catch (_) { /* grid not ready */ }
+    }
+  });
 
   async function openOrderTicket(row, source) {
     if (!allowOrders || $authStore.user?.role !== 'admin') return;

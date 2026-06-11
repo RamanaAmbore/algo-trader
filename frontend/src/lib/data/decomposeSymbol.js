@@ -133,14 +133,15 @@ export function decomposeSymbol(sym) {
 
 
 /**
- * Compose the display month token in compact DD-Mon order — Sensibull /
- * Dhan compact convention. Year is omitted from the display (the
- * underlying Kite tradingsymbol still carries it, so order routing /
- * lookup are unaffected; this is purely a screen-density choice):
+ * Compose the display month token in DD-Mon-YY order. Year kept in the
+ * display because future US-options support will need to disambiguate
+ * across multiple-year expiries on the same chain (e.g. SPX 19DEC25 vs
+ * SPX 18DEC26) — operator: "keep year also in all the places for future
+ * when I incorporate usa options".
  *
- *   Monthly + expiry known  → "DDMON"  (e.g. "16JUN")
- *   Monthly + cold cache    → "MON"    (e.g. "JUN")  — day not yet known
- *   Weekly                  → "DDMON"  (e.g. "24APR") rebuilt from monthLabel
+ *   Monthly + expiry known  → "DDMONYY"  (e.g. "16JUN26")
+ *   Monthly + cold cache    → "MONYY"    (e.g. "JUN26")  — day not yet known
+ *   Weekly                  → "DDMONYY"  (e.g. "24APR25") rebuilt from monthLabel
  *
  * Pure helper — accepts the decomposed shape and a YYYY-MM-DD expiry
  * hint (e.g. from getInstrument(sym).x). Lookup happens at the caller.
@@ -152,26 +153,28 @@ export function decomposeSymbol(sym) {
 export function composeMonthToken(d, expiryYmd) {
   if (!d?.month) return '';
   // Weekly token (e.g. "25624" raw → label "25 APR 24") already has the
-  // day baked into the symbol — split the YY-Mon-DD label and emit
-  // DD-Mon (drop the year segment).
+  // day baked into the symbol — split the YY-Mon-DD label and rebuild
+  // as DD-Mon-YY (industry order: day first, year last).
   const isMonthly5 = d.month.length === 5 && /^\d{2}[A-Z]{3}$/.test(d.month);
   if (!isMonthly5) {
     const parts = (d.monthLabel || '').split(/\s+/);  // ["25","APR","24"]
     if (parts.length === 3) {
-      return `${parts[2]}${parts[1]}`;   // "24APR"  (DD + Mon, year dropped)
+      return `${parts[2]}${parts[1]}${parts[0]}`;  // "24APR25"
     }
     return (d.monthLabel || d.month).replace(/\s+/g, '');
   }
-  // Monthly form: d.month = "YYMon" (e.g. "26JUN"). Extract just Mon.
+  // Monthly form: d.month = "YYMon" (e.g. "26JUN"). Split into Mon + YY.
+  const yy  = d.month.slice(0, 2);
   const mon = d.month.slice(2);
-  // With expiry from the instruments cache → "DDMon"
+  // With expiry from the instruments cache → "DDMonYY"
   if (expiryYmd && /^\d{4}-\d{2}-\d{2}$/.test(expiryYmd)) {
     const dd = expiryYmd.slice(8, 10);
-    return `${dd}${mon}`;
+    return `${dd}${mon}${yy}`;
   }
-  // Cold-cache fallback: just the month. Once the cache populates,
-  // derivations re-fire and the "DDMon" form replaces this.
-  return mon;
+  // Cold-cache fallback: drop the day, keep month + year. Year stays
+  // because future US-options chains can span multiple expiries within
+  // a single underlying — without it, JUN alone is ambiguous.
+  return `${mon}${yy}`;
 }
 
 /**
@@ -181,16 +184,16 @@ export function composeMonthToken(d, expiryYmd) {
  * keep working. Equity / index symbols pass through unchanged.
  *
  * Examples (when instruments cache supplies expiry):
- *   NIFTY26JUN22000CE         → NIFTY-30JUN-22000-CE   (monthly, DD-Mon)
- *   NIFTY2542422000CE         → NIFTY-24APR-22000-CE   (weekly, DD-Mon)
- *   NIFTY26JUNFUT             → NIFTY-30JUN-FUT        (monthly, DD-Mon)
- *   CRUDEOIL26JUN8500PE       → CRUDEOIL-16JUN-8500-PE (commodity opt)
- *   CRUDEOIL26JUNFUT          → CRUDEOIL-18JUN-FUT     (commodity fut)
+ *   NIFTY26JUN22000CE         → NIFTY-30JUN26-22000-CE   (monthly, DD-Mon-YY)
+ *   NIFTY2542422000CE         → NIFTY-24APR25-22000-CE   (weekly, DD-Mon-YY)
+ *   NIFTY26JUNFUT             → NIFTY-30JUN26-FUT        (monthly, DD-Mon-YY)
+ *   CRUDEOIL26JUN8500PE       → CRUDEOIL-16JUN26-8500-PE (commodity opt)
+ *   CRUDEOIL26JUNFUT          → CRUDEOIL-18JUN26-FUT     (commodity fut)
  *   RELIANCE                  → RELIANCE
  *   NIFTY 50                  → NIFTY 50
  *
  * Cold-cache fallback (no instruments loaded yet):
- *   NIFTY26JUN22000CE         → NIFTY-JUN-22000-CE     (Mon only, day pending)
+ *   NIFTY26JUN22000CE         → NIFTY-JUN26-22000-CE     (Mon-YY, day pending)
  *
  * @param {string} sym  Kite tradingsymbol (or any string — non-F&O
  *                      symbols return as-is).
