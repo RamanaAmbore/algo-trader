@@ -338,17 +338,22 @@
 .ag-theme-algo .ag-row.row-pos .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
 }
-/* Day P&L indicator bar — second vertical line inside the symbol
-   cell, painted just before the right inset border. Encodes TODAY's
-   profit/loss direction (independent of the cumulative-P&L cell tint
-   on the same row). Pushed by MarketPulse.getRowClass for every
-   Positions + Holdings row.
+/* Day P&L indicator bar — SINGLE vertical right border on the
+   symbol cell. Encodes TODAY's profit/loss direction (independent of
+   the cumulative-P&L direction tinted on the cell BACKGROUND). Pushed
+   by MarketPulse.getRowClass for every Positions + Holdings row.
      day-pnl-up    → green   (operator made money today)
      day-pnl-down  → red     (lost money today)
      day-pnl-flat  → slate   (zero / unknown — neutral indicator)
-   Pseudo-element so it doesn't fight ag-Grid's own cell rendering
-   or shift cell content. Positioned 8 px from the right edge so it
-   reads as a distinct stripe BEFORE the 4 px outer tint border. */
+
+   Position: `right: 0` flush against the cell's right edge so it
+   reads as a clean cell-edge border (matches the same treatment
+   the Legs grid on /admin/derivatives uses). Previously this was
+   `right: 6 px` (interior stripe) to avoid merging with a now-
+   removed cumulative-tint border at the right edge — that border
+   was dropped in the Pulse-cell simplification pass, leaving the
+   mini-bar floating 6 px inside the cell, which the operator
+   wanted re-anchored to the edge. */
 .ag-theme-algo .ag-row.day-pnl-up .ag-col-sym,
 .ag-theme-algo .ag-row.day-pnl-down .ag-col-sym,
 .ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym {
@@ -359,12 +364,7 @@
 .ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after {
   content: '';
   position: absolute;
-  /* 4 px gap from the outer 2 px cumulative-tint border so the day
-     mini-bar reads as a distinct second stripe even when its colour
-     matches the cumulative border (e.g. both green = "long-up").
-     Previously adjacent + same colour rendered as one merged band —
-     operator couldn't see the day indicator at all 50 % of the time. */
-  right: 6px;
+  right: 0;
   top: 0;
   bottom: 0;
   width: 2px;
