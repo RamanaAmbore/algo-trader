@@ -487,8 +487,53 @@ async def chase_order(
                 logger.info(f"Chase {symbol}: partial fill {filled_qty}, remaining {remaining_qty}")
                 emit("partial_fill", {"filled": filled_qty, "remaining": remaining_qty})
 
-            if order_status in ("CANCELLED", "REJECTED"):
-                logger.warning(f"Chase {symbol}: order {order_status} — {status.get('status_message', '')}")
+            if order_status == "REJECTED":
+                # Broker rejected the order — invalid product / no permission /
+                # margin shortfall / tick violation / price band, etc. The
+                # same parameters will be rejected again next attempt, so we
+                # abort the chase immediately rather than burn through
+                # `max_attempts` re-submitting an order Kite has already
+                # said no to. Operator gets an alert with the broker's
+                # status_message so they can fix the underlying issue.
+                status_msg = status.get("status_message", "") or "rejected by broker"
+                abort_msg = f"Order rejected by broker: {status_msg}"
+                logger.error(f"Chase {symbol}: REJECTED — {status_msg}. Aborting chase.")
+                result.status = ChaseStatus.FAILED
+                result.detail = abort_msg
+                rejected_order_id = current_order_id
+                current_order_id = None
+                emit("chase_failed", {
+                    "attempts": attempt, "error": abort_msg,
+                    "reason": "broker_rejected",
+                    "status_message": status_msg,
+                })
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=account, symbol=symbol,
+                        exchange=cfg.exchange, side=transaction_type,
+                        qty=quantity, mode="live", source="chase",
+                        error=abort_msg,
+                    )
+                except Exception:
+                    pass
+                if rejected_order_id:
+                    import asyncio as _asyncio
+                    _asyncio.create_task(_emit_chase_terminal(
+                        rejected_order_id, "chase_failed",
+                        symbol, transaction_type, quantity,
+                        attempts=attempt, error=abort_msg,
+                    ))
+                return result
+
+            if order_status == "CANCELLED":
+                # External cancel (operator pressed cancel manually, or
+                # broker auto-cancelled due to circuit / session-end). Not
+                # a structural rejection — give the chase one re-try cycle
+                # to recover before the max-attempts guard or
+                # consecutive-error guard kicks in if the condition
+                # persists.
+                logger.warning(f"Chase {symbol}: order CANCELLED — {status.get('status_message', '')}")
                 current_order_id = None  # Need fresh order
                 backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
                 logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
