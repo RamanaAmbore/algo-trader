@@ -91,6 +91,54 @@ def _ist_today() -> str:
     return datetime.now(ist).strftime("%Y-%m-%d")
 
 
+import re as _re
+
+# Dhan F&O tradingsymbol format:
+#   Options:  ROOT-DDmonYYYY-STRIKE-CE|PE   e.g. "CRUDEOIL-16JUL2026-8500-CE"
+#   Futures:  ROOT-DDmonYYYY-FUT            e.g. "CRUDEOIL-19JUN2026-FUT"
+#
+# Kite F&O tradingsymbol format (what every downstream parser expects):
+#   Options:  ROOTYYmmmSTRIKECE|PE          e.g. "CRUDEOIL26JUL8500CE"
+#   Futures:  ROOTYYmmmFUT                  e.g. "CRUDEOIL26JULFUT"
+#
+# Without translation, decomposeSymbol / parse_tradingsymbol / the
+# instruments-cache lookup all reject Dhan-format symbols and the
+# /admin/derivatives page shows "isn't a recognised option or
+# futures contract" above the Legs grid, killing the payoff chart.
+_DHAN_OPT_RE = _re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-(\d+(?:\.\d+)?)-(CE|PE)$")
+_DHAN_FUT_RE = _re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-FUT$")
+
+
+def _dhan_to_kite_symbol(raw: str) -> str:
+    """Convert a Dhan F&O tradingsymbol to the Kite-style canonical form.
+    Equity / index / unknown shapes fall through unchanged with dashes
+    + spaces stripped — same conservative fallback the rest of the
+    codebase already uses for non-derivative symbols.
+    """
+    s = (raw or "").upper().strip()
+    if not s:
+        return ""
+    m = _DHAN_OPT_RE.match(s)
+    if m:
+        root, dd, mon, yyyy, strike, opt_type = m.groups()
+        # Drop trailing .0 on whole-number strikes; preserve halves.
+        try:
+            strike_f = float(strike)
+            strike_disp = (str(int(strike_f)) if strike_f.is_integer()
+                           else str(strike_f))
+        except ValueError:
+            strike_disp = strike
+        return f"{root}{yyyy[2:]}{mon}{strike_disp}{opt_type}"
+    m = _DHAN_FUT_RE.match(s)
+    if m:
+        root, _dd, mon, yyyy = m.groups()
+        return f"{root}{yyyy[2:]}{mon}FUT"
+    # Fallback: just strip dashes + spaces. Equity / index symbols
+    # ("RELIANCE", "NIFTY 50") and any Dhan format the regex doesn't
+    # cover yet pass through cleanly.
+    return s.replace("-", "").replace(" ", "").strip()
+
+
 def _load_dhan_instruments() -> None:
     """Fetch Dhan's master CSV and populate the module-level caches.
     Called under _dhan_instruments_lock. Silently no-ops on any failure
@@ -125,13 +173,16 @@ def _load_dhan_instruments() -> None:
             kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(seg_raw)
             if not kite_exch:
                 continue
-            # Normalise to Kite-style canonical form (no dashes / spaces)
-            # so security_id lookup works for operators submitting Kite-
-            # shape symbols. Dhan publishes some MCX rows with embedded
-            # dashes (e.g. "CRUDEOIL-26JUL...") which would never match
-            # the Kite "CRUDEOIL26JUL..." that the route layer passes.
+            # Translate Dhan's F&O tradingsymbol to the Kite-style canonical
+            # form. Dhan ships symbols as "CRUDEOIL-16JUL2026-8500-CE"
+            # (ROOT-DDmonYYYY-STRIKE-CE|PE); the Kite parser expects
+            # "CRUDEOIL26JUL8500CE" (ROOTYYmmmSTRIKECE). Without this
+            # the security_id lookup misses, and the strategy-analytics
+            # endpoint rejects the leg with "isn't a recognised option
+            # or futures contract" — payoff chart never renders. Equity
+            # / index symbols pass through (just strip dashes + spaces).
             ts_raw = parts[col["SEM_TRADING_SYMBOL"]].strip()
-            ts = ts_raw.replace("-", "").replace(" ", "").strip()
+            ts = _dhan_to_kite_symbol(ts_raw)
             sid = parts[col["SEM_SMST_SECURITY_ID"]].strip()
             if not ts or not sid:
                 continue
@@ -788,11 +839,11 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         else:
             day_change_pct = float(day_change_pct_raw)
 
-        # Strip Dhan-style dash/space separators (see _normalise_positions)
-        # so the tradingsymbol is consistent across all broker adapters.
+        # Translate Dhan F&O symbol → Kite-style (see _dhan_to_kite_symbol)
+        # so every downstream parser + chart works without per-vendor branches.
         _raw_ts_h = str(h.get("tradingSymbol") or h.get("symbol") or "")
         out.append({
-            "tradingsymbol":   _raw_ts_h.replace("-", "").replace(" ", "").strip(),
+            "tradingsymbol":   _dhan_to_kite_symbol(_raw_ts_h),
             "exchange":        h.get("exchange")       or "NSE",
             "instrument_token": inst_tok,
             "isin":             h.get("isin"),
@@ -825,14 +876,15 @@ def _normalise_positions(resp: Any) -> dict:
             inst_tok = int(p.get("securityId") or 0)
         except (TypeError, ValueError):
             inst_tok = 0
-        # Dhan's tradingSymbol can carry trailing dashes / spaces (e.g.
-        # `CRUDEOIL-` for the MCX synthetic spot, or `CRUDEOIL-26JUL...`
-        # with dash separator). Normalise to the Kite-style canonical
-        # form (no dashes, no spaces) so the frontend root-extraction
-        # regex + the underlying picker dedupe see one consistent
-        # symbol shape across all broker adapters.
+        # Translate Dhan's F&O tradingsymbol to Kite-style canonical
+        # form via `_dhan_to_kite_symbol` (e.g. "CRUDEOIL-16JUL2026-8500-CE"
+        # → "CRUDEOIL26JUL8500CE"). Without this every downstream parser
+        # (decomposeSymbol on the frontend, parse_tradingsymbol in the
+        # strategy endpoint, the instruments-cache lookup, etc.) rejects
+        # Dhan-format symbols and the Legs grid shows "isn't a recognised
+        # option or futures contract" above the payoff chart.
         raw_ts = str(p.get("tradingSymbol") or "")
-        ts = raw_ts.replace("-", "").replace(" ", "").strip()
+        ts = _dhan_to_kite_symbol(raw_ts)
         net.append({
             "tradingsymbol":   ts,
             "exchange":        p.get("exchange")     or "NFO",
@@ -925,13 +977,12 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
 def _normalise_orders(resp: Any) -> list[dict]:
     out: list[dict] = []
     for o in _unwrap(resp):
-        # Strip dash/space separators (same pattern as
-        # _normalise_positions) so orders + positions display under one
-        # canonical tradingsymbol shape.
+        # Translate Dhan F&O symbol → Kite-style (see _dhan_to_kite_symbol)
+        # so orders + positions display under one canonical tradingsymbol.
         _raw_ts_o = str(o.get("tradingSymbol") or "")
         out.append({
             "order_id":         str(o.get("orderId") or ""),
-            "tradingsymbol":    _raw_ts_o.replace("-", "").replace(" ", "").strip(),
+            "tradingsymbol":    _dhan_to_kite_symbol(_raw_ts_o),
             "exchange":         o.get("exchange") or "",
             "status":           (o.get("orderStatus") or "").upper(),
             "transaction_type": o.get("transactionType") or "BUY",
@@ -961,7 +1012,7 @@ def _normalise_trades(resp: Any) -> list[dict]:
         out.append({
             "trade_id":         str(t.get("tradeId")   or ""),
             "order_id":         str(t.get("orderId")   or ""),
-            "tradingsymbol":    _raw_ts_t.replace("-", "").replace(" ", "").strip(),
+            "tradingsymbol":    _dhan_to_kite_symbol(_raw_ts_t),
             "exchange":         t.get("exchange")      or "",
             "transaction_type": t.get("transactionType") or "BUY",
             "quantity":         int(t.get("tradedQuantity", 0) or 0),
