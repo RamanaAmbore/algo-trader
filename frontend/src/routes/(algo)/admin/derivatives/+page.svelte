@@ -4741,36 +4741,38 @@
   :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.08); }
 
   /* Symbol-cell treatment ported from the Pulse Positions grid so the
-     two surfaces look identical at a glance — same hyphenated symbol
-     (flat string, not the structured LegLabel chips), same CE/PE text
-     tinting, same per-account background tint with vertical right
-     border, same day-P&L mini-bar on the right edge of the cell.
+     two surfaces look identical at a glance — flat hyphenated symbol
+     via formatSymbol (no structured LegLabel chips), CE/PE text
+     tinting, account-tint background. ONE vertical right border per
+     symbol cell encoding TODAY's P&L direction (day-pnl mini-bar) —
+     this border applies across all three tabs (legs / exp close /
+     optimize). Account identity stays in the trailing Account column
+     so we don't need a second right border for it.
      `--cand-acct-color` is set per-row via inline style from the
      account's hash colour (acctColor from $lib/account). */
   .cand-sym-acct {
     position: relative;
     background-color: color-mix(in srgb, var(--cand-acct-color, transparent) 14%, transparent);
-    /* Vertical right border in the account colour — matches the
-       inset-box-shadow idiom Pulse uses on .mp-sym-acct cells.
-       Lands at the exact same pixel position as the day-pnl mini-bar
-       (right: 0px). */
-    box-shadow: inset -2px 0 0 color-mix(in srgb, var(--cand-acct-color, transparent) 55%, transparent);
   }
   /* CE / PE text tint on the symbol main (Sensibull / Streak convention,
      same colours used everywhere else for sym-main). */
   :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 600; }
   :global(.cand-sym .sym-main.sym-ce) { color: #4ade80; }
   :global(.cand-sym .sym-main.sym-pe) { color: #f87171; }
-  /* Day P&L mini-bar — 2 px vertical stripe inside the symbol cell,
-     painted 6 px from the right edge so it sits BEFORE the
-     account-coloured outer border. Same green/red/slate palette as
-     Pulse's row.day-pnl-up/down/flat. */
+  /* SINGLE vertical right border on the symbol cell, encoding
+     TODAY's P&L direction. 2 px wide, flush against the right edge
+     (right: 0) so it reads as a clean cell border. Green when
+     day_change_val > 0, red < 0, slate = 0. Same palette Pulse uses
+     for its day-pnl mini-bar. Applies in every tab the cand-row
+     renders in (legs / exp close — and on the optimize tab the
+     cand-row treatment doesn't apply, the alternatives panel has its
+     own styling). */
   .cand-row.cand-day-pnl-up   .cand-sym-acct::after,
   .cand-row.cand-day-pnl-down .cand-sym-acct::after,
   .cand-row.cand-day-pnl-flat .cand-sym-acct::after {
     content: '';
     position: absolute;
-    right: 6px;
+    right: 0;
     top: 0;
     bottom: 0;
     width: 2px;

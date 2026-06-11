@@ -374,6 +374,17 @@
 .ag-theme-algo .ag-row.day-pnl-down .ag-col-sym::after { background: rgba(248, 113, 113, 0.85); }
 .ag-theme-algo .ag-row.day-pnl-flat .ag-col-sym::after { background: rgba(148, 163, 184, 0.5); }
 
+/* Directional cell colour classes — used across every algo grid (Pulse,
+   Performance, Legs / Derivatives, Dashboard, Simulator, Replay) to
+   render numeric cells in green / red / slate based on sign. Hoisted
+   here from MarketPulse.svelte's :global block so the same classes
+   work on pages that don't mount MarketPulse (e.g. /admin/derivatives
+   where the Legs grid needs the same cell-pos / cell-neg / cell-flat
+   semantics for its P&L + Day P&L Δ columns). */
+.cell-pos  { color: #4ade80 !important; }
+.cell-neg  { color: #f87171 !important; }
+.cell-flat { color: #94a3b8 !important; }
+
 .ag-theme-algo .ag-row.row-hold-up.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-hold-down.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-hold-flat.ag-row-hover .ag-col-sym,
