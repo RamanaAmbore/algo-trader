@@ -173,18 +173,26 @@ class TickerManager:
         this is a no-op. The Twisted reactor's built-in reconnect logic
         handles drops; we only ever call connect() once.
         """
+        import sys as _sys
+        def _diag(msg):
+            # Bypass the logging system — write directly to stderr so
+            # systemd / uvicorn's stderr→api_error_file pipe captures it.
+            # The kite_ticker module's logger appears silenced (no
+            # records ever in api_log_file across every deploy), so
+            # the standard `logger.info` path is unusable here.
+            print(f"[KT-DIAG] {msg}", file=_sys.stderr, flush=True)
         if self._started:
-            logger.info(f"KiteTicker: start() called but already _started=True — skipping (account={self._current_account or '?'})")
+            _diag(f"start() called but already _started=True — skipping (account={self._current_account or '?'})")
             return
-        logger.info(f"KiteTicker: start() entered (account={account or '?'}, prior_started={self._started})")
+        _diag(f"start() entered (account={account or '?'}, prior_started={self._started})")
         self._started = True
         self._current_account = account or self._current_account
         try:
-            logger.info("KiteTicker: importing kiteconnect.KiteTicker ...")
+            _diag("importing kiteconnect.KiteTicker ...")
             from kiteconnect import KiteTicker
-            logger.info("KiteTicker: constructing KiteTicker(api_key, access_token) ...")
+            _diag("constructing KiteTicker(api_key, access_token) ...")
             self._kws = KiteTicker(api_key, access_token)
-            logger.info("KiteTicker: installing callbacks ...")
+            _diag("installing callbacks ...")
             self._kws.on_connect   = self._on_connect
             self._kws.on_ticks     = self._on_ticks
             self._kws.on_close     = self._on_close
@@ -192,11 +200,13 @@ class TickerManager:
             self._kws.on_reconnect = self._on_reconnect
             # threaded=True runs Twisted's reactor in a daemon thread so
             # the asyncio event loop is never blocked.
-            logger.info("KiteTicker: about to call kws.connect(threaded=True) ...")
+            _diag("about to call kws.connect(threaded=True) ...")
             self._kws.connect(threaded=True)
-            logger.info(f"KiteTicker: connect() returned — initiated (account={self._current_account or '?'})")
+            _diag(f"connect() returned — initiated (account={self._current_account or '?'})")
+            logger.info(f"KiteTicker: connect() initiated (account={self._current_account or '?'})")
         except Exception as e:
-            logger.exception(f"KiteTicker: connect() failed — ticker disabled · {type(e).__name__}: {e}")
+            _diag(f"connect() FAILED — {type(e).__name__}: {e}")
+            logger.exception("KiteTicker: connect() failed — ticker disabled")
             self._started = False
 
     @property
