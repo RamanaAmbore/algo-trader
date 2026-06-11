@@ -173,35 +173,13 @@ class TickerManager:
         this is a no-op. The Twisted reactor's built-in reconnect logic
         handles drops; we only ever call connect() once.
         """
-        import sys as _sys, os as _os
-        _DIAG_PATH = "/opt/ramboq/.log/kite_ticker_diag.log"
-        def _diag(msg):
-            # Tee the diagnostic to (a) stdout, (b) stderr, (c) a
-            # dedicated diag file — bypass every layer of the standard
-            # logging pipeline since logger.info from this module
-            # never lands in api_log_file across every prod deploy.
-            line = f"[KT-DIAG {_os.getpid()}] {msg}"
-            try: print(line, file=_sys.stdout, flush=True)
-            except Exception: pass
-            try: print(line, file=_sys.stderr, flush=True)
-            except Exception: pass
-            try:
-                with open(_DIAG_PATH, "a") as f:
-                    import datetime as _dt
-                    f.write(f"{_dt.datetime.now().isoformat()} {line}\n")
-            except Exception: pass
         if self._started:
-            _diag(f"start() called but already _started=True — skipping (account={self._current_account or '?'})")
             return
-        _diag(f"start() entered (account={account or '?'}, prior_started={self._started})")
         self._started = True
         self._current_account = account or self._current_account
         try:
-            _diag("importing kiteconnect.KiteTicker ...")
             from kiteconnect import KiteTicker
-            _diag("constructing KiteTicker(api_key, access_token) ...")
             self._kws = KiteTicker(api_key, access_token)
-            _diag("installing callbacks ...")
             self._kws.on_connect   = self._on_connect
             self._kws.on_ticks     = self._on_ticks
             self._kws.on_close     = self._on_close
@@ -209,12 +187,9 @@ class TickerManager:
             self._kws.on_reconnect = self._on_reconnect
             # threaded=True runs Twisted's reactor in a daemon thread so
             # the asyncio event loop is never blocked.
-            _diag("about to call kws.connect(threaded=True) ...")
             self._kws.connect(threaded=True)
-            _diag(f"connect() returned — initiated (account={self._current_account or '?'})")
             logger.info(f"KiteTicker: connect() initiated (account={self._current_account or '?'})")
-        except Exception as e:
-            _diag(f"connect() FAILED — {type(e).__name__}: {e}")
+        except Exception:
             logger.exception("KiteTicker: connect() failed — ticker disabled")
             self._started = False
 
@@ -386,17 +361,6 @@ class TickerManager:
         access_token wasn't yet available during on_startup. Returns
         True if the ticker is now started (either freshly or already).
         """
-        import sys as _sys, os as _os
-        _line = (f"[KT-DIAG {_os.getpid()}] ensure_started: _started={self._started} "
-                 f"api_key={'set' if api_key else 'EMPTY'} "
-                 f"token={'set' if access_token else 'EMPTY'} acct={account!r}")
-        try: print(_line, file=_sys.stderr, flush=True)
-        except Exception: pass
-        try:
-            with open("/opt/ramboq/.log/kite_ticker_diag.log", "a") as f:
-                import datetime as _dt
-                f.write(f"{_dt.datetime.now().isoformat()} {_line}\n")
-        except Exception: pass
         if self._started:
             return True
         if not api_key or not access_token:

@@ -84,14 +84,39 @@ queue_listener.start()
 
 def get_logger(name="app_logger"):
     """
-    Return a logger instance configured with queue handler.
-    Ensures no duplicate handlers are added.
+    Return a logger instance with our queue handler attached.
+
+    Important: we check the LOGGER'S OWN handlers, not `hasHandlers()`,
+    because `hasHandlers()` walks the parent chain and returns True the
+    moment ANY ancestor (root, "backend", etc.) has a handler.
+
+    With the previous `if not logger.hasHandlers():` guard, the FIRST
+    call to get_logger("backend.x.y") would install the queue handler
+    on that logger. A SUBSEQUENT call to get_logger("backend.a.b") would
+    see "backend.x.y" already has a handler — `hasHandlers()` on
+    "backend.a.b" walks up to root (still no handler) so returns False,
+    which is fine — BUT if uvicorn (or any library) installed a root
+    handler at import time, every later get_logger call short-circuits,
+    the child logger has no own handler, propagation routes records to
+    the parent's handler at parent's level (WARNING by default), and
+    every `logger.info(...)` from that module is silently dropped.
+
+    This was the observed prod symptom: `backend.shared.helpers.kite_ticker`
+    never wrote a single line to api_log_file across every deploy
+    on 2026-06-10/11, while `backend.shared.helpers.connections` (which
+    happens to be imported earlier) wrote lines normally. The fix is to
+    check this specific logger's `.handlers` list and add the queue
+    handler if not already present.
     """
     logger = logging.getLogger(name)
-    if not logger.hasHandlers():
+    has_queue_handler = any(isinstance(h, QueueHandler) for h in logger.handlers)
+    if not has_queue_handler:
         logger.setLevel(logging.DEBUG)  # Capture everything, handlers filter levels
-        queue_handler = QueueHandler(log_queue)
-        logger.addHandler(queue_handler)
+        logger.addHandler(QueueHandler(log_queue))
+        # Suppress propagation to ancestor handlers — otherwise records
+        # would be emitted twice (once via our queue, once via whichever
+        # parent installed an earlier handler).
+        logger.propagate = False
     return logger
 
 
