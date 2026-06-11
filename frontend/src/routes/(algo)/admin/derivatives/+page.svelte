@@ -34,6 +34,7 @@
     listFutures, getInstrument,
   } from '$lib/data/instruments';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
+  import { acctColor } from '$lib/account';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
@@ -2649,7 +2650,7 @@
       <div class="opt-section-row">
         <span class="opt-section-title">Payoff</span>
         <span class="opt-section-tag tag-{strategy.net_cost > 0 ? 'long' : strategy.net_cost < 0 ? 'short' : 'long'}">
-          {strategy.net_cost > 0 ? 'Net Debit' : strategy.net_cost < 0 ? 'Net Credit' : 'Free'}
+          {strategy.net_cost > 0 ? 'Net Dr' : strategy.net_cost < 0 ? 'Net Cr' : 'Free'}
           {fmtMoney(Math.abs(strategy.net_cost), false)}
         </span>
         <span class="opt-section-tag tag-long" title="Max profit">
@@ -2904,7 +2905,17 @@
             {@const isActionable = isDraft || isClosable}
             {@const _instParsed = getInstrument(c.symbol)}
             {@const _expiryStr = _instParsed?.x || ''}
-            <div class="cand-row cand-row-{dir}"
+            {@const _decomp = decomposeSymbol(c.symbol)}
+            {@const _optClass = _decomp.optType === 'CE' ? 'sym-ce'
+                              : _decomp.optType === 'PE' ? 'sym-pe'
+                              : ''}
+            {@const _dpnlVal = Number(c.day_change_val ?? 0)}
+            {@const _dpnlClass = _dpnlVal > 0 ? 'cand-day-pnl-up'
+                              : _dpnlVal < 0 ? 'cand-day-pnl-down'
+                              : 'cand-day-pnl-flat'}
+            {@const _acctColor = c.account ? acctColor(c.account) : null}
+            <div class="cand-row cand-row-{dir} {_dpnlClass}"
+                 style={_acctColor ? `--cand-acct-color: ${_acctColor};` : ''}
                  class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
@@ -2960,12 +2971,12 @@
                        enabledSymbols = next;
                      }} />
               <!-- svelte-ignore a11y_interactive_supports_focus -->
-              <span class="font-mono cand-sym"
+              <span class="font-mono cand-sym cand-sym-acct"
                 oncontextmenu={(ev) => { ev.preventDefault(); _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY }; }}
                 use:longPress={(ev) => {
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
-                <LegLabel sym={c.symbol} />
+                <span class="sym-main {_optClass}">{formatSymbol(c.symbol)}</span>
                 {#if c._splitTag === 'closed'}
                   <!-- Split-row tag: this row represents the portion of
                        the overnight position that was CLOSED today.
@@ -4728,6 +4739,46 @@
   :global(.cand-pnl.cell-pos)  { background-color: rgba(74,222,128,0.10); }
   :global(.cand-pnl.cell-neg)  { background-color: rgba(248,113,113,0.10); }
   :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.08); }
+
+  /* Symbol-cell treatment ported from the Pulse Positions grid so the
+     two surfaces look identical at a glance — same hyphenated symbol
+     (flat string, not the structured LegLabel chips), same CE/PE text
+     tinting, same per-account background tint with vertical right
+     border, same day-P&L mini-bar on the right edge of the cell.
+     `--cand-acct-color` is set per-row via inline style from the
+     account's hash colour (acctColor from $lib/account). */
+  .cand-sym-acct {
+    position: relative;
+    background-color: color-mix(in srgb, var(--cand-acct-color, transparent) 14%, transparent);
+    /* Vertical right border in the account colour — matches the
+       inset-box-shadow idiom Pulse uses on .mp-sym-acct cells.
+       Lands at the exact same pixel position as the day-pnl mini-bar
+       (right: 0px). */
+    box-shadow: inset -2px 0 0 color-mix(in srgb, var(--cand-acct-color, transparent) 55%, transparent);
+  }
+  /* CE / PE text tint on the symbol main (Sensibull / Streak convention,
+     same colours used everywhere else for sym-main). */
+  :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 600; }
+  :global(.cand-sym .sym-main.sym-ce) { color: #4ade80; }
+  :global(.cand-sym .sym-main.sym-pe) { color: #f87171; }
+  /* Day P&L mini-bar — 2 px vertical stripe inside the symbol cell,
+     painted 6 px from the right edge so it sits BEFORE the
+     account-coloured outer border. Same green/red/slate palette as
+     Pulse's row.day-pnl-up/down/flat. */
+  .cand-row.cand-day-pnl-up   .cand-sym-acct::after,
+  .cand-row.cand-day-pnl-down .cand-sym-acct::after,
+  .cand-row.cand-day-pnl-flat .cand-sym-acct::after {
+    content: '';
+    position: absolute;
+    right: 6px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    pointer-events: none;
+  }
+  .cand-row.cand-day-pnl-up   .cand-sym-acct::after { background: rgba(74, 222, 128, 0.85); }
+  .cand-row.cand-day-pnl-down .cand-sym-acct::after { background: rgba(248, 113, 113, 0.85); }
+  .cand-row.cand-day-pnl-flat .cand-sym-acct::after { background: rgba(148, 163, 184, 0.5); }
 
   .cand-row input[type="checkbox"] {
     accent-color: #fbbf24;
