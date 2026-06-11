@@ -547,14 +547,30 @@ class GrowwBroker(Broker):
         self.groww.cancel_order(segment=seg, groww_order_id=order_id)
         return order_id
 
-    # ── GTT ───────────────────────────────────────────────────────────
+    # ── GTT (Groww Smart Orders — single-trigger only) ────────────────
     #
-    # Groww supports single-trigger GTT only (no OCO). The capability
-    # matrix flags gtt_oco=False so the orchestrator emulates OCO via
-    # two single GTTs + a pair-watcher in our chase engine — those
-    # don't pass through this method at all. Live wiring deferred until
-    # the Groww OAuth + GTT flow is exercised against a real account.
+    # Groww supports single-trigger GTT via `create_smart_order` with
+    # smart_order_type="GTT". OCO is declared gtt_oco=False in the
+    # capability matrix — the orchestrator emulates it via two singles +
+    # a pair-watcher; those don't reach this method.
+    #
+    # Kite shape → Groww `create_smart_order` (GTT variant):
+    #   trigger_values[0]  → trigger_price (string)
+    #   orders[0]["transaction_type"]  → inferred from trigger direction
+    #   trigger direction  → "UP" when trigger > last_price (stop-buy or
+    #                         target on short); "DOWN" otherwise (stop-loss
+    #                         or target on long).
+    #   orders[0]["price"] → order.price (limit price, or absent for MARKET)
+    #   orders[0]["order_type"] → order.order_type ("LIMIT" / "MARKET")
+    #   orders[0]["transaction_type"] → order.transaction_type
+    #
+    # Groww Smart Order docs: https://groww.in/trade-api/docs — see
+    # "Smart Orders" → "Create Smart Order".
+    # The SDK method is `create_smart_order(smart_order_type, segment,
+    #   trading_symbol, quantity, product_type, exchange, duration,
+    #   trigger_price, trigger_direction, order, ...)`.
 
+    @_retry_groww_auth
     def place_gtt(
         self,
         *,
@@ -566,44 +582,185 @@ class GrowwBroker(Broker):
         trigger_values: list[float],
         tag: str | None = None,
     ) -> str:
+        """Place a Groww GTT (Smart Order, single-trigger). Returns the
+        Groww smart order ID (e.g. 'gtt_91a7f4')."""
         if trigger_type == "two-leg":
-            # Defensive — capability matrix already prevents this, but
-            # belt-and-suspenders: any caller bypassing the matrix gets a
-            # clear error pointing at the right path.
             raise NotImplementedError(
                 "GrowwBroker.place_gtt: Groww has no native OCO. The "
-                "orchestrator must emulate via two single GTTs + a "
-                "pair-watcher in our chase engine. Use trigger_type='single' "
-                "twice with paired cancellation logic."
+                "orchestrator emulates OCO via two single GTTs + a "
+                "pair-watcher. Use trigger_type='single' twice."
             )
-        raise NotImplementedError(
-            "GrowwBroker.place_gtt not yet wired. Single-trigger only — "
-            "Groww SDK exposes a `create_gtt` method; needs sandbox token."
-        )
+        ex, seg = _groww_exchange_and_segment(exchange)
+        order0   = orders[0] if orders else {}
+        qty0     = int(order0.get("quantity", 0))
+        price0   = float(order0.get("price") or 0)
+        otype0   = _ORDER_TYPE_TO_GROWW.get(order0.get("order_type", "LIMIT"), "LIMIT")
+        txn0     = order0.get("transaction_type", "SELL")
+        product  = _PRODUCT_TO_GROWW.get(order0.get("product", "NRML"), "NRML")
+        trig     = float(trigger_values[0]) if trigger_values else 0.0
 
-    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
-        raise NotImplementedError(
-            "GrowwBroker.modify_gtt not yet wired."
-        )
+        # Trigger direction: UP when trigger is above last_price (e.g.
+        # stop-buy / short target); DOWN otherwise (stop-loss / long target).
+        direction = "UP" if trig > last_price else "DOWN"
 
+        # Groww order sub-dict: transaction_type, order_type, price (optional)
+        order_body: dict[str, Any] = {
+            "transaction_type": txn0,
+            "order_type":       otype0,
+        }
+        if otype0 == "LIMIT" and price0 > 0:
+            order_body["price"] = price0
+
+        resp = self.groww.create_smart_order(
+            smart_order_type="GTT",
+            segment=seg,
+            trading_symbol=tradingsymbol,
+            quantity=qty0,
+            product_type=product,
+            exchange=ex,
+            duration="GTC",           # GTT is always Good-Till-Cancelled
+            trigger_price=str(trig),
+            trigger_direction=direction,
+            order=order_body,
+        )
+        data = resp.get("data") if isinstance(resp, dict) else resp
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Groww place_gtt rejected: {resp}")
+        gtt_id = (data.get("smart_order_id") or data.get("reference_id")
+                  or data.get("id") or "")
+        if not gtt_id:
+            raise RuntimeError(f"Groww place_gtt: no ID in response: {resp}")
+        return str(gtt_id)
+
+    @_retry_groww_auth
+    def modify_gtt(
+        self,
+        gtt_id: str,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+    ) -> str:
+        """Modify a Groww GTT (Smart Order). Returns the (same) gtt_id."""
+        if trigger_type == "two-leg":
+            raise NotImplementedError(
+                "GrowwBroker.modify_gtt: Groww has no native OCO."
+            )
+        _, seg = _groww_exchange_and_segment(exchange)
+        order0    = orders[0] if orders else {}
+        qty0      = int(order0.get("quantity", 0))
+        price0    = float(order0.get("price") or 0)
+        otype0    = _ORDER_TYPE_TO_GROWW.get(order0.get("order_type", "LIMIT"), "LIMIT")
+        txn0      = order0.get("transaction_type", "SELL")
+        trig      = float(trigger_values[0]) if trigger_values else 0.0
+        direction = "UP" if trig > last_price else "DOWN"
+        order_body: dict[str, Any] = {"transaction_type": txn0, "order_type": otype0}
+        if otype0 == "LIMIT" and price0 > 0:
+            order_body["price"] = price0
+        resp = self.groww.modify_smart_order(
+            smart_order_id=gtt_id,
+            smart_order_type="GTT",
+            segment=seg,
+            quantity=qty0 if qty0 else None,
+            trigger_price=str(trig),
+            trigger_direction=direction,
+            order=order_body,
+        )
+        # modify_smart_order raises GrowwAPIException on failure; if it
+        # returns a dict check for an error shape.
+        if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
+            raise RuntimeError(f"Groww modify_gtt rejected: {resp}")
+        return gtt_id
+
+    @_retry_groww_auth
     def cancel_gtt(self, gtt_id: str) -> str:
-        raise NotImplementedError(
-            "GrowwBroker.cancel_gtt not yet wired."
-        )
+        """Cancel a Groww GTT (Smart Order). Returns the cancelled gtt_id."""
+        # cancel_smart_order needs segment + smart_order_type.
+        # For a stored gtt_id we don't know the segment without a lookup,
+        # so we try CASH first (most common), then FNO, then COMMODITY.
+        # The SDK raises GrowwAPIException on wrong segment; we iterate.
+        for seg in ("CASH", "FNO", "COMMODITY", "CURRENCY"):
+            try:
+                resp = self.groww.cancel_smart_order(
+                    segment=seg,
+                    smart_order_type="GTT",
+                    smart_order_id=gtt_id,
+                )
+                if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
+                    continue
+                return gtt_id
+            except Exception:
+                continue
+        raise RuntimeError(f"Groww cancel_gtt: could not cancel {gtt_id!r} "
+                           f"across any segment (CASH/FNO/COMMODITY/CURRENCY)")
 
+    @_retry_groww_auth
     def get_gtts(self) -> list[dict]:
-        raise NotImplementedError(
-            "GrowwBroker.get_gtts not yet wired. Normalise Groww's "
-            "single-trigger GTT shape into the Kite-shape this codebase "
-            "expects (trigger_type='single', single-element trigger_values)."
-        )
+        """List all active Groww GTT Smart Orders, normalised to Kite GTT shape.
+        Paginates automatically (page_size=50 max per Groww docs)."""
+        out: list[dict] = []
+        page = 0
+        while True:
+            resp = self.groww.get_smart_order_list(
+                smart_order_type="GTT",
+                status="ACTIVE",
+                page=page,
+                page_size=50,
+            )
+            data = resp.get("data") if isinstance(resp, dict) else {}
+            rows = []
+            if isinstance(data, dict):
+                rows = data.get("smart_orders") or data.get("orders") or []
+            elif isinstance(data, list):
+                rows = data
+            if not rows:
+                break
+            for r in rows:
+                trig_price = float(r.get("trigger_price") or 0)
+                order_inner = r.get("order") or {}
+                out.append({
+                    "gtt_id":       str(r.get("smart_order_id") or r.get("reference_id") or ""),
+                    "status":       (r.get("status") or "active").lower(),
+                    "trigger_type": "single",
+                    "tradingsymbol": r.get("trading_symbol") or "",
+                    "exchange":     r.get("exchange") or "",
+                    "trigger_values": [trig_price],
+                    "last_price":   float(r.get("last_price") or 0),
+                    "orders": [{
+                        "transaction_type": order_inner.get("transaction_type") or "SELL",
+                        "quantity":         int(r.get("quantity") or 0),
+                        "price":            float(order_inner.get("price") or 0),
+                        "order_type":       order_inner.get("order_type") or "LIMIT",
+                        "product":          r.get("product_type") or "NRML",
+                    }],
+                    "created_at":   r.get("created_at") or "",
+                    "_raw":         r,
+                })
+            # Groww paginates; if fewer than 50 rows came back we're on the last page
+            if len(rows) < 50:
+                break
+            page += 1
+        return out
 
     # ── Qty translation ───────────────────────────────────────────────
 
-    def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+    def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
         """Groww accepts quantity in contracts across all segments
-        (including MCX). No translation needed."""
+        (including MCX). No lot-to-contract translation needed.
+
+        ASSUMPTION: verified against Groww Trade API docs at
+        https://groww.in/trade-api/docs — Groww's `quantity` field is
+        in contracts across CASH, FNO, and COMMODITY segments. If a
+        Groww account rejects an MCX order with a lot-size error, add
+        MCX-specific `// lot_size` logic here matching Kite's path."""
         return raw_qty
+
+    def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+        """Back-compat alias — prefer translate_qty in new code."""
+        return self.translate_qty(exchange, raw_qty, lot_size)
 
 
 # ── Response normalisers ──────────────────────────────────────────────

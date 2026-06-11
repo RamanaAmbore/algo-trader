@@ -592,9 +592,9 @@ async def _arm_take_profit(
             # Live TP — fire kite.place_order as a limit order.
             try:
                 broker = _broker_for(parent_account)
-                from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+                from backend.shared.brokers.kite import get_lot_size
                 _ls = await get_lot_size(parent_exchange, parent_symbol)
-                _kq = to_kite_qty(parent_exchange, qty, _ls)
+                _kq = broker.translate_qty(parent_exchange, qty, _ls)
                 kite_order_id = broker.place_order(
                     variety="regular",
                     exchange=parent_exchange,
@@ -1171,9 +1171,9 @@ class OrdersController(Controller):
             f"{data.transaction_type} {data.quantity} {data.tradingsymbol}"
         )
         try:
-            from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+            from backend.shared.brokers.kite import get_lot_size
             _ls_dep = await get_lot_size(data.exchange, data.tradingsymbol.upper())
-            _kq_dep = to_kite_qty(data.exchange, data.quantity, _ls_dep)
+            _kq_dep = broker.translate_qty(data.exchange, data.quantity, _ls_dep)
             order_id = broker.place_order(
                 variety=data.variety,
                 exchange=data.exchange,
@@ -1559,10 +1559,10 @@ class OrdersController(Controller):
                 else:
                     # Single-shot — preserves the existing path for
                     # MARKET / SL-M and explicit chase=False tickets.
-                    from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+                    from backend.shared.brokers.kite import get_lot_size
                     _ls_ticket = await get_lot_size(data.exchange or "NFO", sym)
-                    _kq_ticket = to_kite_qty(data.exchange or "NFO", qty, _ls_ticket)
                     broker = _broker_for(account)
+                    _kq_ticket = broker.translate_qty(data.exchange or "NFO", qty, _ls_ticket)
                     order_id = broker.place_order(
                         variety=(data.variety or "regular"),
                         exchange=(data.exchange or "NFO"),
@@ -2204,9 +2204,9 @@ class OrdersController(Controller):
                 if eff_mode == "live":
                     try:
                         broker = _broker_for(account)
-                        from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+                        from backend.shared.brokers.kite import get_lot_size
                         _ls = await get_lot_size(exch, sym)
-                        _kq = to_kite_qty(exch, qty, _ls)
+                        _kq = broker.translate_qty(exch, qty, _ls)
                         kite_oid = await _asyncio.to_thread(
                             broker.place_order,
                             variety=leg.variety or "regular",

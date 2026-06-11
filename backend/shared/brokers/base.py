@@ -202,16 +202,29 @@ class Broker(ABC):
 
     # ── Per-broker qty translation ────────────────────────────────────
 
+    def translate_qty(self, exchange: str, raw_qty: int,
+                      lot_size: int) -> int:
+        """Translate operator-supplied qty to the unit the broker's
+        place_order API expects.
+
+        Semantics: `raw_qty` is in operator-friendly units — contracts
+        for NSE/BSE/NFO/BFO (e.g. 50 = 1 NIFTY lot), or lots for MCX
+        on Kite (e.g. 1 = 1 lot of CRUDEOIL). The return value is the
+        exact integer to pass to the broker's place_order `quantity`
+        field. Each adapter overrides this to match its own convention.
+
+        Default is a no-op (returns `raw_qty` unchanged) — correct for
+        Dhan and Groww which always want qty in contracts. Kite overrides
+        for MCX/NCO where qty=lots is required.
+
+        Only called when `lot_size > 0` and the caller knows the
+        symbol's lot_size (best-effort via the instruments cache). When
+        the lookup fails, `raw_qty` is passed through unchanged and the
+        broker provides an explicit rejection if the qty is wrong."""
+        return raw_qty
+
     def normalise_qty(self, exchange: str, raw_qty: int,
                       lot_size: int) -> int:
-        """Translate operator-supplied contract qty to the unit the
-        broker's place_order API expects.
-
-        Default is a no-op (returns raw_qty unchanged) — suitable for
-        brokers that always want qty=contracts. Kite overrides this for
-        MCX/NCO where qty=lots is required.
-
-        Only called when lot_size > 0 and the caller knows the symbol's
-        lot_size (best-effort). If lookup fails, raw_qty is passed
-        through as-is and Kite rejects odd quantities explicitly."""
-        return raw_qty
+        """Back-compat alias for translate_qty. Prefer translate_qty in
+        new code."""
+        return self.translate_qty(exchange, raw_qty, lot_size)

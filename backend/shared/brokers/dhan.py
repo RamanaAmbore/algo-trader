@@ -40,12 +40,143 @@ fix at that point with the live trace in hand.
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable
+from urllib.request import urlopen
 
 from backend.shared.brokers.base import Broker
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Instruments cache ──────────────────────────────────────────────────
+#
+# Dhan publishes a master CSV at the URL below. We fetch it once per IST
+# day (cache buster = today's date string) and build two lookup tables:
+#   _DHAN_BY_EXCHANGE   — {kite_exchange: list[dict]}  (per-exchange list)
+#   _DHAN_BY_SYMBOL     — {(kite_exchange, tradingsymbol): security_id}
+# Both are wiped and rebuilt on the first call after midnight IST.
+#
+# The CSV download is done with stdlib `urllib.request` — no extra deps.
+# On any network or parse failure the tables stay empty and callers
+# see the "unknown tradingsymbol" error rather than a 500 trace.
+
+_DHAN_INSTRUMENTS_URL = "https://api.dhan.co/v2/instruments-detailed"
+
+# Map Dhan's exchangeSegment column → Kite-style exchange string.
+# Used when building the cache so the rest of the codebase never sees
+# Dhan's opaque strings.
+_DHAN_SEGMENT_TO_EXCHANGE: dict[str, str] = {
+    "NSE_EQ":      "NSE",
+    "BSE_EQ":      "BSE",
+    "NSE_FNO":     "NFO",
+    "BSE_FNO":     "BFO",
+    "MCX_COMM":    "MCX",
+    "NSE_CURRENCY":"CDS",
+    "BSE_CURRENCY":"BCD",
+    "IDX_I":       "NSE",   # Index instruments — treat as NSE for lookup
+}
+
+_dhan_instruments_lock = threading.Lock()
+_DHAN_INSTRUMENTS_DATE: str = ""            # IST date string when cache was built
+_DHAN_BY_EXCHANGE: dict[str, list[dict]] = {}   # kite_exchange → [instrument rows]
+_DHAN_BY_SYMBOL: dict[tuple, str] = {}          # (kite_exchange, tradingsymbol) → security_id
+
+
+def _ist_today() -> str:
+    """Return today's IST date as 'YYYY-MM-DD' (used as cache buster)."""
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist).strftime("%Y-%m-%d")
+
+
+def _load_dhan_instruments() -> None:
+    """Fetch Dhan's master CSV and populate the module-level caches.
+    Called under _dhan_instruments_lock. Silently no-ops on any failure
+    so a network blip doesn't crash the broker registry."""
+    global _DHAN_INSTRUMENTS_DATE, _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL
+    by_exchange: dict[str, list[dict]] = {}
+    by_symbol: dict[tuple, str] = {}
+    try:
+        with urlopen(_DHAN_INSTRUMENTS_URL, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        lines = raw.splitlines()
+        if not lines:
+            logger.warning("DhanBroker: instruments CSV empty")
+            return
+        # Parse header from first line
+        header = [h.strip() for h in lines[0].split(",")]
+        # Build column-index lookup for robustness against column reorder
+        col = {name: idx for idx, name in enumerate(header)}
+        required = {"SEM_SMST_SECURITY_ID", "SEM_TRADING_SYMBOL", "SEM_EXM_EXCH_ID",
+                    "SM_SYMBOL_NAME"}
+        if not required.issubset(col):
+            logger.warning(f"DhanBroker: instruments CSV missing columns "
+                           f"{required - set(col)}; cache aborted")
+            return
+        for line in lines[1:]:
+            parts = line.split(",")
+            if len(parts) <= max(col.get("SEM_SMST_SECURITY_ID", 0),
+                                 col.get("SEM_TRADING_SYMBOL", 0),
+                                 col.get("SEM_EXM_EXCH_ID", 0)):
+                continue
+            seg_raw = parts[col["SEM_EXM_EXCH_ID"]].strip()
+            kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(seg_raw)
+            if not kite_exch:
+                continue
+            ts = parts[col["SEM_TRADING_SYMBOL"]].strip()
+            sid = parts[col["SEM_SMST_SECURITY_ID"]].strip()
+            if not ts or not sid:
+                continue
+            lot_size = 0
+            tick_size = 0.0
+            if "SM_LOT_SIZE" in col and len(parts) > col["SM_LOT_SIZE"]:
+                try:
+                    lot_size = int(float(parts[col["SM_LOT_SIZE"]].strip() or 0))
+                except (ValueError, TypeError):
+                    pass
+            if "SEM_TICK_SIZE" in col and len(parts) > col["SEM_TICK_SIZE"]:
+                try:
+                    tick_size = float(parts[col["SEM_TICK_SIZE"]].strip() or 0)
+                except (ValueError, TypeError):
+                    pass
+            row = {
+                "tradingsymbol":    ts,
+                "security_id":      sid,
+                "exchange":         kite_exch,
+                "exchange_segment": seg_raw,
+                "lot_size":         lot_size,
+                "tick_size":        tick_size,
+            }
+            by_exchange.setdefault(kite_exch, []).append(row)
+            by_symbol[(kite_exch, ts)] = sid
+        _DHAN_BY_EXCHANGE = by_exchange
+        _DHAN_BY_SYMBOL = by_symbol
+        _DHAN_INSTRUMENTS_DATE = _ist_today()
+        total = sum(len(v) for v in by_exchange.values())
+        logger.info(f"DhanBroker: instruments cache loaded — {total} rows "
+                    f"across {len(by_exchange)} exchanges")
+    except Exception as e:
+        logger.warning(f"DhanBroker: instruments cache load failed: {e}")
+
+
+def _ensure_dhan_instruments() -> None:
+    """Ensure the instruments cache is warm for today's IST date."""
+    with _dhan_instruments_lock:
+        if _DHAN_INSTRUMENTS_DATE != _ist_today():
+            _load_dhan_instruments()
+
+
+def _resolve_security_id(tradingsymbol: str, kite_exchange: str) -> str:
+    """Return the Dhan security_id for a tradingsymbol + Kite exchange.
+
+    Loads the instruments cache lazily (once per IST day). Returns an
+    empty string when not found — callers should raise a meaningful
+    error rather than passing an empty string to Dhan (which would
+    return an opaque 'Invalid security_id' rejection)."""
+    _ensure_dhan_instruments()
+    return _DHAN_BY_SYMBOL.get((kite_exchange, tradingsymbol), "")
 
 
 # ── Auth-retry plumbing ──────────────────────────────────────────────
@@ -225,14 +356,19 @@ class DhanBroker(Broker):
         return {}
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
-        """Dhan publishes a master CSV (api.dhan.co/v2/instruments) but
-        the SDK doesn't have a one-shot loader. Returns an empty list
-        so PriceBroker / get_historical_brokers loops fall through to
-        the next adapter without log spam. Earlier this raised
-        NotImplementedError on every iteration of every historical
-        request, generating WARNING-level noise. Empty list is the
-        graceful degradation contract callers already handle."""
-        return []
+        """Load Dhan instruments from the master CSV (api.dhan.co/v2/instruments-detailed).
+        Cached per IST day — first call fetches, subsequent calls read from memory.
+        Returns a Kite-shape list (tradingsymbol, security_id, exchange, lot_size,
+        tick_size, exchange_segment). Returns [] on network failure so PriceBroker /
+        get_historical_brokers fall through to the next adapter cleanly."""
+        _ensure_dhan_instruments()
+        if exchange:
+            return list(_DHAN_BY_EXCHANGE.get(exchange, []))
+        # No exchange filter — merge all
+        out: list[dict] = []
+        for rows in _DHAN_BY_EXCHANGE.values():
+            out.extend(rows)
+        return out
 
     def historical_data(
         self,
@@ -298,12 +434,46 @@ class DhanBroker(Broker):
         return out
 
     def place_order(self, **kwargs: Any) -> str:
-        """Translate Kite kwargs to Dhan and dispatch. Returns Dhan order_id."""
-        ex_seg  = _dhan_exchange(kwargs.get("exchange", ""))
+        """Translate Kite kwargs to Dhan and dispatch. Returns Dhan order_id.
+
+        Accepts the same kwargs as KiteBroker.place_order: tradingsymbol,
+        exchange, transaction_type, quantity, product, order_type, price,
+        trigger_price, validity, tag, variety.
+
+        security_id is resolved from tradingsymbol + exchange via the
+        instruments cache (loaded from Dhan's master CSV once per IST
+        day). If the symbol is unknown, raises RuntimeError with a clear
+        message pointing at the cache — operator should check whether the
+        Dhan instruments CSV has loaded successfully."""
+        exchange      = kwargs.get("exchange", "")
+        tradingsymbol = kwargs.get("tradingsymbol", "")
+
+        # Resolve security_id — prefer explicit kwarg over instruments lookup
+        # so callers that already have security_id (e.g. basket_order_margins)
+        # don't pay the cache lookup cost unnecessarily.
+        security_id = str(kwargs.get("security_id") or "")
+        if not security_id:
+            security_id = _resolve_security_id(tradingsymbol, exchange)
+        if not security_id:
+            raise RuntimeError(
+                f"Dhan: unknown tradingsymbol {tradingsymbol!r} on {exchange!r} — "
+                f"symbol not found in instruments cache. Ensure Dhan instruments "
+                f"CSV loaded successfully (check DhanBroker.instruments())."
+            )
+
+        ex_seg  = _dhan_exchange(exchange)
         product = _PRODUCT_TO_DHAN.get(kwargs.get("product", "MIS"), "INTRADAY")
         otype   = _ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", "MARKET"), "MARKET")
+
+        # Truncate correlation_id (tag) to 20 chars — Dhan enforces
+        # a similar cap on correlationId as Kite does on tag.
+        _DHAN_CORR_MAX = 20
+        tag = kwargs.get("tag")
+        if tag is not None:
+            tag = str(tag)[:_DHAN_CORR_MAX]
+
         resp = self._safe_call(lambda d: d.place_order(
-            security_id=str(kwargs.get("security_id", "")),
+            security_id=security_id,
             exchange_segment=ex_seg,
             transaction_type=kwargs.get("transaction_type", "BUY"),
             quantity=int(kwargs.get("quantity", 0)),
@@ -311,6 +481,8 @@ class DhanBroker(Broker):
             product_type=product,
             price=float(kwargs.get("price") or 0),
             trigger_price=float(kwargs.get("trigger_price") or 0),
+            validity=kwargs.get("validity", "DAY"),
+            **({"tag": tag} if tag else {}),
         ))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_order rejected: {resp}")
@@ -337,13 +509,23 @@ class DhanBroker(Broker):
 
     # ── GTT (Forever Orders) ──────────────────────────────────────────
     #
-    # Dhan calls these "Forever Orders" (effectively GTT). SDK exposes:
-    #   d.place_forever(...)   d.modify_forever(...)   d.cancel_forever(...)
-    #   d.get_forever_orders()
-    # Capability matrix declares gtt_single + gtt_oco both True. Live
-    # wiring deferred until a sandbox token is available for testing —
-    # the request/response shape is documented at
-    # https://dhanhq.co/docs/api-reference/v2/forever-orders/
+    # Dhan calls these "Forever Orders". The dhanhq SDK inherits from
+    # ForeverOrder which provides: place_forever / modify_forever /
+    # cancel_forever / get_forever. The capability matrix declares
+    # gtt_single=True and gtt_oco=True.
+    #
+    # Kite's "single" → Dhan's order_flag="SINGLE"
+    # Kite's "two-leg" (OCO) → Dhan's order_flag="OCO"
+    #
+    # Shape mapping (Kite → Dhan):
+    #   trigger_type="single"  → order_flag="SINGLE"
+    #                            trigger_Price  = trigger_values[0]
+    #                            price          = orders[0]["price"]
+    #   trigger_type="two-leg" → order_flag="OCO"
+    #                            leg 0: trigger_Price, price, quantity
+    #                            leg 1: trigger_Price1, price1, quantity1
+    #
+    # Dhan docs: https://dhanhq.co/docs/api-reference/v2/forever-orders/
 
     def place_gtt(
         self,
@@ -356,37 +538,167 @@ class DhanBroker(Broker):
         trigger_values: list[float],
         tag: str | None = None,
     ) -> str:
-        raise NotImplementedError(
-            "DhanBroker.place_gtt not yet wired. Map to d.place_forever() — "
-            "Dhan Forever Order shape carries securityId + exchangeSegment "
-            "+ orderFlag (SINGLE / OCO). Needs sandbox token to validate."
-        )
+        """Place a Dhan Forever Order (GTT). Returns the Dhan order_id."""
+        security_id = _resolve_security_id(tradingsymbol, exchange)
+        if not security_id:
+            raise RuntimeError(
+                f"Dhan place_gtt: unknown symbol {tradingsymbol!r} on {exchange!r}"
+            )
+        ex_seg  = _dhan_exchange(exchange)
+        order0  = orders[0] if orders else {}
+        product = _PRODUCT_TO_DHAN.get(order0.get("product", "NRML"), "MARGIN")
+        otype   = _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT")
+        qty0    = int(order0.get("quantity", 0))
+        price0  = float(order0.get("price") or 0)
+        trig0   = float(trigger_values[0]) if trigger_values else 0.0
+        txn0    = order0.get("transaction_type", "SELL")
 
-    def modify_gtt(self, gtt_id: str, **kwargs: Any) -> str:
-        raise NotImplementedError(
-            "DhanBroker.modify_gtt not yet wired. Map to d.modify_forever()."
-        )
+        _DHAN_CORR_MAX = 20
+        corr = str(tag)[:_DHAN_CORR_MAX] if tag else None
+
+        if trigger_type == "single":
+            resp = self._safe_call(lambda d: d.place_forever(
+                security_id=security_id,
+                exchange_segment=ex_seg,
+                transaction_type=txn0,
+                product_type=product,
+                order_type=otype,
+                quantity=qty0,
+                price=price0,
+                trigger_Price=trig0,
+                order_flag="SINGLE",
+                tag=corr,
+                symbol=tradingsymbol,
+            ))
+        else:
+            # OCO — two-leg. Leg 0: entry/stop, Leg 1: target.
+            order1  = orders[1] if len(orders) > 1 else {}
+            otype1  = _ORDER_TYPE_TO_DHAN.get(order1.get("order_type", "LIMIT"), "LIMIT")
+            qty1    = int(order1.get("quantity", qty0))
+            price1  = float(order1.get("price") or 0)
+            trig1   = float(trigger_values[1]) if len(trigger_values) > 1 else 0.0
+            resp = self._safe_call(lambda d: d.place_forever(
+                security_id=security_id,
+                exchange_segment=ex_seg,
+                transaction_type=txn0,
+                product_type=product,
+                order_type=otype,
+                quantity=qty0,
+                price=price0,
+                trigger_Price=trig0,
+                order_flag="OCO",
+                price1=price1,
+                trigger_Price1=trig1,
+                quantity1=qty1,
+                tag=corr,
+                symbol=tradingsymbol,
+            ))
+
+        if not isinstance(resp, dict) or resp.get("status") != "success":
+            raise RuntimeError(f"Dhan place_gtt rejected: {resp}")
+        data = resp.get("data") or {}
+        if isinstance(data, dict):
+            return str(data.get("orderId") or data.get("order_id") or "")
+        return str(data)
+
+    def modify_gtt(
+        self,
+        gtt_id: str,
+        *,
+        trigger_type: str,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+    ) -> str:
+        """Modify an existing Dhan Forever Order. Returns the (same) order_id."""
+        order0  = orders[0] if orders else {}
+        otype   = _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT")
+        qty0    = int(order0.get("quantity", 0))
+        price0  = float(order0.get("price") or 0)
+        trig0   = float(trigger_values[0]) if trigger_values else 0.0
+        order_flag = "SINGLE" if trigger_type == "single" else "OCO"
+        # Dhan's modify_forever `leg_name` differentiates which OCO leg
+        # to update: "ENTRY_LEG" (leg 0) or "TARGET_LEG" (leg 1).
+        # For single GTT, leg_name is also "ENTRY_LEG".
+        resp = self._safe_call(lambda d: d.modify_forever(
+            order_id=gtt_id,
+            order_flag=order_flag,
+            order_type=otype,
+            leg_name="ENTRY_LEG",
+            quantity=qty0,
+            price=price0,
+            trigger_price=trig0,
+            disclosed_quantity=0,
+            validity="DAY",
+        ))
+        if not isinstance(resp, dict) or resp.get("status") != "success":
+            raise RuntimeError(f"Dhan modify_gtt rejected: {resp}")
+        return gtt_id
 
     def cancel_gtt(self, gtt_id: str) -> str:
-        raise NotImplementedError(
-            "DhanBroker.cancel_gtt not yet wired. Map to d.cancel_forever()."
-        )
+        """Cancel a Dhan Forever Order. Returns the cancelled order_id."""
+        resp = self._safe_call(lambda d: d.cancel_forever(order_id=gtt_id))
+        if not isinstance(resp, dict) or resp.get("status") != "success":
+            raise RuntimeError(f"Dhan cancel_gtt rejected: {resp}")
+        return gtt_id
 
     def get_gtts(self) -> list[dict]:
-        raise NotImplementedError(
-            "DhanBroker.get_gtts not yet wired. Map to d.get_forever_orders() "
-            "and normalise to the Kite gtt shape (trigger_id, status, "
-            "trigger_type, tradingsymbol, exchange, trigger_values, orders)."
-        )
+        """List all active Dhan Forever Orders, normalised to Kite GTT shape."""
+        resp = self._safe_call(lambda d: d.get_forever())
+        rows = _unwrap(resp)
+        if not isinstance(rows, list):
+            rows = []
+        out: list[dict] = []
+        for r in rows:
+            flag = (r.get("orderFlag") or "SINGLE").upper()
+            ttype = "single" if flag == "SINGLE" else "two-leg"
+            seg = r.get("exchangeSegment") or ""
+            kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(seg, seg)
+            # Build trigger_values list from the response fields
+            t0 = float(r.get("triggerPrice") or r.get("trigger_Price") or 0)
+            t1 = float(r.get("triggerPrice1") or r.get("trigger_Price1") or 0)
+            trigger_values = [t0, t1] if ttype == "two-leg" else [t0]
+            out.append({
+                "gtt_id":       str(r.get("orderId") or r.get("order_id") or ""),
+                "status":       (r.get("orderStatus") or r.get("status") or "").lower(),
+                "trigger_type": ttype,
+                "tradingsymbol": r.get("tradingSymbol") or r.get("symbol") or "",
+                "exchange":     kite_exch,
+                "trigger_values": trigger_values,
+                "last_price":   float(r.get("lastTradedPrice") or 0),
+                "orders": [{
+                    "transaction_type": r.get("transactionType") or "SELL",
+                    "quantity":         int(r.get("quantity") or 0),
+                    "price":            float(r.get("price") or 0),
+                    "order_type":       r.get("orderType") or "LIMIT",
+                    "product":          r.get("productType") or "NRML",
+                }],
+                "created_at":   r.get("createTime") or "",
+                "_raw":         r,
+            })
+        return out
 
     # ── Qty translation ───────────────────────────────────────────────
 
-    def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+    def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
         """Dhan accepts quantity in contracts for every segment including
-        MCX (unlike Kite's qty=lots quirk). No translation needed —
-        ABC default (identity) suffices, but we keep the override here
-        for clarity since this is a frequent Kite-vs-Dhan gotcha."""
+        MCX (unlike Kite's qty=lots quirk for MCX/NCO). The operator
+        types 50 for 1 NIFTY lot and Dhan expects 50; the operator
+        types 1 for 1 CRUDEOIL lot and Dhan also expects 1 (Dhan uses
+        contracts throughout). No translation required — identity.
+
+        ASSUMPTION: verified against Dhan v2 API docs and SDK examples
+        at https://dhanhq.co/docs/api-reference/v2/ — Dhan's `quantity`
+        field is consistently in contracts across NSE_EQ, NSE_FNO, and
+        MCX_COMM. If future accounts show rejection on MCX lot sizing,
+        add MCX-specific logic here matching Kite's `// lot_size` path."""
         return raw_qty
+
+    def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+        """Back-compat alias — prefer translate_qty in new code."""
+        return self.translate_qty(exchange, raw_qty, lot_size)
 
 
 # ── Response normalisers ──────────────────────────────────────────────

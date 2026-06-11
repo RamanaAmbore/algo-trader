@@ -250,8 +250,14 @@ class KiteBroker(Broker):
 
     # ── Qty translation ───────────────────────────────────────────────
 
-    def normalise_qty(self, exchange: str, raw_qty: int,
+    def translate_qty(self, exchange: str, raw_qty: int,
                       lot_size: int) -> int:
         """MCX/NCO want qty=lots; every other Kite exchange wants
-        qty=contracts. Delegates to the module-level `to_kite_qty`."""
+        qty=contracts. Delegates to the module-level `to_kite_qty`
+        helper which encodes Kite's lot-vs-contract convention."""
         return to_kite_qty(exchange, raw_qty, lot_size)
+
+    def normalise_qty(self, exchange: str, raw_qty: int,
+                      lot_size: int) -> int:
+        """Back-compat alias — prefer translate_qty in new code."""
+        return self.translate_qty(exchange, raw_qty, lot_size)
