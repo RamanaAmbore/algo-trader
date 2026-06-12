@@ -322,6 +322,13 @@ _PERSIST_PATH = Path(__file__).resolve().parents[3] / ".log" / "sparkline_cache.
 _persist_lock = threading.Lock()
 _last_save_at: float = 0.0
 _SAVE_THROTTLE_S = 5.0   # at most one disk write every 5 s — bounds I/O
+# Content hash of the last successfully-persisted payload. Set by
+# `_save_caches_to_disk` after every write attempt and compared on the
+# next call — when the past-cache content hasn't changed (operator
+# idle, sparkline data already cached, request handlers reading not
+# writing), we skip the write entirely. Eliminates the steady-state
+# "rewrite the same 100-symbol payload every 5 s" pattern.
+_last_save_hash: str = ""
 
 
 def _persist_file_lock():
@@ -361,61 +368,81 @@ def _key_to_str(key: tuple) -> str:
 
 
 def _save_caches_to_disk(force: bool = False) -> None:
-    """Persist `_spark_past_cache` + `_spark_today_cache` to
-    `_PERSIST_PATH`. Atomic via write-tmp-then-rename so a crashed
-    write never leaves a half-written JSON file that breaks load.
+    """Persist `_spark_past_cache` to `_PERSIST_PATH`. Atomic via
+    write-tmp-then-rename so a crashed write never leaves a
+    half-written JSON file that breaks load.
+
+    What we DO persist:
+      - `_spark_past_cache` (past daily closes) — high value across
+        redeploys. Daily resolution, ~30-s warm task is the
+        alternative-cost. THIS is the file's job.
+
+    What we DON'T persist (decided against during the efficiency
+    pass):
+      - `_spark_today_cache` (today's intraday) — 5-min TTL means a
+        restart within that window keeps stale data; restart after
+        5 min discards it anyway. Pure write-amplification cost for
+        no real persistence value. Restored today-cache would be
+        wrong nearly as often as right (intraday is a moving target
+        within 5 min). Better to let warm + lazy-fetch repopulate.
+      - `_spark_past_attempt` (last-attempt timestamps) — throttle
+        metadata. Losing it means at-most-one extra re-attempt per
+        symbol post-redeploy, which is exactly the desired behaviour
+        (try again now that we're running).
 
     Throttling:
       - `force=False` (default — called from request handlers):
-        skips when the last save was within `_SAVE_THROTTLE_S` seconds,
-        so a burst of /api/quotes/sparkline calls doesn't translate
-        to one disk write per request.
-      - `force=True` (warm task, redeploy checkpoints): bypasses the
-        throttle. Warm cycles land 100+ entries at once and only fire
-        4×/day — losing the post-warm snapshot to the throttle would
-        mean a redeploy a few seconds later boots from a stale cache.
+        skips when the last save was within `_SAVE_THROTTLE_S` seconds.
+      - `force=True` (warm task): bypasses the throttle so the
+        post-warm snapshot lands immediately.
+
+    Change-detection:
+      - Compares the SHA-256 of the past-snapshot to the hash of the
+        last successfully-persisted payload. Identical content → skip
+        the disk write entirely. In the steady state (operator idle,
+        cache static), per-request `_save_caches_to_disk` calls
+        return without touching disk.
     """
-    global _last_save_at
+    global _last_save_at, _last_save_hash
     import time as _t
     now = _t.time()
     if not force and (now - _last_save_at) < _SAVE_THROTTLE_S:
         return
-    _last_save_at = now
 
-    # Shallow-copy the three dicts under the lock, then build the
-    # serialisable snapshots OUTSIDE the lock. The previous shape held
-    # `_spark_lock` for the duration of three dict comprehensions
-    # (each iterating up to 100 entries + value materialisation) which
+    # Shallow-copy the past-cache under the lock, then build the
+    # serialisable snapshot OUTSIDE the lock. The previous shape held
+    # `_spark_lock` for the duration of dict comprehensions which
     # blocked every concurrent batch_sparkline cache read for that
     # full window. dict() copy is O(n) but constant-factor cheap and
     # releases the lock immediately.
     today = _ist_today()
     with _spark_lock:
-        past_copy    = dict(_spark_past_cache)
-        today_copy   = dict(_spark_today_cache)
-        attempt_copy = dict(_spark_past_attempt)
+        past_copy = dict(_spark_past_cache)
     past_snapshot = {
         _key_to_str(k): list(v)
         for k, v in past_copy.items()
         if k[3] == today
     }
-    today_snapshot = {
-        _key_to_str(k): [v[0], list(v[1])]
-        for k, v in today_copy.items()
-        if k[2] == today
-    }
-    attempt_snapshot = {
-        _key_to_str(k): v
-        for k, v in attempt_copy.items()
-        if k[3] == today
-    }
 
     payload = {
-        "ist_date":     today,
-        "past":         past_snapshot,
-        "today":        today_snapshot,
-        "past_attempt": attempt_snapshot,
+        "ist_date": today,
+        "past":     past_snapshot,
     }
+
+    # Change-detection. Compute the hash of the serialised payload
+    # and compare to the last write. Identical → no write needed.
+    import hashlib
+    serialised = json.dumps(payload, sort_keys=True)
+    content_hash = hashlib.sha256(serialised.encode()).hexdigest()
+    if not force and content_hash == _last_save_hash:
+        # Steady-state path — burst of identical writes returns here
+        # without touching disk. Still update the throttle timestamp
+        # so the next change actually fires.
+        _last_save_at = now
+        return
+
+    _last_save_at = now
+    _last_save_hash = content_hash
 
     def _do_write():
         with _persist_file_lock():
@@ -423,7 +450,7 @@ def _save_caches_to_disk(force: bool = False) -> None:
             tmp_path = _PERSIST_PATH.with_suffix(".tmp")
             try:
                 with open(tmp_path, "w") as f:
-                    json.dump(payload, f)
+                    f.write(serialised)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp_path, _PERSIST_PATH)
@@ -441,10 +468,12 @@ def _save_caches_to_disk(force: bool = False) -> None:
 
 
 def load_sparkline_cache_from_disk() -> int:
-    """Restore `_spark_past_cache` + `_spark_today_cache` from disk on
-    process startup. Returns the count of past-cache entries loaded
-    (today-cache + attempt entries are included as a side-effect; the
-    return value is informational for the startup log line).
+    """Restore `_spark_past_cache` from disk on process startup.
+    Returns the count of past-cache entries loaded.
+
+    Only past-cache is persisted (see `_save_caches_to_disk` docstring
+    for rationale). Today-cache and past-attempt are rebuilt naturally
+    by the startup warm task + lazy fetches.
 
     Skipped wholesale when the file is from a prior IST date — the
     cached values would just be evicted on the first batch_sparkline
@@ -453,6 +482,9 @@ def load_sparkline_cache_from_disk() -> int:
     Idempotent and exception-safe: no file / corrupted file / wrong
     schema all silently no-op, and the startup warm task fills the
     gap in ~30 s.
+
+    Tolerates older on-disk schemas that included `today` /
+    `past_attempt` keys — those are silently ignored.
     """
     try:
         if not _PERSIST_PATH.exists():
@@ -486,35 +518,11 @@ def load_sparkline_cache_from_disk() -> int:
                     past_loaded += 1
             except Exception:
                 continue
-        for k_str, val in (payload.get("today") or {}).items():
-            try:
-                parts = k_str.split("|")
-                if len(parts) != 3:
-                    continue
-                sym, exch, date_s = parts
-                key = (sym, exch, date_s)
-                if isinstance(val, list) and len(val) == 2:
-                    cached_at, closes = val
-                    _spark_today_cache[key] = (
-                        float(cached_at), [float(c) for c in closes]
-                    )
-            except Exception:
-                continue
-        for k_str, ts in (payload.get("past_attempt") or {}).items():
-            try:
-                parts = k_str.split("|")
-                if len(parts) != 4:
-                    continue
-                sym, exch, days_s, date_s = parts
-                key = (sym, exch, int(days_s), date_s)
-                _spark_past_attempt[key] = float(ts)
-            except Exception:
-                continue
 
     if past_loaded:
         logger.info(
-            f"sparkline cache restored from disk: {past_loaded} past entries, "
-            f"{len(_spark_today_cache)} today entries (ist_date={today})"
+            f"sparkline cache restored from disk: {past_loaded} past "
+            f"entries (ist_date={today})"
         )
     return past_loaded
 

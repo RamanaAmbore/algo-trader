@@ -2783,6 +2783,13 @@
       row.tradingsymbol = sym;
       if (row.ltp == null && m.last_price != null)    row.ltp        = m.last_price;
       if (row.change_pct == null && m.change_pct != null) row.change_pct = m.change_pct;
+      // Wire previous_close → row.close so the Prev Close column
+      // renders on mover rows (including futures showing up as
+      // pure movers). Without this, futures and stocks in the
+      // movers buckets showed a blank Prev Close cell — only
+      // watchlist + positions rows had close hooked up.
+      if (row.close == null && m.previous_close != null)
+        row.close = m.previous_close;
       if (m.previous_close != null && row.change == null && row.ltp != null)
         row.change = row.ltp - m.previous_close;
       row._mover_sticky    = m.sticky ?? false;
