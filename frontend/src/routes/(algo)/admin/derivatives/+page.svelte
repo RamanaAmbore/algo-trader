@@ -738,7 +738,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
+  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -1902,6 +1902,11 @@
       // portion; the open row keeps the remaining unrealised
       // (broker's pnl − realised already attributed).
       pnl: Number(p.pnl || 0) - closed_realised,
+      // Zero out realised on the open half — the closed half already
+      // carries it as its pnl. Without this, the per-row P&L formula
+      // `(ltp − cost) × qty + realised` would double-count the
+      // realised on the open row.
+      realised: 0,
       day_change_val: open_dcv,
       _splitTag: 'open',
     };
@@ -1931,6 +1936,7 @@
           ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
           prev_close: p?.close_price != null ? Number(p.close_price) : null,
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
+          realised: p?.realised != null ? Number(p.realised) : 0,
           day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
           overnight_quantity: Number(p?.overnight_quantity || 0),
           day_buy_quantity:   Number(p?.day_buy_quantity || 0),
@@ -1971,6 +1977,7 @@
           ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
           prev_close: p?.close_price != null ? Number(p.close_price) : null,
           pnl:      p?.pnl != null ? Number(p.pnl) : 0,
+          realised: p?.realised != null ? Number(p.realised) : 0,
           day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
           overnight_quantity: Number(p?.overnight_quantity || 0),
           day_buy_quantity:   Number(p?.day_buy_quantity || 0),
@@ -2705,9 +2712,19 @@
             {@const displayQty = c._residualQty != null
               ? Number(c._residualQty)
               : Number(c.qty || 0)}
+            <!-- Open-row P&L = (live_ltp − cost) × current_qty + realised.
+                 The realised term carries the cash from intraday
+                 closeouts so the row reconciles with Kite's broker
+                 pnl (which includes realised). Without it, a leg
+                 that's been partially closed today would show
+                 unrealised-only and diverge from the strip's P
+                 chip by the realised amount. Closed rows (qty=0)
+                 use broker's c.pnl directly — that IS realised. -->
             {@const pnl = isClosed
               ? (c.pnl != null ? Number(c.pnl) : null)
-              : ((ltp != null && cost != null) ? (ltp - cost) * displayQty : null)}
+              : ((ltp != null && cost != null)
+                  ? (ltp - cost) * displayQty + Number(c.realised || 0)
+                  : null)}
             {@const dir = displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat'}
             {@const isClosable = !isClosed && c.source !== 'draft'}
             <!-- Row click → close-position ticket. Skipped on

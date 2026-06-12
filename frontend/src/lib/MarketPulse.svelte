@@ -2617,21 +2617,35 @@
       } else if (row.ltp == null) {
         row.ltp = r.last_price ?? null;
       }
-      // Day P&L = (live_ltp − close_price) × qty when the live quote
-      // is present; otherwise fall back to the broker's snapshot
-      // day_change_val (which is only fresh as of the last loadPulse
-      // — every 2 ticks). With the recompute, the subtotals strip +
-      // Day P&L column update on every loadQuotes tick alongside LTP.
+      // Day P&L recompute with realised-today carried through:
+      //
+      //   broker_dcv      = realised_today + (poll_ltp − close) × qty
+      //   realised_today  = broker_dcv − (poll_ltp − close) × qty
+      //   live row.day_pnl = realised_today + (live_ltp − close) × qty
+      //
+      // Without the realised_today term, a partially-closed leg
+      // (overnight 10, sold 4 today, current_qty 6) would show only
+      // the unrealised portion (~6 × move) on the day, missing the
+      // realised cash flow from the 4 sold today. End-to-end: the row
+      // diverged from broker's Day P&L by the realised amount.
+      //
       // Treat ltp=0 as "no live quote" — a positive LTP is the only
       // value that should drive the live recompute. Otherwise a broken
       // quote (pre-open, no trades yet, circuit, broker glitch) would
       // post day_pnl = (0 − close) × qty → a phantom −100% day move.
       const livePos = Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null;
       const closePx = Number(r.close_price) || 0;
+      const pollLtp = Number(r.last_price) || 0;
+      const brokerDcv = Number(r.day_change_val) || 0;
+      // Solve for realised_today from the broker snapshot. Falls
+      // through to 0 when LTP or close is missing (no way to solve).
+      const realisedToday = (pollLtp > 0 && closePx > 0 && q !== 0)
+        ? brokerDcv - (pollLtp - closePx) * q
+        : 0;
       if (livePos != null && closePx > 0 && q !== 0) {
-        row.day_pnl = (row.day_pnl ?? 0) + (livePos - closePx) * q;
+        row.day_pnl = (row.day_pnl ?? 0) + realisedToday + (livePos - closePx) * q;
       } else {
-        row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+        row.day_pnl = (row.day_pnl ?? 0) + brokerDcv;
       }
       // Total P&L = (live_ltp − avg_price) × qty + realised. realised
       // only changes when a trade fills, so the live recompute stays
