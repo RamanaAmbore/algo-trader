@@ -423,46 +423,50 @@ Operators add / edit / delete broker accounts via `/admin/brokers` instead of ed
 
 ---
 
-## Multi-Account Kite IP Binding
+## Multi-Account IPv6 Source Binding (Kite + Dhan)
 
-Kite Connect restricts one IP per app. Each Zerodha account uses a separate Kite app (different API key), so multiple accounts on the same server need different source IPs.
+Two of the three broker integrations enforce some form of "one active session per source IP" rule and need dedicated IPv6 binding when more than one account is loaded on the same server. Groww does not.
 
-**Solution:** All accounts use IPv6 addresses from the server's `/48` subnet (`2a02:4780:12:9e1d::/48`). Each account binds to a unique IPv6 via `source_ip` in `secrets.yaml`. Every account **must** have `source_ip` set — without it, the OS may choose IPv4 or IPv6 unpredictably.
-
-| Account | Source IP | Kite Whitelist |
+| Broker | Rule | What breaks without binding |
 |---|---|---|
-| ZG0790 | `2a02:4780:12:9e1d::2` | `2a02:4780:12:9e1d::2` |
-| ZJ6294 | `2a02:4780:12:9e1d::3` | `2a02:4780:12:9e1d::3` |
-| (future) | `2a02:4780:12:9e1d::4` | `2a02:4780:12:9e1d::4` |
+| **Kite (Zerodha)** | One IP whitelisted per Kite app. Every account uses its own Kite app + own API key. | The second account's calls go through the wrong-whitelisted IP and Kite returns `Insufficient permission`. |
+| **Dhan** | One active access token per partner app per source IP at the v2 auth backend. Every successful `generate_token` from one account invalidates the prior token of every other account on the same source IP. | 3-minute token rotation loop in `api_log_file` — accounts alternate `DH-906: Invalid Token` and "login complete" lines. Positions / holdings silently empty for the bad account each cycle. |
+| **Groww** | No per-IP rule. | n/a |
 
-Server IPv4 (`69.62.78.136`) is **not used** for Kite — only for web traffic. `::1` is reserved as the server's primary IPv6. Account IPs start from `::2`.
+**Solution:** All Kite + Dhan accounts use IPv6 addresses from the server's `/48` subnet (`2a02:4780:12:9e1d::/48`). Each account binds to a unique IPv6 via the `source_ip` column on `broker_accounts`. Every account **must** have `source_ip` set — without it the OS may choose IPv4 or IPv6 unpredictably and the per-IP rules above kick in.
+
+| Account | Broker | Source IP | Whitelist required at broker? |
+|---|---|---|---|
+| ZG0790 | Kite | `2a02:4780:12:9e1d::2` | Yes (Kite developer console) |
+| ZJ6294 | Kite | `2a02:4780:12:9e1d::3` | Yes (Kite developer console) |
+| DH3747 | Dhan | `2a02:4780:12:9e1d::4` | No |
+| DH6847 | Dhan | `2a02:4780:12:9e1d::5` | No |
+| (future) | any | `2a02:4780:12:9e1d::N` | Kite: yes; Dhan: no |
+
+Server IPv4 (`69.62.78.136`) is **not used** for broker traffic — only for web traffic. `::1` is reserved as the server's primary IPv6. Account IPs start from `::2`.
 
 ### Adding a new account
 
-1. Choose the next IPv6: `2a02:4780:12:9e1d::N` (N starts at 4 for the next account)
+1. Choose the next IPv6: `2a02:4780:12:9e1d::N` (next free slot).
 2. Add it to the server: `sudo ip -6 addr add 2a02:4780:12:9e1d::N/48 dev eth0`
-3. Make persistent: add to `/etc/netplan/50-cloud-init.yaml` under `addresses:`
-4. Add to `secrets.yaml` on **both** server paths (`/opt/ramboq/` and `/opt/ramboq_dev/`):
-   ```yaml
-   kite_accounts:
-     NEW_ACCT:
-       source_ip: "2a02:4780:12:9e1d::N"
-       api_key: ...
-       api_secret: ...
-       password: ...
-       totp_token: ...
-   ```
-5. Whitelist `2a02:4780:12:9e1d::N` in the new account's Kite developer console
-6. Clear token cache: `rm /opt/ramboq/.log/kite_tokens.json /opt/ramboq_dev/.log/kite_tokens.json`
-7. Restart both API services
+3. Make persistent: add to `/etc/netplan/50-cloud-init.yaml` under `addresses:` then `sudo netplan apply`.
+4. Add the broker account row via `/admin/brokers` with `source_ip = 2a02:4780:12:9e1d::N`. The connection rebuild on save picks it up — no service restart needed.
+5. **Kite only**: whitelist `2a02:4780:12:9e1d::N` in the Kite developer console for that account's app.
+6. Clear the relevant token cache when changing source IP for an existing account: `rm /opt/ramboq/.log/kite_tokens.json /opt/ramboq/.log/dhan_tokens.json` (do the same on `/opt/ramboq_dev/`).
+7. **Dhan only**: confirm the rotation pattern stops. After deploy + IPv6 set, the `Dhan rotation pattern detected` ERROR log in `api_log_file` should stop firing. If it doesn't, the cause isn't per-IP affinity — check the Dhan dashboard's Settings → DhanHQ Trading APIs → Token validity dropdown (should be 24 h, not 5 min) and verify the two broker_accounts rows aren't pointing at the same physical Dhan account.
 
 ### Token caching
 
-Access tokens are cached in `.log/kite_tokens.json` (per-environment, gitignored). On startup, cached tokens are restored without login/2FA. Full login only on cache miss or token expiry (23h). Clear the cache file when changing `source_ip` or API credentials.
+Tokens are cached per-broker in `.log/` (gitignored, per-environment): `kite_tokens.json`, `dhan_tokens.json`, `groww_tokens.json`. On startup, cached tokens are restored without re-running the login flow. Full login only fires on cache miss or token expiry. Clear the cache file when changing `source_ip` or API credentials so the next call mints a fresh token from the new source IP.
 
 ### Implementation
 
-`_SourceIPAdapter` (in `connections.py`) extends `requests.HTTPAdapter` to set `source_address` on the urllib3 pool manager. Both KiteConnect's internal `reqsession` and the login `session` are patched with this adapter. The adapter is applied to every account that has `source_ip` configured.
+`_IPv6SourceAdapter` (in `connections.py`) extends `requests.HTTPAdapter` to set `source_address` on the urllib3 pool manager. Each broker integration mounts the adapter on every `requests.Session` that talks to the broker API:
+
+- **Kite** — adapter mounted on `KiteConnect.reqsession` (runtime API calls) and the login session.
+- **Dhan** — adapter mounted on `DhanContext.dhan_http.session` (runtime API calls) and on a custom `_login_session()` factory used by `_do_login` / `_try_renew`. The login path bypasses `dhanhq.auth.DhanLogin` (which uses module-level `requests.post`/`requests.get` with no session hook) and calls `https://auth.dhan.co/app/generateAccessToken` and `https://api.dhan.co/v2/RenewToken` directly through the source-bound session.
+
+The adapter is applied per-account; accounts with no `source_ip` configured use the OS default route (works fine for single-account deployments).
 
 ---
 
