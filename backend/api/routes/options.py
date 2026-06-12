@@ -1793,21 +1793,77 @@ class OptionsController(Controller):
         })
         median_strike = (sorted_strikes[len(sorted_strikes) // 2]
                          if sorted_strikes else None)
-        # Pull the shared expiry off any leg for the futures-fallback
-        # path. v1 already guards against mixed-expiry baskets so any
-        # leg works as a representative. Prefer the operator-supplied
-        # expiry (Kite instruments cache) over the parsed-symbol guess.
-        first_parsed = parse_tradingsymbol(data.legs[0].symbol)
+        # Pick the spot ANCHOR leg — the one whose expiry month decides
+        # which futures contract becomes our spot proxy. Two failure
+        # modes the naive `data.legs[0]` shape hit:
+        #
+        #   (a) Mixed-expiry baskets where leg[0] is a far-month outlier.
+        #       Operator's CRUDEOIL basket is mostly JUN with one JUL leg;
+        #       client-side sort puts JUL (lexically "JUL" < "JUN") at
+        #       index 0 → resolver anchors to CRUDEOIL26JULFUT instead of
+        #       CRUDEOIL26JUNFUT and the chart shows the JUL price as
+        #       "spot" even though every JUN leg is being priced off the
+        #       JUN future. Calendar spread basis can drift hundreds of
+        #       rupees on a 6800 CRUDEOIL — a material miscalibration.
+        #
+        #   (b) Futures-first baskets (covered call: long fut + short
+        #       call) where leg[0] is the future itself. The future's
+        #       symbol IS the anchor — fine — but then the strike-anchor
+        #       fallback for the synthetic spot still wants an option's
+        #       median strike, which is irrelevant for a pure-fut basket.
+        #
+        # Anchor selection rule:
+        #   1. Build a multiset of (kind, expiry_iso, symbol) per leg.
+        #   2. Pick the modal expiry — the month carrying the most legs.
+        #      Ties broken by FRONT-MONTH (nearest expiry) since that's
+        #      the operator's primary book and the conservative choice.
+        #   3. From that month, prefer an option symbol over a futures
+        #      symbol for option_symbol (lookup_future_for_option needs
+        #      the option's month token). Fall back to a futures leg if
+        #      that's all the month has.
+        #
+        # Front-month tie-break matches the industry-standard convention
+        # (Sensibull / Bloomberg / Streak all anchor multi-expiry payoff
+        # charts on the front month).
+        leg_expiries: list[tuple[str, str, str]] = []  # (expiry_iso, kind, symbol)
+        for leg in data.legs:
+            p = parse_tradingsymbol(leg.symbol.upper().strip())
+            if not p:
+                continue
+            kind = p.get("kind") or ""
+            expiry_iso = _leg_expiry_iso(leg, p)
+            leg_expiries.append((expiry_iso, kind, leg.symbol.upper().strip()))
+        anchor_symbol: Optional[str] = None
         expiry_hint: Optional[date] = None
-        if first_parsed:
-            expiry_hint = date.fromisoformat(
-                _leg_expiry_iso(data.legs[0], first_parsed)
+        if leg_expiries:
+            from collections import Counter
+            expiry_counts = Counter(e for (e, _k, _s) in leg_expiries)
+            # Tie-break by nearest expiry (front-month wins).
+            modal_expiry = min(
+                expiry_counts.keys(),
+                key=lambda e: (-expiry_counts[e], e)
             )
+            modal_legs = [(k, s) for (e, k, s) in leg_expiries if e == modal_expiry]
+            # Prefer an option symbol for the anchor (lookup_future_for_option
+            # parses the option's month token directly); fall back to the
+            # futures symbol when the modal month is fut-only.
+            option_modal = next((s for (k, s) in modal_legs if k == "opt"), None)
+            futures_modal = next((s for (k, s) in modal_legs if k == "fut"), None)
+            anchor_symbol = option_modal or futures_modal
+            try:
+                expiry_hint = date.fromisoformat(modal_expiry)
+            except Exception:
+                expiry_hint = None
+        # Anchor leg fallback to legs[0] only when none of the legs parse
+        # — defensive, shouldn't fire in practice since parse_tradingsymbol
+        # already gated the basket above.
+        if anchor_symbol is None and data.legs:
+            anchor_symbol = data.legs[0].symbol
         S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
             underlying, data.spot,
             fallback=median_strike,
             expiry_hint=expiry_hint,
-            option_symbol=data.legs[0].symbol if data.legs else None)
+            option_symbol=anchor_symbol)
         # Surface provenance to the UI. When the resolver fell through
         # to the synthetic median-strike anchor, the spot value is just
         # the strike — NOT a real market price. Logging it so prod
