@@ -857,9 +857,14 @@ def _normalise_positions(resp: Any) -> dict:
                                             p.get("overnight_quantity", 0)) or 0),
             "day_buy_quantity":   int(p.get("day_buy_quantity",  0) or 0),
             "day_sell_quantity":  int(p.get("day_sell_quantity", 0) or 0),
-            # Day-trade cash values for the split P∆ formula. Derive
-            # from price × qty when Groww doesn't return value
-            # directly. ₹ cash to match Kite convention.
+            # Day-trade cash values — forwarded to the /admin/derivatives
+            # Candidates panel where `splitClosedReopened` splits a
+            # closed-and-reopened leg into two display rows. Not used by
+            # the day_change_val recompute in broker_apis any more
+            # (that was the retired "split P∆" formula; current shape
+            # is the universal (LTP-close)*qty applied at the
+            # chokepoint). Derive from price × qty when Groww doesn't
+            # return value directly. ₹ cash to match Kite convention.
             "day_buy_value":      float(p.get("day_buy_value",  0) or 0)
                                   or (float(p.get("day_buy_price",  0) or 0)
                                       * int(p.get("day_buy_quantity",  0) or 0)),

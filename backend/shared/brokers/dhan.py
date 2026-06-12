@@ -1,41 +1,36 @@
 """
 Dhan implementation of the `Broker` interface.
 
-Wraps the official `dhanhq` Python SDK (PyPI: `dhanhq`). Two pieces of
-auth state live in `DhanConnection`:
+Production-wired adapter: orders, holdings, positions, margins, GTT
+(Forever) order book, trades, basket margin. Built on the official
+`dhanhq` Python SDK (PyPI: `dhanhq`). Auth + token refresh are managed
+in `DhanConnection` (backend/shared/helpers/connections.py).
 
-  * `client_id`     — the operator's 10-digit Dhan trading account number
-                      (plaintext; alone it does not authenticate).
-  * `access_token`  — short-lived (≤ 24 h) JWT minted from the Dhan
-                      Partner API portal.
+Token refresh — fully headless. The earlier "paste from portal" path
+was retired. Tokens are minted via a direct REST POST to
+`https://auth.dhan.co/app/generateAccessToken` with `client_id + pin
++ TOTP code` (TOTP seed stored in `broker_accounts.totp_token_enc`).
+`dhanhq.auth.DhanLogin` is bypassed because its module-level
+`requests.post` calls don't accept a custom session — we need a
+source-IP-bound `requests.Session` so Dhan's per-IP session affinity
+(one active token per partner-app per source IP) doesn't invalidate
+peer accounts. See `_DhanConnection._login_session()`.
 
-Dhan caps access-token validity at 24 hours, so the adapter cannot use
-the "paste once, run forever" model Kite-without-TOTP uses. Two refresh
-paths are supported:
-
-  1. Manual refresh — operator regenerates the token on Dhan's portal
-     and pastes it into /admin/brokers. Adapter picks up the new token
-     on the post-save `Connections.rebuild_from_db()` call.
-
-  2. Automated refresh via Partner API (not yet wired) — adapter can
-     mint a fresh token daily using `api_key + api_secret + TOTP`.
-     The credential columns already exist on `broker_accounts`
-     (api_secret_enc, totp_token_enc); the OAuth login flow lands in
-     a follow-up sprint once a sandbox token is available to test
-     against.
+IPv6 source-binding — every Dhan account loaded on the same server
+binds to a dedicated IPv6 from the server's /48 subnet, same pattern
+as Kite multi-account. Login session + runtime SDK session both mount
+the source adapter; see CLAUDE.md "Multi-Account IPv6 Source
+Binding". Without this, prod logs show a 3-min token rotation loop
+between Dhan accounts.
 
 Response normalisation — Dhan's REST responses use different field
 names than Kite (e.g. `securityId` vs `instrument_token`,
-`tradingSymbol` vs `tradingsymbol`). Every method here maps Dhan's
+`tradingSymbol` vs `tradingsymbol`). Every method maps Dhan's
 response shape back to the Kite shape the rest of the codebase
-consumes. Where a Dhan field has no Kite analogue it's carried through
-under the Dhan name so future callers can read it without another
-adapter touch.
-
-Status: scaffold. Every method that hits Dhan's API is marked with the
-SDK call it delegates to. First real call against a live account will
-surface any field-shape drift between Dhan's docs and the response;
-fix at that point with the live trace in hand.
+consumes. Where a Dhan field has no Kite analogue it's carried
+through under the Dhan name. F&O `tradingSymbol` ("CRUDEOIL-16JUL2026
+-8500-CE") is canonicalised to Kite form ("CRUDEOIL26JUL8500CE") so
+downstream parsers and the instruments cache resolve consistently.
 """
 
 from __future__ import annotations
@@ -255,14 +250,23 @@ def _resolve_security_id(tradingsymbol: str, kite_exchange: str) -> str:
 # response propagates to the caller unchanged.
 _AUTH_ERROR_HINTS = (
     "invalid access token",
-    "invalid token",
+    "invalid token",   # ← primary signal — Dhan's DH-906 always
+                       #   carries `error_message: 'Invalid Token'`
+                       #   in the remarks dict, which str() renders
+                       #   as "...invalid token..." after lowering.
     "token expired",
     "unauthorized",
     "unauthorised",
     "auth failed",
     "401",
-    "dh-901",   # Dhan: Invalid Authentication
-    "dh-905",   # Dhan: Invalid Token
+    "dh-901",   # Dhan: Invalid Authentication (rare; reported only
+                # for a fresh credential rejected by the auth backend
+                # rather than an in-session token going stale).
+    "dh-906",   # Dhan: Invalid Token — the one the rotation pattern
+                # surfaces. Confirmed against prod logs; the earlier
+                # "dh-905" entry was a doc-drift typo. Kept "dh-906"
+                # as defence-in-depth against the SDK ever surfacing
+                # the code without the matching "invalid token" text.
 )
 
 
@@ -313,9 +317,12 @@ def _check_dhan_rotation_pattern(
 
     The pattern points at one of two operator-actionable causes:
       (a) Dhan's "one active token per partner-app per source-IP"
-          semantic — fix via per-account IPv6 source-binding (the
-          source_ip field on broker_accounts is already wired through
-          the constructor; just unused in the SDK request session).
+          semantic — fix by setting a distinct `source_ip` on each
+          Dhan broker_account row (the runtime SDK session + the
+          login session both mount the IPv6 adapter when source_ip
+          is configured; see DhanConnection._mount_source_ip_adapter
+          and ._login_session()). If both Dhan rows already carry
+          dedicated IPv6 addresses, this isn't the cause — fall to (b).
       (b) A single physical Dhan account split across two RamboQuant
           records — fix by removing one record.
 
@@ -1079,7 +1086,13 @@ def _normalise_positions(resp: Any) -> dict:
             "overnight_quantity": ovn_contracts,
             "day_buy_quantity":   dbq_contracts,
             "day_sell_quantity":  dsq_contracts,
-            # Day-trade cash values — used by broker_apis' split P∆
+            # Day-trade cash values — forwarded to the /admin/derivatives
+            # Candidates panel where `splitClosedReopened` uses them to
+            # split a closed-and-reopened leg into two display rows
+            # (operator: "if positions are closed and the same positions
+            # are opened … you have to show them as different rows").
+            # Not consumed by the day_change_val recompute in
+            # broker_apis any more — that was the retired "split P∆"
             # formula. Derive from price × qty (in contracts) when Dhan
             # doesn't carry the value field directly.
             "day_buy_value":      float(p.get("dayBuyValue",  0) or 0)
@@ -1097,12 +1110,14 @@ def _normalise_positions(resp: Any) -> dict:
             "sell_price":      float(p.get("sellAvg",      0) or 0),
             "buy_quantity":    int(p.get("buyQty",         0) or 0) * _mult,
             "sell_quantity":   int(p.get("sellQty",        0) or 0) * _mult,
-            # Pre-computed pnl + day_change_val from our own formulas;
-            # broker_apis still recomputes day_change_val using the split-
-            # formula for accuracy on intraday reversals, but having
-            # day_change_val populated here means /api/positions returns
-            # a sensible value even on routes that don't run the full
-            # split (e.g. raw-broker views, demo serialisation).
+            # Pre-computed pnl + day_change_val from our own formulas.
+            # broker_apis.fetch_positions recomputes both at the central
+            # chokepoint (universal (LTP-avg)*qty / (LTP-close)*qty rule),
+            # which overwrites these when LTP+avg > 0 and LTP+close > 0.
+            # The pre-computed values survive as the pre-open / cold-LTP
+            # fallback so routes that don't run the recompute (raw-broker
+            # views, demo serialisation) still return a sensible number
+            # rather than 0.
             "pnl":               pnl_calc,
             "realised":          realised,
             "unrealised":        pnl_calc,

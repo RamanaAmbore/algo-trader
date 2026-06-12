@@ -333,9 +333,12 @@ _last_save_hash: str = ""
 
 def _persist_file_lock():
     """Cross-process exclusive lock around the sparkline cache file —
-    same fcntl pattern the broker token caches use so prod + dev
-    writing the same /opt/ramboq/.log/sparkline_cache.json don't
-    lose updates."""
+    same fcntl pattern the broker token caches use. The path resolves
+    per-deployment (prod under /opt/ramboq/.log/, dev under
+    /opt/ramboq_dev/.log/) so prod + dev write separate files; the
+    lock guards against multiple workers OF THE SAME deployment
+    racing each other (Litestar runs uvicorn --workers 1 in prod, so
+    this is defence-in-depth more than strictly necessary)."""
     import contextlib
     @contextlib.contextmanager
     def _ctx():

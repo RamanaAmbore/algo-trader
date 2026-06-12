@@ -361,14 +361,7 @@ class ChartsController(Controller):
         pts = list(_intraday_equity)[-max(1, min(n, 200)):]
         out = []
         for pt in pts:
-            # Tolerate legacy 3-tuple entries that might be in flight during
-            # a rolling deploy — pad with zeros so a partial buffer doesn't
-            # break the API contract.
-            if len(pt) == 3:
-                ts, day, cum = pt
-                h_pnl = h_day = p_pnl = p_day = 0.0
-            else:
-                ts, day, cum, h_pnl, h_day, p_pnl, p_day = pt
+            ts, day, cum, h_pnl, h_day, p_pnl, p_day = pt
             out.append({
                 "ts": ts,
                 "day_pnl": day, "cum_pnl": cum,

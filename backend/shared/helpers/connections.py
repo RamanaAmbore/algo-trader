@@ -485,10 +485,11 @@ class DhanConnection:
     persisted in `broker_accounts`; this class mints a Dhan access
     token on first use and re-mints when the token expires.
 
-    Login flow (one SDK call, no browser, no SMS/email OTP):
+    Login flow (direct REST POST, no browser, no SMS/email OTP):
 
-      DhanLogin(client_id).generate_token(pin, totp_code)
-      → {"data": {"accessToken": "..."}}
+      POST https://auth.dhan.co/app/generateAccessToken
+        ?dhanClientId=<id>&pin=<pin>&totp=<code>
+      → {"accessToken": "..."}  (sometimes wrapped under "data")
 
       where `totp_code = pyotp.TOTP(totp_seed).now()` from the stored
       base32 seed. The token's validity is whatever the operator has
@@ -499,8 +500,16 @@ class DhanConnection:
     The Partner-API consent flow (generate_login_session →
     consume_token_id) is intentionally NOT used — Dhan v2 moved that
     behind browser-based SMS/email-OTP + PIN consent which kills any
-    unattended automation. The direct `generate_token` endpoint above
-    is the only headless path.
+    unattended automation. The direct REST endpoint above is the
+    only headless path.
+
+    `dhanhq.auth.DhanLogin` is bypassed too — its `generate_token` /
+    `renew_token` methods use module-level `requests.post`/
+    `requests.get` calls with no session hook, so we'd have no way
+    to mount the IPv6 source-binding adapter (see below). We call
+    the same two REST endpoints directly via `_login_session()`
+    which returns a `requests.Session` with the per-account
+    source_ip adapter pre-mounted.
 
     Access tokens are cached to `dhan_tokens.json` (next to
     `kite_tokens.json`) so a restart within the validity window skips
@@ -1304,9 +1313,10 @@ class Connections(SingletonBase):
                     #                     "password" is the Kite analogue;
                     #                     for Dhan rows it stores the PIN)
                     #   totp_token_enc  → Dhan TOTP seed
-                    # Connection runs the 4-step DhanLogin flow on first
-                    # use + every 23 h; no operator paste needed after
-                    # initial setup.
+                    # Connection runs the direct REST auth flow
+                    # (POST auth.dhan.co/app/generateAccessToken) on
+                    # first use + every 23 h; no operator paste
+                    # needed after initial setup.
                     if not r.client_id:
                         logger.warning(f"Dhan account {r.account!r} missing "
                                        f"client_id; skipping.")
