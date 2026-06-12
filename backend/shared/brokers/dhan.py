@@ -928,9 +928,33 @@ def _normalise_positions(resp: Any) -> dict:
         # Formulas (signed; long qty>0, short qty<0):
         #   pnl            = (LTP - avg_price)   × qty   (lifetime / unrealised)
         #   day_change_val = (LTP - close_price) × qty   (today's change)
-        avg = float(p.get("netAvgPrice",     0) or 0)
-        ltp = float(p.get("lastTradedPrice", 0) or 0)
-        close = float(p.get("previousClose", p.get("closePrice", 0)) or 0)
+        #
+        # Dhan SDK field names per the v2 positions schema:
+        #   costPrice         — net average across buy + sell legs
+        #   buyAvg / sellAvg  — per-side averages
+        #   lastTradedPrice   — current LTP
+        #   previousClosePrice / closePrice — yesterday's close
+        #
+        # The earlier shape used `netAvgPrice` which is NOT a Dhan
+        # field — every position came back with avg=0, the (ltp>0 AND
+        # avg>0) guard kicked in, and pnl_calc was silently set to 0.
+        # That's why Dhan P&L looked "wrong" on the legs panel even
+        # though qty and ltp were correct. Fall back through three
+        # candidate fields so the adapter works across Dhan API
+        # revisions: costPrice → netAvgPrice (legacy guess) → side-
+        # appropriate buyAvg / sellAvg.
+        avg = float(p.get("costPrice", p.get("netAvgPrice", 0)) or 0)
+        if avg <= 0:
+            # Sided fallback — for a long net position use the buy
+            # average; for a short net position use the sell average.
+            # Neither field is present on a flat (qty=0) row, but we
+            # don't surface P&L for flat rows so the 0 path is safe.
+            avg = float(p.get("buyAvg", 0) or 0) if qty_contracts >= 0 \
+                  else float(p.get("sellAvg", 0) or 0)
+        ltp = float(p.get("lastTradedPrice", p.get("ltp", 0)) or 0)
+        close = float(p.get("previousClosePrice",
+                            p.get("previousClose",
+                                  p.get("closePrice", 0))) or 0)
         pnl_calc = (ltp - avg)   * qty_contracts if (ltp > 0 and avg > 0) else 0.0
         dcv_calc = (ltp - close) * qty_contracts if (ltp > 0 and close > 0) else 0.0
         # Keep Dhan's realisedProfit verbatim — that's a closed-book
