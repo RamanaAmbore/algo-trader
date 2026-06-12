@@ -1435,6 +1435,18 @@ async def _task_visitor_log_daily() -> None:
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
+    # Restore the sparkline cache from disk BEFORE any request handler
+    # can fire. Persisted entries are validated against today's IST
+    # date inside the loader — stale-day entries are ignored and the
+    # startup warm task (queued below) refills them in ~30 s. When the
+    # disk file matches today's date, /api/quotes/sparkline serves from
+    # the restored cache immediately and the startup warm finds every
+    # symbol already cached.
+    try:
+        from backend.api.routes.quote import load_sparkline_cache_from_disk
+        load_sparkline_cache_from_disk()
+    except Exception as e:
+        logger.warning(f"sparkline cache load skipped: {e}")
     # Kick the batched WebSocket-event persist loop — collapses bursts of
     # agent fires into one-commit-per-second instead of one-task-per-event.
     from backend.api.routes.algo import start_persist_flush

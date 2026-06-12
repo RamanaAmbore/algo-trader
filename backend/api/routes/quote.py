@@ -10,9 +10,12 @@ GET  /api/quotes/stream                               → SSE LTP tick stream
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import os
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import msgspec
@@ -297,6 +300,208 @@ _spark_lock       = threading.Lock()
 # Warm-state for health endpoint.
 _spark_warm_symbols: int = 0
 _spark_warm_at: Optional[str] = None   # ISO-8601 UTC string
+
+# ── On-disk persistence ──────────────────────────────────────────────────────
+# Survives process redeployment so the operator's first /pulse load after a
+# deploy reads from a hot cache instead of waiting ~30 s for the startup warm
+# (or paying ~0.3 s per symbol for lazy fetches). File lives alongside the
+# broker token caches in .log/; same fcntl-based cross-process lock so prod +
+# dev sharing the path don't trample each other.
+#
+# Shape on disk:
+#   {
+#     "ist_date": "2026-06-12",
+#     "past": {"<sym>|<exch>|<days>": [closes...]},
+#     "today": {"<sym>|<exch>": [<cached_at_epoch>, [closes...]]},
+#     "past_attempt": {"<sym>|<exch>|<days>": <epoch>},
+#   }
+# `ist_date` is checked on load — entries are dropped wholesale if the file
+# is from a prior IST date (matches the in-memory `_evict_stale` semantics).
+
+_PERSIST_PATH = Path(__file__).resolve().parents[3] / ".log" / "sparkline_cache.json"
+_persist_lock = threading.Lock()
+_last_save_at: float = 0.0
+_SAVE_THROTTLE_S = 5.0   # at most one disk write every 5 s — bounds I/O
+
+
+def _persist_file_lock():
+    """Cross-process exclusive lock around the sparkline cache file —
+    same fcntl pattern the broker token caches use so prod + dev
+    writing the same /opt/ramboq/.log/sparkline_cache.json don't
+    lose updates."""
+    import contextlib
+    @contextlib.contextmanager
+    def _ctx():
+        lock_path = _PERSIST_PATH.with_suffix(".lock")
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        fp = None
+        try:
+            fp = open(lock_path, "a+")
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if fp is not None:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                fp.close()
+    return _ctx()
+
+
+def _key_to_str(key: tuple) -> str:
+    """Serialise a cache key tuple as a delimiter-joined string. JSON
+    object keys must be strings; `|` doesn't appear in any
+    tradingsymbol or exchange code we use, so a simple join survives
+    parse round-trip without collisions."""
+    return "|".join(str(p) for p in key)
+
+
+def _save_caches_to_disk() -> None:
+    """Persist `_spark_past_cache` + `_spark_today_cache` to
+    `_PERSIST_PATH`. Throttled to once per `_SAVE_THROTTLE_S` seconds
+    so a burst of cache writes (e.g. a warm batch landing 100 entries
+    in ~30 s) doesn't translate to 100 disk writes. Atomic via
+    write-tmp-then-rename so a crashed write never leaves a
+    half-written JSON file that breaks load."""
+    global _last_save_at
+    import time as _t
+    now = _t.time()
+    if (now - _last_save_at) < _SAVE_THROTTLE_S:
+        return
+    _last_save_at = now
+
+    with _spark_lock:
+        # Snapshot under the data lock so concurrent mutations can't
+        # corrupt the serialised view. The today_cache value shape
+        # `(epoch, [closes])` serialises as a 2-tuple → JSON array.
+        today = _ist_today()
+        past_snapshot = {
+            _key_to_str(k): list(v)
+            for k, v in _spark_past_cache.items()
+            if k[3] == today
+        }
+        today_snapshot = {
+            _key_to_str(k): [v[0], list(v[1])]
+            for k, v in _spark_today_cache.items()
+            if k[2] == today
+        }
+        attempt_snapshot = {
+            _key_to_str(k): v
+            for k, v in _spark_past_attempt.items()
+            if k[3] == today
+        }
+
+    payload = {
+        "ist_date":     today,
+        "past":         past_snapshot,
+        "today":        today_snapshot,
+        "past_attempt": attempt_snapshot,
+    }
+
+    def _do_write():
+        with _persist_file_lock():
+            _PERSIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = _PERSIST_PATH.with_suffix(".tmp")
+            try:
+                with open(tmp_path, "w") as f:
+                    json.dump(payload, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, _PERSIST_PATH)
+            except Exception as e:
+                logger.warning(f"sparkline cache save failed: {e}")
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    # Avoid holding the data lock while writing to disk — kick the write
+    # to a background thread so request handlers stay responsive even on
+    # a slow disk.
+    threading.Thread(target=_do_write, daemon=True).start()
+
+
+def load_sparkline_cache_from_disk() -> int:
+    """Restore `_spark_past_cache` + `_spark_today_cache` from disk on
+    process startup. Returns the count of past-cache entries loaded
+    (today-cache + attempt entries are included as a side-effect; the
+    return value is informational for the startup log line).
+
+    Skipped wholesale when the file is from a prior IST date — the
+    cached values would just be evicted on the first batch_sparkline
+    call anyway, so loading them is pure overhead.
+
+    Idempotent and exception-safe: no file / corrupted file / wrong
+    schema all silently no-op, and the startup warm task fills the
+    gap in ~30 s.
+    """
+    try:
+        if not _PERSIST_PATH.exists():
+            return 0
+        with _persist_file_lock():
+            with open(_PERSIST_PATH, "r") as f:
+                payload = json.load(f)
+    except Exception as e:
+        logger.warning(f"sparkline cache load failed (will rebuild via warm): {e}")
+        return 0
+
+    today = _ist_today()
+    if payload.get("ist_date") != today:
+        logger.info(
+            f"sparkline cache on disk is from {payload.get('ist_date')!r}, "
+            f"today is {today!r} — skipping reload, startup warm will rebuild"
+        )
+        return 0
+
+    past_loaded = 0
+    with _spark_lock:
+        for k_str, closes in (payload.get("past") or {}).items():
+            try:
+                parts = k_str.split("|")
+                if len(parts) != 4:
+                    continue
+                sym, exch, days_s, date_s = parts
+                key = (sym, exch, int(days_s), date_s)
+                if isinstance(closes, list):
+                    _spark_past_cache[key] = [float(c) for c in closes]
+                    past_loaded += 1
+            except Exception:
+                continue
+        for k_str, val in (payload.get("today") or {}).items():
+            try:
+                parts = k_str.split("|")
+                if len(parts) != 3:
+                    continue
+                sym, exch, date_s = parts
+                key = (sym, exch, date_s)
+                if isinstance(val, list) and len(val) == 2:
+                    cached_at, closes = val
+                    _spark_today_cache[key] = (
+                        float(cached_at), [float(c) for c in closes]
+                    )
+            except Exception:
+                continue
+        for k_str, ts in (payload.get("past_attempt") or {}).items():
+            try:
+                parts = k_str.split("|")
+                if len(parts) != 4:
+                    continue
+                sym, exch, days_s, date_s = parts
+                key = (sym, exch, int(days_s), date_s)
+                _spark_past_attempt[key] = float(ts)
+            except Exception:
+                continue
+
+    if past_loaded:
+        logger.info(
+            f"sparkline cache restored from disk: {past_loaded} past entries, "
+            f"{len(_spark_today_cache)} today entries (ist_date={today})"
+        )
+    return past_loaded
 
 # ── Instrument token-map cache ────────────────────────────────────────────────
 # broker.instruments(exchange) returns ~500 kB per exchange; fetching all
@@ -906,6 +1111,12 @@ class SparklineController(Controller):
             # If neither past nor today nor ltp: omit silently
             # (symbol unresolvable).
 
+        # Persist any lazy-fetch updates to disk so a redeploy
+        # restores them on next startup. Throttled to one write per
+        # 5 s; runs in a background thread so the request returns
+        # without waiting for fsync.
+        _save_caches_to_disk()
+
         return SparklineResponse(
             data=result,
             refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1172,4 +1383,9 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     _spark_warm_symbols = cached_count
     _spark_warm_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     logger.info(f"sparkline warm: cached {cached_count}/{len(to_fetch)} symbols for {today}")
+    # Persist the full warm result to disk. Throttled inside
+    # _save_caches_to_disk to one write per 5 s — the warm task fires
+    # at most 4× per day (startup + 00:30 IST + 09:00 + 09:15), so
+    # this is far below the throttle anyway.
+    _save_caches_to_disk()
     return cached_count
