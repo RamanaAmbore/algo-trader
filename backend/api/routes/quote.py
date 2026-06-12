@@ -337,6 +337,67 @@ def _evict_stale(today: str) -> None:
         del _spark_past_cache[k]
 
 
+def _bar_date_iso(bar: dict) -> str:
+    """Return the bar's date as YYYY-MM-DD in IST.
+
+    Kite's historical_data bars carry `date` as a tz-aware datetime
+    (IST) when interval=day. Older SDKs sometimes hand back an ISO
+    string. Handle both shapes defensively so the today-bar drop
+    rule below works either way."""
+    raw = bar.get("date")
+    if raw is None:
+        return ""
+    if hasattr(raw, "strftime"):
+        try:
+            return raw.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    s = str(raw)
+    # Pull the first 10 chars — works for "2026-06-12", "2026-06-12T...", etc.
+    return s[:10] if len(s) >= 10 else ""
+
+
+def _trim_past_closes(raw_bars: list[dict], days: int, today: str) -> list[float]:
+    """Build the sparkline's past-closes window from Kite's
+    historical_data bars. Returns the most recent (days-1) closed-day
+    closes, oldest first. Caller appends today's live LTP on top of
+    this to produce the final `days`-point sparkline.
+
+    Critical: drop the LAST bar only when its date matches today
+    (intraday-running value that we'll replace with live LTP).
+    Off-hours / pre-market the last bar IS yesterday's settled close
+    — dropping it leaves the operator looking at D-5..D-2 with
+    today's LTP appended, with yesterday's close missing entirely.
+    That looked like "5d sparkline not updating" — the most recent
+    settled close was just gone.
+
+    Falls back to keeping every bar when bar dates can't be parsed
+    (defensive — preserves the old shape).
+    """
+    if not raw_bars:
+        return []
+    closes_with_date: list[tuple[str, float]] = []
+    for b in raw_bars:
+        close = b.get("close")
+        if close is None:
+            continue
+        try:
+            closes_with_date.append((_bar_date_iso(b), float(close)))
+        except (TypeError, ValueError):
+            continue
+    if not closes_with_date:
+        return []
+    last_date, _ = closes_with_date[-1]
+    if last_date == today:
+        # Today's intraday-running bar — drop. The live-LTP append
+        # downstream replaces it with a fresh quote.
+        closes_with_date = closes_with_date[:-1]
+    closes = [c for (_d, c) in closes_with_date]
+    if len(closes) > (days - 1):
+        closes = closes[-(days - 1):]
+    return closes
+
+
 # ── Sparkline schemas ─────────────────────────────────────────────────────────
 
 class SparklineSymbol(msgspec.Struct):
@@ -486,12 +547,7 @@ class SparklineController(Controller):
                                 raw = await asyncio.to_thread(
                                     broker.historical_data, token, from_d, to_d, "day"
                                 ) or []
-                                closes = [float(b["close"]) for b in raw if b.get("close") is not None]
-                                # Drop the last bar (today's running intraday value —
-                                # unreliable mid-session; we append live LTP below).
-                                # Keep the `days-1` bars before that.
-                                past_closes = closes[:-1] if closes else []
-                                past_closes = past_closes[-(days - 1):] if len(past_closes) > (days - 1) else past_closes
+                                past_closes = _trim_past_closes(raw, days, today)
                                 await asyncio.sleep(_KITE_PACE_S)
                                 return sym, past_closes
                             except Exception as exc:
@@ -778,9 +834,7 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         async with sem:
             try:
                 raw = await asyncio.to_thread(broker.historical_data, token, from_d, to_d, "day") or []
-                closes = [float(b["close"]) for b in raw if b.get("close") is not None]
-                past_closes = closes[:-1] if closes else []
-                past_closes = past_closes[-(days - 1):] if len(past_closes) > (days - 1) else past_closes
+                past_closes = _trim_past_closes(raw, days, today)
                 await asyncio.sleep(_KITE_PACE_S)
                 return sym, past_closes
             except Exception as exc:
