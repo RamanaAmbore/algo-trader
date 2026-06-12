@@ -807,8 +807,20 @@
       await loadPulse();
       if (showFunds) await loadFunds();
     }
-    if (enableMovers && _tickCount % _TICK_MOVERS === 0) await loadMovers();
-    if (_tickCount % _TICK_SPARK === 0) loadSparklines();
+    let moversChanged = false;
+    if (enableMovers && _tickCount % _TICK_MOVERS === 0) {
+      await loadMovers();
+      moversChanged = true;
+    }
+    // Sparklines fire on the regular 12-tick cadence (60 s) OR
+    // immediately after a movers refresh so new winners/losers
+    // get their 5d column populated within the same tick instead
+    // of waiting up to another 30 s. The backend's _spark_past_cache
+    // + _spark_today_cache absorb the extra calls — symbols already
+    // cached return instantly from the past+today layers, only
+    // genuinely-new mover symbols pay a historical_data fetch (paced
+    // at 3 req/sec by the endpoint).
+    if (moversChanged || _tickCount % _TICK_SPARK === 0) loadSparklines();
   }
   /** Operator-initiated "refresh everything now" — bound to the
    *  RefreshButton in the toolbar. Drains the spinner state after the
