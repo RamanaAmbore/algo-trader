@@ -743,12 +743,36 @@ class DhanConnection:
             # When the previous _do_login raised because of that, we
             # set _login_blocked_until = now + 130s (2 min + 10s
             # safety). Re-login attempts within that window short-
-            # circuit and either return the LAST KNOWN client
-            # (possibly stale but better than nothing) or raise so
-            # the broker layer can degrade gracefully.
+            # circuit:
+            #
+            #   - test_conn=True (caller hit DH-906 / "Invalid Token"):
+            #     the cached token IS dead. Returning self._dhan would
+            #     keep handing out the dead handle for the next 130 s,
+            #     and every position / holdings / margins fetch would
+            #     silently come back empty (the auth-failure response
+            #     shape unwraps to []), so the Candidates panel +
+            #     PositionStrip lose all Dhan rows for two minutes
+            #     after every token expiry. Raise instead so the
+            #     broker layer (`fetch_positions` etc.) logs the
+            #     failure cleanly and the frontend gets an explicit
+            #     "broker unavailable" surface. The 130 s window
+            #     elapses and the very next fetch attempts a fresh
+            #     login.
+            #
+            #   - test_conn=False (routine refresh, token might still
+            #     be live): the cached token COULD still be valid, so
+            #     return self._dhan and let the SDK try. If the SDK
+            #     succeeds, great; if it fails with DH-906, _safe_call
+            #     retries with test_conn=True which falls into the
+            #     raise-on-dead path above.
             import time as _time_mod
             if _time_mod.time() < self._login_blocked_until:
                 wait_s = int(self._login_blocked_until - _time_mod.time())
+                if test_conn:
+                    raise RuntimeError(
+                        f"Dhan login rate-limited for {self.account!r} — "
+                        f"token known dead; wait {wait_s}s before retrying"
+                    )
                 if self._dhan is not None:
                     logger.warning(
                         f"Dhan login blocked for {self.account!r} "

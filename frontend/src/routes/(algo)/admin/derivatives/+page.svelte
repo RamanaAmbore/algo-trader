@@ -614,6 +614,11 @@
       for (const a of newAccts) cur.add(a);
       selectedAccounts = [...cur].sort();
     }
+    // Mark every account in choices as seen — "has been offered to
+    // the operator in the picker, they had a chance to react." If
+    // they're picked into selectedAccounts later, that's the
+    // operator's call. Auto-union only fires when an account appears
+    // AFTER first being seen — i.e., a genuine late-arrival.
     for (const a of choices) _seenAccts.add(a);
     try {
       if (typeof sessionStorage !== 'undefined') {
