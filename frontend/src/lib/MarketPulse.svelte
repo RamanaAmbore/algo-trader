@@ -3587,6 +3587,77 @@
       _acctColTrailing,
     ]);
 
+    // Group-preserving postSortRows. After ag-Grid sorts each row
+    // independently by the selected column, we re-arrange so an
+    // underlying (kind='spot' / 'fut') always carries its options
+    // (kind='opt') with it as one contiguous block. Operator: "sort
+    // moves the GROUP, not individual elements in the group".
+    //
+    // Algorithm:
+    //   1. Walk the post-sort row order.
+    //   2. For each row, look up its group key (underlying name).
+    //   3. The FIRST time we see a group, emit the anchor row +
+    //      every other row in that group (preserving the post-sort
+    //      relative order of the group's members).
+    //   4. Subsequent rows of an already-emitted group are skipped
+    //      since they were attached above.
+    //
+    // Rows without an underlying (cash equity, watchlist items
+    // without F&O coverage) keep their post-sort position individually.
+    function postSortGroups({ nodes }) {
+      if (!nodes || nodes.length === 0) return;
+      const byKey = new Map();   // groupKey → array of nodes
+      const orderedGroupKeys = [];   // first-appearance order of groups
+      const standaloneOrder = [];   // rows with no group key
+      const standaloneIdx = new Map();   // node → its index in standaloneOrder
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        const d = n.data || {};
+        // Group key: underlying name. Rows without an underlying
+        // (cash equity, pinned indices, watchlist symbols that
+        // aren't derivatives) get a unique key so they don't
+        // collapse into one another's group.
+        const u = String(d.underlying || '').toUpperCase();
+        if (!u) {
+          standaloneIdx.set(n, standaloneOrder.length);
+          standaloneOrder.push(n);
+          continue;
+        }
+        if (!byKey.has(u)) {
+          byKey.set(u, []);
+          orderedGroupKeys.push(u);
+        }
+        byKey.get(u).push(n);
+      }
+      // Build the final order. Interleave standalone rows and group
+      // blocks based on the first occurrence of each in the original
+      // sorted list — preserves the relative sort order between
+      // (groups + non-grouped rows).
+      const firstIdxOf = new Map();   // groupKey → idx in original `nodes` of its first member
+      for (const k of orderedGroupKeys) {
+        firstIdxOf.set(k, nodes.indexOf(byKey.get(k)[0]));
+      }
+      // Combine groups + standalone rows, sorted by their first
+      // occurrence in the ag-Grid sort result.
+      const seq = [];
+      for (const k of orderedGroupKeys) seq.push({ first: firstIdxOf.get(k), kind: 'g', key: k });
+      for (const n of standaloneOrder) seq.push({ first: nodes.indexOf(n), kind: 's', node: n });
+      seq.sort((a, b) => a.first - b.first);
+
+      // Reassemble in place — ag-Grid mutates the nodes array.
+      const out = [];
+      for (const entry of seq) {
+        if (entry.kind === 'g') {
+          for (const n of byKey.get(entry.key)) out.push(n);
+        } else {
+          out.push(entry.node);
+        }
+      }
+      // Mutate nodes in place (ag-Grid postSortRows contract).
+      nodes.length = 0;
+      for (const n of out) nodes.push(n);
+    }
+
     // Factory: every per-bucket grid shares the same shape (height
     // tracks, getRowClass, sort + resize defaults, click handlers).
     // Only columnDefs / emptyMsg / pinnedBottom vary per bucket.
@@ -3606,6 +3677,11 @@
           `<span style="font-size:0.65rem;color:#7e97b8">${emptyMsg}</span>`,
         domLayout: 'normal',
         getRowClass,
+        // Keep underlyings + their options together as a block during
+        // column sort. The TOTAL row + pinned-bottom rows ride
+        // outside this since they're rendered via pinnedBottomRowData
+        // (not in the sortable body).
+        postSortRows: postSortGroups,
         rowHeight: 28,
         headerHeight: 28,
         onRowClicked: handleRowClick,
