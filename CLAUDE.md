@@ -263,7 +263,7 @@ Defined in `backend_config.yaml` under `market_segments`. Background thread hand
 | Close summary (per segment) | `close_summary_offset_minutes` (15) after segment close, once per day |
 | Loss alert check | Every performance fetch during market hours |
 | Agent engine `run_cycle()` | Every performance fetch; skips `schedule: market_hours` agents when no segment is open |
-| Sparkline past-close warm | Immediately at app startup; then once per market-segment open (NSE 09:15, MCX 09:00 IST) |
+| Sparkline past-close warm | Immediately at app startup; daily at 00:30 IST (midnight rollover — keeps cache hot for overnight / pre-market loads); plus once per market-segment open (NSE 09:15, MCX 09:00 IST) |
 
 **Holiday calendar caching** — `fetch_holidays(exchange)` in `broker_apis.py` is now cached per `(exchange, today's date)` to avoid hammering nseindia.com on every `_build_context()` call (once per 5 min on the real path, once per 2 s in sim). The daily cache refreshes naturally at midnight IST and caches the empty set on API failure to avoid retry-hammering when the upstream is down.
 

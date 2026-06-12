@@ -1068,9 +1068,34 @@ async def _task_sparkline_warm(state: dict) -> None:
     else:
         logger.info("sparkline warm: skipped startup — engine idle (dev)")
 
-    # ── Then at each market-segment open boundary ────────────────────────────
+    # ── Then at each market-segment open boundary + daily IST midnight ───────
+    #
+    # Three boundary types per day:
+    #   - 00:30 IST  "midnight"   — fires right after the date rolls so the
+    #                                next operator glance (overnight, pre-
+    #                                market, weekend) reads from a hot
+    #                                cache. Without this, the cache evicts
+    #                                at midnight and stays empty until the
+    #                                09:00 MCX-open warm — every
+    #                                /api/quotes/sparkline call between
+    #                                those hours triggers ~30-100 lazy
+    #                                per-symbol historical_data fetches.
+    #                                The 30-minute offset gives Kite a few
+    #                                minutes to settle yesterday's final
+    #                                daily aggregate (last bar reliably
+    #                                shows YESTERDAY's close, not today
+    #                                pre-market).
+    #   - 09:00 IST  "commodity"  — MCX session open
+    #   - 09:15 IST  "equity"     — NSE session open
+    #
+    # All three populate _spark_past_cache for the day's IST date. Cache
+    # entries with stale dates are evicted lazily on every batch_sparkline
+    # call (`_evict_stale`).
     segments = _build_segments()
     seg_warm_dates: dict[str, date | None] = {s['name']: None for s in segments}
+    midnight_warm_date: date | None = None
+
+    _MIDNIGHT_HH, _MIDNIGHT_MM = 0, 30
 
     while True:
         # Re-read segments on every loop iteration so config changes land.
@@ -1078,8 +1103,9 @@ async def _task_sparkline_warm(state: dict) -> None:
         now  = timestamp_indian()
         today = now.date()
 
-        # Find the soonest next-open boundary across all segments.
-        # A boundary fires once per day when the clock crosses it.
+        # Find the soonest next-warm boundary — earliest of all segment
+        # opens AND the daily 00:30 IST midnight boundary. A boundary
+        # fires once per day when the clock crosses it.
         next_fire: datetime | None = None
         for seg in segments:
             open_dt = now.replace(
@@ -1088,29 +1114,53 @@ async def _task_sparkline_warm(state: dict) -> None:
                 second=0, microsecond=0,
             )
             if now >= open_dt:
-                # Today's boundary is in the past — schedule for tomorrow.
                 open_dt = open_dt + timedelta(days=1)
             if next_fire is None or open_dt < next_fire:
                 next_fire = open_dt
 
+        midnight_dt = now.replace(
+            hour=_MIDNIGHT_HH, minute=_MIDNIGHT_MM,
+            second=0, microsecond=0,
+        )
+        if now >= midnight_dt:
+            midnight_dt = midnight_dt + timedelta(days=1)
+        if next_fire is None or midnight_dt < next_fire:
+            next_fire = midnight_dt
+
         if next_fire is None:
-            # No segments configured — sleep and retry.
+            # No segments configured AND no midnight — sleep and retry.
             await asyncio.sleep(3600)
             continue
 
         sleep_s = (next_fire - now).total_seconds()
         logger.info(
             f"sparkline warm: sleeping {sleep_s / 3600:.1f}h until "
-            f"next market-open boundary at {next_fire.strftime('%H:%M')} IST"
+            f"next boundary at {next_fire.strftime('%H:%M')} IST"
         )
         await asyncio.sleep(max(sleep_s, 1))
 
-        # Identify which segment(s) just opened and warm once per segment per day.
+        # Identify which boundary(ies) just fired. Warm once per
+        # boundary per IST date.
         now   = timestamp_indian()
         today = now.date()
+
+        # Daily midnight warm — only fires once per IST date and only
+        # after 00:30. Doesn't depend on segments being configured.
+        midnight_dt_now = now.replace(
+            hour=_MIDNIGHT_HH, minute=_MIDNIGHT_MM,
+            second=0, microsecond=0,
+        )
+        if now >= midnight_dt_now and midnight_warm_date != today:
+            midnight_warm_date = today
+            if is_engine_idle():
+                logger.info("sparkline warm: skipped daily-midnight — engine idle (dev)")
+            else:
+                await _do_warm("daily-midnight")
+
+        # Per-segment opens — warm once per segment per IST date.
         for seg in segments:
             if seg_warm_dates[seg['name']] == today:
-                continue  # already warmed today for this segment
+                continue
             open_dt = now.replace(
                 hour=seg['hours_start'].hour,
                 minute=seg['hours_start'].minute,
