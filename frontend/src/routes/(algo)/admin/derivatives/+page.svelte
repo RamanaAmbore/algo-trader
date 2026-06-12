@@ -2814,8 +2814,8 @@
               <span class="num cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
-              <span class="num cand-pnl {Number(c.day_change_val ?? 0) > 0 ? 'cell-pos' : Number(c.day_change_val ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
-                {Number(c.day_change_val ?? 0) === 0 ? '—' : aggCompact(Number(c.day_change_val ?? 0))}
+              <span class="num cand-pnl {c.day_change_val == null ? 'cell-flat' : Number(c.day_change_val) > 0 ? 'cell-pos' : Number(c.day_change_val) < 0 ? 'cell-neg' : 'cell-flat'}">
+                {c.day_change_val == null ? '—' : aggCompact(Number(c.day_change_val))}
               </span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>

@@ -1008,43 +1008,84 @@ async def _task_sparkline_warm(state: dict) -> None:
         except Exception as e:
             logger.warning(f"sparkline warm: watchlist query failed: {e}")
 
-        # 2. Holdings (equity — NSE).
-        try:
-            from backend.shared.helpers import broker_apis
-            dfs = broker_apis.fetch_holdings()
-            import pandas as pd
-            df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-            if not df_h.empty and "tradingsymbol" in df_h.columns:
-                _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
-                for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
-                    sym  = str(sym_raw or "").upper().strip()
-                    exch = str(exch_raw or "NSE").upper().strip()
-                    if sym:
-                        key = (sym, exch)
-                        if key not in seen:
-                            seen.add(key)
-                            pairs.append(key)
-        except Exception as e:
-            logger.warning(f"sparkline warm: holdings fetch failed: {e}")
+        # 2. + 3. Holdings + Positions — prefer the in-process cache
+        # populated by _task_performance + the /api/holdings, /api/positions
+        # endpoints. At the 09:00 / 09:15 segment-open boundaries the
+        # performance cycle has typically run within the last 30 s, so
+        # the cache hit avoids a duplicate broker fan-out. Falls through
+        # to a direct broker_apis call only when the cache is cold (cold
+        # startup, dev box that hasn't received any HTTP traffic yet).
+        from backend.api.cache import _store as _cache_store
+        import time as _t
 
-        # 3. Positions (F&O / commodities).
+        def _cache_hit(key: str):
+            entry = _cache_store.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if expires_at > _t.monotonic() and value is not None:
+                return value
+            return None
+
+        # Holdings (equity — NSE).
         try:
-            from backend.shared.helpers import broker_apis
-            dfs = broker_apis.fetch_positions()
-            import pandas as pd
-            df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-            if not df_p.empty and "tradingsymbol" in df_p.columns:
-                _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
-                for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
-                    sym  = str(sym_raw or "").upper().strip()
-                    exch = str(exch_raw or "NFO").upper().strip()
+            cached_h = _cache_hit("holdings")
+            if cached_h is not None and getattr(cached_h, "rows", None):
+                for row in cached_h.rows:
+                    sym  = str(getattr(row, "tradingsymbol", "") or "").upper().strip()
+                    exch = str(getattr(row, "exchange", "") or "NSE").upper().strip()
                     if sym:
                         key = (sym, exch)
                         if key not in seen:
                             seen.add(key)
                             pairs.append(key)
+            else:
+                from backend.shared.helpers import broker_apis
+                import pandas as pd
+                dfs = broker_apis.fetch_holdings()
+                df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+                if not df_h.empty and "tradingsymbol" in df_h.columns:
+                    _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
+                    for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
+                        sym  = str(sym_raw or "").upper().strip()
+                        exch = str(exch_raw or "NSE").upper().strip()
+                        if sym:
+                            key = (sym, exch)
+                            if key not in seen:
+                                seen.add(key)
+                                pairs.append(key)
         except Exception as e:
-            logger.warning(f"sparkline warm: positions fetch failed: {e}")
+            logger.warning(f"sparkline warm: holdings collect failed: {e}")
+
+        # Positions (F&O / commodities).
+        try:
+            cached_p = _cache_hit("positions")
+            if cached_p is not None and getattr(cached_p, "rows", None):
+                for row in cached_p.rows:
+                    sym  = str(getattr(row, "tradingsymbol", "") or "").upper().strip()
+                    exch = str(getattr(row, "exchange", "") or "NFO").upper().strip()
+                    if sym:
+                        key = (sym, exch)
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append(key)
+            else:
+                from backend.shared.helpers import broker_apis
+                import pandas as pd
+                dfs = broker_apis.fetch_positions()
+                df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+                if not df_p.empty and "tradingsymbol" in df_p.columns:
+                    _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
+                    for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
+                        sym  = str(sym_raw or "").upper().strip()
+                        exch = str(exch_raw or "NFO").upper().strip()
+                        if sym:
+                            key = (sym, exch)
+                            if key not in seen:
+                                seen.add(key)
+                                pairs.append(key)
+        except Exception as e:
+            logger.warning(f"sparkline warm: positions collect failed: {e}")
 
         return pairs[:100]  # hard cap
 
