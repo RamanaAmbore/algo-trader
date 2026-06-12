@@ -67,18 +67,33 @@ except ImportError:
 
 
 def _retry_groww_auth(fn: Callable) -> Callable:
+    """Wraps every GrowwBroker method with: (a) the per-account
+    source-IP ContextVar bound for the duration of the SDK call so
+    the patched `requests` module routes through a source-bound
+    session (see `_install_groww_source_binding` in connections.py),
+    and (b) an auth-retry that re-mints the token once on
+    GrowwAPIAuthenticationException."""
     @functools.wraps(fn)
     def wrapper(self: "GrowwBroker", *args, **kwargs):
+        from backend.shared.helpers.connections import (
+            _GROWW_SOURCE_IP_OVERRIDE,
+        )
+        ip = getattr(self._conn, "_source_ip", None)
+        token = _GROWW_SOURCE_IP_OVERRIDE.set(ip) if ip else None
         try:
-            return fn(self, *args, **kwargs)
-        except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
-            logger.warning(
-                f"GrowwBroker.{fn.__name__} for {self.account!r} hit "
-                f"{type(e).__name__}: {e}. Evicting cached access token "
-                f"and re-minting via TOTP."
-            )
-            self._conn.refresh()
-            return fn(self, *args, **kwargs)
+            try:
+                return fn(self, *args, **kwargs)
+            except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
+                logger.warning(
+                    f"GrowwBroker.{fn.__name__} for {self.account!r} hit "
+                    f"{type(e).__name__}: {e}. Evicting cached access token "
+                    f"and re-minting via TOTP."
+                )
+                self._conn.refresh()
+                return fn(self, *args, **kwargs)
+        finally:
+            if token is not None:
+                _GROWW_SOURCE_IP_OVERRIDE.reset(token)
     return wrapper
 
 

@@ -151,6 +151,112 @@ class _IPv6SourceAdapter(HTTPAdapter):
             _IPV6_FAMILY_OVERRIDE.reset(token)
 
 
+# ── Groww source-IP binding ────────────────────────────────────────
+#
+# The Groww SDK (`growwapi.groww.client`) uses module-level
+# `requests.get/post/put` calls — there's no `session` attribute on
+# the `GrowwAPI` instance we can mount an adapter on. So we patch the
+# `requests` reference inside the SDK's own module namespace at
+# import time: every `requests.get(...)` inside the SDK becomes a
+# call into `_RequestsProxy.get(...)` which reads the per-thread
+# source IP from a ContextVar and routes the call through a
+# source-bound `requests.Session`.
+#
+# The patcher is idempotent — multiple `GrowwConnection` instances on
+# different IPs install it once; each call's source IP is bound via
+# the ContextVar set inside `GrowwConnection`'s SDK callers (the
+# `GrowwBroker._with_source_bind` decorator). Threads using different
+# source IPs concurrently don't fight because each sees its own
+# ContextVar value.
+
+_GROWW_SOURCE_IP_OVERRIDE: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("_GROWW_SOURCE_IP_OVERRIDE", default=None)
+)
+_GROWW_BOUND_SESSIONS: dict[str, Any] = {}
+_GROWW_SESSION_LOCK = threading.Lock()
+_GROWW_PATCHED = False
+
+
+def _get_bound_session_for_ip(source_ip: str):
+    """Return a `requests.Session` whose HTTPS adapter is bound to
+    `source_ip`. Sessions are pooled per source IP so we don't burn
+    a new TCP pool per call."""
+    with _GROWW_SESSION_LOCK:
+        sess = _GROWW_BOUND_SESSIONS.get(source_ip)
+        if sess is not None:
+            return sess
+        new_sess = requests.Session()
+        try:
+            adapter = _IPv6SourceAdapter(source_ip)
+            new_sess.mount("https://", adapter)
+            new_sess.mount("http://", adapter)
+        except Exception as e:
+            logger.warning(
+                f"Groww source-bound session for {source_ip!r} "
+                f"failed to mount adapter ({e})"
+            )
+        _GROWW_BOUND_SESSIONS[source_ip] = new_sess
+        return new_sess
+
+
+def _install_groww_source_binding() -> None:
+    """Patch the `requests` reference inside `growwapi.groww.client`'s
+    module namespace so module-level `requests.get/post/put` calls
+    inside the SDK route through a per-thread source-bound session.
+
+    Idempotent — repeated calls no-op. Safe to call from every
+    `GrowwConnection.__init__`."""
+    global _GROWW_PATCHED
+    if _GROWW_PATCHED:
+        return
+    try:
+        from growwapi.groww import client as _groww_client_mod  # type: ignore
+    except Exception as e:
+        logger.warning(
+            f"Groww source-binding: SDK import failed ({e}); skipping patch"
+        )
+        return
+
+    class _RequestsProxy:
+        """Wraps the `requests` module so module-level calls inside the
+        SDK route through a source-bound session when a per-thread IP
+        override is in effect. Falls back to plain `requests` when no
+        override is set (e.g. a stray helper that doesn't go through a
+        GrowwConnection — preserves existing semantics)."""
+
+        # Expose attribute access to the real `requests` module so SDK
+        # code that does `requests.Timeout`, `requests.Response`, etc.
+        # continues to work unmodified.
+        def __getattr__(self, name):
+            return getattr(requests, name)
+
+        def _route(self, method, url, **kwargs):
+            ip = _GROWW_SOURCE_IP_OVERRIDE.get()
+            if not ip:
+                return getattr(requests, method)(url, **kwargs)
+            sess = _get_bound_session_for_ip(ip)
+            return getattr(sess, method)(url, **kwargs)
+
+        def get(self, url, **kwargs):
+            return self._route("get", url, **kwargs)
+
+        def post(self, url, **kwargs):
+            return self._route("post", url, **kwargs)
+
+        def put(self, url, **kwargs):
+            return self._route("put", url, **kwargs)
+
+        def delete(self, url, **kwargs):
+            return self._route("delete", url, **kwargs)
+
+    _groww_client_mod.requests = _RequestsProxy()  # type: ignore[attr-defined]
+    _GROWW_PATCHED = True
+    logger.info(
+        "Groww source-binding installed: SDK module-level requests calls "
+        "now route through per-thread source-bound sessions"
+    )
+
+
 
 # Resolved at every retry-decorator entry so live changes from
 # /admin/settings → connections.retry_count take effect on the next
@@ -992,9 +1098,24 @@ class GrowwConnection:
     Mode 1 mints a token via `GrowwAPI.get_access_token(api_key,
     totp=<code>)` on first use, then caches it to disk
     (`.log/groww_tokens.json`) keyed by account. Cached tokens
-    survive a service restart within the validity window. The cache
-    file is shared between prod + dev via the same `/opt/ramboq/.log`
-    path used for `kite_tokens.json`.
+    survive a service restart within the validity window. Path
+    resolves per-deployment (prod under `/opt/ramboq/.log/`, dev
+    under `/opt/ramboq_dev/.log/`); the fcntl file lock guards
+    same-deployment multi-worker races.
+
+    IPv6 source-binding: the SDK uses module-level `requests.get/
+    post/put` calls (no session attribute on `GrowwAPI` we can
+    mount an adapter on). When `source_ip` is configured we install
+    `_install_groww_source_binding()` once at first construction —
+    it replaces the `requests` reference inside the SDK's module
+    namespace with a proxy that reads a per-thread ContextVar and
+    routes the call through a source-bound `requests.Session` from
+    a pooled per-IP cache. The ContextVar is set by
+    `GrowwBroker._retry_groww_auth` for every method call AND by
+    `_mint_access_token` for the login POST, so both login + runtime
+    egress from this account's dedicated IPv6. Defensive — Groww
+    has not (yet) shown the per-IP session affinity that Dhan v2
+    enforces, but this proactively closes the gap.
     """
 
     def __init__(
@@ -1004,6 +1125,7 @@ class GrowwConnection:
         api_key: Optional[str] = None,
         totp_seed: Optional[str] = None,
         access_token: Optional[str] = None,
+        source_ip: Optional[str] = None,
         # `secret` accepted but ignored — kept in the signature so
         # rebuild_from_db() callers don't have to special-case Groww.
         # The approval-secret flow was retired (see _mint_access_token).
@@ -1013,6 +1135,7 @@ class GrowwConnection:
         self._api_key      = api_key or ""
         self._totp_seed    = totp_seed or ""
         self._access_token = access_token or ""
+        self._source_ip    = source_ip
         self._groww        = None
         self._import_error = None
         # Serialises concurrent re-mints — matches Kite + Dhan. Without
@@ -1021,6 +1144,23 @@ class GrowwConnection:
         # (waste + rate-limit exposure). The cross-process file lock
         # keeps the prod + dev services from racing each other too.
         self._login_lock   = threading.Lock()
+        # IPv6 source binding install — patches the `requests` module
+        # inside `growwapi.groww.client`'s namespace so module-level
+        # `requests.get/post/put` calls go through a source-bound
+        # session. Set on construction (covers every account loaded
+        # at startup); idempotent (same patcher class for every
+        # GrowwConnection — the patched module-level functions read
+        # the per-thread source IP from a ContextVar at call time so
+        # parallel GrowwConnection instances don't fight each other).
+        # See `_install_groww_source_binding` for the patcher.
+        if self._source_ip:
+            try:
+                _install_groww_source_binding()
+            except Exception as e:
+                logger.warning(
+                    f"GrowwConnection {self.account!r}: source_ip patch "
+                    f"install failed ({e}); falling back to default route"
+                )
         self._build()
 
     # ── Token mint + cache ────────────────────────────────────────────
@@ -1047,6 +1187,16 @@ class GrowwConnection:
             )
         import pyotp  # type: ignore[import-not-found]
         totp_code = pyotp.TOTP(self._totp_seed).now()
+        # Bind the login POST to this account's source IP via the
+        # ContextVar — the patched `requests` reference inside
+        # `growwapi.groww.client` reads this and routes through a
+        # source-bound session. No-op when source_ip is unset.
+        if self._source_ip:
+            token = _GROWW_SOURCE_IP_OVERRIDE.set(self._source_ip)
+            try:
+                return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
+            finally:
+                _GROWW_SOURCE_IP_OVERRIDE.reset(token)
         return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
 
     def _resolve_token(self) -> str:
@@ -1382,6 +1532,7 @@ class Connections(SingletonBase):
                         api_key=(r.api_key or None),
                         totp_seed=(totp_token or None),
                         access_token=(access_token or None),
+                        source_ip=r.source_ip,
                     )
                     continue
 

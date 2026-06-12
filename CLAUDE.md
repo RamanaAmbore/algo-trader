@@ -433,7 +433,7 @@ Two of the three broker integrations enforce some form of "one active session pe
 |---|---|---|
 | **Kite (Zerodha)** | One IP whitelisted per Kite app. Every account uses its own Kite app + own API key. | The second account's calls go through the wrong-whitelisted IP and Kite returns `Insufficient permission`. |
 | **Dhan** | One active access token per partner app per source IP at the v2 auth backend. Every successful `generate_token` from one account invalidates the prior token of every other account on the same source IP. | 3-minute token rotation loop in `api_log_file` — accounts alternate `DH-906: Invalid Token` and "login complete" lines. Positions / holdings silently empty for the bad account each cycle. |
-| **Groww** | No per-IP rule. | n/a |
+| **Groww** | No per-IP rule observed in prod. | n/a — but wired defensively. The SDK uses module-level `requests` calls so we monkey-patch the module namespace + use a per-thread ContextVar to route through a source-bound session pool. Login + runtime both bind. |
 
 **Solution:** All Kite + Dhan accounts use IPv6 addresses from the server's `/48` subnet (`2a02:4780:12:9e1d::/48`). Each account binds to a unique IPv6 via the `source_ip` column on `broker_accounts`. Every account **must** have `source_ip` set — without it the OS may choose IPv4 or IPv6 unpredictably and the per-IP rules above kick in.
 
@@ -467,6 +467,7 @@ Tokens are cached per-broker in `.log/` (gitignored, per-environment): `kite_tok
 
 - **Kite** — adapter mounted on `KiteConnect.reqsession` (runtime API calls) and the login session.
 - **Dhan** — adapter mounted on `DhanContext.dhan_http.session` (runtime API calls) and on a custom `_login_session()` factory used by `_do_login` / `_try_renew`. The login path bypasses `dhanhq.auth.DhanLogin` (which uses module-level `requests.post`/`requests.get` with no session hook) and calls `https://auth.dhan.co/app/generateAccessToken` and `https://api.dhan.co/v2/RenewToken` directly through the source-bound session.
+- **Groww** — the SDK (`growwapi.groww.client`) uses module-level `requests` calls with no `session` attribute we can mount on. `_install_groww_source_binding()` replaces the `requests` reference inside the SDK's module namespace with a proxy that reads a per-thread `_GROWW_SOURCE_IP_OVERRIDE` ContextVar and routes through a pooled source-bound `requests.Session` per source IP. `GrowwBroker._retry_groww_auth` sets the ContextVar for every method call; `_mint_access_token` sets it for the login POST. Idempotent install — multiple `GrowwConnection` instances on different IPs trigger the patch once.
 
 The adapter is applied per-account; accounts with no `source_ip` configured use the OS default route (works fine for single-account deployments).
 
