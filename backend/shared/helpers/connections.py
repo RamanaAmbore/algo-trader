@@ -825,6 +825,17 @@ class DhanConnection:
             self._conn_created_at = timestamp_indian()
             self._save_token(access_token)
             self._build_client(access_token)
+            # Side-channel: stamp this account's login moment in the
+            # cross-account ledger so the rotation-pattern detector in
+            # DhanBroker._safe_call can correlate "this account's
+            # token died" with "that other account's recent login".
+            # Imported lazily to avoid the connections ↔ brokers
+            # circular import at module load.
+            try:
+                from backend.shared.brokers.dhan import record_dhan_login_event
+                record_dhan_login_event(self.account)
+            except Exception:
+                pass
             logger.info(f"Dhan login complete for {self.account} "
                         f"(token cached, valid ~24h)")
 

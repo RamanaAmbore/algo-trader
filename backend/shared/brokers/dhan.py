@@ -277,6 +277,84 @@ def _looks_like_auth_failure(resp: Any) -> bool:
     return any(hint in remarks for hint in _AUTH_ERROR_HINTS)
 
 
+# Module-level ledger of recent Dhan account login + invalidation
+# events. Lets `_check_dhan_rotation_pattern` detect the "every time
+# one Dhan account logs in, the other's token immediately dies"
+# pattern — a strong signal that Dhan is enforcing one active session
+# per partner app per source IP. The cure is per-account IPv6 source
+# binding (same shape we use for Kite multi-account); the diagnostic
+# is needed first to confirm the cause.
+import threading as _dhan_threading
+
+_DHAN_LOGIN_HISTORY: dict[str, "datetime"] = {}
+_DHAN_HISTORY_LOCK = _dhan_threading.Lock()
+
+
+def record_dhan_login_event(account: str) -> None:
+    """Stamp `now` against this Dhan account's last successful login.
+    Called from DhanConnection at the moment a fresh token is minted
+    + saved. Pure side-channel; no functional change to the auth
+    flow."""
+    from datetime import datetime as _dt, timezone as _tz
+    with _DHAN_HISTORY_LOCK:
+        _DHAN_LOGIN_HISTORY[account] = _dt.now(_tz.utc)
+
+
+def _check_dhan_rotation_pattern(
+    failing_account: str,
+    failing_token_created_at,
+) -> None:
+    """Emit a diagnostic ERROR log when the timing of THIS account's
+    token going bad matches a recent successful login from a DIFFERENT
+    Dhan account. Threshold: any other account's login complete within
+    the failing token's entire lifetime — if A's token was minted at
+    T0 and went bad now, and B logged in at T_B with T0 ≤ T_B ≤ now,
+    the rotation pattern fires.
+
+    The pattern points at one of two operator-actionable causes:
+      (a) Dhan's "one active token per partner-app per source-IP"
+          semantic — fix via per-account IPv6 source-binding (the
+          source_ip field on broker_accounts is already wired through
+          the constructor; just unused in the SDK request session).
+      (b) A single physical Dhan account split across two RamboQuant
+          records — fix by removing one record.
+
+    Operator should check the Dhan dashboard's
+    Settings → DhanHQ Trading APIs → Token validity dropdown for
+    cause (c) — if it's set to 5 min, that explains short-lived
+    tokens but NOT cross-account rotation.
+    """
+    if failing_token_created_at is None:
+        return
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+    with _DHAN_HISTORY_LOCK:
+        snapshot = dict(_DHAN_LOGIN_HISTORY)
+    suspects: list[tuple[str, float]] = []
+    for other_account, other_login_at in snapshot.items():
+        if other_account == failing_account:
+            continue
+        # Only the OTHER account's login matters if it happened during
+        # OUR token's lifetime — that's when it could have invalidated us.
+        if failing_token_created_at <= other_login_at <= now:
+            gap_s = (now - other_login_at).total_seconds()
+            suspects.append((other_account, gap_s))
+    if suspects:
+        suspects.sort(key=lambda x: x[1])  # nearest in time first
+        details = ", ".join(
+            f"{acct} logged in {gap:.0f}s ago" for acct, gap in suspects
+        )
+        logger.error(
+            f"Dhan rotation pattern detected: {failing_account!r}'s "
+            f"token went bad after another Dhan account's recent login "
+            f"({details}). Likely Dhan's one-active-session-per-IP "
+            f"limit. Mitigation: bind each Dhan account to its own "
+            f"IPv6 (set source_ip in /admin/brokers — same pattern as "
+            f"Kite multi-account) OR verify both records aren't the "
+            f"same physical Dhan account."
+        )
+
+
 # Dhan exchange-segment constants. The SDK uses opaque integer codes;
 # we accept the Kite-style string ("NSE", "NFO", "MCX", ...) at the
 # Broker boundary and translate here. Kite's "BSE" and "BFO" map to
@@ -350,11 +428,33 @@ class DhanBroker(Broker):
         immediately — only auth-shaped failures trigger the retry."""
         resp = sdk_call(self.dhan)
         if _looks_like_auth_failure(resp):
+            # Capture token age at invalidation time — critical signal
+            # for "why are these tokens dying so fast?" investigations.
+            # If the operator's Dhan dashboard has token validity set
+            # to 5 min, every token dies at ~5 min. If the dashboard
+            # is set to 24 h but tokens die in 3 min, something else
+            # is invalidating them (probably another Dhan account
+            # logging in from the same source IP — Dhan's "one active
+            # session per partner-app per IP" semantic). Cross-check
+            # against `Dhan rotation` log line below to confirm.
+            from datetime import datetime as _dt, timezone as _tz
+            created = self._conn._conn_created_at
+            age_s = "unknown"
+            if created is not None:
+                age = _dt.now(_tz.utc) - created
+                age_s = f"{age.total_seconds():.0f}s"
             logger.warning(
                 f"DhanBroker for {self.account!r} got auth failure "
-                f"(remarks={resp.get('remarks')!r}). Forcing re-login "
-                f"via PIN+TOTP and retrying once."
+                f"(remarks={resp.get('remarks')!r}, token_age={age_s}). "
+                f"Forcing re-login via PIN+TOTP and retrying once."
             )
+            # Cross-account rotation signal — if another Dhan account
+            # logged in within the recent past (≤ this token's lifetime),
+            # the timing strongly suggests Dhan invalidated THIS token
+            # when the other account's session opened. Surfacing this
+            # so the operator can confirm via the `dhan_tokens.json`
+            # cache mtime + `Dhan login complete for ...` events.
+            _check_dhan_rotation_pattern(self.account, created)
             fresh = self._conn.get_dhan_conn(test_conn=True)
             resp = sdk_call(fresh)
         return resp
