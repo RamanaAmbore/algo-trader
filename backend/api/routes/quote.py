@@ -284,6 +284,14 @@ _spark_past_cache: dict[tuple, list[float]] = {}
 _spark_today_cache: dict[tuple, tuple[float, list[float]]] = {}
 _TODAY_TTL_S = 300   # 5 min — refresh today's intraday at this cadence
 _TODAY_INTERVAL = "30minute"
+# Track the last-attempt epoch for past-cache entries that came back
+# incomplete (`len(closes) < days - 1`). Used by `_past_cache_is_complete`
+# to allow a re-fetch every `_INCOMPLETE_RETRY_S` seconds without
+# hammering Kite on genuinely-newly-listed symbols (which will always
+# return fewer bars than the requested window). Same lock as the data
+# caches above.
+_spark_past_attempt: dict[tuple, float] = {}
+_INCOMPLETE_RETRY_S = 300   # 5 min — re-attempt incomplete past fetches at this cadence
 _spark_lock       = threading.Lock()
 
 # Warm-state for health endpoint.
@@ -349,9 +357,56 @@ def _evict_stale(today: str) -> None:
     stale = [k for k in _spark_past_cache if k[3] != today]
     for k in stale:
         del _spark_past_cache[k]
+        _spark_past_attempt.pop(k, None)
     stale_today = [k for k in _spark_today_cache if k[2] != today]
     for k in stale_today:
         del _spark_today_cache[k]
+
+
+def _past_cache_is_complete(
+    cached: Optional[list[float]],
+    key: tuple,
+    days: int,
+) -> bool:
+    """Decide whether a past-cache hit can be served as-is, or whether
+    the caller should fall through to a fresh historical_data fetch.
+
+    Hit semantics:
+      - cached is None                 → MISS (key not present at all)
+      - len(cached) >= (days - 1)      → HIT, full window present
+      - shorter AND last-attempt was   → HIT (throttled re-attempt window),
+        within _INCOMPLETE_RETRY_S       serve the partial result
+      - shorter AND last-attempt was   → MISS (allow re-fetch — handles
+        > _INCOMPLETE_RETRY_S            redeploy with stale partial, plus
+                                          newly-listed symbols whose history
+                                          grows over time)
+
+    Without the completeness check, a partial cache entry (e.g. Kite
+    returned only 2 bars because of a long holiday weekend, or the
+    fetch raced a token refresh and got an empty list) sticks for the
+    rest of the day. After redeploy the warm task refills the cache,
+    but ANY lazy fetch that produced a short result locks in that
+    shortness — operator sees a sparkline that never grows back to
+    the full window. The retry-window throttle prevents hammering
+    on symbols that are GENUINELY only N days old (newly listed)
+    where every fetch will be short.
+    """
+    if cached is None:
+        return False
+    if len(cached) >= (days - 1):
+        return True
+    import time as _t
+    last_attempt = _spark_past_attempt.get(key, 0.0)
+    return (_t.time() - last_attempt) < _INCOMPLETE_RETRY_S
+
+
+def _past_cache_record_attempt(key: tuple) -> None:
+    """Stamp the last-attempt timestamp on a past-cache key. Called
+    after every historical_data fetch (success or empty) so the
+    throttle in `_past_cache_is_complete` knows when to allow the
+    next attempt."""
+    import time as _t
+    _spark_past_attempt[key] = _t.time()
 
 
 def _today_intraday_closes(
@@ -588,8 +643,16 @@ class SparklineController(Controller):
             cache_key = (sym_obj.tradingsymbol, sym_obj.exchange, days, today)
             with _spark_lock:
                 cached = _spark_past_cache.get(cache_key)
-            if cached is not None:
-                past_result[sym_obj.tradingsymbol] = cached
+                # Hit only when the cached window is COMPLETE (or recently
+                # re-attempted). A partial entry — Kite returned 2 bars
+                # because of a holiday weekend, the warm task hit a token
+                # refresh mid-flight, etc. — falls through to to_fetch so
+                # the next fetch tops up the window. Without this, an
+                # incomplete entry sticks for the day and the sparkline
+                # silently stays short.
+                is_hit = _past_cache_is_complete(cached, cache_key, days)
+            if is_hit:
+                past_result[sym_obj.tradingsymbol] = cached  # type: ignore[arg-type]
             else:
                 to_fetch.append(sym_obj)
 
@@ -654,11 +717,16 @@ class SparklineController(Controller):
                         fetched = await asyncio.gather(*tasks)
                         with _spark_lock:
                             for sym, past_closes in fetched:
+                                exch = next(
+                                    (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
+                                )
+                                cache_key = (sym, exch, days, today)
+                                # Stamp every attempt — empty or short —
+                                # so the throttle in _past_cache_is_complete
+                                # waits _INCOMPLETE_RETRY_S before retrying
+                                # this symbol again.
+                                _past_cache_record_attempt(cache_key)
                                 if past_closes:
-                                    exch = next(
-                                        (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
-                                    )
-                                    cache_key = (sym, exch, days, today)
                                     _spark_past_cache[cache_key] = past_closes
                                     past_result[sym] = past_closes
 
@@ -929,12 +997,21 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     with _spark_lock:
         _evict_stale(today)
 
-    # Filter to symbols not already in past-cache for today.
-    to_fetch = [
-        SparklineSymbol(tradingsymbol=sym.upper().strip(), exchange=exch.upper().strip())
-        for sym, exch in symbols
-        if _spark_past_cache.get((sym.upper().strip(), exch.upper().strip(), days, today)) is None
-    ]
+    # Filter to symbols whose past-cache is missing OR incomplete (so
+    # we re-warm partial entries from prior fetches). Same completeness
+    # rule as the endpoint — keeps the two surfaces in sync.
+    to_fetch: list[SparklineSymbol] = []
+    for sym, exch in symbols:
+        sym_n  = sym.upper().strip()
+        exch_n = exch.upper().strip()
+        key = (sym_n, exch_n, days, today)
+        with _spark_lock:
+            cached = _spark_past_cache.get(key)
+            is_hit = _past_cache_is_complete(cached, key, days)
+        if not is_hit:
+            to_fetch.append(
+                SparklineSymbol(tradingsymbol=sym_n, exchange=exch_n)
+            )
     # Today's intraday set — re-fetched even when past-cache is hot,
     # because intraday bars expire on a 5-minute TTL and the segment-
     # open warms (09:00 / 09:15 IST) need to seed the cache with the
@@ -1022,11 +1099,13 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         fetched = await asyncio.gather(*tasks)
         with _spark_lock:
             for sym, past_closes in fetched:
+                exch = next(
+                    (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
+                )
+                key = (sym, exch, days, today)
+                _past_cache_record_attempt(key)
                 if past_closes:
-                    exch = next(
-                        (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
-                    )
-                    _spark_past_cache[(sym, exch, days, today)] = past_closes
+                    _spark_past_cache[key] = past_closes
                     cached_count += 1
 
     today_cached = 0
