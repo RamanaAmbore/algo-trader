@@ -184,6 +184,15 @@
 
   /** @type {string[]} Selected account codes; empty = all accounts */
   let selectedAccounts = $state([]);
+  /** @type {Set<string>} Per-session ledger of every account we've ever
+   * observed in `accountChoices`. Persisted to sessionStorage so the
+   * "is this account new?" check survives tab refresh. Used by the
+   * auto-union effect below to fold late-arriving broker accounts (Dhan
+   * loaded via /admin/brokers AFTER the operator's selectedAccounts
+   * was already restored from cache) into the active selection. Without
+   * this, Dhan rows stay filtered out of the Candidates panel until
+   * the operator manually opens the picker and toggles them on. */
+  let _seenAccts = new Set();
   /** @type {string} Underlying name (e.g. NIFTY); '' = pick required */
   let selectedUnderlying = $state('');
   /** @type {string[]} Expiry filter (YYYY-MM-DD[]); empty = all expiries.
@@ -583,6 +592,35 @@
       set.add(u);
     }
     return Array.from(set).sort();
+  });
+
+  // Auto-union late-arriving broker accounts into selectedAccounts.
+  // Fires whenever accountChoices changes (positions reload or
+  // realAccounts refresh). Without this, a Dhan account loaded AFTER
+  // the operator's selectedAccounts was restored from sessionStorage
+  // would silently filter every Dhan row out of the Candidates panel
+  // and the strategy basket — even though Dhan rows are in `positions`
+  // and the account dropdown shows the Dhan code in its options. Same
+  // bug pattern + same fix shape as MarketPulse's stage (b) seeder.
+  // No-op when selectedAccounts is empty (= show all): the operator
+  // hasn't curated a subset, so there's nothing to extend.
+  $effect(() => {
+    const choices = accountChoices;
+    if (!choices.length) return;
+    const newAccts = choices.filter(a => !_seenAccts.has(a));
+    if (newAccts.length === 0) return;
+    if (selectedAccounts.length > 0) {
+      const cur = new Set(selectedAccounts);
+      for (const a of newAccts) cur.add(a);
+      selectedAccounts = [...cur].sort();
+    }
+    for (const a of choices) _seenAccts.add(a);
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(
+          'opt.seenAccounts', JSON.stringify([..._seenAccts]));
+      }
+    } catch (_) {}
   });
 
   /** Display labels for the Underlying picker. MCX commodity roots
@@ -2091,6 +2129,22 @@
     // so the page never shows up empty on a tab reopen. Background
     // fetches below replace the snapshot once the broker responds.
     _loadCache();
+    // Restore the "seen accounts" ledger so the auto-union effect knows
+    // which broker accounts were already known last time the operator
+    // was on this page. A fresh-arrival (e.g. Dhan loaded after the
+    // operator's prior session) gets unioned into selectedAccounts on
+    // first sighting; previously-known-and-untoggled accounts stay
+    // unchanged. See `selectedAccounts` declaration block above for the
+    // full rationale.
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        const raw = sessionStorage.getItem('opt.seenAccounts');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) _seenAccts = new Set(parsed.map(String));
+        }
+      }
+    } catch (_) { _seenAccts = new Set(); }
     loadPositions();
     // Real broker accounts — needed by the OrderTicket so the
     // operator can pick which Kite handle the order routes through.
@@ -2461,7 +2515,7 @@
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
         payoff={strategy.payoff}
-        spot={strategy.spot_source === 'fallback' ? null : strategy.spot}
+        spot={(strategy.spot_source === 'fallback') ? null : strategy.spot}
         prevClose={strategy.spot_prev_close}
         breakevens={strategy.risk.breakevens}
         intermediateCurves={strategy.intermediate_curves || []}
@@ -2474,7 +2528,9 @@
         realizedPnl={chartPnlOffset}
         legSymbols={strategy.legs.map(/** @param {{symbol:string}} l */ l => l.symbol)}
         spotAnchor={strategy.spot_anchor_contract
-          ? { contract: strategy.spot_anchor_contract, source: 'futures', expiryISO: strategy.expiry ?? '' }
+          ? { contract: strategy.spot_anchor_contract,
+              source: strategy.spot_source || 'futures',
+              expiryISO: strategy.expiry ?? '' }
           : null}
         loading={loading || strategy.spot_source === 'fallback'}
         height={320} />

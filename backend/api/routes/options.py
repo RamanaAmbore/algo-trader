@@ -465,6 +465,18 @@ class StrategyResponse(msgspec.Struct):
     # Resolved futures tradingsymbol used as the spot anchor when
     # source='futures' (MCX commodities). Null for index/equity paths.
     spot_anchor_contract: str | None = None
+    # Provenance of the resolved spot — matches the single-leg
+    # /analytics response. Lets the UI distinguish a real broker
+    # reading ('live' / 'close' / 'depth' / 'futures' / 'cached') from
+    # a synthetic fallback ('fallback' = median-strike anchor) and
+    # suppress the spot marker entirely on the chart when the value
+    # would be misleading. Earlier responses omitted this field, so
+    # the frontend's `strategy.spot_source === 'fallback'` check at
+    # the OptionsPayoff callsite was always false — a stale 8129
+    # median-strike or stale-cached value would still display as a
+    # real spot. Default 'live' so older clients that don't read the
+    # field don't trip on a missing-default error.
+    spot_source: str = 'live'
 
 
 # ── Resolvers ─────────────────────────────────────────────────────────
@@ -1796,6 +1808,19 @@ class OptionsController(Controller):
             fallback=median_strike,
             expiry_hint=expiry_hint,
             option_symbol=data.legs[0].symbol if data.legs else None)
+        # Surface provenance to the UI. When the resolver fell through
+        # to the synthetic median-strike anchor, the spot value is just
+        # the strike — NOT a real market price. Logging it so prod
+        # debugging can correlate spot=8129-style complaints with the
+        # actual path: 'fallback' = no broker data; 'cached' = stale
+        # broker reading from earlier in the session; 'futures' = live
+        # broker quote on the matching-month future.
+        if _spot_src in ('fallback', 'cached'):
+            logger.warning(
+                f"strategy spot for {underlying} fell through to "
+                f"source={_spot_src!r} (spot={S}, anchor={_spot_anchor}). "
+                f"Live + futures lookups failed; UI will suppress the spot marker."
+            )
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
         # Pre-compute per-option T_years list so eval_T (near expiry) and
@@ -2152,4 +2177,5 @@ class OptionsController(Controller):
                    and parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
             }) > 1,
             spot_anchor_contract=_spot_anchor,
+            spot_source=_spot_src,
         )
