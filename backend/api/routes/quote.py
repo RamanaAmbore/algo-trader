@@ -360,17 +360,25 @@ def _key_to_str(key: tuple) -> str:
     return "|".join(str(p) for p in key)
 
 
-def _save_caches_to_disk() -> None:
+def _save_caches_to_disk(force: bool = False) -> None:
     """Persist `_spark_past_cache` + `_spark_today_cache` to
-    `_PERSIST_PATH`. Throttled to once per `_SAVE_THROTTLE_S` seconds
-    so a burst of cache writes (e.g. a warm batch landing 100 entries
-    in ~30 s) doesn't translate to 100 disk writes. Atomic via
-    write-tmp-then-rename so a crashed write never leaves a
-    half-written JSON file that breaks load."""
+    `_PERSIST_PATH`. Atomic via write-tmp-then-rename so a crashed
+    write never leaves a half-written JSON file that breaks load.
+
+    Throttling:
+      - `force=False` (default — called from request handlers):
+        skips when the last save was within `_SAVE_THROTTLE_S` seconds,
+        so a burst of /api/quotes/sparkline calls doesn't translate
+        to one disk write per request.
+      - `force=True` (warm task, redeploy checkpoints): bypasses the
+        throttle. Warm cycles land 100+ entries at once and only fire
+        4×/day — losing the post-warm snapshot to the throttle would
+        mean a redeploy a few seconds later boots from a stale cache.
+    """
     global _last_save_at
     import time as _t
     now = _t.time()
-    if (now - _last_save_at) < _SAVE_THROTTLE_S:
+    if not force and (now - _last_save_at) < _SAVE_THROTTLE_S:
         return
     _last_save_at = now
 
@@ -1383,9 +1391,10 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     _spark_warm_symbols = cached_count
     _spark_warm_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     logger.info(f"sparkline warm: cached {cached_count}/{len(to_fetch)} symbols for {today}")
-    # Persist the full warm result to disk. Throttled inside
-    # _save_caches_to_disk to one write per 5 s — the warm task fires
-    # at most 4× per day (startup + 00:30 IST + 09:00 + 09:15), so
-    # this is far below the throttle anyway.
-    _save_caches_to_disk()
+    # Persist the full warm result to disk. force=True bypasses the
+    # 5-s request-side throttle so a deploy seconds after a warm
+    # completes still boots from the freshly-warmed snapshot — not
+    # from a 5-s-stale on-disk copy. Warm cycles fire ~4× per day
+    # so the unthrottled write is cheap.
+    _save_caches_to_disk(force=True)
     return cached_count
