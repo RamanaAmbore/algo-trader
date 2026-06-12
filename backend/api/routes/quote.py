@@ -271,6 +271,19 @@ class QuoteController(Controller):
 # _spark_warm_state tracks when the last warm completed (for /api/admin/health).
 
 _spark_past_cache: dict[tuple, list[float]] = {}
+# Today's intraday closes per symbol, keyed (sym, exch, today_ist).
+# Stored separately from `_spark_past_cache` because:
+#   - TTL is short (5 min, vs daily for past closes)
+#   - Refresh cadence is independent (every batch_sparkline call checks
+#     whether today's cache is older than `_TODAY_TTL_S` and re-fetches
+#     when stale; past closes are static once cached for the day).
+# Value shape: (epoch_seconds_when_cached, list[float] of intraday closes).
+# Combined with past closes downstream so the sparkline shows
+# "4 daily closes → N intraday 30-min closes for today" — operator
+# sees today's actual path instead of a single end-of-line dot.
+_spark_today_cache: dict[tuple, tuple[float, list[float]]] = {}
+_TODAY_TTL_S = 300   # 5 min — refresh today's intraday at this cadence
+_TODAY_INTERVAL = "30minute"
 _spark_lock       = threading.Lock()
 
 # Warm-state for health endpoint.
@@ -331,10 +344,86 @@ def _ist_today() -> str:
 
 
 def _evict_stale(today: str) -> None:
-    """Drop past-cache entries whose date != today (lazy eviction on each batch call)."""
+    """Drop past-cache + today-cache entries whose date != today
+    (lazy eviction on each batch call)."""
     stale = [k for k in _spark_past_cache if k[3] != today]
     for k in stale:
         del _spark_past_cache[k]
+    stale_today = [k for k in _spark_today_cache if k[2] != today]
+    for k in stale_today:
+        del _spark_today_cache[k]
+
+
+def _today_intraday_closes(
+    raw_bars: list[dict],
+    today: str,
+) -> list[float]:
+    """Pull the close prices for TODAY's bars only from a Kite
+    historical_data response. Filters by bar date so an over-broad
+    range (e.g. from_d set to today-1 to cover NSE 09:15 vs MCX
+    09:00 timing differences) doesn't pollute the today series with
+    yesterday's bars. Keeps the running last bar — that's today's
+    most recent 30-minute close (or in-progress aggregate)."""
+    out: list[float] = []
+    for b in raw_bars or []:
+        if _bar_date_iso(b) != today:
+            continue
+        c = b.get("close")
+        if c is None:
+            continue
+        try:
+            out.append(float(c))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _fetch_today_intraday_sync(
+    broker, token: int, today: str,
+) -> list[float]:
+    """Blocking helper — fetches today's 30-minute closes for one
+    instrument and returns the list of close prices. Off-hours
+    (pre-market, post-close, weekend / holiday) returns []; the
+    caller falls back to just the past-closes window in that case.
+
+    Run via asyncio.to_thread by both batch_sparkline and
+    warm_sparkline_cache."""
+    try:
+        from_d = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        to_d   = datetime.now()
+        raw = broker.historical_data(token, from_d, to_d, _TODAY_INTERVAL) or []
+        return _today_intraday_closes(raw, today)
+    except Exception as exc:
+        logger.warning(f"sparkline: today intraday fetch failed for token={token}: {exc}")
+        return []
+
+
+def _today_cache_get(sym: str, exch: str, today: str) -> Optional[list[float]]:
+    """Return today's intraday closes for (sym, exch) when cached AND
+    the entry is fresher than `_TODAY_TTL_S` seconds; else None.
+    Eviction of stale-date entries is handled by `_evict_stale`."""
+    import time as _t
+    key = (sym, exch, today)
+    with _spark_lock:
+        entry = _spark_today_cache.get(key)
+    if entry is None:
+        return None
+    cached_at, closes = entry
+    if (_t.time() - cached_at) > _TODAY_TTL_S:
+        return None
+    return closes
+
+
+def _today_cache_put(sym: str, exch: str, today: str, closes: list[float]) -> None:
+    """Store today's intraday closes. Empty lists are NOT cached —
+    that way the next call gets another chance during the day (e.g.,
+    we tried at 09:14:55 and got no bars yet; the 09:15 NSE-open
+    boundary or the next request after 09:15 succeeds)."""
+    if not closes:
+        return
+    import time as _t
+    with _spark_lock:
+        _spark_today_cache[(sym, exch, today)] = (_t.time(), closes)
 
 
 def _bar_date_iso(bar: dict) -> str:
@@ -682,19 +771,72 @@ class SparklineController(Controller):
             except Exception as exc:
                 logger.warning(f"sparkline: ltp fallback batch failed: {exc}")
 
+        # ── Step 3: Today's intraday bars (cache → fetch on miss/stale) ──
+        # Adds today's 30-minute closes to each symbol so the sparkline
+        # shows today's actual path, not just a single end-of-line LTP
+        # dot. Cached separately from past closes with a 5-minute TTL so
+        # the right edge of the sparkline keeps moving as the session
+        # progresses. Symbols whose today-cache is stale or missing get
+        # one historical_data call paced against the same 3 req/sec
+        # budget as the past-closes step.
+        today_result: dict[str, list[float]] = {}
+        today_to_fetch: list[tuple[str, str, int]] = []   # (sym, exch, token)
+        for sym_obj in norm_syms:
+            sym  = sym_obj.tradingsymbol
+            exch = sym_obj.exchange
+            cached_today = _today_cache_get(sym, exch, today)
+            if cached_today is not None:
+                today_result[sym] = cached_today
+                continue
+            tok = token_map.get(sym)
+            if tok is not None:
+                today_to_fetch.append((sym, exch, tok))
+
+        if today_to_fetch:
+            try:
+                t_broker = get_sparkline_broker()
+            except Exception:
+                t_broker = None
+            if t_broker is not None:
+                t_sem = asyncio.Semaphore(2)
+
+                async def _fetch_today(sym: str, exch: str, token: int) -> tuple[str, str, list[float]]:
+                    async with t_sem:
+                        closes = await asyncio.to_thread(
+                            _fetch_today_intraday_sync, t_broker, token, today,
+                        )
+                        await asyncio.sleep(0.35)
+                        return sym, exch, closes
+
+                t_tasks = [_fetch_today(s, e, t) for (s, e, t) in today_to_fetch]
+                t_fetched = await asyncio.gather(*t_tasks)
+                for sym, exch, closes in t_fetched:
+                    if closes:
+                        _today_cache_put(sym, exch, today, closes)
+                        today_result[sym] = closes
+
         result: dict[str, list[float]] = {}
         for sym_obj in norm_syms:
             sym  = sym_obj.tradingsymbol
             past = past_result.get(sym, [])
+            today_bars = today_result.get(sym, [])
             ltp_key = f"{sym_obj.exchange}:{sym}"
             ltp_val = ltp_map.get(ltp_key)
-            if ltp_val and ltp_val > 0:
-                result[sym] = past + [ltp_val]
-            elif past:
-                # No LTP available (off-hours, delisted, broker down) —
-                # return past-only; sparkline still renders with N-1 points.
-                result[sym] = past
-            # If neither past nor ltp: omit silently (symbol unresolvable).
+            tail_ltp = ltp_val if (ltp_val and ltp_val > 0) else None
+            # Series order: past daily closes, then today's intraday
+            # closes (chronological), then current LTP if available.
+            # Off-hours today_bars is empty → series collapses to
+            # past + [ltp] (old behaviour). During session, today_bars
+            # carries the intraday path. The frontend's liveTail
+            # overlay replaces just the last point — fine whether
+            # that's an LTP or the last intraday bar.
+            series = past + today_bars
+            if tail_ltp is not None:
+                series = series + [tail_ltp]
+            if series:
+                result[sym] = series
+            # If neither past nor today nor ltp: omit silently
+            # (symbol unresolvable).
 
         return SparklineResponse(
             data=result,
@@ -793,7 +935,17 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         for sym, exch in symbols
         if _spark_past_cache.get((sym.upper().strip(), exch.upper().strip(), days, today)) is None
     ]
-    if not to_fetch:
+    # Today's intraday set — re-fetched even when past-cache is hot,
+    # because intraday bars expire on a 5-minute TTL and the segment-
+    # open warms (09:00 / 09:15 IST) need to seed the cache with the
+    # first few bars so the operator's first Pulse load sees today's
+    # path immediately.
+    today_to_fetch = [
+        SparklineSymbol(tradingsymbol=sym.upper().strip(), exchange=exch.upper().strip())
+        for sym, exch in symbols
+        if _today_cache_get(sym.upper().strip(), exch.upper().strip(), today) is None
+    ]
+    if not to_fetch and not today_to_fetch:
         logger.info(f"sparkline warm: all {len(symbols)} symbols already cached")
         return 0
 
@@ -805,17 +957,20 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         return 0
 
     # Build instrument token map from the day-cache (shared with batch_sparkline).
+    # Resolve for the union of past + today fetches so the warm pass
+    # below can issue both kinds of historical_data calls in parallel.
     token_map: dict[str, int] = {}
     try:
         _full_map = await asyncio.to_thread(_get_today_token_map, broker)
-        for sym_obj in to_fetch:
-            if sym_obj.tradingsymbol in token_map:
+        union_syms = {(s.tradingsymbol, s.exchange) for s in (to_fetch + today_to_fetch)}
+        for sym_str, exch_str in union_syms:
+            if sym_str in token_map:
                 continue
-            pref = [sym_obj.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != sym_obj.exchange]
+            pref = [exch_str] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch_str]
             for ex in pref:
-                tok = _full_map.get((sym_obj.tradingsymbol, ex))
+                tok = _full_map.get((sym_str, ex))
                 if tok is not None:
-                    token_map[sym_obj.tradingsymbol] = tok
+                    token_map[sym_str] = tok
                     break
     except Exception as exc:
         logger.warning(f"sparkline warm: instrument lookup failed: {exc}")
@@ -848,6 +1003,20 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         if sym_obj.tradingsymbol in token_map
     ]
 
+    async def _fetch_today_warm(sym: str, token: int) -> tuple[str, list[float]]:
+        async with sem:
+            closes = await asyncio.to_thread(
+                _fetch_today_intraday_sync, broker, token, today,
+            )
+            await asyncio.sleep(_KITE_PACE_S)
+            return sym, closes
+
+    today_tasks = [
+        _fetch_today_warm(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
+        for sym_obj in today_to_fetch
+        if sym_obj.tradingsymbol in token_map
+    ]
+
     cached_count = 0
     if tasks:
         fetched = await asyncio.gather(*tasks)
@@ -859,6 +1028,22 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
                     )
                     _spark_past_cache[(sym, exch, days, today)] = past_closes
                     cached_count += 1
+
+    today_cached = 0
+    if today_tasks:
+        fetched_today = await asyncio.gather(*today_tasks)
+        for sym, today_closes in fetched_today:
+            if today_closes:
+                exch = next(
+                    (s.exchange for s in today_to_fetch if s.tradingsymbol == sym), "NSE"
+                )
+                _today_cache_put(sym, exch, today, today_closes)
+                today_cached += 1
+        if today_cached:
+            logger.info(
+                f"sparkline warm: today-intraday cached {today_cached}/"
+                f"{len(today_tasks)} symbols"
+            )
 
     # Push all resolved instrument tokens to the TickerManager so the
     # WebSocket stream is seeded with every watchlist + book symbol at

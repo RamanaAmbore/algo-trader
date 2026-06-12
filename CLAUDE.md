@@ -267,9 +267,10 @@ Defined in `backend_config.yaml` under `market_segments`. Background thread hand
 
 **Holiday calendar caching** — `fetch_holidays(exchange)` in `broker_apis.py` is now cached per `(exchange, today's date)` to avoid hammering nseindia.com on every `_build_context()` call (once per 5 min on the real path, once per 2 s in sim). The daily cache refreshes naturally at midnight IST and caches the empty set on API failure to avoid retry-hammering when the upstream is down.
 
-**Sparkline cache** — two-tier split since the background warm:
-- `_spark_past_cache` (in `backend/api/routes/quote.py`) keyed `(tradingsymbol, exchange, days, ist_date_str)` stores **past `days-1` daily closes** (the last full day's bar is dropped since Kite returns it as an intraday-running value during the session). Populated lazily on cache miss via `historical_data` (3 req/sec budget); pre-filled at market open by `_task_sparkline_warm` so operator's first Pulse load pays no historical fetch cost.
-- Today's running price is appended at response time via a single batched `broker.ltp()` call (10 req/sec quota) — never stored. Final sparkline series = past + [today_ltp].
+**Sparkline cache** — three-tier split:
+- `_spark_past_cache` (in `backend/api/routes/quote.py`) keyed `(tradingsymbol, exchange, days, ist_date_str)` stores **past `days-1` daily closes**. The last bar of Kite's `historical_data` response is dropped only when its date matches today's IST date (intraday-running value); off-hours every settled close including yesterday is kept (`_trim_past_closes`). Populated lazily on cache miss via `historical_data` (3 req/sec budget); pre-filled by `_task_sparkline_warm` at startup + daily 00:30 IST + market-segment opens so operator's first Pulse load pays no historical fetch cost.
+- `_spark_today_cache` (same file) keyed `(tradingsymbol, exchange, ist_date_str)` stores **today's intraday 30-minute closes** with a 5-min TTL. Lets the sparkline show today's actual path — operator sees the right edge wiggle as the session progresses, not just a single end-of-line dot. Pre-filled by the warm task at every boundary and refreshed lazily on each `/api/quote/sparkline` call when the cached entry is older than the TTL.
+- Current LTP is appended at response time via the SSE ticker's `_tick_map` (zero Kite quota) with a `broker.ltp()` batched fallback (10 req/sec quota) — never stored. Final sparkline series = `past_closes + today_intraday + [current_ltp]`.
 - Symbol universe for warm: `watchlist_items` (DB) + live holdings + live positions, deduped, capped at 100.
 - Warm state (symbols cached, last_warmed_at) is surfaced in `GET /api/admin/health` as `sparkline_warm`.
 
