@@ -513,9 +513,20 @@ class DhanConnection:
     callers doesn't hammer the limit; the cool-off check sits in
     `get_dhan_conn()`.
 
-    No IPv6 source-binding here — Dhan doesn't enforce per-IP
-    whitelisting the way Kite does. `source_ip` is accepted on the
-    constructor for future symmetry but unused today.
+    IPv6 source-binding: Dhan doesn't whitelist source IPs the way
+    Kite does, but the v2 auth backend enforces "one active token
+    per partner app per source IP". In a multi-Dhan-account
+    deployment routed through the server's default outgoing IPv4,
+    every successful login from one account invalidates the prior
+    token of every other account — the operator sees a 3-minute
+    token rotation loop in the prod log (`DH-906: Invalid Token`
+    alternating between accounts). Mitigation: bind each Dhan
+    account to its own IPv6 from the server's /48 subnet (same
+    `2a02:4780:12:9e1d::N` pattern as Kite). `source_ip` is mounted
+    on BOTH the login session (generate_token / renew_token) and
+    the runtime SDK session (positions / holdings / orders /
+    margins / quote) so the per-IP session affinity is preserved
+    end-to-end.
 
     `api_key` / `api_secret` are also accepted on the constructor for
     historical compatibility with the retired Partner-API flow; the
@@ -576,7 +587,17 @@ class DhanConnection:
     def _build_client(self, access_token: str) -> None:
         """Construct the `dhanhq` runtime client from a known-good
         access_token. SDK import is deferred so the module is loadable
-        without dhanhq installed (deploys land in stages)."""
+        without dhanhq installed (deploys land in stages).
+
+        After construction, mount the per-account IPv6 source-binding
+        adapter on the SDK's internal `requests.Session` so every
+        runtime call (positions / holdings / orders / margins / quote)
+        egresses from this account's dedicated source IP. Without
+        this, multi-Dhan-account deployments hit Dhan's "one active
+        token per partner app per source IP" semantic and tokens
+        rotate every few minutes — see the `Dhan rotation pattern`
+        diagnostic in dhan.py for the symptom shape.
+        """
         try:
             from dhanhq import dhanhq  # type: ignore[import-not-found]
         except ImportError as e:
@@ -592,19 +613,96 @@ class DhanConnection:
             from dhanhq import DhanContext  # type: ignore[import-not-found]
             ctx = DhanContext(self.client_id, access_token)
             self._dhan = dhanhq(ctx)
+            # Mount source-binding adapter on the SDK's internal session.
+            # DhanHTTP exposes its session as `dhan_http.session` (verified
+            # against dhanhq 2.x source). Skipped when no source_ip is
+            # configured — falls back to the OS default route.
+            self._mount_source_ip_adapter(getattr(ctx, "dhan_http", None))
         except ImportError:
-            # dhanhq 1.x fallback (positional args).
+            # dhanhq 1.x fallback (positional args). Older shape has the
+            # session at `self._dhan._http` or similar; best-effort mount.
             self._dhan = dhanhq(self.client_id, access_token)
+            self._mount_source_ip_adapter(
+                getattr(self._dhan, "dhan_http", None)
+                or getattr(self._dhan, "_http", None)
+            )
         self._import_error = None
 
+    def _mount_source_ip_adapter(self, http_holder: Any) -> None:
+        """Replace `http_holder.session`'s default HTTPS adapter with an
+        `_IPv6SourceAdapter` bound to this account's source_ip. No-op
+        when source_ip is unset or the holder doesn't expose `session`
+        (defensive against future SDK refactors).
+        """
+        if not self._source_ip:
+            return
+        if http_holder is None:
+            logger.warning(
+                f"Dhan {self.account!r}: SDK doesn't expose dhan_http "
+                f"holder; source_ip binding skipped. Token rotation "
+                f"pattern may persist."
+            )
+            return
+        session = getattr(http_holder, "session", None)
+        if session is None:
+            logger.warning(
+                f"Dhan {self.account!r}: SDK http holder has no session "
+                f"attribute; source_ip binding skipped."
+            )
+            return
+        try:
+            adapter = _IPv6SourceAdapter(self._source_ip)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            logger.info(
+                f"Dhan {self.account!r}: source_ip {self._source_ip} "
+                f"bound to SDK runtime session"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Dhan {self.account!r}: failed to mount source_ip "
+                f"adapter ({e}); falling back to default route"
+            )
+
     # ── Login flow ───────────────────────────────────────────────────
+
+    def _login_session(self):
+        """Build a fresh `requests.Session` for the Dhan login call,
+        with the per-account IPv6 source-binding adapter mounted when
+        source_ip is configured. Used for both `_do_login`
+        (generate_token) and `_try_renew` (renew_token) so the auth
+        endpoint sees the same source IP as our runtime SDK calls —
+        a prerequisite for Dhan's per-IP session tracking to recognise
+        login + subsequent calls as one logical session.
+
+        Bypasses `dhanhq.auth.DhanLogin` (which uses module-level
+        `requests.post`/`requests.get` and offers no session hook).
+        We call the same two REST endpoints directly so the source-
+        binding adapter is the canonical path, not a monkey-patched
+        sidestep that could leak into unrelated HTTP calls.
+        """
+        import requests  # local import — keeps module loadable without it
+        session = requests.Session()
+        if self._source_ip:
+            try:
+                adapter = _IPv6SourceAdapter(self._source_ip)
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+            except Exception as e:
+                logger.warning(
+                    f"Dhan {self.account!r}: login source_ip mount failed "
+                    f"({e}); falling back to default route"
+                )
+        return session
+
+    _DHAN_AUTH_BASE = "https://auth.dhan.co"
+    _DHAN_API_BASE  = "https://api.dhan.co/v2"
 
     def _do_login(self) -> str:
         """Mint a fresh Dhan access_token end-to-end programmatically.
 
-        Uses `DhanLogin.generate_token(pin, totp)` — single POST to
-        `https://auth.dhan.co/app/generateAccessToken?dhanClientId=…&
-        pin=…&totp=…`. No browser, no SMS/email OTP, no consent flow.
+        POST `https://auth.dhan.co/app/generateAccessToken?dhanClientId=…
+        &pin=…&totp=…` — no browser, no SMS/email OTP, no consent flow.
         Validity is whatever the Dhan dashboard's "Token validity"
         dropdown is set to (24 h default; can be extended to 30 d / 1 yr).
 
@@ -612,33 +710,42 @@ class DhanConnection:
         consume_token_id) was retired because Dhan v2 moved that flow
         behind browser-based SMS/email-OTP + PIN consent. The direct
         endpoint here is what the SDK actually exposes for headless use.
-        """
-        try:
-            from dhanhq import DhanLogin  # type: ignore[import-not-found]
-        except ImportError as e:
-            raise RuntimeError(
-                f"dhanhq SDK missing — cannot run Dhan login for "
-                f"{self.account!r}: {e}"
-            ) from e
 
+        Source-binding: when `source_ip` is configured on this account,
+        the login POST egresses from that IP. Critical for multi-Dhan-
+        account deployments where Dhan's per-IP session tracking would
+        otherwise invalidate the previously-issued token every time a
+        peer account logs in from the same default IP.
+        """
         if not all([self.client_id, self._pin, self._totp_token]):
             raise RuntimeError(
                 f"Dhan account {self.account!r} needs client_id + PIN + "
                 f"TOTP seed for headless auth. Fill them in /admin/brokers."
             )
 
-        login = DhanLogin(self.client_id)
         totp_code = generate_totp(self._totp_token)
-        resp = login.generate_token(self._pin, totp_code)
+        session = self._login_session()
+        url = f"{self._DHAN_AUTH_BASE}/app/generateAccessToken"
+        params = {
+            "dhanClientId": self.client_id,
+            "pin":          self._pin,
+            "totp":         totp_code,
+        }
+        try:
+            response = session.post(url, params=params, timeout=30)
+            resp = response.json() if response.content else {}
+        except Exception as e:
+            raise RuntimeError(
+                f"Dhan generate_token HTTP call failed: {e}"
+            ) from e
+
         # Response shape: {"accessToken": "..."} (sometimes wrapped under
-        # "data"). Tolerate both for resilience against minor SDK
-        # changes.
+        # "data"). Tolerate both for resilience against minor API changes.
+        access_token = None
         if isinstance(resp, dict):
             data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
             access_token = (data.get("accessToken")
                             or data.get("access_token"))
-        else:
-            access_token = None
         if not access_token:
             raise RuntimeError(
                 f"Dhan generate_token returned no accessToken: {resp!r}"
@@ -646,19 +753,26 @@ class DhanConnection:
         return str(access_token)
 
     def _try_renew(self) -> str | None:
-        """Best-effort token refresh using `DhanLogin.renew_token`. Lets
-        a still-valid-but-close-to-expiring token roll forward without
-        the operator re-entering anything. Returns the new token or
-        None if renewal isn't available (older SDK, missing token, …)."""
+        """Best-effort token refresh via `GET /v2/RenewToken`. Lets a
+        still-valid-but-close-to-expiring token roll forward without
+        re-entering PIN+TOTP. Returns the new token or None on any
+        failure (older API, missing token, network blip, …).
+
+        Same source-binding as `_do_login` — the renewal HTTP call
+        egresses from this account's source_ip so the per-IP session
+        affinity is preserved.
+        """
         if not self._access_token:
             return None
+        session = self._login_session()
+        url = f"{self._DHAN_API_BASE}/RenewToken"
+        headers = {
+            "access-token": self._access_token,
+            "dhanClientId": self.client_id,
+        }
         try:
-            from dhanhq import DhanLogin  # type: ignore[import-not-found]
-        except ImportError:
-            return None
-        try:
-            login = DhanLogin(self.client_id)
-            resp = login.renew_token(self._access_token)
+            response = session.get(url, headers=headers, timeout=30)
+            resp = response.json() if response.content else {}
         except Exception as e:
             logger.warning(f"Dhan renew_token failed for {self.account!r}: {e}")
             return None
