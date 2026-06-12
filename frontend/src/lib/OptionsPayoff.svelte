@@ -25,6 +25,7 @@
    *   ivProxy?:     number|null,
    *   legCount?:    number|null,
    *   realizedPnl?: number,
+   *   dayPnl?:      number|null,
    *   onRefresh?:   (() => void) | null,
    *   loading?:     boolean,
    *   prevClose?:   number|null,
@@ -58,6 +59,13 @@
     //   ≈ dashboard ₹ for this underlying
     // 0 (default) → REAL + TOTAL rows hide; chart reads as before.
     realizedPnl = 0,
+    // Sum of day_change_val (today's mark-to-market move) for the
+    // enabled candidates. Rendered as the DAY row in the stat overlay
+    // so the operator can compare it against the PositionStrip's P∆
+    // chip. Subset relationship: when the basket covers EVERY open
+    // position in the operator's book, DAY equals P∆ exactly. null /
+    // 0 → DAY row hides.
+    dayPnl = /** @type {number|null} */ (null),
     onRefresh  = /** @type {(() => void) | null} */ (null),
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
@@ -654,11 +662,25 @@
           <span class="ps-v ps-flat">{fmtSpot(prevClose)}</span>
         </div>
       {/if}
+      {#if dayPnl != null && dayPnl !== 0}
+        <!-- DAY row — sum of today's mark-to-market change across
+             enabled candidates. Reconciles with the PositionStrip's
+             P∆ chip when the basket covers every position in the
+             book. Operator can scan TDAY (lifetime) vs DAY (today's
+             delta) at a glance. -->
+        <div class="ps-row"
+             title="Today's mark-to-market change on enabled basket positions (sum of day_change_val). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position.">
+          <span class="ps-k">DAY</span>
+          <span class={'ps-v ' + (dayPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
+            {fmtMoney(dayPnl)}
+          </span>
+        </div>
+      {/if}
       {#if curveAtSpot}
         <div class="ps-row"
              title={realizedPnl !== 0
-               ? `Today's strategy P&L at the current spot — adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in (closed-position realised + open-leg theoretical-vs-LTP gap).`
-               : "Today's strategy P&L at the current spot — Black-Scholes value of all open legs minus entry cost"}>
+               ? `Position lifetime P&L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
+               : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's delta — use the DAY row above for that."}>
           <span class="ps-k">TDAY</span>
           <span class={'ps-v ' + (curveAtSpot.today_value >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(curveAtSpot.today_value)}

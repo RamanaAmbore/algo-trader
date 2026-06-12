@@ -738,7 +738,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
+  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -826,6 +826,22 @@
     for (const c of candidatePositions) {
       if (enabledSymbols[enKey(c)] === false) continue;
       s += Number(c.pnl || 0);
+    }
+    return s;
+  });
+
+  // Sum of day_change_val across enabled candidates. Surfaced as the
+  // DAY row in the OptionsPayoff overlay so the operator can reconcile
+  // it with the PositionStrip's P∆ chip (= sum of day_change_val
+  // across the ENTIRE position book). Subset relationship: if every
+  // position in the strip belongs to the chart's underlying AND every
+  // candidate is enabled, DAY equals the strip's P∆ exactly. Useful
+  // for "is my chart showing what the strip says?" sanity checks.
+  const candidatesDayPnl = $derived.by(() => {
+    let s = 0;
+    for (const c of candidatePositions) {
+      if (enabledSymbols[enKey(c)] === false) continue;
+      s += Number(c.day_change_val || 0);
     }
     return s;
   });
@@ -2531,6 +2547,7 @@
         legCount={strategy.legs.length}
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
+        dayPnl={candidatesDayPnl}
         legSymbols={strategy.legs.map(/** @param {{symbol:string}} l */ l => l.symbol)}
         spotAnchor={strategy.spot_anchor_contract
           ? { contract: strategy.spot_anchor_contract,
