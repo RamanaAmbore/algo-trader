@@ -45,43 +45,41 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
 
     if {"average_price", "opening_quantity"}.issubset(df_holdings.columns):
         df_holdings["inv_val"] = df_holdings["average_price"] * df_holdings["opening_quantity"]
-    # Universal P&L recompute — operator's formula:
-    #   pnl       = (LTP   − avg)   × qty
-    #   day_change= (LTP   − close)        (per-share, then × qty for the val)
-    # Apply at the central chokepoint so every broker (Kite, Dhan, Groww)
-    # surfaces consistent numbers. Falls back to broker-reported pnl
-    # when last_price hasn't ticked yet (pre-open, broker glitch) so the
-    # column doesn't go blank during early-session warm-up.
+    # Reconciled P&L posture (mirrors fetch_positions):
+    #   - Broker pnl / day_change_val are the source of truth when the
+    #     adapter shipped them (Kite always does; Dhan + Groww populate
+    #     via their normalisers).
+    #   - Our (LTP - avg) × qty / (LTP - close) × qty formulas are the
+    #     synthesise-from-scratch fallback for adapters that don't
+    #     populate the column.
     if {"last_price", "average_price", "opening_quantity"}.issubset(df_holdings.columns):
         _ltp_h = pd.to_numeric(df_holdings["last_price"], errors="coerce").fillna(0)
         _avg_h = pd.to_numeric(df_holdings["average_price"], errors="coerce").fillna(0)
         _qty_h = pd.to_numeric(df_holdings["opening_quantity"], errors="coerce").fillna(0)
         _pnl_calc = (_ltp_h - _avg_h) * _qty_h
-        # Only overwrite when LTP + avg are both positive (a quoted, real
-        # position). For pre-open rows where LTP=0 the recompute would
-        # post a phantom −avg×qty loss; keep broker's pnl in that case.
-        _valid = (_ltp_h > 0) & (_avg_h > 0)
         if "pnl" in df_holdings.columns:
-            df_holdings["pnl"] = _pnl_calc.where(_valid, df_holdings["pnl"])
+            _broker_pnl_h = pd.to_numeric(df_holdings["pnl"], errors="coerce")
+            df_holdings["pnl"] = _broker_pnl_h.where(_broker_pnl_h.notna(), _pnl_calc)
         else:
+            _valid = (_ltp_h > 0) & (_avg_h > 0)
             df_holdings["pnl"] = _pnl_calc.where(_valid, 0.0)
     if "pnl" in df_holdings.columns and "inv_val" in df_holdings.columns:
         df_holdings["cur_val"] = df_holdings["inv_val"] + df_holdings["pnl"]
         df_holdings["pnl_percentage"] = df_holdings["pnl"] / df_holdings["inv_val"] * 100
     if {"close_price", "average_price"}.issubset(df_holdings.columns):
         df_holdings["price_change"] = df_holdings["close_price"] - df_holdings["average_price"]
-    # day_change_val = (LTP − close) × qty — recompute from LTP first
-    # (matches operator's spec). Broker-reported `day_change` (delta per
-    # share) is a fallback only when last_price is missing.
     if {"last_price", "close_price", "opening_quantity"}.issubset(df_holdings.columns):
         _ltp_h2 = pd.to_numeric(df_holdings["last_price"], errors="coerce").fillna(0)
         _cls_h  = pd.to_numeric(df_holdings["close_price"], errors="coerce").fillna(0)
         _qty_h2 = pd.to_numeric(df_holdings["opening_quantity"], errors="coerce").fillna(0)
         _dcv_calc = (_ltp_h2 - _cls_h) * _qty_h2
-        _valid_d = (_ltp_h2 > 0) & (_cls_h > 0)
         if "day_change_val" in df_holdings.columns:
-            df_holdings["day_change_val"] = _dcv_calc.where(_valid_d, df_holdings["day_change_val"])
+            _broker_dcv_h = pd.to_numeric(df_holdings["day_change_val"], errors="coerce")
+            df_holdings["day_change_val"] = _broker_dcv_h.where(
+                _broker_dcv_h.notna(), _dcv_calc
+            )
         else:
+            _valid_d = (_ltp_h2 > 0) & (_cls_h > 0)
             df_holdings["day_change_val"] = _dcv_calc.where(_valid_d, 0.0)
     elif {"day_change", "opening_quantity"}.issubset(df_holdings.columns):
         df_holdings["day_change_val"] = df_holdings["day_change"] * df_holdings["opening_quantity"]
@@ -127,27 +125,31 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     if df_positions.empty:
         return df_positions
 
-    # ── P∆ (day change in P&L on positions) ─────────────────────────────
-    # Operator-stated formula, applied universally across every broker
-    # adapter:
+    # ── P&L + day change reconciliation ────────────────────────────────
+    # Broker is the source of truth. The earlier revision overrode
+    # `pnl` and `day_change_val` with `(LTP - avg) × qty` and
+    # `(LTP - close) × qty` for every row where LTP + avg/close were
+    # positive — that replaced Kite's broker.pnl (which includes
+    # realised cash flow from intraday closeouts) with a simple
+    # unrealised-only formula. End-to-end effect: a position with
+    # intraday partial closeouts showed different numbers in the
+    # strip / Legs / Payoff than the operator's broker app, because
+    # the realised portion got dropped.
     #
-    #   pnl            = (LTP − avg)   × qty           ← lifetime / unrealised
-    #   day_change_val = (LTP − close) × qty           ← today's change
+    # Reconciled posture:
+    #   - When the adapter shipped a numeric pnl / day_change_val
+    #     value, TRUST IT. Kite's pnl includes realised; Dhan's
+    #     adapter computes (LTP - avg) × qty natively (because
+    #     Dhan's unrealisedProfit field is unreliable); Groww
+    #     forwards its own pnl. All three are the broker-canonical
+    #     values for that adapter.
+    #   - Fall back to our simple formula ONLY when the adapter
+    #     left the field null / missing — defensive against future
+    #     adapters that don't populate the column.
     #
-    # Falls back to the broker-reported value only when LTP / avg / close
-    # is zero or missing (pre-open warm-up, broker glitch) — keeps the
-    # column non-blank during early session while still letting our
-    # formula take over the moment a real quote lands.
-    #
-    # NOTE: an earlier revision used a "split" formula that combined
-    # overnight MTM + intraday MTM + realised cash flow to correctly
-    # attribute partial-closeout P&L. That gave numerically different
-    # values from (LTP − avg) × qty when a leg was partially closed
-    # today, which the operator reported as wrong. The simple formula
-    # above matches the operator's mental model ("entry price and
-    # current price difference is P&L; from yesterday's closing price
-    # and today's price is day P&L") and is now the source of truth
-    # across Kite, Dhan, and Groww.
+    # day_change column (per-share delta — `LTP - close`) is
+    # cosmetic, kept verbatim for downstream readers that still
+    # reference it.
     df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
     _ltp = pd.to_numeric(df_positions['last_price'],    errors='coerce').fillna(0)
     _avg = pd.to_numeric(df_positions['average_price'], errors='coerce').fillna(0)
@@ -155,18 +157,26 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     _qty = pd.to_numeric(df_positions['quantity'],      errors='coerce').fillna(0)
     _pnl_calc = (_ltp - _avg) * _qty
     _dcv_calc = (_ltp - _cls) * _qty
-    _pnl_valid = (_ltp > 0) & (_avg > 0)
-    _dcv_valid = (_ltp > 0) & (_cls > 0)
+    # Trust broker pnl when present (not null / not NaN). Fall back
+    # to (LTP - avg) × qty only on missing values. Same posture for
+    # day_change_val.
     if 'pnl' in df_positions.columns:
-        df_positions['pnl'] = _pnl_calc.where(_pnl_valid, df_positions['pnl'])
+        _broker_pnl = pd.to_numeric(df_positions['pnl'], errors='coerce')
+        df_positions['pnl'] = _broker_pnl.where(_broker_pnl.notna(), _pnl_calc)
     else:
+        # Adapter didn't ship a pnl column at all — synthesize from
+        # the simple formula, guarded by ltp+avg validity (avoid
+        # phantom values during pre-open warm-up).
+        _pnl_valid = (_ltp > 0) & (_avg > 0)
         df_positions['pnl'] = _pnl_calc.where(_pnl_valid, 0.0)
-    df_positions['day_change_val'] = _dcv_calc.where(
-        _dcv_valid,
-        df_positions.get('day_change_val', 0.0)
-        if 'day_change_val' in df_positions.columns
-        else 0.0,
-    )
+    if 'day_change_val' in df_positions.columns:
+        _broker_dcv = pd.to_numeric(df_positions['day_change_val'], errors='coerce')
+        df_positions['day_change_val'] = _broker_dcv.where(
+            _broker_dcv.notna(), _dcv_calc
+        )
+    else:
+        _dcv_valid = (_ltp > 0) & (_cls > 0)
+        df_positions['day_change_val'] = _dcv_calc.where(_dcv_valid, 0.0)
     prev_val = (df_positions['close_price'] * df_positions['quantity']).abs()
     df_positions['day_change_percentage'] = (
         df_positions['day_change_val'] / prev_val.replace(0, pd.NA) * 100

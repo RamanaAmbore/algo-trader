@@ -1431,7 +1431,35 @@
   // Holdings feed the right-style book grids (with TOTAL rows
   // pinned at the bucket's bottom edge).
   const pinnedRows     = $derived(pinnedTopRows);
-  const _allWatchRows  = $derived(mainRows.filter(r => r._majorGroup === 'watchlist'));
+  // Single-pass bucketing over mainRows. The previous shape had four
+  // separate `$derived(mainRows.filter(...))` chains (_allWatchRows,
+  // positionsRows, holdingsRows + watchCounts iterated _allWatchRows
+  // again), so every mainRows change triggered four full passes.
+  // Bucketing in one pass cuts that to a single O(n) walk per
+  // mainRows update — meaningful on the initial-paint hot path where
+  // mainRows is 100-300 rows wide and 4 filter passes adds up to a
+  // visible delay on lower-end devices.
+  const _rowBuckets = $derived.by(() => {
+    const watch = [];
+    const positions = [];
+    const holdings = [];
+    /** @type {Record<number, number>} */
+    const counts = {};
+    for (const r of mainRows) {
+      const mg = r._majorGroup;
+      if (mg === 'watchlist') {
+        watch.push(r);
+        const id = Number(r.watchlist_list_id);
+        if (Number.isFinite(id)) counts[id] = (counts[id] || 0) + 1;
+      } else if (mg === 'positions') {
+        positions.push(r);
+      } else if (mg === 'holdings') {
+        holdings.push(r);
+      }
+    }
+    return { watch, positions, holdings, counts };
+  });
+  const _allWatchRows  = $derived(_rowBuckets.watch);
   // User watchlists — capped at 5 visible tabs (anything beyond can be
   // reached via the Show dropdown). Each list becomes its own top-tab.
   const _userLists = $derived((lists || []).filter(l => !l.is_pinned).slice(0, 5));
@@ -1444,17 +1472,9 @@
       : _allWatchRows
   );
   // Per-tab row counts so the tab pill can show its denominator.
-  const watchCounts = $derived.by(() => {
-    /** @type {Record<number, number>} */
-    const out = {};
-    for (const r of _allWatchRows) {
-      const id = Number(r.watchlist_list_id);
-      if (Number.isFinite(id)) out[id] = (out[id] || 0) + 1;
-    }
-    return out;
-  });
-  const positionsRows  = $derived(mainRows.filter(r => r._majorGroup === 'positions'));
-  const holdingsRows   = $derived(mainRows.filter(r => r._majorGroup === 'holdings'));
+  const watchCounts = $derived(_rowBuckets.counts);
+  const positionsRows  = $derived(_rowBuckets.positions);
+  const holdingsRows   = $derived(_rowBuckets.holdings);
   // Sub-group tabs on the Winners + Losers grids — each grid scopes
   // to one of five universes:
   //   underlying → major indices (NIFTY 50, BANKNIFTY, etc.)

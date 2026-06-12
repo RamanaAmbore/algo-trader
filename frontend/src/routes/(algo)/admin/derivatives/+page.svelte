@@ -3970,13 +3970,32 @@
   }
   /* TOTAL row — always last, visually distinct (top border + bolder
      text) so the operator sees the roll-up at a glance. The two pnl
-     columns sum to the strip's P + P∆ chips for the same accounts. */
+     columns sum to the strip's P + P∆ chips for the same accounts.
+     position:sticky pins the row to the bottom of the .cand-scroll
+     container so the operator always sees the roll-up even when the
+     candidate list is long enough to scroll. Background is slightly
+     more opaque than the in-line variant so it reads as a solid pill
+     against the scrolling rows underneath. */
   .cand-row.cand-row-total {
     border-top: 2px solid var(--algo-amber-border);
-    background: rgba(251, 191, 36, 0.05);
+    background: rgba(20, 28, 48, 0.96);
+    box-shadow: 0 -4px 8px rgba(0, 0, 0, 0.35);
     font-weight: 700;
     margin-top: 0.2rem;
     padding-top: 0.35rem;
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+  }
+  .cand-row.cand-row-total::after {
+    /* Amber tint overlay — same colour family as the in-line variant,
+       layered on top of the dark base so the tint shows through but
+       the rows underneath don't bleed in. */
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(251, 191, 36, 0.08);
+    pointer-events: none;
   }
   .cand-total-label {
     color: #fbbf24;
