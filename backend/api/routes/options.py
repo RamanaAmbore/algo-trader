@@ -641,36 +641,81 @@ async def _lookup_mcx_future(underlying: str,
 #   (expires_at_monotonic, spot_px, source, prev_close, anchor_contract)
 # Source carries 'cached' when read back so the UI knows the data is
 # stale-but-real (vs 'fallback' which means synthetic strike anchor).
-_LAST_KNOWN_SPOT: dict[str, tuple[float, float, str, Optional[float], Optional[str]]] = {}
+#
+# Key shape: (underlying, anchor) — anchor is the resolving futures
+# tradingsymbol when the spot came from a futures proxy (every MCX
+# commodity goes through this path; NSE/NFO falls through when the
+# spot ticker miss-fires). Indices / stocks with a working NSE spot
+# ticker land in the cache with anchor=None, so they all dedupe to
+# one entry per underlying.
+#
+# Why the compound key matters: CRUDEOIL has no spot — JUN options
+# are anchored to CRUDEOIL26JUNFUT and JUL options to CRUDEOIL26JULFUT.
+# The two futures trade at different prices (calendar spread). The
+# earlier single-key shape (`underlying` only) let JUL queries
+# overwrite the JUN entry, so a JUN-month broker failure would
+# silently return the JUL price as the JUN spot — wrong month, wrong
+# basis. Compound key keeps per-month entries isolated.
+_LAST_KNOWN_SPOT: dict[tuple[str, Optional[str]],
+                       tuple[float, float, str, Optional[float], Optional[str]]] = {}
 _LAST_KNOWN_SPOT_LOCK = _threading.Lock()
 _LAST_KNOWN_SPOT_TTL = 86400  # 24 h
 
 
-def _spot_cache_get(underlying: str) -> tuple[float, str, Optional[float], Optional[str]] | None:
+def _spot_cache_get(underlying: str,
+                     anchor: Optional[str] = None
+                     ) -> tuple[float, str, Optional[float], Optional[str]] | None:
     """Return (spot, 'cached', prev_close, anchor) if a non-expired cache
-    entry exists for the underlying, else None. Always relabels the
-    source as 'cached' so the UI distinguishes stale-but-real data
-    from a fresh broker fetch."""
+    entry exists, else None. Always relabels the source as 'cached'
+    so the UI distinguishes stale-but-real data from a fresh broker
+    fetch.
+
+    Lookup order:
+      1. Exact (underlying, anchor) — the caller asked for a specific
+         futures-anchored spot (e.g. JUN's spot for a JUN option).
+      2. Exact (underlying, None) — the no-anchor / spot-ticker entry
+         (indices, stocks). Useful when the caller has no anchor and
+         hopes any cached spot is good enough.
+
+    No fuzzy fallback across different anchors: a JUL-anchored entry
+    is NEVER returned for a JUN-anchored query (the whole point of
+    the per-month key shape). When neither key hits, we return None
+    and the resolver falls through to its synthetic-strike fallback.
+    """
     with _LAST_KNOWN_SPOT_LOCK:
-        entry = _LAST_KNOWN_SPOT.get(underlying)
-        if entry is None:
-            return None
-        expires_at, px, _orig_src, prev_close, anchor = entry
-        if time.monotonic() >= expires_at:
-            _LAST_KNOWN_SPOT.pop(underlying, None)
-            return None
-        return (px, "cached", prev_close, anchor)
+        keys = [(underlying, anchor)]
+        # Indices / stocks: the spot-ticker entry is keyed (underlying, None).
+        # If the caller passed a futures anchor and we have no per-anchor
+        # entry, fall back to the spot-ticker entry. For commodities the
+        # spot-ticker entry never exists (no NSE spot for MCX), so this
+        # second probe just no-ops.
+        if anchor is not None:
+            keys.append((underlying, None))
+        for k in keys:
+            entry = _LAST_KNOWN_SPOT.get(k)
+            if entry is None:
+                continue
+            expires_at, px, _orig_src, prev_close, anc = entry
+            if time.monotonic() >= expires_at:
+                _LAST_KNOWN_SPOT.pop(k, None)
+                continue
+            return (px, "cached", prev_close, anc)
+        return None
 
 
 def _spot_cache_put(underlying: str, px: float, src: str,
                      prev_close: Optional[float], anchor: Optional[str]) -> None:
     """Write a fresh broker-sourced spot into the cache. Never called
     with 'fallback' source — only real broker data gets cached, so
-    a cache read can never reconstruct the median-strike anchor."""
+    a cache read can never reconstruct the median-strike anchor.
+
+    Keyed by (underlying, anchor) so JUN and JUL futures cache
+    independently. Indices / stocks pass anchor=None and dedupe to
+    a single entry per underlying."""
     if px <= 0 or src in ("fallback", "cached"):
         return
     with _LAST_KNOWN_SPOT_LOCK:
-        _LAST_KNOWN_SPOT[underlying] = (
+        _LAST_KNOWN_SPOT[(underlying, anchor)] = (
             time.monotonic() + _LAST_KNOWN_SPOT_TTL,
             float(px), src, prev_close, anchor,
         )
@@ -753,8 +798,16 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     #    front-month. Jun->Sep basis spread can be 200-500 on a 6800
     #    CRUDEOIL base -- a material IV miscalibration. Falls back to
     #    front-month when expiry_hint is None or no match is found.
+    # Compute the operator's INTENDED anchor for this query. For MCX
+    # commodities the matching-month future IS the anchor; for NSE/NFO
+    # there's no per-month anchor (one spot ticker per underlying), so
+    # anchor stays None. Stored even when the live broker query below
+    # fails so the cache fallback at the end of the function can read
+    # the right per-month entry instead of whatever month was last
+    # cached. Without this, a JUN-option query whose live fetch fails
+    # would return a JUL-cached spot — wrong basis.
+    resolved_sym: Optional[str] = None
     if is_commodity:
-        resolved_sym: Optional[str] = None
         if option_symbol:
             resolved_sym = await lookup_future_for_option(option_symbol)
         if not resolved_sym and expiry_hint is not None:
@@ -818,7 +871,14 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     # 24 h. Operator-preferred to the median-strike synthetic, which
     # paints a misleading 9000 spot for a CRUDEOIL book whose actual
     # underlying is ~7000.
-    cached = _spot_cache_get(underlying)
+    #
+    # Cache lookup is keyed by (underlying, anchor). For commodities the
+    # `resolved_sym` we computed above carries the operator's intended
+    # anchor (the matching-month future). For NSE/NFO anchor=None. This
+    # keeps a JUN-option query from returning a JUL-cached spot when
+    # the live JUN fetch fails.
+    cache_anchor = resolved_sym if is_commodity else None
+    cached = _spot_cache_get(underlying, cache_anchor)
     if cached is not None:
         return cached  # (px, "cached", prev_close, anchor)
 
