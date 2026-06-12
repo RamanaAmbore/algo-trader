@@ -148,68 +148,6 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     # current price difference is P&L; from yesterday's closing price
     # and today's price is day P&L") and is now the source of truth
     # across Kite, Dhan, and Groww.
-    # Dhan's v2 positions endpoint doesn't return a previous-close
-    # field (only position state — qty / avg / LTP / unrealised). Without
-    # it, close_price=0 on every Dhan row and the recompute below would
-    # fall back to broker-reported day_change_val (also 0 by the same
-    # logic in the Dhan adapter). End-to-end effect: Day P&L renders
-    # as `—` for every Dhan position on /pulse + Candidates panel.
-    #
-    # Fix: lookup yesterday's close via PriceBroker (Kite has the data
-    # for every symbol regardless of which broker holds the position)
-    # in one batched call. broker.quote returns ohlc.close per quote
-    # key — same data feed every other consumer reads. Costs 1 Kite
-    # quote() call per /api/positions tick when at least one row has
-    # close_price=0; skipped entirely when every adapter populated
-    # close_price natively (Kite, Groww).
-    if 'close_price' in df_positions.columns:
-        _missing_close_mask = pd.to_numeric(
-            df_positions['close_price'], errors='coerce'
-        ).fillna(0).le(0)
-        if _missing_close_mask.any():
-            try:
-                from backend.shared.brokers.registry import get_price_broker
-                _missing_rows = df_positions[_missing_close_mask]
-                _quote_keys: list[str] = []
-                _key_per_row: list[str] = []
-                for _, _row in _missing_rows.iterrows():
-                    _exch = str(_row.get('exchange', '') or 'NFO').upper()
-                    _sym  = str(_row.get('tradingsymbol', '') or '').upper()
-                    if _sym:
-                        _k = f"{_exch}:{_sym}"
-                        _key_per_row.append(_k)
-                        if _k not in _quote_keys:
-                            _quote_keys.append(_k)
-                    else:
-                        _key_per_row.append('')
-                if _quote_keys:
-                    _pb = get_price_broker()
-                    _q = _pb.quote(_quote_keys) or {}
-                    _close_lookup: dict[str, float] = {}
-                    for _k, _v in _q.items():
-                        if isinstance(_v, dict):
-                            _ohlc = _v.get('ohlc') if isinstance(_v.get('ohlc'), dict) else {}
-                            _cls_val = _ohlc.get('close') if _ohlc else None
-                            if _cls_val is None:
-                                _cls_val = _v.get('close_price')
-                            try:
-                                _f = float(_cls_val) if _cls_val is not None else 0.0
-                            except (TypeError, ValueError):
-                                _f = 0.0
-                            if _f > 0:
-                                _close_lookup[_k] = _f
-                    # Patch close_price on rows where we found a value.
-                    _row_indices = df_positions.index[_missing_close_mask].tolist()
-                    for _idx, _k in zip(_row_indices, _key_per_row):
-                        _looked_up = _close_lookup.get(_k)
-                        if _looked_up:
-                            df_positions.at[_idx, 'close_price'] = _looked_up
-            except Exception as _e:
-                logger.warning(
-                    f"[{account}] PriceBroker close-price lookup failed "
-                    f"for Dhan/other rows: {_e}"
-                )
-
     df_positions['day_change'] = df_positions['last_price'] - df_positions['close_price']
     _ltp = pd.to_numeric(df_positions['last_price'],    errors='coerce').fillna(0)
     _avg = pd.to_numeric(df_positions['average_price'], errors='coerce').fillna(0)
@@ -243,6 +181,128 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     ).fillna(0)
 
     return df_positions
+
+
+def backfill_close_prices(df) -> int:
+    """Backfill `close_price` on rows where the adapter didn't supply
+    one (Dhan v2 positions endpoint doesn't return prev-close), then
+    recompute `day_change_val` and `day_change_percentage` for the
+    patched rows so Day P&L shows correctly downstream.
+
+    Called by the /api/positions and /api/holdings endpoints AFTER
+    `pd.concat(broker_apis.fetch_*())` so the PriceBroker.quote call
+    is ONE batched round-trip across every broker's missing-close
+    rows — not N per N accounts (the prior shape called the lookup
+    inside the per-account `@for_all_accounts` body and burned N
+    quote() calls per poll).
+
+    No-op when `close_price` is already populated on every row
+    (Kite always returns it; Groww too). Exception-safe: a broker
+    outage on PriceBroker leaves rows untouched and Day P&L
+    fallback behaviour matches the pre-patch state.
+
+    Returns the count of patched rows (informational for callers'
+    debug logs).
+    """
+    if df is None or df.empty or 'close_price' not in df.columns:
+        return 0
+    _missing = pd.to_numeric(df['close_price'], errors='coerce').fillna(0).le(0)
+    if not _missing.any():
+        return 0
+
+    # Build unique quote keys across every missing-close row.
+    _missing_rows = df[_missing]
+    _key_per_row: list[str] = []
+    _seen_keys: set[str] = set()
+    _unique_keys: list[str] = []
+    for _, _row in _missing_rows.iterrows():
+        _exch = str(_row.get('exchange', '') or 'NFO').upper()
+        _sym  = str(_row.get('tradingsymbol', '') or '').upper()
+        if _sym:
+            _k = f"{_exch}:{_sym}"
+            _key_per_row.append(_k)
+            if _k not in _seen_keys:
+                _seen_keys.add(_k)
+                _unique_keys.append(_k)
+        else:
+            _key_per_row.append('')
+
+    if not _unique_keys:
+        return 0
+
+    try:
+        from backend.shared.brokers.registry import get_price_broker
+        _pb = get_price_broker()
+        _q = _pb.quote(_unique_keys) or {}
+    except Exception as _e:
+        logger.warning(
+            f"PriceBroker close-price backfill failed (1 batched call for "
+            f"{len(_unique_keys)} symbols): {_e}"
+        )
+        return 0
+
+    _close_lookup: dict[str, float] = {}
+    for _k, _v in _q.items():
+        if not isinstance(_v, dict):
+            continue
+        _ohlc = _v.get('ohlc') if isinstance(_v.get('ohlc'), dict) else {}
+        _cls_val = _ohlc.get('close') if _ohlc else None
+        if _cls_val is None:
+            _cls_val = _v.get('close_price')
+        try:
+            _f = float(_cls_val) if _cls_val is not None else 0.0
+        except (TypeError, ValueError):
+            _f = 0.0
+        if _f > 0:
+            _close_lookup[_k] = _f
+
+    # Patch close_price in place; record which row indices got values
+    # so we can re-run the day_change_val recompute for ONLY those rows
+    # (rows that already had a valid close stay untouched).
+    _row_indices = df.index[_missing].tolist()
+    _patched_indices: list = []
+    for _idx, _k in zip(_row_indices, _key_per_row):
+        _looked_up = _close_lookup.get(_k)
+        if _looked_up:
+            df.at[_idx, 'close_price'] = _looked_up
+            _patched_indices.append(_idx)
+
+    if not _patched_indices:
+        return 0
+
+    # Re-run the (LTP - close) × qty recompute on patched rows only.
+    # The per-account fetch already wrote a value (0 or broker-reported)
+    # that the consumer treats as authoritative — overwrite it now that
+    # we have a real close.
+    _qty_col = 'opening_quantity' if 'opening_quantity' in df.columns else 'quantity'
+    if _qty_col not in df.columns or 'last_price' not in df.columns:
+        return len(_patched_indices)
+
+    _idx_array = pd.Index(_patched_indices)
+    _ltp_p = pd.to_numeric(df.loc[_idx_array, 'last_price'], errors='coerce').fillna(0)
+    _cls_p = pd.to_numeric(df.loc[_idx_array, 'close_price'], errors='coerce').fillna(0)
+    _qty_p = pd.to_numeric(df.loc[_idx_array, _qty_col], errors='coerce').fillna(0)
+    _dcv_p = (_ltp_p - _cls_p) * _qty_p
+    _valid_p = (_ltp_p > 0) & (_cls_p > 0)
+    if 'day_change_val' in df.columns:
+        df.loc[_idx_array, 'day_change_val'] = _dcv_p.where(
+            _valid_p, df.loc[_idx_array, 'day_change_val']
+        )
+    else:
+        df.loc[_idx_array, 'day_change_val'] = _dcv_p.where(_valid_p, 0.0)
+    df.loc[_idx_array, 'day_change'] = _ltp_p - _cls_p
+
+    # day_change_percentage rides off close × qty in the consumer's
+    # per-account summary. For row-level we update the column directly
+    # so the API response is consistent.
+    if 'day_change_percentage' in df.columns:
+        _prev_val_p = (_cls_p * _qty_p).abs()
+        _pct_p = (_dcv_p / _prev_val_p.replace(0, pd.NA) * 100).fillna(0)
+        df.loc[_idx_array, 'day_change_percentage'] = _pct_p.where(
+            _valid_p, df.loc[_idx_array, 'day_change_percentage']
+        )
+
+    return len(_patched_indices)
 
 
 @for_all_accounts

@@ -925,11 +925,17 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         close_price = float(
             h.get("previousClosePrice", h.get("closePrice", 0)) or 0
         )
-        # If close_price is missing, fall back to last_price (gives a
-        # 0% day_change rather than a -100% one — least misleading
-        # display when we genuinely don't have yesterday's close).
-        if close_price <= 0:
-            close_price = last_price
+        # Leave close_price=0 when truly missing — the broker_apis
+        # `backfill_close_prices` helper (called after pd.concat at
+        # the /api/holdings endpoint) batches a PriceBroker.quote()
+        # call across every missing-close row from every account and
+        # patches them in one round-trip. The earlier fallback to
+        # last_price (close=last → day_change=0 → frontend `—`)
+        # masked these rows from the backfill mask and looked like a
+        # silent zero on the Day P&L column. PriceBroker outage
+        # leaves close=0 and the fetch_holdings recompute falls
+        # through to broker-reported day_change_val (also 0) — same
+        # safe end state as the prior fallback.
 
         pnl_raw = h.get("unrealisedProfit")
         if pnl_raw in (None, 0, "0", 0.0):

@@ -131,6 +131,22 @@ class KiteBroker(Broker):
     def orders(self) -> list[dict]:
         return self.kite.orders()
 
+    def order_status(self, order_id: str) -> dict:
+        """Targeted single-order status via Kite's `order_history`
+        endpoint — returns the order's full lifecycle (placed → open →
+        complete / cancelled / rejected). Last entry is the current
+        state. Used by the chase engine's 20-s status poll; replaces
+        a full `orders()` round-trip with a single-order REST call.
+
+        Kite returns an empty list when the order_id is unknown — we
+        map that to an empty dict so callers see the same shape as
+        the default `orders()` filter."""
+        try:
+            history = self.kite.order_history(str(order_id)) or []
+        except Exception:
+            return {}
+        return history[-1] if history else {}
+
     def trades(self) -> list[dict]:
         return self.kite.trades()
 

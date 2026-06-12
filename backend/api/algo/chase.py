@@ -253,30 +253,65 @@ def _calc_limit_price(depth: dict, transaction_type: str, attempt: int,
         return min(snapped, best_ask)
 
 
-def _lot_size_sync(exchange: str, symbol: str) -> int:
-    """Read lot_size from the in-process instruments cache (sync).
+# O(1) (exchange, symbol) → (lot_size, tick_size) index built on top
+# of the instruments cache. The cache itself is a 75k-row list — the
+# legacy `for inst in resp.items` scan in `_lot_size_sync` and
+# `_tick_size_sync` cost ~75k comparisons per chase attempt. A
+# 5-attempt chase = 10 full scans (lot + tick lookups); a 20-attempt
+# MCX chase = 40. This dict is built once per cache generation
+# (lazily on first lookup; rebuilt when the underlying response id
+# changes — detected by the `id(resp)` guard) so subsequent reads
+# are O(1) regardless of how many chase loops are concurrent.
+_INSTRUMENT_INDEX: dict[tuple[str, str], tuple[int, float]] = {}
+_INSTRUMENT_INDEX_FOR: int = 0   # id(resp) the current index was built from
 
-    The instruments cache is pre-warmed at startup and refreshed daily,
-    so this read is almost always a dict lookup. Falls through to 1 on
-    any miss — safe default for to_kite_qty (no translation for non-MCX
-    exchanges, and MCX lot_size > 1 so raw_qty // 1 == raw_qty anyway).
-    """
+
+def _ensure_instrument_index(resp) -> None:
+    """Build (or rebuild) `_INSTRUMENT_INDEX` from the given instruments
+    response when the cache rotated since the last build."""
+    global _INSTRUMENT_INDEX, _INSTRUMENT_INDEX_FOR
+    rid = id(resp)
+    if rid == _INSTRUMENT_INDEX_FOR and _INSTRUMENT_INDEX:
+        return
+    new_index: dict[tuple[str, str], tuple[int, float]] = {}
+    for inst in resp.items:
+        new_index[(inst.e, inst.s)] = (
+            int(inst.ls) if inst.ls > 0 else 1,
+            float(inst.ts) if inst.ts > 0 else 0.05,
+        )
+    _INSTRUMENT_INDEX = new_index
+    _INSTRUMENT_INDEX_FOR = rid
+
+
+def _instrument_specs(exchange: str, symbol: str) -> tuple[int, float]:
+    """Return (lot_size, tick_size) for a contract in O(1). Falls
+    through to (1, 0.05) — the NSE default — on any miss (cache cold,
+    symbol not in instruments dump, etc.)."""
     try:
-        from backend.api.cache import _store  # in-process dict, no I/O
+        from backend.api.cache import _store
         entry = _store.get("instruments")
-        if entry is not None:
-            _expires, resp = entry
-            if resp is not None and hasattr(resp, "items"):
-                for inst in resp.items:
-                    if inst.e == exchange and inst.s == symbol:
-                        return int(inst.ls) if inst.ls > 0 else 1
+        if entry is None:
+            return (1, 0.05)
+        _expires, resp = entry
+        if resp is None or not hasattr(resp, "items"):
+            return (1, 0.05)
+        _ensure_instrument_index(resp)
+        return _INSTRUMENT_INDEX.get((exchange, symbol), (1, 0.05))
     except Exception:
-        pass
-    return 1
+        return (1, 0.05)
+
+
+def _lot_size_sync(exchange: str, symbol: str) -> int:
+    """O(1) lot_size lookup. See `_instrument_specs` for cache shape.
+
+    Falls through to 1 on a miss — safe default for to_kite_qty (no
+    translation for non-MCX exchanges, and MCX lot_size > 1 so
+    raw_qty // 1 == raw_qty anyway)."""
+    return _instrument_specs(exchange, symbol)[0]
 
 
 def _tick_size_sync(exchange: str, symbol: str) -> float:
-    """Read tick_size from the in-process instruments cache (sync).
+    """O(1) tick_size lookup. See `_instrument_specs` for cache shape.
 
     Kite rejects orders whose LIMIT price isn't a multiple of the
     contract's tick — NFO/NSE = ₹0.05, MCX commodities like CRUDEOIL =
@@ -286,20 +321,8 @@ def _tick_size_sync(exchange: str, symbol: str) -> float:
     tick before returning the chase price.
 
     Falls through to 0.05 on a miss — the NSE default that's been
-    the implicit assumption everywhere else in this engine.
-    """
-    try:
-        from backend.api.cache import _store
-        entry = _store.get("instruments")
-        if entry is not None:
-            _expires, resp = entry
-            if resp is not None and hasattr(resp, "items"):
-                for inst in resp.items:
-                    if inst.e == exchange and inst.s == symbol:
-                        return float(inst.ts) if inst.ts > 0 else 0.05
-    except Exception:
-        pass
-    return 0.05
+    the implicit assumption everywhere else in this engine."""
+    return _instrument_specs(exchange, symbol)[1]
 
 
 def _snap_to_tick(price: float, tick: float) -> float:
@@ -346,13 +369,17 @@ def _cancel_order(account: str, order_id: str, variety: str = "regular"):
 
 
 def _order_status(account: str, order_id: str) -> dict:
-    """Get order status. Returns dict with status, filled_quantity, etc."""
+    """Get order status. Returns dict with status, filled_quantity, etc.
+
+    Calls `broker.order_status(order_id)` — the Broker ABC's
+    targeted single-order endpoint. Kite implements this via
+    `order_history(order_id)` so we pay for one order's lifecycle
+    instead of the entire day's order book on every 20-s chase
+    status poll. Dhan / Groww fall back to the default
+    `orders()`-filter implementation until their SDKs expose a
+    targeted endpoint."""
     broker = _get_broker(account)
-    orders = broker.orders()
-    for o in orders:
-        if str(o.get("order_id")) == order_id:
-            return o
-    return {}
+    return broker.order_status(order_id)
 
 
 async def _run(fn, *args):

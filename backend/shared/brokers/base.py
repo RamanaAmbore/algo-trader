@@ -85,6 +85,28 @@ class Broker(ABC):
     @abstractmethod
     def orders(self) -> list[dict]: ...
 
+    def order_status(self, order_id: str) -> dict:
+        """Return the latest status snapshot for a single order. Used by
+        the chase engine to poll status without paying for a full
+        `orders()` round-trip on every 20-s cycle.
+
+        Default implementation filters `orders()` — works for every
+        broker but is wasteful when the SDK exposes a targeted
+        single-order endpoint. Kite overrides this with
+        `kite.order_history(order_id)` which fetches only the
+        requested order's lifecycle. Dhan / Groww keep the default
+        until their SDKs expose an equivalent.
+
+        Returns the matching order dict (Kite-shape — `status`,
+        `filled_quantity`, `average_price`, `status_message`, …) or
+        an empty dict when the order_id isn't in the broker's day
+        book (rare — usually means it was placed under a different
+        account)."""
+        for o in self.orders():
+            if str(o.get("order_id")) == str(order_id):
+                return o
+        return {}
+
     @abstractmethod
     def trades(self) -> list[dict]:
         """Executed trades for the current trading day. Returns Kite-shape

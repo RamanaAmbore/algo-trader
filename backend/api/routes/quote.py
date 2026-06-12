@@ -382,26 +382,33 @@ def _save_caches_to_disk(force: bool = False) -> None:
         return
     _last_save_at = now
 
+    # Shallow-copy the three dicts under the lock, then build the
+    # serialisable snapshots OUTSIDE the lock. The previous shape held
+    # `_spark_lock` for the duration of three dict comprehensions
+    # (each iterating up to 100 entries + value materialisation) which
+    # blocked every concurrent batch_sparkline cache read for that
+    # full window. dict() copy is O(n) but constant-factor cheap and
+    # releases the lock immediately.
+    today = _ist_today()
     with _spark_lock:
-        # Snapshot under the data lock so concurrent mutations can't
-        # corrupt the serialised view. The today_cache value shape
-        # `(epoch, [closes])` serialises as a 2-tuple → JSON array.
-        today = _ist_today()
-        past_snapshot = {
-            _key_to_str(k): list(v)
-            for k, v in _spark_past_cache.items()
-            if k[3] == today
-        }
-        today_snapshot = {
-            _key_to_str(k): [v[0], list(v[1])]
-            for k, v in _spark_today_cache.items()
-            if k[2] == today
-        }
-        attempt_snapshot = {
-            _key_to_str(k): v
-            for k, v in _spark_past_attempt.items()
-            if k[3] == today
-        }
+        past_copy    = dict(_spark_past_cache)
+        today_copy   = dict(_spark_today_cache)
+        attempt_copy = dict(_spark_past_attempt)
+    past_snapshot = {
+        _key_to_str(k): list(v)
+        for k, v in past_copy.items()
+        if k[3] == today
+    }
+    today_snapshot = {
+        _key_to_str(k): [v[0], list(v[1])]
+        for k, v in today_copy.items()
+        if k[2] == today
+    }
+    attempt_snapshot = {
+        _key_to_str(k): v
+        for k, v in attempt_copy.items()
+        if k[3] == today
+    }
 
     payload = {
         "ist_date":     today,

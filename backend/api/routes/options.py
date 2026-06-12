@@ -156,13 +156,16 @@ def _hist_cache_put(key: tuple, value: object, ttl_seconds: float) -> None:
     with _HIST_CACHE_LOCK:
         _HIST_CACHE[key] = (now + ttl_seconds, value)
         _HIST_CACHE.move_to_end(key)
-        # Evict oldest until under cap
+        # Evict oldest until under cap. The LRU cap is the only
+        # memory-bound that matters — an O(N) stale-entry sweep on
+        # every write held the lock for ~200 µs per call against a
+        # 200-entry cache, blocking concurrent reads under load.
+        # Expired entries get filtered at read time (`_HIST_CACHE_get`
+        # checks the per-entry expiry stamp), so this background
+        # sweep was pure write-side overhead with no correctness
+        # benefit.
         while len(_HIST_CACHE) > _HIST_CACHE_MAX_SIZE:
             _HIST_CACHE.popitem(last=False)
-        # Opportunistic expired-entry sweep (cheap — cache stays ≤ MAX_SIZE)
-        stale = [k for k, (exp, _) in _HIST_CACHE.items() if exp <= now]
-        for k in stale:
-            _HIST_CACHE.pop(k, None)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
