@@ -2519,13 +2519,24 @@
           title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
           ρ {pctFmt(strategy.aggregate_greeks.rho)}
         </span>
-        {#if _fsPayoff}
-          <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-                         loading={loading} label="payoff" />
-        {/if}
-        <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
-        <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
-        <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
+        <!-- Card-control trio kept in a tight no-wrap cluster so the
+             three icons sit on the same row even on a narrow viewport.
+             Without this, the outer `.opt-section-row gap: 0.5rem`
+             between each child applied to the trio too, eating ~1rem
+             of horizontal space and forcing the FullscreenButton to
+             spill to a second row on mobile. Now the trio reads as
+             one flex item; the outer 0.5rem gap separates the cluster
+             from the previous greek chip, but inside the cluster the
+             buttons sit at the inter-button 0.15rem gap. -->
+        <span class="payoff-card-controls">
+          {#if _fsPayoff}
+            <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+                           loading={loading} label="payoff" />
+          {/if}
+          <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
+          <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
+          <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
+        </span>
       </div>
     </div>
     <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
@@ -2616,13 +2627,18 @@
           </button>
         </div>
       </div>
-      {#if _fsLegs}
-        <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-                       loading={loading} label="legs" />
-      {/if}
-      <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
-      <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
-      <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
+      <!-- Same tight no-wrap trio cluster as the Payoff header — see
+           the comment over `.payoff-card-controls`. Reuses the same
+           class so the CSS rule covers both cards. -->
+      <span class="payoff-card-controls">
+        {#if _fsLegs}
+          <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
+                         loading={loading} label="legs" />
+        {/if}
+        <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
+        <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
+        <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
+      </span>
     </div>
     {#if !_colLegs && displayedCandidates.length}
       {@const hideAcct = selectedAccounts.length === 1}
@@ -3360,6 +3376,20 @@
   @media (max-width: 600px) {
     .opt-section-h { gap: 0.25rem; flex-wrap: nowrap; overflow-x: auto; }
     .opt-section-tag { font-size: 0.6rem; padding: 1px 3px; letter-spacing: 0.02em; }
+  }
+  /* Tight no-wrap cluster for the card-control trio (Collapse +
+     DefaultSize + Fullscreen + optional Refresh in fullscreen mode).
+     Without this, the outer `.opt-section-row gap: 0.5rem` applied
+     between each child and the trio ate ~1rem of horizontal space —
+     enough to spill the Fullscreen button to a second row on mobile.
+     Inside the cluster the buttons sit at 0.15rem; the outer 0.5rem
+     gap separates the cluster from the previous header chip. */
+  .payoff-card-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    white-space: nowrap;
+    margin-left: auto;
   }
   .tag-deriv  { color: #7dd3fc; background: rgba(125,211,252,0.10); }
   .tag-long   { color: #4ade80; background: rgba(74,222,128,0.10); }
