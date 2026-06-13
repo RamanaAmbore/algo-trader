@@ -814,6 +814,25 @@
     flex-direction: column;
     align-items: center;
   }
+  /* Force the html + body background to the algo dark navy on every
+     page that mounts this layout. Without this, the public-site
+     cream (`body { background-color: #f0ece3 }` in app.css) shows
+     through whenever the .algo-viewport doesn't fully cover the
+     paint area — iOS Safari rubber-band overscroll at the top or
+     bottom of the page, browser bottom-nav reveal during scroll,
+     wide-margin desktop layouts. Mobile reliably hit the "white
+     background under the card" symptom because scroll-bounce
+     exposes the body underneath the dark .algo-viewport. */
+  :global(html), :global(body) {
+    background-color: #080f1c;
+  }
+  /* overscroll-behavior: none disables iOS Safari's bounce so the
+     algo dark surface stays edge-to-edge even when the operator
+     pulls past the top/bottom edge. Falls back gracefully on
+     browsers that don't support it. */
+  :global(html) {
+    overscroll-behavior: none;
+  }
 
   /* No max-width: let the card consume the whole viewport so the
      grids / log panel / simulator don't leave dead gutters on wide

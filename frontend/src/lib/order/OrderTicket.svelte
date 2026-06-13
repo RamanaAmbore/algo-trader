@@ -545,6 +545,10 @@
   let _previewPlan = $state(/** @type {any} */ (null));
   let _previewLoading = $state(false);
   let _previewError = $state('');
+  // Sequence number for the preview fetch — incremented before each
+  // dispatch, checked after `await` to drop stale responses. See the
+  // template-preview $effect for the full rationale.
+  let _previewSeq = 0;
 
   const _selectedTemplate = $derived(
     _templates.find(t => t.id === _templateId) || null
@@ -1339,8 +1343,23 @@
       return;
     }
     if (_previewTimer) clearTimeout(_previewTimer);
+    // Sequence guard — every fetch captures its own `seq` at start.
+    // When the response lands, we only assign if `seq` still matches
+    // the latest dispatched value. Without this, two preview calls
+    // fired back-to-back (operator flipping templates faster than
+    // the 200ms debounce + backend latency) could land
+    // out-of-order: the older call's response overwrites the newer
+    // call's response → "on fill" preview shows the template the
+    // operator already moved away from. Symptom: preview chips
+    // never sync with the template selector.
+    _previewSeq++;
+    const seq = _previewSeq;
     _previewTimer = setTimeout(async () => {
       _previewLoading = true; _previewError = '';
+      // Snapshot the dispatching state so the comparison after
+      // await checks the EXACT template_id we sent — not whatever
+      // _templateId says by the time the response lands.
+      const dispatchedTemplateId = _templateId;
       try {
         const refPx = Number(_price) > 0 ? Number(_price) : 0;
         const res = await previewTicketTemplate({
@@ -1352,18 +1371,21 @@
           product:          _product || 'NRML',
           account:          _account || '',
           reference_price:  refPx,
-          template_id:                  _templateId,
+          template_id:                  dispatchedTemplateId,
           tp_pct_override:              _tpOverride !== '' ? Number(_tpOverride) : null,
           sl_pct_override:              _slOverride !== '' ? Number(_slOverride) : null,
           wing_premium_pct_override:    _wingPremPctOverride !== '' ? Number(_wingPremPctOverride) : null,
           wing_strike_offset_override:  _wingStrikeOffsetOverride !== '' ? Number(_wingStrikeOffsetOverride) : null,
         });
+        // Drop stale responses — a newer fetch has been dispatched.
+        if (seq !== _previewSeq) return;
         _previewPlan = res?.plan || null;
       } catch (e) {
+        if (seq !== _previewSeq) return;
         _previewError = e?.message || 'preview failed';
         _previewPlan = null;
       } finally {
-        _previewLoading = false;
+        if (seq === _previewSeq) _previewLoading = false;
       }
     }, 200);
   });
