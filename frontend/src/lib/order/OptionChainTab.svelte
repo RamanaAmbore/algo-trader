@@ -25,6 +25,13 @@
   } from '$lib/data/instruments';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt } from '$lib/format';
+  // Order-template catalog — same source the OrderTicket uses.
+  // Operator: "template should be applicable to option chain too".
+  // Templates apply per-leg to each basket entry: when the leg fills,
+  // the template runs (TP / SL / Wing) just like a single-leg ticket.
+  import {
+    loadOrderTemplates, orderTemplatesStore,
+  } from '$lib/data/templates';
 
   /** @type {{
    *   symbol?:         string,
@@ -161,6 +168,35 @@
       _account = account;
     }
   });
+  // ── Template state ───────────────────────────────────────────
+  // Templates apply per leg of the basket: when the leg fills, the
+  // backend's apply_template_to_order pipeline runs to attach TP /
+  // SL / Wing GTTs. Same shape as the OrderTicket template flow —
+  // single template selection per basket; threaded into every leg
+  // on placeBasket(). Operator picks once, the whole basket
+  // inherits.
+  let _templates = $state(/** @type {any[]} */ ([]));
+  let _templateId = $state(/** @type {number|null} */ (null));
+  const _selectedTemplate = $derived(
+    _templates.find(t => t.id === _templateId) || null
+  );
+  // Subscribe to the shared template store — keeps the picker
+  // current when the operator edits a template on
+  // /automation/templates while the chain tab is mounted.
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows && rows.length) {
+      _templates = rows.filter(t => t.is_active);
+      // First-run default: pick the 'none' (no-attach) template if
+      // present, so the operator opts-in to attach rather than
+      // discovering an unexpected GTT after their first basket.
+      if (_templateId === null) {
+        const none = _templates.find(t => t.slug === 'none');
+        if (none) _templateId = none.id;
+      }
+    }
+  });
+
   // Push picker changes back to the shell so the other tabs sync.
   // Guard against the echo of the inbound prop sync above.
   let _lastNotifiedAcct = '';
@@ -594,6 +630,11 @@
           price: Number(leg.limit),
           variety: 'regular', account: leg.account || acct,
           chase: true, chase_aggressiveness: leg.chaseAgg || 'low',
+          // Same template attaches to every leg in the basket. The
+          // backend ticket route reads `template_id` and runs
+          // apply_template_to_order on fill — TP / SL / Wing GTTs
+          // for each leg get queued individually.
+          template_id: _templateId,
         });
       } catch (e) {
         failures.push(`${leg.side} ${leg.sym}: ${String(/** @type {any} */ (e)?.message || e || 'failed')}`);
@@ -625,6 +666,11 @@
           _selfAccounts = list;
         }).catch(() => {});
     }
+    // Templates catalog — shared store warms via OrderTicket too, but
+    // an isolated chain mount (modal opened straight to Chain tab)
+    // wouldn't have triggered it yet. Idempotent — repeat opens
+    // serve from the in-memory cache.
+    loadOrderTemplates().catch(() => { /* silent — picker stays empty */ });
   });
 </script>
 
@@ -876,11 +922,40 @@
         {/each}
       </div>
       <div class="chain-basket-actions">
+        {#if _templates.length > 0}
+          <!-- Template selector — same catalog the OrderTicket uses
+               via $orderTemplatesStore. The choice applies to EVERY
+               leg in the basket; pick once before placing. Operator:
+               "template should be applicable to option chain too". -->
+          <label class="chain-tpl-pick" title="On-fill template attached to every leg in this basket">
+            <span class="chain-tpl-pick-label">On fill</span>
+            <Select
+              bind:value={_templateId}
+              options={_templates.map(t => ({
+                value: t.id,
+                label: t.name || t.slug || `Template #${t.id}`,
+              }))}
+              placeholder="select template" />
+          </label>
+        {/if}
         <button type="button" class="chain-basket-clear" disabled={basketPlacing} onclick={clearBasket}>Clear</button>
         <button type="button" class="chain-basket-place" disabled={basketPlacing} onclick={placeBasket}>
           {#if basketPlacing}Placing… ({basketProgress}/{chainBasket.length}){:else}Place {chainBasket.length} leg{chainBasket.length === 1 ? '' : 's'}{/if}
         </button>
       </div>
+      {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+        <!-- Tiny chip surfacing the active template's identity so the
+             operator can see at a glance which TP/SL rule will attach
+             after every leg fills. Hidden on the no-attach default. -->
+        <div class="chain-tpl-note">
+          <span class="chain-tpl-note-arrow">↳</span>
+          <span class="chain-tpl-note-label">on fill →</span>
+          <span class="chain-tpl-note-name">{_selectedTemplate.name || _selectedTemplate.slug}</span>
+          {#if _selectedTemplate.description}
+            <span class="chain-tpl-note-desc">· {_selectedTemplate.description}</span>
+          {/if}
+        </div>
+      {/if}
       {#if basketError}
         <div class="chain-basket-err">{basketError}</div>
       {/if}
@@ -1244,6 +1319,57 @@
   .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
   .chain-basket-chase-pill-high.on { background: rgba(74,222,128,0.20);  color: #4ade80; border-color: rgba(74,222,128,0.55); }
   .chain-basket-actions { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-wrap: wrap; }
+  /* Template selector — small inline label + dropdown. Sized to sit
+     next to Clear / Place without dominating the action row. */
+  .chain-tpl-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-family: monospace;
+    font-size: 0.6rem;
+    color: var(--algo-muted);
+  }
+  .chain-tpl-pick-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  /* Active-template chip — sits below the action row when a template
+     other than 'none' is picked, so the operator can see the on-fill
+     identity at a glance. Same family as OrderTicket's on-fill
+     preview chip but lighter; no per-leg breakdown since the same
+     template applies to every leg. */
+  .chain-tpl-note {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+    padding: 0.2rem 0.5rem;
+    background: rgba(125, 211, 252, 0.08);
+    border: 1px solid rgba(125, 211, 252, 0.24);
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.58rem;
+    color: #c8d8f0;
+    width: 100%;
+  }
+  .chain-tpl-note-arrow {
+    color: #7dd3fc;
+    font-weight: 700;
+  }
+  .chain-tpl-note-label {
+    color: rgba(200, 216, 240, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  .chain-tpl-note-name {
+    color: #7dd3fc;
+    font-weight: 700;
+  }
+  .chain-tpl-note-desc {
+    color: rgba(200, 216, 240, 0.55);
+  }
   .chain-basket-clear,
   .chain-basket-place {
     height: 1.5rem; padding: 0 0.7rem; border-radius: 2px;
