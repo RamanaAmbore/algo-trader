@@ -1173,26 +1173,27 @@
       <span class="legend-item">
         <span class="legend-mark legend-spot-mark"></span>
         Spot
+        {#if spotAnchor?.contract}
+          <!-- Spot anchor chip in-line with the Spot legend item so the
+               operator reads "Spot · anchor=<contract>" as one unit
+               instead of a separate paragraph below. The amber variant
+               (rolls-in-N-days) keeps the same warning palette as the
+               standalone chip. The calendar/diagonal multi-expiry note
+               was retired here per operator request — the spot anchor
+               chip already names the resolving contract, so the
+               redundant prose was just noise. -->
+          {@const _ancTitle = `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`}
+          <span class="payoff-anchor-chip payoff-anchor-chip--inline"
+                class:payoff-anchor-chip--amber={anchorRollingSoon}
+                title={_ancTitle}>
+            <span class="anchor-contract">{spotAnchor.contract}</span>
+            {#if anchorRollingSoon}
+              &#9888; rolls in {anchorDaysToExpiry} {anchorDaysToExpiry === 1 ? 'day' : 'days'}
+            {/if}
+          </span>
+        {/if}
       </span>
     </div>
-    {#if spotAnchor?.contract}
-      {@const _ancTitle = `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`}
-      <p class="payoff-anchor-chip"
-         class:payoff-anchor-chip--amber={anchorRollingSoon}
-         title={_ancTitle}>
-        Spot anchor: <span class="anchor-contract">{spotAnchor.contract}</span>
-        {#if anchorRollingSoon}
-          &#9888; rolls in {anchorDaysToExpiry} {anchorDaysToExpiry === 1 ? 'day' : 'days'}
-        {:else}
-          &#9403;
-        {/if}
-      </p>
-    {/if}
-    {#if multiExpiry}
-      <p class="payoff-multi-expiry-note">
-        Calendar/diagonal basket — chart assumes proportional movement across contract months.
-      </p>
-    {/if}
   {/if}
 </div>
 
@@ -1455,6 +1456,16 @@
     border: 1px solid rgba(125, 145, 184, 0.22);
     border-radius: 3px;
     cursor: default;
+  }
+  /* In-line variant — sits next to the "Spot" legend label rather
+     than below the legend row. Tighter padding + zero top margin so
+     the chip reads as a trailing tag on the Spot item, not a
+     standalone block. */
+  .payoff-anchor-chip--inline {
+    margin: 0 0 0 0.35rem;
+    padding: 0 5px;
+    font-size: 0.55rem;
+    line-height: 1.4;
   }
   .payoff-anchor-chip .anchor-contract {
     font-weight: 600;
