@@ -294,6 +294,20 @@ class BasketLeg(msgspec.Struct):
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     variety: str = "regular"
+    # When set, the basket-placement route runs
+    # `apply_template_to_order` on this leg after submit so the
+    # leg's fill attaches TP / SL / Wing GTTs per the template.
+    # Same pipeline TicketOrderRequest uses. Frontend's option-chain
+    # basket builder sets this from the operator's "On fill"
+    # selector in the shell basket bar (SymbolPanel).
+    template_id: Optional[int] = None
+    # Per-leg chase + aggressiveness used by the basket-placement route.
+    chase: bool = True
+    chase_aggressiveness: str = "low"
+    # Per-leg take-profit override fields (legacy single-leg path
+    # carries these too).
+    target_pct: Optional[float] = None
+    target_abs: Optional[float] = None
 
 
 class BasketGroup(msgspec.Struct):
@@ -496,6 +510,12 @@ class CancelOrderResponse(msgspec.Struct):
 class ModifyOrderResponse(msgspec.Struct):
     order_id: str
     detail: str = "Order modified successfully"
+
+
+class ReconcileSingleRequest(msgspec.Struct):
+    """Body for per-card reconcile: which account holds the broker
+    order so the route knows which Kite handle to query."""
+    account: str
 
 
 # ---------------------------------------------------------------------------

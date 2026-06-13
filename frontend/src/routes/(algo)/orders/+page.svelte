@@ -7,7 +7,7 @@
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
-  import { fetchOrders, cancelOrder } from '$lib/api';
+  import { fetchOrders, cancelOrder, reconcileSingleOrder } from '$lib/api';
   import OrderDetail from '$lib/OrderDetail.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
@@ -193,6 +193,24 @@
   function inlineModify(/** @type {any} */ o, /** @type {Event} */ e) {
     e?.stopPropagation();
     orderTicketProps = _buildModifyProps(o);
+  }
+  // Inline-action handler — Reconcile: re-sync this single broker order
+  // against the broker book and update the matching algo row when it
+  // disagrees (postback miss, network drop, REJECTED chase that left
+  // the algo row at OPEN, etc.).
+  let _reconcilingId = $state(/** @type {string|null} */ (null));
+  async function inlineReconcile(/** @type {any} */ o, /** @type {Event} */ e) {
+    e?.stopPropagation();
+    if (!o?.order_id || !o?.account) return;
+    _reconcilingId = String(o.order_id);
+    try {
+      const res = await reconcileSingleOrder(o.order_id, o.account);
+      if (res?.updated) await loadOrders();
+    } catch (err) {
+      error = err.message || String(err);
+    } finally {
+      _reconcilingId = null;
+    }
   }
 
   // Empty-state copy adapts to which filter is active so the operator
@@ -430,12 +448,18 @@
            restyle UnifiedLog's card-mode rows to match /market's
            news-row look (flat row, time on the left, thin bottom
            divider, no left accent). -->
-      <div class="oc-activity-log oc-act-scroll">
+      <!-- UnifiedLog's own `.ul-wrap` carries `overflow-y: auto`, so we
+           give it the flex height directly via `heightClass` instead of
+           wrapping in a second `oc-act-scroll`. Previous nesting produced
+           two scroll contexts where the inner never received a finite
+           height — the log grew past the activity card and pushed the
+           page footer over the last few rows. -->
+      <div class="oc-activity-log oc-act-flex">
         <UnifiedLog
           filter={{ simMode: $executionMode === 'sim' ? true : undefined }}
           pollMs={3000}
           maxRows={50}
-          heightClass=""
+          heightClass="oc-act-log-scroll"
           cardMode={true}
           tsFormat="dual" />
       </div>
@@ -450,8 +474,8 @@
             onSymbolClick={(ord, _e) => { orderTicketProps = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', defaultTab: 'ticket' }; }}
             onSymbolContext={(ord, ev) => { _ctxMenu = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', x: ev.clientX, y: ev.clientY }; }}>
             {#snippet actions(ord)}
-              {#if isOpenStatus(ord.status)}
-                <div class="oc-row-actions">
+              <div class="oc-row-actions">
+                {#if isOpenStatus(ord.status)}
                   <button type="button" class="oc-act-btn" title="Modify order"
                     aria-label="Modify order" onclick={(e) => inlineModify(ord, e)}>
                     <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
@@ -464,8 +488,26 @@
                       <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                     </svg>
                   </button>
-                </div>
-              {/if}
+                {/if}
+                <!-- Reconcile (circular arrow) — re-sync this single
+                     order's algo row against the broker book. Visible
+                     for every status, since stuck rows can be OPEN,
+                     REJECTED-but-still-OPEN, or terminal-but-stale. -->
+                <button type="button" class="oc-act-btn oc-act-reconcile"
+                  title="Reconcile with broker"
+                  aria-label="Reconcile with broker"
+                  disabled={_reconcilingId === String(ord.order_id)}
+                  onclick={(e) => inlineReconcile(ord, e)}>
+                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                    <path d="M3 8a5 5 0 0 1 8.6-3.5M13 8a5 5 0 0 1-8.6 3.5"
+                      fill="none" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" />
+                    <path d="M11.5 2v3h-3M4.5 14v-3h3"
+                      fill="none" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </div>
             {/snippet}
           </OrderCard>
         {/each}
@@ -587,6 +629,19 @@
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
+  }
+  /* Log tab — flex container + matching height class on UnifiedLog's
+     own `.ul-wrap` so the inner native scroll receives a finite
+     height. Single scroll context, no nested overflow. */
+  .oc-act-flex {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  :global(.oc-act-flex .oc-act-log-scroll) {
+    flex: 1 1 0;
+    min-height: 0;
   }
   /* Book tab — order grid uses the same scroll container as the log
      tab so card height is consistent when flipping between them. */
@@ -1007,6 +1062,22 @@
     background: rgba(248, 113, 113, 0.26);
     border-color: rgba(248, 113, 113, 0.85);
     color: #fca5a5;
+  }
+  /* Reconcile button — sky-blue palette so it reads as "sync / refresh"
+     rather than "edit" (amber) or "destroy" (red). */
+  .oc-act-reconcile {
+    background: rgba(125, 211, 252, 0.14);
+    border-color: rgba(125, 211, 252, 0.55);
+    color: #7dd3fc;
+  }
+  .oc-act-reconcile:hover {
+    background: rgba(125, 211, 252, 0.26);
+    border-color: rgba(125, 211, 252, 0.85);
+    color: #bae6fd;
+  }
+  .oc-act-reconcile:disabled {
+    opacity: 0.5;
+    cursor: progress;
   }
 
 </style>

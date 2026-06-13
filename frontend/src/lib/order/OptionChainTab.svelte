@@ -922,40 +922,17 @@
         {/each}
       </div>
       <div class="chain-basket-actions">
-        {#if _templates.length > 0}
-          <!-- Template selector — same catalog the OrderTicket uses
-               via $orderTemplatesStore. The choice applies to EVERY
-               leg in the basket; pick once before placing. Operator:
-               "template should be applicable to option chain too". -->
-          <label class="chain-tpl-pick" title="On-fill template attached to every leg in this basket">
-            <span class="chain-tpl-pick-label">On fill</span>
-            <Select
-              bind:value={_templateId}
-              options={_templates.map(t => ({
-                value: t.id,
-                label: t.name || t.slug || `Template #${t.id}`,
-              }))}
-              placeholder="select template" />
-          </label>
-        {/if}
+        <!-- Template picker was previously rendered here but the
+             reachable shell (SymbolPanel) lifts the basket to
+             `_externalBasket=true` so this block never paints in
+             practice. The picker now lives in the shell's
+             `.oes-basket-bar` (SymbolPanel.svelte) so it appears for
+             every chain-modal mount. -->
         <button type="button" class="chain-basket-clear" disabled={basketPlacing} onclick={clearBasket}>Clear</button>
         <button type="button" class="chain-basket-place" disabled={basketPlacing} onclick={placeBasket}>
           {#if basketPlacing}Placing… ({basketProgress}/{chainBasket.length}){:else}Place {chainBasket.length} leg{chainBasket.length === 1 ? '' : 's'}{/if}
         </button>
       </div>
-      {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-        <!-- Tiny chip surfacing the active template's identity so the
-             operator can see at a glance which TP/SL rule will attach
-             after every leg fills. Hidden on the no-attach default. -->
-        <div class="chain-tpl-note">
-          <span class="chain-tpl-note-arrow">↳</span>
-          <span class="chain-tpl-note-label">on fill →</span>
-          <span class="chain-tpl-note-name">{_selectedTemplate.name || _selectedTemplate.slug}</span>
-          {#if _selectedTemplate.description}
-            <span class="chain-tpl-note-desc">· {_selectedTemplate.description}</span>
-          {/if}
-        </div>
-      {/if}
       {#if basketError}
         <div class="chain-basket-err">{basketError}</div>
       {/if}

@@ -444,6 +444,12 @@ export const killChase = (algoOrderId) =>
  *  OPEN rows against the broker. Returns {scanned, updated, missing}. */
 export const reconcileAlgoOrders = () =>
   _post('/orders/algo/reconcile', {}, { auth: true });
+/** POST /api/orders/{broker_order_id}/reconcile — re-sync ONE order
+ *  against the broker. Body `{account}` tells the route which Kite
+ *  handle to query. Returns
+ *  {broker_order_id, broker_status, algo_status, updated, note}. */
+export const reconcileSingleOrder = (brokerOrderId, account) =>
+  _post(`/orders/${brokerOrderId}/reconcile`, { account }, { auth: true });
 // Synthesize-and-start — scenario generated live from the agent's condition
 // tree. Preferred over manually picking a scenario when the goal is "test
 // this specific agent."

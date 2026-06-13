@@ -50,6 +50,7 @@ from backend.api.schemas import (
     OrdersResponse,
     PlaceOrderRequest,
     PlaceOrderResponse,
+    ReconcileSingleRequest,
     TicketOrderRequest,
     TicketOrderResponse,
     TicketPreviewRequest,
@@ -474,6 +475,47 @@ async def _maybe_attach_template_to_ticket(
     if result is None:
         return None
     return result.to_dict()
+
+
+async def _attach_basket_leg_template(
+    *,
+    algo_order_id: int | None,
+    template_id: int | None,
+    account: str,
+    sym: str,
+    side: str,
+    qty: int,
+    exch: str,
+    price: float,
+    product: str,
+) -> None:
+    """Best-effort template attach for one basket leg. Mirrors the ticket
+    pipeline (`_ticket_attach`) but skips the overrides path — basket
+    legs carry only the shared `template_id` picked once for the whole
+    basket. Silent on failure; the parent order is already persisted."""
+    if not algo_order_id or not template_id:
+        return
+    from backend.api.algo.template_attach import apply_template_to_order
+    try:
+        await apply_template_to_order(
+            template_id=template_id,
+            template_slug=None,
+            overrides=None,
+            parent_account=account,
+            parent_symbol=sym,
+            parent_side=side,
+            parent_qty=qty,
+            parent_exchange=exch,
+            parent_fill_price=price,
+            parent_product=product,
+            parent_order_id=algo_order_id,
+            apply_path="auto",
+        )
+    except Exception as e:
+        logger.warning(
+            f"[BASKET-TEMPLATE] attach failed for #{algo_order_id} "
+            f"template={template_id}: {e}"
+        )
 
 
 async def _arm_take_profit(
@@ -972,6 +1014,107 @@ class OrdersController(Controller):
             await s.commit()
 
         return {"scanned": len(rows), "updated": updated, "missing": missing}
+
+    @post("/{broker_order_id:str}/reconcile")
+    async def reconcile_single_order(
+        self,
+        broker_order_id: str,
+        request: Request,
+        data: ReconcileSingleRequest,
+    ) -> dict:
+        """Per-card reconcile — re-sync ONE order against the broker.
+        Looks the broker_order_id up in the broker's live order book,
+        then maps any terminal status back onto the matching algo_orders
+        row (when one exists). Operator-triggered from the OrderCard
+        Reconcile button so a stuck row can be cleared without running
+        the full sweep across every account.
+        """
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403, detail="admin only")
+
+        import asyncio as _asyncio
+        from sqlalchemy import select as _sql_select
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        from backend.shared.helpers.connections import Connections
+        from datetime import datetime, timezone
+
+        _KITE_TO_ALGO = {
+            "COMPLETE":  "FILLED",
+            "CANCELLED": "CANCELLED",
+            "REJECTED":  "REJECTED",
+            "EXPIRED":   "UNFILLED",
+        }
+
+        acct = (data.account or "").strip()
+        if not acct:
+            raise HTTPException(status_code=400, detail="account required")
+
+        broker = Connections().conn.get(acct)
+        if broker is None:
+            raise HTTPException(status_code=404, detail=f"account {acct} not loaded")
+
+        try:
+            broker_orders = await _asyncio.to_thread(broker.orders)
+        except Exception as e:
+            logger.warning(f"reconcile {broker_order_id}: broker.orders() failed: {e}")
+            raise HTTPException(status_code=502, detail=f"broker fetch failed: {e}")
+
+        by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
+        bo = by_id.get(str(broker_order_id))
+        kite_status = str(bo.get("status") or "").upper() if bo else None
+        target = _KITE_TO_ALGO.get(kite_status) if kite_status else None
+
+        async with async_session() as s:
+            r = (await s.execute(
+                _sql_select(AlgoOrder).where(
+                    AlgoOrder.broker_order_id == str(broker_order_id),
+                )
+            )).scalars().first()
+            updated = False
+            note = ""
+
+            if r is None:
+                if bo is None:
+                    note = f"broker has no order {broker_order_id}"
+                else:
+                    note = f"broker status={kite_status} (no algo row to update)"
+            elif bo is None:
+                if r.status == "OPEN":
+                    r.status = "UNFILLED"
+                    r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
+                    updated = True
+                    note = "broker no longer carries order_id"
+                else:
+                    note = "broker has no order and algo row already terminal"
+            else:
+                if target and r.status != target:
+                    r.status = target
+                    if target == "FILLED" and bo.get("average_price"):
+                        try:
+                            r.fill_price = float(bo["average_price"])
+                            r.filled_at = datetime.now(timezone.utc)
+                        except Exception:
+                            pass
+                    r.detail = (r.detail or "") + f" [reconciled → {target}]"
+                    updated = True
+                    note = f"broker status={kite_status} → {target}"
+                elif target and r.status == target:
+                    note = f"already {target}"
+                else:
+                    note = f"broker status={kite_status} (no algo mapping)"
+
+            if updated:
+                await s.commit()
+                invalidate("orders")
+
+        return {
+            "broker_order_id": str(broker_order_id),
+            "broker_status":   kite_status,
+            "algo_status":     (r.status if r is not None else None),
+            "updated":         updated,
+            "note":            note,
+        }
 
     @get("/{order_id:int}/events")
     async def order_events(self, order_id: int, request: Request) -> list[AlgoOrderEventInfo]:
@@ -2234,7 +2377,16 @@ class OrdersController(Controller):
                             )
                             _s.add(_r)
                             await _s.commit()
+                            _live_aid = _r.id
                         invalidate("orders")
+                        await _attach_basket_leg_template(
+                            algo_order_id=_live_aid,
+                            template_id=leg.template_id,
+                            account=account, sym=sym, side=side, qty=qty,
+                            exch=exch,
+                            price=float(leg.price or 0),
+                            product=(leg.product or "NRML"),
+                        )
                         leg_results.append(BasketLegResult(
                             leg_index=i, order_id=str(kite_oid), status="OPEN",
                         ))
@@ -2263,6 +2415,15 @@ class OrdersController(Controller):
                         )
                         _s.add(_r)
                         await _s.commit()
+                        _shadow_aid = _r.id
+                    await _attach_basket_leg_template(
+                        algo_order_id=_shadow_aid,
+                        template_id=leg.template_id,
+                        account=account, sym=sym, side=side, qty=qty,
+                        exch=exch,
+                        price=float(leg.price or 0),
+                        product=(leg.product or "NRML"),
+                    )
                     leg_results.append(BasketLegResult(
                         leg_index=i, order_id=None, status="SHADOW",
                     ))
@@ -2315,6 +2476,14 @@ class OrdersController(Controller):
                                 f"#{_paper_id}: {_pe}"
                             )
 
+                    await _attach_basket_leg_template(
+                        algo_order_id=_paper_id,
+                        template_id=leg.template_id,
+                        account=account, sym=sym, side=side, qty=qty,
+                        exch=exch,
+                        price=float(leg.price or 0),
+                        product=(leg.product or "NRML"),
+                    )
                     leg_results.append(BasketLegResult(
                         leg_index=i, order_id=str(_paper_id), status="PAPER",
                     ))

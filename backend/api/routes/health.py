@@ -27,9 +27,8 @@ from backend.api.models import (
     User,
 )
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config, mask_column
+from backend.shared.helpers.utils import config
 
-import pandas as pd
 
 logger = get_logger(__name__)
 
@@ -139,7 +138,6 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
             )).scalars().all()
 
         for row in rows:
-            masked = mask_column(pd.Series([row.account]))[0]
             if not row.is_active:
                 status = "DISABLED"
             elif row.account in loaded_accounts:
@@ -151,7 +149,7 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
             source_ip = row.source_ip or ""
 
             statuses.append(BrokerStatus(
-                account=masked,
+                account=row.account,
                 status=status,
                 api_key_last4=api_key_last4,
                 source_ip=source_ip,

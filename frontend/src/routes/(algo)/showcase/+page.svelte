@@ -100,11 +100,28 @@
       bullets: [
         'Basket-building UI: one symbol per leg, per-leg account dropdown. Margin strip shows per-account Required / Avail / After.',
         'Auto profit target: default +30% (tunable in /admin/settings → algo.default_target_pct). Override per-order inline.',
+        'On-fill template attach (per ticket OR per basket) — pick one TP/SL/wing template, every leg auto-arms its bracket OCO when the parent fills',
         'Submit → POST /api/orders/basket: one Kite basket_order call per account in parallel',
         'Spread-aware adaptive chase loop — same code path paper + live, validates via basket_margin before any order touches the broker',
+        'REJECTED aborts the chase immediately so a broker reject can\'t loop into a fee-burning retry storm',
+        'Per-card Reconcile button — re-syncs ONE order\'s algo row against the broker book (postback miss / network drop / stuck OPEN row), no full sweep needed',
         'Per-tick fill check (bid ≥ limit for SELL, ask ≤ limit for BUY); cancel + re-quote after N attempts',
       ],
       link: { href: '/orders', label: 'Open Orders' },
+    },
+    {
+      title: 'Order templates — one-click bracket OCO',
+      tag: 'Trading',
+      color: '#fcd34d',
+      body: 'Templates pre-define the TP / SL / wing GTTs that should arm the moment a parent order fills. Pick a template once on the OrderTicket or basket bar; the backend applies it per leg via the unified apply_template_to_order pipeline. Same pipeline runs for ticket-attached templates, basket-attached templates, and CLI-attached templates so behaviour is identical across surfaces.',
+      bullets: [
+        'Catalog managed in /admin/orders/templates — TP %, SL %, optional wing GTTs, per-symbol overrides',
+        'OrderTicket carries a Select chip below the side toggle; basket bar carries one above the legs list',
+        'Backend dispatches via apply_template_to_order(parent_order_id, template_id) right after each leg commits — paper / live / shadow all branch the same way',
+        'Templates respect the parent\'s side (BUY parent → SELL TP, SELL parent → BUY TP at fill ± template %)',
+        'apply_path="auto" lets a template pick LIMIT vs GTT based on instrument class without operator hand-holding',
+      ],
+      link: { href: '/admin/orders/templates', label: 'Open Templates' },
     },
     {
       title: 'Unified card UX + page-header modal trio + connection health',

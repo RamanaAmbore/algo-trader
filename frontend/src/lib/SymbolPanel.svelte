@@ -42,6 +42,11 @@
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import Select            from '$lib/Select.svelte';
+  // Order-template catalog — shared with OrderTicket. SymbolPanel's
+  // basket bar exposes the "On fill" picker; the chosen template is
+  // attached per leg in submitBasket. Single source of truth so
+  // CRUD on /automation/templates propagates here without a refresh.
+  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -509,6 +514,18 @@
   ));
   let _sharedChase    = $state(true);
   let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  // Shared template — applied to every leg in the basket on submit.
+  // Operator picks once from the bar; submitBasket threads the id
+  // into each BasketLeg's `template_id` so the backend runs the
+  // `apply_template_to_order` pipeline per leg on fill. Defaults
+  // to the 'none' (no-attach) row once the catalog loads so the
+  // first basket doesn't surprise the operator with an unexpected
+  // GTT. Operator: "template should be applicable to option chain too".
+  let _sharedTemplateId = $state(/** @type {number|null} */ (null));
+  let _templates = $state(/** @type {any[]} */ ([]));
+  const _selectedTemplate = $derived(
+    _templates.find(t => t.id === _sharedTemplateId) || null
+  );
   // Account list — falls through three layers:
   //   1. `accounts` prop (host page injects them, e.g. /orders)
   //   2. cached fetch from /api/accounts/ on mount when prop is empty
@@ -522,6 +539,27 @@
       untrack(() => { _modalAccounts = accounts; });
     }
   });
+  // Subscribe to the template store + kick a defensive load. The
+  // store warms once at module evaluation in templates.js, but if
+  // this is the FIRST mount in the page's lifetime the rows may
+  // not have landed yet — kick a load() (idempotent, cached on
+  // repeat). The store subscription below picks up CRUD mutations
+  // on /automation/templates while the modal is open.
+  loadOrderTemplates().catch(() => { /* picker stays empty */ });
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows && rows.length) {
+      _templates = rows.filter(t => t.is_active);
+      // Default to the 'none' (no-attach) row on first arrival so
+      // the operator opts-in to attach rather than discovers an
+      // unexpected GTT after their first basket.
+      if (_sharedTemplateId === null) {
+        const none = _templates.find(t => t.slug === 'none');
+        if (none) _sharedTemplateId = none.id;
+      }
+    }
+  });
+
   onMount(async () => {
     try {
       const list = await loadAccounts();
@@ -855,6 +893,10 @@
         chase_aggressiveness: _sharedChase ? (leg.chaseAgg || _sharedChaseAgg || 'low') : 'low',
         target_pct:       leg.target_pct   ?? null,
         target_abs:       leg.target_abs   ?? null,
+        // Same template attaches to every leg. Backend basket route
+        // reads BasketLeg.template_id; per-leg `apply_template_to_order`
+        // runs on fill to attach TP/SL/Wing GTTs.
+        template_id:      _sharedTemplateId,
       })),
     }));
 
@@ -1324,6 +1366,35 @@
          any tab without flipping back to Chain. -->
     {#if basketLegs.length > 0}
       <div class="oes-basket-bar">
+        <!-- On-fill template picker — applies to every leg in this
+             basket. Operator: "template should be applicable to
+             option chain too". Hides when the catalog hasn't loaded
+             yet so the bar doesn't show an empty dropdown. The
+             active-template chip below surfaces the on-fill identity
+             when the pick isn't the 'none' (no-attach) default. -->
+        {#if _templates.length > 0}
+          <div class="oes-basket-tpl-row">
+            <label class="oes-basket-tpl-pick" title="On-fill template attached to every leg in this basket">
+              <span class="oes-basket-tpl-label">On fill</span>
+              <Select
+                bind:value={_sharedTemplateId}
+                options={_templates.map(t => ({
+                  value: t.id,
+                  label: t.name || t.slug || `Template #${t.id}`,
+                }))}
+                placeholder="select template" />
+            </label>
+            {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+              <span class="oes-basket-tpl-note">
+                <span class="oes-basket-tpl-note-arrow">↳</span>
+                <span class="oes-basket-tpl-note-name">{_selectedTemplate.name || _selectedTemplate.slug}</span>
+                {#if _selectedTemplate.description}
+                  <span class="oes-basket-tpl-note-desc">· {_selectedTemplate.description}</span>
+                {/if}
+              </span>
+            {/if}
+          </div>
+        {/if}
         <!-- Per-account margin strip — shown when basket spans >1 account.
              Single-account baskets keep using the existing common-footer
              margin pill so behaviour is unchanged for the typical case. -->
@@ -2010,6 +2081,46 @@
   .bms-v    { font-variant-numeric: tabular-nums; }
   .bms-kv-short .bms-v { color: #f87171; }
   .bms-err  { opacity: 0.85; }
+
+  /* On-fill template picker row — first child of .oes-basket-bar.
+     Operator picks once; submitBasket threads template_id into every
+     leg. Active-template chip sits inline so the operator sees the
+     identity of the rule that will attach to each leg's fill. */
+  .oes-basket-tpl-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .oes-basket-tpl-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--algo-muted);
+  }
+  .oes-basket-tpl-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  .oes-basket-tpl-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.5rem;
+    background: rgba(125, 211, 252, 0.10);
+    border: 1px solid rgba(125, 211, 252, 0.28);
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.58rem;
+    color: #c8d8f0;
+  }
+  .oes-basket-tpl-note-arrow { color: #7dd3fc; font-weight: 700; }
+  .oes-basket-tpl-note-name  { color: #7dd3fc; font-weight: 700; }
+  .oes-basket-tpl-note-desc  { color: rgba(200, 216, 240, 0.6); }
 
   .oes-basket-bar {
     position: sticky;
