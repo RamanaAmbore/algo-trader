@@ -271,11 +271,30 @@ def backfill_close_prices(df) -> int:
     # (rows that already had a valid close stay untouched).
     _row_indices = df.index[_missing].tolist()
     _patched_indices: list = []
+    _unresolved: list[str] = []
     for _idx, _k in zip(_row_indices, _key_per_row):
         _looked_up = _close_lookup.get(_k)
         if _looked_up:
             df.at[_idx, 'close_price'] = _looked_up
             _patched_indices.append(_idx)
+        elif _k:
+            _unresolved.append(_k)
+
+    # Diagnostic: log the symbols where PriceBroker.quote() didn't
+    # return an ohlc.close. These rows keep close_price=0 and end up
+    # with day_change_val=0 downstream — the dreaded "Dhan Day P&L
+    # shows zero while Kite shows non-zero" symptom on /admin/derivatives
+    # Legs panel. When the operator reports this, the log line below
+    # names the exact symbols that failed so the next step is
+    # determinist (usually: symbol not in Kite instruments cache, or
+    # ohlc.close==0 because the contract didn't trade yesterday).
+    if _unresolved:
+        logger.warning(
+            f"close-price backfill: {len(_unresolved)}/{len(_unique_keys)} "
+            f"symbols had no ohlc.close from PriceBroker; rows stay at "
+            f"close=0 → Day P&L=0. Unresolved: {_unresolved[:10]}"
+            + (f" (+{len(_unresolved)-10} more)" if len(_unresolved) > 10 else "")
+        )
 
     if not _patched_indices:
         return 0

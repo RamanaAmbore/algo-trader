@@ -589,7 +589,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={() => { loadAgents(); loadAgentLog(); }} loading={loading} label="agents" />
+    <RefreshButton onClick={loadAll} loading={loading} label="agents" />
     <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
       🔔 History
     </a>
