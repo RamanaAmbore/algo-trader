@@ -1299,12 +1299,15 @@
     display: flex;
     gap: 0.9rem;
     flex-wrap: wrap;
-    padding-top: 0.4rem;
+    /* Snug against the SVG bottom — the x-axis labels inside SVG
+       provide enough breathing room above the legend. The earlier
+       0.3rem margin + 0.4rem padding + border combination left a
+       visible empty band between the labels and the legend. */
+    padding-top: 0.15rem;
     font-size: 0.65rem;
     font-family: monospace;
     color: var(--algo-slate);
-    border-top: 1px solid rgba(255,255,255,0.05);
-    margin-top: 0.3rem;
+    margin-top: 0;
   }
   .legend-legs {
     display: inline-flex;

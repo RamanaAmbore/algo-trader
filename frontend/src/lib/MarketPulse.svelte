@@ -3389,6 +3389,14 @@
   function mountGrid() {
     const RA = 'ag-right-aligned-cell';
     const dirCellClass = (p) => `${RA} ${dirCls(p.value)}`;
+    // P&L-tinted cell class for the Positions / Holdings right-grid
+    // P&L + Day P&L columns. Adds a green/red background tint on
+    // top of the direction-colored text — matches the Candidates
+    // panel in /admin/derivatives (`.cand-pnl.cell-pos` etc.) so the
+    // P&L columns read with the same visual identity across both
+    // surfaces. Plain `dirCellClass` (text-only) stays on the
+    // watch/mover grids where the P&L column isn't surfaced.
+    const pnlCellClass = (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`;
 
     // Main symbols grid — only built when the parent opted into the
     // per-symbol view (/pulse). /dashboard passes showSymbolsGrid=false
@@ -3551,7 +3559,7 @@
         headerTooltip: 'Weighted average entry across positions + holdings.' },
       { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
+        cellClass: pnlCellClass,
         valueFormatter: aggFmtGrid },
       // Day P&L % — one-day return on yesterday's market value (close × qty).
       // NOT cost basis: dividing by cost over-states day % for a long-held
@@ -3561,7 +3569,7 @@
       // TOTAL gets a market-value-weighted day return.
       { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
+        cellClass: pnlCellClass,
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
           const prev = Number(p.data?._prev_market_value);
@@ -3576,11 +3584,11 @@
         headerTooltip: 'Day P&L as % of yesterday’s market value (close × qty).' },
       { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
+        cellClass: pnlCellClass,
         valueFormatter: aggFmtGrid },
       { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
+        cellClass: pnlCellClass,
         valueGetter: (p) => {
           const pnl  = Number(p.data?.pnl);
           const cost = Number(p.data?._cost_basis);
@@ -3770,13 +3778,13 @@
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
         { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: pctFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
         { field: 'pnl',                   headerName: 'P&L',     width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
       ];
       positionsSummaryGrid = createGrid(positionsSummaryEl, {
         theme: 'legacy',
@@ -3802,16 +3810,16 @@
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
         { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: pctFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
         { field: 'pnl',                   headerName: 'P&L',     width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: aggFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
         { field: 'pnl_percentage',        headerName: 'P&L %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: pctFmtGrid },
+          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
         { field: 'cur_val',               headerName: 'Value', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },
@@ -4929,6 +4937,14 @@
   :global(.cell-pos)  { color: #4ade80 !important; }
   :global(.cell-neg)  { color: #f87171 !important; }
   :global(.cell-flat) { color: #94a3b8 !important; }
+  /* P&L cell background tint — same colour family + same alphas as the
+     /admin/derivatives Candidates panel (`.cand-pnl.cell-pos` etc.) so
+     the two surfaces' P&L columns read with the same visual identity.
+     Applied via the `mp-pnl-cell` marker class on Pulse's right-grid
+     P&L / Day P&L / P&L % / Day % columns + the summary grids. */
+  :global(.mp-pnl-cell.cell-pos)  { background-color: rgba(74,222,128,0.10) !important; }
+  :global(.mp-pnl-cell.cell-neg)  { background-color: rgba(248,113,113,0.10) !important; }
+  :global(.mp-pnl-cell.cell-flat) { background-color: rgba(148,163,184,0.08) !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
 
   /* Pinned sub-group dividers — first row of each pinned category
