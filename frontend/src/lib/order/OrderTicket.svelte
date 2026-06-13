@@ -658,12 +658,13 @@
 
   // Auto-fill plumbing — the OrderDepth child polls the quote
   // every 1.2 s and bubbles each fresh response here via
-  // onDepthQuote. We pre-fill the limit price with the marketable
-  // side (BUY → ask, SELL → bid) so the operator doesn't have to
-  // type a price every time. Once the operator types into the
-  // field, `_priceTouched` flips true and we stop overwriting
-  // their input. Flipping side resets to the new marketable side
-  // unless they've typed.
+  // onDepthQuote. Operator request: pre-fill the limit price with
+  // LTP (last traded price) so it reads as "buy/sell at the
+  // current market price by default". Falls through to the
+  // marketable side (BUY → ask, SELL → bid) when LTP is missing
+  // (off-hours, just-listed contracts with no trades yet). Once
+  // the operator types into the field, `_priceTouched` flips
+  // true and we stop overwriting their input.
   // Caller can pre-supply `price` to suppress auto-fill (e.g. a
   // close-position flow that wants the operator's last limit).
   // Untrack the read so we capture the initial value once — this
@@ -694,12 +695,17 @@
     if (_priceTouched) return;
     if (_type !== 'LIMIT' && _type !== 'SL') return;
     if (!_lastQuote) return;
-    const px = _side === 'BUY' ? _lastQuote.ask : _lastQuote.bid;
-    // Fall back to LTP when the corresponding side has no depth
-    // (off-hours, illiquid contracts) so the operator isn't left
-    // with a blank field.
-    const fallback = (px && px > 0) ? px : _lastQuote.ltp;
-    if (fallback && fallback > 0) _price = _formatTick(_roundToTick(fallback));
+    // LTP first — the operator-facing "current market price".
+    // Marketable side (BUY → ask, SELL → bid) is the fallback for
+    // off-hours / illiquid contracts where ltp is null. Without
+    // this preference order, LIMIT orders pre-filled at the
+    // worst-marketable-side price even when LTP was a tighter
+    // anchor, which forced the operator to retype every time.
+    const marketable = _side === 'BUY' ? _lastQuote.ask : _lastQuote.bid;
+    const pick = (_lastQuote.ltp && _lastQuote.ltp > 0)
+      ? _lastQuote.ltp
+      : ((marketable && marketable > 0) ? marketable : null);
+    if (pick && pick > 0) _price = _formatTick(_roundToTick(pick));
   }
   function onDepthQuote(/** @type {any} */ q) {
     _lastQuote = q ? {
