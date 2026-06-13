@@ -1234,6 +1234,19 @@
        room = 2.6rem. Content sits ~0.6rem below strip bottom. */
     padding: 2.6rem 0.5rem 1.5rem;
     color: var(--algo-slate);
+    /* flex column so descendant containers (e.g. orders page's
+       `.oc-page-wrap`) can use `flex: 1` to fill the actual
+       available space INSIDE algo-content's padded content box.
+       Without this, descendants that need finite height for
+       their inner flex chains were resorting to fixed
+       `calc(100vh - Nrem)` calculations — which under-counted
+       algo-content's own padding and over-counted by Nrem,
+       making the wrap extend below algo-card's 100vh into the
+       body's default-white background AND visually shoving the
+       footer "on top of" the wrap's last few rows. */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   /* algo-content padding-top is always EXACTLY the page-header
      strip height (1.8rem). The ps-strip is sticky-IN-FLOW so it

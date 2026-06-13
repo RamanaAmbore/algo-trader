@@ -28,11 +28,15 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import OrderCard from '$lib/order/OrderCard.svelte';
 
-  // Activity-card tab definitions — id drives class-based colour
-  // (oc-tab--log = sky, oc-tab--book = green) instead of inline style.
+  // Activity-card tab definitions — matches the ActivityLogModal /
+  // LogPanel tab ordering (Orders first, Agents second) and uses
+  // the same default tab styling (no per-tab color override) so the
+  // two surfaces read identically. Operator: "order page activity
+  // tabs and order modal activity tabs are not in sync. they should
+  // be like order modal".
   const ACT_TABS = /** @type {const} */ ([
-    { id: 'log',  label: 'Agents' },
     { id: 'book', label: 'Orders' },
+    { id: 'log',  label: 'Agents' },
   ]);
 
   let orders        = $state([]);
@@ -390,7 +394,6 @@
         id: t.id,
         label: t.label,
         badge: t.id === 'book' && _filteredOrders.length > 0 ? _filteredOrders.length : undefined,
-        color: t.id === 'log' ? 'sky' : 'green',
       }))}
       bind:value={_activityTab}
     />
@@ -556,14 +559,19 @@
      above and the footer so the Activity card can grow to take all
      remaining vertical space. Status filter strip + Order Entry
      card stay at their natural heights; Activity flexes.
-     Hard `height` (not just min-height) is required so the inner
-     flex chain (`.oc-act-body` → `.oc-act-scroll` / `.oc-book-grid`)
-     resolves to a finite height. With only `min-height`, the chain
-     was unbounded and `overflow-y: auto` never triggered, so the
-     log tab silently overflowed off-screen. */
+     Uses `flex: 1` inside `.algo-content` (which is `display: flex;
+     flex-direction: column`) so the wrap inherits the actual
+     remaining content area — not a hard `calc(100vh - Nrem)`
+     guess that over-counted algo-content's own padding, pushing
+     the Activity card below algo-card's 100vh into the body's
+     default-white background and visually shoving the footer "on
+     top of" the wrap's last few rows. `min-height: 0` is the
+     standard flex-child unlock so the inner flex chain (oc-act-body
+     → oc-act-scroll / oc-book-grid) can resolve to finite height
+     and the scroll containers' `overflow-y: auto` triggers. */
   .oc-page-wrap {
-    height: calc(100vh - 6.5rem);
-    min-height: 28rem;
+    flex: 1 1 0;
+    min-height: 0;
   }
   .oc-fill {
     flex: 1 1 0;
