@@ -1243,6 +1243,12 @@ async def _task_ticker_watchdog(state: dict) -> None:
 
     from backend.shared.helpers.kite_ticker import get_ticker
     from backend.shared.brokers.registry import get_historical_brokers
+    from backend.shared.helpers.broker_apis import fetch_holidays
+
+    # Per-watchdog holiday cache keyed by year so off-hours gating doesn't
+    # hammer nseindia.com every 30 s. Refreshes naturally at year rollover.
+    _wd_holiday_cache: dict = {}
+    _wd_holiday_year: int | None = None
 
     while True:
         try:
@@ -1255,6 +1261,43 @@ async def _task_ticker_watchdog(state: dict) -> None:
             from backend.shared.helpers.utils import is_engine_idle
             if is_engine_idle():
                 continue
+
+            # Market-hours gate — when no segment is open (overnight,
+            # weekend, holiday) Kite drops the WebSocket as expected:
+            # there are no ticks to deliver. The watchdog has no useful
+            # work in that window. Alerting here was pure noise — the
+            # operator got "TickerWatchdog — degraded" pings at 3 AM
+            # because the WS legitimately closed at 23:30 IST after MCX
+            # session end. Clear any active incident silently on entry
+            # so the next session starts with a clean slate; we don't
+            # ping a recovery because there was no real recovery — the
+            # market just closed.
+            now = timestamp_indian().replace(tzinfo=None)
+            segments = _build_segments()
+            if _wd_holiday_year != now.year:
+                _wd_holiday_cache = {}
+                _wd_holiday_year = now.year
+            for seg in segments:
+                exch = seg['holiday_exchange']
+                if exch not in _wd_holiday_cache:
+                    try:
+                        _wd_holiday_cache[exch] = await asyncio.to_thread(
+                            fetch_holidays, exch
+                        )
+                    except Exception:
+                        _wd_holiday_cache[exch] = set()
+            any_open = any(
+                is_market_open(now, _wd_holiday_cache.get(seg['holiday_exchange'], set()),
+                               seg['hours_start'], seg['hours_end'])
+                for seg in segments
+            )
+            if not any_open:
+                if _ticker_alert_state["alert_active"]:
+                    _ticker_alert_state["alert_active"] = False
+                    _ticker_alert_state["incident_start"] = 0.0
+                    _ticker_alert_state["last_alerted_at"] = 0.0
+                continue
+
             ticker = get_ticker()
             status = ticker.status()
             # Watchdog applies only to a ticker that's STARTED but has
