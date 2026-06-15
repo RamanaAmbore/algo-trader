@@ -597,64 +597,44 @@
 
 <style>
 
-  /* Outer page wrap — fills the viewport between the navbar/strip
-     above and the footer so the Activity card can grow to take all
-     remaining vertical space. Status filter strip + Order Entry
-     card stay at their natural heights; Activity flexes.
-     Uses `flex: 1` inside `.algo-content` (which is `display: flex;
-     flex-direction: column`) so the wrap inherits the actual
-     remaining content area — not a hard `calc(100vh - Nrem)`
-     guess that over-counted algo-content's own padding, pushing
-     the Activity card below algo-card's 100vh into the body's
-     default-white background and visually shoving the footer "on
-     top of" the wrap's last few rows. `min-height: 0` is the
-     standard flex-child unlock so the inner flex chain (oc-act-body
-     → oc-act-scroll / oc-book-grid) can resolve to finite height
-     and the scroll containers' `overflow-y: auto` triggers. */
+  /* Page flows naturally — no flex-fill on the wrap. The Entry card
+     takes its natural height; the Activity card sits below at its
+     natural height too. The OUTER algo-content / document scroll
+     absorbs any overflow, exactly the way /dashboard works. Operator
+     scrolls the page down to reveal the Activity card when the Entry
+     card is tall (Chain expanded, etc.). Matches the user's mental
+     model of the orders modal — content flows, scroll reveals more.
+     Sticky `.algo-footer` (in the layout) stays pinned to the
+     viewport bottom while scrolling. */
   .oc-page-wrap {
-    flex: 1 1 0;
-    min-height: 0;
-    /* Hard-clip the wrap so a tall Entry card (Order Ticket /
-       Option Chain expanded) + Activity card's min-height: 12rem can't
-       overflow past the wrap's capped box and paint over the sticky
-       footer. Inner scrolls (.oc-act-log-scroll, .oc-book-grid,
-       OrderTicket's own scroll) absorb overflow per-card. */
-    overflow: hidden;
+    /* no flex / no overflow — natural-height flow */
   }
   .oc-fill {
-    flex: 1 1 0;
+    /* No flex-fill — Activity card grows to its own content height.
+       min-height keeps it readable when the log / book is empty. */
     min-height: 12rem;
   }
   .oc-act-body {
-    flex: 1 1 0;
-    min-height: 0;
     display: flex;
     flex-direction: column;
   }
-  .oc-act-scroll {
+  /* When the operator wants the activity card to OWN the viewport
+     (fullscreen mode), the .fs-card-on rule on the section gives it a
+     pinned modal-style frame and we re-enable the inner flex chain so
+     the log / book grow to fill that fixed frame. */
+  :global(.bucket-card-activity.fs-card-on) .oc-act-body { flex: 1 1 0; min-height: 0; }
+  :global(.bucket-card-activity.fs-card-on) .oc-act-flex,
+  :global(.bucket-card-activity.fs-card-on) .oc-act-log-scroll,
+  :global(.bucket-card-activity.fs-card-on) .oc-book-grid {
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
   }
-  /* Log tab — flex container + matching height class on UnifiedLog's
-     own `.ul-wrap` so the inner native scroll receives a finite
-     height. Single scroll context, no nested overflow. */
-  .oc-act-flex {
-    flex: 1 1 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  :global(.oc-act-flex .oc-act-log-scroll) {
-    flex: 1 1 0;
-    min-height: 0;
-  }
-  /* Book tab — order grid uses the same scroll container as the log
-     tab so card height is consistent when flipping between them. */
+  .oc-act-scroll { /* legacy alias — natural-flow now */ }
+  .oc-act-flex   { display: flex; flex-direction: column; }
+  /* Book tab — order grid is a normal CSS grid. No internal scroll;
+     the page scrolls when the grid is tall. */
   .oc-book-grid {
-    flex: 1 1 0;
-    min-height: 0;
-    overflow-y: auto;
     display: grid;
     grid-template-columns: 1fr;
     gap: 0.5rem;
