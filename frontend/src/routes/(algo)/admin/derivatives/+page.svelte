@@ -943,11 +943,26 @@
   // Rebuild legs from the current candidates × enabled-flag combination.
   // Drafts already live in candidatePositions (with source='draft'),
   // so this single derivation covers live + sim + draft uniformly.
+  //
+  // Expiry-filter integrity: candidatePositions deliberately lets
+  // closed rows (qty=0) bypass the expiry filter so they stay visible
+  // in the Legs panel (parity with the dashboard grid). But they MUST
+  // NOT bleed into the payoff payload — sending other-expiry legs to
+  // the strategy endpoint pollutes the curve with contracts the
+  // operator explicitly filtered out. Re-apply the expiry gate here so
+  // legs stays scoped to the picked expiries even when the panel
+  // shows extra context rows.
   $effect(() => {
     void candidatePositions; void enabledSymbols;
     untrack(() => {
+      const expActive = selectedExpiries.length > 0;
       legs = candidatePositions
         .filter(c => enabledSymbols[enKey(c)] !== false)
+        .filter(c => {
+          if (!expActive) return true;
+          const inst = getInstrument(String(c.symbol || '').toUpperCase());
+          return selectedExpiries.includes(inst?.x);
+        })
         .map(c => ({
           symbol:   c.symbol,
           qty:      c.qty,
