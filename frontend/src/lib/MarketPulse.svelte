@@ -1634,13 +1634,22 @@
   const _losersTotal = $derived(
     loserCounts.underlying + loserCounts.large_cap
     + loserCounts.midcap + loserCounts.smallcap);
-  const _effColPinned    = $derived(_colPinned    || (_isMobile && pinnedRows.length === 0));
-  const _effColWatch     = $derived(_colWatch     || (_isMobile && _allWatchRows.length === 0));
-  const _effColPinWatch  = $derived(_colPinWatch  || (_isMobile && pinnedRows.length === 0 && _allWatchRows.length === 0));
-  const _effColWinners   = $derived(_colWinners   || (_isMobile && _winnersTotal === 0));
-  const _effColLosers    = $derived(_colLosers    || (_isMobile && _losersTotal === 0));
-  const _effColPositions = $derived(_colPositions || (_isMobile && positionsRows.length === 0));
-  const _effColHoldings  = $derived(_colHoldings  || (_isMobile && holdingsRows.length === 0));
+  // Effective collapse = operator's explicit choice only. The earlier
+  // `(_isMobile && rows.length === 0)` auto-collapse meant: while data
+  // is still loading OR when an operator's book legitimately has zero
+  // rows in a bucket, the card body would render at height: 0 with
+  // only the header showing — and on the post-sticky-footer layout
+  // this looked like a broken card (no body, no footer-floating to
+  // hint at the empty zone below). Let the ag-Grid render its own
+  // "No rows to display" message so the operator sees a real empty
+  // state instead of a phantom collapsed shell.
+  const _effColPinned    = $derived(_colPinned);
+  const _effColWatch     = $derived(_colWatch);
+  const _effColPinWatch  = $derived(_colPinWatch);
+  const _effColWinners   = $derived(_colWinners);
+  const _effColLosers    = $derived(_colLosers);
+  const _effColPositions = $derived(_colPositions);
+  const _effColHoldings  = $derived(_colHoldings);
 
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
