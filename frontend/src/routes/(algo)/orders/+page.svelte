@@ -614,6 +614,12 @@
   .oc-page-wrap {
     flex: 1 1 0;
     min-height: 0;
+    /* Hard-clip the wrap so a tall Entry card (Order Ticket /
+       Option Chain expanded) + Activity card's min-height: 12rem can't
+       overflow past the wrap's capped box and paint over the sticky
+       footer. Inner scrolls (.oc-act-log-scroll, .oc-book-grid,
+       OrderTicket's own scroll) absorb overflow per-card. */
+    overflow: hidden;
   }
   .oc-fill {
     flex: 1 1 0;
