@@ -1275,6 +1275,14 @@
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
   .algo-footer {
+    /* Sticky-bottom — mirrors the public `.pub-footer` pattern so on
+       short pages the footer pins to the viewport bottom instead of
+       floating mid-screen above empty space. On long pages it still
+       lands naturally at the document bottom; sticky just keeps it
+       glued to the viewport edge while the operator scrolls. */
+    position: sticky;
+    bottom: 0;
+    z-index: 40;
     background: #0a1020;
     border-top: 1px solid rgba(251,191,36,0.2);
     height: 1.6rem;
