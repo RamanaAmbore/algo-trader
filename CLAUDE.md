@@ -427,6 +427,30 @@ Operators add / edit / delete broker accounts via `/admin/brokers` instead of ed
 
 ## Multi-Account IPv6 Source Binding (Kite + Dhan)
 
+> **2026-06-15 — Hostinger VPS limitation.** The upstream router on
+> the prod VPS only egresses packets sourced from `2a02:4780:12:9e1d::1`
+> (the primary IPv6). The other addresses in the documented `/48`
+> (`::2` through `::5`) bind cleanly to `eth0` but their outbound
+> packets are silently dropped at the provider edge (uRPF-like
+> filter). Confirmed with `curl --interface 2a02:4780:12:9e1d::4
+> https://auth.dhan.co/` → connect timeout 10s, vs `::1` → 200 OK.
+> Result: **the multi-IPv6 fix below works in principle but is
+> blocked by Hostinger today**. Workarounds in active use:
+> - **One Dhan account active at a time.** `DH3747` is currently
+>   `is_active=false` (DB note: "auto-disabled 2026-06-15: Dhan IP
+>   rotation"); only `DH6847` egresses + serves positions / holdings.
+>   Operator flips which one is active in `/admin/brokers` when
+>   they need the other account's data.
+> - **Set Dhan dashboard Token Validity to 24h on both partner apps.**
+>   The 5-min `token_age=305s` evictions seen in logs are partly the
+>   Dhan dashboard's per-app validity dropdown. Setting both to 24h
+>   reduces re-login frequency from every 5 min to once a day, which
+>   gives the second-account-disabled workaround a stable runtime.
+> - Reactivate the multi-IP path once Hostinger routes the full /48
+>   from us (open a support ticket asking them to disable source-IP
+>   filtering or to add explicit static routes for `::2`–`::5` via
+>   the eth0 gateway).
+
 Two of the three broker integrations enforce some form of "one active session per source IP" rule and need dedicated IPv6 binding when more than one account is loaded on the same server. Groww does not.
 
 | Broker | Rule | What breaks without binding |
