@@ -411,40 +411,39 @@
 
 <style>
 
-  /* Flex-fill the wrap so the Entry + Status + Chases + Activity
-     stack fills algo-content vertically with no empty gap above
-     the sticky footer. Mirrors the modal's behaviour: the Activity
-     card has a fixed frame and the LogPanel inside it owns its own
-     scroll. Page doesn't grow past the viewport; operator scrolls
-     INSIDE the Activity card to see more log/order rows. Footer
-     stays pinned at viewport bottom on every render. */
+  /* Natural-flow wrap — Entry + Status + Chases + Activity stack at
+     their content heights. On short pages the wrap fills algo-content
+     via `flex: 1 1 auto` (no gap above the sticky footer). On tall
+     pages the wrap grows past algo-content; algo-card + body grow with
+     it; the document becomes scrollable and the operator can scroll
+     down to reveal the last card. Sticky algo-footer in the layout
+     stays pinned at the viewport bottom while scrolling.
+
+     Critical not to use `min-height: 0` here — that would let the wrap
+     shrink below its content and the last card would clip again. The
+     default `min-height: auto` keeps the wrap at least as tall as its
+     intrinsic content so every card is reachable. */
   .oc-page-wrap {
-    flex: 1 1 0;
-    min-height: 0;
-    /* Clip anything that overflows the wrap's capped flex height so it
-       doesn't bleed into document scroll. Without this, the Activity
-       card's intrinsic content size + Entry card's chain panel can push
-       body.scrollHeight past `.algo-card` (min-height: 100dvh). The
-       operator's window scroll then pushes the algo-card's bottom edge
-       above viewport bottom, and the sticky footer (anchored to
-       algo-card) rides up with it instead of staying pinned to the
-       viewport. LogPanel + OrderTicket own their internal scrolls so
-       this clip is safe — every overflowing surface has its own
-       absorber. */
-    overflow: hidden;
+    flex: 1 1 auto;
   }
   .oc-fill {
-    /* Activity card flexes to consume spare vertical space inside
-       the wrap; LogPanel inside it absorbs overflow via its own
-       flex-1 min-h-0 internal scroll. */
-    flex: 1 1 0;
+    /* Activity card grows to consume spare vertical space when the
+       wrap is taller than its other children (short Entry, no Chases).
+       Floor at 12rem so it never collapses to a header strip even when
+       the operator has no orders or log entries yet. */
+    flex: 1 1 auto;
     min-height: 12rem;
   }
   .oc-act-body {
-    flex: 1 1 0;
-    min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* Fullscreen mode pins the Activity card to the viewport; re-enable
+     the inner flex chain so LogPanel's heightClass="flex-1 min-h-0"
+     resolves correctly to the modal-style frame. */
+  :global(.bucket-card-activity.fs-card-on) .oc-act-body {
+    flex: 1 1 0;
+    min-height: 0;
   }
   /* Activity card title — bell icon + label match the ActivityLogModal's
      header so heading reads identically on both surfaces. */
