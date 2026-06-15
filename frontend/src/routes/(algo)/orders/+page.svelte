@@ -421,6 +421,17 @@
   .oc-page-wrap {
     flex: 1 1 0;
     min-height: 0;
+    /* Clip anything that overflows the wrap's capped flex height so it
+       doesn't bleed into document scroll. Without this, the Activity
+       card's intrinsic content size + Entry card's chain panel can push
+       body.scrollHeight past `.algo-card` (min-height: 100dvh). The
+       operator's window scroll then pushes the algo-card's bottom edge
+       above viewport bottom, and the sticky footer (anchored to
+       algo-card) rides up with it instead of staying pinned to the
+       viewport. LogPanel + OrderTicket own their internal scrolls so
+       this clip is safe — every overflowing surface has its own
+       absorber. */
+    overflow: hidden;
   }
   .oc-fill {
     /* Activity card flexes to consume spare vertical space inside
