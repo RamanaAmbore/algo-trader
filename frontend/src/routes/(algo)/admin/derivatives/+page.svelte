@@ -767,15 +767,13 @@
       const isFut = /FUT$/i.test(sym);
       const isOpt = /(CE|PE)$/i.test(sym);
       if (!isFut && !isOpt) continue;
-      // Closed positions (qty=0) bypass the expiry filter. Their
-      // contract often expired in the past, OR the instruments cache
-      // has already evicted them — so matchExpiry would always reject
-      // them and the row would silently disappear from the legs panel
-      // even though it still shows in the dashboard positions grid.
-      // Operator wanted parity with the grid: show every closed
-      // position regardless of selected expiry.
-      const isClosed = Number(p.qty || 0) === 0;
-      if (!isClosed && !matchExpiry(sym)) continue;
+      // Hard expiry filter — when the operator picks an expiry, the
+      // payoff + legs panel + every P&L overlay must scope to JUST
+      // that expiry. Closed-position bypass was retired because it
+      // dragged realised cash from other-expiry positions into TDAY/
+      // unrealised aggregates. The dashboard grid is the right surface
+      // for cross-expiry closed-row context; this page stays focused.
+      if (!matchExpiry(sym)) continue;
       out.push({
         ...p,
         kind: isFut ? 'fut' : 'opt',
@@ -821,23 +819,15 @@
   // Earlier this summed every candidate — unchecking a leg dropped
   // it from the curve but kept it in the offset, so the chart's
   // TDAY didn't change visually. Now they stay in lock-step.
-  // Helper — closed positions from other expiries bypass the
-  // candidatePositions expiry filter (so they stay visible in the panel),
-  // but their `pnl` (which INCLUDES realised cash from intraday closeouts)
-  // would otherwise leak into TDAY/DAY overlays and the strategy payload
-  // when an expiry is selected. Re-apply the gate for every aggregate
-  // that drives chart/overlay numbers.
-  function _matchesSelectedExpiry(/** @type {any} */ c) {
-    if (!selectedExpiries.length) return true;
-    const inst = getInstrument(String(c?.symbol || '').toUpperCase());
-    return selectedExpiries.includes(inst?.x);
-  }
-
+  // candidatePositions already enforces the expiry filter, so every
+  // aggregate over it stays scoped to the selected expiry by
+  // construction. P&L (realised + unrealised) from other expiries
+  // is excluded at the candidate level — no per-aggregate re-gate
+  // needed.
   const candidatesActualPnl = $derived.by(() => {
     let s = 0;
     for (const c of candidatePositions) {
       if (enabledSymbols[enKey(c)] === false) continue;
-      if (!_matchesSelectedExpiry(c)) continue;
       s += Number(c.pnl || 0);
     }
     return s;
@@ -854,7 +844,6 @@
     let s = 0;
     for (const c of candidatePositions) {
       if (enabledSymbols[enKey(c)] === false) continue;
-      if (!_matchesSelectedExpiry(c)) continue;
       s += Number(c.day_change_val || 0);
     }
     return s;
@@ -971,7 +960,6 @@
     untrack(() => {
       legs = candidatePositions
         .filter(c => enabledSymbols[enKey(c)] !== false)
-        .filter(_matchesSelectedExpiry)
         .map(c => ({
           symbol:   c.symbol,
           qty:      c.qty,
