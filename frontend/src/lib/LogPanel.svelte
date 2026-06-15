@@ -4,7 +4,7 @@
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
-    fetchOrders, cancelOrder,
+    fetchOrders, cancelOrder, reconcileSingleOrder,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
@@ -317,6 +317,29 @@
       bubbles: true,
       composed: true,
     }));
+  }
+
+  // Per-order reconcile — sync ONE broker order against the broker book
+  // and update the matching algo row when it disagrees (postback miss /
+  // network drop / stuck OPEN row after REJECTED). Available on every
+  // LogPanel mount so the Activity modal + /orders Activity card behave
+  // identically.
+  let _reconciling = $state(new Set());
+  async function _reconcileRow(/** @type {any} */ o) {
+    const key = String(o.order_id || o.id || '');
+    if (!key || !o?.account || _reconciling.has(key)) return;
+    _reconciling = new Set([..._reconciling, key]);
+    try {
+      const res = await reconcileSingleOrder(o.order_id, o.account);
+      if (res?.updated) await _loadOrders();
+    } catch (e) {
+      _cancelErr = /** @type {any} */ (e)?.message || 'reconcile failed';
+      setTimeout(() => { _cancelErr = ''; }, 3000);
+    } finally {
+      const next = new Set(_reconciling);
+      next.delete(key);
+      _reconciling = next;
+    }
   }
 
   /** Escape HTML attribute values from broker-supplied strings (defence-in-depth). */
@@ -908,8 +931,8 @@
             onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ord.symbol || ''; _symPanelExch = ord.exchange || ''; }}
             onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }}>
             {#snippet actions(ord)}
-              {#if _isOpenBroker(ord)}
-                <div class="lp-oc-actions" role="group" aria-label="Order actions">
+              <div class="lp-oc-actions" role="group" aria-label="Order actions">
+                {#if _isOpenBroker(ord)}
                   <!-- Modify — dispatches lp:modify-order so the host page opens its modal -->
                   <button type="button" class="lp-oc-btn lp-oc-modify"
                     title="Modify order"
@@ -933,8 +956,24 @@
                             stroke-linecap="round"/>
                     </svg>
                   </button>
-                </div>
-              {/if}
+                {/if}
+                <!-- Reconcile — sync this single row against the broker book.
+                     Visible for every status: stuck rows can be OPEN, REJECTED
+                     -but-still-OPEN, or terminal-but-stale. Sky-blue trio. -->
+                <button type="button" class="lp-oc-btn lp-oc-reconcile"
+                  title="Reconcile with broker"
+                  aria-label="Reconcile"
+                  disabled={_reconciling.has(_oKey)}
+                  onclick={(e) => { e.stopPropagation(); _reconcileRow(ord); }}>
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M3 8a5 5 0 0 1 8.6-3.5M13 8a5 5 0 0 1-8.6 3.5"
+                      stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    <path d="M11.5 2v3h-3M4.5 14v-3h3"
+                      stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </div>
             {/snippet}
           </OrderCard>
         {/each}
@@ -1385,6 +1424,19 @@
     background: rgba(248,113,113,0.14);
     border-color: rgba(252,165,165,0.65);
     color: #fca5a5;
+  }
+  /* Reconcile — sky-400 palette ("sync / refresh", distinct from
+     destructive red and edit cyan). Matches the /orders standalone
+     reconcile button so the affordance reads identically on both
+     surfaces. */
+  .lp-oc-reconcile {
+    border: 1px solid rgba(125,211,252,0.55);
+    color: #7dd3fc;
+  }
+  .lp-oc-reconcile:hover:not(:disabled) {
+    background: rgba(125,211,252,0.18);
+    border-color: rgba(186,230,253,0.85);
+    color: #bae6fd;
   }
 
 </style>

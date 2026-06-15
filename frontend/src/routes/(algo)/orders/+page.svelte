@@ -6,54 +6,25 @@
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
-  import UnifiedLog from '$lib/UnifiedLog.svelte';
-  import { fetchOrders, cancelOrder, reconcileSingleOrder } from '$lib/api';
-  import OrderDetail from '$lib/OrderDetail.svelte';
+  import LogPanel from '$lib/LogPanel.svelte';
+  import BellIcon from '$lib/icons/BellIcon.svelte';
+  import { fetchOrders } from '$lib/api';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
-  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { loadInstruments } from '$lib/data/instruments';
-  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
     loadAccounts,
     resolveSymbol, resolveAccount,
     setRecentSymbol, setRecentAccount,
   } from '$lib/data/accounts';
-  // executionMode is used to gate the Order Activity card's bespoke
-  // book tab (same as LogPanel's gateByMode behaviour).
-  import { executionMode } from '$lib/stores';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
-  import OrderCard from '$lib/order/OrderCard.svelte';
-
-  // Activity-card tab definitions — matches the ActivityLogModal /
-  // LogPanel tab ordering (Orders first, Agents second) and uses
-  // the same default tab styling (no per-tab color override) so the
-  // two surfaces read identically. Operator: "order page activity
-  // tabs and order modal activity tabs are not in sync. they should
-  // be like order modal".
-  const ACT_TABS = /** @type {const} */ ([
-    { id: 'book', label: 'Orders' },
-    { id: 'log',  label: 'Agents' },
-  ]);
 
   let orders        = $state([]);
   let loading       = $state(true);
   let error         = $state('');
-  // Default the status filter to ALL — matches every other LogPanel
-  // mount (Activity modal, Order modal bottom panel, /console, /automation)
-  // where the Orders tab opens un-filtered ("All" chip clicked). Earlier
-  // /orders defaulted to OPEN, which made it the only surface where
-  // landing on the Orders tab hid every non-open row.
-  let filterStatus  = $state('all');
-  // Account + exchange filters on the Order Book card. AccountMultiSelect
-  // is the same component pulse + dashboard use, so the filter UX is
-  // identical across surfaces.
-  let _accountFilter  = $state(/** @type {string[]} */ ([]));
-  let _exchangeFilter = $state('all');
-  let selectedOrder = $state(/** @type {any|null} */(null));
 
   // Page-level Symbol picker for the Order Entry card. Seeded from
   // the recent-symbol store → settings default → empty. Operator:
@@ -110,18 +81,13 @@
 
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other
-  // surface (Activity modal, Order modal bottom panel, /console,
-  // /automation). Agent Log (UnifiedLog of recent events) is one click
-  // away. Earlier 'log' was the default but that left the operator
-  // landing on a different visual format than every other Orders
-  // surface uses.
-  let _activityTab = $state(/** @type {'log'|'book'} */ ('book'));
+  // Status counter strip below uses `orders` to compute per-status
+  // counts; the Activity LogPanel handles its own data + filters.
 
   // OrderTicket props — opens a SymbolPanel modal pre-filled from a
-  // row click (Modify / Repeat path). The top-of-page inline shell
-  // handles fresh placement; this separate modal handles single-target
-  // modify / repeat so row context is preserved without losing the
-  // operator's spot on the order book.
+  // LogPanel `lp:modify-order` event (row pencil click). The top-of-page
+  // inline shell handles fresh placement; this separate modal handles
+  // single-target modify / repeat.
   let orderTicketProps = $state(/** @type {any|null} */(null));
   /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
   let _ctxMenu = $state(null);
@@ -138,33 +104,22 @@
     catch (e) { error = e.message; }
     finally { loading = false; }
   }
-  // Status check used by per-row action gating (Modify / Cancel buttons).
-  const isOpenStatus = (/** @type {string} */ s) =>
-    s === 'OPEN' || s === 'TRIGGER PENDING';
 
-  // Available account / exchange values for the filter chips.
-  const _availableAccounts = $derived([...new Set(orders.map(o => o.account).filter(Boolean))]);
-  const _availableExchanges = $derived([...new Set(orders.map(o => o.exchange).filter(Boolean))]);
-
-  // Single source of truth for which orders the Book card shows.
-  // Combines status + account + exchange + executionMode filters.
-  // The mode gate mirrors LogPanel's gateByMode behaviour so the
-  // /orders page and the Activity modal show the same rows.
-  const _filteredOrders = $derived.by(() => {
-    return orders.filter(o => {
-      const s = o.status;
-      if (filterStatus === 'open' && !isOpenStatus(s)) return false;
-      if (filterStatus !== 'all' && filterStatus !== 'open' && s !== filterStatus.toUpperCase()) return false;
-      if (_accountFilter.length && !_accountFilter.includes(o.account)) return false;
-      if (_exchangeFilter !== 'all' && o.exchange !== _exchangeFilter) return false;
-      // Mode gate: broker orders (no .mode field) count as 'live'.
-      const oMode = o.mode || 'live';
-      if ($executionMode && oMode !== $executionMode) return false;
-      return true;
-    });
-  });
+  // Svelte action — attaches the `lp:modify-order` listener LogPanel
+  // dispatches when the operator clicks the pencil on any order row.
+  // Custom event names with colons can't ride on Svelte 5 `on:` props;
+  // a `use:` action with addEventListener bypasses that restriction.
+  function listenModifyOrder(/** @type {HTMLElement} */ node) {
+    const handler = (/** @type {Event} */ e) => {
+      const detail = /** @type {CustomEvent} */ (e).detail;
+      if (detail) orderTicketProps = _buildModifyProps(detail);
+    };
+    node.addEventListener('lp:modify-order', handler);
+    return { destroy() { node.removeEventListener('lp:modify-order', handler); } };
+  }
 
   // Shared helper — builds the orderTicketProps shape for a modify action.
+  // Called from the lp:modify-order listener on the Activity card.
   function _buildModifyProps(/** @type {any} */ o) {
     return {
       symbol:    String(o.tradingsymbol || '').toUpperCase(),
@@ -182,53 +137,6 @@
       accounts:  [],
     };
   }
-
-  // Inline-action handlers — Cancel hits the broker directly; Modify
-  // and Repeat open the orderTicketProps modal pre-filled.
-  async function inlineCancel(/** @type {any} */ o, /** @type {Event} */ e) {
-    e?.stopPropagation();
-    try { await cancelOrder(o.order_id, o.account); await loadOrders(); }
-    catch (err) { error = err.message || String(err); }
-  }
-  function inlineModify(/** @type {any} */ o, /** @type {Event} */ e) {
-    e?.stopPropagation();
-    orderTicketProps = _buildModifyProps(o);
-  }
-  // Inline-action handler — Reconcile: re-sync this single broker order
-  // against the broker book and update the matching algo row when it
-  // disagrees (postback miss, network drop, REJECTED chase that left
-  // the algo row at OPEN, etc.).
-  let _reconcilingId = $state(/** @type {string|null} */ (null));
-  async function inlineReconcile(/** @type {any} */ o, /** @type {Event} */ e) {
-    e?.stopPropagation();
-    if (!o?.order_id || !o?.account) return;
-    _reconcilingId = String(o.order_id);
-    try {
-      const res = await reconcileSingleOrder(o.order_id, o.account);
-      if (res?.updated) await loadOrders();
-    } catch (err) {
-      error = err.message || String(err);
-    } finally {
-      _reconcilingId = null;
-    }
-  }
-
-  // Empty-state copy adapts to which filter is active so the operator
-  // never sees a generic "no orders" when they're actually looking at
-  // a slice.
-  const _emptyMessage = $derived.by(() => {
-    const parts = [];
-    if (filterStatus === 'all')          parts.push('orders');
-    else if (filterStatus === 'open')    parts.push('OPEN orders');
-    else if (filterStatus === 'complete')parts.push('FILLED orders');
-    else if (filterStatus === 'rejected')parts.push('REJECTED orders');
-    else if (filterStatus === 'cancelled') parts.push('CANCELLED orders');
-    else parts.push('orders');
-    if (_accountFilter.length === 1) parts.push(`for ${_accountFilter[0]}`);
-    else if (_accountFilter.length > 1) parts.push(`for ${_accountFilter.length} accounts`);
-    if (_exchangeFilter !== 'all') parts.push(`on ${_exchangeFilter}`);
-    return `No ${parts.join(' ')} today.`;
-  });
 
   onMount(() => {
     loadOrders();
@@ -278,11 +186,12 @@
 
 {#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
 
-<!-- Status filter strip — compact one-line counters. Number + label
-     sit inline (number left, label right) so each card collapses to
-     ~38 px tall instead of the previous ~80 px (Phase D of the
-     redesign). Card border carries the status colour now (Phase E)
-     so the number stays uniformly slate. -->
+<!-- Status counter strip — at-a-glance counts (All / Open / Filled /
+     Rejected / Cancelled). Click any card to uncollapse the Activity
+     card below; status FILTERING lives inside LogPanel's mode + account
+     chips (Activity now uses the canonical 6-tab LogPanel, same as the
+     modal). The cards stay un-toggled — they're informational + a
+     quick "expand activity" affordance, not a filter selector. -->
 <div class="grid grid-cols-5 gap-2 mt-1 mb-2">
   {#each [
     { id: 'all',       label: 'All',       count: orders.length, accent: 'inactive' },
@@ -292,8 +201,8 @@
     { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
   ] as f}
     <button type="button"
-      onclick={() => { filterStatus = f.id; _activityTab = 'book'; _colActivity = false; }}
-      class="oc-filter-card {filterStatus === f.id ? 'oc-filter-card-on' : ''}"
+      onclick={() => { _colActivity = false; }}
+      class="oc-filter-card"
       data-status={f.accent}>
       <span class="oc-filter-count">{f.count}</span>
       <span class="oc-filter-label">{f.label}</span>
@@ -397,135 +306,40 @@
   </div>
 </section>
 
-<!-- Order Activity card — single card that absorbs both Order Book
-     (the order grid that used to be its own card) and Order Log
-     (UnifiedLog of order / agent events). Book is the default tab;
-     Log is one click away. Order History was retired — it
-     duplicated Order Book. -->
+<!-- Order Activity card — same 6-tab LogPanel surface the ActivityLogModal
+     mounts (Orders · Agents · Terminal · Ticks · System · News). The card
+     header carries the modal's "Activity" wording + bell icon so heading
+     text matches; LogPanel renders its own tab strip + the live mode
+     chip (top-right of the tab row, mode-pill-paper/-live/-sim). Modify /
+     Cancel / Reconcile actions live on every OrderCard inside LogPanel
+     itself so they ship to the modal too — single source of truth for
+     order-row actions.
+
+     Listener for lp:modify-order: LogPanel dispatches this CustomEvent
+     when the operator clicks the inline pencil on any row; the host
+     opens its OrderTicket modal pre-filled. Same plumbing the Activity
+     modal uses. -->
 <section class="bucket-card bucket-card-activity oc-fill mb-2"
   class:fs-card-on={_fsActivity}
-  class:is-collapsed={_colActivity}>
+  class:is-collapsed={_colActivity}
+  use:listenModifyOrder>
   <div class="bucket-header">
-    <span class="mp-section-label">Order Activity</span>
-    <AlgoTabs
-      tabs={ACT_TABS.map(t => ({
-        id: t.id,
-        label: t.label,
-        badge: t.id === 'book' && _filteredOrders.length > 0 ? _filteredOrders.length : undefined,
-      }))}
-      bind:value={_activityTab}
-    />
-    {#if _activityTab === 'book'}
-      <!-- Book-only filters — Account multi-select + Exchange chips.
-           Lifted from the retired Order Book card's header. -->
-      {#if _availableAccounts.length > 1}
-        <AccountMultiSelect
-          bind:value={_accountFilter}
-          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      {/if}
-      {#if _availableExchanges.length > 1}
-        <div class="oc-ex-strip" role="group" aria-label="Exchange filter">
-          <button type="button" class="oc-chip" class:oc-chip-on={_exchangeFilter === 'all'}
-            onclick={() => _exchangeFilter = 'all'}>All</button>
-          {#each _availableExchanges as ex}
-            <button type="button" class="oc-chip" class:oc-chip-on={_exchangeFilter === ex}
-              onclick={() => _exchangeFilter = ex}>{ex}</button>
-          {/each}
-        </div>
-      {/if}
-    {/if}
+    <span class="mp-section-label oc-act-title">
+      <BellIcon width="12" height="12" class="oc-act-title-icon" />
+      Activity
+    </span>
     <span class="oc-spacer"></span>
     {#if _fsActivity}
       <RefreshButton onClick={loadOrders} loading={loading} label="activity" />
     {/if}
-    <CollapseButton bind:isCollapsed={_colActivity} label="Order Activity" />
-    <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Order Activity" />
-    <FullscreenButton bind:isFullscreen={_fsActivity} label="Order Activity" />
+    <CollapseButton bind:isCollapsed={_colActivity} label="Activity" />
+    <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Activity" />
+    <FullscreenButton bind:isFullscreen={_fsActivity} label="Activity" />
   </div>
   <div class="card-body oc-act-body" hidden={_colActivity}>
-    {#if _activityTab === 'log'}
-      <!-- Wrap in .oc-activity-log so the :global overrides above
-           restyle UnifiedLog's card-mode rows to match /market's
-           news-row look (flat row, time on the left, thin bottom
-           divider, no left accent). -->
-      <!-- UnifiedLog's own `.ul-wrap` carries `overflow-y: auto`, so we
-           give it the flex height directly via `heightClass` instead of
-           wrapping in a second `oc-act-scroll`. Previous nesting produced
-           two scroll contexts where the inner never received a finite
-           height — the log grew past the activity card and pushed the
-           page footer over the last few rows. -->
-      <div class="oc-activity-log oc-act-flex">
-        <UnifiedLog
-          filter={{ simMode: $executionMode === 'sim' ? true : undefined }}
-          pollMs={3000}
-          maxRows={50}
-          heightClass="oc-act-log-scroll"
-          cardMode={true}
-          tsFormat="dual" />
-      </div>
-    {:else if loading && !orders.length}
-      <div class="text-center text-muted text-xs animate-pulse py-2">Loading orders…</div>
-    {:else if _filteredOrders.length}
-      <div class="oc-book-grid">
-        {#each _filteredOrders as o (o.order_id)}
-          <OrderCard
-            order={o}
-            onCardClick={() => { selectedOrder = (selectedOrder?.order_id === o.order_id ? null : o); }}
-            onSymbolClick={(ord, _e) => { orderTicketProps = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', defaultTab: 'ticket' }; }}
-            onSymbolContext={(ord, ev) => { _ctxMenu = { symbol: ord.tradingsymbol, exchange: ord.exchange || '', x: ev.clientX, y: ev.clientY }; }}>
-            {#snippet actions(ord)}
-              <div class="oc-row-actions">
-                {#if isOpenStatus(ord.status)}
-                  <button type="button" class="oc-act-btn" title="Modify order"
-                    aria-label="Modify order" onclick={(e) => inlineModify(ord, e)}>
-                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                      <path d="M11.5 3l1.5 1.5L5 12.5 2 13l.5-3L11.5 3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </button>
-                  <button type="button" class="oc-act-btn oc-act-cancel" title="Cancel order"
-                    aria-label="Cancel order" onclick={(e) => inlineCancel(ord, e)}>
-                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                      <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                    </svg>
-                  </button>
-                {/if}
-                <!-- Reconcile (circular arrow) — re-sync this single
-                     order's algo row against the broker book. Visible
-                     for every status, since stuck rows can be OPEN,
-                     REJECTED-but-still-OPEN, or terminal-but-stale. -->
-                <button type="button" class="oc-act-btn oc-act-reconcile"
-                  title="Reconcile with broker"
-                  aria-label="Reconcile with broker"
-                  disabled={_reconcilingId === String(ord.order_id)}
-                  onclick={(e) => inlineReconcile(ord, e)}>
-                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                    <path d="M3 8a5 5 0 0 1 8.6-3.5M13 8a5 5 0 0 1-8.6 3.5"
-                      fill="none" stroke="currentColor" stroke-width="1.5"
-                      stroke-linecap="round" />
-                    <path d="M11.5 2v3h-3M4.5 14v-3h3"
-                      fill="none" stroke="currentColor" stroke-width="1.5"
-                      stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </button>
-              </div>
-            {/snippet}
-          </OrderCard>
-        {/each}
-      </div>
-    {:else}
-      <div class="text-center text-muted text-xs py-2">{_emptyMessage}</div>
-    {/if}
+    <LogPanel defaultTab="order" pollMs={3000} />
   </div>
 </section>
-
-<OrderDetail order={selectedOrder}
-  onclose={() => selectedOrder = null}
-  onchanged={async () => { await loadOrders(); if (selectedOrder) selectedOrder = orders.find(o => o.order_id === selectedOrder.order_id) || null; }}
-  onmodify={(ord) => {
-    if (!ord) return;
-    orderTicketProps = _buildModifyProps(ord);
-  }}
-/>
 
 </div>
 
@@ -597,54 +411,34 @@
 
 <style>
 
-  /* Page flows naturally — no flex-fill on the wrap. The Entry card
-     takes its natural height; the Activity card sits below at its
-     natural height too. The OUTER algo-content / document scroll
-     absorbs any overflow, exactly the way /dashboard works. Operator
-     scrolls the page down to reveal the Activity card when the Entry
-     card is tall (Chain expanded, etc.). Matches the user's mental
-     model of the orders modal — content flows, scroll reveals more.
-     Sticky `.algo-footer` (in the layout) stays pinned to the
-     viewport bottom while scrolling. */
+  /* Flex-fill the wrap so the Entry + Status + Chases + Activity
+     stack fills algo-content vertically with no empty gap above
+     the sticky footer. Mirrors the modal's behaviour: the Activity
+     card has a fixed frame and the LogPanel inside it owns its own
+     scroll. Page doesn't grow past the viewport; operator scrolls
+     INSIDE the Activity card to see more log/order rows. Footer
+     stays pinned at viewport bottom on every render. */
   .oc-page-wrap {
-    /* no flex / no overflow — natural-height flow */
+    flex: 1 1 0;
+    min-height: 0;
   }
   .oc-fill {
-    /* No flex-fill — Activity card grows to its own content height.
-       min-height keeps it readable when the log / book is empty. */
+    /* Activity card flexes to consume spare vertical space inside
+       the wrap; LogPanel inside it absorbs overflow via its own
+       flex-1 min-h-0 internal scroll. */
+    flex: 1 1 0;
     min-height: 12rem;
   }
   .oc-act-body {
+    flex: 1 1 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
   }
-  /* When the operator wants the activity card to OWN the viewport
-     (fullscreen mode), the .fs-card-on rule on the section gives it a
-     pinned modal-style frame and we re-enable the inner flex chain so
-     the log / book grow to fill that fixed frame. */
-  :global(.bucket-card-activity.fs-card-on) .oc-act-body { flex: 1 1 0; min-height: 0; }
-  :global(.bucket-card-activity.fs-card-on) .oc-act-flex,
-  :global(.bucket-card-activity.fs-card-on) .oc-act-log-scroll,
-  :global(.bucket-card-activity.fs-card-on) .oc-book-grid {
-    flex: 1 1 0;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  .oc-act-scroll { /* legacy alias — natural-flow now */ }
-  .oc-act-flex   { display: flex; flex-direction: column; }
-  /* Book tab — order grid is a normal CSS grid. No internal scroll;
-     the page scrolls when the grid is tall. */
-  .oc-book-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 0.5rem;
-  }
-  @media (min-width: 640px) {
-    .oc-book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-  @media (min-width: 1024px) {
-    .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  }
+  /* Activity card title — bell icon + label match the ActivityLogModal's
+     header so heading reads identically on both surfaces. */
+  .oc-act-title { display: inline-flex; align-items: center; gap: 0.35rem; }
+  :global(.oc-act-title-icon) { color: #fbbf24; flex-shrink: 0; transform: translateY(-0.5px); }
 
   /* Card chrome — full 1.5px white-10% box-border plus a 3px colored
      left-edge accent stripe per card type. Each card has its own
@@ -717,57 +511,10 @@
   /* History list — retired with the History tab. Style block kept
      empty for callsite stability but no element uses it. */
 
-  /* UnifiedLog rows inside the Activity card — flat news-row look.
-     Row is a `display: block` container with INLINE children so the
-     time chip, kind chip, refs, and message all flow as inline text.
-     When the message wraps on a narrow viewport, the second line
-     continues at the LEFT edge (no indent) — the previous flex-row
-     layout indented wrapped text by the gap, wasting horizontal
-     space on mobile. Operator request: "data should continue with
-     no indentation". */
-  :global(.oc-activity-log .ul-list-cards) {
-    gap: 0;
-    padding: 0;
-    background: transparent;
-  }
-  :global(.oc-activity-log .ul-card) {
-    display: block;
-    background: transparent;
-    border: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 0;
-    padding: 0.32rem 0.25rem;
-    line-height: 1.4;
-  }
-  :global(.oc-activity-log .ul-card:last-child) { border-bottom: 0; }
-  :global(.oc-activity-log .ul-card:hover) {
-    background: rgba(255, 255, 255, 0.02);
-  }
-  /* Head + msg become inline-block so they sit side-by-side when
-     space permits, but the msg wraps to the article's left edge —
-     not the head's right edge — when there's not enough width. */
-  :global(.oc-activity-log .ul-card-head) {
-    display: inline;
-    font-size: 0.6rem;
-  }
-  :global(.oc-activity-log .ul-card-head > *) {
-    margin-right: 0.35rem;
-  }
-  :global(.oc-activity-log .ul-card-time) {
-    font-size: 0.6rem;
-    letter-spacing: 0.02em;
-    margin-left: 0;
-    margin-right: 0.4rem;
-  }
-  :global(.oc-activity-log .ul-card-msg) {
-    display: inline;
-    color: #e2e8f0;
-    font-weight: 500;
-    font-size: 0.66rem;
-    padding-left: 0;
-    margin-left: 0;
-    word-break: break-word;
-  }
+  /* UnifiedLog-specific row overrides retired with the custom
+     book/log tabs — LogPanel renders its own card styles inside the
+     Activity card now. */
+
   /* Order History tab dead CSS removed (~50 lines): oc-act-empty,
      oc-act-head[-done], oc-act-count, oc-act-row[-done],
      oc-act-status[-pending|-complete|-rejected|-cancelled],
@@ -915,17 +662,8 @@
     border-color: rgba(126, 151, 184, 0.45);
   }
 
-  /* Selected state — bright amber inset ring stacked on top of the
-     status colour. Shadow stack: amber ring + the lit-from-above
-     highlight + a stronger outer drop so the active card visibly
-     lifts. */
-  .oc-filter-card-on {
-    box-shadow:
-      0 0 0 2px rgba(251, 191, 36, 0.65) inset,
-      0 1px 0 rgba(255, 255, 255, 0.10) inset,
-      0 3px 6px rgba(0, 0, 0, 0.35);
-    transform: translateY(-1px);
-  }
+  /* `.oc-filter-card-on` retired — strip is informational + click-to-
+     uncollapse-activity only; no toggle state. */
 
   /* Count number — bigger + colour-coded by status. */
   .oc-filter-count {
@@ -952,50 +690,12 @@
   /* oc-count retired with the standalone Order Book card header. */
 
 
-  /* Exchange filter strip inside the Order Book card header.
-     Compact pill cluster, same cyan-400 accent family as the
-     card-control trio so the filter affordances read as one
-     consistent control language. */
-  .oc-ex-strip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.2rem;
-  }
-  .oc-chip {
-    padding: 0.05rem 0.4rem;
-    background: var(--algo-cyan-bg-soft);
-    border: 1px solid var(--algo-cyan-border-soft);
-    border-radius: 8px;
-    color: var(--algo-muted);
-    font-size: 0.55rem;
-    font-weight: 700;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .oc-chip:hover {
-    background: rgba(34, 211, 238, 0.16);
-    color: var(--algo-slate);
-    border-color: var(--algo-cyan-border);
-  }
-  .oc-chip-on {
-    background: rgba(34, 211, 238, 0.26);
-    color: #67e8f9;
-    border-color: rgba(34, 211, 238, 0.85);
-  }
-
-  /* Per-row action strip — Modify / Cancel for OPEN; Repeat for
-     terminal. Sits on the right edge of each order card. Cyan-400
-     palette + 1.2rem squares so the icons read as a smaller-scale
-     family of the card-control trio above (which is 1.4rem). */
-  .order-card { position: relative; }
+  /* Exchange filter strip + per-row Modify/Cancel/Reconcile buttons
+     retired — the Activity card now mounts LogPanel which carries its
+     own filter chips + action buttons via `.lp-oc-actions`. */
 
   /* Symbol text as a clickable affordance — underline on hover so
-     the operator knows it's interactive. Colour stays the same
-     sky-blue (var(--algo-slate)) as the surrounding text; underline is the
-     only extra cue so the row stays scan-tight. */
+     the operator knows it's interactive. */
   :global(.oc-sym-btn) {
     cursor: pointer;
     border-radius: 2px;
@@ -1004,66 +704,6 @@
   :global(.oc-sym-btn:hover) {
     color: #7dd3fc !important;
     text-decoration: underline;
-  }
-
-  .oc-row-actions {
-    position: absolute;
-    top: 0.25rem;
-    right: 0.25rem;
-    display: inline-flex;
-    gap: 0.2rem;
-    opacity: 0.65;
-    transition: opacity 0.12s;
-  }
-  .order-card:hover .oc-row-actions { opacity: 1; }
-  .oc-act-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.2rem;
-    height: 1.2rem;
-    padding: 0;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
-    border-radius: 3px;
-    color: #22d3ee;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-    flex-shrink: 0;
-  }
-  .oc-act-btn:hover {
-    background: rgba(34, 211, 238, 0.26);
-    border-color: rgba(34, 211, 238, 0.85);
-    color: #67e8f9;
-  }
-  /* Cancel button shifts to red-400 palette to signal destructiveness
-     without breaking the visual family — same shape + size + accent
-     pattern, only the hue changes. */
-  .oc-act-cancel {
-    background: rgba(248, 113, 113, 0.14);
-    border-color: var(--algo-red-border);
-    color: #f87171;
-  }
-  .oc-act-cancel:hover {
-    background: rgba(248, 113, 113, 0.26);
-    border-color: rgba(248, 113, 113, 0.85);
-    color: #fca5a5;
-  }
-  /* Reconcile button — sky-blue palette so it reads as "sync / refresh"
-     rather than "edit" (amber) or "destroy" (red). */
-  .oc-act-reconcile {
-    background: rgba(125, 211, 252, 0.14);
-    border-color: rgba(125, 211, 252, 0.55);
-    color: #7dd3fc;
-  }
-  .oc-act-reconcile:hover {
-    background: rgba(125, 211, 252, 0.26);
-    border-color: rgba(125, 211, 252, 0.85);
-    color: #bae6fd;
-  }
-  .oc-act-reconcile:disabled {
-    opacity: 0.5;
-    cursor: progress;
   }
 
 </style>
