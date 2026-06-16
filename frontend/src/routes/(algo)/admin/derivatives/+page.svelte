@@ -2571,7 +2571,7 @@
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
         payoff={strategy.payoff}
-        spot={(strategy.spot_source === 'fallback') ? null : strategy.spot}
+        spot={strategy.spot}
         prevClose={strategy.spot_prev_close}
         breakevens={strategy.risk.breakevens}
         intermediateCurves={strategy.intermediate_curves || []}
