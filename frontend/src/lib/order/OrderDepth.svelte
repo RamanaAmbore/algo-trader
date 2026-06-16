@@ -54,10 +54,6 @@
   }
 
   onMount(() => {
-    if (!paused) {
-      poll();
-      timer = setInterval(poll, 2000);
-    }
     document.addEventListener('visibilitychange', _onVisibilityChange);
   });
   onDestroy(() => {
@@ -65,12 +61,30 @@
     document.removeEventListener('visibilitychange', _onVisibilityChange);
   });
 
+  // Reactive lifecycle — start polling when `paused` flips false and
+  // stop when it flips true. Previously the start was wired through
+  // onMount only, so an OrderTicket that mounted while its parent
+  // (SymbolPanel) was on the Chain tab (suspended=true) never started
+  // depth polling even after the operator switched to the Ticket tab.
+  // Operator: "Orders is not updating prices in order ticket and chain."
+  $effect(() => {
+    if (!symbol) return;
+    if (paused) {
+      if (timer) { clearInterval(timer); timer = null; }
+      return;
+    }
+    if (!timer) {
+      poll();
+      timer = setInterval(poll, 2000);
+    }
+  });
+
   // Host-triggered refresh — when the host increments refreshKey we
   // re-poll immediately so depth always reflects the latest tick on
   // tab activation / modal re-open. Skipped when key is still 0
-  // (initial render; onMount handles the first fetch).
+  // (initial render; the paused-effect above handles the first fetch).
   $effect(() => {
-    if (refreshKey > 0) poll();
+    if (refreshKey > 0 && !paused) poll();
   });
 
   // 5-row scaffold filled from the response. Shorter arrays pad
