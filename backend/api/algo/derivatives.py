@@ -559,14 +559,15 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                         opt_expired = True
                     break
 
-        async def _roll_past_month():
+        async def _roll_past_month(matched_fut_expiry: str):
             """Pick the first future for this underlying whose expiry is
-            strictly AFTER the option's own expiry (and strictly after
-            today). lookup_mcx_front_month_future alone would return the
-            matched-month future itself when it's still live — e.g. on
-            CRUDEOIL JUN options expiry day, the JUN future is alive
-            through Jun 18 but is no longer the right anchor."""
-            cutoff = max(opt_expiry_iso or _today_iso, _today_iso)
+            strictly AFTER the MATCHED future's expiry. Using the
+            matched future's expiry as the cutoff (not just the option's
+            expiry or today) correctly skips the entire matched month —
+            on Jun 16 for a JUN option, the matched JUN future expires
+            Jun 18, so the cutoff > Jun 18 lands on JUL future (Jul 20),
+            not back on JUN."""
+            cutoff = matched_fut_expiry or _today_iso
             if is_mcx_underlying(root):
                 target_u = root.upper()
                 candidates = [
@@ -596,7 +597,7 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                     # options settle ~5 business days before the futures).
                     # Operator: "when options expire consider the next
                     # crudeoil future as the spot."
-                    rolled = await _roll_past_month()
+                    rolled = await _roll_past_month(inst.x or "")
                     if rolled:
                         return rolled
                     return None
@@ -611,7 +612,7 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                         and s != fut_sym_upper):
                     if _live(inst) and not opt_expired:
                         return inst.s
-                    rolled = await _roll_past_month()
+                    rolled = await _roll_past_month(inst.x or "")
                     if rolled:
                         return rolled
                     return None
