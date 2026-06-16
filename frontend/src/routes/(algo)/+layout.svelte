@@ -826,12 +826,15 @@
   :global(html), :global(body) {
     background-color: #080f1c;
   }
-  /* overscroll-behavior: none disables iOS Safari's bounce so the
-     algo dark surface stays edge-to-edge even when the operator
-     pulls past the top/bottom edge. Falls back gracefully on
-     browsers that don't support it. */
+  /* `overscroll-behavior: contain` still stops the iOS Safari bounce
+     from exposing the body background on edge pulls AND prevents inner
+     scroll containers from chaining their scroll up to the document —
+     but DOES NOT disable Chrome's mobile pull-to-refresh gesture (which
+     the previous `none` value also killed). Operator reported losing
+     pull-to-refresh on mobile; `contain` keeps the original bounce
+     suppression without taking the gesture with it. */
   :global(html) {
-    overscroll-behavior: none;
+    overscroll-behavior: contain;
   }
 
   /* No max-width: let the card consume the whole viewport so the
