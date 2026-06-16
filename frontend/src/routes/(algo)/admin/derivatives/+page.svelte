@@ -912,7 +912,14 @@
   // the chart would render WITHOUT any offset. We pick the payoff
   // point nearest strategy.spot from the unshifted curve.
   const chartTheoreticalAtSpot = $derived.by(() => {
-    const arr = strategy?.payoff;
+    // Read from the MERGED payoff (option strategy + any layered
+    // equity-holding contribution), not strategy.payoff. Without this,
+    // the chart's TDAY at current spot would double-count the eq
+    // holding's P&L: candidatesActualPnl already includes the eq's
+    // broker pnl, and merged_today_value(spot) also includes
+    // (spot − cost) × qty for the eq leg — at spot=ltp those two
+    // quantities are equal and stacked.
+    const arr = _mergedPayoff;
     if (!arr || arr.length === 0) return 0;
     const targetSpot = Number(strategy?.spot || 0);
     let best = arr[0];
@@ -2890,6 +2897,7 @@
                  class:cand-disabled={enabledSymbols[enKey(c)] === false}
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
+                 class:cand-eq={c.kind === 'eq'}
                  class:expiry-band-close={legsTab === 'expiry' && c._band === 'close'}
                  class:expiry-band-netted={legsTab === 'expiry' && c._band === 'netted'}
                  class:expiry-band-otm={legsTab === 'expiry' && c._band === 'otm'}
@@ -2948,6 +2956,13 @@
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
                 <span class="sym-main {_optClass}">{formatSymbol(c.symbol)}</span>
+                {#if c.kind === 'eq'}
+                  <!-- Equity-holding leg tag — operator scanning the
+                       Candidates panel sees at a glance which row is
+                       the cash-stock layer behind the option strategy. -->
+                  <span class="cand-split-tag cand-eq-tag"
+                        title="Cash equity holding of the underlying — adds a linear (S − cost) × qty contribution to the payoff curve">STOCK</span>
+                {/if}
                 {#if c._splitTag === 'closed'}
                   <!-- Split-row tag: this row represents the portion of
                        the overnight position that was CLOSED today.
@@ -4203,6 +4218,20 @@
     color: #4ade80;
     background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.45);
+  }
+  /* Equity-leg tag — sky-blue family, distinct from the green/red
+     split tags so the operator can scan the panel and instantly tell
+     "this row is the stock layer behind my option strategy". */
+  .cand-eq-tag {
+    color: #38bdf8;
+    background: rgba(56, 189, 248, 0.18);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+  }
+  /* Soft sky tint on the whole eq row so it reads as a different
+     layer from the option/futures legs without competing with the
+     pos-long/pos-short direction tints. */
+  .cand-row.cand-eq {
+    background: rgba(56, 189, 248, 0.05) !important;
   }
   /* Cell-level truncation so numeric tracks can shrink below their
      natural max-content without breaking row layout. Scoped to
