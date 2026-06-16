@@ -5056,15 +5056,16 @@
     overflow: hidden;
   }
   /* Empty-state shrink — when the Winners / Losers bucket has zero
-     rows, drop the grid to just enough height to render ag-Grid's
-     "No rows to display" overlay (~2.4 rem) instead of holding the
-     default 260 px and wasting screen real estate. Operator sees the
-     header + a single-line empty message; the next non-empty card
-     gets the saved space. The fullscreen rule below overrides so
-     maximising still gives the operator a full viewport surface. */
+     rows, drop the grid to just enough to fit the column header
+     (28 px) + ag-Grid's "No top winners/losers right now." overlay
+     message (line-height ~14 px + ~14 px vertical padding) without
+     truncating. 4.2 rem ≈ 67 px leaves a comfortable 5-6 px breathing
+     room below the message. Operator gets the saved space for the
+     next non-empty card; fullscreen rule below still lifts the card
+     to the viewport surface when maximised. */
   .mp-bucket-wrap.is-empty:not(.is-collapsed):not(.fs-card-on) .bucket-grid {
-    height: 2.4rem !important;
-    min-height: 2.4rem !important;
+    height: 4.2rem !important;
+    min-height: 4.2rem !important;
   }
   /* Fullscreen card promotes the bucket-grid to fill the viewport
      minus the card's inset + header height. ag-Grid's ResizeObserver
