@@ -459,6 +459,29 @@ async def lookup_mcx_front_month_future(underlying: str) -> str | None:
     return candidates[0].s
 
 
+def _next_nse_future(items, root: str, today_iso: str) -> str | None:
+    """Pick the first NSE/NFO future for `root` whose expiry is strictly
+    after `today_iso`. Equity-side equivalent of
+    `lookup_mcx_front_month_future` for the same-day-expiry rollover.
+    Returns the bare tradingsymbol (e.g. NIFTY26JULFUT) or None when no
+    later-month future is listed in the cache."""
+    if not items or not root:
+        return None
+    root_upper = root.upper()
+    candidates = [
+        inst for inst in items
+        if (inst.e in ("NFO", "NSE")
+            and inst.t == "FUT"
+            and (inst.u or "").upper() == root_upper
+            and inst.x
+            and inst.x > today_iso)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda i: i.x or "")
+    return candidates[0].s
+
+
 async def lookup_future_for_option(option_symbol: str) -> str | None:
     """Return the futures tradingsymbol matching this option's month token,
     e.g. NIFTY26JUN22000CE → NIFTY26JUNFUT, CRUDEOIL25JUN5800CE → CRUDEOIL25JUNFUT.
@@ -499,13 +522,44 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
             items = resp.items if resp else []
         except Exception:
             items = []
+        # Today (IST) — used to skip already-settled contracts. MCX
+        # commodity expiry afternoon (CRUDEOIL ≈ 19th, GOLDM ≈ 5th)
+        # turns the matched future's last_price into a stale settlement
+        # value; the operator's broker app rolls to the next month and
+        # so should we.
+        from datetime import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            _today_iso = _dt.now(_ZI("Asia/Kolkata")).date().isoformat()
+        except Exception:
+            _today_iso = _dt.utcnow().date().isoformat()
+        def _live(inst):
+            """A future is 'live' when its expiry is strictly after today
+            IST. On expiry day itself (today == inst.x) the contract is
+            settling; its quote during late session is the settlement
+            price, not a tradable spot. Treat as expired so the
+            same-month-rollover path picks the next-out future."""
+            x = (inst.x or "")
+            return x and x > _today_iso
         if items:
             fut_sym_upper = fut_sym.upper()
             prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
             # Pass 1: exact match (covers NSE/NFO).
             for inst in items:
                 if (inst.s or "").upper() == fut_sym_upper:
-                    return inst.s
+                    if _live(inst):
+                        return inst.s
+                    # Same-day-expiry rollover: use the next-out front
+                    # month for this underlying. Operator: "when options
+                    # expire consider the next crudeoil future as the
+                    # spot." Falls through to the second-pass exact-
+                    # match check below for non-MCX underlyings via the
+                    # weekly-path NSE walk.
+                    if is_mcx_underlying(root):
+                        rolled = await lookup_mcx_front_month_future(root)
+                        if rolled:
+                            return rolled
+                    return _next_nse_future(items, root, _today_iso)
             # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
             # When multiple matches exist (rare — e.g. CRUDEOIL26JUL19FUT
             # vs an extension) we pick the FIRST in instrument-cache
@@ -515,7 +569,13 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                 s = (inst.s or "").upper()
                 if (s.startswith(prefix) and s.endswith("FUT")
                         and s != fut_sym_upper):
-                    return inst.s
+                    if _live(inst):
+                        return inst.s
+                    if is_mcx_underlying(root):
+                        rolled = await lookup_mcx_front_month_future(root)
+                        if rolled:
+                            return rolled
+                    return _next_nse_future(items, root, _today_iso)
         # Cache miss — the future for this month isn't listed yet.
         return None
 
@@ -596,19 +656,31 @@ async def lookup_mcx_future_for_expiry(underlying: str,
         items = []
     if not items:
         return None
+    # Today (IST) — gate out settling-today contracts. Same rollover
+    # rule lookup_mcx_front_month_future enforces; operator: "when
+    # options expire consider the next crudeoil future as the spot."
+    from datetime import datetime as _dt
+    try:
+        _today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _today_iso = _dt.utcnow().date().isoformat()
     target_u = underlying.upper()
     candidates = [
         inst for inst in items
         if (inst.e == "MCX"
             and inst.t == "FUT"
             and (inst.u or "").upper() == target_u
-            and inst.x)
+            and inst.x
+            and inst.x > _today_iso)
     ]
     if not candidates:
         return None
     candidates.sort(key=lambda i: i.x or "")
     target_iso = target_expiry.isoformat()
-    # First contract whose expiry >= target_expiry
+    # First contract whose expiry >= target_expiry. If target_expiry is
+    # today (e.g. the option settles today), we'd want the next-out
+    # future — the live-only filter above already handles that since
+    # today-expiring contracts have been dropped from the list.
     for inst in candidates:
         if (inst.x or "") >= target_iso:
             return inst.s
