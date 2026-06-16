@@ -3233,6 +3233,22 @@
     if (row.src?.h) {
       const q = Number(row.qty_hold) || 0;
       badges.push(`<span class="sym-badge badge-h" title="Holding">H ${qtyFmt(q)}</span>`);
+      // Lot-viable badge — show whole-lot count for F&O underlying
+      // holdings. Matches the refresh-button broker-count badge so the
+      // same "number-in-a-pill" idiom reads consistently across the
+      // operator's surface. Sub-lot holdings (qty < lot) get no badge
+      // (the row-hold-fno green left stripe alone signals "F&O
+      // eligible, but no covered-call viable yet").
+      try {
+        const sym = String(row.tradingsymbol || '').toUpperCase();
+        const lot = sym ? _fnoLotFor(sym) : 0;
+        if (lot > 0) {
+          const lots = Math.floor(Math.abs(q) / lot);
+          if (lots >= 1) {
+            badges.push(`<span class="sym-badge badge-fno-lot" title="Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot})">${lots}L</span>`);
+          }
+        }
+      } catch (_) { /* defensive */ }
     }
     if (row.src?.w) {
       badges.push(`<span class="sym-badge badge-w" title="Watchlist">W</span>`);
@@ -3392,25 +3408,14 @@
       if (Number.isFinite(pnl) && pnl > 0) classes.push('row-hold-up');
       else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
       else classes.push('row-hold-flat');
-      // F&O-eligibility tagging — two ORTHOGONAL dimensions, two
-      // independent classes, both can apply to the same row:
-      //   row-hold-fno     → stock has options listed (F&O eligible)
-      //   row-hold-fno-lot → qty ≥ 1 lot (covered-call viable RIGHT NOW)
-      // The two indicators encode different facts (fundamental
-      // eligibility vs sized-position eligibility), so they get
-      // distinct visual treatments: a violet left stripe for F&O
-      // eligibility and a green prepended dot for lot-viability. A
-      // non-F&O stock gets neither; an F&O sub-lot row gets only the
-      // violet stripe; an F&O lot-viable row gets BOTH (stripe + dot).
+      // F&O-eligibility tagging — one class, one visual treatment:
+      //   row-hold-fno → stock has options listed (green left stripe)
+      // Lot-count viability is communicated via the NL badge appended
+      // to the symbol cell by symRenderer, not by a second row class.
       try {
         if (getInstrument) {
           const sym = String(r.tradingsymbol || '').toUpperCase();
-          const lot = _fnoLotFor(sym);
-          if (lot > 0) {
-            classes.push('row-hold-fno');
-            const qty = Math.abs(Number(r.qty_hold) || Number(r.qty_pos) || 0);
-            if (qty >= lot) classes.push('row-hold-fno-lot');
-          }
+          if (_fnoLotFor(sym) > 0) classes.push('row-hold-fno');
         }
       } catch (_) { /* defensive — cache miss shouldn't break row class */ }
     }
@@ -4900,6 +4905,16 @@
   :global(.badge-u) { color: #c4b5fd; background: rgba(196,181,253,0.18); }
   :global(.badge-m-pos) { color: #4ade80; background: rgba(74,222,128,0.18); }
   :global(.badge-m-neg) { color: #f87171; background: rgba(248,113,113,0.18); }
+  /* Covered-call lot-count badge — green pill with the number of whole
+     lots the operator holds. Same pill family as the H/P/W/U badges so
+     the row's badge strip reads as one consistent set. Bolder
+     background than the others to draw the operator's eye to the
+     actionable column (the rest are informational tags). */
+  :global(.badge-fno-lot) {
+    color: #052e16;
+    background: #4ade80;
+    font-weight: 800;
+  }
 
   /* Inline remove-from-watchlist button. */
   :global(.sym-remove) {
