@@ -3717,6 +3717,31 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
+      // Lots — qty expressed in F&O lot units when the row is an option
+      // underlying (CE/PE listed), 0 otherwise. Operator: "you can keep
+      // qty as lot size as a separate column. if it is not an
+      // underlying show it as 0." Lets the operator scan the book and
+      // see "I hold 2.5 lots of RELIANCE" inline next to the raw qty.
+      // One-decimal precision when fractional, integer otherwise — same
+      // formatting rule as the inline lot chip.
+      { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: RA,
+        valueGetter: (p) => {
+          if (p.data?._isTotal) return null;
+          const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+          if (!sym) return 0;
+          const lot = _fnoLotFor(sym);
+          if (lot <= 0) return 0;
+          const qHold = Math.abs(Number(p.data?.qty_hold) || 0);
+          return Math.round((qHold / lot) * 10) / 10;
+        },
+        valueFormatter: ({ value }) => {
+          if (value == null) return '';
+          if (value === 0) return '0';
+          return value % 1 === 0 ? String(value) : value.toFixed(1);
+        },
+        headerTooltip: 'Qty expressed in F&O lot units (qty ÷ lot size). 0 when the symbol is not an option underlying.' },
       // Investment + Current value — holdings only. The user wants both
       // values per row plus a TOTAL footer; aggregator sums them when
       // present (positions rows carry null inv/cur and skip the sum).
