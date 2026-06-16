@@ -4385,6 +4385,7 @@
         {#if showWinners}
           <section class="mp-bucket-wrap mp-bucket-winners"
                    class:is-collapsed={_effColWinners}
+                   class:is-empty={_winnersTotal === 0}
                    class:fs-card-on={_fsWinners}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
@@ -4413,6 +4414,7 @@
         {#if showLosers}
           <section class="mp-bucket-wrap mp-bucket-losers"
                    class:is-collapsed={_effColLosers}
+                   class:is-empty={_losersTotal === 0}
                    class:fs-card-on={_fsLosers}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
@@ -5052,6 +5054,17 @@
     height: 0 !important;
     min-height: 0 !important;
     overflow: hidden;
+  }
+  /* Empty-state shrink — when the Winners / Losers bucket has zero
+     rows, drop the grid to just enough height to render ag-Grid's
+     "No rows to display" overlay (~2.4 rem) instead of holding the
+     default 260 px and wasting screen real estate. Operator sees the
+     header + a single-line empty message; the next non-empty card
+     gets the saved space. The fullscreen rule below overrides so
+     maximising still gives the operator a full viewport surface. */
+  .mp-bucket-wrap.is-empty:not(.is-collapsed):not(.fs-card-on) .bucket-grid {
+    height: 2.4rem !important;
+    min-height: 2.4rem !important;
   }
   /* Fullscreen card promotes the bucket-grid to fill the viewport
      minus the card's inset + header height. ag-Grid's ResizeObserver

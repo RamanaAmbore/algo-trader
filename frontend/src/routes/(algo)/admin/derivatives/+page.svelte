@@ -2589,7 +2589,7 @@
               source: strategy.spot_source || 'futures',
               expiryISO: strategy.expiry ?? '' }
           : null}
-        loading={loading || strategy.spot_source === 'fallback'}
+        loading={loading}
         height={320} />
     </div>
   </div>
