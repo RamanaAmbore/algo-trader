@@ -32,6 +32,7 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
+  import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
@@ -361,6 +362,14 @@
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',           headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
+    // Lots — qty in F&O lot units. Holdings on F&O underlyings use
+    // the underlying lot; option / futures positions use the contract
+    // lot. Non-F&O rows read 0. Same shared helper that powers Pulse
+    // so both pages report the same number for the same row.
+    { field: 'lots', headerName: 'Lots', width: 52, type: 'numericColumn', headerClass: numericHdr,
+      valueGetter: (p) => lotsForRow(p.data),
+      valueFormatter: ({ value }) => fmtLots(value),
+      headerTooltip: 'Qty in F&O lot units. 0 when the symbol is not an option underlying.' },
     // Weight % = this row's cur_val / total cur_val across the visible
     // holdings filter. Computed in valueGetter so it tracks the AG Grid
     // row-filter live (per-account view stays meaningful).
@@ -462,6 +471,14 @@
     { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',          headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
+    // Lots — option / futures positions use the contract's own lot;
+    // cash equity + other non-derivative positions read 0. Shared
+    // helper with Pulse + Holdings tab so every page reports the same
+    // number for the same row.
+    { field: 'lots', headerName: 'Lots', width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls,
+      valueGetter: (p) => lotsForRow(p.data),
+      valueFormatter: ({ value }) => fmtLots(value),
+      headerTooltip: 'Qty in F&O lot units. 0 for cash equity / non-derivative positions.' },
     // Per-row Greeks for option positions (delta × qty, theta × qty).
     // Backend computes once per /api/positions hit using the existing
     // implied_vol bisection + analytical greeks. Non-option rows show

@@ -36,6 +36,7 @@
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -2686,6 +2687,8 @@
             <span>Symbol</span>
             {#if !hideAcct}<span>Acct</span>{/if}
             <span class="num">Qty</span>
+            <span class="num"
+                  title="Qty in F&L lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
             <span class="num">LTP</span>
             <span class="num">Prev</span>
             <span class="num">Avg</span>
@@ -2875,6 +2878,7 @@
               <!-- Expiry cell removed — the hyphenated symbol shows it. -->
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
               <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
+              <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, qty_pos: displayQty }))}</span>
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
@@ -2902,6 +2906,7 @@
               <span></span>
               <span class="cand-total-label">TOTAL</span>
               {#if !hideAcct}<span>—</span>{/if}
+              <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
@@ -3998,6 +4003,7 @@
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(max-content, max-content)     /* account */
       minmax(48px, max-content)            /* qty */
+      minmax(44px, max-content)            /* lots */
       minmax(62px, max-content)            /* ltp */
       minmax(62px, max-content)            /* prev close */
       minmax(62px, max-content)            /* avg (cost basis) */
@@ -4021,6 +4027,7 @@
       auto                                 /* checkbox */
       minmax(max-content, max-content)     /* symbol (carries expiry) */
       minmax(48px, max-content)            /* qty */
+      minmax(44px, max-content)            /* lots */
       minmax(62px, max-content)            /* ltp */
       minmax(62px, max-content)            /* prev close */
       minmax(62px, max-content)            /* avg (cost basis) */

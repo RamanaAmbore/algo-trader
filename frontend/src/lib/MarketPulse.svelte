@@ -978,6 +978,48 @@
     return v;
   }
 
+  /** Lots-in-F&O-units for a unified Pulse row.
+   *  - Holdings on an F&O underlying (EQ row with options listed)
+   *      → qty_hold / underlying_lot
+   *  - Position on a derivative contract (CE / PE / FUT)
+   *      → qty_pos / contract_lot
+   *  - Everything else → 0
+   *  Combined holdings + position rows on the same symbol sum.
+   *  Returns null for TOTAL rows (the aggregate is meaningless). */
+  function _lotsForUnifiedRow(/** @type {any} */ row) {
+    if (!row || row._isTotal) return null;
+    const sym = String(row.tradingsymbol || '').toUpperCase();
+    if (!sym) return 0;
+    let total = 0;
+    // Derivative-contract position: use the contract's own ls.
+    const inst = getInstrument ? getInstrument(sym) : null;
+    const itype = inst?.t;
+    if (itype === 'CE' || itype === 'PE' || itype === 'FUT') {
+      const lot = Number(inst?.ls) || 0;
+      if (lot > 0) {
+        const qPos = Math.abs(Number(row.qty_pos) || 0);
+        if (qPos > 0) total += qPos / lot;
+      }
+    } else {
+      // Equity / index: use the underlying-options lot (if any).
+      const lot = _fnoLotFor(sym);
+      if (lot > 0) {
+        const qHold = Math.abs(Number(row.qty_hold) || 0);
+        if (qHold > 0) total += qHold / lot;
+      }
+    }
+    return Math.round(total * 10) / 10;
+  }
+
+  /** Number formatter for the Lots column. Hides 0 as a bare '0'
+   *  string (operator scan-cost matters more than completeness);
+   *  whole-number lots render without decimal, fractional with one. */
+  function _lotsFmt(/** @type {number|null|undefined} */ value) {
+    if (value == null) return '';
+    if (value === 0) return '0';
+    return value % 1 === 0 ? String(value) : value.toFixed(1);
+  }
+
   // Transient-error suppression. Quote-refresh polls fire every 5 s
   // and can blip on broker hiccups; one failed call shouldn't paint
   // the page red. Show the banner only after 3 consecutive failures.
@@ -3717,31 +3759,21 @@
           return q === 0 ? null : q;
         },
         valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      // Lots — qty expressed in F&O lot units when the row is an option
-      // underlying (CE/PE listed), 0 otherwise. Operator: "you can keep
+      // Lots — qty expressed in F&O lot units. Holdings on F&O
+      // underlyings use the underlying's lot; option/futures POSITIONS
+      // use the contract's own lot. Everything else (cash equity
+      // position, non-F&O holding) reads 0. Operator: "you can keep
       // qty as lot size as a separate column. if it is not an
-      // underlying show it as 0." Lets the operator scan the book and
-      // see "I hold 2.5 lots of RELIANCE" inline next to the raw qty.
-      // One-decimal precision when fractional, integer otherwise — same
-      // formatting rule as the inline lot chip.
+      // underlying show it as 0… similarly do it for option positions
+      // for other positions show it as 0. keep it consistent across
+      // all algo pages for holdings and positions."
+      // One-decimal precision when fractional, integer otherwise.
       { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: RA,
-        valueGetter: (p) => {
-          if (p.data?._isTotal) return null;
-          const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-          if (!sym) return 0;
-          const lot = _fnoLotFor(sym);
-          if (lot <= 0) return 0;
-          const qHold = Math.abs(Number(p.data?.qty_hold) || 0);
-          return Math.round((qHold / lot) * 10) / 10;
-        },
-        valueFormatter: ({ value }) => {
-          if (value == null) return '';
-          if (value === 0) return '0';
-          return value % 1 === 0 ? String(value) : value.toFixed(1);
-        },
-        headerTooltip: 'Qty expressed in F&O lot units (qty ÷ lot size). 0 when the symbol is not an option underlying.' },
+        valueGetter: (p) => _lotsForUnifiedRow(p.data),
+        valueFormatter: ({ value }) => _lotsFmt(value),
+        headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
       // Investment + Current value — holdings only. The user wants both
       // values per row plus a TOTAL footer; aggregator sums them when
       // present (positions rows carry null inv/cur and skip the sum).
