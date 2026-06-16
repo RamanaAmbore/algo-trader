@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, Optional
 
 from backend.shared.brokers.base import Broker
 from backend.shared.brokers.dhan import DhanBroker
@@ -133,6 +133,44 @@ def all_brokers() -> list[Broker]:
     return [get_broker(acct) for acct in Connections().conn.keys()]
 
 
+def _quote_has_data(result: Any, symbols: list[str]) -> bool:
+    """True when `quote()` returned at least one symbol entry with a
+    usable last_price or close. Empty dict / missing-key / zero-price
+    responses (Dhan returns these for MCX commodity futures that aren't
+    in its watchlist) read as soft failures so PriceBroker walks to the
+    next broker. We accept ANY of the requested symbols having data —
+    a partial response on a multi-symbol query is still useful."""
+    if not isinstance(result, dict) or not result:
+        return False
+    for sym in symbols:
+        entry = result.get(sym)
+        if not isinstance(entry, dict):
+            continue
+        lp = entry.get("last_price")
+        if isinstance(lp, (int, float)) and lp:
+            return True
+        ohlc = entry.get("ohlc") or {}
+        close = ohlc.get("close") if isinstance(ohlc, dict) else None
+        if isinstance(close, (int, float)) and close:
+            return True
+    return False
+
+
+def _ltp_has_data(result: Any, symbols: list[str]) -> bool:
+    """True when `ltp()` returned at least one symbol with a non-zero
+    last_price. Kite's `ltp()` shape is `{sym: {instrument_token, last_price}}`."""
+    if not isinstance(result, dict) or not result:
+        return False
+    for sym in symbols:
+        entry = result.get(sym)
+        if not isinstance(entry, dict):
+            continue
+        lp = entry.get("last_price")
+        if isinstance(lp, (int, float)) and lp:
+            return True
+    return False
+
+
 class PriceBroker(Broker):
     """
     Auto-failover wrapper for shared market-data fetches.
@@ -181,7 +219,9 @@ class PriceBroker(Broker):
     def underlying_count(self) -> int:
         return len(self._brokers)
 
-    def _try(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+    def _try(self, method_name: str, *args: Any,
+             _result_ok: Optional[Callable[[Any], bool]] = None,
+             **kwargs: Any) -> Any:
         """Walk every underlying broker in preference order; return the
         first non-exception result. If every broker fails, re-raise the
         last exception so the caller sees a real diagnostic.
@@ -191,8 +231,14 @@ class PriceBroker(Broker):
         "Too many requests" error it is marked rate-limited for
         _RATE_LIMIT_COOLOFF_SECONDS so the next call falls through to the
         next broker without amplifying the rate-limit storm.
+
+        Optional `_result_ok` predicate lets the caller treat a
+        successful-but-empty response as a soft failure that falls
+        through to the next broker (used by quote/ltp where Dhan
+        returns `{}` for MCX commodity symbols it doesn't expose).
         """
         last_exc: Exception | None = None
+        last_empty: Any = None
         for broker in self._brokers:
             broker_key = f"{broker.broker_id}/{broker.account}"
             if _is_rate_limited(broker_key):
@@ -203,6 +249,17 @@ class PriceBroker(Broker):
                 continue
             try:
                 result = getattr(broker, method_name)(*args, **kwargs)
+                if _result_ok is not None and not _result_ok(result):
+                    # Soft-failure: try the next broker. Keep the result
+                    # so we can return it if every broker comes back empty
+                    # (don't raise — empty is technically a valid answer
+                    # that some callers handle gracefully).
+                    last_empty = result
+                    logger.debug(
+                        f"PriceBroker: {broker_key} returned no usable "
+                        f"data for {method_name}; trying next broker"
+                    )
+                    continue
                 self._last_used = broker_key
                 return result
             except Exception as e:
@@ -219,6 +276,11 @@ class PriceBroker(Broker):
                         f"{broker_key}: {str(e)[:160]}"
                     )
                 continue
+        if last_empty is not None:
+            # Every broker returned an empty/no-data response, no
+            # exception. Hand it back so the caller sees the same shape
+            # it would normally.
+            return last_empty
         # Every broker failed — surface the LAST exception so the
         # operator's log shows a real broker error, not a generic
         # 'all brokers failed' wrapper.
@@ -229,10 +291,22 @@ class PriceBroker(Broker):
     # ── Market-data methods — fall over across brokers ────────────────
 
     def quote(self, symbols: list[str]) -> dict:
-        return self._try("quote", symbols)
+        # Fall through when a broker returns no usable quote data for
+        # ANY of the requested symbols. Dhan's quote() returns `{}` for
+        # MCX commodity futures (e.g. CRUDEOIL26JULFUT) — that's a
+        # successful-but-empty response, not an exception, so the
+        # unguarded _try() would treat it as the answer and never try
+        # Kite next. Now we walk to the next broker when EVERY symbol
+        # in the response is missing a usable last_price/close.
+        return self._try("quote", symbols,
+                         _result_ok=lambda r: _quote_has_data(r, symbols))
 
     def ltp(self, symbols: list[str]) -> dict:
-        return self._try("ltp", symbols)
+        # Same fall-through gate as quote() — Dhan's ltp() returns `{}`
+        # for symbols it doesn't expose; we want the next broker tried
+        # rather than handing the empty dict back to the caller.
+        return self._try("ltp", symbols,
+                         _result_ok=lambda r: _ltp_has_data(r, symbols))
 
     def historical_data(self, instrument_token: int, from_date: Any,
                         to_date: Any, interval: str = "day") -> list[dict]:
