@@ -1044,6 +1044,39 @@
       };
     });
   });
+  /** Risk overlay values — recomputed from the merged curve when eq
+   *  legs are present so MAX P / MAX L / breakevens reflect the
+   *  combined position (stock + option) instead of the backend's
+   *  option-only numbers. When no eq legs are enabled this is a thin
+   *  pass-through of `strategy.risk` so behaviour for pure-option
+   *  baskets is unchanged. */
+  const _mergedRisk = $derived.by(() => {
+    const baseRisk = strategy?.risk;
+    if (!baseRisk) return null;
+    if (_equityLegs.length === 0) return baseRisk;
+    const curve = _mergedPayoff;
+    if (!curve.length) return baseRisk;
+    // Walk the expiry curve over the displayed range.
+    let maxP = -Infinity, maxL = Infinity;
+    for (const pt of curve) {
+      const v = pt.expiry_value;
+      if (v > maxP) maxP = v;
+      if (v < maxL) maxL = v;
+    }
+    // Breakevens: linear-interpolate every zero-crossing along the
+    // expiry curve. Stable for monotonic and piecewise-linear segments.
+    const breakevens = [];
+    for (let i = 1; i < curve.length; i++) {
+      const a = curve[i - 1], b = curve[i];
+      const av = a.expiry_value, bv = b.expiry_value;
+      if ((av <= 0 && bv >= 0) || (av >= 0 && bv <= 0)) {
+        if (av === bv) continue;
+        const t = -av / (bv - av);
+        breakevens.push(a.spot + t * (b.spot - a.spot));
+      }
+    }
+    return { ...baseRisk, max_profit: maxP, max_loss: maxL, breakevens };
+  });
 
   // Auto-trigger strategy analytics whenever the leg set changes — no
   // explicit Analyze button needed.
@@ -2397,11 +2430,24 @@
    *  near zero or max_loss is unbounded; rendered as '—' in the UI. */
   const _ror = $derived.by(() => {
     if (!strategy) return null;
-    const ml = strategy.risk?.max_loss;
+    const ml = _mergedRisk?.max_loss ?? strategy.risk?.max_loss;
     const nc = strategy.net_cost;
     if (ml == null || !Number.isFinite(ml)) return null;
     if (nc == null || Math.abs(nc) <= 1) return null;
     return Math.abs(ml) / Math.abs(nc);
+  });
+  /** R:R ratio recomputed from the merged risk (max_profit / |max_loss|).
+   *  Falls back to the backend's strategy.risk.rr_ratio when no eq
+   *  legs are layered. Returns null when either side is unbounded. */
+  const _rrRatio = $derived.by(() => {
+    if (!strategy) return null;
+    const merged = _mergedRisk;
+    if (!merged || merged === strategy.risk) return strategy.risk?.rr_ratio ?? null;
+    const mp = merged.max_profit;
+    const ml = merged.max_loss;
+    if (mp == null || ml == null || !Number.isFinite(mp) || !Number.isFinite(ml)) return null;
+    if (Math.abs(ml) < 1) return null;
+    return mp / Math.abs(ml);
   });
   function fmtPct(/** @type {number|null|undefined} */ v) {
     if (v == null) return '—';
@@ -2617,11 +2663,11 @@
           {strategy.net_cost > 0 ? 'Net Dr' : strategy.net_cost < 0 ? 'Net Cr' : 'Free'}
           {fmtMoney(Math.abs(strategy.net_cost), false)}
         </span>
-        <span class="opt-section-tag tag-long" title="Max profit">
-          MAX P {fmtUnbounded(strategy.risk.max_profit, false)}
+        <span class="opt-section-tag tag-long" title="Max profit (merged curve when an eq holding is layered on the strategy)">
+          MAX P {fmtUnbounded(_mergedRisk?.max_profit ?? strategy.risk.max_profit, false)}
         </span>
-        <span class="opt-section-tag tag-short" title="Max loss">
-          MAX L {fmtUnbounded(strategy.risk.max_loss, false)}
+        <span class="opt-section-tag tag-short" title="Max loss (merged curve when an eq holding is layered on the strategy)">
+          MAX L {fmtUnbounded(_mergedRisk?.max_loss ?? strategy.risk.max_loss, false)}
         </span>
         <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
              header so the operator sees position-level direction /
@@ -2688,7 +2734,7 @@
         payoff={_mergedPayoff}
         spot={strategy.spot}
         prevClose={strategy.spot_prev_close}
-        breakevens={strategy.risk.breakevens}
+        breakevens={_mergedRisk?.breakevens ?? strategy.risk.breakevens}
         intermediateCurves={strategy.intermediate_curves || []}
         spanSigmas={strategy.span_sigmas}
         spanPct={strategy.span_pct}
@@ -3000,7 +3046,14 @@
               <!-- Expiry cell removed — the hyphenated symbol shows it. -->
               {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
               <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
-              <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, qty_pos: displayQty }))}</span>
+              <!-- Pass `quantity` so lotsForRow's per-symbol inference
+                   picks the right field. For EQ rows quantity → qHold;
+                   for CE/PE/FUT rows quantity → qPos. The previous
+                   `qty_pos: displayQty` was wrong for eq legs because
+                   the function reads it as a position qty and divides
+                   by the option contract lot — which is 0 for an EQ
+                   tradingsymbol. Showed "0" instead of the lot count. -->
+              <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty }))}</span>
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
@@ -3109,7 +3162,7 @@
           <div class="opt-kv">
             <div class="kv-pair">
               <span class="kv-k">R:R <InfoHint popup text={'<b>Risk-to-reward</b> = max_profit / |max_loss|. "1 : 0.5" = risk ₹100 to make ₹50. "1 : 3" = risk ₹100 to make ₹300. <b>—</b> when one side is unbounded.'} /></span>
-              <span class="kv-v">{strategy.risk.rr_ratio == null ? '—' : `1 : ${pctFmt(strategy.risk.rr_ratio)}`}</span>
+              <span class="kv-v">{_rrRatio == null ? '—' : `1 : ${pctFmt(_rrRatio)}`}</span>
             </div>
             <!-- Risk-of-ruin: |max_loss| / |net_cost|. How many times the
                  strategy's premium budget is consumed by a single
@@ -3127,8 +3180,8 @@
             <div class="kv-pair">
               <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">
-                {#if strategy.risk.breakevens.length}
-                  {strategy.risk.breakevens.map(/** @param {number} b */ (b) => priceFmt(b)).join(' / ')}
+                {#if (_mergedRisk?.breakevens ?? strategy.risk.breakevens).length}
+                  {(_mergedRisk?.breakevens ?? strategy.risk.breakevens).map(/** @param {number} b */ (b) => priceFmt(b)).join(' / ')}
                 {:else}—{/if}
               </span>
             </div>
