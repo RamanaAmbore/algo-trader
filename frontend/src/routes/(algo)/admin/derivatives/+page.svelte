@@ -12,7 +12,7 @@
   import { isMarketOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
   import {
-    fetchPositions, fetchSimStatus, fetchStrategyAnalytics,
+    fetchPositions, fetchHoldings, fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, addWatchlistItem,
@@ -214,7 +214,7 @@
   // (live or sim, depending on simActive) plus drafts that match the
   // selected underlying, intersected with the operator's checked rows
   // in the Candidates panel.
-  /** @type {Array<{symbol:string, qty:any, avg_cost:any, ltp:any, source:string}>} */
+  /** @type {Array<{symbol:string, qty:any, avg_cost:any, ltp:any, source:string, kind?:string}>} */
   let legs = $state([]);
 
   // Legs panel collapsed/expanded — operator may want to fold it
@@ -785,6 +785,28 @@
         kind: isFut ? 'fut' : 'opt',
       });
     }
+    // Cash-equity holdings of the underlying — surface as long-stock
+    // legs (kind='eq') so covered calls / collars / synthetic-short
+    // setups plot the full payoff. A holding of RELIANCE while the
+    // operator analyses RELIANCE options should appear alongside the
+    // option legs with delta=1 per share linear behaviour. Matches the
+    // underlying symbol exactly (no prefix walk — holdings are on the
+    // bare equity). Operator: "in legs, if you have underlyings in
+    // holdings, include that in legs and plot it together in payoff."
+    for (const h of holdings) {
+      const sym = String(h.symbol || '').toUpperCase();
+      if (sym !== target) continue;
+      if (acctFilter.length && !acctFilter.includes(h.account)) continue;
+      out.push({
+        ...h,
+        source: 'live',
+        kind:   'eq',
+        // Holdings carry the operator's lifetime exposure but have no
+        // expiry — they need to be visible regardless of the expiry
+        // filter (the option legs above already enforce it for the
+        // chart's expiration scope).
+      });
+    }
     // Drafts — matched by symbol prefix; no account filter (drafts
     // aren't tied to a broker account).
     for (const d of drafts) {
@@ -972,7 +994,47 @@
           avg_cost: c.avg_cost ?? '',
           ltp:      c.ltp ?? '',
           source:   c.source,
+          kind:     c.kind,
         }));
+    });
+  });
+  // Enabled equity-holding legs of the underlying — held out of the
+  // strategy-analytics POST (backend only accepts opt/fut) and layered
+  // onto the rendered payoff in the chart instead. Long stock has a
+  // linear payoff: (S − avg_cost) × qty added to every point of both
+  // curves.
+  const _equityLegs = $derived(
+    candidatePositions.filter(c =>
+      c.kind === 'eq' &&
+      enabledSymbols[enKey(c)] !== false &&
+      Number(c.qty || 0) !== 0
+    )
+  );
+  /** Backend payoff with the equity-holding contribution layered on
+   *  per-spot. Long stock has a linear payoff: `(S − avg_cost) × qty`.
+   *  Each point's today_value AND expiry_value gets the same shift
+   *  (stock value doesn't decay between today and expiry). When there
+   *  are no equity legs this is a pass-through reference (no array
+   *  rebuild — strategy.payoff identity preserved for OptionsPayoff
+   *  $derived caches). */
+  const _mergedPayoff = $derived.by(() => {
+    const base = strategy?.payoff;
+    if (!Array.isArray(base) || base.length === 0) return base || [];
+    const eqs = _equityLegs;
+    if (eqs.length === 0) return base;
+    return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
+      let add = 0;
+      for (const eq of eqs) {
+        const qty = Number(eq.qty) || 0;
+        const cost = Number(eq.avg_cost);
+        if (!Number.isFinite(cost)) continue;
+        add += (pt.spot - cost) * qty;
+      }
+      return {
+        ...pt,
+        today_value:  pt.today_value  + add,
+        expiry_value: pt.expiry_value + add,
+      };
     });
   });
 
@@ -1719,6 +1781,12 @@
   // because the backend can't fetch their ltp from the broker).
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null}>} */
   let positions = $state([]);
+  /** Raw broker holdings keyed by symbol. When the operator picks an
+   *  underlying that they ALSO hold the cash equity for, the holding
+   *  appears as a long-equity leg in candidatePositions so the payoff
+   *  curve reflects covered calls / hedges correctly. */
+  /** @type {Array<{symbol:string, account:string, qty:number, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number}>} */
+  let holdings = $state([]);
 
   /** Real (unmasked) broker account IDs from /api/accounts/. Loaded
    *  separately from positions because /positions masks the account
@@ -2008,6 +2076,40 @@
     } catch (_) { /* ignore */ }
 
     positions = merged;
+
+    // Cash-equity holdings — pulled in so the operator's COVERED CALL
+    // / collar setup plots correctly. Operator: "in legs, if you have
+    // underlyings in holdings, include that in legs and plot it
+    // together in payoff." Skipped during sim runs (sim doesn't model
+    // equity book). Only EQ rows are kept; derivative holdings (rare)
+    // would already be picked up by the positions pass above.
+    if (!simActive) {
+      try {
+        const r = await fetchHoldings();
+        const rows = [];
+        for (const h of (r?.rows || [])) {
+          const sym = h?.tradingsymbol || h?.symbol;
+          if (!sym) continue;
+          // Skip anything that smells like a derivative — only cash
+          // equity holdings should layer as a long-stock leg.
+          if (/(CE|PE|FUT)$/i.test(String(sym))) continue;
+          rows.push({
+            symbol:     String(sym).toUpperCase(),
+            account:    String(h?.account || ''),
+            qty:        Number(h?.quantity || 0),
+            avg_cost:   h?.average_price != null ? Number(h.average_price) : null,
+            ltp:        h?.last_price    != null ? Number(h.last_price)    : null,
+            prev_close: h?.close_price != null ? Number(h.close_price) : null,
+            pnl:        h?.pnl != null ? Number(h.pnl) : 0,
+            day_change_val: h?.day_change_val != null ? Number(h.day_change_val) : 0,
+          });
+        }
+        holdings = rows;
+      } catch (_) { /* ignore — holdings layer is additive */ }
+    } else {
+      holdings = [];
+    }
+
     _saveCache();
   }
 
@@ -2019,6 +2121,11 @@
   let _stratFails = 0;
   async function loadStrategy() {
     const cleanLegs = legs
+      // Equity-holding legs are layered onto the rendered payoff at the
+      // chart level (see _mergedPayoff). The backend strategy endpoint
+      // only accepts option / futures contracts; sending an equity
+      // ticker would 400.
+      .filter(l => l.kind !== 'eq')
       .map(l => {
         const sym = String(l.symbol || '').trim().toUpperCase();
         // Look up the contract's actual expiry from the instruments
@@ -2571,7 +2678,7 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={strategy.payoff}
+        payoff={_mergedPayoff}
         spot={strategy.spot}
         prevClose={strategy.spot_prev_close}
         breakevens={strategy.risk.breakevens}
@@ -2580,7 +2687,7 @@
         spanPct={strategy.span_pct}
         dte={strategy.days_to_expiry}
         ivProxy={strategy.iv_proxy}
-        legCount={strategy.legs.length}
+        legCount={strategy.legs.length + _equityLegs.length}
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         dayPnl={candidatesDayPnl}
