@@ -3225,6 +3225,25 @@
     const optClass = row.opt_type === 'CE' ? 'sym-ce'
                     : row.opt_type === 'PE' ? 'sym-pe'
                     : '';
+    // Lot-viable chip — sits IMMEDIATELY after the symbol text (before
+    // any P/H/W/U/M badge group) so the operator's eye lands on the
+    // actionable "how many covered calls can I write" number first.
+    // Operator: "keep lot chip immediately after the symbol." Shown
+    // only when the holding qty ≥ 1 whole lot of an F&O underlying.
+    let lotChip = '';
+    if (row.src?.h) {
+      try {
+        const symStr = String(row.tradingsymbol || '').toUpperCase();
+        const lot = symStr ? _fnoLotFor(symStr) : 0;
+        if (lot > 0) {
+          const qHold = Math.abs(Number(row.qty_hold) || 0);
+          const lots = Math.floor(qHold / lot);
+          if (lots >= 1) {
+            lotChip = `<span class="sym-badge badge-fno-lot" title="Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot})">${lots}L</span>`;
+          }
+        }
+      } catch (_) { /* defensive */ }
+    }
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
@@ -3233,22 +3252,6 @@
     if (row.src?.h) {
       const q = Number(row.qty_hold) || 0;
       badges.push(`<span class="sym-badge badge-h" title="Holding">H ${qtyFmt(q)}</span>`);
-      // Lot-viable badge — show whole-lot count for F&O underlying
-      // holdings. Matches the refresh-button broker-count badge so the
-      // same "number-in-a-pill" idiom reads consistently across the
-      // operator's surface. Sub-lot holdings (qty < lot) get no badge
-      // (the row-hold-fno green left stripe alone signals "F&O
-      // eligible, but no covered-call viable yet").
-      try {
-        const sym = String(row.tradingsymbol || '').toUpperCase();
-        const lot = sym ? _fnoLotFor(sym) : 0;
-        if (lot > 0) {
-          const lots = Math.floor(Math.abs(q) / lot);
-          if (lots >= 1) {
-            badges.push(`<span class="sym-badge badge-fno-lot" title="Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot})">${lots}L</span>`);
-          }
-        }
-      } catch (_) { /* defensive */ }
     }
     if (row.src?.w) {
       badges.push(`<span class="sym-badge badge-w" title="Watchlist">W</span>`);
@@ -3293,7 +3296,7 @@
       ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
         `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
       : '';
-    return `<span class="sym-main ${optClass}">${main}</span>${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
+    return `<span class="sym-main ${optClass}">${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
   }
 
   /**
@@ -4914,6 +4917,11 @@
     color: #052e16;
     background: #4ade80;
     font-weight: 800;
+    /* Standalone — sits between sym-main and the sym-badges group, so
+       it needs its own breathing room (the group's `margin-left: 2px`
+       doesn't apply since the chip lives outside the group). */
+    margin-left: 4px;
+    vertical-align: middle;
   }
 
   /* Inline remove-from-watchlist button. */
