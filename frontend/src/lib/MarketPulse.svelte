@@ -3268,15 +3268,26 @@
         const lot = symStr ? _fnoLotFor(symStr) : 0;
         if (lot > 0) {
           const qHold = Math.abs(Number(row.qty_hold) || 0);
-          const lots = Math.floor(qHold / lot);
-          if (lots >= 1) {
+          // Round to one decimal place. Operator: "if lot size is
+          // fraction, show that with one decimal point precision …
+          // if decimal point is 0, don't show decimal point and
+          // fraction part." So 70/100 = 0.7L (DIXON-style sub-lot),
+          // 100/100 = 1L (whole lot), 150/100 = 1.5L. Threshold of
+          // 0.1 hides noise from negligible holdings (e.g. 1 share
+          // of a 100-lot stock = 0.0L would clutter the row).
+          const lotsRounded = Math.round((qHold / lot) * 10) / 10;
+          if (lotsRounded >= 0.1) {
+            const lotsStr = lotsRounded % 1 === 0
+              ? lotsRounded.toFixed(0)
+              : lotsRounded.toFixed(1);
             const _hasPos = _underlyingsWithActivePositions.has(symStr);
             const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos'
                                  : 'badge-fno-lot';
+            const _plural = lotsRounded === 1 ? '' : 's';
             const _title = _hasPos
-              ? `Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot}). Underlying already has an open derivative position; review exposure before writing more.`
-              : `Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot})`;
-            lotChip = `<span class="sym-badge ${_cls}" title="${_title}">${lots}L</span>`;
+              ? `Covered-call viable — ${lotsStr} lot${_plural} (lot size ${lot}). Underlying already has an open derivative position; review exposure before writing more.`
+              : `Covered-call viable — ${lotsStr} lot${_plural} (lot size ${lot})`;
+            lotChip = `<span class="sym-badge ${_cls}" title="${_title}">${lotsStr}L</span>`;
           }
         }
       } catch (_) { /* defensive */ }
