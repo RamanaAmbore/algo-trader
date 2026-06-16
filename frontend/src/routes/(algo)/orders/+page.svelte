@@ -437,13 +437,27 @@
   .oc-act-body {
     display: flex;
     flex-direction: column;
+    /* Cap the body so LogPanel's tab content (Orders / Agents /
+       Terminal / Ticks / System / News) scrolls INTERNALLY rather
+       than blowing the card to whatever the row count produces.
+       Page scroll handles "more cards"; tab scroll handles "more
+       rows than fit in the visible card body". 70vh keeps the card
+       comfortably under the fold; 18rem floor stops it from
+       collapsing on empty data. `overflow: hidden` makes the body a
+       containing block so LogPanel's `flex-1 min-h-0` resolves to a
+       finite height and its inner scrolls activate. */
+    min-height: 18rem;
+    max-height: 70vh;
+    overflow: hidden;
   }
   /* Fullscreen mode pins the Activity card to the viewport; re-enable
      the inner flex chain so LogPanel's heightClass="flex-1 min-h-0"
-     resolves correctly to the modal-style frame. */
+     resolves correctly to the modal-style frame, and lift the body
+     caps so the maximised card fills its modal frame. */
   :global(.bucket-card-activity.fs-card-on) .oc-act-body {
     flex: 1 1 0;
     min-height: 0;
+    max-height: none;
   }
   /* Activity card title — bell icon + label match the ActivityLogModal's
      header so heading reads identically on both surfaces. */

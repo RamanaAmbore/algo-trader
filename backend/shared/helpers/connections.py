@@ -1445,6 +1445,56 @@ class Connections(SingletonBase):
                 # Truly empty (no YAML either). Leave self.conn as-is.
                 return
 
+        # Dhan multi-account stabilizer — permanent fix for the rotation
+        # loop discovered 2026-06-15. Background: Dhan enforces "one
+        # active session per partner app per source IP" at the v2 auth
+        # backend. The documented solution (CLAUDE.md → Multi-Account
+        # IPv6 Source Binding) is to bind each Dhan account to its own
+        # IPv6 in the server's /48. That binding is blocked on this VPS
+        # by Hostinger's upstream — only `::1` actually egresses; binds
+        # to `::2`-`::5` time out on TCP connect (curl --interface diag
+        # confirmed). Until upstream routing is unblocked, multiple
+        # Dhan accounts sharing the OS-default route invalidate each
+        # other's tokens every ~5 min → 'DH-906 Invalid Token' loop.
+        #
+        # Permanent stabilization: when two or more Dhan rows would land
+        # on the same source IP (incl. blank = OS-default), keep only
+        # the highest-priority row in `self.conn`. The deferred rows
+        # stay `is_active=true` in the DB but don't get a connection
+        # built. Operator swaps the active one via the `priority`
+        # column in /admin/brokers (lowest number wins). Eliminates the
+        # rotation cycle at the connection layer so positions/holdings
+        # for the active Dhan account stay stable across every refresh.
+        from collections import defaultdict
+        _dhan_by_ip: dict[str, list] = defaultdict(list)
+        for r in rows:
+            if (r.broker_id or "").lower() == "dhan":
+                key = (r.source_ip or "").strip().lower()  # "" = OS default
+                _dhan_by_ip[key].append(r)
+        _dhan_deferred: set[str] = set()
+        for ip_key, group in _dhan_by_ip.items():
+            if len(group) <= 1:
+                continue
+            # Lowest priority number wins; ties broken by account code
+            # so the choice is deterministic across rebuilds.
+            group.sort(key=lambda x: (int(getattr(x, "priority", 100) or 100),
+                                       (x.account or "")))
+            keep = group[0]
+            for r in group[1:]:
+                _dhan_deferred.add(r.account)
+            shown_ip = ip_key or "<OS default>"
+            logger.warning(
+                "Dhan multi-account stabilizer: %d Dhan rows share "
+                "source_ip=%s. Keeping %r (priority=%s); deferring %s. "
+                "Reason: Dhan's per-IP one-session limit + Hostinger "
+                "edge filter on non-primary IPv6 addresses. Edit "
+                "broker_accounts.priority in /admin/brokers to swap "
+                "which account is active.",
+                len(group), shown_ip, keep.account,
+                getattr(keep, "priority", 100),
+                ", ".join(repr(x.account) for x in group[1:]),
+            )
+
         # Build new credentials dict from DB rows + decrypt in-memory.
         # The connection type branches on broker_id — Dhan rows build a
         # DhanConnection (client_id + access_token), everything else
@@ -1452,6 +1502,8 @@ class Connections(SingletonBase):
         new_conn: dict[str, Any] = {}
         for r in rows:
             broker_id = (r.broker_id or "zerodha_kite").lower()
+            if broker_id == "dhan" and r.account in _dhan_deferred:
+                continue  # Deferred by the multi-account stabilizer above.
             try:
                 if broker_id == "dhan":
                     # Dhan path — Partner-API auto-login.

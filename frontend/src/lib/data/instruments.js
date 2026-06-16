@@ -281,6 +281,38 @@ export function listFutures(underlying) {
     .slice().sort((a, b) => (a.x || '').localeCompare(b.x || ''));
 }
 
+/**
+ * Returns the F&O lot size for a stock/index that has option contracts
+ * listed. Reads from the nearest-expiry CE contract on the underlying.
+ * Falls back to the FUT contract when no CE is available. Returns 0
+ * when the symbol is NOT an option underlying — caller treats that as
+ * "this holding is not F&O-eligible".
+ *
+ * Use case: the Holdings grid colour-codes rows where the stock is an
+ * F&O underlying so the operator can spot opportunities to write
+ * covered calls / cash-secured puts. A second colour highlights rows
+ * where the held qty is ≥ one lot, meaning the operator could write a
+ * covered call against the position right now.
+ */
+export function getOptionUnderlyingLot(tradingsymbol) {
+  if (!_byUnderlyingType) return 0;
+  const sym = String(tradingsymbol || '').toUpperCase();
+  if (!sym) return 0;
+  // Try CE first — most underlyings have both CE + PE, picking CE keeps
+  // the lookup deterministic.
+  const ceRows = _byUnderlyingType.get(`${sym}|CE`);
+  if (ceRows && ceRows.length) {
+    return Number(ceRows[0].ls || 0);
+  }
+  // Index futures (NIFTY, BANKNIFTY) — no spot equity, just FUT contract.
+  // Used when the holding symbol IS an index like NIFTY 50.
+  const futRows = _byUnderlyingType.get(`${sym}|FUT`);
+  if (futRows && futRows.length) {
+    return Number(futRows[0].ls || 0);
+  }
+  return 0;
+}
+
 /** Nearest upcoming expiry for an underlying+type. Returns YYYY-MM-DD or null. */
 export function nearestExpiry(underlying, type) {
   const rows = listOptions(underlying, type);

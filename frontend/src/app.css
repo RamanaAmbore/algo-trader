@@ -329,6 +329,28 @@
 .ag-theme-algo .ag-row.row-hold-flat .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
 }
+/* F&O-underlying tagging — overlays the existing P&L tint above with a
+   subtle indicator that this holding has option contracts listed.
+   Operator: "identify the stocks in holdings which are option
+   underlying. If the qty is more than the lot size color code
+   differently. Color code both of holdings in both the situations."
+     row-hold-fno-lot → qty ≥ 1 lot — can write a covered call right
+                        now (amber dot, brighter to draw the eye)
+     row-hold-fno-sub → underlying eligible but qty < 1 lot — keep on
+                        the operator's radar (muted violet dot)
+   Both indicators sit at the FAR LEFT of the symbol cell as a 6 px
+   vertical accent stripe — flanks the existing right-border which
+   encodes P&L direction. The two indicators don't compete; they
+   convey orthogonal information (fundamental F&O eligibility vs
+   today's P&L). */
+.ag-theme-algo .ag-row.row-hold-fno-lot .ag-col-sym {
+  /* Amber-400 left accent — covered-call viable RIGHT NOW. */
+  box-shadow: inset 4px 0 0 0 #fbbf24;
+}
+.ag-theme-algo .ag-row.row-hold-fno-sub .ag-col-sym {
+  /* Violet-400 left accent — F&O-eligible underlying, qty < 1 lot. */
+  box-shadow: inset 4px 0 0 0 #a78bfa;
+}
 .ag-theme-algo .ag-row.row-watch .ag-col-sym {
   background-color: rgba(251,191,36,0.10) !important;
 }

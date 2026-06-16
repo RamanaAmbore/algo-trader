@@ -284,7 +284,12 @@
     const annotated = [];
     for (const c of candidatePositions) {
       const qty = Number(c.qty || 0);
-      if (qty === 0) continue;
+      // Operator: closed positions of the selected expiry should still
+      // appear in the Close-tab analysis — they're informational ("this
+      // expiry leg was closed today, nothing to do"). When no expiry is
+      // selected, keep the old behavior of hiding zero-qty rows so the
+      // unfiltered Close list isn't noisy with historical closeouts.
+      if (qty === 0 && !selectedExpiries.length) continue;
       if (c.source === 'draft') continue;
       const inst = getInstrument(String(c.symbol || '').toUpperCase());
       if (!inst) continue;

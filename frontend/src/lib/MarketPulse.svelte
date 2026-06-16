@@ -961,6 +961,14 @@
   let getInstrument     = $state(/** @type {((s: string) => any) | null} */ (null));
   let findNearestFuture = $state(/** @type {((u: string) => any) | null} */ (null));
   let listFutures       = $state(/** @type {((u: string) => any[]) | null} */ (null));
+  // F&O underlying lot lookup — returns the contract lot size when the
+  // tradingsymbol has CE/PE listed (covered-call viable), 0 otherwise.
+  // Loaded alongside getInstrument so the Holdings row-class can fire
+  // synchronously inside getRowClass.
+  let _fnoLotForState   = $state(/** @type {((s: string) => number) | null} */ (null));
+  function _fnoLotFor(/** @type {string} */ s) {
+    return _fnoLotForState ? _fnoLotForState(s) : 0;
+  }
 
   // Transient-error suppression. Quote-refresh polls fire every 5 s
   // and can blip on broker hiccups; one failed call shouldn't paint
@@ -1061,6 +1069,7 @@
         getInstrument     = mod.getInstrument;
         findNearestFuture = mod.findNearestFuture;
         listFutures       = mod.listFutures;
+        _fnoLotForState   = mod.getOptionUnderlyingLot;
       } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
     })();
     const accountsP = (async () => {
@@ -3383,6 +3392,28 @@
       if (Number.isFinite(pnl) && pnl > 0) classes.push('row-hold-up');
       else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
       else classes.push('row-hold-flat');
+      // F&O-underlying tagging — if the held stock has option contracts
+      // listed, flag the row so the operator can spot opportunities to
+      // write covered calls / cash-secured puts. Two states:
+      //   row-hold-fno-lot   → qty is a whole multiple ≥ 1 lot (covered
+      //                        call viable RIGHT NOW)
+      //   row-hold-fno-sub   → underlying exists but qty < 1 lot
+      // Cheap O(1) Map lookup via getOptionUnderlyingLot — no walk per
+      // render. Only fires when the instruments cache is loaded.
+      try {
+        if (getInstrument) {
+          // Lazy-import to avoid circulars; the symbol-resolution module
+          // is already loaded as part of the broader instruments cache.
+          // eslint-disable-next-line no-undef
+          const sym = String(r.tradingsymbol || '').toUpperCase();
+          const lot = _fnoLotFor(sym);
+          if (lot > 0) {
+            const qty = Math.abs(Number(r.qty_hold) || Number(r.qty_pos) || 0);
+            if (qty >= lot) classes.push('row-hold-fno-lot');
+            else            classes.push('row-hold-fno-sub');
+          }
+        }
+      } catch (_) { /* defensive — cache miss shouldn't break row class */ }
     }
     // Day-P&L indicator deprecated — the symbol-cell right border now
     // encodes POSITION direction (pos-long/pos-short) or HOLDING
