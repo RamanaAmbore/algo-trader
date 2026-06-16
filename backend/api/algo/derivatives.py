@@ -549,13 +549,40 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
         # from the instruments cache and treat today >= option.x as an
         # expired option that should anchor to the next future.
         opt_expired = False
+        opt_expiry_iso = ""
         if items:
             sym_upper = sym
             for inst in items:
                 if (inst.s or "").upper() == sym_upper:
-                    if (inst.x or "") and (inst.x or "") <= _today_iso:
+                    opt_expiry_iso = (inst.x or "")
+                    if opt_expiry_iso and opt_expiry_iso <= _today_iso:
                         opt_expired = True
                     break
+
+        async def _roll_past_month():
+            """Pick the first future for this underlying whose expiry is
+            strictly AFTER the option's own expiry (and strictly after
+            today). lookup_mcx_front_month_future alone would return the
+            matched-month future itself when it's still live — e.g. on
+            CRUDEOIL JUN options expiry day, the JUN future is alive
+            through Jun 18 but is no longer the right anchor."""
+            cutoff = max(opt_expiry_iso or _today_iso, _today_iso)
+            if is_mcx_underlying(root):
+                target_u = root.upper()
+                candidates = [
+                    inst for inst in items
+                    if (inst.e == "MCX"
+                        and inst.t == "FUT"
+                        and (inst.u or "").upper() == target_u
+                        and inst.x
+                        and inst.x > cutoff)
+                ]
+                if candidates:
+                    candidates.sort(key=lambda i: i.x or "")
+                    return candidates[0].s
+                return await lookup_mcx_front_month_future(root)
+            # NSE / NFO equivalent
+            return _next_nse_future(items, root, cutoff)
         if items:
             fut_sym_upper = fut_sym.upper()
             prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
@@ -569,11 +596,10 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                     # options settle ~5 business days before the futures).
                     # Operator: "when options expire consider the next
                     # crudeoil future as the spot."
-                    if is_mcx_underlying(root):
-                        rolled = await lookup_mcx_front_month_future(root)
-                        if rolled:
-                            return rolled
-                    return _next_nse_future(items, root, _today_iso)
+                    rolled = await _roll_past_month()
+                    if rolled:
+                        return rolled
+                    return None
             # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
             # When multiple matches exist (rare — e.g. CRUDEOIL26JUL19FUT
             # vs an extension) we pick the FIRST in instrument-cache
@@ -585,11 +611,10 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                         and s != fut_sym_upper):
                     if _live(inst) and not opt_expired:
                         return inst.s
-                    if is_mcx_underlying(root):
-                        rolled = await lookup_mcx_front_month_future(root)
-                        if rolled:
-                            return rolled
-                    return _next_nse_future(items, root, _today_iso)
+                    rolled = await _roll_past_month()
+                    if rolled:
+                        return rolled
+                    return None
         # Cache miss — the future for this month isn't listed yet.
         return None
 
