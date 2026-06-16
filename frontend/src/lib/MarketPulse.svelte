@@ -1484,6 +1484,29 @@
   const watchCounts = $derived(_rowBuckets.counts);
   const positionsRows  = $derived(_rowBuckets.positions);
   const holdingsRows   = $derived(_rowBuckets.holdings);
+  // Set of underlying symbols where the operator currently has any
+  // OPEN option/future position (qty != 0). Feeds the holdings lot
+  // chip: amber chip → underlying already has live derivative
+  // exposure (covered call / hedge / spread in play); green chip →
+  // clean F&O underlying with no derivative position yet. The check
+  // walks the raw `positions` array (not positionsRows, which is the
+  // unified-grid view) so it sees every option/future contract the
+  // operator holds, parsed via the instruments cache for the
+  // underlying name.
+  const _underlyingsWithActivePositions = $derived.by(() => {
+    const set = new Set();
+    if (!getInstrument) return set;
+    for (const p of positions) {
+      const qty = Number(p?.quantity ?? p?.qty_pos ?? 0);
+      if (!qty) continue;
+      const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+      if (!sym) continue;
+      const inst = getInstrument(sym);
+      const u = inst?.u ? String(inst.u).toUpperCase() : '';
+      if (u) set.add(u);
+    }
+    return set;
+  });
   // Sub-group tabs on the Winners + Losers grids — each grid scopes
   // to one of five universes:
   //   underlying → major indices (NIFTY 50, BANKNIFTY, etc.)
@@ -3230,6 +3253,14 @@
     // actionable "how many covered calls can I write" number first.
     // Operator: "keep lot chip immediately after the symbol." Shown
     // only when the holding qty ≥ 1 whole lot of an F&O underlying.
+    //
+    // Colour rule (operator: "color code the lot chip based on if
+    // underlying active positions exist"):
+    //   no derivative position on this underlying → GREEN  (clean,
+    //     covered-call viable; write something new)
+    //   existing derivative position on this underlying → AMBER
+    //     (the operator already has exposure here — covered call /
+    //      hedge / spread in play; double-writing would compound risk)
     let lotChip = '';
     if (row.src?.h) {
       try {
@@ -3239,7 +3270,13 @@
           const qHold = Math.abs(Number(row.qty_hold) || 0);
           const lots = Math.floor(qHold / lot);
           if (lots >= 1) {
-            lotChip = `<span class="sym-badge badge-fno-lot" title="Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot})">${lots}L</span>`;
+            const _hasPos = _underlyingsWithActivePositions.has(symStr);
+            const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos'
+                                 : 'badge-fno-lot';
+            const _title = _hasPos
+              ? `Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot}). Underlying already has an open derivative position; review exposure before writing more.`
+              : `Covered-call viable — ${lots} lot${lots === 1 ? '' : 's'} (lot size ${lot})`;
+            lotChip = `<span class="sym-badge ${_cls}" title="${_title}">${lots}L</span>`;
           }
         }
       } catch (_) { /* defensive */ }
@@ -4922,6 +4959,15 @@
        doesn't apply since the chip lives outside the group). */
     margin-left: 4px;
     vertical-align: middle;
+  }
+  /* Amber variant — the underlying already has an open derivative
+     position so the operator should think twice before writing more.
+     Uses the same amber as `.badge-w` watchlist chip so the colour
+     family stays consistent. Dark text for contrast against the
+     bright fill. */
+  :global(.badge-fno-lot-pos) {
+    color: #422006;
+    background: #fbbf24;
   }
 
   /* Inline remove-from-watchlist button. */
