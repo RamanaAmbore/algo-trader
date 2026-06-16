@@ -2133,10 +2133,20 @@
           // Skip anything that smells like a derivative — only cash
           // equity holdings should layer as a long-stock leg.
           if (/(CE|PE|FUT)$/i.test(String(sym))) continue;
+          // Skip fully-sold-today rows. Backend HoldingRow drops
+          // `quantity` to 0 after an intraday full-sell while
+          // `opening_quantity` keeps the start-of-day amount; for the
+          // payoff chart we want the CURRENT exposure (linear stock
+          // contribution = 0 when no shares are held), so qty=0 means
+          // skip — don't pollute the Legs panel with phantom rows
+          // that contribute nothing to the curves. Operator: "the
+          // legs is not showing qty and lot size correctly."
+          const qty = Number(h?.quantity || 0);
+          if (!qty) continue;
           rows.push({
             symbol:     String(sym).toUpperCase(),
             account:    String(h?.account || ''),
-            qty:        Number(h?.quantity || 0),
+            qty,
             avg_cost:   h?.average_price != null ? Number(h.average_price) : null,
             ltp:        h?.last_price    != null ? Number(h.last_price)    : null,
             prev_close: h?.close_price != null ? Number(h.close_price) : null,
