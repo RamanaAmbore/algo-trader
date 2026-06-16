@@ -914,14 +914,8 @@
   // once the row derivations exist) folds in the auto-collapse
   // rule: a card with zero rows renders as collapsed regardless
   // of the operator toggle.
-  // Pinned + Watchlist merged into ONE tabbed card. _colPinWatch
-  // is its single collapse state; topTab toggles which feed is
-  // visible inside the card. The legacy _colPinned / _colWatch
-  // remain in the code (still read by the per-bucket effects
-  // upstream) — they default to false so they never block their
-  // grids; the visible-grid gate is now _colPinWatch.
-  let _colPinned    = $state(false);
-  let _colWatch     = $state(false);
+  // Pinned + Watchlist merged into ONE tabbed card; _colPinWatch is
+  // its single collapse state, topTab toggles which feed is visible.
   let _colPinWatch  = $state(false);
   // Top-tab is either the special 'pinned' string (the merged
   // Default + Markets feed) OR a user-watchlist id. Operator request:
@@ -964,10 +958,24 @@
   // F&O underlying lot lookup — returns the contract lot size when the
   // tradingsymbol has CE/PE listed (covered-call viable), 0 otherwise.
   // Loaded alongside getInstrument so the Holdings row-class can fire
-  // synchronously inside getRowClass.
+  // synchronously inside getRowClass. Memoized per-symbol because the
+  // underlying lookup is stable within a session (lot sizes don't
+  // change tick-to-tick) and getRowClass + symRenderer call it on
+  // every visible row every refresh.
   let _fnoLotForState   = $state(/** @type {((s: string) => number) | null} */ (null));
+  /** @type {Map<string, number>} */
+  const _fnoLotCache = new Map();
+  $effect(() => {
+    // Clear the per-session memo when the upstream lookup is replaced
+    // (e.g. instruments cache reload).
+    void _fnoLotForState;
+    _fnoLotCache.clear();
+  });
   function _fnoLotFor(/** @type {string} */ s) {
-    return _fnoLotForState ? _fnoLotForState(s) : 0;
+    if (_fnoLotCache.has(s)) return /** @type {number} */ (_fnoLotCache.get(s));
+    const v = _fnoLotForState ? _fnoLotForState(s) : 0;
+    _fnoLotCache.set(s, v);
+    return v;
   }
 
   // Transient-error suppression. Quote-refresh polls fire every 5 s
@@ -1484,6 +1492,14 @@
   const watchCounts = $derived(_rowBuckets.counts);
   const positionsRows  = $derived(_rowBuckets.positions);
   const holdingsRows   = $derived(_rowBuckets.holdings);
+  // Set of watchlist list-ids that are flagged `is_global`. Hoisted out
+  // of `symRenderer` so the per-row `lists.find(l => l.id === ... &&
+  // l.is_global)` linear scan becomes an O(1) `Set.has()`. With ~50
+  // visible rows × multiple SSE-triggered `refreshCells` per second,
+  // this turns ~50 walks/tick into one walk per `lists` change.
+  const _globalListIds = $derived(
+    new Set((lists || []).filter(l => l?.is_global).map(l => l.id))
+  );
   // Set of underlying symbols where the operator currently has any
   // OPEN option/future position (qty != 0). Feeds the holdings lot
   // chip: amber chip → underlying already has live derivative
@@ -1675,8 +1691,6 @@
   // hint at the empty zone below). Let the ag-Grid render its own
   // "No rows to display" message so the operator sees a real empty
   // state instead of a phantom collapsed shell.
-  const _effColPinned    = $derived(_colPinned);
-  const _effColWatch     = $derived(_colWatch);
   const _effColPinWatch  = $derived(_colPinWatch);
   const _effColWinners   = $derived(_colWinners);
   const _effColLosers    = $derived(_colLosers);
@@ -3320,9 +3334,7 @@
     // Hidden on the shared global Pinned row for non-admin / non-
     // designated users since the backend would 403 the delete; UI
     // shouldn't tease an affordance that won't work.
-    const _isGlobalRow = !!lists.find(
-      l => l.id === row.watchlist_list_id && l.is_global
-    );
+    const _isGlobalRow = _globalListIds.has(row.watchlist_list_id);
     const _canRemoveHere = !_isGlobalRow || _isDesignated;
     const removeBtn = (row.src?.w && row.watchlist_item_id != null && _canRemoveHere)
       ? `<span class="sym-remove" data-item="${row.watchlist_item_id}" data-list="${row.watchlist_list_id ?? ''}" title="Remove from watchlist">×</span>`

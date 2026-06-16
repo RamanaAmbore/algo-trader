@@ -459,6 +459,32 @@ async def lookup_mcx_front_month_future(underlying: str) -> str | None:
     return candidates[0].s
 
 
+# Per-cache by-symbol index, keyed by the ID of the `items` list so a
+# new cache cycle (24h TTL refresh in instruments.py) drops the old
+# index automatically. Walking the ~90k-row items list per call adds
+# measurable latency to multi-leg strategy requests; an O(1) Map cuts
+# the hot path to a single dict lookup.
+_INSTRUMENT_INDEX_BY_ID: dict[int, dict] = {}
+
+
+def _instrument_index(items) -> dict:
+    """Lazy-build a `{symbol_upper → Instrument}` dict for the given
+    items list. Returns an empty dict when items is falsy."""
+    if not items:
+        return {}
+    key = id(items)
+    cached = _INSTRUMENT_INDEX_BY_ID.get(key)
+    if cached is not None:
+        return cached
+    # Bound the cache so a transient cache rebuild doesn't leak
+    # ever-growing dicts. Two entries is enough — current + previous.
+    if len(_INSTRUMENT_INDEX_BY_ID) >= 2:
+        _INSTRUMENT_INDEX_BY_ID.clear()
+    index = {(inst.s or "").upper(): inst for inst in items}
+    _INSTRUMENT_INDEX_BY_ID[key] = index
+    return index
+
+
 def _next_nse_future(items, root: str, today_iso: str) -> str | None:
     """Pick the first NSE/NFO future for `root` whose expiry is strictly
     after `today_iso`. Equity-side equivalent of
@@ -551,13 +577,15 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
         opt_expired = False
         opt_expiry_iso = ""
         if items:
-            sym_upper = sym
-            for inst in items:
-                if (inst.s or "").upper() == sym_upper:
-                    opt_expiry_iso = (inst.x or "")
-                    if opt_expiry_iso and opt_expiry_iso <= _today_iso:
-                        opt_expired = True
-                    break
+            # O(1) lookup via the per-cache by-symbol index. Walking the
+            # 90k-row items list per call (and again below for futures)
+            # added measurable latency to multi-leg strategy requests.
+            index = _instrument_index(items)
+            _inst = index.get(sym)
+            if _inst is not None:
+                opt_expiry_iso = (_inst.x or "")
+                if opt_expiry_iso and opt_expiry_iso <= _today_iso:
+                    opt_expired = True
 
         async def _roll_past_month(matched_fut_expiry: str):
             """Pick the first future for this underlying whose expiry is
@@ -587,20 +615,17 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
         if items:
             fut_sym_upper = fut_sym.upper()
             prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
-            # Pass 1: exact match (covers NSE/NFO).
-            for inst in items:
-                if (inst.s or "").upper() == fut_sym_upper:
-                    if _live(inst) and not opt_expired:
-                        return inst.s
-                    # Rollover: either the matched future has settled OR
-                    # the option itself has expired (MCX commodity rule —
-                    # options settle ~5 business days before the futures).
-                    # Operator: "when options expire consider the next
-                    # crudeoil future as the spot."
-                    rolled = await _roll_past_month(inst.x or "")
-                    if rolled:
-                        return rolled
-                    return None
+            # Pass 1: exact match (covers NSE/NFO) via the by-symbol
+            # index — O(1) instead of a full items walk.
+            _exact = _instrument_index(items).get(fut_sym_upper)
+            if _exact is not None:
+                inst = _exact
+                if _live(inst) and not opt_expired:
+                    return inst.s
+                rolled = await _roll_past_month(inst.x or "")
+                if rolled:
+                    return rolled
+                return None
             # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
             # When multiple matches exist (rare — e.g. CRUDEOIL26JUL19FUT
             # vs an extension) we pick the FIRST in instrument-cache
