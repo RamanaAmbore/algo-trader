@@ -3392,25 +3392,24 @@
       if (Number.isFinite(pnl) && pnl > 0) classes.push('row-hold-up');
       else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
       else classes.push('row-hold-flat');
-      // F&O-underlying tagging — if the held stock has option contracts
-      // listed, flag the row so the operator can spot opportunities to
-      // write covered calls / cash-secured puts. Two states:
-      //   row-hold-fno-lot   → qty is a whole multiple ≥ 1 lot (covered
-      //                        call viable RIGHT NOW)
-      //   row-hold-fno-sub   → underlying exists but qty < 1 lot
-      // Cheap O(1) Map lookup via getOptionUnderlyingLot — no walk per
-      // render. Only fires when the instruments cache is loaded.
+      // F&O-eligibility tagging — two ORTHOGONAL dimensions, two
+      // independent classes, both can apply to the same row:
+      //   row-hold-fno     → stock has options listed (F&O eligible)
+      //   row-hold-fno-lot → qty ≥ 1 lot (covered-call viable RIGHT NOW)
+      // The two indicators encode different facts (fundamental
+      // eligibility vs sized-position eligibility), so they get
+      // distinct visual treatments: a violet left stripe for F&O
+      // eligibility and a green prepended dot for lot-viability. A
+      // non-F&O stock gets neither; an F&O sub-lot row gets only the
+      // violet stripe; an F&O lot-viable row gets BOTH (stripe + dot).
       try {
         if (getInstrument) {
-          // Lazy-import to avoid circulars; the symbol-resolution module
-          // is already loaded as part of the broader instruments cache.
-          // eslint-disable-next-line no-undef
           const sym = String(r.tradingsymbol || '').toUpperCase();
           const lot = _fnoLotFor(sym);
           if (lot > 0) {
+            classes.push('row-hold-fno');
             const qty = Math.abs(Number(r.qty_hold) || Number(r.qty_pos) || 0);
             if (qty >= lot) classes.push('row-hold-fno-lot');
-            else            classes.push('row-hold-fno-sub');
           }
         }
       } catch (_) { /* defensive — cache miss shouldn't break row class */ }

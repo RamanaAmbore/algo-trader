@@ -604,11 +604,20 @@
 </script>
 
 <div class="payoff-chart" style="--chart-h: {height}px">
-  {#if loading && (!payoff.length || spot == null)}
-    <!-- Loading state — shown while the backend is still resolving
-         a real spot price. Suppresses the brief "fallback strike"
-         flash for MCX commodities when the instruments cache is
-         cold and the spot resolver falls back to the strike. -->
+  {#if (legCount ?? 0) === 0 && !payoff.length}
+    <!-- No legs selected — chart has nothing to plot. Tell the
+         operator instead of leaving a stale "Resolving spot…" message
+         that implied an in-flight fetch when there's actually nothing
+         to fetch. -->
+    <div class="payoff-empty">
+      Pick legs to see payoff.
+    </div>
+  {:else if loading && (!payoff.length || spot == null)}
+    <!-- Loading state — shown while the backend is actively resolving
+         a real spot price with at least one leg in flight. Suppresses
+         the brief "fallback strike" flash for MCX commodities when
+         the instruments cache is cold and the spot resolver falls
+         back to the strike. -->
     <div class="payoff-empty">
       Resolving spot…
     </div>
