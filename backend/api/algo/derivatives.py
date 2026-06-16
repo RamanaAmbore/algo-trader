@@ -541,20 +541,34 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
             same-month-rollover path picks the next-out future."""
             x = (inst.x or "")
             return x and x > _today_iso
+        # Has the OPTION itself expired? Even when the matching future is
+        # still alive (MCX commodity options expire 5 business days
+        # BEFORE the futures), the operator's broker app rolls to the
+        # next-out FUTURE because the held option position is settled
+        # for the rest of the session. Look up the option's own expiry
+        # from the instruments cache and treat today >= option.x as an
+        # expired option that should anchor to the next future.
+        opt_expired = False
+        if items:
+            sym_upper = sym
+            for inst in items:
+                if (inst.s or "").upper() == sym_upper:
+                    if (inst.x or "") and (inst.x or "") <= _today_iso:
+                        opt_expired = True
+                    break
         if items:
             fut_sym_upper = fut_sym.upper()
             prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
             # Pass 1: exact match (covers NSE/NFO).
             for inst in items:
                 if (inst.s or "").upper() == fut_sym_upper:
-                    if _live(inst):
+                    if _live(inst) and not opt_expired:
                         return inst.s
-                    # Same-day-expiry rollover: use the next-out front
-                    # month for this underlying. Operator: "when options
-                    # expire consider the next crudeoil future as the
-                    # spot." Falls through to the second-pass exact-
-                    # match check below for non-MCX underlyings via the
-                    # weekly-path NSE walk.
+                    # Rollover: either the matched future has settled OR
+                    # the option itself has expired (MCX commodity rule —
+                    # options settle ~5 business days before the futures).
+                    # Operator: "when options expire consider the next
+                    # crudeoil future as the spot."
                     if is_mcx_underlying(root):
                         rolled = await lookup_mcx_front_month_future(root)
                         if rolled:
@@ -569,7 +583,7 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
                 s = (inst.s or "").upper()
                 if (s.startswith(prefix) and s.endswith("FUT")
                         and s != fut_sym_upper):
-                    if _live(inst):
+                    if _live(inst) and not opt_expired:
                         return inst.s
                     if is_mcx_underlying(root):
                         rolled = await lookup_mcx_front_month_future(root)
