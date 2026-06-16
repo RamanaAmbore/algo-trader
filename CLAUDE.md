@@ -427,29 +427,74 @@ Operators add / edit / delete broker accounts via `/admin/brokers` instead of ed
 
 ## Multi-Account IPv6 Source Binding (Kite + Dhan)
 
-> **2026-06-15 — Hostinger VPS limitation.** The upstream router on
-> the prod VPS only egresses packets sourced from `2a02:4780:12:9e1d::1`
-> (the primary IPv6). The other addresses in the documented `/48`
-> (`::2` through `::5`) bind cleanly to `eth0` but their outbound
-> packets are silently dropped at the provider edge (uRPF-like
-> filter). Confirmed with `curl --interface 2a02:4780:12:9e1d::4
-> https://auth.dhan.co/` → connect timeout 10s, vs `::1` → 200 OK.
-> Result: **the multi-IPv6 fix below works in principle but is
-> blocked by Hostinger today**. Workarounds in active use:
-> - **One Dhan account active at a time.** `DH3747` is currently
->   `is_active=false` (DB note: "auto-disabled 2026-06-15: Dhan IP
->   rotation"); only `DH6847` egresses + serves positions / holdings.
->   Operator flips which one is active in `/admin/brokers` when
->   they need the other account's data.
-> - **Set Dhan dashboard Token Validity to 24h on both partner apps.**
->   The 5-min `token_age=305s` evictions seen in logs are partly the
->   Dhan dashboard's per-app validity dropdown. Setting both to 24h
->   reduces re-login frequency from every 5 min to once a day, which
->   gives the second-account-disabled workaround a stable runtime.
-> - Reactivate the multi-IP path once Hostinger routes the full /48
->   from us (open a support ticket asking them to disable source-IP
->   filtering or to add explicit static routes for `::2`–`::5` via
->   the eth0 gateway).
+> **2026-06-16 — Resolved via IP-sharing across brokers.** The
+> Hostinger VPS edge router only egresses traffic from the two
+> documented working IPs (`2a02:4780:12:9e1d::1` IPv6 and
+> `69.62.78.136` IPv4). The other addresses in the documented `/48`
+> (`::2`–`::5`) bind cleanly to `eth0` but their outbound packets
+> are silently dropped at the provider edge. Confirmed with `curl
+> --interface 2a02:4780:12:9e1d::4 https://auth.dhan.co/` → connect
+> timeout 10s, vs `::1` → 200 OK.
+>
+> **What works in prod today** — each broker account binds to one of
+> the two egressing IPs, and IPs are SHARED across brokers (different
+> brokers maintain independent per-IP session registries, so a Kite
+> account and a Dhan account can sit on the same IP with zero
+> interference):
+>
+> | Account | Broker | source_ip |
+> |---|---|---|
+> | ZG0790 | Kite | `69.62.78.136` |
+> | DH6847 | Dhan | `69.62.78.136` (shares Kite's IPv4) |
+> | ZJ6294 | Kite | `2a02:4780:12:9e1d::1` |
+> | DH3747 | Dhan | `2a02:4780:12:9e1d::1` (shares Kite's IPv6) |
+> | GR87DF | Groww | (default route) |
+>
+> Both Dhan accounts now load successfully with stable tokens — zero
+> rotation events in the steady state. Operator does NOT need to
+> rotate which Dhan account is active.
+
+**Defense-in-depth at the broker registry level:**
+
+1. **Dhan multi-account stabilizer** in
+   [`Connections.rebuild_from_db`](backend/shared/helpers/connections.py)
+   groups all Dhan rows by `source_ip` (treating blank as "OS
+   default"). If two Dhan rows would share the same egress IP, only
+   the lowest-`priority` row is loaded; the rest are deferred with
+   a warning log. Operator swaps which one is active by editing
+   `broker_accounts.priority` in `/admin/brokers`. With the IP-sharing
+   layout above this never fires in practice — but if a future
+   operator forgets to set `source_ip` on a new Dhan account, the
+   stabilizer prevents the rotation cycle from starting.
+
+2. **PriceBroker soft-failure on empty quotes** in
+   [`backend/shared/brokers/registry.py`](backend/shared/brokers/registry.py)
+   — `_quote_has_data` / `_ltp_has_data` predicates check that the
+   returned dict has at least one symbol with a usable `last_price`
+   or `ohlc.close`. When a broker returns `{}` (Dhan does this for
+   MCX commodity futures it doesn't expose, even though the call
+   succeeds), PriceBroker now treats the empty response as a soft
+   failure and falls through to the next broker. Without this, a
+   single Dhan-first preference would mask Kite's MCX coverage and
+   spot resolution would land on the median-strike fallback (the
+   "CRUDEOIL spot 8200" bug, 2026-06-16).
+
+3. **Same-day-expiry rollover** in
+   [`backend/api/algo/derivatives.py::lookup_future_for_option`](backend/api/algo/derivatives.py)
+   — when the OPTION's own expiry is today or earlier, the resolver
+   rolls past the matched-month future to the next listed contract.
+   MCX commodity options settle ~5 business days before the future
+   (e.g. CRUDEOIL JUN options expire Jun 16, JUN future expires Jun
+   19), so the operator's broker app rolls to JUL during the late
+   session — and so does the chart now.
+
+**If you ever need MORE than 2 working IPs** (e.g. 3+ Dhan accounts
+on this VPS): open a Hostinger support ticket asking them to enable
+egress routing for the full `2a02:4780:12:9e1d::/48` subnet. They
+currently filter source IPs at the provider edge. Once they unblock
+the subnet, you can bind each Dhan account to its own `/128` from
+the documented allocation below. Until then, 2 Dhan accounts is the
+ceiling without a residential proxy / per-account VPS.
 
 Two of the three broker integrations enforce some form of "one active session per source IP" rule and need dedicated IPv6 binding when more than one account is loaded on the same server. Groww does not.
 
@@ -461,7 +506,11 @@ Two of the three broker integrations enforce some form of "one active session pe
 
 **Solution:** All Kite + Dhan accounts use IPv6 addresses from the server's `/48` subnet (`2a02:4780:12:9e1d::/48`). Each account binds to a unique IPv6 via the `source_ip` column on `broker_accounts`. Every account **must** have `source_ip` set — without it the OS may choose IPv4 or IPv6 unpredictably and the per-IP rules above kick in.
 
-| Account | Broker | Source IP | Whitelist required at broker? |
+**Aspirational allocation** (only usable once Hostinger unblocks the
+`/48` egress). The actual live allocation is the IP-sharing table at
+the top of this section.
+
+| Account | Broker | Aspirational source_ip | Whitelist required at broker? |
 |---|---|---|---|
 | ZG0790 | Kite | `2a02:4780:12:9e1d::2` | Yes (Kite developer console) |
 | ZJ6294 | Kite | `2a02:4780:12:9e1d::3` | Yes (Kite developer console) |
@@ -469,7 +518,10 @@ Two of the three broker integrations enforce some form of "one active session pe
 | DH6847 | Dhan | `2a02:4780:12:9e1d::5` | No |
 | (future) | any | `2a02:4780:12:9e1d::N` | Kite: yes; Dhan: no |
 
-Server IPv4 (`69.62.78.136`) is **not used** for broker traffic — only for web traffic. `::1` is reserved as the server's primary IPv6. Account IPs start from `::2`.
+Server IPv4 (`69.62.78.136`) **was historically** reserved for web
+traffic, but with Hostinger's edge filter blocking `::2`–`::5`, we
+now use it for broker traffic too (shared between ZG0790 Kite and
+DH6847 Dhan).
 
 ### Adding a new account
 
