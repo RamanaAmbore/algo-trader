@@ -1066,30 +1066,19 @@
     // here so this component can also be embedded in flows that
     // intentionally allow anonymous demo viewers.
     loadOverrides();
-    // Restore previous account-multiselect from sessionStorage so
-    // the filter survives a tab refresh. Wrapped in try/catch
-    // because cached account codes may no longer exist on the
-    // current server (operator switched broker accounts).
+    // Account selection defaults to ALL ACCOUNTS on every page load.
+    // Operator: "all accounts should be default for positions and
+    // holdings in pulse." Previously the picker restored its
+    // sessionStorage cache here, so a prior narrowing (e.g. ZJ6294
+    // only) stuck across tab reopens. Now within-tab toggles still
+    // persist via the auto-save $effect below — but a fresh tab
+    // starts wide. The "seen accounts" ledger also resets so
+    // late-arriving brokers (Dhan, Groww) are treated as new and
+    // surface in the wide-default view immediately. */
     if (accountPicker) {
-      try {
-        const cachedP = sessionStorage.getItem('mp.positionsAccounts');
-        if (cachedP) positionsAccounts = JSON.parse(cachedP) || [];
-      } catch (_) { positionsAccounts = []; }
-      try {
-        const cachedH = sessionStorage.getItem('mp.holdingsAccounts');
-        if (cachedH) holdingsAccounts = JSON.parse(cachedH) || [];
-      } catch (_) { holdingsAccounts = []; }
-      // Restore the "seen accounts" ledger so the auto-add-new-broker
-      // logic below knows which accounts were known last time. Without
-      // it, every tab refresh would treat every account as "new" and
-      // re-add everything (clobbering the operator's manual exclusions).
-      try {
-        const cachedSeen = sessionStorage.getItem('mp.seenAccounts');
-        if (cachedSeen) {
-          const parsed = JSON.parse(cachedSeen);
-          if (Array.isArray(parsed)) _seenAccounts = new Set(parsed.map(String));
-        }
-      } catch (_) { _seenAccounts = new Set(); }
+      positionsAccounts = [];
+      holdingsAccounts  = [];
+      _seenAccounts     = new Set();
     }
     // Restore the Show filter (sources + watchlists). The eager seed
     // at $state declaration acts as fallback when no persisted value
@@ -2292,49 +2281,19 @@
                 'mp.seenAccounts', JSON.stringify([..._seenAccounts]));
             } catch (_) {}
           }
-          // Stage (a): first-load seed. Behaviour preserved from the
-          // prior implementation — adds EVERY known account when no
-          // persisted state exists, then latches.
+          // Stage (a): first-load latch. Operator: "all accounts should
+          // be default for positions and holdings in pulse." The picker
+          // intentionally STARTS EMPTY (= "All accounts" filter), so
+          // first-load just marks the ledger and latches without
+          // pre-filling. Stage (b) above handles late-arriving brokers
+          // when the operator has explicitly narrowed (non-empty
+          // selection); empty-selection sessions stay wide.
           if (!_seededFromBrokers) {
-            let restoredP = false;
-            let restoredH = false;
-            try {
-              const cP = sessionStorage.getItem('mp.positionsAccounts');
-              if (cP) {
-                const parsed = JSON.parse(cP);
-                if (Array.isArray(parsed) && parsed.length > 0) restoredP = true;
-              }
-              const cH = sessionStorage.getItem('mp.holdingsAccounts');
-              if (cH) {
-                const parsed = JSON.parse(cH);
-                if (Array.isArray(parsed) && parsed.length > 0) restoredH = true;
-              }
-            } catch (_) {}
-            if (!restoredP) {
-              const cur = new Set(positionsAccounts);
-              let changed = false;
-              for (const a of sorted) {
-                if (!cur.has(a)) { cur.add(a); changed = true; }
-              }
-              if (changed) positionsAccounts = [...cur].sort();
-            }
-            if (!restoredH) {
-              const cur = new Set(holdingsAccounts);
-              let changed = false;
-              for (const a of sorted) {
-                if (!cur.has(a)) { cur.add(a); changed = true; }
-              }
-              if (changed) holdingsAccounts = [...cur].sort();
-            }
-            // Mark every account as seen so subsequent stage (b)
-            // iterations don't try to re-add them on later polls.
             for (const a of sorted) _seenAccounts.add(a);
             try {
               sessionStorage.setItem(
                 'mp.seenAccounts', JSON.stringify([..._seenAccounts]));
             } catch (_) {}
-            // Mark as seeded once the broker fetch has confirmed —
-            // subsequent loadPulse polls run stage (b) only.
             if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
           }
         }
