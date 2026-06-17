@@ -3350,22 +3350,18 @@
                 {#if c.kind === 'eq'}
                   <!-- Equity-holding leg tag — operator scanning the
                        Candidates panel sees at a glance which row is
-                       the cash-stock layer behind the option strategy. -->
+                       the cash-stock layer behind the option strategy.
+                       qty cell carries `opening_qty` for intraday-sold
+                       rows so the size reads the same as every other
+                       holding row; the broker's pnl / cur_val / day_change
+                       fields are also computed against opening_qty, so
+                       treating the row as held end-to-end is consistent
+                       with the rest of the holdings view. Operator: "why
+                       bhel underlying is shown with sold chip in legs of
+                       derivatives page. we hold it in holdings." Earlier
+                       SOLD chip was over-claiming. -->
                   <span class="cand-split-tag cand-eq-tag"
-                        title={Number(c.qty || 0) !== 0
-                          ? `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`
-                          : `Cash equity holding of the underlying, fully sold today — realised P&L is locked in and applied as a flat offset to the payoff curve`}>STOCK</span>
-                  {#if Number(c.qty || 0) === 0 && Number(c.opening_qty || 0) !== 0}
-                    <!-- Sold-today badge. The qty cell shows the opening
-                         qty (3000) so the operator reads the position
-                         size from the same column as every other row;
-                         the chip flags that the size represents the
-                         opening position now realised, not current
-                         exposure. Realised P&L flows into the merged
-                         payoff as a flat offset (see _mergedPayoff). -->
-                    <span class="cand-split-tag cand-eq-sold-tag"
-                          title={`Fully sold intraday — qty shown is the opening size, realised P&L flows into the payoff as a flat offset`}>SOLD</span>
-                  {/if}
+                        title={`Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`}>STOCK</span>
                 {/if}
                 {#if c._splitTag === 'closed'}
                   <!-- Split-row tag: this row represents the portion of
@@ -4646,14 +4642,6 @@
     color: #38bdf8;
     background: rgba(56, 189, 248, 0.18);
     border: 1px solid rgba(56, 189, 248, 0.45);
-  }
-  /* Sold-today follow-on tag — warm amber so it reads next to STOCK
-     as "this stock was held but isn't anymore — its realised P&L is
-     in the payoff as a flat offset, not a curve". */
-  .cand-eq-sold-tag {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.16);
-    border: 1px solid rgba(251, 191, 36, 0.45);
   }
   /* Soft sky tint on the whole eq row so it reads as a different
      layer from the option/futures legs without competing with the
