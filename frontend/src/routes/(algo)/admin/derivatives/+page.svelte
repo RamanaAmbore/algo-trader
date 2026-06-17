@@ -30,7 +30,7 @@
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
-    listFutures, getInstrument, getOptionUnderlyingLot,
+    listFutures, getInstrument,
   } from '$lib/data/instruments';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
@@ -597,29 +597,19 @@
       if (!u) continue;
       set.add(u);
     }
-    // Surface F&O-eligible holdings too so the operator can analyse
-    // "what does a covered call against THIS stock I hold look like"
-    // even before any option position exists. Same shared helper that
-    // powers Pulse + Performance lot detection — if the cash equity
-    // has CE/PE listed, the underlying name lands in the picker.
+    // Dropdown is scoped to roots with at least one derivative
+    // position. F&O-eligible holdings without any matching option /
+    // future in the book are intentionally NOT surfaced here —
+    // operator: "there are no derivative positions on HAL but dropdown
+    // shows HAL" — the page is a derivative-analysis workspace, and
+    // listing every F&O-eligible stock the operator happens to hold
+    // would clutter the picker with hypotheticals.
     //
-    // Reading `instrumentsReady` here is what makes this derived
-    // re-evaluate when the instruments cache finally lands. Without
-    // the explicit dep, a cold load where fetchHoldings completes
-    // BEFORE loadInstruments leaves the picker empty of holdings —
-    // getOptionUnderlyingLot returns 0 for every symbol while the
-    // cache is empty, the derived caches that result, and the later
-    // `instrumentsReady = true` flip doesn't re-trigger because the
-    // derived isn't tracking it. Operator: "legs shows option but
-    // doesn't show underlying which is part of holdings" — the
-    // dropdown race was the upstream cause.
-    if (instrumentsReady) {
-      for (const h of holdings) {
-        const sym = String(h?.symbol || '').toUpperCase();
-        if (!sym) continue;
-        if (getOptionUnderlyingLot(sym) > 0) set.add(sym);
-      }
-    }
+    // Holdings still layer into Legs through the eq merge inside
+    // candidatePositions — when the operator picks a root that DOES
+    // have derivatives AND they hold the underlying, the eq leg
+    // surfaces alongside the option/future legs for combined
+    // exposure analysis.
     return Array.from(set).sort();
   });
 
