@@ -47,6 +47,7 @@ from backend.api.routes.quote import QuoteController, SparklineController
 from backend.api.routes.positions import PositionsController
 from backend.api.routes.settings import SettingsController
 from backend.api.routes.brokers import BrokersController
+from backend.api.routes.hedge_proxies import HedgeProxiesController, seed_hedge_proxies
 from backend.api.routes.research import ResearchController
 from backend.api.routes.economic import EconomicController
 from backend.api.routes.charts import ChartsController
@@ -202,6 +203,7 @@ _route_handlers = [
     ChartsController,
     OptionsController,
     BrokersController,
+    HedgeProxiesController,
     ResearchController,
     EconomicController,
     WatchlistController,
@@ -541,7 +543,7 @@ app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, _start_kite_ticker, bg_startup],
+    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup],
     on_shutdown=[bg_shutdown, _stop_kite_ticker],
     before_request=_log_visitor,
 )

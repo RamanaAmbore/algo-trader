@@ -10,7 +10,8 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
-  import { fetchSettings, updateSetting, resetSetting, fetchWatchlists } from '$lib/api';
+  import { fetchSettings, updateSetting, resetSetting, fetchWatchlists,
+           fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy } from '$lib/api';
   import Select   from '$lib/Select.svelte';
 
   // Pinned-watchlist symbols feed the orders.default_symbol dropdown
@@ -68,6 +69,70 @@
     try { settings = await fetchSettings(); }
     catch (e) { error = e.message; }
     finally   { loading = false; }
+    loadProxies();
+  }
+
+  // ── Hedge proxy CRUD ───────────────────────────────────────────────
+  /** @type {Array<{id:number,proxy_symbol:string,target_root:string,
+   *                conversion_kind:string,static_factor:number|null,
+   *                beta:number|null,correlation:number,kind:string,
+   *                note:string|null,source:string,is_active:boolean}>} */
+  let proxies = $state([]);
+  let proxiesErr = $state('');
+  let proxyForm = $state({
+    proxy_symbol: '', target_root: '', conversion_kind: 'dynamic',
+    static_factor: '', beta: '', correlation: '1.0', kind: 'units',
+    note: '', is_active: true,
+  });
+  async function loadProxies() {
+    proxiesErr = '';
+    try { const r = await fetchHedgeProxies(); proxies = Array.isArray(r?.rows) ? r.rows : []; }
+    catch (e) { proxiesErr = e?.message || 'fetch failed'; }
+  }
+  async function addProxy() {
+    proxiesErr = '';
+    try {
+      const payload = {
+        proxy_symbol: String(proxyForm.proxy_symbol || '').trim().toUpperCase(),
+        target_root:  String(proxyForm.target_root  || '').trim().toUpperCase(),
+        conversion_kind: proxyForm.conversion_kind,
+        static_factor: proxyForm.static_factor === '' ? null : Number(proxyForm.static_factor),
+        beta:          proxyForm.beta          === '' ? null : Number(proxyForm.beta),
+        correlation:   Number(proxyForm.correlation) || 1.0,
+        kind:          proxyForm.kind,
+        note:          proxyForm.note || null,
+        is_active:     !!proxyForm.is_active,
+      };
+      if (!payload.proxy_symbol || !payload.target_root) {
+        proxiesErr = 'proxy_symbol and target_root required';
+        return;
+      }
+      await createHedgeProxy(payload);
+      proxyForm = { proxy_symbol:'', target_root:'', conversion_kind:'dynamic',
+                    static_factor:'', beta:'', correlation:'1.0', kind:'units',
+                    note:'', is_active:true };
+      await loadProxies();
+    } catch (e) { proxiesErr = e?.message || 'create failed'; }
+  }
+  async function saveProxy(row) {
+    proxiesErr = '';
+    try {
+      await updateHedgeProxy(row.id, {
+        conversion_kind: row.conversion_kind,
+        static_factor: row.static_factor === '' || row.static_factor == null ? null : Number(row.static_factor),
+        beta:          row.beta          === '' || row.beta          == null ? null : Number(row.beta),
+        correlation:   Number(row.correlation),
+        kind:          row.kind,
+        note:          row.note,
+        is_active:     !!row.is_active,
+      });
+      await loadProxies();
+    } catch (e) { proxiesErr = e?.message || 'save failed'; }
+  }
+  async function removeProxy(row) {
+    proxiesErr = '';
+    try { await deleteHedgeProxy(row.id); await loadProxies(); }
+    catch (e) { proxiesErr = e?.message || 'delete failed'; }
   }
 
   function onEdit(/** @type {any} */ s, /** @type {any} */ newVal) {
@@ -288,6 +353,98 @@
       </div>
     </section>
   {/each}
+
+  <!-- Hedge-proxy table — backs the /admin/derivatives Underlying
+       picker's proxy-aware Tier 4 + the proxy-eq leg math. Operator:
+       "there should be a panel to enter in the current admin settings
+       pages. the code should use this table." -->
+  <section class="algo-status-card p-2 mb-2" data-status="inactive">
+    <h2 class="text-[0.8rem] font-bold mb-1">Hedge proxies</h2>
+    <p class="text-[0.6rem] opacity-70 mb-1">
+      Cross-reference between a held instrument (GOLDBEES, NIFTYBEES, …)
+      and the option underlying it can hedge. <code>dynamic</code> mode
+      derives factor from current LTPs; <code>static</code> uses
+      <code>static_factor</code>; <code>beta</code> uses <code>beta</code>.
+      <code>correlation</code> (0–1) scales the effective qty.
+    </p>
+    {#if proxiesErr}
+      <div class="text-[0.65rem] text-red-300 mb-1">{proxiesErr}</div>
+    {/if}
+    {#if proxies.length}
+      <div class="overflow-x-auto mb-2">
+        <table class="text-[0.65rem] w-full">
+          <thead class="opacity-70">
+            <tr><th class="text-left p-1">Proxy</th>
+                <th class="text-left p-1">Target</th>
+                <th class="text-left p-1">Mode</th>
+                <th class="text-left p-1">Static</th>
+                <th class="text-left p-1">Beta</th>
+                <th class="text-left p-1">Corr</th>
+                <th class="text-left p-1">Kind</th>
+                <th class="text-left p-1">Note</th>
+                <th class="text-left p-1">Src</th>
+                <th class="text-left p-1">Active</th>
+                <th></th></tr>
+          </thead>
+          <tbody>
+            {#each proxies as p (p.id)}
+              <tr class="border-t border-white/5">
+                <td class="p-1 font-mono">{p.proxy_symbol}</td>
+                <td class="p-1 font-mono">{p.target_root}</td>
+                <td class="p-1">
+                  <select bind:value={p.conversion_kind} class="field-input w-20">
+                    <option value="dynamic">dynamic</option>
+                    <option value="static">static</option>
+                    <option value="beta">beta</option>
+                  </select>
+                </td>
+                <td class="p-1">
+                  <input type="number" step="0.0001" bind:value={p.static_factor} class="field-input w-16" />
+                </td>
+                <td class="p-1">
+                  <input type="number" step="0.01" bind:value={p.beta} class="field-input w-14" />
+                </td>
+                <td class="p-1">
+                  <input type="number" step="0.01" min="0" max="1" bind:value={p.correlation} class="field-input w-14" />
+                </td>
+                <td class="p-1">
+                  <select bind:value={p.kind} class="field-input w-16">
+                    <option value="units">units</option>
+                    <option value="shares">shares</option>
+                  </select>
+                </td>
+                <td class="p-1"><input bind:value={p.note} class="field-input w-44" /></td>
+                <td class="p-1 opacity-60">{p.source}</td>
+                <td class="p-1"><input type="checkbox" bind:checked={p.is_active} /></td>
+                <td class="p-1 flex gap-1">
+                  <button class="btn-primary text-[0.6rem] py-0.5 px-2" onclick={() => saveProxy(p)}>Save</button>
+                  <button class="btn-secondary text-[0.6rem] py-0.5 px-2" onclick={() => removeProxy(p)}>×</button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+    <div class="flex flex-wrap items-center gap-1 text-[0.65rem]">
+      <input placeholder="Proxy (e.g. GOLDBEES)" bind:value={proxyForm.proxy_symbol} class="field-input w-32" />
+      <input placeholder="Target (e.g. GOLD)"    bind:value={proxyForm.target_root}  class="field-input w-28" />
+      <select bind:value={proxyForm.conversion_kind} class="field-input w-20">
+        <option value="dynamic">dynamic</option>
+        <option value="static">static</option>
+        <option value="beta">beta</option>
+      </select>
+      <input placeholder="static_factor" bind:value={proxyForm.static_factor} class="field-input w-20" />
+      <input placeholder="beta"          bind:value={proxyForm.beta}          class="field-input w-16" />
+      <input placeholder="correlation"   bind:value={proxyForm.correlation}   class="field-input w-16" />
+      <select bind:value={proxyForm.kind} class="field-input w-16">
+        <option value="units">units</option>
+        <option value="shares">shares</option>
+      </select>
+      <input placeholder="note" bind:value={proxyForm.note} class="field-input flex-1 min-w-32" />
+      <button class="btn-primary text-[0.65rem] py-0.5 px-2" onclick={addProxy}>+ Add</button>
+    </div>
+  </section>
 {/if}
 
 <style>

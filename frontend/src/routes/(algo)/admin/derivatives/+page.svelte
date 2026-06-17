@@ -38,7 +38,8 @@
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
-    proxiesForTarget, proxyTargets, computeProxyFactor,
+    loadHedgeProxies, proxiesForTarget, proxyTargets,
+    getProxyRow, computeProxyFactor, computeEffectiveQty,
   } from '$lib/data/hedgeProxies';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -752,13 +753,14 @@
       if (!have.has(sym) && getOptionUnderlyingLot(sym) > 0) set.add(sym);
       // (b) Proxy hedge — operator holds an ETF (GOLDBEES, NIFTYBEES
       //     etc.) whose tracked target has its own F&O book at Kite.
-      //     Stage 1 mapping in $lib/data/hedgeProxies.js. Picking the
-      //     target from the dropdown auto-checks the proxy eq leg and
-      //     the conversion-factor math kicks in via _equityLegs +
-      //     _mergedPayoff. Operator: "is there anyway to use them
-      //     based units and qty to hedge against option in legs and
-      //     payoff … this concept should be generalized when there is
-      //     no strictly underlying relation."
+      //     Stage 2 mapping lives in the `hedge_proxies` DB table
+      //     edited via /admin/settings. Picking the target from the
+      //     dropdown auto-checks the proxy eq leg; the conversion
+      //     factor (dynamic/static/beta) + correlation come from the
+      //     row. Read proxyTableReady so this derived re-runs when
+      //     the async load completes (otherwise the page would
+      //     hydrate against an empty cache and never refresh).
+      void proxyTableReady;
       const pt = proxyTargets(sym);
       if (pt) {
         for (const t of pt.targets) {
@@ -1095,6 +1097,7 @@
     // silverbees and goldbees holdings … no need to have a separate
     // table." Factor = proxy_LTP / target_spot, computed lazily
     // when strategy.spot is in hand.
+    void proxyTableReady;   // re-derive when the proxy table loads
     const _proxies = proxiesForTarget(target);
     if (_proxies.length) {
       const _allowed = new Set(_proxies.map(p => p.proxy));
@@ -1371,13 +1374,18 @@
       let effQty = rawQty;
       let effCost = cost;
       if (eq.proxy_for) {
-        // Runtime factor from current LTPs. Skip the proxy leg if
-        // either price is missing — we can't responsibly convert
-        // GOLDBEES into GOLD without knowing the gold spot.
-        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
+        // Row carries the conversion mode (dynamic/static/beta) +
+        // correlation. Dynamic = proxy_LTP / target_spot; static =
+        // row.static_factor; beta = row.beta. Correlation scales the
+        // effective qty so the operator can dial in "this hedge is
+        // 0.85 reliable". computeEffectiveQty handles the math.
+        const row = getProxyRow(eq.symbol, eq.proxy_for);
+        if (!row) continue;
+        const factor = computeProxyFactor(row, Number(eq.ltp), _targetSpot);
         if (factor <= 0) continue;
-        effQty  = rawQty * factor;
-        effCost = cost   / factor;
+        effQty  = computeEffectiveQty(row, factor, rawQty);
+        effCost = cost / factor;
+        if (effQty === 0) continue;
       }
       linearLegs.push({ qty: effQty, cost: effCost });
     }
@@ -1447,9 +1455,12 @@
       if (rawQty === 0) continue;
       let effQty = rawQty;
       if (eq.proxy_for) {
-        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
+        const row = getProxyRow(eq.symbol, eq.proxy_for);
+        if (!row) continue;
+        const factor = computeProxyFactor(row, Number(eq.ltp), _targetSpot);
         if (factor <= 0) continue;
-        effQty = rawQty * factor;
+        effQty = computeEffectiveQty(row, factor, rawQty);
+        if (effQty === 0) continue;
       }
       extraDelta += effQty;
     }
@@ -1470,6 +1481,11 @@
   // the contract universe from the instruments cache (already loaded
   // for /console autocomplete) — no extra API round-trips.
   let instrumentsReady = $state(false);
+  // True once the hedge-proxy table has resolved on mount. The proxy
+  // derivations (_hedgeOpportunities, candidatePositions eq merge) read
+  // this so they re-trigger after the async fetch lands; without it,
+  // the page would render with an empty proxy cache and never refresh.
+  let proxyTableReady  = $state(false);
   let chainUnderlying  = $state('');
   let chainExpiry      = $state('');
   // Kind multi-select — operator picks any combination of Options
@@ -2762,6 +2778,12 @@
       await loadInstruments();
       instrumentsReady = true;
     } catch (_) { /* instruments unreachable — chain picker hides */ }
+    // Load the proxy-hedge table once at mount. Failure leaves the
+    // module cache empty — page degrades gracefully (no proxy legs)
+    // rather than crashing. /admin/settings panel forces a reload
+    // after mutations.
+    try { await loadHedgeProxies(); proxyTableReady = true; }
+    catch (_) { /* operator's API may be unreachable — silent */ }
     // Two separate cadences:
     //   - hot (5 s): analytics / strategy aggregate — Greeks + IV move
     //     intra-tick so the operator wants this fresh.
@@ -3436,20 +3458,23 @@
                           ? `Proxy hedge — ${c.symbol} ETF tracks ${c.proxy_for}; converted to target units at runtime via current LTPs`
                           : `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`}>STOCK</span>
                   {#if c.proxy_for}
+                    {@const _proxyRow = getProxyRow(c.symbol, c.proxy_for)}
                     {@const _spotForChip = Number(strategy?.spot) || 0}
-                    {@const _factorChip = _spotForChip > 0 ? (Number(c.ltp) / _spotForChip) : 0}
+                    {@const _factorChip = _proxyRow ? computeProxyFactor(_proxyRow, Number(c.ltp), _spotForChip) : 0}
                     {@const _rawQtyChip = Number(c.qty || 0) || Number(c.opening_qty || 0) || 0}
-                    {@const _effQtyChip = _factorChip > 0 ? _rawQtyChip * _factorChip : 0}
+                    {@const _effQtyChip = _proxyRow && _factorChip > 0 ? computeEffectiveQty(_proxyRow, _factorChip, _rawQtyChip) : 0}
+                    {@const _corrChip = Number(_proxyRow?.correlation ?? 1)}
+                    {@const _modeChip = _proxyRow?.conversion_kind || 'dynamic'}
                     <!-- PROXY chip — flags that the eq leg is a
                          proxy hedge rather than the literal underlying
                          being held. Tooltip carries the conversion
-                         math so the operator can sanity-check the
-                         factor against current LTPs. Operator: "is
-                         there anyway to use them based units and qty
-                         to hedge against option in legs and payoff." -->
+                         math + correlation so the operator can sanity-
+                         check the row's parameters against the live
+                         numbers. Backed by the hedge_proxies DB row
+                         edited via /admin/settings (Stage 2). -->
                     <span class="cand-split-tag cand-proxy-tag"
                           title={_factorChip > 0
-                            ? `${_rawQtyChip} ${c.symbol} × ${_factorChip.toFixed(4)} (${c.symbol} LTP / ${c.proxy_for} spot) ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent`
+                            ? `${_modeChip} × correlation ${_corrChip.toFixed(2)}: ${_rawQtyChip} ${c.symbol} × ${_factorChip.toFixed(4)} × ${_corrChip.toFixed(2)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent`
                             : `Proxy of ${c.proxy_for} — waiting on spot to compute conversion factor`}>PROXY</span>
                   {/if}
                 {/if}

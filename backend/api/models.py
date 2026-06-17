@@ -1118,3 +1118,63 @@ class ResearchThread(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class HedgeProxy(Base):
+    """Operator-managed cross-reference between a HELD instrument
+    (`proxy_symbol`) and an UNDERLYING root (`target_root`) it can hedge
+    against. Stage 2 of the proxy-hedge feature on /admin/derivatives.
+
+    Operator: "somewhere there should be some cross reference between
+    root and instrument … don't want to hard code. these tables can have
+    multiple columns with parameter values. the conversion can be
+    static, dynamic. the correlation can be 0 to 1. for goldbees, and
+    silverbees it is one. there could be more parameters. in future, ai
+    can generate this info. there should be a panel to enter in the
+    current admin settings pages. the code should use this table."
+
+    Schema captures three conversion modes (`conversion_kind`):
+      - "dynamic" — factor derived at runtime from current LTPs
+                    (factor = proxy_LTP / target_spot). Default for
+                    most ETFs that track spot. No static_factor needed.
+      - "static"  — fixed factor stored in `static_factor`. Use when
+                    the ratio is contractually fixed.
+      - "beta"    — beta-pair correlation for stock-vs-index hedges
+                    (Stage 3 — RELIANCE → NIFTY beta=0.12 etc.).
+
+    `correlation` (0..1) is the operator's confidence in the proxy
+    relation. GOLDBEES → GOLD is ~1.0. HDFCBANK → BANKNIFTY might be
+    0.85. Downstream math multiplies the effective qty by `correlation`
+    so the operator can tune "this hedge is 80 % reliable" and the Δ
+    chip reflects that.
+
+    `source` is provenance: 'seeded' for bootstrap rows inserted on
+    first boot, 'operator' for entries added via /admin/settings,
+    'ai' for future AI-generated suggestions.
+    """
+    __tablename__ = "hedge_proxies"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    proxy_symbol: Mapped[str]    = mapped_column(String(32), nullable=False, index=True)
+    target_root: Mapped[str]     = mapped_column(String(32), nullable=False, index=True)
+    conversion_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="dynamic")
+    static_factor: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    beta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    correlation: Mapped[float]   = mapped_column(Float, nullable=False, default=1.0)
+    kind: Mapped[str]            = mapped_column(String(16), nullable=False, default="units")
+    note: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    source: Mapped[str]          = mapped_column(String(16), nullable=False, default="operator")
+    is_active: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("proxy_symbol", "target_root", name="uq_hedge_proxy_pair"),
+    )

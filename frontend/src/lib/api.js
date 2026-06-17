@@ -324,6 +324,18 @@ export const deleteOrderTemplate = (id) =>
 export const previewTicketTemplate = (payload) =>
   _post('/orders/ticket/preview', payload, { auth: true });
 
+// ── Hedge proxies (admin) ───────────────────────────────────────────────
+// Cross-reference table for proxy hedges (GOLDBEES → GOLD etc.). Backs
+// the /admin/derivatives Underlying picker's proxy-aware Tier 4 + the
+// proxy-eq leg math. Stage 2 lifted out of the frontend static const.
+export const fetchHedgeProxies   = () => _get('/admin/hedge-proxies/', { auth: true });
+export const createHedgeProxy    = (payload) =>
+  _post('/admin/hedge-proxies/', payload, { auth: true });
+export const updateHedgeProxy    = (id, payload) =>
+  _patch(`/admin/hedge-proxies/${id}`, payload, { auth: true });
+export const deleteHedgeProxy    = (id) =>
+  _del(`/admin/hedge-proxies/${id}`, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const updateSetting     = (key, value) =>

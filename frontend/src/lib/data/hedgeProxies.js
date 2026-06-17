@@ -1,123 +1,173 @@
-// Hedge-proxy mapping for the /admin/derivatives Underlying picker +
-// Legs panel. Operator: "i have goldbees and silverbees. is there
-// anyway to use them based units and qty to hedge against option in
-// legs and payoff … this concept should be generalized when there is
-// no strictly underlying relation." Stage 1.
+// Hedge-proxy mapping for /admin/derivatives. Stage 2 — the table
+// lives in the `hedge_proxies` DB row, edited from /admin/settings
+// (no static hard-coding). This module is a thin loader + in-memory
+// cache wrapping `fetchHedgeProxies`.
 //
-// Two-step approach:
-//   1. A small inline list of `proxy → targets[]` pairings tells the
-//      page which holdings hedge which underlyings (GOLDBEES hedges
-//      GOLD / GOLDM, NIFTYBEES hedges NIFTY, …). This is identity
-//      mapping only — NO conversion factor stored.
-//   2. The conversion factor is derived AT RUNTIME from current LTPs:
-//          factor = proxy_LTP / target_spot
-//      Operator: "is there anyway you determine qty and lot size based
-//      current value of total silverbees and goldbees holdings. it may
-//      not 100% accurate. it will be very close, no need to have a
-//      separate table." So the page reads the live GOLDBEES LTP and
-//      the live GOLD front-month spot, divides them, and uses the
-//      ratio as the conversion factor. Stays self-calibrating as both
-//      prices drift.
+// Operator: "somewhere there should be some cross reference between
+// root and instrument … don't want to hard code. these tables can
+// have multiple columns with parameter values. the conversion can be
+// static, dynamic. the correlation can be 0 to 1. for goldbees, and
+// silverbees it is one. there could be more parameters. in future, ai
+// can generate this info. there should be a panel to enter in the
+// current admin settings pages. the code should use this table."
+//
+// Conversion semantics (driven by row.conversion_kind):
+//   - dynamic — factor = proxy_LTP / target_spot   (default for ETFs)
+//   - static  — factor = row.static_factor          (fixed at the row)
+//   - beta    — factor = row.beta                   (Stage 3, stock vs index)
+//
+// `correlation` (0..1) scales the effective qty so the operator can
+// say "this hedge is 0.85 reliable" and the math reflects that.
 //
 // Once a factor is in hand the math is the standard linear stock
 // formula in target units:
-//      effective_qty           = raw_qty   × factor
+//      effective_qty           = raw_qty   × factor × correlation
 //      effective_cost_per_unit = raw_cost  / factor
 //      payoff_contribution(S)  = (S − effective_cost) × effective_qty
-//                              = (S × factor − raw_cost) × raw_qty
-//
-// Symmetric for delta: Δ_contribution = effective_qty.
+//      Δ_contribution          = effective_qty
+
+import { fetchHedgeProxies } from '$lib/api';
+
+/** @typedef {{ id:number, proxy_symbol:string, target_root:string,
+ *              conversion_kind:'dynamic'|'static'|'beta',
+ *              static_factor:number|null, beta:number|null,
+ *              correlation:number, kind:'units'|'shares',
+ *              note:string|null, source:string, is_active:boolean }} HedgeProxyRow */
+
+/** @type {HedgeProxyRow[]} */
+let _rows = [];
+let _loading = null;        // in-flight fetch promise so concurrent callers share it
+let _loadedOnce = false;
+
+/** @type {Record<string, Array<{ proxy: string, kind: string, row: HedgeProxyRow }>>} */
+let _byTarget = {};
+/** @type {Record<string, { targets: string[], kind: string, rows: HedgeProxyRow[] }>} */
+let _byProxy = {};
+
+function _rebuildIndices() {
+  _byTarget = {};
+  _byProxy = {};
+  for (const r of _rows) {
+    if (!r.is_active) continue;
+    const t = String(r.target_root || '').toUpperCase();
+    const p = String(r.proxy_symbol || '').toUpperCase();
+    if (!t || !p) continue;
+    if (!_byTarget[t]) _byTarget[t] = [];
+    _byTarget[t].push({ proxy: p, kind: r.kind, row: r });
+    if (!_byProxy[p]) _byProxy[p] = { targets: [], kind: r.kind, rows: [] };
+    if (!_byProxy[p].targets.includes(t)) _byProxy[p].targets.push(t);
+    _byProxy[p].rows.push(r);
+  }
+}
 
 /**
- * Identity-only mapping. Each entry tells the derivatives page that
- * the operator's holding in `proxy` can hedge an option position on
- * any of the listed `targets`. The factor is NOT stored here — see
- * the module docstring for the runtime derivation.
- *
- * @typedef {{ proxy: string, targets: string[], kind: 'units'|'shares' }} ProxyPair
+ * Load the proxy rows from the API. Idempotent — returns the cached
+ * value on subsequent calls. Forces a refresh when `force=true`
+ * (used by the admin panel after mutations).
+ * @param {boolean} [force]
  */
-
-/** @type {ProxyPair[]} */
-const PROXY_PAIRS = [
-  { proxy: 'GOLDBEES',   targets: ['GOLD', 'GOLDM', 'GOLDPETAL', 'GOLDGUINEA'], kind: 'units'  },
-  { proxy: 'SILVERBEES', targets: ['SILVER', 'SILVERM', 'SILVERMIC'],           kind: 'units'  },
-  { proxy: 'NIFTYBEES',  targets: ['NIFTY'],                                    kind: 'shares' },
-  { proxy: 'BANKBEES',   targets: ['BANKNIFTY'],                                kind: 'shares' },
-];
-
-/** Reverse index: target → list of proxy symbols that hedge it.
- *  Built once at module load — keys are uppercase target roots, values
- *  are arrays of {proxy, kind} so callers can iterate proxies for a
- *  picked underlying without re-walking PROXY_PAIRS each render. */
-const _BY_TARGET = (() => {
-  /** @type {Record<string, Array<{ proxy: string, kind: 'units'|'shares' }>>} */
-  const m = {};
-  for (const p of PROXY_PAIRS) {
-    for (const t of p.targets) {
-      const k = String(t).toUpperCase();
-      if (!m[k]) m[k] = [];
-      m[k].push({ proxy: p.proxy, kind: p.kind });
+export async function loadHedgeProxies(force = false) {
+  if (!force && _loadedOnce) return _rows;
+  if (_loading) return _loading;
+  _loading = (async () => {
+    try {
+      const resp = await fetchHedgeProxies();
+      _rows = Array.isArray(resp?.rows) ? resp.rows : [];
+      _rebuildIndices();
+      _loadedOnce = true;
+    } catch (_) {
+      _rows = [];
+      _rebuildIndices();
+      // Don't latch — let the next call retry.
+    } finally {
+      _loading = null;
     }
-  }
-  return m;
-})();
+    return _rows;
+  })();
+  return _loading;
+}
 
-/** Reverse index: proxy → list of targets it can hedge. Mirror of
- *  PROXY_PAIRS but keyed for O(1) lookup. */
-const _BY_PROXY = (() => {
-  /** @type {Record<string, { targets: string[], kind: 'units'|'shares' }>} */
-  const m = {};
-  for (const p of PROXY_PAIRS) {
-    m[String(p.proxy).toUpperCase()] = { targets: p.targets.map(t => String(t).toUpperCase()), kind: p.kind };
-  }
-  return m;
-})();
+/** Synchronous accessor. Returns whatever's cached now (possibly
+ *  empty array on cold start before `loadHedgeProxies()` has resolved). */
+export function getHedgeProxies() {
+  return _rows;
+}
 
 /**
- * Return the list of proxy symbols that hedge the given target. Empty
- * array when no proxy is configured (no hedge available).
+ * Return the list of proxy entries that hedge the given target.
+ * Empty array when no proxy is configured.
  * @param {string} targetRoot
- * @returns {Array<{ proxy: string, kind: 'units'|'shares' }>}
+ * @returns {Array<{ proxy: string, kind: string, row: HedgeProxyRow }>}
  */
 export function proxiesForTarget(targetRoot) {
-  return _BY_TARGET[String(targetRoot || '').toUpperCase()] || [];
+  return _byTarget[String(targetRoot || '').toUpperCase()] || [];
 }
 
 /**
- * Return the list of targets the given proxy can hedge, plus the
- * conversion kind ('units' for ETFs tracking precious metals, 'shares'
- * for index ETFs). Returns null when the symbol isn't a known proxy.
+ * Return the list of targets the given proxy can hedge.
  * @param {string} proxySymbol
- * @returns {{ targets: string[], kind: 'units'|'shares' } | null}
+ * @returns {{ targets: string[], kind: string, rows: HedgeProxyRow[] } | null}
  */
 export function proxyTargets(proxySymbol) {
-  return _BY_PROXY[String(proxySymbol || '').toUpperCase()] || null;
+  return _byProxy[String(proxySymbol || '').toUpperCase()] || null;
 }
 
 /**
- * True when `proxySymbol` is a hedge proxy for `targetRoot`.
+ * Look up the specific (proxy, target) row.
  * @param {string} proxySymbol
  * @param {string} targetRoot
+ * @returns {HedgeProxyRow | null}
  */
-export function isProxyFor(proxySymbol, targetRoot) {
-  const p = _BY_PROXY[String(proxySymbol || '').toUpperCase()];
-  if (!p) return false;
-  return p.targets.includes(String(targetRoot || '').toUpperCase());
+export function getProxyRow(proxySymbol, targetRoot) {
+  const p = String(proxySymbol || '').toUpperCase();
+  const t = String(targetRoot || '').toUpperCase();
+  const entries = _byTarget[t] || [];
+  const hit = entries.find(e => e.proxy === p);
+  return hit?.row || null;
 }
 
 /**
- * Compute the runtime conversion factor from current LTPs. Returns 0
- * when either price is missing or non-positive — caller treats 0 as
- * "can't convert, skip the proxy contribution". Operator: "may not
- * 100% accurate. it will be very close." — accuracy is bounded by
- * tracking error + bid/ask spread on both sides.
- * @param {number} proxyLtp     current LTP of the held proxy (e.g. GOLDBEES @ ₹95)
- * @param {number} targetSpot   current spot of the target underlying (e.g. GOLD @ ₹9,500/g)
+ * Compute the runtime conversion factor for a given row, given current
+ * LTPs. Returns 0 when the factor isn't computable (caller skips the
+ * proxy contribution). Operator: "may not 100 % accurate. it will be
+ * very close" — bounded by tracking error + bid/ask spread on both
+ * sides for dynamic mode; static/beta modes use the row's stored value.
+ *
+ * @param {HedgeProxyRow} row
+ * @param {number} proxyLtp     current LTP of the proxy holding
+ * @param {number} targetSpot   current spot of the target underlying
  * @returns {number}
  */
-export function computeProxyFactor(proxyLtp, targetSpot) {
+export function computeProxyFactor(row, proxyLtp, targetSpot) {
+  if (!row) return 0;
+  if (row.conversion_kind === 'static') {
+    const f = Number(row.static_factor) || 0;
+    return f > 0 ? f : 0;
+  }
+  if (row.conversion_kind === 'beta') {
+    const b = Number(row.beta) || 0;
+    return b > 0 ? b : 0;
+  }
+  // dynamic — the default.
   const p = Number(proxyLtp) || 0;
   const t = Number(targetSpot) || 0;
   if (p <= 0 || t <= 0) return 0;
   return p / t;
+}
+
+/**
+ * Compute the effective qty in TARGET units. Multiplies by the row's
+ * correlation so operator-configured "this hedge is 0.85 reliable"
+ * tunes the downstream Δ + payoff line.
+ *
+ * @param {HedgeProxyRow} row
+ * @param {number} factor          from computeProxyFactor()
+ * @param {number} rawQty          broker-reported qty of the proxy holding
+ */
+export function computeEffectiveQty(row, factor, rawQty) {
+  if (!row || factor <= 0) return 0;
+  const q = Number(rawQty) || 0;
+  const c = Number(row.correlation);
+  const corr = Number.isFinite(c) && c >= 0 && c <= 1 ? c : 1.0;
+  return q * factor * corr;
 }
