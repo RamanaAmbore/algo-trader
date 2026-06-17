@@ -683,12 +683,15 @@ effective qty    = β × market value ÷ target spot  (live; β=1.0 when no regr
 target lots      = effective qty ÷ target lot size (from instruments cache)
 ```
 
-For 1500 GOLDBEES @ ₹95 with GOLD @ ₹9,500/g:
+For 1500 GOLDBEES @ ₹95 with GOLD futures at ₹95,000 (per 10g):
 - market value = ₹142,500
-- effective qty = 15g gold-equivalent
-- GOLD lots = 0.15 (the PROXY chip reads `PROXY 0.15×`)
+- effective qty = 1.5 × 10g = **15g gold-equivalent**
+- **GOLD lots** = 0.015 (≈ 1.5% of a 1 kg lot — barely registers)
+- **GOLDM lots** = 0.15 (≈ 15% of a 100g lot — meaningful hedge)
 
-The Lots column in Legs shows `0.15` directly; tooltip carries the full chain.
+**For retail-scale ETF holdings, GOLDM and SILVERM are the practical hedge targets.** The full-size GOLD (1 kg per lot) and SILVER (30 kg per lot) lots are too large for typical GOLDBEES/SILVERBEES positions to meaningfully cover. The chip + Lots column auto-show the right number once you pick the target, so it's obvious which contract size to write options against.
+
+The Lots column in Legs shows the target-specific lot count directly; tooltip carries the full chain.
 
 ### Adding your own pairs
 
