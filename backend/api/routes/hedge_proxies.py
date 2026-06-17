@@ -49,6 +49,25 @@ _TARGET_HINTS: dict[str, tuple[str, str]] = {
     "SILVERM":   ("MCX", "SILVERM"),
 }
 
+# MCX commodity targets — the front-month FUT rolls monthly, so a fresh
+# contract typically only has 30–60 calendar days of bars available when
+# the regression task runs. Cap the window + min-bars guard tighter so
+# the regression actually completes on a fresh contract instead of
+# aborting at the n < 15 guard for the first month after each roll.
+# Operator: "the challenge mcx underlying or not equities they are
+# futures which have different expiration different from option
+# expiraiton. the root and underlying reference needs to be rolled over
+# which is not present in equites" — option (b) per the design doc:
+# roll-aware shorter window, no continuous-stitch yet.
+_MCX_COMMODITY_ROOTS: set[str] = {
+    "GOLD", "GOLDM", "GOLDPETAL", "GOLDGUINEA",
+    "SILVER", "SILVERM", "SILVERMIC",
+    "CRUDEOIL", "CRUDEOILM",
+    "NATURALGAS", "NATGASMINI",
+    "COPPER", "ZINC", "ALUMINIUM", "ALUMINI", "NICKEL", "LEAD", "LEADMINI",
+    "ZINCMINI", "MENTHAOIL", "COTTON",
+}
+
 
 def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
     """Resolve `symbol` to a Kite instrument_token via broker.instruments().
@@ -105,6 +124,22 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
     if not t_token:
         return None, None, 0
 
+    # MCX commodity targets: the front-month FUT we just resolved was
+    # listed at most ~60 days ago (typical contract life is 2-5 months
+    # depending on commodity, but only the last ~30 days of bars are
+    # reliably available pre-expiry). Clamp the window + min-overlap
+    # guard tighter so the regression actually runs on a fresh contract
+    # immediately after monthly rollover. Equity targets keep the
+    # full 60-day window — index instruments are continuous.
+    is_mcx = target_root.upper() in _MCX_COMMODITY_ROOTS
+    if is_mcx:
+        days = min(days, 30)
+        min_overlap = 12     # need ≥ 12 overlapping bars (was 20)
+        min_returns = 8      # need ≥ 8 daily returns (was 15)
+    else:
+        min_overlap = 20
+        min_returns = 15
+
     to_d = datetime.now()
     from_d = to_d - timedelta(days=days + 30)   # +30 to absorb holidays / weekends
     try:
@@ -131,14 +166,14 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
     p_map = _by_date(p_bars)
     t_map = _by_date(t_bars)
     common = sorted(set(p_map.keys()) & set(t_map.keys()))[-(days + 1):]
-    if len(common) < 20:
+    if len(common) < min_overlap:
         return None, None, len(common)
     p_closes = [p_map[d] for d in common]
     t_closes = [t_map[d] for d in common]
     # Daily returns.
     p_ret = np.diff(np.log(p_closes))
     t_ret = np.diff(np.log(t_closes))
-    if len(p_ret) < 15 or float(np.var(t_ret)) <= 0:
+    if len(p_ret) < min_returns or float(np.var(t_ret)) <= 0:
         return None, None, len(p_ret)
     cov = float(np.cov(p_ret, t_ret, ddof=1)[0][1])
     var_t = float(np.var(t_ret, ddof=1))
