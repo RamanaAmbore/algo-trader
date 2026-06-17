@@ -1648,7 +1648,7 @@
       {/if}
       <div
         bind:this={_marginEl}
-        class="ag-theme-algo dash-mini-grid"
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
         class:is-empty={_marginRows.length === 0}></div>
 
       {#if _fundsBody.length > 0}
@@ -1656,7 +1656,7 @@
       {/if}
       <div
         bind:this={_fundsEl}
-        class="ag-theme-algo dash-mini-grid"
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
         class:is-empty={_fundsBody.length === 0}></div>
 
       {#if _marginRows.length === 0 && _fundsBody.length === 0}
@@ -1674,7 +1674,7 @@
       {/if}
       <div
         bind:this={_eqPosEl}
-        class="ag-theme-algo dash-mini-grid"
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
         class:is-empty={_positionsSummary.length === 0}></div>
 
       {#if _holdingsSummary.length > 0}
@@ -1685,7 +1685,7 @@
       {/if}
       <div
         bind:this={_eqHoldEl}
-        class="ag-theme-algo dash-mini-grid"
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
         class:is-empty={_holdingsSummary.length === 0}></div>
 
       {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}

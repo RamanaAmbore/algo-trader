@@ -4377,16 +4377,16 @@
          PerformancePage-driven /dashboard ("what's my cash" answers
          before "what's my P&L"). -->
     <div class="mp-section-label">Funds</div>
-    <div bind:this={fundsEl} class="ag-theme-algo funds-grid mb-2"></div>
+    <div bind:this={fundsEl} class="ag-theme-quartz ag-theme-algo funds-grid mb-2"></div>
   {/if}
 
   {#if showSummary}
     <!-- Positions Summary — per-account Day P&L + P&L. -->
     <div class="mp-section-label">Positions Summary</div>
-    <div bind:this={positionsSummaryEl} class="ag-theme-algo summary-grid mb-2"></div>
+    <div bind:this={positionsSummaryEl} class="ag-theme-quartz ag-theme-algo summary-grid mb-2"></div>
     <!-- Holdings Summary — per-account Day P&L + P&L + Cur Val. -->
     <div class="mp-section-label">Holdings Summary</div>
-    <div bind:this={holdingsSummaryEl} class="ag-theme-algo summary-grid mb-2"></div>
+    <div bind:this={holdingsSummaryEl} class="ag-theme-quartz ag-theme-algo summary-grid mb-2"></div>
   {/if}
 
   {#if showSymbolsGrid}
@@ -4492,10 +4492,10 @@
                inactive one — switching tabs is a paint-only flip,
                no remount. -->
           <div bind:this={gridPinnedEl}
-               class="ag-theme-algo bucket-grid"
+               class="ag-theme-quartz ag-theme-algo bucket-grid"
                class:mp-grid-hidden={topTab !== 'pinned'}></div>
           <div bind:this={gridWatchEl}
-               class="ag-theme-algo bucket-grid"
+               class="ag-theme-quartz ag-theme-algo bucket-grid"
                class:mp-grid-hidden={typeof topTab !== 'number'}></div>
         </section>
         {#if showWinners}
@@ -4524,7 +4524,7 @@
               <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
               <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
             </div>
-            <div bind:this={gridWinEl} class="ag-theme-algo bucket-grid"></div>
+            <div bind:this={gridWinEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
         {#if showLosers}
@@ -4553,7 +4553,7 @@
               <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
               <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
             </div>
-            <div bind:this={gridLoseEl} class="ag-theme-algo bucket-grid"></div>
+            <div bind:this={gridLoseEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
       </div>
@@ -4585,7 +4585,7 @@
             <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
             <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
           </div>
-          <div bind:this={gridPositionsEl} class="ag-theme-algo bucket-grid"></div>
+          <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
         <section class="mp-bucket-wrap mp-bucket-holdings"
                  class:is-collapsed={_effColHoldings}
@@ -4607,7 +4607,7 @@
             <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
             <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />
           </div>
-          <div bind:this={gridHoldingsEl} class="ag-theme-algo bucket-grid"></div>
+          <div bind:this={gridHoldingsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
       </div>
     </div>

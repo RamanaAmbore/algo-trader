@@ -7,7 +7,7 @@
     {#if rows.length === 0}
       <EmptyState message="No open positions" />
     {:else}
-      <div bind:this={gridEl} class="ag-theme-algo …"></div>
+      <div bind:this={gridEl} class="ag-theme-quartz ag-theme-algo …"></div>
     {/if}
 
   Or inline alongside a collapsing grid wrapper:
