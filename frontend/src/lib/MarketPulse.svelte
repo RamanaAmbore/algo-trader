@@ -2479,18 +2479,19 @@
   const unifiedRows = $derived.by(() => {
     // eslint-disable-next-line no-unused-expressions
     groupOrder; detachedSymbols;
-    // Positions + Holdings are the only account-scoped sources, and
-    // they now carry per-card pickers. When a card's picker is empty
-    // (and the picker is visible — i.e. accountPicker on), hide that
-    // card's rows in the unified grid. Operator picks at least one
-    // account in either picker → those rows appear, scoped to that
-    // card's selection. When the picker isn't rendered at all (no
-    // accountPicker prop), passes through unconditionally.
-    const posPicked = !accountPicker || positionsAccounts.length > 0;
-    const holdPicked = !accountPicker || holdingsAccounts.length > 0;
+    // Positions + Holdings are the only account-scoped sources. Empty
+    // picker = "All accounts" (default) — show every row. Non-empty
+    // picker = scope to the picked accounts (filter lives in
+    // scopedPositions / scopedHoldings via _includesPosAcct /
+    // _includesHoldAcct). Operator: "for default all accounts, position
+    // and holding all rows are not fetched. they grids are empty. fix
+    // it." The previous gate `accountPicker && positionsAccounts.length
+    // === 0 → HIDE` was a relic of the now-removed stage (a) seeder
+    // that pre-filled the picker; with the new "All accounts" default
+    // it dropped every row when no narrowing was active.
     return buildUnified(
       activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
-      showPositions && posPicked, showHoldings && holdPicked,
+      showPositions, showHoldings,
       movers, showMovers,
       showWatchlist,
     );
@@ -3882,12 +3883,12 @@
     // pinnedBottomRowData semantics).
     if (gridPositionsEl) {
       gridPositions = makeBucketGrid(gridPositionsEl, rightColDefs,
-        'Pick an account to load positions.');
+        'No positions in the active book.');
       gridPositionsReady = true;
     }
     if (gridHoldingsEl) {
       gridHoldings = makeBucketGrid(gridHoldingsEl, rightColDefs,
-        'Pick an account to load holdings.');
+        'No holdings in the active book.');
       gridHoldingsReady = true;
     }
     }  // end main symbols grid block
