@@ -933,7 +933,7 @@ def _normalise_holdings(resp: Any) -> list[dict]:
             h.get("previousClosePrice", h.get("closePrice", 0)) or 0
         )
         # Leave close_price=0 when truly missing — the broker_apis
-        # `backfill_close_prices` helper (called after pd.concat at
+        # `backfill_market_data` helper (called after pd.concat at
         # the /api/holdings endpoint) batches a PriceBroker.quote()
         # call across every missing-close row from every account and
         # patches them in one round-trip. The earlier fallback to

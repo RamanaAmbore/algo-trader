@@ -45,12 +45,15 @@ def _fetch() -> PositionsResponse:
         raise Exception("Broker (Kite) returned no positions data — upstream Bad Gateway / outage")
     # Account masking removed — admin-only pages show real account IDs
 
-    # Backfill close_price for adapters that don't return one (Dhan v2
-    # positions endpoint omits it). One batched PriceBroker.quote()
-    # across every missing-close row from every account — not N per
-    # N accounts the way it ran before this lift. Day_change_val on
-    # patched rows is recomputed inside the helper.
-    broker_apis.backfill_close_prices(raw)
+    # Backfill missing market data (close_price + last_price) for
+    # adapters that don't populate them (Dhan v2 positions endpoint
+    # omits close_price, sometimes last_price too). One batched
+    # PriceBroker.quote() across every missing-field row from every
+    # account — not N per N accounts. Source brokers keep their
+    # account-specific facts (avg_price, qty, realised); market data
+    # routes through Kite. Day_change_val + pnl on patched rows are
+    # recomputed inside the helper.
+    broker_apis.backfill_market_data(raw)
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)

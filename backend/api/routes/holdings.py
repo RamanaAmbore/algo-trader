@@ -42,12 +42,13 @@ def _fetch() -> HoldingsResponse:
         raise Exception("Broker (Kite) returned no holdings data — upstream Bad Gateway / outage")
     # Account masking removed — admin-only pages show real account IDs
 
-    # Backfill close_price for adapters that don't return one. The
-    # Dhan holdings adapter falls back to last_price when previousClose
-    # fields are missing → day_change = 0 → Day P&L renders as '—'.
-    # Same one-batched-call PriceBroker lookup the /positions endpoint
-    # uses; helper recomputes day_change_val on patched rows.
-    broker_apis.backfill_close_prices(raw)
+    # Backfill missing market data (close_price + last_price) for
+    # adapters that don't populate them. Source brokers keep their
+    # account-specific facts (avg_price, qty, opening_qty, realised);
+    # market data routes through PriceBroker.quote (prefers Kite) so
+    # Dhan + Groww rows match Kite's Day P&L / Day % / Prev Close
+    # downstream. Single batched round-trip across every missing row.
+    broker_apis.backfill_market_data(raw)
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)
