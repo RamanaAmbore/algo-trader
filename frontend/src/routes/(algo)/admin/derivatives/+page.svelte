@@ -210,19 +210,59 @@
   // counter summed both rows even though only one was "checked".
   function enKey(c) { return `${c.account || ''}|${c.symbol || ''}`; }
 
+  /** Long-term memory of eq-leg checkbox choices, keyed by enKey(c).
+   *  Survives across page reloads (localStorage, no TTL), so an
+   *  operator who's once explicitly checked BHEL eq doesn't have to
+   *  re-check it on every future visit. Only eq rows write here —
+   *  derivative legs follow the default-ON rule and don't need memory.
+   *  Toggling OFF removes the key entirely (no "remember off" — the
+   *  default IS off, so explicit off behaves like "forget"). */
+  const _EQ_MEMORY_KEY = 'ramboq:options-eq-checked';
+  /** @type {Record<string, boolean>} */
+  let _eqMemory = $state(_loadEqMemory());
+  function _loadEqMemory() {
+    if (typeof localStorage === 'undefined') return {};
+    try {
+      const v = JSON.parse(localStorage.getItem(_EQ_MEMORY_KEY) || '{}');
+      return (v && typeof v === 'object') ? v : {};
+    } catch { return {}; }
+  }
+  function _saveEqMemory() {
+    if (typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(_EQ_MEMORY_KEY, JSON.stringify(_eqMemory)); }
+    catch { /* quota / private mode — silent */ }
+  }
+  /** Record an eq-leg's explicit on/off choice. ON writes the key;
+   *  OFF removes it (default IS off, so we never need to persist a
+   *  "remember off" — absence == default == off). */
+  function _persistEqMemory(/** @type {{account?:string, symbol?:string}} */ c, /** @type {boolean} */ checked) {
+    const k = enKey(c);
+    if (!k || k === '|') return;
+    const next = { ..._eqMemory };
+    if (checked) next[k] = true;
+    else delete next[k];
+    _eqMemory = next;
+    _saveEqMemory();
+  }
+
   /** Single source of truth for "is this candidate row contributing to
-   *  the payoff right now?". Derivative legs default ON (operator's
-   *  existing positions auto-contribute); equity-holding legs default
-   *  OFF — operator: "by default it should be unselected state for
-   *  payoff" — so the operator decides per-pick whether to layer the
-   *  underlying's cost basis / realised P&L into the curve.
+   *  the payoff right now?". Derivative legs default ON; equity-
+   *  holding legs default OFF — but eq legs also consult the long-
+   *  term `_eqMemory` so a previously-checked row stays checked
+   *  across page reloads / days / weeks. Session enabledSymbols
+   *  state takes precedence so an explicit toggle inside the page
+   *  reflects immediately.
    *
    * @param {{kind?:string, account?:string, symbol?:string}} c
    * @returns {boolean}
    */
   function _isLegEnabled(c) {
     const v = enabledSymbols[enKey(c)];
-    if (c?.kind === 'eq') return v === true;
+    if (c?.kind === 'eq') {
+      if (v === true) return true;
+      if (v === false) return false;
+      return _eqMemory[enKey(c)] === true;
+    }
     return v !== false;
   }
 
@@ -757,7 +797,14 @@
       for (const h of holdings) {
         if (String(h?.symbol || '').toUpperCase() !== target.toUpperCase()) continue;
         const key = `${h.account || ''}|${target.toUpperCase()}`;
-        if (next[key] === undefined) { next[key] = true; touched = true; }
+        if (next[key] === undefined) {
+          next[key] = true;
+          touched = true;
+          // Hedge-opp pick == explicit "include the underlying" intent.
+          // Persist to long-term memory so future visits remember this
+          // choice (the eq-default-off rule has zero cost from here on).
+          _persistEqMemory({ account: h.account, symbol: target.toUpperCase() }, true);
+        }
       }
       if (touched) enabledSymbols = next;
     });
@@ -996,11 +1043,17 @@
   });
   function toggleAllCandidates() {
     // Flip toward the opposite of the current "all-on" state. Builds
-    // a fresh map so Svelte 5 picks up the change reactively.
+    // a fresh map so Svelte 5 picks up the change reactively. Also
+    // propagates eq-leg picks to long-term memory so the master
+    // toggle teaches the same "remember my choice" pattern as the
+    // per-row checkbox.
     /** @type {Record<string, boolean>} */
     const next = {};
     const target = !allCandidatesOn;
-    for (const c of candidatePositions) next[enKey(c)] = target;
+    for (const c of candidatePositions) {
+      next[enKey(c)] = target;
+      if (c.kind === 'eq') _persistEqMemory(c, target);
+    }
     enabledSymbols = next;
   }
 
@@ -3141,9 +3194,11 @@
                      checked={_isLegEnabled(c)}
                      onclick={(e) => e.stopPropagation()}
                      onchange={(e) => {
+                       const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
                        const next = { ...enabledSymbols };
-                       next[enKey(c)] = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
+                       next[enKey(c)] = checked;
                        enabledSymbols = next;
+                       if (c.kind === 'eq') _persistEqMemory(c, checked);
                      }} />
               <!-- svelte-ignore a11y_interactive_supports_focus -->
               <span class="font-mono cand-sym cand-sym-acct"
