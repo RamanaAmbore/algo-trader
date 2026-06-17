@@ -210,6 +210,22 @@
   // counter summed both rows even though only one was "checked".
   function enKey(c) { return `${c.account || ''}|${c.symbol || ''}`; }
 
+  /** Single source of truth for "is this candidate row contributing to
+   *  the payoff right now?". Derivative legs default ON (operator's
+   *  existing positions auto-contribute); equity-holding legs default
+   *  OFF — operator: "by default it should be unselected state for
+   *  payoff" — so the operator decides per-pick whether to layer the
+   *  underlying's cost basis / realised P&L into the curve.
+   *
+   * @param {{kind?:string, account?:string, symbol?:string}} c
+   * @returns {boolean}
+   */
+  function _isLegEnabled(c) {
+    const v = enabledSymbols[enKey(c)];
+    if (c?.kind === 'eq') return v === true;
+    return v !== false;
+  }
+
   // Legs sent to the strategy endpoint — built from candidate positions
   // (live or sim, depending on simActive) plus drafts that match the
   // selected underlying, intersected with the operator's checked rows
@@ -882,7 +898,7 @@
   const candidatesActualPnl = $derived.by(() => {
     let s = 0;
     for (const c of candidatePositions) {
-      if (enabledSymbols[enKey(c)] === false) continue;
+      if (!_isLegEnabled(c)) continue;
       s += Number(c.pnl || 0);
     }
     return s;
@@ -898,7 +914,7 @@
   const candidatesDayPnl = $derived.by(() => {
     let s = 0;
     for (const c of candidatePositions) {
-      if (enabledSymbols[enKey(c)] === false) continue;
+      if (!_isLegEnabled(c)) continue;
       s += Number(c.day_change_val || 0);
     }
     return s;
@@ -913,11 +929,11 @@
   let allCandidatesEl = $state(/** @type {HTMLInputElement|null} */ (null));
   const allCandidatesOn = $derived.by(() => {
     if (!candidatePositions.length) return false;
-    return candidatePositions.every(c => enabledSymbols[enKey(c)] !== false);
+    return candidatePositions.every(c => _isLegEnabled(c));
   });
   const someCandidatesOn = $derived.by(() => {
     if (!candidatePositions.length) return false;
-    return candidatePositions.some(c => enabledSymbols[enKey(c)] !== false);
+    return candidatePositions.some(c => _isLegEnabled(c));
   });
   $effect(() => {
     if (!allCandidatesEl) return;
@@ -1021,7 +1037,7 @@
     void candidatePositions; void enabledSymbols;
     untrack(() => {
       legs = candidatePositions
-        .filter(c => enabledSymbols[enKey(c)] !== false)
+        .filter(c => _isLegEnabled(c))
         .map(c => ({
           symbol:   c.symbol,
           qty:      c.qty,
@@ -1043,7 +1059,7 @@
   const _equityLegs = $derived(
     candidatePositions.filter(c => {
       if (c.kind !== 'eq') return false;
-      if (enabledSymbols[enKey(c)] === false) return false;
+      if (!_isLegEnabled(c)) return false;
       const qty = Number(c.qty || 0);
       const opq = Number(c.opening_qty || 0);
       return qty !== 0 || opq !== 0;
@@ -2979,9 +2995,20 @@
                  row direction tint, P&L recompute, and the close-
                  ticket prefill so every surface speaks to the
                  effective exposure rather than the gross position. -->
+            <!-- Eq rows fully sold today (qty=0 + opening_qty>0) surface
+                 the opening qty in the qty cell so the operator can size-
+                 check the locked-in realised P&L contribution at a glance.
+                 Operator: "now, update the qty also for underlying in
+                 legs." isClosed below still keys on c.qty so the row stays
+                 non-closable and uses broker pnl for the P&L cell. -->
+            {@const _eqDisplayQty = c.kind === 'eq'
+                                 && Number(c.qty || 0) === 0
+                                 && Number(c.opening_qty || 0) !== 0
+                                  ? Number(c.opening_qty)
+                                  : null}
             {@const displayQty = c._residualQty != null
               ? Number(c._residualQty)
-              : Number(c.qty || 0)}
+              : (_eqDisplayQty != null ? _eqDisplayQty : Number(c.qty || 0))}
             <!-- Open-row P&L = (live_ltp − cost) × current_qty + realised.
                  The realised term carries the cash from intraday
                  closeouts so the row reconciles with Kite's broker
@@ -3014,7 +3041,7 @@
             {@const _acctColor = c.account ? acctColor(c.account) : null}
             <div class="cand-row cand-row-{dir}"
                  style={_acctColor ? `--cand-acct-color: ${_acctColor};` : ''}
-                 class:cand-disabled={enabledSymbols[enKey(c)] === false}
+                 class:cand-disabled={!_isLegEnabled(c)}
                  class:cand-closed={isClosed}
                  class:cand-draft={isDraft}
                  class:cand-eq={c.kind === 'eq'}
@@ -3062,7 +3089,7 @@
                    }
                  }}>
               <input type="checkbox"
-                     checked={enabledSymbols[enKey(c)] !== false}
+                     checked={_isLegEnabled(c)}
                      onclick={(e) => e.stopPropagation()}
                      onchange={(e) => {
                        const next = { ...enabledSymbols };
