@@ -636,6 +636,37 @@
     }
     return Array.from(accts).sort();
   });
+  /** Long-term usage memory for the Underlying picker. Operator: "It
+   *  also needs to sort on usage count. The most used ones should come
+   *  first in a different color." Persisted to localStorage and
+   *  incremented on every user-driven Select pick (the bump only fires
+   *  via the Select component's onValueChange callback, which doesn't
+   *  fire on programmatic auto-selects — so opening the page never
+   *  inflates the count for whatever underlying happens to be the
+   *  alphabetic first). */
+  const _USAGE_KEY = 'ramboq:options-underlying-usage';
+  const _USAGE_TOP_N = 5;
+  /** @type {Record<string, number>} */
+  let _usageMap = $state(_loadUsage());
+  function _loadUsage() {
+    if (typeof localStorage === 'undefined') return {};
+    try {
+      const v = JSON.parse(localStorage.getItem(_USAGE_KEY) || '{}');
+      return (v && typeof v === 'object') ? v : {};
+    } catch { return {}; }
+  }
+  function _saveUsage() {
+    if (typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(_USAGE_KEY, JSON.stringify(_usageMap)); }
+    catch { /* quota / private mode — silent */ }
+  }
+  function _bumpUnderlyingUsage(sym) {
+    const k = String(sym || '').toUpperCase();
+    if (!k) return;
+    _usageMap = { ..._usageMap, [k]: (_usageMap[k] || 0) + 1 };
+    _saveUsage();
+  }
+
   /** Two roots-with-positions sets so the picker can sort + color them
    *  separately. `_rootsWithOptions` carries underlyings where the
    *  operator holds at least one CE or PE — these are the most
@@ -755,20 +786,41 @@
     // in scope is now read off the expiry picker + legs grid.
     const seen = new Set();
     const out = [];
-    // Tier 1 — options positions. Cyan-highlighted label + 'options'
-    // hint suffix. Sorted alphabetically inside the tier.
+    // Tier 1 — operator's most-used underlyings, by raw pick count.
+    // Restricted to roots currently in the book (positions OR hedge
+    // opportunities) so a no-longer-held favourite doesn't squat at
+    // the top of the dropdown. Amber label + 'frequent' hint chip so
+    // the colour-coding reads "personal-favourite" rather than the
+    // cyan "tier-2 has-options" treatment.
+    const _available = new Set([
+      ..._rootsWithOptions,
+      ..._rootsWithFuturesOnly,
+      ..._hedgeOpportunities,
+    ]);
+    const _topUsed = Object.entries(_usageMap)
+      .filter(([k, v]) => _available.has(k) && Number(v) > 0)
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .slice(0, _USAGE_TOP_N)
+      .map(([k]) => k);
+    for (const u of _topUsed) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push({ value: u, label: u, hint: 'frequent' });
+    }
+    // Tier 2 — options positions. Cyan-highlighted label + 'options'
+    // hint chip. Sorted alphabetically inside the tier.
     for (const u of [..._rootsWithOptions].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u, hint: 'options' });
     }
-    // Tier 2 — futures-only positions. No hint suffix, normal styling.
+    // Tier 3 — futures-only positions. No hint suffix, default colour.
     for (const u of [..._rootsWithFuturesOnly].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u });
     }
-    // Tier 3 — Hedge-opportunity group. F&O-eligible holdings with no
+    // Tier 4 — Hedge-opportunity group. F&O-eligible holdings with no
     // matching derivative position. `hint: 'hedge'` styles the row
     // dimmer + adds a small suffix so the operator can scan
     // "positions vs. hedge ideas" at a glance. Picking from this
@@ -2756,6 +2808,7 @@
       <Select id="opt-und"
         bind:value={selectedUnderlying}
         options={underlyingOptionsForPicker}
+        onValueChange={_bumpUnderlyingUsage}
         placeholder={underlyingChoicesFromBook.length ? 'Pick underlying…' : 'No options in book'} />
     </div>
   </div>
@@ -3653,9 +3706,33 @@
     min-width: 0;
   }
   .opt-und-row :global(.rbq-select-wrap) { flex: 1 1 auto; min-width: 0; }
-  /* Underlying-picker tier colour coding. Operator: "in the symbol
-     dropdown, if options position exists for underlying, color code
-     the root differently, show them first in default order." */
+  /* Underlying-picker tier colour coding. Operator's two specs:
+       1. "if options position exists for underlying, color code the
+          root differently, show them first in default order."
+       2. "It also needs to sort on usage count. The most used ones
+          should come first in a different color … then roots with
+          options show in different color in sequence. The last ones
+          should not have options for the underlying."
+
+     Four tiers, top → bottom:
+       Tier 1  hint='frequent'  amber/gold   (operator's top-N picks)
+       Tier 2  hint='options'   cyan-400     (has CE/PE position)
+       Tier 3  (no hint)        default      (has FUT-only position)
+       Tier 4  hint='hedge'     dimmed       (held, no derivative) */
+  .opt-und-row :global(.rbq-select-option-label[data-hint='frequent']) {
+    color: #fbbf24;         /* amber-400 — operator favourite */
+    font-weight: 700;
+  }
+  .opt-und-row :global(.rbq-select-option-hint[data-hint='frequent']) {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+    border: 1px solid rgba(251, 191, 36, 0.40);
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
   .opt-und-row :global(.rbq-select-option-label[data-hint='options']) {
     color: #22d3ee;         /* cyan-400 — actionable, matches card controls */
     font-weight: 700;
