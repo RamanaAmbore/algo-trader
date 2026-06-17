@@ -75,6 +75,7 @@ def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
     the front-month-future fallback for MCX commodities doesn't match
     either. Best-effort — quiet skip on miss; regression handler logs
     the resolved-pair-count so the operator knows what worked."""
+    import re
     try:
         insts = broker.instruments(exchange=exchange_hint) or []
     except Exception:
@@ -85,12 +86,24 @@ def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
         if ts == symbol.upper():
             tk = inst.get("instrument_token")
             return int(tk) if tk else None
-    # MCX commodity fallback — front-month future. Find the earliest
-    # expiry whose tradingsymbol starts with the commodity root.
+    # MCX commodity fallback — front-month future. The MCX tradingsymbol
+    # shape is `<ROOT><YY><MON>FUT` (e.g. GOLD26JUNFUT). Match the ROOT
+    # EXACTLY by parsing the prefix before the first digit. Operator:
+    # "goldm and gold cannot have same root. as they underlying may
+    # have different prices based weight and liquidity." The prior
+    # `startswith(symbol)` check collapsed GOLD with GOLDM /
+    # GOLDPETAL / GOLDGUINEA and SILVER with SILVERM / SILVERMIC,
+    # silently letting the wrong contract supply spot + history.
     if exchange_hint == "MCX":
-        candidates = [i for i in insts
-                      if str(i.get("tradingsymbol") or "").upper().startswith(symbol.upper())
-                      and str(i.get("tradingsymbol") or "").upper().endswith("FUT")]
+        target_root = symbol.upper()
+        candidates = []
+        for inst in insts:
+            ts = str(inst.get("tradingsymbol") or "").upper()
+            if not ts.endswith("FUT"):
+                continue
+            m = re.match(r"^([A-Z]+)\d", ts)
+            if m and m.group(1) == target_root:
+                candidates.append(inst)
         candidates.sort(key=lambda i: str(i.get("expiry") or ""))
         if candidates:
             tk = candidates[0].get("instrument_token")
