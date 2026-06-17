@@ -30,7 +30,7 @@
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
-    listFutures, getInstrument,
+    listFutures, getInstrument, getOptionUnderlyingLot,
   } from '$lib/data/instruments';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
@@ -613,19 +613,27 @@
       if (!u) continue;
       set.add(u);
     }
-    // Dropdown is scoped to roots with at least one derivative
-    // position. F&O-eligible holdings without any matching option /
-    // future in the book are intentionally NOT surfaced here —
-    // operator: "there are no derivative positions on HAL but dropdown
-    // shows HAL" — the page is a derivative-analysis workspace, and
-    // listing every F&O-eligible stock the operator happens to hold
-    // would clutter the picker with hypotheticals.
-    //
-    // Holdings still layer into Legs through the eq merge inside
-    // candidatePositions — when the operator picks a root that DOES
-    // have derivatives AND they hold the underlying, the eq leg
-    // surfaces alongside the option/future legs for combined
-    // exposure analysis.
+    return Array.from(set).sort();
+  });
+
+  /** F&O-eligible holdings the operator has NO derivative position
+   *  in. Surfaced as a secondary "hedge opportunities" group in the
+   *  underlying picker so the operator can preview covered-call /
+   *  protective-put setups against stocks they hold even before any
+   *  derivative exists on the root.
+   *
+   *  Excludes anything already in `underlyingChoicesFromBook` so the
+   *  picker doesn't double-list. Gated on `instrumentsReady` because
+   *  getOptionUnderlyingLot requires the instruments cache. */
+  const _hedgeOpportunities = $derived.by(() => {
+    if (!instrumentsReady) return [];
+    const have = new Set(underlyingChoicesFromBook);
+    const set = new Set();
+    for (const h of holdings) {
+      const sym = String(h?.symbol || '').toUpperCase();
+      if (!sym || have.has(sym)) continue;
+      if (getOptionUnderlyingLot(sym) > 0) set.add(sym);
+    }
     return Array.from(set).sort();
   });
 
@@ -687,10 +695,24 @@
     // in scope is now read off the expiry picker + legs grid.
     const seen = new Set();
     const out = [];
+    // Primary group — roots with at least one CE / PE / FUT in the
+    // book. No hint suffix.
     for (const u of underlyingChoicesFromBook) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u });
+    }
+    // Hedge-opportunity group — F&O-eligible holdings with no
+    // matching derivative position. `hint: 'hedge'` styles the row
+    // dimmer + adds a small suffix so the operator can scan
+    // "positions vs. hedge ideas" at a glance. Picking from this
+    // group auto-checks the eq leg (see effect below) since the
+    // operator's intent is clearly "model a hedge against this
+    // stock I hold".
+    for (const u of _hedgeOpportunities) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push({ value: u, label: u, hint: 'hedge' });
     }
     return out;
   });
@@ -707,6 +729,37 @@
       if (!selectedUnderlying && list.length) {
         selectedUnderlying = list[0];
       }
+    });
+  });
+
+  // Auto-check the eq leg when the operator picks a hedge-opportunity
+  // underlying (a held stock with no existing derivative position).
+  // The intent of picking from that group is clearly "model a covered-
+  // call / collar against this stock I hold" — making the eq leg opt-
+  // in would force a click that's already implicit in the pick. Eq
+  // legs of derivative-position roots stay default-OFF (regular flow).
+  $effect(() => {
+    void selectedUnderlying;
+    untrack(() => {
+      const target = selectedUnderlying;
+      if (!target) return;
+      if (!_hedgeOpportunities.includes(target)) return;
+      // Pre-check every matching eq row's key, BUT only when the key
+      // is untouched (=== undefined). Respect explicit false — if the
+      // operator unchecked the row, switched underlying, and came
+      // back, the auto-check shouldn't override their choice.
+      // candidatePositions may not have materialised on first pick
+      // (holdings still loading), so we seed against every account
+      // that holds this root — operator's holdings list is the
+      // source of truth.
+      const next = { ...enabledSymbols };
+      let touched = false;
+      for (const h of holdings) {
+        if (String(h?.symbol || '').toUpperCase() !== target.toUpperCase()) continue;
+        const key = `${h.account || ''}|${target.toUpperCase()}`;
+        if (next[key] === undefined) { next[key] = true; touched = true; }
+      }
+      if (touched) enabledSymbols = next;
     });
   });
 
@@ -2576,10 +2629,13 @@
      controls rather than as content inside a panel. -->
 <div class="opt-picker mb-3">
   <div class="opt-field opt-field-grow">
-    <label class="field-label" for="opt-acct">Account</label>
-    <!-- /admin/options is fundamentally about positions-based option
-         analysis — picker is always per-account, so AccountMultiSelect
-         here is just a styled passthrough (no disabled state ever). -->
+    <label class="field-label" for="opt-acct" title="Default routing account for new orders placed from this page. Does NOT filter the Legs panel — payoff analysis spans every account regardless of this pick.">Order routing</label>
+    <!-- Picker semantics: scopes the OrderTicket's default account
+         only. Legs / payoff / risk all walk the full book regardless,
+         since exposure on an underlying is exposure regardless of
+         which broker handle holds the contract. Label was previously
+         "Account" which implied analysis-wide filtering it no longer
+         does. -->
     <AccountMultiSelect id="opt-acct"
       bind:value={selectedAccounts}
       options={accountChoices.map(a => ({ value: a, label: a }))}
@@ -2909,9 +2965,13 @@
       </span>
     </div>
     {#if !_colLegs && displayedCandidates.length}
-      {@const hideAcct = selectedAccounts.length === 1}
+      <!-- Legs ALWAYS show the Account column now — the picker no
+           longer scopes the analysis (it's order-routing only), so
+           legs can span multiple accounts even when the picker is
+           narrowed to one. The previous `hideAcct` shortcut hid useful
+           per-leg context whenever the operator narrowed routing. -->
       <div class="cand-scroll">
-        <div class="cand-grid" class:cand-grid-noacct={hideAcct}>
+        <div class="cand-grid">
           <!-- Header row checkbox = master toggle. Checked when
                EVERY candidate is on; unchecked when none; the
                middle "indeterminate" state is rendered via the JS
@@ -2935,7 +2995,7 @@
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->
             <span>Symbol</span>
-            {#if !hideAcct}<span>Acct</span>{/if}
+            <span>Acct</span>
             <span class="num">Qty</span>
             <span class="num"
                   title="Qty in F&L lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
@@ -2995,20 +3055,9 @@
                  row direction tint, P&L recompute, and the close-
                  ticket prefill so every surface speaks to the
                  effective exposure rather than the gross position. -->
-            <!-- Eq rows fully sold today (qty=0 + opening_qty>0) surface
-                 the opening qty in the qty cell so the operator can size-
-                 check the locked-in realised P&L contribution at a glance.
-                 Operator: "now, update the qty also for underlying in
-                 legs." isClosed below still keys on c.qty so the row stays
-                 non-closable and uses broker pnl for the P&L cell. -->
-            {@const _eqDisplayQty = c.kind === 'eq'
-                                 && Number(c.qty || 0) === 0
-                                 && Number(c.opening_qty || 0) !== 0
-                                  ? Number(c.opening_qty)
-                                  : null}
             {@const displayQty = c._residualQty != null
               ? Number(c._residualQty)
-              : (_eqDisplayQty != null ? _eqDisplayQty : Number(c.qty || 0))}
+              : Number(c.qty || 0)}
             <!-- Open-row P&L = (live_ltp − cost) × current_qty + realised.
                  The realised term carries the cash from intraday
                  closeouts so the row reconciles with Kite's broker
@@ -3112,17 +3161,16 @@
                           ? `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`
                           : `Cash equity holding of the underlying, fully sold today — realised P&L is locked in and applied as a flat offset to the payoff curve`}>STOCK</span>
                   {#if Number(c.qty || 0) === 0 && Number(c.opening_qty || 0) !== 0}
-                    <!-- Sold-today badge — operator: "include underlying
-                         from holdings in legs. show the cost price on
-                         it profit to offset option return in payoff
-                         graph." The realised P&L on the broker's
-                         intraday-sold shares is locked in and flows
-                         into the merged payoff as a constant offset
-                         (see _mergedPayoff). Opening qty surfaced in
-                         the tooltip so the operator can size-check the
-                         contribution. -->
+                    <!-- Sold-today badge. qty cell shows 0 (truthful
+                         current state); the badge carries the opening
+                         size inline (×3000) so the operator can read
+                         "STOCK SOLD ×3000" at a glance and know both
+                         that the row was held + how much was sold,
+                         without the qty cell misrepresenting current
+                         exposure. Realised P&L flows into the merged
+                         payoff as a constant offset (see _mergedPayoff). -->
                     <span class="cand-split-tag cand-eq-sold-tag"
-                          title={`Fully sold intraday — opening qty ${Math.abs(Number(c.opening_qty))}, realised P&L flows into the payoff as a flat offset`}>SOLD</span>
+                          title={`Fully sold intraday — realised P&L flows into the payoff as a flat offset`}>SOLD ×{Math.abs(Number(c.opening_qty))}</span>
                   {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
@@ -3160,7 +3208,7 @@
                 {/if}
               </span>
               <!-- Expiry cell removed — the hyphenated symbol shows it. -->
-              {#if !hideAcct}<span class="font-mono">{c.account}</span>{/if}
+              <span class="font-mono">{c.account}</span>
               <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
               <!-- Pass `quantity` so lotsForRow's per-symbol inference
                    picks the right field. For EQ rows quantity → qHold;
@@ -3196,7 +3244,7 @@
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
-              {#if !hideAcct}<span>—</span>{/if}
+              <span>—</span>
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
@@ -4308,27 +4356,6 @@
     column-gap: 0.6rem;
     row-gap: 0.2rem;
     width: max-content;
-  }
-  /* When the operator filters to a single account, the Account
-     column is implicit (every row carries the same value) — drop
-     the column entirely. */
-  .cand-grid-noacct {
-    /* Expiry column also removed in the no-account-column variant. */
-    grid-template-columns:
-      auto                                 /* checkbox */
-      minmax(max-content, max-content)     /* symbol (carries expiry) */
-      minmax(48px, max-content)            /* qty */
-      minmax(44px, max-content)            /* lots */
-      minmax(62px, max-content)            /* ltp */
-      minmax(62px, max-content)            /* prev close */
-      minmax(62px, max-content)            /* avg (cost basis) */
-      minmax(72px, max-content)            /* day pnl */
-      minmax(72px, max-content)            /* day pnl delta */
-      minmax(52px, max-content)            /* iv */
-      minmax(56px, max-content)            /* delta */
-      minmax(56px, max-content)            /* gamma */
-      minmax(62px, max-content)            /* theta */
-      minmax(56px, max-content);           /* vega */
   }
   /* TOTAL row — always last, visually distinct (top border + bolder
      text) so the operator sees the roll-up at a glance. The two pnl
