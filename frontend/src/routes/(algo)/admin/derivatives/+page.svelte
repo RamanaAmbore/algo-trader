@@ -37,6 +37,9 @@
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
+  import {
+    proxiesForTarget, proxyTargets, computeProxyFactor,
+  } from '$lib/data/hedgeProxies';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -741,8 +744,28 @@
     const set = new Set();
     for (const h of holdings) {
       const sym = String(h?.symbol || '').toUpperCase();
-      if (!sym || have.has(sym)) continue;
-      if (getOptionUnderlyingLot(sym) > 0) set.add(sym);
+      if (!sym) continue;
+      // (a) Direct hedge — operator holds the literal underlying, and
+      //     that underlying has F&O contracts listed at Kite. Same as
+      //     the original hedge-opp surface: covered-call analysis on
+      //     a stock you hold.
+      if (!have.has(sym) && getOptionUnderlyingLot(sym) > 0) set.add(sym);
+      // (b) Proxy hedge — operator holds an ETF (GOLDBEES, NIFTYBEES
+      //     etc.) whose tracked target has its own F&O book at Kite.
+      //     Stage 1 mapping in $lib/data/hedgeProxies.js. Picking the
+      //     target from the dropdown auto-checks the proxy eq leg and
+      //     the conversion-factor math kicks in via _equityLegs +
+      //     _mergedPayoff. Operator: "is there anyway to use them
+      //     based units and qty to hedge against option in legs and
+      //     payoff … this concept should be generalized when there is
+      //     no strictly underlying relation."
+      const pt = proxyTargets(sym);
+      if (pt) {
+        for (const t of pt.targets) {
+          if (have.has(t)) continue;        // already covered by positions tier
+          set.add(t);
+        }
+      }
     }
     return Array.from(set).sort();
   });
@@ -891,16 +914,33 @@
       // source of truth.
       const next = { ...enabledSymbols };
       let touched = false;
+      // Direct hedge — operator holds the literal underlying.
       for (const h of holdings) {
         if (String(h?.symbol || '').toUpperCase() !== target.toUpperCase()) continue;
         const key = `${h.account || ''}|${target.toUpperCase()}`;
         if (next[key] === undefined) {
           next[key] = true;
           touched = true;
-          // Hedge-opp pick == explicit "include the underlying" intent.
-          // Persist to long-term memory so future visits remember this
-          // choice (the eq-default-off rule has zero cost from here on).
           _persistEqMemory({ account: h.account, symbol: target.toUpperCase() }, true);
+        }
+      }
+      // Proxy hedge — operator holds an ETF (GOLDBEES → GOLD etc.).
+      // Same opt-in semantics — the pick is the consent, the key is
+      // by the proxy's actual symbol so the operator can selectively
+      // un-check it without losing the memory for OTHER targets the
+      // same proxy hedges.
+      const _proxies = proxiesForTarget(target);
+      if (_proxies.length) {
+        const _allowed = new Set(_proxies.map(p => p.proxy));
+        for (const h of holdings) {
+          const psym = String(h?.symbol || '').toUpperCase();
+          if (!_allowed.has(psym)) continue;
+          const key = `${h.account || ''}|${psym}`;
+          if (next[key] === undefined) {
+            next[key] = true;
+            touched = true;
+            _persistEqMemory({ account: h.account, symbol: psym }, true);
+          }
         }
       }
       if (touched) enabledSymbols = next;
@@ -970,7 +1010,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -1046,6 +1086,30 @@
         // filter (the option legs above already enforce it for the
         // chart's expiration scope).
       });
+    }
+    // Proxy hedges (GOLDBEES → GOLD, NIFTYBEES → NIFTY etc.). Same
+    // shape as the direct eq merge above but stamps the row with
+    // proxy metadata so _equityLegs + _mergedPayoff can apply the
+    // runtime-derived conversion factor. Operator: "is there anyway
+    // you determine qty and lot size based current value of total
+    // silverbees and goldbees holdings … no need to have a separate
+    // table." Factor = proxy_LTP / target_spot, computed lazily
+    // when strategy.spot is in hand.
+    const _proxies = proxiesForTarget(target);
+    if (_proxies.length) {
+      const _allowed = new Set(_proxies.map(p => p.proxy));
+      for (const h of holdings) {
+        const sym = String(h.symbol || '').toUpperCase();
+        if (!_allowed.has(sym)) continue;
+        const meta = _proxies.find(p => p.proxy === sym);
+        out.push({
+          ...h,
+          source: 'live',
+          kind:   'eq',
+          proxy_for:  target,
+          proxy_kind: meta?.kind || 'units',
+        });
+      }
     }
     // Drafts — matched by symbol prefix; no account filter (drafts
     // aren't tied to a broker account).
@@ -1298,11 +1362,24 @@
     if (eqs.length === 0) return base;
     /** @type {Array<{qty:number,cost:number}>} */
     const linearLegs = [];
+    const _targetSpot = Number(strategy?.spot) || 0;
     for (const eq of eqs) {
       const cost = Number(eq.avg_cost);
       if (!Number.isFinite(cost)) continue;
-      const effectiveQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
-      if (effectiveQty !== 0) linearLegs.push({ qty: effectiveQty, cost });
+      const rawQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
+      if (rawQty === 0) continue;
+      let effQty = rawQty;
+      let effCost = cost;
+      if (eq.proxy_for) {
+        // Runtime factor from current LTPs. Skip the proxy leg if
+        // either price is missing — we can't responsibly convert
+        // GOLDBEES into GOLD without knowing the gold spot.
+        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
+        if (factor <= 0) continue;
+        effQty  = rawQty * factor;
+        effCost = cost   / factor;
+      }
+      linearLegs.push({ qty: effQty, cost: effCost });
     }
     if (linearLegs.length === 0) return base;
     return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
@@ -1364,14 +1441,17 @@
     const eqs = _equityLegs;
     if (eqs.length === 0) return base;
     let extraDelta = 0;
+    const _targetSpot = Number(strategy?.spot) || 0;
     for (const eq of eqs) {
-      // Same effective-qty rule as _mergedPayoff: held qty when
-      // present, else opening_qty for sold-today rows that the
-      // operator opted into. Symmetry between the curve slope and
-      // the Δ chip is what makes the combined display read
-      // consistently.
-      const effectiveQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
-      if (effectiveQty !== 0) extraDelta += effectiveQty;
+      const rawQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
+      if (rawQty === 0) continue;
+      let effQty = rawQty;
+      if (eq.proxy_for) {
+        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
+        if (factor <= 0) continue;
+        effQty = rawQty * factor;
+      }
+      extraDelta += effQty;
     }
     if (extraDelta === 0) return base;
     return { ...base, delta: Number(base.delta || 0) + extraDelta };
@@ -3350,18 +3430,28 @@
                 {#if c.kind === 'eq'}
                   <!-- Equity-holding leg tag — operator scanning the
                        Candidates panel sees at a glance which row is
-                       the cash-stock layer behind the option strategy.
-                       qty cell carries `opening_qty` for intraday-sold
-                       rows so the size reads the same as every other
-                       holding row; the broker's pnl / cur_val / day_change
-                       fields are also computed against opening_qty, so
-                       treating the row as held end-to-end is consistent
-                       with the rest of the holdings view. Operator: "why
-                       bhel underlying is shown with sold chip in legs of
-                       derivatives page. we hold it in holdings." Earlier
-                       SOLD chip was over-claiming. -->
+                       the cash-stock layer behind the option strategy. -->
                   <span class="cand-split-tag cand-eq-tag"
-                        title={`Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`}>STOCK</span>
+                        title={c.proxy_for
+                          ? `Proxy hedge — ${c.symbol} ETF tracks ${c.proxy_for}; converted to target units at runtime via current LTPs`
+                          : `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`}>STOCK</span>
+                  {#if c.proxy_for}
+                    {@const _spotForChip = Number(strategy?.spot) || 0}
+                    {@const _factorChip = _spotForChip > 0 ? (Number(c.ltp) / _spotForChip) : 0}
+                    {@const _rawQtyChip = Number(c.qty || 0) || Number(c.opening_qty || 0) || 0}
+                    {@const _effQtyChip = _factorChip > 0 ? _rawQtyChip * _factorChip : 0}
+                    <!-- PROXY chip — flags that the eq leg is a
+                         proxy hedge rather than the literal underlying
+                         being held. Tooltip carries the conversion
+                         math so the operator can sanity-check the
+                         factor against current LTPs. Operator: "is
+                         there anyway to use them based units and qty
+                         to hedge against option in legs and payoff." -->
+                    <span class="cand-split-tag cand-proxy-tag"
+                          title={_factorChip > 0
+                            ? `${_rawQtyChip} ${c.symbol} × ${_factorChip.toFixed(4)} (${c.symbol} LTP / ${c.proxy_for} spot) ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent`
+                            : `Proxy of ${c.proxy_for} — waiting on spot to compute conversion factor`}>PROXY</span>
+                  {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
                   <!-- Split-row tag: this row represents the portion of
@@ -4642,6 +4732,15 @@
     color: #38bdf8;
     background: rgba(56, 189, 248, 0.18);
     border: 1px solid rgba(56, 189, 248, 0.45);
+  }
+  /* Proxy-hedge chip — magenta tint distinguishes a proxy leg (GOLDBEES
+     hedging GOLD, NIFTYBEES hedging NIFTY etc.) from a direct STOCK
+     leg. Same shape + size as the other split tags so the row's
+     rhythm stays consistent. */
+  .cand-proxy-tag {
+    color: #c084fc;
+    background: rgba(192, 132, 252, 0.16);
+    border: 1px solid rgba(192, 132, 252, 0.45);
   }
   /* Soft sky tint on the whole eq row so it reads as a different
      layer from the option/futures legs without competing with the
