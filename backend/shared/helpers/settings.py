@@ -225,6 +225,23 @@ SEEDS: list[tuple] = [
      "retail default and covers a full quarter of LLM-initiated activity.",
      "days", {"min": 0, "max": 730, "step": 1}),
 
+    # ── Hedge proxies — Stage 4 ──────────────────────────────────────
+    ("hedge_proxy", "hedge_proxy.regression_enabled", "bool", True,
+     "Run the daily β regression background task at 02:30 IST. False "
+     "disables the periodic auto-recompute; operator's 'Compute β' "
+     "button in /admin/settings still works.",
+     None, None),
+    ("hedge_proxy", "hedge_proxy.regression_window_days", "int", 60,
+     "Number of daily candles used in the β / R² regression. 60 covers "
+     "~3 months of trading days — long enough to smooth out single-day "
+     "spikes, short enough to reflect current beta drift.",
+     "days", {"min": 20, "max": 365, "step": 5}),
+    ("hedge_proxy", "hedge_proxy.regression_max_age_days", "int", 7,
+     "Skip rows that regressed within this window — daily firing still "
+     "recomputes each pair exactly once per window. Default 7 days "
+     "(weekly cadence).",
+     "days", {"min": 1, "max": 90, "step": 1}),
+
     # ── Notifications (per-branch capability toggles) ───────────────────
     # `is_enabled()` in utils.py reads notifications.<cap>_enabled from
     # the DB first, falling back to the cap_in_<branch>.<feature> YAML

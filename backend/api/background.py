@@ -934,6 +934,125 @@ async def _task_mcp_audit_cleanup() -> None:
         await _purge_once()
 
 
+async def _task_hedge_proxy_regression() -> None:
+    """Periodic β regression for every active hedge-proxy pair.
+
+    Stage 4 of the proxy-hedge feature. Runs once a day at 02:30 IST
+    — outside market hours, low broker-quota window, after the daily
+    sparkline warm has settled. For each active row whose
+    `regression_at` is older than `hedge_proxy.regression_max_age_days`
+    (default 7) the task fetches 60 days of daily closes for the
+    proxy + target and writes back β + R² + regression_at.
+
+    Idempotent: a row regressed yesterday gets skipped today. Operators
+    can still hit the "Compute β" button in /admin/settings for an
+    immediate ad-hoc run.
+
+    Disabled by setting `hedge_proxy.regression_enabled = False` — the
+    operator-triggered button keeps working independently.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import HedgeProxy
+    from backend.api.routes.hedge_proxies import _compute_regression
+    from backend.shared.helpers.settings import get_bool, get_int
+    from sqlalchemy import select as sql_select
+
+    async def _run_once():
+        if not get_bool("hedge_proxy.regression_enabled", True):
+            logger.info("Background: hedge-proxy regression disabled")
+            return
+        max_age = get_int("hedge_proxy.regression_max_age_days", 7)
+        window  = get_int("hedge_proxy.regression_window_days", 60)
+        try:
+            from backend.shared.brokers.registry import get_price_broker
+            broker = get_price_broker()
+        except Exception as exc:
+            logger.warning(f"hedge-proxy regression: no broker available: {exc}")
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age)
+        try:
+            async with async_session() as s:
+                rows = (await s.execute(
+                    sql_select(HedgeProxy).where(HedgeProxy.is_active.is_(True))
+                )).scalars().all()
+        except Exception as exc:
+            logger.error(f"hedge-proxy regression: load failed: {exc}")
+            return
+
+        ran = 0
+        skipped = 0
+        failed = 0
+        for row in rows:
+            # Skip rows that regressed within the freshness window —
+            # daily firing should still hit a row's slot exactly once
+            # per max_age window.
+            if row.regression_at and row.regression_at >= cutoff:
+                skipped += 1
+                continue
+            try:
+                beta, r2, n = await asyncio.to_thread(
+                    _compute_regression, broker, row.proxy_symbol, row.target_root, window,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} failed: {exc}"
+                )
+                failed += 1
+                continue
+            if beta is None:
+                # Resolution failure or not enough overlapping bars.
+                # Stamp `regression_at` anyway so we don't retry the
+                # same broken pair on every run — operator should
+                # delete the row or fix the symbol.
+                async with async_session() as s:
+                    db_row = await s.get(HedgeProxy, row.id)
+                    if db_row:
+                        db_row.regression_at = datetime.now(timezone.utc)
+                        await s.commit()
+                failed += 1
+                continue
+            try:
+                async with async_session() as s:
+                    db_row = await s.get(HedgeProxy, row.id)
+                    if db_row:
+                        db_row.beta = float(beta)
+                        db_row.correlation = float(r2 if r2 is not None else 1.0)
+                        db_row.regression_at = datetime.now(timezone.utc)
+                        await s.commit()
+                logger.info(
+                    f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "
+                    f"β={beta:.4f} R²={r2:.3f} n={n}"
+                )
+                ran += 1
+            except Exception as exc:
+                logger.warning(f"hedge-proxy regression: write-back failed for {row.id}: {exc}")
+                failed += 1
+            # Pace per-row work to stay within Kite's 3 req/s historical
+            # budget (each row burns 2 historical_data calls).
+            await asyncio.sleep(1.0)
+
+        logger.info(
+            f"hedge-proxy regression: cycle complete — "
+            f"ran={ran} skipped={skipped} failed={failed} of {len(rows)}"
+        )
+
+    await asyncio.sleep(120)  # let startup + broker rebuild settle
+    await _run_once()
+
+    while True:
+        # Daily at 02:30 IST — markets closed, sparkline warm done at
+        # 00:30, mcp_audit cleanup at 03:15 leaves a quiet slot.
+        now = timestamp_indian()
+        next_run = now.replace(hour=2, minute=30, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: hedge-proxy regression sleeping {sleep_s/3600:.1f}h until 02:30 IST")
+        await asyncio.sleep(sleep_s)
+        await _run_once()
+
+
 async def _task_sparkline_warm(state: dict) -> None:
     """
     Pre-populate the sparkline past-close cache at startup and at each
@@ -1547,6 +1666,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_visitor_log_daily(),   name="bg-visitor-log"),
         asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
         asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
+        asyncio.create_task(_task_hedge_proxy_regression(), name="bg-hedge-proxy-regression"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes
