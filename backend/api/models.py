@@ -1147,6 +1147,15 @@ class HedgeProxy(Base):
     target_root: Mapped[str]     = mapped_column(String(32), nullable=False, index=True)
     is_active: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True)
     note: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    # Stage 3 placeholder. For ETF tracking hedges (Stage 2, current
+    # use case) this is always 1.0 — GOLDBEES → GOLD correlation is
+    # ~1.0 by construction (the ETF's NAV mechanics force it). Reserved
+    # for future stock-vs-index hedges (RELIANCE → NIFTY etc.) where
+    # the value WOULD be auto-generated from a rolling regression of
+    # daily returns (R² between proxy and target). Column exists so
+    # the schema doesn't need a migration when Stage 3 lands.
+    correlation: Mapped[float]   = mapped_column(Float, nullable=False, default=1.0,
+                                                  server_default="1.0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

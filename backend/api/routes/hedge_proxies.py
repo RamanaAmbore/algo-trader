@@ -38,8 +38,14 @@ class HedgeProxyInfo(msgspec.Struct):
     target_root:  str
     is_active:    bool
     note:         Optional[str]
-    created_at:   str
-    updated_at:   str
+    # Stage 3 placeholder. Always 1.0 for ETF tracking hedges; reserved
+    # for future stock-vs-index hedges where the value would be
+    # auto-generated from a rolling regression of proxy vs target
+    # returns. Carried in the API surface so the UI can show it
+    # read-only today and become editable when Stage 3 lands.
+    correlation:  float = 1.0
+    created_at:   str   = ""
+    updated_at:   str   = ""
 
 
 class HedgeProxyCreate(msgspec.Struct):
@@ -47,14 +53,16 @@ class HedgeProxyCreate(msgspec.Struct):
     target_root:  str
     is_active:    bool = True
     note:         Optional[str] = None
+    correlation:  float = 1.0
 
 
 class HedgeProxyUpdate(msgspec.Struct):
     """Partial update — every field optional."""
-    proxy_symbol: Optional[str]  = None
-    target_root:  Optional[str]  = None
-    is_active:    Optional[bool] = None
-    note:         Optional[str]  = None
+    proxy_symbol: Optional[str]   = None
+    target_root:  Optional[str]   = None
+    is_active:    Optional[bool]  = None
+    note:         Optional[str]   = None
+    correlation:  Optional[float] = None
 
 
 class HedgeProxyResponse(msgspec.Struct):
@@ -102,6 +110,15 @@ async def seed_hedge_proxies() -> int:
         if cols and "conversion_kind" in cols:
             logger.info("hedge_proxies: legacy schema detected, dropping for migration")
             await conn.execute(text("DROP TABLE IF EXISTS hedge_proxies CASCADE"))
+        elif cols and "correlation" not in cols:
+            # Stage 3 placeholder column. Non-destructive ALTER — the
+            # row count stays intact; new column defaults to 1.0 on
+            # every existing row.
+            logger.info("hedge_proxies: adding correlation placeholder column")
+            await conn.execute(text(
+                "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                "correlation DOUBLE PRECISION NOT NULL DEFAULT 1.0"
+            ))
     # init_db has already created the new shape if the table is gone —
     # if migration just dropped it, SQLAlchemy's metadata.create_all
     # (run from init_db) needs to re-fire. Easiest path: re-run it here
@@ -138,6 +155,7 @@ def _to_info(row: HedgeProxy) -> HedgeProxyInfo:
         target_root=row.target_root,
         is_active=row.is_active,
         note=row.note,
+        correlation=float(row.correlation if row.correlation is not None else 1.0),
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -178,6 +196,7 @@ class HedgeProxiesController(Controller):
                 target_root=target,
                 is_active=data.is_active,
                 note=data.note,
+                correlation=float(data.correlation if data.correlation is not None else 1.0),
             )
             sess.add(row)
             try:
@@ -202,6 +221,8 @@ class HedgeProxiesController(Controller):
                 row.is_active = data.is_active
             if data.note is not None:
                 row.note = data.note
+            if data.correlation is not None:
+                row.correlation = float(data.correlation)
             try:
                 await sess.commit()
             except Exception as exc:

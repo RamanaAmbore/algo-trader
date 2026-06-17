@@ -74,10 +74,10 @@
 
   // ── Hedge proxy CRUD (pair-only) ───────────────────────────────────
   /** @type {Array<{id:number,proxy_symbol:string,target_root:string,
-   *                is_active:boolean,note:string|null}>} */
+   *                is_active:boolean,note:string|null,correlation:number}>} */
   let proxies = $state([]);
   let proxiesErr = $state('');
-  let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true });
+  let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true, correlation: '1.0' });
   async function loadProxies() {
     proxiesErr = '';
     try { const r = await fetchHedgeProxies(); proxies = Array.isArray(r?.rows) ? r.rows : []; }
@@ -86,18 +86,20 @@
   async function addProxy() {
     proxiesErr = '';
     try {
+      const corrNum = Number(proxyForm.correlation);
       const payload = {
         proxy_symbol: String(proxyForm.proxy_symbol || '').trim().toUpperCase(),
         target_root:  String(proxyForm.target_root  || '').trim().toUpperCase(),
         note:         proxyForm.note || null,
         is_active:    !!proxyForm.is_active,
+        correlation:  Number.isFinite(corrNum) && corrNum >= 0 && corrNum <= 1 ? corrNum : 1.0,
       };
       if (!payload.proxy_symbol || !payload.target_root) {
         proxiesErr = 'proxy_symbol and target_root required';
         return;
       }
       await createHedgeProxy(payload);
-      proxyForm = { proxy_symbol:'', target_root:'', note:'', is_active:true };
+      proxyForm = { proxy_symbol:'', target_root:'', note:'', is_active:true, correlation:'1.0' };
       await loadProxies();
     } catch (e) { proxiesErr = e?.message || 'create failed'; }
   }
@@ -105,8 +107,9 @@
     proxiesErr = '';
     try {
       await updateHedgeProxy(row.id, {
-        note:      row.note,
-        is_active: !!row.is_active,
+        note:        row.note,
+        is_active:   !!row.is_active,
+        correlation: Number(row.correlation) || 1.0,
       });
       await loadProxies();
     } catch (e) { proxiesErr = e?.message || 'save failed'; }
@@ -348,6 +351,11 @@
       derivatives page computes the conversion factor at runtime from
       current LTPs (<code>factor = proxy_LTP / target_spot</code>) and
       the lot count from the instruments cache.
+      <br />
+      <strong>Correlation</strong> (0–1) is a Stage 3 placeholder —
+      always 1.0 for ETF tracking hedges. Reserved for future
+      stock-vs-index hedges where the value will be auto-generated
+      from a rolling regression of proxy vs target daily returns.
     </p>
     {#if proxiesErr}
       <div class="text-[0.65rem] text-red-300 mb-1">{proxiesErr}</div>
@@ -359,6 +367,7 @@
             <tr><th class="text-left p-1">Proxy</th>
                 <th class="text-left p-1">Target</th>
                 <th class="text-left p-1">Note</th>
+                <th class="text-left p-1" title="Stage 3 placeholder — always 1.0 for ETFs">Corr</th>
                 <th class="text-left p-1">Active</th>
                 <th></th></tr>
           </thead>
@@ -367,7 +376,12 @@
               <tr class="border-t border-white/5">
                 <td class="p-1 font-mono">{p.proxy_symbol}</td>
                 <td class="p-1 font-mono">{p.target_root}</td>
-                <td class="p-1"><input bind:value={p.note} class="field-input w-72" /></td>
+                <td class="p-1"><input bind:value={p.note} class="field-input w-60" /></td>
+                <td class="p-1">
+                  <input type="number" step="0.01" min="0" max="1"
+                         bind:value={p.correlation} class="field-input w-14"
+                         title="Stage 3 placeholder — 1.0 for ETF tracking hedges" />
+                </td>
                 <td class="p-1"><input type="checkbox" bind:checked={p.is_active} /></td>
                 <td class="p-1 flex gap-1">
                   <button class="btn-primary text-[0.6rem] py-0.5 px-2" onclick={() => saveProxy(p)}>Save</button>
@@ -383,6 +397,9 @@
       <input placeholder="Proxy (e.g. GOLDBEES)" bind:value={proxyForm.proxy_symbol} class="field-input w-32" />
       <input placeholder="Target (e.g. GOLD)"    bind:value={proxyForm.target_root}  class="field-input w-28" />
       <input placeholder="note" bind:value={proxyForm.note} class="field-input flex-1 min-w-32" />
+      <input type="number" step="0.01" min="0" max="1" placeholder="corr"
+             bind:value={proxyForm.correlation} class="field-input w-14"
+             title="Stage 3 placeholder — keep at 1.0 for ETF tracking hedges" />
       <button class="btn-primary text-[0.65rem] py-0.5 px-2" onclick={addProxy}>+ Add</button>
     </div>
   </section>
