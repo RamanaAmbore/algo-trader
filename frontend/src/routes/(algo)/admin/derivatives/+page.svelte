@@ -39,7 +39,6 @@
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy,
-    computeProxyFactor,
   } from '$lib/data/hedgeProxies';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -1367,13 +1366,24 @@
       let effQty = rawQty;
       let effCost = cost;
       if (eq.proxy_for) {
-        // Dynamic factor from current LTPs. Skip when either price
-        // is missing — we can't responsibly convert GOLDBEES into
-        // GOLD without knowing the gold spot.
-        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
-        if (factor <= 0) continue;
-        effQty  = rawQty * factor;
-        effCost = cost   / factor;
+        // Derive the proxy's contribution from live broker numbers
+        // alone — no coded factor anywhere. Operator: "can you
+        // dynamically get factor, based on number of units of
+        // goldbees, silverbees, qty, market value and current spot
+        // price. That way I don't need to code factor manually."
+        //   market_value     = raw_qty × proxy_LTP
+        //   effective_qty    = market_value / target_spot
+        //   investment_value = raw_qty × avg_cost  (₹ in the proxy)
+        //   effective_cost   = investment_value / effective_qty
+        // Skip when either price is missing — can't responsibly
+        // convert GOLDBEES into GOLD without the gold spot.
+        const proxyLtp = Number(eq.ltp);
+        if (proxyLtp <= 0 || _targetSpot <= 0) continue;
+        const marketValue = rawQty * proxyLtp;
+        const investmentValue = rawQty * cost;
+        effQty  = marketValue / _targetSpot;
+        if (effQty === 0) continue;
+        effCost = investmentValue / effQty;
       }
       linearLegs.push({ qty: effQty, cost: effCost });
     }
@@ -1443,9 +1453,11 @@
       if (rawQty === 0) continue;
       let effQty = rawQty;
       if (eq.proxy_for) {
-        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
-        if (factor <= 0) continue;
-        effQty = rawQty * factor;
+        // Same derivation as _mergedPayoff — effective qty in target
+        // units = market_value / target_spot. No coded factor.
+        const proxyLtp = Number(eq.ltp);
+        if (proxyLtp <= 0 || _targetSpot <= 0) continue;
+        effQty = (rawQty * proxyLtp) / _targetSpot;
       }
       extraDelta += effQty;
     }
@@ -3444,21 +3456,23 @@
                           : `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`}>STOCK</span>
                   {#if c.proxy_for}
                     {@const _spotForChip = Number(strategy?.spot) || 0}
-                    {@const _factorChip = computeProxyFactor(Number(c.ltp), _spotForChip)}
-                    {@const _rawQtyChip = Number(c.qty || 0) || Number(c.opening_qty || 0) || 0}
-                    {@const _effQtyChip = _factorChip > 0 ? _rawQtyChip * _factorChip : 0}
-                    {@const _targetLot = getOptionUnderlyingLot(c.proxy_for)}
-                    {@const _targetLots = _targetLot > 0 ? _effQtyChip / _targetLot : 0}
+                    {@const _proxyLtpChip = Number(c.ltp) || 0}
+                    {@const _rawQtyChip   = Number(c.qty || 0) || Number(c.opening_qty || 0) || 0}
+                    {@const _marketValChip = _rawQtyChip * _proxyLtpChip}
+                    {@const _effQtyChip   = _spotForChip > 0 ? _marketValChip / _spotForChip : 0}
+                    {@const _targetLot    = getOptionUnderlyingLot(c.proxy_for)}
+                    {@const _targetLots   = _targetLot > 0 ? _effQtyChip / _targetLot : 0}
                     <!-- PROXY chip — flags that the eq leg is a proxy
-                         hedge rather than the literal underlying.
-                         Tooltip carries the math chain (raw qty × factor
-                         = target-unit equivalent ÷ lot_size = option
-                         lots covered) so the operator can read the
-                         option-sizing impact directly. -->
+                         hedge rather than the literal underlying. The
+                         entire conversion is derived from broker
+                         numbers (units × LTP) and the live target
+                         spot — no coded factor. Tooltip spells out
+                         the chain so the operator can sanity-check
+                         the option-sizing impact directly. -->
                     <span class="cand-split-tag cand-proxy-tag"
-                          title={_factorChip > 0
-                            ? `${_rawQtyChip} ${c.symbol} × ${_factorChip.toFixed(4)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}`
-                            : `Proxy of ${c.proxy_for} — waiting on spot to compute conversion factor`}>PROXY{_targetLot > 0 && _factorChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}</span>
+                          title={_effQtyChip > 0
+                            ? `Market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}`
+                            : `Proxy of ${c.proxy_for} — waiting on live ${c.proxy_for} spot to compute equivalent`}>PROXY{_targetLot > 0 && _effQtyChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}</span>
                   {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}

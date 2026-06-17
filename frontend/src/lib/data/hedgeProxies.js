@@ -103,15 +103,8 @@ export function isProxyFor(proxySymbol, targetRoot) {
   return arr.includes(String(targetRoot || '').toUpperCase());
 }
 
-/**
- * Dynamic conversion factor. Returns 0 when either price is missing
- * (caller skips the proxy contribution rather than guess).
- * @param {number} proxyLtp
- * @param {number} targetSpot
- */
-export function computeProxyFactor(proxyLtp, targetSpot) {
-  const p = Number(proxyLtp) || 0;
-  const t = Number(targetSpot) || 0;
-  if (p <= 0 || t <= 0) return 0;
-  return p / t;
-}
+// Factor helper retired — callers now derive `effective_qty` directly
+// as `market_value / target_spot` so the conversion reads as a single
+// step in line with the operator's mental model ("number of units ×
+// market value ÷ current spot price"). See _mergedPayoff /
+// _mergedGreeks in /admin/derivatives.
