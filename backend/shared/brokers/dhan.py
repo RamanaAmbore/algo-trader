@@ -968,9 +968,26 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         # Translate Dhan F&O symbol → Kite-style (see _dhan_to_kite_symbol)
         # so every downstream parser + chart works without per-vendor branches.
         _raw_ts_h = str(h.get("tradingSymbol") or h.get("symbol") or "")
+        # Dhan reports equity holdings with exchange="ALL" (cross-exchange
+        # marker — the same ISIN is held against both NSE + BSE liquidity).
+        # That literal leaks into the close-price backfill which builds
+        # "ALL:TEJASNET" quote keys that no broker can resolve → close=0 →
+        # day_change_val=0 → /pulse + /performance show '—' for Day P&L
+        # on every Dhan equity row. Resolution order:
+        #   1. exchangeSegment ("NSE_EQ" → "NSE") if Dhan provides it
+        #   2. exchange field mapped through the segment table
+        #   3. "NSE" as the safe equity-default for "ALL" / blank
+        _seg_h = str(h.get("exchangeSegment") or "").upper()
+        _exch_raw_h = str(h.get("exchange") or "").upper()
+        _kite_exch_h = (
+            _DHAN_SEGMENT_TO_EXCHANGE.get(_seg_h)
+            or (_DHAN_SEGMENT_TO_EXCHANGE.get(_exch_raw_h, _exch_raw_h)
+                if _exch_raw_h and _exch_raw_h != "ALL"
+                else "NSE")
+        )
         out.append({
             "tradingsymbol":   _dhan_to_kite_symbol(_raw_ts_h),
-            "exchange":        h.get("exchange")       or "NSE",
+            "exchange":        _kite_exch_h,
             "instrument_token": inst_tok,
             "isin":             h.get("isin"),
             "quantity":         qty,
@@ -1074,9 +1091,23 @@ def _normalise_positions(resp: Any) -> dict:
         # figure they're authoritative on.
         realised = float(p.get("realisedProfit", 0) or 0)
 
+        # Normalise the exchange field the same way holdings do: prefer
+        # the canonical exchangeSegment map ("NSE_FNO" → "NFO", "MCX_COMM"
+        # → "MCX") so CRUDEOIL on Dhan reads as MCX (matching Kite) rather
+        # than the bare "NFO" string Dhan's positions endpoint sometimes
+        # ships for commodity options. Fall through to p.get("exchange")
+        # when no segment is present, defaulting to NFO for derivatives.
+        _seg_p = str(p.get("exchangeSegment") or "").upper()
+        _exch_raw_p = str(p.get("exchange") or "").upper()
+        _kite_exch_p = (
+            _DHAN_SEGMENT_TO_EXCHANGE.get(_seg_p)
+            or (_DHAN_SEGMENT_TO_EXCHANGE.get(_exch_raw_p, _exch_raw_p)
+                if _exch_raw_p and _exch_raw_p != "ALL"
+                else "NFO")
+        )
         net.append({
             "tradingsymbol":   ts,
-            "exchange":        p.get("exchange")     or "NFO",
+            "exchange":        _kite_exch_p,
             "instrument_token": inst_tok,
             "product":         {"INTRADAY": "MIS",
                                 "MARGIN":   "NRML",
