@@ -757,7 +757,7 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
@@ -1034,36 +1034,59 @@
   });
   // Enabled equity-holding legs of the underlying — held out of the
   // strategy-analytics POST (backend only accepts opt/fut) and layered
-  // onto the rendered payoff in the chart instead. Long stock has a
-  // linear payoff: (S − avg_cost) × qty added to every point of both
-  // curves.
+  // onto the rendered payoff in the chart instead. Two contribution
+  // shapes:
+  //   qty > 0       → linear  (S − avg_cost) × qty   (still held)
+  //   qty = 0, opening_qty > 0 → flat realized pnl   (sold today —
+  //                              profit locked in, applied as a
+  //                              constant offset regardless of spot)
   const _equityLegs = $derived(
-    candidatePositions.filter(c =>
-      c.kind === 'eq' &&
-      enabledSymbols[enKey(c)] !== false &&
-      Number(c.qty || 0) !== 0
-    )
+    candidatePositions.filter(c => {
+      if (c.kind !== 'eq') return false;
+      if (enabledSymbols[enKey(c)] === false) return false;
+      const qty = Number(c.qty || 0);
+      const opq = Number(c.opening_qty || 0);
+      return qty !== 0 || opq !== 0;
+    })
   );
   /** Backend payoff with the equity-holding contribution layered on
-   *  per-spot. Long stock has a linear payoff: `(S − avg_cost) × qty`.
-   *  Each point's today_value AND expiry_value gets the same shift
-   *  (stock value doesn't decay between today and expiry). When there
-   *  are no equity legs this is a pass-through reference (no array
-   *  rebuild — strategy.payoff identity preserved for OptionsPayoff
-   *  $derived caches). */
+   *  per-spot. Operator: "include underlying from holdings in legs.
+   *  show the cost price on it profit to offset option return in
+   *  payoff graph."
+   *
+   *  qty > 0: long stock, linear payoff `(S − cost) × qty` — both
+   *  today and expiry curves shift by the same amount (stock value
+   *  doesn't decay).
+   *
+   *  qty = 0, opening_qty > 0: sold intraday. Realized P&L (`pnl` on
+   *  the holding row) is locked in — applies as a flat offset to
+   *  every point of both curves, since spot-at-expiry no longer
+   *  affects what was already booked.
+   *
+   *  Pass-through when no equity legs are enabled (preserves
+   *  strategy.payoff identity for OptionsPayoff $derived caches). */
   const _mergedPayoff = $derived.by(() => {
     const base = strategy?.payoff;
     if (!Array.isArray(base) || base.length === 0) return base || [];
     const eqs = _equityLegs;
     if (eqs.length === 0) return base;
-    return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
-      let add = 0;
-      for (const eq of eqs) {
-        const qty = Number(eq.qty) || 0;
-        const cost = Number(eq.avg_cost);
-        if (!Number.isFinite(cost)) continue;
-        add += (pt.spot - cost) * qty;
+    // Pre-split into linear vs flat so the per-spot loop only computes
+    // the spot-dependent term.
+    let flatOffset = 0;
+    /** @type {Array<{qty:number,cost:number}>} */
+    const linearLegs = [];
+    for (const eq of eqs) {
+      const qty = Number(eq.qty) || 0;
+      const cost = Number(eq.avg_cost);
+      if (qty !== 0 && Number.isFinite(cost)) {
+        linearLegs.push({ qty, cost });
+      } else {
+        flatOffset += Number(eq.pnl) || 0;
       }
+    }
+    return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
+      let add = flatOffset;
+      for (const l of linearLegs) add += (pt.spot - l.cost) * l.qty;
       return {
         ...pt,
         today_value:  pt.today_value  + add,
@@ -2160,20 +2183,34 @@
           // Skip anything that smells like a derivative — only cash
           // equity holdings should layer as a long-stock leg.
           if (/(CE|PE|FUT)$/i.test(String(sym))) continue;
-          // Skip fully-sold-today rows. Backend HoldingRow drops
-          // `quantity` to 0 after an intraday full-sell while
-          // `opening_quantity` keeps the start-of-day amount; for the
-          // payoff chart we want the CURRENT exposure (linear stock
-          // contribution = 0 when no shares are held), so qty=0 means
-          // skip — don't pollute the Legs panel with phantom rows
-          // that contribute nothing to the curves. Operator: "the
-          // legs is not showing qty and lot size correctly."
+          // Backend HoldingRow drops `quantity` to 0 after an intraday
+          // full-sell while `opening_quantity` keeps the start-of-day
+          // amount. Two distinct cases:
+          //
+          //   qty > 0          → still held. Linear contribution
+          //                      `(spot − cost) × qty` to the payoff.
+          //   qty = 0, opq > 0 → fully sold today. Realized profit is
+          //                      locked in regardless of where spot goes
+          //                      from here. Apply as a CONSTANT offset
+          //                      `pnl` (the broker's realized P&L on the
+          //                      sold shares) to every point of the
+          //                      payoff curve.
+          //   qty = 0, opq = 0 → nothing — skip.
+          //
+          // Operator: "include underlying from holdings in legs. show
+          // the cost price on it profit to offset option return in
+          // payoff graph." Use case: operator was running a covered call
+          // (long BHEL + short BHEL CE), sold BHEL intraday, now holds a
+          // naked CE — but the locked-in stock profit still offsets the
+          // option exposure in net P&L terms.
           const qty = Number(h?.quantity || 0);
-          if (!qty) continue;
+          const openingQty = Number(h?.opening_quantity || 0);
+          if (!qty && !openingQty) continue;
           rows.push({
             symbol:     String(sym).toUpperCase(),
             account:    String(h?.account || ''),
             qty,
+            opening_qty: openingQty,
             avg_cost:   h?.average_price != null ? Number(h.average_price) : null,
             ltp:        h?.last_price    != null ? Number(h.last_price)    : null,
             prev_close: h?.close_price != null ? Number(h.close_price) : null,
@@ -3044,7 +3081,22 @@
                        Candidates panel sees at a glance which row is
                        the cash-stock layer behind the option strategy. -->
                   <span class="cand-split-tag cand-eq-tag"
-                        title="Cash equity holding of the underlying — adds a linear (S − cost) × qty contribution to the payoff curve">STOCK</span>
+                        title={Number(c.qty || 0) !== 0
+                          ? `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`
+                          : `Cash equity holding of the underlying, fully sold today — realised P&L is locked in and applied as a flat offset to the payoff curve`}>STOCK</span>
+                  {#if Number(c.qty || 0) === 0 && Number(c.opening_qty || 0) !== 0}
+                    <!-- Sold-today badge — operator: "include underlying
+                         from holdings in legs. show the cost price on
+                         it profit to offset option return in payoff
+                         graph." The realised P&L on the broker's
+                         intraday-sold shares is locked in and flows
+                         into the merged payoff as a constant offset
+                         (see _mergedPayoff). Opening qty surfaced in
+                         the tooltip so the operator can size-check the
+                         contribution. -->
+                    <span class="cand-split-tag cand-eq-sold-tag"
+                          title={`Fully sold intraday — opening qty ${Math.abs(Number(c.opening_qty))}, realised P&L flows into the payoff as a flat offset`}>SOLD</span>
+                  {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
                   <!-- Split-row tag: this row represents the portion of
@@ -4316,6 +4368,14 @@
     color: #38bdf8;
     background: rgba(56, 189, 248, 0.18);
     border: 1px solid rgba(56, 189, 248, 0.45);
+  }
+  /* Sold-today follow-on tag — warm amber so it reads next to STOCK
+     as "this stock was held but isn't anymore — its realised P&L is
+     in the payoff as a flat offset, not a curve". */
+  .cand-eq-sold-tag {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.16);
+    border: 1px solid rgba(251, 191, 36, 0.45);
   }
   /* Soft sky tint on the whole eq row so it reads as a different
      layer from the option/futures legs without competing with the
