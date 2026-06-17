@@ -3512,14 +3512,29 @@
               <!-- Expiry cell removed — the hyphenated symbol shows it. -->
               <span class="font-mono">{c.account}</span>
               <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
-              <!-- Pass `quantity` so lotsForRow's per-symbol inference
-                   picks the right field. For EQ rows quantity → qHold;
-                   for CE/PE/FUT rows quantity → qPos. The previous
-                   `qty_pos: displayQty` was wrong for eq legs because
-                   the function reads it as a position qty and divides
-                   by the option contract lot — which is 0 for an EQ
-                   tradingsymbol. Showed "0" instead of the lot count. -->
-              <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty }))}</span>
+              <!-- Lots column. For proxy eq rows the lot count is in
+                   TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
+                   so the math derives from the same market_value /
+                   target_spot / target_lot_size chain the PROXY chip
+                   tooltip surfaces. Plain rows pass through to the
+                   shared lotsForRow helper (per-symbol inference: EQ
+                   → qHold, CE/PE/FUT → qPos). -->
+              {#if c.proxy_for}
+                {@const _lotsTargetSpot = Number(strategy?.spot) || 0}
+                {@const _lotsProxyLtp = Number(c.ltp) || 0}
+                {@const _lotsTargetLot = getOptionUnderlyingLot(c.proxy_for)}
+                {@const _lotsEffQty = (_lotsTargetSpot > 0 && _lotsProxyLtp > 0)
+                    ? (Math.abs(displayQty) * _lotsProxyLtp) / _lotsTargetSpot : 0}
+                {@const _lotsTargetLots = _lotsTargetLot > 0 ? _lotsEffQty / _lotsTargetLot : 0}
+                <span class="num"
+                      title={_lotsTargetLots > 0
+                        ? `${_lotsTargetLots.toFixed(2)} ${c.proxy_for} lot${_lotsTargetLots === 1 ? '' : 's'} (${_lotsEffQty.toFixed(2)} target units ÷ ${_lotsTargetLot} per lot)`
+                        : `Waiting on ${c.proxy_for} spot`}>
+                  {_lotsTargetLots > 0 ? fmtLots(_lotsTargetLots) : '—'}
+                </span>
+              {:else}
+                <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty }))}</span>
+              {/if}
               <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
