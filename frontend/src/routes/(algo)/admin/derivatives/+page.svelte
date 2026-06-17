@@ -38,8 +38,8 @@
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
-    loadHedgeProxies, proxiesForTarget, proxyTargets,
-    getProxyRow, computeProxyFactor, computeEffectiveQty,
+    loadHedgeProxies, proxiesForTarget, targetsForProxy,
+    computeProxyFactor,
   } from '$lib/data/hedgeProxies';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -761,12 +761,9 @@
       //     the async load completes (otherwise the page would
       //     hydrate against an empty cache and never refresh).
       void proxyTableReady;
-      const pt = proxyTargets(sym);
-      if (pt) {
-        for (const t of pt.targets) {
-          if (have.has(t)) continue;        // already covered by positions tier
-          set.add(t);
-        }
+      for (const t of targetsForProxy(sym)) {
+        if (have.has(t)) continue;          // already covered by positions tier
+        set.add(t);
       }
     }
     return Array.from(set).sort();
@@ -931,9 +928,8 @@
       // by the proxy's actual symbol so the operator can selectively
       // un-check it without losing the memory for OTHER targets the
       // same proxy hedges.
-      const _proxies = proxiesForTarget(target);
-      if (_proxies.length) {
-        const _allowed = new Set(_proxies.map(p => p.proxy));
+      const _allowed = new Set(proxiesForTarget(target));
+      if (_allowed.size) {
         for (const h of holdings) {
           const psym = String(h?.symbol || '').toUpperCase();
           if (!_allowed.has(psym)) continue;
@@ -1098,19 +1094,16 @@
     // table." Factor = proxy_LTP / target_spot, computed lazily
     // when strategy.spot is in hand.
     void proxyTableReady;   // re-derive when the proxy table loads
-    const _proxies = proxiesForTarget(target);
-    if (_proxies.length) {
-      const _allowed = new Set(_proxies.map(p => p.proxy));
+    const _allowedProxies = new Set(proxiesForTarget(target));
+    if (_allowedProxies.size) {
       for (const h of holdings) {
         const sym = String(h.symbol || '').toUpperCase();
-        if (!_allowed.has(sym)) continue;
-        const meta = _proxies.find(p => p.proxy === sym);
+        if (!_allowedProxies.has(sym)) continue;
         out.push({
           ...h,
           source: 'live',
           kind:   'eq',
-          proxy_for:  target,
-          proxy_kind: meta?.kind || 'units',
+          proxy_for: target,
         });
       }
     }
@@ -1374,18 +1367,13 @@
       let effQty = rawQty;
       let effCost = cost;
       if (eq.proxy_for) {
-        // Row carries the conversion mode (dynamic/static/beta) +
-        // correlation. Dynamic = proxy_LTP / target_spot; static =
-        // row.static_factor; beta = row.beta. Correlation scales the
-        // effective qty so the operator can dial in "this hedge is
-        // 0.85 reliable". computeEffectiveQty handles the math.
-        const row = getProxyRow(eq.symbol, eq.proxy_for);
-        if (!row) continue;
-        const factor = computeProxyFactor(row, Number(eq.ltp), _targetSpot);
+        // Dynamic factor from current LTPs. Skip when either price
+        // is missing — we can't responsibly convert GOLDBEES into
+        // GOLD without knowing the gold spot.
+        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
         if (factor <= 0) continue;
-        effQty  = computeEffectiveQty(row, factor, rawQty);
-        effCost = cost / factor;
-        if (effQty === 0) continue;
+        effQty  = rawQty * factor;
+        effCost = cost   / factor;
       }
       linearLegs.push({ qty: effQty, cost: effCost });
     }
@@ -1455,12 +1443,9 @@
       if (rawQty === 0) continue;
       let effQty = rawQty;
       if (eq.proxy_for) {
-        const row = getProxyRow(eq.symbol, eq.proxy_for);
-        if (!row) continue;
-        const factor = computeProxyFactor(row, Number(eq.ltp), _targetSpot);
+        const factor = computeProxyFactor(Number(eq.ltp), _targetSpot);
         if (factor <= 0) continue;
-        effQty = computeEffectiveQty(row, factor, rawQty);
-        if (effQty === 0) continue;
+        effQty = rawQty * factor;
       }
       extraDelta += effQty;
     }
@@ -3458,24 +3443,22 @@
                           ? `Proxy hedge — ${c.symbol} ETF tracks ${c.proxy_for}; converted to target units at runtime via current LTPs`
                           : `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`}>STOCK</span>
                   {#if c.proxy_for}
-                    {@const _proxyRow = getProxyRow(c.symbol, c.proxy_for)}
                     {@const _spotForChip = Number(strategy?.spot) || 0}
-                    {@const _factorChip = _proxyRow ? computeProxyFactor(_proxyRow, Number(c.ltp), _spotForChip) : 0}
+                    {@const _factorChip = computeProxyFactor(Number(c.ltp), _spotForChip)}
                     {@const _rawQtyChip = Number(c.qty || 0) || Number(c.opening_qty || 0) || 0}
-                    {@const _effQtyChip = _proxyRow && _factorChip > 0 ? computeEffectiveQty(_proxyRow, _factorChip, _rawQtyChip) : 0}
-                    {@const _corrChip = Number(_proxyRow?.correlation ?? 1)}
-                    {@const _modeChip = _proxyRow?.conversion_kind || 'dynamic'}
-                    <!-- PROXY chip — flags that the eq leg is a
-                         proxy hedge rather than the literal underlying
-                         being held. Tooltip carries the conversion
-                         math + correlation so the operator can sanity-
-                         check the row's parameters against the live
-                         numbers. Backed by the hedge_proxies DB row
-                         edited via /admin/settings (Stage 2). -->
+                    {@const _effQtyChip = _factorChip > 0 ? _rawQtyChip * _factorChip : 0}
+                    {@const _targetLot = getOptionUnderlyingLot(c.proxy_for)}
+                    {@const _targetLots = _targetLot > 0 ? _effQtyChip / _targetLot : 0}
+                    <!-- PROXY chip — flags that the eq leg is a proxy
+                         hedge rather than the literal underlying.
+                         Tooltip carries the math chain (raw qty × factor
+                         = target-unit equivalent ÷ lot_size = option
+                         lots covered) so the operator can read the
+                         option-sizing impact directly. -->
                     <span class="cand-split-tag cand-proxy-tag"
                           title={_factorChip > 0
-                            ? `${_modeChip} × correlation ${_corrChip.toFixed(2)}: ${_rawQtyChip} ${c.symbol} × ${_factorChip.toFixed(4)} × ${_corrChip.toFixed(2)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent`
-                            : `Proxy of ${c.proxy_for} — waiting on spot to compute conversion factor`}>PROXY</span>
+                            ? `${_rawQtyChip} ${c.symbol} × ${_factorChip.toFixed(4)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}`
+                            : `Proxy of ${c.proxy_for} — waiting on spot to compute conversion factor`}>PROXY{_targetLot > 0 && _factorChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}</span>
                   {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
