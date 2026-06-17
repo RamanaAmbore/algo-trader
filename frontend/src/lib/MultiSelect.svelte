@@ -24,6 +24,14 @@
     // Bindable so parents can observe or control the dropdown open state,
     // e.g. to suppress hover popups while the dropdown is open.
     open = $bindable(false),
+    // When true (default), the trigger shows a "×" clear-all button
+    // once any option is picked. Set to false to suppress it for
+    // pickers where the operator should toggle each option from the
+    // dropdown panel instead — e.g. AccountMultiSelect, where the
+    // "remove account ×" affordance was found confusing because it
+    // jumped the operator back to the empty-set ("All accounts") state
+    // in one click without confirming intent.
+    allowClear = true,
   } = $props();
   let triggerEl;
   let panelEl;
@@ -93,7 +101,7 @@
     <span class="rbq-multi-label {!value?.length ? 'rbq-multi-placeholder' : ''}">
       {displayLabel || '\u00a0'}
     </span>
-    {#if value?.length}
+    {#if value?.length && allowClear}
       <button type="button" class="rbq-multi-clear" onclick={clearAll}
               aria-label="Clear selection">×</button>
     {/if}

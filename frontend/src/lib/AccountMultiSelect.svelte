@@ -51,6 +51,11 @@
 </script>
 
 <div class="ams" title={disabled ? disabledReason : enabledHint}>
+  <!-- allowClear=false intentionally. Operator: "in positions[/]holdings
+       dropdown the 'remove account ×' should not be present." Toggling
+       individual accounts via the dropdown panel is the only way to
+       change the selection now; un-pick all of them to fall back to
+       the "All accounts" empty-state filter. -->
   <MultiSelect
     bind:value
     {options}
@@ -58,7 +63,8 @@
     {placeholder}
     {ariaLabel}
     {theme}
-    {id} />
+    {id}
+    allowClear={false} />
 </div>
 
 <style>
