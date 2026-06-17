@@ -1176,14 +1176,21 @@
    *  show the cost price on it profit to offset option return in
    *  payoff graph."
    *
-   *  qty > 0: long stock, linear payoff `(S − cost) × qty` — both
-   *  today and expiry curves shift by the same amount (stock value
-   *  doesn't decay).
+   *  When an eq leg is ENABLED it always contributes linearly:
+   *    payoff_add(spot) = (spot − avg_cost) × effective_qty
+   *  where effective_qty = current qty if still held, else
+   *  opening_qty if the row was fully sold today. Both today AND
+   *  expiry curves shift by the same amount (stock value doesn't
+   *  decay).
    *
-   *  qty = 0, opening_qty > 0: sold intraday. Realized P&L (`pnl` on
-   *  the holding row) is locked in — applies as a flat offset to
-   *  every point of both curves, since spot-at-expiry no longer
-   *  affects what was already booked.
+   *  Treating sold-today rows the same as held rows when enabled is
+   *  a deliberate "what-if-still-held" simulation — the operator's
+   *  opt-in is the signal that they want the underlying's full
+   *  exposure reflected in the combined view. At the current spot
+   *  the linear contribution ≈ the realised P&L (cost basis + sale
+   *  near current LTP); at distant spots it shows the slope of
+   *  having maintained the position. This is what makes the
+   *  combined Δ chip change when the eq leg is checked.
    *
    *  Pass-through when no equity legs are enabled (preserves
    *  strategy.payoff identity for OptionsPayoff $derived caches). */
@@ -1192,22 +1199,17 @@
     if (!Array.isArray(base) || base.length === 0) return base || [];
     const eqs = _equityLegs;
     if (eqs.length === 0) return base;
-    // Pre-split into linear vs flat so the per-spot loop only computes
-    // the spot-dependent term.
-    let flatOffset = 0;
     /** @type {Array<{qty:number,cost:number}>} */
     const linearLegs = [];
     for (const eq of eqs) {
-      const qty = Number(eq.qty) || 0;
       const cost = Number(eq.avg_cost);
-      if (qty !== 0 && Number.isFinite(cost)) {
-        linearLegs.push({ qty, cost });
-      } else {
-        flatOffset += Number(eq.pnl) || 0;
-      }
+      if (!Number.isFinite(cost)) continue;
+      const effectiveQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
+      if (effectiveQty !== 0) linearLegs.push({ qty: effectiveQty, cost });
     }
+    if (linearLegs.length === 0) return base;
     return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
-      let add = flatOffset;
+      let add = 0;
       for (const l of linearLegs) add += (pt.spot - l.cost) * l.qty;
       return {
         ...pt,
@@ -1266,11 +1268,13 @@
     if (eqs.length === 0) return base;
     let extraDelta = 0;
     for (const eq of eqs) {
-      const qty = Number(eq.qty) || 0;
-      // Only currently-held shares contribute delta. Sold-today rows
-      // (qty=0 + opening_qty>0) have realised P&L baked into the
-      // payoff curve but ZERO go-forward delta.
-      if (qty !== 0) extraDelta += qty;
+      // Same effective-qty rule as _mergedPayoff: held qty when
+      // present, else opening_qty for sold-today rows that the
+      // operator opted into. Symmetry between the curve slope and
+      // the Δ chip is what makes the combined display read
+      // consistently.
+      const effectiveQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
+      if (effectiveQty !== 0) extraDelta += effectiveQty;
     }
     if (extraDelta === 0) return base;
     return { ...base, delta: Number(base.delta || 0) + extraDelta };
