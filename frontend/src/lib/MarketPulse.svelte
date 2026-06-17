@@ -5171,13 +5171,13 @@
      stay (violet/sky/teal) since this is a per-ROW indicator, not
      a per-section divider. */
   :global(.ag-theme-algo .ag-row.mover-underlying .ag-cell:first-child) {
-    box-shadow: inset 3px 0 0 rgba(196, 181, 253, 0.35);
+    box-shadow: inset 2px 0 0 rgba(196, 181, 253, 0.35);
   }
   :global(.ag-theme-algo .ag-row.mover-midcap .ag-cell:first-child) {
-    box-shadow: inset 3px 0 0 rgba(56, 189, 248, 0.35);
+    box-shadow: inset 2px 0 0 rgba(56, 189, 248, 0.35);
   }
   :global(.ag-theme-algo .ag-row.mover-smallcap .ag-cell:first-child) {
-    box-shadow: inset 3px 0 0 rgba(94, 234, 212, 0.35);
+    box-shadow: inset 2px 0 0 rgba(94, 234, 212, 0.35);
   }
 
   /* Grid containers — each ag-Grid sits inside its own .bucket-grid

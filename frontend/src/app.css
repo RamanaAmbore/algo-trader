@@ -341,8 +341,12 @@
    left vertical border." Left stripe = eligibility; badge = sized-
    position viability. */
 .ag-theme-algo .ag-row.row-hold-fno .ag-col-sym {
-  /* Green-400 left accent — stock has options listed. */
-  box-shadow: inset 4px 0 0 0 #4ade80;
+  /* Green-400 left accent — stock has options listed. Thin 2 px
+     stripe matches the right-edge direction bar so both edges of
+     the cell read as the same visual weight. Operator: "the left
+     vertical border for underlying in holding reduce its thickness.
+     apply it everywhere." */
+  box-shadow: inset 2px 0 0 0 #4ade80;
 }
 .ag-theme-algo .ag-row.row-watch .ag-col-sym {
   background-color: rgba(251,191,36,0.10) !important;
@@ -450,16 +454,16 @@
    override the colour with the warmer/cooler direction tint, but the
    border is always present. */
 .ag-theme-ramboq .ag-col-sym {
-  box-shadow: inset 4px 0 0 rgba(120,135,160,0.55),
-              inset -4px 0 0 rgba(120,135,160,0.55) !important;
+  box-shadow: inset 2px 0 0 rgba(120,135,160,0.55),
+              inset -2px 0 0 rgba(120,135,160,0.55) !important;
 }
 .ag-theme-ramboq .ag-row.pos-long .ag-col-sym {
-  box-shadow: inset 4px 0 0 rgba(91,142,149,0.85),
-              inset -4px 0 0 rgba(91,142,149,0.85) !important;
+  box-shadow: inset 2px 0 0 rgba(91,142,149,0.85),
+              inset -2px 0 0 rgba(91,142,149,0.85) !important;
 }
 .ag-theme-ramboq .ag-row.pos-short .ag-col-sym {
-  box-shadow: inset 4px 0 0 rgba(196,122,61,0.85),
-              inset -4px 0 0 rgba(196,122,61,0.85) !important;
+  box-shadow: inset 2px 0 0 rgba(196,122,61,0.85),
+              inset -2px 0 0 rgba(196,122,61,0.85) !important;
 }
 .ag-theme-ramboq .ag-row.pos-long.ag-row-hover .ag-col-fill {
   background-color: rgba(91,142,149,0.12) !important;

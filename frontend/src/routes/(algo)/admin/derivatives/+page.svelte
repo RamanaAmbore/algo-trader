@@ -4224,11 +4224,11 @@
      the new band classes are the canonical path going forward. */
   .cand-row.expiry-band-close {
     background-color: var(--algo-amber-bg-soft) !important;
-    box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
+    box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
   }
   .cand-row.expiry-band-netted {
     background-color: rgba(125, 145, 184, 0.08) !important;
-    box-shadow: inset 3px 0 0 rgba(125, 145, 184, 0.35);
+    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.35);
   }
   /* Per-pair tint — each pair of opposite positions inside the
      NETTED band gets one of 5 alternating background tints + a
@@ -4239,23 +4239,23 @@
      alternate color for each netted opposite positions". */
   .cand-row.expiry-band-netted[data-pair-tint="0"] {
     background-color: rgba(125, 211, 252, 0.10) !important;  /* sky */
-    box-shadow: inset 3px 0 0 rgba(125, 211, 252, 0.65);
+    box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.65);
   }
   .cand-row.expiry-band-netted[data-pair-tint="1"] {
     background-color: rgba(168, 85, 247, 0.10) !important;   /* violet */
-    box-shadow: inset 3px 0 0 rgba(168, 85, 247, 0.65);
+    box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.65);
   }
   .cand-row.expiry-band-netted[data-pair-tint="2"] {
     background-color: rgba(45, 212, 191, 0.10) !important;   /* teal */
-    box-shadow: inset 3px 0 0 rgba(45, 212, 191, 0.65);
+    box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.65);
   }
   .cand-row.expiry-band-netted[data-pair-tint="3"] {
     background-color: rgba(244, 114, 182, 0.10) !important;  /* pink */
-    box-shadow: inset 3px 0 0 rgba(244, 114, 182, 0.65);
+    box-shadow: inset 2px 0 0 rgba(244, 114, 182, 0.65);
   }
   .cand-row.expiry-band-netted[data-pair-tint="4"] {
     background-color: rgba(132, 204, 22, 0.10) !important;   /* lime */
-    box-shadow: inset 3px 0 0 rgba(132, 204, 22, 0.65);
+    box-shadow: inset 2px 0 0 rgba(132, 204, 22, 0.65);
   }
   .cand-row.expiry-band-otm {
     background-color: transparent !important;
@@ -4265,11 +4265,11 @@
   /* Legacy band aliases — keep while _expiryStatus still references them. */
   .cand-row.cand-row-equity-close {
     background-color: var(--algo-red-bg) !important;
-    box-shadow: inset 3px 0 0 rgba(248, 113, 113, 0.65);
+    box-shadow: inset 2px 0 0 rgba(248, 113, 113, 0.65);
   }
   .cand-row.cand-row-commodity-close {
     background-color: rgba(251, 191, 36, 0.10) !important;
-    box-shadow: inset 3px 0 0 rgba(251, 191, 36, 0.65);
+    box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
   }
 
   /* Band section header — full-width row containing the section
@@ -4616,12 +4616,12 @@
      cue to the row body without flooding the whole table. */
   .cand-row-long {
     background-color: rgba(56,189,248,0.08);
-    box-shadow: inset 3px 0 0 rgba(56,189,248,0.75),
+    box-shadow: inset 2px 0 0 rgba(56,189,248,0.75),
                 inset -3px 0 0 rgba(56,189,248,0.75);
   }
   .cand-row-short {
     background-color: rgba(251,146,60,0.08);
-    box-shadow: inset 3px 0 0 rgba(251,146,60,0.75),
+    box-shadow: inset 2px 0 0 rgba(251,146,60,0.75),
                 inset -3px 0 0 rgba(251,146,60,0.75);
   }
   .cand-row-long:hover  { background-color: rgba(56,189,248,0.16); }
@@ -4636,13 +4636,13 @@
      panel + the draft input rows above. */
   .cand-row.cand-draft {
     background-color: rgba(240,171,252,0.06);
-    box-shadow: inset 4px 0 0 rgba(240,171,252,0.85);
+    box-shadow: inset 2px 0 0 rgba(240,171,252,0.85);
     /* Override the long/short tint so the draft cue wins. */
   }
   .cand-row.cand-draft.cand-row-long,
   .cand-row.cand-draft.cand-row-short {
     background-color: rgba(240,171,252,0.06);
-    box-shadow: inset 4px 0 0 rgba(240,171,252,0.85);
+    box-shadow: inset 2px 0 0 rgba(240,171,252,0.85);
   }
   .cand-row.cand-draft:hover {
     background-color: rgba(240,171,252,0.14);
