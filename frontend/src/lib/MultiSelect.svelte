@@ -32,6 +32,16 @@
     // jumped the operator back to the empty-set ("All accounts") state
     // in one click without confirming intent.
     allowClear = true,
+    // When true, picking a new option AUTO-DEselects every other
+    // currently-selected option — radio behaviour with the checkbox
+    // visuals. Re-picking the SAME option flips it off (back to
+    // empty selection). Use for pickers where the operator wants
+    // single-scope semantics even though the visual is a checkbox
+    // list (e.g. AccountMultiSelect on Pulse — "when you select any
+    // other value all [accounts] should be deselected automatically").
+    // Default false keeps existing multi-pick behaviour everywhere
+    // else (Expiry picker, Watchlist picker, etc.).
+    singleSelect = false,
   } = $props();
   let triggerEl;
   let panelEl;
@@ -59,6 +69,15 @@
     const v = opt.value;
     const cur = Array.isArray(value) ? [...value] : [];
     const i = cur.indexOf(v);
+    if (singleSelect) {
+      // Radio behaviour over a checkbox UI. Tapping the currently-
+      // selected option clears the selection (back to empty = "all");
+      // tapping any other option REPLACES the selection with just
+      // that one — no multi-pick across this picker.
+      if (i >= 0 && cur.length === 1) value = [];
+      else value = [v];
+      return;
+    }
     if (i >= 0) cur.splice(i, 1);
     else cur.push(v);
     value = cur;

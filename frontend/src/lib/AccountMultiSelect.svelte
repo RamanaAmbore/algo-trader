@@ -54,8 +54,14 @@
   <!-- allowClear=false intentionally. Operator: "in positions[/]holdings
        dropdown the 'remove account ×' should not be present." Toggling
        individual accounts via the dropdown panel is the only way to
-       change the selection now; un-pick all of them to fall back to
-       the "All accounts" empty-state filter. -->
+       change the selection now; un-pick the current one to fall back
+       to the "All accounts" empty-state filter.
+
+       singleSelect=true so the picker behaves as a radio over a
+       checkbox UI. Operator: "when you select any other value all
+       [accounts] should be deselected automatically." Picking ZG0790
+       after ZJ6294 leaves only ZG0790 selected; re-tapping ZG0790
+       clears back to empty (= all accounts). -->
   <MultiSelect
     bind:value
     {options}
@@ -64,7 +70,8 @@
     {ariaLabel}
     {theme}
     {id}
-    allowClear={false} />
+    allowClear={false}
+    singleSelect={true} />
 </div>
 
 <style>
