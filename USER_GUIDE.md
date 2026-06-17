@@ -280,6 +280,18 @@ Netted pairs on MCX carry shared colors (N1 / N2 / … labels) — a teal row an
 
 ---
 
+## Proxy hedges — when one instrument can hedge another
+
+If you hold an **ETF** that tracks a commodity or index (GOLDBEES tracks gold, NIFTYBEES tracks the NIFTY index), you don't need to buy the actual underlying to be exposed to it. The ETF's NAV moves with the underlying spot price. When you pick the underlying on `/admin/derivatives` (say GOLD), your GOLDBEES holding shows up in Legs as a PROXY hedge — automatically converted to gram-equivalent and then to GOLD option lots.
+
+The math is fully derived from live broker prices: market value of your GOLDBEES ÷ current GOLD spot = grams-equivalent ÷ lot size = GOLD lots. The PROXY chip surfaces all three numbers so you can sanity-check.
+
+**For stocks vs. indices** (RELIANCE → NIFTY etc.), the relationship is statistical, not mechanical. The platform supports a **β regression**: it fetches 60 days of daily closes for both sides, computes the slope β and the R² confidence, and writes them back to the row. When you pick NIFTY, your RELIANCE holding shows as a β-scaled NIFTY-equivalent. A daily background task keeps β fresh on a 7-day cadence; you can also hit "Compute β" manually for an instant rerun.
+
+You only see this when you have the proxy holdings. The default seeded pairs (GOLDBEES/SILVERBEES/NIFTYBEES/BANKBEES) cover most ETF tracking cases out of the box.
+
+---
+
 ## Symbol identity — commodity root vs contract
 
 In the Chart workspace (`/charts`), Derivatives Candidates grid, Watchlist, Positions, and Orders, symbols now show their **commodity root** as the primary label. A small chip below shows the resolved **contract month** (e.g. CRUDEOIL → `CRUDEOIL26JUNFUT`).

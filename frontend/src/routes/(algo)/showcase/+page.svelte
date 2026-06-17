@@ -140,6 +140,21 @@
       link: { href: '/pulse', label: 'Open Pulse' },
     },
     {
+      title: 'Proxy hedges — GOLDBEES hedges GOLD, RELIANCE hedges NIFTY',
+      tag: 'Derivatives analytics',
+      color: '#c084fc',
+      body: 'The derivatives page treats ETF holdings (GOLDBEES, SILVERBEES, NIFTYBEES, BANKBEES) and individual stocks (RELIANCE, HDFCBANK …) as PROXY hedges for the options book they don\'t directly underly. Pick GOLD in the Underlying picker and your GOLDBEES units surface as an eq leg in Legs — auto-converted to gram-equivalent, then to GOLD option lots. Pick NIFTY and any held stock with a β regression on file shows up as a beta-scaled hedge. Math is fully derived from live broker LTPs; nothing coded by hand.',
+      bullets: [
+        'DB-backed `hedge_proxies` pair table (proxy_symbol → target_root) — operator edits from /admin/settings; 6 default pairs seeded on first boot (GOLDBEES → GOLD/GOLDM, SILVERBEES → SILVER/SILVERM, NIFTYBEES → NIFTY, BANKBEES → BANKNIFTY)',
+        'Effective qty = β × market_value / target_spot, derived per-render from current LTPs (no static factor stored or coded anywhere)',
+        'Lot conversion: effective_qty / target_lot_size → "1500 GOLDBEES ≈ 0.15 GOLD lots" surfaces in the Lots column and the PROXY chip label, so option-sizing impact reads at a glance',
+        'Stage 3 β regression: POST /api/admin/hedge-proxies/{id}/compute runs `proxy_return = α + β × target_return` on 60 days of daily closes, writes β + R² back. NIFTY → "NIFTY 50" index resolution + MCX commodity front-month FUT fallback baked into the resolver',
+        'Stage 4 background task: daily at 02:30 IST, recompute β for any row older than `hedge_proxy.regression_max_age_days` (default 7), pace 1s/row to stay under Kite\'s 3 req/s historical budget',
+        'ETF case auto-validates: GOLDBEES β converges to ~1.0 R² ≈ 0.99, empirically confirming the tracking relationship the math implicitly uses',
+      ],
+      link: { href: '/admin/derivatives', label: 'See it on Derivatives' },
+    },
+    {
       title: 'Unified card UX + page-header modal trio + connection health',
       tag: 'Operator UX',
       color: '#22d3ee',

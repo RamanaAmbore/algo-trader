@@ -1635,6 +1635,84 @@ Polling: strategy analytics auto-refreshes whenever the leg set changes (an `$ef
 
 ---
 
+## Proxy hedges — held instrument hedges a different option underlying
+
+DB-backed cross-reference between holdings (GOLDBEES, SILVERBEES, NIFTYBEES, BANKBEES, individual stocks, …) and the option roots they can hedge against (GOLD, SILVER, NIFTY, BANKNIFTY, etc.). When the operator picks one of those underlyings on `/admin/derivatives`, matching proxy holdings surface as eq legs in the Legs panel with auto-derived conversion math.
+
+### Data model
+
+`hedge_proxies` table — pair-only schema with a regression placeholder:
+
+| Column | Use |
+|---|---|
+| `proxy_symbol` | held instrument (GOLDBEES, RELIANCE, …) |
+| `target_root` | option underlying the proxy hedges (GOLD, NIFTY, …) |
+| `is_active` | toggle |
+| `note` | free-form |
+| `beta` | regression slope from Stage 3 — NULL → math uses 1.0 (ETF case) |
+| `correlation` | R² from the regression (0..1) |
+| `regression_at` | when β was last computed |
+| `created_at` / `updated_at` | standard |
+
+Migration shape: legacy Stage 2 schema (conversion_kind / static_factor / kind / source columns) detected at boot via `information_schema.columns` and DROP'd; init_db recreates the simplified shape; seeder re-inserts the six default pairs.
+
+Seeded defaults on first boot:
+- `GOLDBEES → GOLD`, `GOLDBEES → GOLDM`
+- `SILVERBEES → SILVER`, `SILVERBEES → SILVERM`
+- `NIFTYBEES → NIFTY`
+- `BANKBEES → BANKNIFTY`
+
+### Math (per render, no factor stored anywhere)
+
+```
+market_value     = raw_qty × proxy_LTP            (broker live)
+effective_qty    = β × market_value / target_spot
+target_lots      = effective_qty / target_lot_size
+investment_value = raw_qty × avg_cost
+effective_cost   = investment_value / effective_qty
+payoff_add(S)    = (S − effective_cost) × effective_qty
+Δ_extra          = effective_qty
+```
+
+β defaults to 1.0 when the regression hasn't run yet (ETF tracking case). Stage 3 stock-vs-index uses the regression slope. The Lots column in Legs displays `target_lots` directly so 1500 GOLDBEES reads as `0.15` GOLD lots (rather than 0 from the lotsForRow helper, which doesn't know about proxies).
+
+### Stage 3 — β regression (operator-triggered)
+
+[`POST /api/admin/hedge-proxies/{id}/compute`](backend/api/routes/hedge_proxies.py) runs a 60-day daily-returns regression: `β = Cov(p,t) / Var(t)`, `R² = corr²`. Symbol resolution baked into `_TARGET_HINTS`:
+
+| Target | Exchange | Resolved as |
+|---|---|---|
+| NIFTY | NSE | "NIFTY 50" (index instrument) |
+| BANKNIFTY | NSE | "NIFTY BANK" |
+| FINNIFTY | NSE | "NIFTY FIN SERVICE" |
+| GOLD/GOLDM | MCX | front-month FUT |
+| SILVER/SILVERM | MCX | front-month FUT |
+| (others) | NSE | direct tradingsymbol match |
+
+Proxy symbols default to NSE (works for stock proxies + ETFs that list on NSE). Regression needs ≥15 overlapping bars; failure (resolution miss, too few bars) returns 422 with a diagnostic.
+
+### Stage 4 — daily auto-recompute
+
+[`_task_hedge_proxy_regression`](backend/api/background.py) fires daily at 02:30 IST. For every active row whose `regression_at` is older than `hedge_proxy.regression_max_age_days` (default 7), it runs the same regression as the manual endpoint and writes back. Failed regressions still stamp `regression_at` so a broken pair doesn't retry daily. 1s pacing per row to stay within Kite's 3 req/s historical budget.
+
+Settings:
+- `hedge_proxy.regression_enabled` (bool, True) — kill-switch
+- `hedge_proxy.regression_window_days` (int, 60) — daily candles in the regression
+- `hedge_proxy.regression_max_age_days` (int, 7) — skip freshness window
+
+### UI surfaces
+
+- **Underlying picker tier 4** — proxy holdings without a direct derivative position appear in the hedge-opportunity tier (alongside direct F&O-eligible holdings). Pick GOLD → GOLDBEES proxy leg auto-checks via the existing eq-leg auto-check effect.
+- **PROXY chip** on eq rows — magenta, label carries the lot count (`PROXY 0.15×`) and β when set (`PROXY 0.15× β1.18`). Tooltip surfaces the full chain: `β=1.183 × market value ₹250000 ÷ NIFTY spot ₹25000 ≈ 11.83 NIFTY-equiv ≈ 0.24 NIFTY lots · R²=0.78`.
+- **Lots cell** on proxy rows — shows `target_lots` (not the raw GOLDBEES lot count, which is 0).
+- **/admin/settings → Hedge proxies** — list + add form, columns `Proxy | Target | Note | β | R² | Run | Active`, "Compute β" button per row.
+
+### Frontend module
+
+[`$lib/data/hedgeProxies.js`](frontend/src/lib/data/hedgeProxies.js) — API-backed in-memory cache. `loadHedgeProxies(force=true)` re-fetches after admin mutations. Three indices (`_byTarget`, `_byProxy`, `_byPair`) for O(1) lookups during render. `getProxyRow(proxy, target)` returns the row at math time so β + correlation feed the derivations.
+
+---
+
 ## Chart workspace (`/charts`) — unified chart canvas
 
 A consolidated, reusable chart component that renders historical OHLCV + optional intraday price history + underlying-spot overlays + options Greeks for any symbol kind (underlying, future, option, equity). Serves as the entry point for all chart interactions across the platform.

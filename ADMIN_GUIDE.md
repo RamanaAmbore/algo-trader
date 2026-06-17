@@ -660,6 +660,66 @@ So real alerts and simulated alerts are never in the same bucket.
 
 ---
 
+## Proxy hedges — when you hold GOLDBEES against GOLD options
+
+The `/admin/derivatives` Underlying picker treats your **ETF holdings** and **individual stocks** as PROXY hedges for the option underlyings they don't directly correspond to. Pick GOLD → GOLDBEES shows up in Legs with auto-converted gram-equivalent and GOLD lot count. Pick NIFTY → any held stock with a β regression on file shows up beta-scaled. Nothing to type or maintain.
+
+### The default pairs (seeded on first boot)
+
+| Held | Hedges |
+|---|---|
+| GOLDBEES   | GOLD, GOLDM |
+| SILVERBEES | SILVER, SILVERM |
+| NIFTYBEES  | NIFTY |
+| BANKBEES   | BANKNIFTY |
+
+### How the conversion is derived
+
+Every value comes from live broker LTPs — there's no factor table, no hardcoded ratio:
+
+```
+market value     = held qty × proxy LTP            (live)
+effective qty    = β × market value ÷ target spot  (live; β=1.0 when no regression)
+target lots      = effective qty ÷ target lot size (from instruments cache)
+```
+
+For 1500 GOLDBEES @ ₹95 with GOLD @ ₹9,500/g:
+- market value = ₹142,500
+- effective qty = 15g gold-equivalent
+- GOLD lots = 0.15 (the PROXY chip reads `PROXY 0.15×`)
+
+The Lots column in Legs shows `0.15` directly; tooltip carries the full chain.
+
+### Adding your own pairs
+
+`/admin/settings → Hedge proxies → + Add`. Fill `proxy_symbol` + `target_root` + an optional note. ETF tracking pairs (something → its underlying) work immediately with β=1.0 implicit.
+
+For **stock-vs-index** hedges (RELIANCE → NIFTY etc.) hit **Compute β** on the row. The server fetches 60 days of daily closes for both legs, runs a returns regression, writes β + R² back. Takes ~5s. Now picking NIFTY surfaces your RELIANCE holding as a β-scaled NIFTY-equivalent hedge.
+
+### Auto-recompute schedule
+
+A background task runs daily at **02:30 IST**. For each active row whose last regression is older than `hedge_proxy.regression_max_age_days` (default 7), it runs the same regression. Failed pairs (broken symbol etc.) get stamped so they don't retry every day — fix or delete the row.
+
+Knobs in `/admin/settings → Hedge proxy`:
+- `regression_enabled` (True) — kill-switch
+- `regression_window_days` (60) — candles in the regression
+- `regression_max_age_days` (7) — recompute cadence
+
+### What you see on the row
+
+| Field | Meaning |
+|---|---|
+| **β** | regression slope, blank for ETF tracking pairs |
+| **R²** | confidence: 1.0 = perfect, 0.0 = random |
+| **Run** | date of last regression, `—` if never |
+| **Compute β** | run the regression on demand (independent of the daily task) |
+
+### ETF check: GOLDBEES → GOLD
+
+After the first regression run you'll see something like `β=0.98 R²=0.99`. That's the empirical confirmation that GOLDBEES tracks gold spot ~1:1. The math doesn't change (it uses β when set, falls back to 1.0 when NULL), but you now have validation that the proxy is working.
+
+---
+
 ## Settings — runtime tunables
 
 The Settings page (`/admin/settings`) is where you tune the knobs that change more often than a deploy cycle: alert thresholds, refresh cadences, simulator defaults, and the **execution mode** flags that decide whether an action hits the broker or stays in paper. Edits take effect on the **next agent tick / sim run** — no service restart, no redeploy.
