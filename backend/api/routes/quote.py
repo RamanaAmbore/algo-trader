@@ -371,23 +371,25 @@ def _key_to_str(key: tuple) -> str:
 
 
 def _save_caches_to_disk(force: bool = False) -> None:
-    """Persist `_spark_past_cache` to `_PERSIST_PATH`. Atomic via
+    """Persist sparkline caches to `_PERSIST_PATH`. Atomic via
     write-tmp-then-rename so a crashed write never leaves a
     half-written JSON file that breaks load.
 
-    What we DO persist:
+    What we persist:
       - `_spark_past_cache` (past daily closes) — high value across
-        redeploys. Daily resolution, ~30-s warm task is the
-        alternative-cost. THIS is the file's job.
+        redeploys. Daily resolution, full rebuild costs ~30 s.
+      - `_spark_today_cache` (today's intraday 30-min closes) — also
+        persisted now. Operator: mid-day redeploys were losing the
+        intraday tier and the warm task had to re-fetch ~100 symbols
+        through the Kite historical_data budget. The 30-min bars
+        don't change once a candle closes; the most recent bar may
+        be a few minutes stale, but `_today_cache_get` enforces the
+        5-min TTL on read so a stale entry quietly falls through to
+        a fresh fetch. Net effect: mid-day redeploys keep most of
+        today's intraday tier hot from disk, and the next lazy
+        fetch refreshes only what's actually stale.
 
-    What we DON'T persist (decided against during the efficiency
-    pass):
-      - `_spark_today_cache` (today's intraday) — 5-min TTL means a
-        restart within that window keeps stale data; restart after
-        5 min discards it anyway. Pure write-amplification cost for
-        no real persistence value. Restored today-cache would be
-        wrong nearly as often as right (intraday is a moving target
-        within 5 min). Better to let warm + lazy-fetch repopulate.
+    What we DON'T persist:
       - `_spark_past_attempt` (last-attempt timestamps) — throttle
         metadata. Losing it means at-most-one extra re-attempt per
         symbol post-redeploy, which is exactly the desired behaviour
@@ -420,16 +422,26 @@ def _save_caches_to_disk(force: bool = False) -> None:
     # releases the lock immediately.
     today = _ist_today()
     with _spark_lock:
-        past_copy = dict(_spark_past_cache)
+        past_copy  = dict(_spark_past_cache)
+        today_copy = dict(_spark_today_cache)
     past_snapshot = {
         _key_to_str(k): list(v)
         for k, v in past_copy.items()
         if k[3] == today
     }
+    # Today cache key shape: (sym, exch, today). Value shape:
+    # (cached_at_epoch, list[float]). Serialised as [epoch, closes]
+    # so the restore reads cleanly without dict shape gymnastics.
+    today_snapshot = {
+        _key_to_str(k): [float(v[0]), list(v[1])]
+        for k, v in today_copy.items()
+        if k[2] == today
+    }
 
     payload = {
         "ist_date": today,
         "past":     past_snapshot,
+        "today":    today_snapshot,
     }
 
     # Change-detection. Compute the hash of the serialised payload
@@ -508,6 +520,7 @@ def load_sparkline_cache_from_disk() -> int:
         return 0
 
     past_loaded = 0
+    today_loaded = 0
     with _spark_lock:
         for k_str, closes in (payload.get("past") or {}).items():
             try:
@@ -521,13 +534,36 @@ def load_sparkline_cache_from_disk() -> int:
                     past_loaded += 1
             except Exception:
                 continue
+        # Restore today_cache too. The on-disk shape is
+        # `[cached_at_epoch, [closes]]`. `_today_cache_get` enforces
+        # the 5-min TTL on read, so any entry older than that quietly
+        # falls through to a fresh fetch — restoring all-of-today is
+        # safe; the stale ones just don't get served. Net win: a
+        # mid-day restart within the 5-min window keeps every
+        # intraday bar hot from disk.
+        for k_str, entry in (payload.get("today") or {}).items():
+            try:
+                parts = k_str.split("|")
+                if len(parts) != 3:
+                    continue
+                sym, exch, date_s = parts
+                if (
+                    isinstance(entry, list) and len(entry) == 2
+                    and isinstance(entry[1], list)
+                ):
+                    cached_at = float(entry[0])
+                    closes = [float(c) for c in entry[1]]
+                    _spark_today_cache[(sym, exch, date_s)] = (cached_at, closes)
+                    today_loaded += 1
+            except Exception:
+                continue
 
-    if past_loaded:
+    if past_loaded or today_loaded:
         logger.info(
-            f"sparkline cache restored from disk: {past_loaded} past "
-            f"entries (ist_date={today})"
+            f"sparkline cache restored from disk: {past_loaded} past + "
+            f"{today_loaded} today entries (ist_date={today})"
         )
-    return past_loaded
+    return past_loaded + today_loaded
 
 # ── Instrument token-map cache ────────────────────────────────────────────────
 # broker.instruments(exchange) returns ~500 kB per exchange; fetching all
@@ -921,14 +957,31 @@ class SparklineController(Controller):
                     to_d   = datetime.now()
                     from_d = to_d - timedelta(days=days + 5)  # +5 buffer for weekends/holidays
 
-                    sem = asyncio.Semaphore(2)
-                    _KITE_PACE_S = 0.35  # sleep between completions inside each slot
+                    # Round-robin across every historical-eligible Kite
+                    # account so a heavy lazy-fetch burst (Pulse load
+                    # during the warm window) doesn't bottleneck on a
+                    # single broker's 3 req/sec budget. Each broker
+                    # keeps its own Sem(2) + pace(0.35 s). Falls back to
+                    # the original single-broker path cleanly when only
+                    # one account is available.
+                    try:
+                        from backend.shared.brokers.registry import get_historical_brokers
+                        _broker_pool = get_historical_brokers() or [broker]
+                    except Exception:
+                        _broker_pool = [broker]
+                    _KITE_PACE_S = 0.35
+                    _sems = [asyncio.Semaphore(2) for _ in _broker_pool]
 
-                    async def _fetch_closes(sym: str, token: int) -> tuple[str, list[float]]:
-                        async with sem:
+                    def _pick(idx: int) -> tuple:
+                        n = len(_broker_pool)
+                        return _broker_pool[idx % n], _sems[idx % n]
+
+                    async def _fetch_closes(sym: str, token: int, idx: int) -> tuple[str, list[float]]:
+                        bk, sem_b = _pick(idx)
+                        async with sem_b:
                             try:
                                 raw = await asyncio.to_thread(
-                                    broker.historical_data, token, from_d, to_d, "day"
+                                    bk.historical_data, token, from_d, to_d, "day"
                                 ) or []
                                 past_closes = _trim_past_closes(raw, days, today)
                                 await asyncio.sleep(_KITE_PACE_S)
@@ -939,8 +992,8 @@ class SparklineController(Controller):
                                 return sym, []
 
                     tasks = [
-                        _fetch_closes(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
-                        for sym_obj in to_fetch
+                        _fetch_closes(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol], i)
+                        for i, sym_obj in enumerate(to_fetch)
                         if sym_obj.tradingsymbol in token_map
                     ]
 
@@ -1093,21 +1146,35 @@ class SparklineController(Controller):
 
         if today_to_fetch:
             try:
-                t_broker = get_sparkline_broker()
+                from backend.shared.brokers.registry import get_historical_brokers
+                t_pool = get_historical_brokers()
             except Exception:
-                t_broker = None
-            if t_broker is not None:
-                t_sem = asyncio.Semaphore(2)
+                t_pool = []
+            if not t_pool:
+                try:
+                    t_pool = [get_sparkline_broker()]
+                except Exception:
+                    t_pool = []
+            if t_pool:
+                # Same round-robin pattern as past-closes — each broker
+                # holds its own Sem(2) + pace(0.35 s) so per-account
+                # 3 req/sec budget compounds with broker count.
+                _t_sems = [asyncio.Semaphore(2) for _ in t_pool]
 
-                async def _fetch_today(sym: str, exch: str, token: int) -> tuple[str, str, list[float]]:
-                    async with t_sem:
+                def _t_pick(idx: int) -> tuple:
+                    n = len(t_pool)
+                    return t_pool[idx % n], _t_sems[idx % n]
+
+                async def _fetch_today(sym: str, exch: str, token: int, idx: int) -> tuple[str, str, list[float]]:
+                    bk, sem_b = _t_pick(idx)
+                    async with sem_b:
                         closes = await asyncio.to_thread(
-                            _fetch_today_intraday_sync, t_broker, token, today,
+                            _fetch_today_intraday_sync, bk, token, today,
                         )
                         await asyncio.sleep(0.35)
                         return sym, exch, closes
 
-                t_tasks = [_fetch_today(s, e, t) for (s, e, t) in today_to_fetch]
+                t_tasks = [_fetch_today(s, e, t, i) for i, (s, e, t) in enumerate(today_to_fetch)]
                 t_fetched = await asyncio.gather(*t_tasks)
                 for sym, exch, closes in t_fetched:
                     if closes:
@@ -1212,6 +1279,62 @@ class SparklineController(Controller):
 
 # ── Background warm helper ────────────────────────────────────────────────────
 
+
+def _ticker_seed_early(token_map: dict[str, int]) -> None:
+    """Seed KiteTicker subscriptions BEFORE the historical-data warm
+    fetches kick off. Hoists what used to be a post-warm step to a
+    pre-warm step so the WebSocket reconnect + token subscribe run in
+    parallel with the rate-limited historical fetches — instead of
+    serially after them.
+
+    Operator-visible effect: after a redeploy, the SSE tick stream
+    starts pushing live LTPs roughly 5-15 s sooner because the WS
+    handshake didn't have to wait for ~100 historical_data round-trips
+    to complete first.
+
+    subscribe_with_sym() is idempotent + non-blocking. Safe to call
+    from anywhere in the warm flow; called once here at the top of
+    `warm_sparkline_cache`. Errors swallowed silently — historical
+    fetches still proceed, just without the early WS push.
+    """
+    if not token_map:
+        return
+    try:
+        from backend.shared.helpers.kite_ticker import get_ticker
+        ticker = get_ticker()
+        # Deferred-start safety: the on_startup _start_kite_ticker()
+        # hook may have run before Connections() finished restoring
+        # the cached access_token. Retry the start here against the
+        # same eligible Kite account preference order.
+        if not ticker.status().get("started"):
+            try:
+                from backend.shared.brokers.registry import get_sparkline_broker
+                spark_bk = get_sparkline_broker()
+                for b in getattr(spark_bk, "_brokers", []):
+                    kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
+                    api_key = getattr(kc, "api_key", None)
+                    access_token = getattr(kc, "_access_token", None) or getattr(kc, "access_token", None)
+                    if api_key and access_token:
+                        if ticker.ensure_started(api_key, access_token):
+                            logger.info(
+                                f"sparkline warm: KiteTicker started "
+                                f"(deferred retry, account={getattr(b, 'account', '?')})"
+                            )
+                        break
+            except Exception as exc:
+                logger.warning(f"sparkline warm: deferred ticker start failed: {exc}")
+        # subscribe_with_sym pushes both (token, sym) so SSE tick
+        # payloads carry the right sym key. Without it, the frontend's
+        # quoteStream filter silently drops every tick.
+        ticker.subscribe_with_sym(
+            [(tok, sym) for sym, tok in token_map.items()]
+        )
+        logger.info(
+            f"sparkline warm: pushed {len(token_map)} token(s) to TickerManager (pre-fetch)"
+        )
+    except Exception as exc:
+        logger.warning(f"sparkline warm: ticker subscribe failed: {exc}")
+
 async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) -> int:
     """
     Pre-populate _spark_past_cache for the given (tradingsymbol, exchange)
@@ -1293,16 +1416,43 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     if not token_map:
         return 0
 
+    # Subscribe the ticker BEFORE the historical-data fetches kick off.
+    # The KiteTicker WebSocket reconnect + token subscription proceeds
+    # in parallel with the (rate-limited) historical fetches, so by the
+    # time the warm task completes the operator's first SSE tick is
+    # already in flight rather than waiting another 5-15 s after warm
+    # completion. subscribe() is idempotent — the post-fetch top-up
+    # block below stays for any tokens resolved late, and re-calling
+    # for already-subscribed tokens is a no-op.
+    _ticker_seed_early(token_map)
+
     to_d   = datetime.now()
     from_d = to_d - timedelta(days=days + 5)
 
-    sem = asyncio.Semaphore(2)
+    # Round-robin work across every historical-eligible Kite account so
+    # Kite's per-account 3 req/sec budget compounds with broker count.
+    # Each broker keeps its OWN Semaphore(2) + 0.35 s pace pair — within
+    # the per-account limit. With two Kite accounts the effective
+    # historical throughput doubles (~6 req/sec) without touching
+    # per-broker pacing. Falls back to the original single-broker path
+    # gracefully when only one account is available.
+    try:
+        from backend.shared.brokers.registry import get_historical_brokers
+        broker_pool = get_historical_brokers() or [broker]
+    except Exception:
+        broker_pool = [broker]
     _KITE_PACE_S = 0.35
+    sems = [asyncio.Semaphore(2) for _ in broker_pool]
 
-    async def _fetch_past(sym: str, token: int) -> tuple[str, list[float]]:
+    def _pick(idx: int) -> tuple:
+        n = len(broker_pool)
+        return broker_pool[idx % n], sems[idx % n]
+
+    async def _fetch_past(sym: str, token: int, idx: int) -> tuple[str, list[float]]:
+        bk, sem = _pick(idx)
         async with sem:
             try:
-                raw = await asyncio.to_thread(broker.historical_data, token, from_d, to_d, "day") or []
+                raw = await asyncio.to_thread(bk.historical_data, token, from_d, to_d, "day") or []
                 past_closes = _trim_past_closes(raw, days, today)
                 await asyncio.sleep(_KITE_PACE_S)
                 return sym, past_closes
@@ -1312,22 +1462,23 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
                 return sym, []
 
     tasks = [
-        _fetch_past(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
-        for sym_obj in to_fetch
+        _fetch_past(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol], i)
+        for i, sym_obj in enumerate(to_fetch)
         if sym_obj.tradingsymbol in token_map
     ]
 
-    async def _fetch_today_warm(sym: str, token: int) -> tuple[str, list[float]]:
+    async def _fetch_today_warm(sym: str, token: int, idx: int) -> tuple[str, list[float]]:
+        bk, sem = _pick(idx)
         async with sem:
             closes = await asyncio.to_thread(
-                _fetch_today_intraday_sync, broker, token, today,
+                _fetch_today_intraday_sync, bk, token, today,
             )
             await asyncio.sleep(_KITE_PACE_S)
             return sym, closes
 
     today_tasks = [
-        _fetch_today_warm(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol])
-        for sym_obj in today_to_fetch
+        _fetch_today_warm(sym_obj.tradingsymbol, token_map[sym_obj.tradingsymbol], i)
+        for i, sym_obj in enumerate(today_to_fetch)
         if sym_obj.tradingsymbol in token_map
     ]
 
@@ -1361,50 +1512,11 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
                 f"{len(today_tasks)} symbols"
             )
 
-    # Push all resolved instrument tokens to the TickerManager so the
-    # WebSocket stream is seeded with every watchlist + book symbol at
-    # market open, before any user requests arrive. Subsequent sparkline
-    # requests will read from the tick_map instead of issuing broker.ltp()
-    # calls. subscribe() is idempotent — calling it here and again in
-    # batch_sparkline is safe.
-    if token_map:
-        try:
-            from backend.shared.helpers.kite_ticker import get_ticker
-            ticker = get_ticker()
-            # Deferred-start safety: the on_startup _start_kite_ticker()
-            # hook may have run before Connections() finished restoring
-            # the cached access_token (race seen in prod restart log).
-            # By the time this warm task fires (~25s after boot) the
-            # token is guaranteed hydrated, so retry the start here.
-            if not ticker.status().get("started"):
-                try:
-                    from backend.shared.brokers.registry import get_sparkline_broker
-                    spark_bk = get_sparkline_broker()
-                    for b in getattr(spark_bk, "_brokers", []):
-                        kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
-                        api_key = getattr(kc, "api_key", None)
-                        access_token = getattr(kc, "_access_token", None) or getattr(kc, "access_token", None)
-                        if api_key and access_token:
-                            if ticker.ensure_started(api_key, access_token):
-                                logger.info(
-                                    f"sparkline warm: KiteTicker started "
-                                    f"(deferred retry, account={getattr(b, 'account', '?')})"
-                                )
-                            break
-                except Exception as exc:
-                    logger.warning(f"sparkline warm: deferred ticker start failed: {exc}")
-            # Use subscribe_with_sym so SSE ticks carry the right sym
-            # — same fix as batch_sparkline above. Without this, the
-            # ~100 sparkline-warm tokens publish with sym="" and the
-            # frontend silently drops every tick.
-            ticker.subscribe_with_sym(
-                [(tok, sym) for sym, tok in token_map.items()]
-            )
-            logger.info(
-                f"sparkline warm: pushed {len(token_map)} token(s) to TickerManager"
-            )
-        except Exception as exc:
-            logger.warning(f"sparkline warm: ticker subscribe failed: {exc}")
+    # Ticker subscription already happened up front via _ticker_seed_early.
+    # The WS reconnect + token subscribe ran in PARALLEL with the historical
+    # fetches above, so by the time we land here the WebSocket is already
+    # streaming live ticks rather than waiting on the operator's first
+    # request to trigger the subscribe.
 
     _spark_warm_symbols = cached_count
     _spark_warm_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

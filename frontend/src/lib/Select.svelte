@@ -195,8 +195,8 @@
                 {highlighted === i ? 'rbq-select-option-hl' : ''}"
               onmousedown={() => pick(opt)}
               onmouseenter={() => { highlighted = i; }}>
-            <span class="rbq-select-option-label">{opt.label}</span>
-            {#if opt.hint}<span class="rbq-select-option-hint">{opt.hint}</span>{/if}
+            <span class="rbq-select-option-label" data-hint={opt.hint || ''}>{opt.label}</span>
+            {#if opt.hint}<span class="rbq-select-option-hint" data-hint={opt.hint}>{opt.hint}</span>{/if}
           </li>
         {/each}
         {#if !filteredOptions.length}

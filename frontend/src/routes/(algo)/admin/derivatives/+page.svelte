@@ -636,24 +636,44 @@
     }
     return Array.from(accts).sort();
   });
-  const underlyingChoicesFromBook = $derived.by(() => {
+  /** Two roots-with-positions sets so the picker can sort + color them
+   *  separately. `_rootsWithOptions` carries underlyings where the
+   *  operator holds at least one CE or PE — these are the most
+   *  actively-analysed roots (the page is built for option payoff
+   *  analysis), so they sort to the top of the picker AND get a
+   *  cyan-highlighted label. `_rootsWithFuturesOnly` carries
+   *  underlyings where the only open derivative is a future — still
+   *  shown without dimming but ranked second. Operator: "in the symbol
+   *  dropdown, if options position exists for underlying, color code
+   *  the root differently, show them first in default order." */
+  const _rootsWithOptions = $derived.by(() => {
     const set = new Set();
     for (const p of positions) {
-      if (!/(CE|PE|FUT)$/i.test(p.symbol)) continue;
-      // Strip everything from the first digit on — that's where the
-      // YY-month-strike block starts. Works for monthly + weekly.
-      // Each MCX variant (CRUDEOIL vs CRUDEOILM, GOLD vs GOLDM vs
-      // GOLDPETAL vs GOLDTEN vs GOLDGUINEA, etc.) keeps its own
-      // entry in the dropdown — they're separately tradable contracts
-      // with different lot sizes / tick sizes and need their own
-      // payoff chart. Operator: "for goldm positions, it should show
-      // goldm in dropdown. not gold. otherwise it may conflict in
-      // future with gold options".
+      if (!/(CE|PE)$/i.test(p.symbol)) continue;
       const u = p.symbol.replace(/\d.*$/, '');
-      if (!u) continue;
-      set.add(u);
+      if (u) set.add(u);
     }
-    return Array.from(set).sort();
+    return set;
+  });
+  const _rootsWithFuturesOnly = $derived.by(() => {
+    const set = new Set();
+    for (const p of positions) {
+      if (!/FUT$/i.test(p.symbol)) continue;
+      const u = p.symbol.replace(/\d.*$/, '');
+      if (u && !_rootsWithOptions.has(u)) set.add(u);
+    }
+    return set;
+  });
+  const underlyingChoicesFromBook = $derived.by(() => {
+    // Order = options-first (sorted), then futures-only (sorted) — both
+    // carry derivative positions; the split exists for visual coding +
+    // ranking only. Each MCX variant (CRUDEOIL vs CRUDEOILM, GOLD vs
+    // GOLDM vs GOLDPETAL vs GOLDTEN vs GOLDGUINEA, etc.) keeps its own
+    // entry — they're separately tradable contracts with different
+    // lot sizes / tick sizes and need their own payoff chart.
+    const opts = [..._rootsWithOptions].sort();
+    const futs = [..._rootsWithFuturesOnly].sort();
+    return [...opts, ...futs];
   });
 
   /** F&O-eligible holdings the operator has NO derivative position
@@ -735,14 +755,20 @@
     // in scope is now read off the expiry picker + legs grid.
     const seen = new Set();
     const out = [];
-    // Primary group — roots with at least one CE / PE / FUT in the
-    // book. No hint suffix.
-    for (const u of underlyingChoicesFromBook) {
+    // Tier 1 — options positions. Cyan-highlighted label + 'options'
+    // hint suffix. Sorted alphabetically inside the tier.
+    for (const u of [..._rootsWithOptions].sort()) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push({ value: u, label: u, hint: 'options' });
+    }
+    // Tier 2 — futures-only positions. No hint suffix, normal styling.
+    for (const u of [..._rootsWithFuturesOnly].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u });
     }
-    // Hedge-opportunity group — F&O-eligible holdings with no
+    // Tier 3 — Hedge-opportunity group. F&O-eligible holdings with no
     // matching derivative position. `hint: 'hedge'` styles the row
     // dimmer + adds a small suffix so the operator can scan
     // "positions vs. hedge ideas" at a glance. Picking from this
@@ -3627,6 +3653,26 @@
     min-width: 0;
   }
   .opt-und-row :global(.rbq-select-wrap) { flex: 1 1 auto; min-width: 0; }
+  /* Underlying-picker tier colour coding. Operator: "in the symbol
+     dropdown, if options position exists for underlying, color code
+     the root differently, show them first in default order." */
+  .opt-und-row :global(.rbq-select-option-label[data-hint='options']) {
+    color: #22d3ee;         /* cyan-400 — actionable, matches card controls */
+    font-weight: 700;
+  }
+  .opt-und-row :global(.rbq-select-option-hint[data-hint='options']) {
+    color: #22d3ee;
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.40);
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .opt-und-row :global(.rbq-select-option-label[data-hint='hedge']) {
+    opacity: 0.78;
+  }
 
   .opt-picker {
     display: flex;
