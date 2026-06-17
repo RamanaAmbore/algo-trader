@@ -2802,12 +2802,43 @@
     //    + pinned anchors are gated downstream by mainRows /
     //    pinnedTopRows via the _majorGroup filter; the includePos /
     //    includeHold flags only reach buildUnified.
+    //
+    //    Account-scope gate: the underlying anchor SEEDS come from the
+    //    full unfiltered positions+holdings universe (so anchors
+    //    survive cache rolls), but the anchor row should only appear
+    //    in a major when the scoped per-card input array (pos / hold,
+    //    already account-filtered) carries an OPTION (CE/PE) on that
+    //    underlying. Operator: "when i select dh3747 in positions, why
+    //    is it showing bel and underlyings when there are no options in
+    //    the account. if an option is present in the account, the
+    //    underlying can be present. fix it." Same rule applies symmetrically
+    //    to holdings — though holdings rarely carry options, the gate is
+    //    written for both to stay symmetric.
+    /** @type {Set<string>} */
+    const posOptUnderlyings = new Set();
+    for (const r of (includePos === false ? [] : pos)) {
+      const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+      if (!/(CE|PE)$/i.test(sym)) continue;
+      const p = parseSymbol(sym, getInst);
+      if (p?.underlying) posOptUnderlyings.add(String(p.underlying).toUpperCase());
+    }
+    /** @type {Set<string>} */
+    const holdOptUnderlyings = new Set();
+    for (const r of (includeHold === false ? [] : hold)) {
+      const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+      if (!/(CE|PE)$/i.test(sym)) continue;
+      const p = parseSymbol(sym, getInst);
+      if (p?.underlying) holdOptUnderlyings.add(String(p.underlying).toUpperCase());
+    }
     for (const [logicalName, q] of Object.entries(uq)) {
       const info = q._resolved;
       if (!info) continue;
       const anchorMajor = info._major || 'positions';
       if (anchorMajor === 'positions' && includePos  === false) continue;
       if (anchorMajor === 'holdings'  && includeHold === false) continue;
+      const _uKey = String(info.displayUnderlying || info.underlying_group || '').toUpperCase();
+      if (anchorMajor === 'positions' && _uKey && !posOptUnderlyings.has(_uKey)) continue;
+      if (anchorMajor === 'holdings'  && _uKey && !holdOptUnderlyings.has(_uKey)) continue;
       const row = get(info.tradingsymbol, anchorMajor);
       row.exchange      = row.exchange || info.exchange;
       row.tradingsymbol = info.tradingsymbol;
