@@ -1250,6 +1250,32 @@
     return { ...baseRisk, max_profit: maxP, max_loss: maxL, breakevens };
   });
 
+  /** Aggregate Greeks with the equity-holding contribution layered on.
+   *  Long stock has delta = +1 per share, gamma/theta/vega/rho = 0
+   *  (linear payoff, no convexity, no decay, no IV/rate sensitivity).
+   *  Short stock contributes -1 per share. Sold-today rows contribute
+   *  ZERO across all Greeks — the realised P&L is locked in, there's
+   *  no go-forward position to risk-manage.
+   *
+   *  Pass-through when no eq legs are enabled (preserves
+   *  strategy.aggregate_greeks identity). */
+  const _mergedGreeks = $derived.by(() => {
+    const base = strategy?.aggregate_greeks;
+    if (!base) return null;
+    const eqs = _equityLegs;
+    if (eqs.length === 0) return base;
+    let extraDelta = 0;
+    for (const eq of eqs) {
+      const qty = Number(eq.qty) || 0;
+      // Only currently-held shares contribute delta. Sold-today rows
+      // (qty=0 + opening_qty>0) have realised P&L baked into the
+      // payoff curve but ZERO go-forward delta.
+      if (qty !== 0) extraDelta += qty;
+    }
+    if (extraDelta === 0) return base;
+    return { ...base, delta: Number(base.delta || 0) + extraDelta };
+  });
+
   // Auto-trigger strategy analytics whenever the leg set changes — no
   // explicit Analyze button needed.
   $effect(() => {
@@ -2877,24 +2903,24 @@
              variants on theta / vega / rho since those flip sign with
              credit vs debit structures. -->
         <span class="opt-section-tag tag-greek"
-          title="Delta — net directional exposure (₹ per ₹1 spot move)">
-          Δ {pctFmt(strategy.aggregate_greeks.delta)}
+          title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
+          Δ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).delta)}
         </span>
         <span class="opt-section-tag tag-greek"
           title="Gamma — convexity, rate of change of Δ as spot moves">
-          Γ {pctFmt(strategy.aggregate_greeks.gamma)}
+          Γ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).gamma)}
         </span>
-        <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.theta < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tag-greek {(_mergedGreeks ?? strategy.aggregate_greeks).theta < 0 ? 'tag-greek-neg' : ''}"
           title="Theta — daily decay (₹/day, positive when net short premium)">
-          Θ {pctFmt(strategy.aggregate_greeks.theta)}
+          Θ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).theta)}
         </span>
-        <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.vega < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tag-greek {(_mergedGreeks ?? strategy.aggregate_greeks).vega < 0 ? 'tag-greek-neg' : ''}"
           title="Vega — P&L per 1% IV move (positive = long volatility)">
-          𝒱 {pctFmt(strategy.aggregate_greeks.vega)}
+          𝒱 {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).vega)}
         </span>
-        <span class="opt-section-tag tag-greek {strategy.aggregate_greeks.rho < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tag-greek {(_mergedGreeks ?? strategy.aggregate_greeks).rho < 0 ? 'tag-greek-neg' : ''}"
           title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
-          ρ {pctFmt(strategy.aggregate_greeks.rho)}
+          ρ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).rho)}
         </span>
         <!-- Card-control trio kept in a tight no-wrap cluster so the
              three icons sit on the same row even on a narrow viewport.
@@ -3108,9 +3134,21 @@
                  row direction tint, P&L recompute, and the close-
                  ticket prefill so every surface speaks to the
                  effective exposure rather than the gross position. -->
+            <!-- Sold-today eq rows: surface opening_qty in the qty cell
+                 so the Lots column (which derives from displayQty) shows
+                 the original position size. Combined with the SOLD chip
+                 the operator reads at a glance "stock that was 3000
+                 strong, now sold, realised P&L locked into the payoff
+                 as a flat offset". isClosed below still keys on c.qty
+                 so the row stays non-closable and uses broker pnl. -->
+            {@const _eqDisplayQty = c.kind === 'eq'
+                                 && Number(c.qty || 0) === 0
+                                 && Number(c.opening_qty || 0) !== 0
+                                  ? Number(c.opening_qty)
+                                  : null}
             {@const displayQty = c._residualQty != null
               ? Number(c._residualQty)
-              : Number(c.qty || 0)}
+              : (_eqDisplayQty != null ? _eqDisplayQty : Number(c.qty || 0))}
             <!-- Open-row P&L = (live_ltp − cost) × current_qty + realised.
                  The realised term carries the cash from intraday
                  closeouts so the row reconciles with Kite's broker
@@ -3216,16 +3254,15 @@
                           ? `Cash equity holding of the underlying — adds (S − cost) × qty per spot to the payoff curve`
                           : `Cash equity holding of the underlying, fully sold today — realised P&L is locked in and applied as a flat offset to the payoff curve`}>STOCK</span>
                   {#if Number(c.qty || 0) === 0 && Number(c.opening_qty || 0) !== 0}
-                    <!-- Sold-today badge. qty cell shows 0 (truthful
-                         current state); the badge carries the opening
-                         size inline (×3000) so the operator can read
-                         "STOCK SOLD ×3000" at a glance and know both
-                         that the row was held + how much was sold,
-                         without the qty cell misrepresenting current
+                    <!-- Sold-today badge. The qty cell shows the opening
+                         qty (3000) so the operator reads the position
+                         size from the same column as every other row;
+                         the chip flags that the size represents the
+                         opening position now realised, not current
                          exposure. Realised P&L flows into the merged
-                         payoff as a constant offset (see _mergedPayoff). -->
+                         payoff as a flat offset (see _mergedPayoff). -->
                     <span class="cand-split-tag cand-eq-sold-tag"
-                          title={`Fully sold intraday — realised P&L flows into the payoff as a flat offset`}>SOLD ×{Math.abs(Number(c.opening_qty))}</span>
+                          title={`Fully sold intraday — qty shown is the opening size, realised P&L flows into the payoff as a flat offset`}>SOLD</span>
                   {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
@@ -3347,28 +3384,28 @@
         <div class="opt-block">
           <div class="opt-block-h">
             Greeks (position)
-            <InfoHint popup text={'Sum of every leg\'s signed-qty Greeks. Δ = net directional exposure; Θ = daily decay (positive when net short premium); 𝒱 = sensitivity to a 1 % IV move.'} />
+            <InfoHint popup text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
           </div>
           <div class="opt-kv opt-kv-greeks">
-            <div class="kv-pair" title="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise.">
+            <div class="kv-pair" title="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs.">
               <span class="kv-k kv-k-greek">Δ</span>
-              <span class="kv-v">{pctFmt(strategy.aggregate_greeks.delta)}</span>
+              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).delta)}</span>
             </div>
             <div class="kv-pair" title="Gamma — rate-of-change of delta as spot moves.">
               <span class="kv-k kv-k-greek">Γ</span>
-              <span class="kv-v">{pctFmt(strategy.aggregate_greeks.gamma)}</span>
+              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).gamma)}</span>
             </div>
             <div class="kv-pair" title="Theta — daily decay in rupees. Positive when net short premium.">
               <span class="kv-k kv-k-greek">Θ</span>
-              <span class="kv-v {strategy.aggregate_greeks.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt(strategy.aggregate_greeks.theta)}</span>
+              <span class="kv-v {(_mergedGreeks ?? strategy.aggregate_greeks).theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).theta)}</span>
             </div>
             <div class="kv-pair" title="Vega — P&L change per 1 % IV move. Positive = long volatility.">
               <span class="kv-k kv-k-greek">𝒱</span>
-              <span class="kv-v {strategy.aggregate_greeks.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt(strategy.aggregate_greeks.vega)}</span>
+              <span class="kv-v {(_mergedGreeks ?? strategy.aggregate_greeks).vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).vega)}</span>
             </div>
             <div class="kv-pair" title="Rho — sensitivity to a 1 % rate change. Mostly cosmetic for short-dated index options.">
               <span class="kv-k kv-k-greek">ρ</span>
-              <span class="kv-v">{pctFmt(strategy.aggregate_greeks.rho)}</span>
+              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).rho)}</span>
             </div>
           </div>
         </div>
