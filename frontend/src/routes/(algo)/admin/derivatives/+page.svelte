@@ -677,9 +677,26 @@
    *  shown without dimming but ranked second. Operator: "in the symbol
    *  dropdown, if options position exists for underlying, color code
    *  the root differently, show them first in default order." */
+  // Operator: "in positions, when the underlying for the positions
+  // only in the account should be displayed. underlyings for positions
+  // in other accounts should not be displayed." When the Order-routing
+  // picker narrows to a subset of accounts, the Underlying dropdown
+  // scopes to roots that have a derivative position in THAT account
+  // set — a CRUDEOIL position in DH6847 doesn't surface when ZG0790
+  // is the picked routing account. Legs panel still shows all legs
+  // across accounts once an underlying is picked (Legs deliberately
+  // ignores the account filter for total-exposure analysis), so the
+  // dropdown narrowing + Legs breadth together read as "pick from
+  // what I can route an order against; analyse total exposure".
+  const _accountAllow = $derived.by(() => {
+    if (selectedAccounts.length === 0) return null;
+    return new Set(selectedAccounts.map(String));
+  });
   const _rootsWithOptions = $derived.by(() => {
     const set = new Set();
+    const allow = _accountAllow;
     for (const p of positions) {
+      if (allow && !allow.has(String(p.account || ''))) continue;
       if (!/(CE|PE)$/i.test(p.symbol)) continue;
       const u = p.symbol.replace(/\d.*$/, '');
       if (u) set.add(u);
@@ -688,7 +705,9 @@
   });
   const _rootsWithFuturesOnly = $derived.by(() => {
     const set = new Set();
+    const allow = _accountAllow;
     for (const p of positions) {
+      if (allow && !allow.has(String(p.account || ''))) continue;
       if (!/FUT$/i.test(p.symbol)) continue;
       const u = p.symbol.replace(/\d.*$/, '');
       if (u && !_rootsWithOptions.has(u)) set.add(u);
