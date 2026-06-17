@@ -771,8 +771,6 @@
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
-    /** @type {string[]} */
-    const acctFilter = selectedAccounts.length ? selectedAccounts : [];
     // Hoisted regexes — constructed once per re-derivation rather than
     // once per position/draft. The literal /FUT$/ and /(CE|PE)$/ are
     // already cached at parse time; the dynamic prefix regex is the
@@ -788,9 +786,18 @@
       const inst = getInstrument(String(sym || '').toUpperCase());
       return selectedExpiries.includes(inst?.x);
     };
+    // Account filter intentionally NOT applied here. The payoff workspace
+    // analyses the operator's TOTAL exposure on the underlying — a CE on
+    // ZG0790 hedges a future on DH6847 just as well as if they were on
+    // the same handle, and the broker nets them at expiry settlement.
+    // Operator: "legs is not showing correct derivatives from accounts"
+    // — the silent account scope was hiding cross-account positions
+    // (e.g. CRUDEOIL spread across ZG0790 + ZJ6294 + DH6847, GOLDM on
+    // ZG0790 hidden when only ZJ6294 was picked). Symmetric with the eq
+    // holdings merge below which already ignores selectedAccounts for
+    // the same reason — payoff is exposure-driven, not account-scoped.
     for (const p of positions) {
       if (p.source !== wantedSource) continue;
-      if (acctFilter.length && !acctFilter.includes(p.account)) continue;
       const sym = p.symbol;
       if (!prefixRe.test(sym)) continue;
       const isFut = /FUT$/i.test(sym);
