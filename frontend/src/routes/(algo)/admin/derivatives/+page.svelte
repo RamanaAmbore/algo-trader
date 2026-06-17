@@ -30,7 +30,7 @@
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
-    listFutures, getInstrument,
+    listFutures, getInstrument, getOptionUnderlyingLot,
   } from '$lib/data/instruments';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
@@ -597,6 +597,18 @@
       if (!u) continue;
       set.add(u);
     }
+    // Surface F&O-eligible holdings too so the operator can analyse
+    // "what does a covered call against THIS stock I hold look like"
+    // even before any option position exists. Same shared helper that
+    // powers Pulse + Performance lot detection — if the cash equity
+    // has CE/PE listed, the underlying name lands in the picker.
+    for (const h of holdings) {
+      const sym = String(h?.symbol || '').toUpperCase();
+      if (!sym) continue;
+      if (getOptionUnderlyingLot && getOptionUnderlyingLot(sym) > 0) {
+        set.add(sym);
+      }
+    }
     return Array.from(set).sort();
   });
 
@@ -796,7 +808,14 @@
     for (const h of holdings) {
       const sym = String(h.symbol || '').toUpperCase();
       if (sym !== target) continue;
-      if (acctFilter.length && !acctFilter.includes(h.account)) continue;
+      // Intentionally NOT filtering by account here. The operator may
+      // hold the stock in one broker and run option positions in
+      // another (Kite + Dhan + Groww layout). For payoff purposes the
+      // total exposure on this underlying is what matters; an
+      // account-scoped option view should still see the full stock
+      // layer. Operator: "the payoff and legs is not showing
+      // underlying holding if it exists" — the previous account
+      // filter was the silent culprit on cross-broker books.
       out.push({
         ...h,
         source: 'live',
