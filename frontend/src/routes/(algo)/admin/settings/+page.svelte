@@ -11,7 +11,8 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { fetchSettings, updateSetting, resetSetting, fetchWatchlists,
-           fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy } from '$lib/api';
+           fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy,
+           computeHedgeProxy } from '$lib/api';
   import Select   from '$lib/Select.svelte';
 
   // Pinned-watchlist symbols feed the orders.default_symbol dropdown
@@ -74,7 +75,8 @@
 
   // ── Hedge proxy CRUD (pair-only) ───────────────────────────────────
   /** @type {Array<{id:number,proxy_symbol:string,target_root:string,
-   *                is_active:boolean,note:string|null,correlation:number}>} */
+   *                is_active:boolean,note:string|null,correlation:number,
+   *                beta:number|null,regression_at:string|null}>} */
   let proxies = $state([]);
   let proxiesErr = $state('');
   let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true, correlation: '1.0' });
@@ -118,6 +120,19 @@
     proxiesErr = '';
     try { await deleteHedgeProxy(row.id); await loadProxies(); }
     catch (e) { proxiesErr = e?.message || 'delete failed'; }
+  }
+  /** @type {Record<number, boolean>} */
+  let computingProxy = $state({});
+  async function computeProxy(row) {
+    proxiesErr = '';
+    computingProxy = { ...computingProxy, [row.id]: true };
+    try { await computeHedgeProxy(row.id); await loadProxies(); }
+    catch (e) { proxiesErr = e?.message || 'regression failed'; }
+    finally { computingProxy = { ...computingProxy, [row.id]: false }; }
+  }
+  function _shortDate(s) {
+    if (!s) return '—';
+    try { return new Date(s).toISOString().slice(0, 10); } catch { return s.slice(0, 10); }
   }
 
   function onEdit(/** @type {any} */ s, /** @type {any} */ newVal) {
@@ -346,16 +361,19 @@
   <section class="algo-status-card p-2 mb-2" data-status="inactive">
     <h2 class="text-[0.8rem] font-bold mb-1">Hedge proxies</h2>
     <p class="text-[0.6rem] opacity-70 mb-1">
-      Pair-only cross-reference between a held instrument (GOLDBEES,
-      NIFTYBEES, …) and the option underlying it can hedge. The
-      derivatives page computes the conversion factor at runtime from
-      current LTPs (<code>factor = proxy_LTP / target_spot</code>) and
-      the lot count from the instruments cache.
+      Pair-only cross-reference between a held instrument and the
+      option underlying it can hedge. The derivatives page computes
+      effective qty as <code>β × market_value ÷ target_spot</code>
+      and the lot count from the instruments cache.
       <br />
-      <strong>Correlation</strong> (0–1) is a Stage 3 placeholder —
-      always 1.0 for ETF tracking hedges. Reserved for future
-      stock-vs-index hedges where the value will be auto-generated
-      from a rolling regression of proxy vs target daily returns.
+      <strong>ETF tracking hedges</strong> (GOLDBEES → GOLD,
+      NIFTYBEES → NIFTY etc.): β stays blank ⇒ math uses 1.0. No
+      regression needed.
+      <br />
+      <strong>Stock-vs-index hedges</strong> (Stage 3 — RELIANCE → NIFTY
+      etc.): click <em>Compute β</em> to run a 60-day daily-returns
+      regression. The server fetches historical bars, computes the
+      slope and R², writes them back to the row.
     </p>
     {#if proxiesErr}
       <div class="text-[0.65rem] text-red-300 mb-1">{proxiesErr}</div>
@@ -367,7 +385,9 @@
             <tr><th class="text-left p-1">Proxy</th>
                 <th class="text-left p-1">Target</th>
                 <th class="text-left p-1">Note</th>
-                <th class="text-left p-1" title="Stage 3 placeholder — always 1.0 for ETFs">Corr</th>
+                <th class="text-left p-1" title="Regression slope (proxy returns vs target returns). Blank → ETF case (β=1.0 implicit).">β</th>
+                <th class="text-left p-1" title="R² from the regression — operator-visible confidence indicator.">R²</th>
+                <th class="text-left p-1" title="Date β was last computed">Run</th>
                 <th class="text-left p-1">Active</th>
                 <th></th></tr>
           </thead>
@@ -376,14 +396,17 @@
               <tr class="border-t border-white/5">
                 <td class="p-1 font-mono">{p.proxy_symbol}</td>
                 <td class="p-1 font-mono">{p.target_root}</td>
-                <td class="p-1"><input bind:value={p.note} class="field-input w-60" /></td>
-                <td class="p-1">
-                  <input type="number" step="0.01" min="0" max="1"
-                         bind:value={p.correlation} class="field-input w-14"
-                         title="Stage 3 placeholder — 1.0 for ETF tracking hedges" />
-                </td>
+                <td class="p-1"><input bind:value={p.note} class="field-input w-44" /></td>
+                <td class="p-1 font-mono opacity-80">{p.beta != null ? Number(p.beta).toFixed(3) : '—'}</td>
+                <td class="p-1 font-mono opacity-80">{Number(p.correlation ?? 1).toFixed(2)}</td>
+                <td class="p-1 opacity-70">{_shortDate(p.regression_at)}</td>
                 <td class="p-1"><input type="checkbox" bind:checked={p.is_active} /></td>
                 <td class="p-1 flex gap-1">
+                  <button class="btn-primary text-[0.6rem] py-0.5 px-2"
+                          disabled={!!computingProxy[p.id]}
+                          onclick={() => computeProxy(p)}>
+                    {computingProxy[p.id] ? '…' : 'Compute β'}
+                  </button>
                   <button class="btn-primary text-[0.6rem] py-0.5 px-2" onclick={() => saveProxy(p)}>Save</button>
                   <button class="btn-secondary text-[0.6rem] py-0.5 px-2" onclick={() => removeProxy(p)}>×</button>
                 </td>

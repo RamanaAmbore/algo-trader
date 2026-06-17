@@ -1156,6 +1156,15 @@ class HedgeProxy(Base):
     # the schema doesn't need a migration when Stage 3 lands.
     correlation: Mapped[float]   = mapped_column(Float, nullable=False, default=1.0,
                                                   server_default="1.0")
+    # Stage 3 — regression slope from a rolling regression of proxy
+    # daily returns vs target daily returns (`proxy_return = α + β ×
+    # target_return + ε`). NULL → Stage 2 ETF case where β=1.0 by
+    # construction. Populated by POST /api/admin/hedge-proxies/{id}/compute
+    # on demand (Stage 3) and by a periodic background task (Stage 4).
+    beta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    regression_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

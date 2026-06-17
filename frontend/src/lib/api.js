@@ -335,6 +335,10 @@ export const updateHedgeProxy    = (id, payload) =>
   _patch(`/admin/hedge-proxies/${id}`, payload, { auth: true });
 export const deleteHedgeProxy    = (id) =>
   _del(`/admin/hedge-proxies/${id}`, { auth: true });
+// Stage 3 — run a 60-day daily-returns regression for the pair on the
+// server and write β + R² back to the row.
+export const computeHedgeProxy   = (id) =>
+  _post(`/admin/hedge-proxies/${id}/compute`, {}, { auth: true });
 
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });

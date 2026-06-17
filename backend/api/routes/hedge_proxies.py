@@ -14,6 +14,8 @@ LTPs; the lot count is derived from `effective_qty / target_lot_size`.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import msgspec
@@ -29,6 +31,123 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+# ── Regression helper ─────────────────────────────────────────────────
+
+
+# Index / commodity symbols that need an explicit Kite exchange hint
+# beyond the default NSE-equity guess. NIFTY 50 + BANK NIFTY trade as
+# index instruments on NSE with the "INDICES" naming convention; GOLD /
+# SILVER / etc. land on MCX via the front-month future. Anything not in
+# this map falls back to NSE-equity (Stage 3 stock proxies).
+_TARGET_HINTS: dict[str, tuple[str, str]] = {
+    "NIFTY":     ("NSE", "NIFTY 50"),
+    "BANKNIFTY": ("NSE", "NIFTY BANK"),
+    "FINNIFTY":  ("NSE", "NIFTY FIN SERVICE"),
+    "GOLD":      ("MCX", "GOLD"),     # resolves to front-month FUT via instruments search
+    "GOLDM":     ("MCX", "GOLDM"),
+    "SILVER":    ("MCX", "SILVER"),
+    "SILVERM":   ("MCX", "SILVERM"),
+}
+
+
+def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
+    """Resolve `symbol` to a Kite instrument_token via broker.instruments().
+    Returns None when the symbol isn't found on the hinted exchange and
+    the front-month-future fallback for MCX commodities doesn't match
+    either. Best-effort — quiet skip on miss; regression handler logs
+    the resolved-pair-count so the operator knows what worked."""
+    try:
+        insts = broker.instruments(exchange=exchange_hint) or []
+    except Exception:
+        return None
+    # Exact match first.
+    for inst in insts:
+        ts = str(inst.get("tradingsymbol") or "").upper()
+        if ts == symbol.upper():
+            tk = inst.get("instrument_token")
+            return int(tk) if tk else None
+    # MCX commodity fallback — front-month future. Find the earliest
+    # expiry whose tradingsymbol starts with the commodity root.
+    if exchange_hint == "MCX":
+        candidates = [i for i in insts
+                      if str(i.get("tradingsymbol") or "").upper().startswith(symbol.upper())
+                      and str(i.get("tradingsymbol") or "").upper().endswith("FUT")]
+        candidates.sort(key=lambda i: str(i.get("expiry") or ""))
+        if candidates:
+            tk = candidates[0].get("instrument_token")
+            return int(tk) if tk else None
+    return None
+
+
+def _compute_regression(broker, proxy_symbol: str, target_root: str,
+                        days: int = 60) -> tuple[Optional[float], Optional[float], int]:
+    """Run a daily-returns regression of proxy vs target. Returns
+    (beta, r_squared, sample_size) — beta/r2 are None when either side
+    can't be resolved or there aren't enough overlapping bars.
+
+    Math: `proxy_return = α + β × target_return + ε`
+          β = Cov(target, proxy) / Var(target)
+          R² = correlation²
+    """
+    # numpy is a runtime dep used elsewhere (sim driver, performance
+    # task) — safe to import inline so import_pyc doesn't pull it for
+    # the cold-start path on operators who never trigger Stage 3.
+    import numpy as np
+
+    p_token = _resolve_token(broker, proxy_symbol, "NSE")
+    if not p_token:
+        # Stock proxies live on NSE-equity; commodity proxies (GOLDBEES
+        # etc.) are tracked ETFs that DO list on NSE so the default is
+        # correct for both classes.
+        return None, None, 0
+    hint_exchange, hint_symbol = _TARGET_HINTS.get(target_root.upper(), ("NSE", target_root))
+    t_token = _resolve_token(broker, hint_symbol, hint_exchange)
+    if not t_token:
+        return None, None, 0
+
+    to_d = datetime.now()
+    from_d = to_d - timedelta(days=days + 30)   # +30 to absorb holidays / weekends
+    try:
+        p_bars = broker.historical_data(p_token, from_d, to_d, "day") or []
+        t_bars = broker.historical_data(t_token, from_d, to_d, "day") or []
+    except Exception as e:
+        logger.warning(f"hedge-proxy regression: historical_data failed: {e}")
+        return None, None, 0
+
+    # Align by date string. Daily candles are unambiguous on calendar.
+    def _by_date(bars):
+        out = {}
+        for b in bars:
+            ts = b.get("date") if isinstance(b, dict) else None
+            close = b.get("close") if isinstance(b, dict) else None
+            if ts is None or close is None:
+                continue
+            try:
+                out[str(ts)[:10]] = float(close)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    p_map = _by_date(p_bars)
+    t_map = _by_date(t_bars)
+    common = sorted(set(p_map.keys()) & set(t_map.keys()))[-(days + 1):]
+    if len(common) < 20:
+        return None, None, len(common)
+    p_closes = [p_map[d] for d in common]
+    t_closes = [t_map[d] for d in common]
+    # Daily returns.
+    p_ret = np.diff(np.log(p_closes))
+    t_ret = np.diff(np.log(t_closes))
+    if len(p_ret) < 15 or float(np.var(t_ret)) <= 0:
+        return None, None, len(p_ret)
+    cov = float(np.cov(p_ret, t_ret, ddof=1)[0][1])
+    var_t = float(np.var(t_ret, ddof=1))
+    beta = cov / var_t if var_t > 0 else None
+    r = float(np.corrcoef(p_ret, t_ret)[0][1]) if np.std(p_ret) > 0 and np.std(t_ret) > 0 else 0.0
+    r2 = max(0.0, min(1.0, r * r))
+    return beta, r2, len(p_ret)
+
+
 # ── Schemas ───────────────────────────────────────────────────────────
 
 
@@ -38,14 +157,16 @@ class HedgeProxyInfo(msgspec.Struct):
     target_root:  str
     is_active:    bool
     note:         Optional[str]
-    # Stage 3 placeholder. Always 1.0 for ETF tracking hedges; reserved
-    # for future stock-vs-index hedges where the value would be
-    # auto-generated from a rolling regression of proxy vs target
-    # returns. Carried in the API surface so the UI can show it
-    # read-only today and become editable when Stage 3 lands.
-    correlation:  float = 1.0
-    created_at:   str   = ""
-    updated_at:   str   = ""
+    # ETF tracking hedges (Stage 2) leave β=None → math treats as 1.0.
+    # Stock-vs-index hedges (Stage 3) carry β from the regression
+    # endpoint below; the derivatives page multiplies the dynamic
+    # market_value / target_spot by β to get the right NIFTY-equivalent
+    # for a RELIANCE → NIFTY hedge.
+    beta:          Optional[float] = None
+    correlation:   float           = 1.0
+    regression_at: Optional[str]   = None     # ISO-8601, NULL if never run
+    created_at:    str             = ""
+    updated_at:    str             = ""
 
 
 class HedgeProxyCreate(msgspec.Struct):
@@ -110,15 +231,26 @@ async def seed_hedge_proxies() -> int:
         if cols and "conversion_kind" in cols:
             logger.info("hedge_proxies: legacy schema detected, dropping for migration")
             await conn.execute(text("DROP TABLE IF EXISTS hedge_proxies CASCADE"))
-        elif cols and "correlation" not in cols:
-            # Stage 3 placeholder column. Non-destructive ALTER — the
-            # row count stays intact; new column defaults to 1.0 on
-            # every existing row.
-            logger.info("hedge_proxies: adding correlation placeholder column")
-            await conn.execute(text(
-                "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                "correlation DOUBLE PRECISION NOT NULL DEFAULT 1.0"
-            ))
+        elif cols:
+            # Additive ALTERs — non-destructive, row count intact.
+            if "correlation" not in cols:
+                logger.info("hedge_proxies: adding correlation column")
+                await conn.execute(text(
+                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                    "correlation DOUBLE PRECISION NOT NULL DEFAULT 1.0"
+                ))
+            if "beta" not in cols:
+                logger.info("hedge_proxies: adding beta column (Stage 3)")
+                await conn.execute(text(
+                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                    "beta DOUBLE PRECISION"
+                ))
+            if "regression_at" not in cols:
+                logger.info("hedge_proxies: adding regression_at column (Stage 3)")
+                await conn.execute(text(
+                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                    "regression_at TIMESTAMP WITH TIME ZONE"
+                ))
     # init_db has already created the new shape if the table is gone —
     # if migration just dropped it, SQLAlchemy's metadata.create_all
     # (run from init_db) needs to re-fire. Easiest path: re-run it here
@@ -155,7 +287,9 @@ def _to_info(row: HedgeProxy) -> HedgeProxyInfo:
         target_root=row.target_root,
         is_active=row.is_active,
         note=row.note,
+        beta=float(row.beta) if row.beta is not None else None,
         correlation=float(row.correlation if row.correlation is not None else 1.0),
+        regression_at=row.regression_at.isoformat() if row.regression_at else None,
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -229,6 +363,39 @@ class HedgeProxiesController(Controller):
                 await sess.rollback()
                 raise HTTPException(status_code=409, detail=f"Conflict: {exc}") from exc
             await sess.refresh(row)
+            return _to_info(row)
+
+    @post("/{proxy_id:int}/compute")
+    async def compute_regression(self, proxy_id: int) -> HedgeProxyInfo:
+        """Run a 60-day daily-returns regression for this pair and
+        write the resulting β + R² back to the row. Operator-triggered
+        via the "Compute β" button in /admin/settings; Stage 4 will
+        also run this from a periodic background task."""
+        async with async_session() as sess:
+            row = await sess.get(HedgeProxy, proxy_id)
+            if not row:
+                raise HTTPException(status_code=404, detail="Not found.")
+            try:
+                from backend.shared.brokers.registry import get_price_broker
+                broker = get_price_broker()
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"No broker available: {exc}") from exc
+            beta, r2, n = await asyncio.to_thread(
+                _compute_regression, broker, row.proxy_symbol, row.target_root, 60,
+            )
+            if beta is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Regression failed — n={n} overlapping bars (need ≥ 15). "
+                           "Verify both symbols exist on the broker.")
+            row.beta = float(beta)
+            row.correlation = float(r2 if r2 is not None else 1.0)
+            row.regression_at = datetime.now(timezone.utc)
+            await sess.commit()
+            await sess.refresh(row)
+            logger.info(
+                f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "
+                f"β={beta:.4f} R²={r2:.3f} n={n}")
             return _to_info(row)
 
     @delete("/{proxy_id:int}", status_code=204)

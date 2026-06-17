@@ -38,7 +38,7 @@
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
-    loadHedgeProxies, proxiesForTarget, targetsForProxy,
+    loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -1366,22 +1366,21 @@
       let effQty = rawQty;
       let effCost = cost;
       if (eq.proxy_for) {
-        // Derive the proxy's contribution from live broker numbers
-        // alone — no coded factor anywhere. Operator: "can you
-        // dynamically get factor, based on number of units of
-        // goldbees, silverbees, qty, market value and current spot
-        // price. That way I don't need to code factor manually."
+        // Stage 2 ETF tracking case (β = null / 1.0):
         //   market_value     = raw_qty × proxy_LTP
         //   effective_qty    = market_value / target_spot
-        //   investment_value = raw_qty × avg_cost  (₹ in the proxy)
+        //   investment_value = raw_qty × avg_cost
         //   effective_cost   = investment_value / effective_qty
-        // Skip when either price is missing — can't responsibly
-        // convert GOLDBEES into GOLD without the gold spot.
+        // Stage 3 stock-vs-index case (β from regression):
+        //   effective_qty    = β × market_value / target_spot
+        // Skip when either price is missing.
         const proxyLtp = Number(eq.ltp);
         if (proxyLtp <= 0 || _targetSpot <= 0) continue;
+        const _row = getProxyRow(eq.symbol, eq.proxy_for);
+        const _beta = _row?.beta != null ? Number(_row.beta) : 1.0;
         const marketValue = rawQty * proxyLtp;
         const investmentValue = rawQty * cost;
-        effQty  = marketValue / _targetSpot;
+        effQty  = (_beta * marketValue) / _targetSpot;
         if (effQty === 0) continue;
         effCost = investmentValue / effQty;
       }
@@ -1453,11 +1452,14 @@
       if (rawQty === 0) continue;
       let effQty = rawQty;
       if (eq.proxy_for) {
-        // Same derivation as _mergedPayoff — effective qty in target
-        // units = market_value / target_spot. No coded factor.
+        // Same derivation as _mergedPayoff — β × market_value /
+        // target_spot. ETF case has β=1.0 implicit; Stage 3
+        // stock-vs-index uses the regression slope.
         const proxyLtp = Number(eq.ltp);
         if (proxyLtp <= 0 || _targetSpot <= 0) continue;
-        effQty = (rawQty * proxyLtp) / _targetSpot;
+        const _row = getProxyRow(eq.symbol, eq.proxy_for);
+        const _beta = _row?.beta != null ? Number(_row.beta) : 1.0;
+        effQty = (_beta * rawQty * proxyLtp) / _targetSpot;
       }
       extraDelta += effQty;
     }
@@ -3458,21 +3460,20 @@
                     {@const _spotForChip = Number(strategy?.spot) || 0}
                     {@const _proxyLtpChip = Number(c.ltp) || 0}
                     {@const _rawQtyChip   = Number(c.qty || 0) || Number(c.opening_qty || 0) || 0}
+                    {@const _rowChip      = getProxyRow(c.symbol, c.proxy_for)}
+                    {@const _betaChip     = _rowChip?.beta != null ? Number(_rowChip.beta) : 1.0}
+                    {@const _r2Chip       = _rowChip?.correlation != null ? Number(_rowChip.correlation) : 1.0}
                     {@const _marketValChip = _rawQtyChip * _proxyLtpChip}
-                    {@const _effQtyChip   = _spotForChip > 0 ? _marketValChip / _spotForChip : 0}
+                    {@const _effQtyChip   = _spotForChip > 0 ? (_betaChip * _marketValChip) / _spotForChip : 0}
                     {@const _targetLot    = getOptionUnderlyingLot(c.proxy_for)}
                     {@const _targetLots   = _targetLot > 0 ? _effQtyChip / _targetLot : 0}
-                    <!-- PROXY chip — flags that the eq leg is a proxy
-                         hedge rather than the literal underlying. The
-                         entire conversion is derived from broker
-                         numbers (units × LTP) and the live target
-                         spot — no coded factor. Tooltip spells out
-                         the chain so the operator can sanity-check
-                         the option-sizing impact directly. -->
+                    {@const _hasBeta      = _rowChip?.beta != null}
                     <span class="cand-split-tag cand-proxy-tag"
                           title={_effQtyChip > 0
-                            ? `Market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}`
-                            : `Proxy of ${c.proxy_for} — waiting on live ${c.proxy_for} spot to compute equivalent`}>PROXY{_targetLot > 0 && _effQtyChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}</span>
+                            ? (_hasBeta
+                                ? `β=${_betaChip.toFixed(3)} × market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equiv${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''} · R²=${_r2Chip.toFixed(2)}`
+                                : `Market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}`)
+                            : `Proxy of ${c.proxy_for} — waiting on live ${c.proxy_for} spot`}>PROXY{_targetLot > 0 && _effQtyChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}{_hasBeta ? ` β${_betaChip.toFixed(2)}` : ''}</span>
                   {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
@@ -3522,13 +3523,15 @@
               {#if c.proxy_for}
                 {@const _lotsTargetSpot = Number(strategy?.spot) || 0}
                 {@const _lotsProxyLtp = Number(c.ltp) || 0}
+                {@const _lotsRow = getProxyRow(c.symbol, c.proxy_for)}
+                {@const _lotsBeta = _lotsRow?.beta != null ? Number(_lotsRow.beta) : 1.0}
                 {@const _lotsTargetLot = getOptionUnderlyingLot(c.proxy_for)}
                 {@const _lotsEffQty = (_lotsTargetSpot > 0 && _lotsProxyLtp > 0)
-                    ? (Math.abs(displayQty) * _lotsProxyLtp) / _lotsTargetSpot : 0}
+                    ? (_lotsBeta * Math.abs(displayQty) * _lotsProxyLtp) / _lotsTargetSpot : 0}
                 {@const _lotsTargetLots = _lotsTargetLot > 0 ? _lotsEffQty / _lotsTargetLot : 0}
                 <span class="num"
                       title={_lotsTargetLots > 0
-                        ? `${_lotsTargetLots.toFixed(2)} ${c.proxy_for} lot${_lotsTargetLots === 1 ? '' : 's'} (${_lotsEffQty.toFixed(2)} target units ÷ ${_lotsTargetLot} per lot)`
+                        ? `${_lotsTargetLots.toFixed(2)} ${c.proxy_for} lot${_lotsTargetLots === 1 ? '' : 's'} (β=${_lotsBeta.toFixed(2)}, ${_lotsEffQty.toFixed(2)} target units ÷ ${_lotsTargetLot}/lot)`
                         : `Waiting on ${c.proxy_for} spot`}>
                   {_lotsTargetLots > 0 ? fmtLots(_lotsTargetLots) : '—'}
                 </span>

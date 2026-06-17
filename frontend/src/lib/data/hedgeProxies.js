@@ -18,7 +18,9 @@
 import { fetchHedgeProxies } from '$lib/api';
 
 /** @typedef {{ id:number, proxy_symbol:string, target_root:string,
- *              is_active:boolean, note:string|null }} HedgeProxyRow */
+ *              is_active:boolean, note:string|null,
+ *              beta:number|null, correlation:number,
+ *              regression_at:string|null }} HedgeProxyRow */
 
 /** @type {HedgeProxyRow[]} */
 let _rows = [];
@@ -29,10 +31,13 @@ let _loadedOnce = false;
 let _byTarget = {};
 /** @type {Record<string, string[]>} */    // proxy → target roots
 let _byProxy = {};
+/** @type {Record<string, HedgeProxyRow>} */ // "proxy|target" → row
+let _byPair = {};
 
 function _rebuildIndices() {
   _byTarget = {};
   _byProxy = {};
+  _byPair = {};
   for (const r of _rows) {
     if (!r.is_active) continue;
     const t = String(r.target_root || '').toUpperCase();
@@ -42,7 +47,22 @@ function _rebuildIndices() {
     _byTarget[t].push(p);
     if (!_byProxy[p]) _byProxy[p] = [];
     _byProxy[p].push(t);
+    _byPair[`${p}|${t}`] = r;
   }
+}
+
+/**
+ * Return the row for a (proxy, target) pair, or null when unknown.
+ * Used at math time to pull β / correlation for the Stage 3
+ * regression-based math layer.
+ * @param {string} proxySymbol
+ * @param {string} targetRoot
+ * @returns {HedgeProxyRow | null}
+ */
+export function getProxyRow(proxySymbol, targetRoot) {
+  const p = String(proxySymbol || '').toUpperCase();
+  const t = String(targetRoot || '').toUpperCase();
+  return _byPair[`${p}|${t}`] || null;
 }
 
 /**
