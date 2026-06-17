@@ -602,11 +602,22 @@
     // even before any option position exists. Same shared helper that
     // powers Pulse + Performance lot detection — if the cash equity
     // has CE/PE listed, the underlying name lands in the picker.
-    for (const h of holdings) {
-      const sym = String(h?.symbol || '').toUpperCase();
-      if (!sym) continue;
-      if (getOptionUnderlyingLot && getOptionUnderlyingLot(sym) > 0) {
-        set.add(sym);
+    //
+    // Reading `instrumentsReady` here is what makes this derived
+    // re-evaluate when the instruments cache finally lands. Without
+    // the explicit dep, a cold load where fetchHoldings completes
+    // BEFORE loadInstruments leaves the picker empty of holdings —
+    // getOptionUnderlyingLot returns 0 for every symbol while the
+    // cache is empty, the derived caches that result, and the later
+    // `instrumentsReady = true` flip doesn't re-trigger because the
+    // derived isn't tracking it. Operator: "legs shows option but
+    // doesn't show underlying which is part of holdings" — the
+    // dropdown race was the upstream cause.
+    if (instrumentsReady) {
+      for (const h of holdings) {
+        const sym = String(h?.symbol || '').toUpperCase();
+        if (!sym) continue;
+        if (getOptionUnderlyingLot(sym) > 0) set.add(sym);
       }
     }
     return Array.from(set).sort();
