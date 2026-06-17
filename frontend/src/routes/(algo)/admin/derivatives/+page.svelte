@@ -3706,46 +3706,32 @@
     min-width: 0;
   }
   .opt-und-row :global(.rbq-select-wrap) { flex: 1 1 auto; min-width: 0; }
-  /* Underlying-picker tier colour coding. Operator's two specs:
-       1. "if options position exists for underlying, color code the
-          root differently, show them first in default order."
-       2. "It also needs to sort on usage count. The most used ones
-          should come first in a different color … then roots with
-          options show in different color in sequence. The last ones
-          should not have options for the underlying."
+  /* Underlying-picker tier colour coding. Operator: "only colo coding
+     for root. no chips in dropdown in derivatives page." — drop the
+     `frequent` / `options` / `hedge` suffix chips entirely; the label
+     colour alone communicates the tier so the dropdown rows read as
+     clean monosymbol entries instead of label-plus-chip pairs.
 
      Four tiers, top → bottom:
-       Tier 1  hint='frequent'  amber/gold   (operator's top-N picks)
-       Tier 2  hint='options'   cyan-400     (has CE/PE position)
-       Tier 3  (no hint)        default      (has FUT-only position)
-       Tier 4  hint='hedge'     dimmed       (held, no derivative) */
+       Tier 1  data-hint='frequent'  amber-400   (operator's top-N picks)
+       Tier 2  data-hint='options'   cyan-400    (has CE/PE position)
+       Tier 3  (no data-hint)        default     (has FUT-only position)
+       Tier 4  data-hint='hedge'     dimmed      (held, no derivative)
+
+     The `hint` field still rides on the option object purely as the
+     CSS marker that wires up `data-hint` on the label — the
+     rbq-select-option-hint <span> itself is hidden inside this picker
+     so no chip ever renders. */
+  .opt-und-row :global(.rbq-select-option-hint) {
+    display: none;
+  }
   .opt-und-row :global(.rbq-select-option-label[data-hint='frequent']) {
     color: #fbbf24;         /* amber-400 — operator favourite */
     font-weight: 700;
   }
-  .opt-und-row :global(.rbq-select-option-hint[data-hint='frequent']) {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.14);
-    border: 1px solid rgba(251, 191, 36, 0.40);
-    padding: 0 0.3rem;
-    border-radius: 2px;
-    font-size: 0.5rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-  }
   .opt-und-row :global(.rbq-select-option-label[data-hint='options']) {
     color: #22d3ee;         /* cyan-400 — actionable, matches card controls */
     font-weight: 700;
-  }
-  .opt-und-row :global(.rbq-select-option-hint[data-hint='options']) {
-    color: #22d3ee;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.40);
-    padding: 0 0.3rem;
-    border-radius: 2px;
-    font-size: 0.5rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
   }
   .opt-und-row :global(.rbq-select-option-label[data-hint='hedge']) {
     opacity: 0.78;
