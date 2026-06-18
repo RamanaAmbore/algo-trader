@@ -749,10 +749,27 @@ def apply_plan_live(
     """Route the plan into a real broker via the Broker ABC's place_gtt.
     Wing leg fans through broker.place_order. Idempotency: failures on
     any single attach are collected, never raised — the caller decides
-    whether to roll back."""
+    whether to roll back.
+
+    Sprint C — when the broker doesn't support OCO natively (Groww
+    today) AND the plan produced two singles (TP + SL), wire them as
+    a sibling pair so the postback-handler persistence + the OCO
+    pair-watcher background task know to cancel the survivor when
+    one side fires."""
     result = AttachResult(plan=plan)
 
-    for spec in plan.gtts:
+    # Detect Groww-style two-singles split. Same predicate `apply_plan_sim`
+    # uses to wire SimGttBook.pair_with — the resolver produces two
+    # `trigger_type="single"` GTTs labelled TP + SL when broker_caps.
+    # gtt_oco is False, and we pair-stitch them post-place.
+    pair_two_singles = (
+        len(plan.gtts) == 2
+        and all(g.trigger_type == "single" for g in plan.gtts)
+        and {g.label for g in plan.gtts} == {"TP", "SL"}
+    )
+    pair_first_id: Optional[str] = None
+
+    for idx, spec in enumerate(plan.gtts):
         try:
             gtt_id = broker.place_gtt(
                 trigger_type=spec.trigger_type,
@@ -768,6 +785,10 @@ def apply_plan_live(
             )
             spec.placed_id = str(gtt_id)
             result.gtt_ids.append(spec.placed_id)
+            if pair_two_singles and idx == 0:
+                pair_first_id = spec.placed_id
+            elif pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:
+                result.sibling_pairs.append((pair_first_id, spec.placed_id))
         except NotImplementedError as e:
             result.errors.append(
                 f"{broker.broker_id} does not yet support GTT: {e}"

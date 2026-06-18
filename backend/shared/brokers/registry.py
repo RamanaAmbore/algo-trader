@@ -389,7 +389,7 @@ class PriceBroker(Broker):
             "PriceBroker.modify_gtt() not supported — use get_broker(account).modify_gtt()."
         )
 
-    def cancel_gtt(self, gtt_id: str) -> str:
+    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         raise NotImplementedError(
             "PriceBroker.cancel_gtt() not supported — use get_broker(account).cancel_gtt()."
         )

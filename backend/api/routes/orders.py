@@ -686,6 +686,17 @@ async def _fire_template_attach_on_fill(
                 return
     
             attached = []
+            # Sprint C — flatten sibling_pairs into a placed_id → sibling_id
+            # lookup so the loop below can stamp the pointer per entry.
+            # Pairs are bidirectional (either leg firing should cancel the
+            # other), but we record both directions to keep the post-fire
+            # cleanup simple — the watcher reads `sibling_id` directly
+            # off the firing entry, no second lookup needed.
+            _sibling_by_id: dict[str, str] = {}
+            for a, b in (result.sibling_pairs or []):
+                if a and b:
+                    _sibling_by_id[a] = b
+                    _sibling_by_id[b] = a
             for spec in (result.plan.gtts or []):
                 if not spec.placed_id:
                     continue
@@ -694,6 +705,16 @@ async def _fire_template_attach_on_fill(
                     "label": spec.label,
                     "id":    spec.placed_id,
                 }
+                # Sprint C — emulated OCO entries carry a `sibling_id`
+                # pointer so the pair-watcher background task can cancel
+                # the survivor when one leg fires. Native OCO entries
+                # (single broker id, two-leg trigger_type) leave this
+                # absent — the broker handles the cancel atomically.
+                _sib = _sibling_by_id.get(str(spec.placed_id))
+                if _sib:
+                    entry["sibling_id"] = _sib
+                    entry["parent_account"]  = str(result.plan.parent_account)
+                    entry["parent_exchange"] = str(result.plan.parent_exchange)
                 # Phase 3B — when this leg carries a trailing stop, persist
                 # the metadata so _task_trail_stop can find + advance the
                 # trigger without re-loading the template (operator may

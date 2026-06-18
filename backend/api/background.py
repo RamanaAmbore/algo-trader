@@ -1318,6 +1318,177 @@ async def _task_trail_stop() -> None:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
 
+async def _task_oco_pair_watcher() -> None:
+    """OCO sibling-watcher for brokers without native OCO (Groww).
+
+    Sprint C — when `apply_plan_live` placed two single-trigger GTTs
+    instead of a real OCO (because `broker.capabilities.gtt_oco` is
+    False), each `attached_gtts_json` entry carries a `sibling_id`
+    pointer. When one leg fires (FILLED / TRIGGERED at the broker),
+    this task cancels the surviving sibling so the operator doesn't
+    end up with a naked stop or take-profit on the book.
+
+    Polling cadence: `templates.oco_pair_poll_seconds`, default 15s
+    (faster than trail-stop's 30s because the OCO race window
+    matters more — a fired-but-not-cancelled sibling can produce a
+    second unwanted fill). Source of truth is `broker.get_gtts()`
+    filtered by `attached_gtts_json` entries.
+
+    Failure shape: best-effort. A sibling-cancel that fails is logged
+    and retried next cycle; the entry stays in `attached_gtts_json`
+    until either the cancel succeeds or the operator manually clears
+    the row. No background failure mode can fire an extra order — the
+    worst case is a stale entry that no longer maps to live broker
+    state.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.shared.brokers.registry import get_broker
+    from backend.shared.helpers.settings import get_int
+    from sqlalchemy import select as _sel
+    import json as _json
+
+    while True:
+        try:
+            interval = max(5, get_int("templates.oco_pair_poll_seconds", 15))
+        except Exception:
+            interval = 15
+        await asyncio.sleep(interval)
+        try:
+            async with async_session() as s:
+                rows = (await s.execute(
+                    _sel(AlgoOrder).where(
+                        AlgoOrder.mode == "live",
+                        AlgoOrder.status == "FILLED",
+                        AlgoOrder.attached_gtts_json.is_not(None),
+                    ).limit(500)
+                )).scalars().all()
+            # Group by account so we hit broker.get_gtts() once per
+            # account, not once per OCO entry.
+            rows_by_account: dict[str, list] = {}
+            attached_by_row: dict[int, list] = {}
+            for row in rows:
+                try:
+                    attached = _json.loads(row.attached_gtts_json or "[]")
+                except Exception:
+                    continue
+                if not isinstance(attached, list):
+                    continue
+                has_sibling = any(
+                    isinstance(e, dict) and e.get("sibling_id")
+                    for e in attached
+                )
+                if not has_sibling:
+                    continue
+                # Sibling-bearing entries always carry parent_account
+                # (the persistence step stamps it alongside sibling_id).
+                acct = None
+                for e in attached:
+                    if isinstance(e, dict) and e.get("sibling_id"):
+                        acct = e.get("parent_account")
+                        if acct:
+                            break
+                if not acct:
+                    continue
+                rows_by_account.setdefault(acct, []).append(row)
+                attached_by_row[row.id] = attached
+            if not rows_by_account:
+                continue
+            # One broker.get_gtts() per account — establishes which side
+            # of each pair has fired and which is still active.
+            gtts_by_account: dict[str, dict[str, dict]] = {}
+            for acct in rows_by_account:
+                try:
+                    broker = get_broker(acct)
+                except Exception:
+                    continue
+                try:
+                    gtts = await asyncio.to_thread(broker.get_gtts)
+                except Exception as e:
+                    logger.debug(f"[OCO-WATCH] get_gtts failed for {acct}: {e}")
+                    continue
+                gtts_by_account[acct] = {
+                    str(g.get("id") or g.get("gtt_id")): g
+                    for g in (gtts or [])
+                    if isinstance(g, dict)
+                }
+            # Walk each row, decide if a sibling needs cancelling.
+            for acct, acct_rows in rows_by_account.items():
+                broker_gtts = gtts_by_account.get(acct, {})
+                try:
+                    broker = get_broker(acct)
+                except Exception:
+                    continue
+                for row in acct_rows:
+                    attached = attached_by_row.get(row.id) or []
+                    changed = False
+                    # Build a quick id→entry map so we can mark siblings
+                    # as cancelled in the same JSON blob.
+                    by_id: dict[str, dict] = {
+                        str(e.get("id")): e
+                        for e in attached
+                        if isinstance(e, dict) and e.get("id")
+                    }
+                    for entry in attached:
+                        if not (isinstance(entry, dict)
+                                and entry.get("sibling_id")):
+                            continue
+                        my_id  = str(entry.get("id") or "")
+                        sib_id = str(entry.get("sibling_id") or "")
+                        if not (my_id and sib_id):
+                            continue
+                        # If MY id is no longer active on the broker
+                        # (fired or already cancelled) AND my sibling
+                        # IS still active → cancel the sibling.
+                        my_active  = my_id in broker_gtts
+                        sib_active = sib_id in broker_gtts
+                        if my_active or not sib_active:
+                            # Either we're still waiting (both active)
+                            # or both already gone — nothing to do.
+                            if not my_active and not sib_active:
+                                # Both legs settled — clear sibling
+                                # pointer so we stop polling this row.
+                                entry.pop("sibling_id", None)
+                                changed = True
+                            continue
+                        # MY leg gone, sibling still alive → cancel it.
+                        sib_entry = by_id.get(sib_id) or {}
+                        sib_exchange = (
+                            sib_entry.get("parent_exchange")
+                            or entry.get("parent_exchange")
+                            or "NFO"
+                        )
+                        try:
+                            await asyncio.to_thread(
+                                broker.cancel_gtt, sib_id, exchange=sib_exchange
+                            )
+                            logger.info(
+                                f"[OCO-WATCH] row={row.id} cancelled survivor "
+                                f"sibling={sib_id} (my id={my_id} fired)"
+                            )
+                            # Drop sibling pointer on both ends — pair
+                            # is fully resolved.
+                            entry.pop("sibling_id", None)
+                            if sib_entry:
+                                sib_entry.pop("sibling_id", None)
+                            changed = True
+                        except Exception as e:
+                            logger.warning(
+                                f"[OCO-WATCH] row={row.id} cancel sibling "
+                                f"{sib_id} failed: {e}"
+                            )
+                    if changed:
+                        async with async_session() as s2:
+                            _r2 = (await s2.execute(
+                                _sel(AlgoOrder).where(AlgoOrder.id == row.id)
+                            )).scalar_one_or_none()
+                            if _r2 is not None:
+                                _r2.attached_gtts_json = _json.dumps(attached)
+                                await s2.commit()
+        except Exception as e:
+            logger.debug(f"[OCO-WATCH] poll iteration failed: {e}")
+
+
 async def _task_sparkline_warm(state: dict) -> None:
     """
     Pre-populate the sparkline past-close cache at startup and at each
@@ -1933,6 +2104,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
         asyncio.create_task(_task_hedge_proxy_regression(), name="bg-hedge-proxy-regression"),
         asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
+        asyncio.create_task(_task_oco_pair_watcher(),    name="bg-oco-pair-watcher"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

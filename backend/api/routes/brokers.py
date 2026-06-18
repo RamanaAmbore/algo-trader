@@ -185,6 +185,18 @@ class BrokersController(Controller):
                                 detail=f"Broker account {account!r} not found")
         return _to_info(row, loaded=(account in _loaded_accounts()))
 
+    @get("/{account:str}/capabilities")
+    async def get_capabilities(self, account: str) -> dict:
+        """Sprint C — return the broker capability matrix for one
+        account so OrderTicket can surface inline warnings ("Groww
+        emulates OCO — ~15s race window", "Dhan doesn't cover MCX") at
+        SUBMIT time, not at fill time. Pure read of the dataclass; no
+        broker round-trip."""
+        from backend.shared.brokers.capabilities import capabilities_for
+        from dataclasses import asdict
+        caps = capabilities_for(account)
+        return asdict(caps)
+
     # ── Create ────────────────────────────────────────────────────────
 
     @post("/")

@@ -703,6 +703,21 @@ class DhanBroker(Broker):
         tag: str | None = None,
     ) -> str:
         """Place a Dhan Forever Order (GTT). Returns the Dhan order_id."""
+        # Sprint C — Dhan Forever covers equity / F&O segments but the
+        # adapter has no MCX/NCO commodity wiring (Dhan's positions
+        # coverage is incomplete on MCX too — see CLAUDE.md
+        # "Multi-Account IPv6 Source Binding" notes on the CRUDEOIL
+        # symbol resolution failure). Raise a clear runtime error here
+        # so the template-attach path surfaces a single readable error
+        # in AttachResult.errors instead of the SDK's opaque rejection
+        # ("security_id not found"). Operators with a Dhan account
+        # placing MCX templates should mirror to their Kite account.
+        if exchange in ("MCX", "NCO"):
+            raise RuntimeError(
+                f"Dhan Forever Order does not cover MCX/NCO — operator "
+                f"should attach the template via the Kite-mirrored "
+                f"account (got exchange={exchange!r}, symbol={tradingsymbol!r})"
+            )
         security_id = _resolve_security_id(tradingsymbol, exchange)
         if not security_id:
             raise RuntimeError(
@@ -776,20 +791,28 @@ class DhanBroker(Broker):
         orders: list[dict],
         trigger_values: list[float],
     ) -> str:
-        """Modify an existing Dhan Forever Order. Returns the (same) order_id."""
+        """Modify an existing Dhan Forever Order. Returns the (same) order_id.
+
+        For OCO (`trigger_type='two-leg'`) Dhan requires TWO modify
+        calls — one per leg — because `modify_forever` only updates the
+        leg named by `leg_name`. Sprint C fix (audit defect): the prior
+        implementation hardcoded `leg_name='ENTRY_LEG'` so the
+        target-side TP update never reached the broker. The Sprint A
+        two-leg trail-stop wired `[tp_trigger, sl_trigger]` through
+        modify_gtt expecting both to land; only the entry leg was
+        actually changing.
+        """
+        order_flag = "SINGLE" if trigger_type == "single" else "OCO"
         order0  = orders[0] if orders else {}
-        otype   = _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT")
+        otype0  = _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT")
         qty0    = int(order0.get("quantity", 0))
         price0  = float(order0.get("price") or 0)
         trig0   = float(trigger_values[0]) if trigger_values else 0.0
-        order_flag = "SINGLE" if trigger_type == "single" else "OCO"
-        # Dhan's modify_forever `leg_name` differentiates which OCO leg
-        # to update: "ENTRY_LEG" (leg 0) or "TARGET_LEG" (leg 1).
-        # For single GTT, leg_name is also "ENTRY_LEG".
+        # Single GTT (or first leg of OCO) → ENTRY_LEG.
         resp = self._safe_call(lambda d: d.modify_forever(
             order_id=gtt_id,
             order_flag=order_flag,
-            order_type=otype,
+            order_type=otype0,
             leg_name="ENTRY_LEG",
             quantity=qty0,
             price=price0,
@@ -798,7 +821,28 @@ class DhanBroker(Broker):
             validity="DAY",
         ))
         if not isinstance(resp, dict) or resp.get("status") != "success":
-            raise RuntimeError(f"Dhan modify_gtt rejected: {resp}")
+            raise RuntimeError(f"Dhan modify_gtt rejected (entry leg): {resp}")
+        # OCO needs a second call for the target leg with leg 1's
+        # qty/price/trigger.
+        if trigger_type == "two-leg" and len(orders) > 1 and len(trigger_values) > 1:
+            order1 = orders[1]
+            otype1 = _ORDER_TYPE_TO_DHAN.get(order1.get("order_type", "LIMIT"), "LIMIT")
+            qty1   = int(order1.get("quantity", qty0))
+            price1 = float(order1.get("price") or 0)
+            trig1  = float(trigger_values[1])
+            resp1  = self._safe_call(lambda d: d.modify_forever(
+                order_id=gtt_id,
+                order_flag="OCO",
+                order_type=otype1,
+                leg_name="TARGET_LEG",
+                quantity=qty1,
+                price=price1,
+                trigger_price=trig1,
+                disclosed_quantity=0,
+                validity="DAY",
+            ))
+            if not isinstance(resp1, dict) or resp1.get("status") != "success":
+                raise RuntimeError(f"Dhan modify_gtt rejected (target leg): {resp1}")
         return gtt_id
 
     def cancel_gtt(self, gtt_id: str) -> str:

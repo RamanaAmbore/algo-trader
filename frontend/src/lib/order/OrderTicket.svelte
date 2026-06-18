@@ -593,6 +593,53 @@
   const _noneTemplate = $derived(
     _templates.find(t => t.slug === 'none') || null
   );
+
+  // Sprint C — broker capability matrix for the selected account.
+  // Drives the inline warning chip: when caps.gtt_oco is false the
+  // operator gets an "OCO emulated — ~15s race window" note before
+  // submitting a TP+SL template. Fetched lazily on first account
+  // change, cached in-memory per account so account-toggle is cheap.
+  /** @type {Record<string, any>} */
+  let _capsCache = $state({});
+  /** @type {any} */
+  let _brokerCaps = $state(null);
+  $effect(() => {
+    const acct = _account;
+    if (!acct) { _brokerCaps = null; return; }
+    if (_capsCache[acct]) { _brokerCaps = _capsCache[acct]; return; }
+    (async () => {
+      try {
+        const { fetchBrokerCapabilities } = await import('$lib/api');
+        const caps = await fetchBrokerCapabilities(acct);
+        _capsCache = { ..._capsCache, [acct]: caps };
+        if (_account === acct) _brokerCaps = caps;
+      } catch (_e) {
+        // Silent — demo / unauthed sessions can't see admin endpoints.
+        // OrderTicket continues to work; just no inline warning chip.
+      }
+    })();
+  });
+  // Warning text — returned non-empty only when the SELECTED template
+  // produces a bracket the broker can't handle natively. Drives a
+  // small amber chip rendered next to the template summary.
+  const _templateCapWarning = $derived.by(() => {
+    const t = _selectedTemplate;
+    const c = _brokerCaps;
+    if (!t || !c) return '';
+    const wantsOco = (t.tp_pct != null && t.sl_pct != null);
+    const wantsTrail = t.sl_trail_pct != null;
+    const parts = [];
+    if (wantsOco && !c.gtt_oco) {
+      parts.push(`${c.display_name || 'broker'} OCO emulated — ~15s race window`);
+    }
+    if (wantsTrail && !c.gtt_modify) {
+      parts.push(`${c.display_name || 'broker'} can't trail — SL stays fixed`);
+    }
+    if (t.tp_scales_json && !c.gtt_single) {
+      parts.push(`${c.display_name || 'broker'} has no GTT — scale-out won't attach`);
+    }
+    return parts.join(' · ');
+  });
   const _isUsingNone = $derived(
     _selectedTemplate?.slug === 'none' || _templateId === null
   );
@@ -1826,6 +1873,11 @@
                 <span class="ot-tpl-active-name">{_selectedTemplate.name}</span>
                 <span class="ot-tpl-active-summary">{_summariseTemplate(_selectedTemplate)}</span>
               </div>
+              {#if _templateCapWarning}
+                <div class="ot-tpl-cap-warn" title={_templateCapWarning}>
+                  ⚠ {_templateCapWarning}
+                </div>
+              {/if}
             {/if}
             <div class="ot-template-overrides">
               <label class="ot-tpl-field">
@@ -2892,6 +2944,20 @@
   }
   .ot-tpl-active-summary {
     color: rgba(180, 200, 230, 0.65);
+  }
+  /* Sprint C — broker-capability warning chip below the template
+     summary. Amber so it reads as "heads-up", not "blocker". Only
+     visible when the selected template asks for a feature the
+     selected account's broker can't provide natively. */
+  .ot-tpl-cap-warn {
+    margin-top: 0.2rem;
+    padding: 0.18rem 0.42rem;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    line-height: 1.25;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.40);
   }
 
   /* Preview line — explains what will fire after the entry fills */

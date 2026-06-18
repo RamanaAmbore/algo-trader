@@ -597,13 +597,27 @@ class GrowwBroker(Broker):
         trigger_values: list[float],
         tag: str | None = None,
     ) -> str:
-        """Place a Groww GTT (Smart Order, single-trigger). Returns the
-        Groww smart order ID (e.g. 'gtt_91a7f4')."""
+        """Place a Groww GTT (Smart Order). Returns the Groww smart
+        order ID (e.g. 'gtt_91a7f4') for a single trigger, or a
+        compound ID `"oco:{a}+{b}"` for an emulated OCO pair.
+
+        Sprint C — Groww has no native OCO. When `trigger_type='two-leg'`
+        we split into two separate single-trigger Smart Orders, return
+        a compound id that `cancel_gtt` / `modify_gtt` know how to parse,
+        and the background `_task_oco_pair_watcher` polls broker state
+        to cancel the sibling when one side fires. If the second leg
+        placement fails after the first one succeeded, we cancel the
+        first leg immediately so the operator doesn't end up with a
+        naked single-leg exit on the book.
+        """
         if trigger_type == "two-leg":
-            raise NotImplementedError(
-                "GrowwBroker.place_gtt: Groww has no native OCO. The "
-                "orchestrator emulates OCO via two single GTTs + a "
-                "pair-watcher. Use trigger_type='single' twice."
+            return self._place_oco_emulated(
+                tradingsymbol=tradingsymbol,
+                exchange=exchange,
+                last_price=last_price,
+                orders=orders,
+                trigger_values=trigger_values,
+                tag=tag,
             )
         ex, seg = _groww_exchange_and_segment(exchange)
         order0   = orders[0] if orders else {}
@@ -647,6 +661,75 @@ class GrowwBroker(Broker):
             raise RuntimeError(f"Groww place_gtt: no ID in response: {resp}")
         return str(gtt_id)
 
+    def _place_oco_emulated(
+        self,
+        *,
+        tradingsymbol: str,
+        exchange: str,
+        last_price: float,
+        orders: list[dict],
+        trigger_values: list[float],
+        tag: str | None,
+    ) -> str:
+        """Place two single-trigger Smart Orders to emulate a Kite OCO.
+
+        Returns a compound id `"oco:{a}+{b}"` that `cancel_gtt` /
+        `modify_gtt` parse to dispatch to both legs. Atomic: if leg 1
+        placement fails after leg 0 succeeded, we cancel leg 0 so the
+        operator doesn't get left with a naked single-leg bracket.
+        """
+        if len(orders) < 2 or len(trigger_values) < 2:
+            raise RuntimeError(
+                "GrowwBroker.place_gtt OCO needs 2 orders + 2 trigger_values"
+            )
+        # Leg 0 first (typically TP — caller's convention).
+        leg0_id = self.place_gtt(
+            trigger_type="single",
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            last_price=last_price,
+            orders=[orders[0]],
+            trigger_values=[trigger_values[0]],
+            tag=tag,
+        )
+        try:
+            leg1_id = self.place_gtt(
+                trigger_type="single",
+                tradingsymbol=tradingsymbol,
+                exchange=exchange,
+                last_price=last_price,
+                orders=[orders[1]],
+                trigger_values=[trigger_values[1]],
+                tag=tag,
+            )
+        except Exception as e:
+            # Roll back leg 0 — operator should NEVER end up with one
+            # half of an OCO sitting alone on the book.
+            try:
+                self.cancel_gtt(leg0_id, exchange=exchange)
+            except Exception as ce:
+                logger.error(
+                    f"GrowwBroker emulated OCO rollback failed for leg0={leg0_id}: "
+                    f"{ce} (after leg1 place failed: {e})"
+                )
+            raise RuntimeError(
+                f"Groww emulated OCO leg1 failed (leg0={leg0_id} rolled back): {e}"
+            )
+        return f"oco:{leg0_id}+{leg1_id}"
+
+    @staticmethod
+    def _parse_oco_id(gtt_id: str) -> tuple[str, str] | None:
+        """Parse `"oco:{a}+{b}"` → (a, b). Returns None for plain ids."""
+        if not isinstance(gtt_id, str) or not gtt_id.startswith("oco:"):
+            return None
+        body = gtt_id[4:]
+        if "+" not in body:
+            return None
+        a, b = body.split("+", 1)
+        if not (a and b):
+            return None
+        return a, b
+
     @_retry_groww_auth
     def modify_gtt(
         self,
@@ -659,10 +742,45 @@ class GrowwBroker(Broker):
         orders: list[dict],
         trigger_values: list[float],
     ) -> str:
-        """Modify a Groww GTT (Smart Order). Returns the (same) gtt_id."""
+        """Modify a Groww GTT (Smart Order). Returns the (same) gtt_id.
+
+        Sprint C — for an emulated OCO (`gtt_id` starts with `"oco:"`),
+        dispatch to both underlying singles. Caller hands us the full
+        `[tp, sl]` shape; we map orders[0]/trigger_values[0] → leg0,
+        orders[1]/trigger_values[1] → leg1.
+        """
+        oco = self._parse_oco_id(gtt_id)
+        if oco is not None:
+            leg0_id, leg1_id = oco
+            if len(orders) < 2 or len(trigger_values) < 2:
+                raise RuntimeError(
+                    "Groww OCO modify needs 2 orders + 2 trigger_values"
+                )
+            self.modify_gtt(
+                leg0_id,
+                trigger_type="single",
+                tradingsymbol=tradingsymbol,
+                exchange=exchange,
+                last_price=last_price,
+                orders=[orders[0]],
+                trigger_values=[trigger_values[0]],
+            )
+            self.modify_gtt(
+                leg1_id,
+                trigger_type="single",
+                tradingsymbol=tradingsymbol,
+                exchange=exchange,
+                last_price=last_price,
+                orders=[orders[1]],
+                trigger_values=[trigger_values[1]],
+            )
+            return gtt_id
         if trigger_type == "two-leg":
-            raise NotImplementedError(
-                "GrowwBroker.modify_gtt: Groww has no native OCO."
+            # Reached only when caller passed two-leg with a non-compound
+            # id — happens if state was corrupted. Surface clearly.
+            raise RuntimeError(
+                f"GrowwBroker.modify_gtt: trigger_type='two-leg' requires "
+                f"a compound 'oco:{{a}}+{{b}}' id; got {gtt_id!r}"
             )
         _, seg = _groww_exchange_and_segment(exchange)
         order0    = orders[0] if orders else {}
@@ -691,12 +809,62 @@ class GrowwBroker(Broker):
         return gtt_id
 
     @_retry_groww_auth
-    def cancel_gtt(self, gtt_id: str) -> str:
-        """Cancel a Groww GTT (Smart Order). Returns the cancelled gtt_id."""
-        # cancel_smart_order needs segment + smart_order_type.
-        # For a stored gtt_id we don't know the segment without a lookup,
-        # so we try CASH first (most common), then FNO, then COMMODITY.
-        # The SDK raises GrowwAPIException on wrong segment; we iterate.
+    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
+        """Cancel a Groww GTT (Smart Order). Returns the cancelled gtt_id.
+
+        Sprint C — compound OCO ids dispatch to both singles, each
+        cancelled independently. A single-leg failure logs but does not
+        block the other side from being attempted (operator hits an
+        all-or-nothing situation otherwise — better one cancelled than
+        zero).
+
+        `exchange` kwarg, when present, lets us resolve the Groww
+        segment without the four-way blind retry (CASH → FNO →
+        COMMODITY → CURRENCY). Existing callers without exchange in
+        hand still work via the legacy fall-through.
+        """
+        oco = self._parse_oco_id(gtt_id)
+        if oco is not None:
+            leg0_id, leg1_id = oco
+            err0 = None
+            try:
+                self.cancel_gtt(leg0_id, exchange=exchange)
+            except Exception as e:
+                err0 = e
+                logger.warning(
+                    f"GrowwBroker.cancel_gtt OCO leg0={leg0_id} failed: {e}"
+                )
+            try:
+                self.cancel_gtt(leg1_id, exchange=exchange)
+            except Exception as e:
+                logger.warning(
+                    f"GrowwBroker.cancel_gtt OCO leg1={leg1_id} failed: {e}"
+                )
+                if err0 is not None:
+                    raise RuntimeError(
+                        f"Groww cancel_gtt: both legs failed (leg0={err0}, leg1={e})"
+                    )
+            return gtt_id
+        # cancel_smart_order needs segment + smart_order_type. When the
+        # caller passes `exchange`, derive the segment directly; otherwise
+        # fall back to the blind iteration (legacy callers that don't
+        # carry the segment).
+        if exchange:
+            try:
+                _, seg = _groww_exchange_and_segment(exchange)
+                resp = self.groww.cancel_smart_order(
+                    segment=seg,
+                    smart_order_type="GTT",
+                    smart_order_id=gtt_id,
+                )
+                if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
+                    raise RuntimeError(f"Groww cancel_gtt rejected: {resp}")
+                return gtt_id
+            except Exception as e:
+                logger.warning(
+                    f"GrowwBroker.cancel_gtt direct-segment failed "
+                    f"({exchange} → {seg}): {e} — falling back to blind iteration"
+                )
         for seg in ("CASH", "FNO", "COMMODITY", "CURRENCY"):
             try:
                 resp = self.groww.cancel_smart_order(

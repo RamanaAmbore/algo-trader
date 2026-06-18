@@ -689,6 +689,13 @@ export const fetchBrokerAccounts = () => _get('/admin/brokers', { auth: true });
 export const fetchBrokerAccount = (acct) =>
   _get(`/admin/brokers/${encodeURIComponent(acct)}`, { auth: true });
 
+/** GET /api/admin/brokers/{account}/capabilities — Sprint C: broker
+ *  capability matrix (gtt_single / gtt_oco / gtt_modify / display_name
+ *  / etc) so OrderTicket can render inline warnings on attach. Pure
+ *  read of a dataclass; no broker round-trip. */
+export const fetchBrokerCapabilities = (acct) =>
+  _get(`/admin/brokers/${encodeURIComponent(acct)}/capabilities`, { auth: true });
+
 /** POST /api/admin/brokers — create a new account. */
 export async function createBrokerAccount(payload) {
   return _post('/admin/brokers', payload, { auth: true });

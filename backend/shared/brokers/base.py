@@ -207,8 +207,14 @@ class Broker(ABC):
             f"{self.broker_id} adapter has not implemented modify_gtt"
         )
 
-    def cancel_gtt(self, gtt_id: str) -> str:
-        """Cancel a GTT. Returns the cancelled GTT id."""
+    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
+        """Cancel a GTT. Returns the cancelled GTT id.
+
+        `exchange` is an optional hint some adapters use to skip a
+        cross-segment blind retry (Groww needs the segment up-front
+        because cancel_smart_order requires it). Adapters that don't
+        need it should ignore the kwarg.
+        """
         raise NotImplementedError(
             f"{self.broker_id} adapter has not implemented cancel_gtt"
         )
