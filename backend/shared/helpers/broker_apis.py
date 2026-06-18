@@ -74,7 +74,39 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
         _ltp_h2 = pd.to_numeric(df_holdings["last_price"], errors="coerce").fillna(0)
         _cls_h  = pd.to_numeric(df_holdings["close_price"], errors="coerce").fillna(0)
         _qty_h2 = pd.to_numeric(df_holdings["opening_quantity"], errors="coerce").fillna(0)
-        _dcv_calc = (_ltp_h2 - _cls_h) * _qty_h2
+        # Day P&L = pnl − yesterday's overnight P&L = broker.pnl − (close − cost) × opening_qty
+        #
+        # This handles all three cases correctly:
+        #   • Still-held holding: pnl = (LTP − cost) × opening_qty so the
+        #     expression collapses to (LTP − close) × opening_qty (drifts
+        #     with LTP — correct).
+        #   • Partially sold today: pnl = (sale − cost) × sold + (LTP − cost) × held
+        #     so day_pnl = (sale − close) × sold + (LTP − close) × held
+        #     (sold portion frozen, held drifts — correct).
+        #   • Fully sold today: pnl = (sale − cost) × opening_qty so
+        #     day_pnl = (sale − close) × opening_qty (frozen — correct).
+        #
+        # Operator: "IFCI went down by more than 8% which should reduce
+        # h delta." For IFCI the operator sold all 10 000 today; the
+        # previous (LTP − close) × opening formula kept drifting with
+        # LTP after the sale, but the operator's actual day P&L was
+        # locked in at the sale price. Switching to `pnl −
+        # overnight_pnl` freezes it correctly.
+        if "average_price" in df_holdings.columns and "pnl" in df_holdings.columns:
+            _avg_h2 = pd.to_numeric(df_holdings["average_price"], errors="coerce").fillna(0)
+            _pnl_h2 = pd.to_numeric(df_holdings["pnl"], errors="coerce")
+            _overnight_pnl = (_cls_h - _avg_h2) * _qty_h2
+            _dcv_calc = _pnl_h2 - _overnight_pnl
+            # Fall back to (LTP - close) × opening when broker pnl
+            # isn't usable (NaN / cold open) so the row still renders.
+            _ltp_fallback = (_ltp_h2 - _cls_h) * _qty_h2
+            _dcv_calc = _dcv_calc.where(_pnl_h2.notna(), _ltp_fallback)
+        else:
+            # Older adapter shape — no avg_price/pnl column. Use the
+            # naive overnight formula (operator with no intraday sells
+            # gets correct numbers; sold-today rows drift, same as
+            # before).
+            _dcv_calc = (_ltp_h2 - _cls_h) * _qty_h2
         if "day_change_val" in df_holdings.columns:
             _broker_dcv_h = pd.to_numeric(df_holdings["day_change_val"], errors="coerce")
             df_holdings["day_change_val"] = _broker_dcv_h.where(
