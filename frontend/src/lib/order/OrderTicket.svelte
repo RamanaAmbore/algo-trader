@@ -604,8 +604,25 @@
       const mkt = t.tp_order_type === 'MARKET' ? ' MKT' : '';
       parts.push(`TP +${t.tp_pct}%${mkt}`);
     }
-    if (t.sl_pct != null) parts.push(`SL -${t.sl_pct}%`);
-    if (t.wing_strike_offset != null) parts.push(`Wing +${t.wing_strike_offset}`);
+    // Scale-out ladder summary — Sprint D fix. Pre-fix a template
+    // with only tp_scales_json (no tp_pct) showed "(entry only)"
+    // and the operator had no warning that multiple TP legs would
+    // fire on submit.
+    if (t.tp_scales_json) {
+      try {
+        const scales = JSON.parse(t.tp_scales_json);
+        if (Array.isArray(scales) && scales.length > 0) {
+          parts.push(`TP ×${scales.length} scales`);
+        }
+      } catch (_e) { /* malformed JSON — silently skip */ }
+    }
+    if (t.sl_pct != null) {
+      const trail = t.sl_trail_pct != null ? ` trail ${t.sl_trail_pct}%` : '';
+      parts.push(`SL -${t.sl_pct}%${trail}`);
+    } else if (t.sl_trail_pct != null) {
+      parts.push(`SL trail ${t.sl_trail_pct}%`);
+    }
+    if (t.wing_strike_offset != null) parts.push(`Wing +${t.wing_strike_offset} pts`);
     if (t.wing_premium_pct != null) parts.push(`Wing ${t.wing_premium_pct}% prem`);
     return parts.length ? parts.join(' · ') : '(entry only)';
   }
@@ -1236,10 +1253,8 @@
       // re-parsing the inline submitOk string.
       await onSubmit({ ...payload, broker_response: brokerResp });
       // DRAFT closes immediately; PAPER / LIVE stay open with an Exit
-      // button so the operator can read the placed-order line. The
-      // previous auto-close (200 / 600 ms) was racing the operator's
-      // gaze — the inline "✓ placed" flash was visible for a heartbeat
-      // then gone, leaving them unsure what landed.
+      // button so the operator can read the placed-order line and
+      // place more without re-opening. Explicit close via × / Escape.
       if (_mode === 'draft') {
         onClose();
       }

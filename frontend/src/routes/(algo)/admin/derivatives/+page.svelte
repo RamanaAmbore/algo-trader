@@ -1481,6 +1481,122 @@
     return { ...baseRisk, max_profit: maxP, max_loss: maxL, breakevens };
   });
 
+  // Sprint D fix (audit cross-symbol #1): re-derive EV + POP over the
+  // MERGED curve when proxy/equity legs are layered. Pre-fix the chart
+  // displayed `strategy.risk.pop` and `strategy.risk.ev` directly from
+  // the backend, which only saw the option legs — so a GOLDBEES proxy
+  // hedged short straddle showed option-only POP/EV unchanged after
+  // the equity leg shifted the payoff curve.
+  //
+  // Math mirrors backend/api/algo/derivatives.py — JS port:
+  //   _normCdf  — Abramowitz & Stegun 7.1.26 approximation
+  //   _probAbove(S, K, T, σ) — P(S_T ≥ K) under risk-neutral lognormal
+  //   _expectedValueOnCurve — trapezoid ∫ expiry_value × pdf
+  //   _multilegPopOnCurve — sum over contiguous profit segments
+  function _normCdf(x) {
+    const t = 1 / (1 + 0.2316419 * Math.abs(x));
+    const d = 0.3989422804 * Math.exp(-x * x / 2);
+    let p = d * t * (0.31938153
+      + t * (-0.356563782
+      + t * (1.781477937
+      + t * (-1.821255978
+      + t * 1.330274429))));
+    return x > 0 ? 1 - p : p;
+  }
+  const _RISK_FREE_R = 0.07;   // matches backend default
+  function _probAbove(S, K, T, sigma) {
+    if (K <= 0 || S <= 0 || T <= 0 || sigma <= 0) return 0;
+    const d2 = (Math.log(S / K) + (_RISK_FREE_R - sigma * sigma / 2) * T)
+             / (sigma * Math.sqrt(T));
+    return _normCdf(d2);
+  }
+  function _expectedValueOnCurve(curve, S, T, sigma) {
+    if (!curve || curve.length < 2 || S <= 0 || T <= 0 || sigma <= 0) return 0;
+    function pdf(ST) {
+      if (ST <= 0) return 0;
+      const lnRatio = Math.log(ST / S);
+      const denom   = ST * sigma * Math.sqrt(2 * Math.PI * T);
+      const expArg  = -Math.pow(
+        lnRatio - (_RISK_FREE_R - sigma * sigma / 2) * T, 2
+      ) / (2 * sigma * sigma * T);
+      return Math.exp(expArg) / denom;
+    }
+    let ev = 0;
+    for (let i = 1; i < curve.length; i++) {
+      const a = curve[i - 1], b = curve[i];
+      const dx = b.spot - a.spot;
+      ev += 0.5 * dx * (a.expiry_value * pdf(a.spot) + b.expiry_value * pdf(b.spot));
+    }
+    return ev;
+  }
+  function _multilegPopOnCurve(curve, S, T, sigma) {
+    if (!curve || curve.length < 2 || S <= 0 || T <= 0 || sigma <= 0) return null;
+    let pop = 0;
+    let segStart = null;
+    let segStartIdx = -1;
+    for (let i = 0; i < curve.length; i++) {
+      const v = curve[i].expiry_value;
+      if (v > 0 && segStart === null) {
+        segStart = curve[i].spot;
+        segStartIdx = i;
+      } else if (v <= 0 && segStart !== null) {
+        // Segment ended at curve[i-1]. Lower bound = 1.0 when the
+        // segment touches the curve's left edge (open-ended downward).
+        const lower = segStartIdx === 0 ? 1.0 : _probAbove(S, segStart, T, sigma);
+        const upper = _probAbove(S, curve[i - 1].spot, T, sigma);
+        pop += lower - upper;
+        segStart = null;
+        segStartIdx = -1;
+      }
+    }
+    if (segStart !== null) {
+      // Open-ended upward segment touching the curve's right edge —
+      // upper bound = 0 since P(S_T → ∞) = 0.
+      const lower = segStartIdx === 0 ? 1.0 : _probAbove(S, segStart, T, sigma);
+      pop += lower;
+    }
+    return Math.max(0, Math.min(1, pop));
+  }
+  /** EV recomputed over the merged curve. Falls back to the backend's
+   *  strategy.risk.ev when no eq legs are present (zero overhead) or
+   *  when prereqs are missing. */
+  const _mergedEv = $derived.by(() => {
+    const baseEv = strategy?.risk?.ev ?? null;
+    if (_equityLegs.length === 0) return baseEv;
+    const S     = Number(strategy?.spot || 0);
+    const dte   = Number(strategy?.days_to_expiry || 0);
+    const sigma = Number(strategy?.iv_proxy || 0);
+    if (S <= 0 || dte <= 0 || sigma <= 0) return baseEv;
+    const T = dte / 365.0;
+    const ev = _expectedValueOnCurve(_mergedPayoff, S, T, sigma);
+    return Number.isFinite(ev) ? ev : baseEv;
+  });
+  /** POP recomputed over the merged curve. Same fallback shape as EV. */
+  const _mergedPop = $derived.by(() => {
+    const basePop = strategy?.risk?.pop ?? null;
+    if (_equityLegs.length === 0) return basePop;
+    const S     = Number(strategy?.spot || 0);
+    const dte   = Number(strategy?.days_to_expiry || 0);
+    const sigma = Number(strategy?.iv_proxy || 0);
+    if (S <= 0 || dte <= 0 || sigma <= 0) return basePop;
+    const T = dte / 365.0;
+    const pop = _multilegPopOnCurve(_mergedPayoff, S, T, sigma);
+    return pop !== null && Number.isFinite(pop) ? pop : basePop;
+  });
+  /** EV-as-pct-of-cost when eq legs are layered. Back-derives the
+   *  underlying |cost| basis from the backend's
+   *  `base.ev_pct = base.ev / |cost| × 100` identity, then rescales
+   *  with the merged EV. Returns null when prereqs are absent or the
+   *  base values can't be inverted (ev=0). */
+  const _mergedEvPct = $derived.by(() => {
+    const baseEvPct = strategy?.risk?.ev_pct ?? null;
+    if (_equityLegs.length === 0 || baseEvPct == null) return baseEvPct;
+    const baseEv = Number(strategy?.risk?.ev ?? 0);
+    const mergedEv = _mergedEv;
+    if (!baseEv || mergedEv == null) return baseEvPct;
+    return mergedEv * baseEvPct / baseEv;
+  });
+
   /** Aggregate Greeks with the equity-holding contribution layered on.
    *  Long stock has delta = +1 per share, gamma/theta/vega/rho = 0
    *  (linear payoff, no convexity, no decay, no IV/rate sensitivity).
@@ -3662,12 +3778,24 @@
                     {@const _targetLot    = getOptionUnderlyingLot(c.proxy_for)}
                     {@const _targetLots   = _targetLot > 0 ? _effQtyChip / _targetLot : 0}
                     {@const _hasBeta      = _rowChip?.beta != null}
+                    {@const _regAtChip    = _rowChip?.regression_at ? new Date(_rowChip.regression_at) : null}
+                    {@const _regAgeDays   = _regAtChip ? Math.floor((Date.now() - _regAtChip.getTime()) / 86400000) : null}
+                    {@const _regErrChip   = _rowChip?.regression_error || null}
+                    {@const _regStaleHi   = _regAgeDays != null && _regAgeDays > 7}
+                    {@const _regStaleMid  = _regAgeDays != null && _regAgeDays > 2 && _regAgeDays <= 7}
+                    {@const _regSuffix    = _regErrChip
+                                              ? ` · ⚠ regression failed: ${_regErrChip}`
+                                              : (_regAgeDays != null
+                                                  ? ` · β computed ${_regAgeDays}d ago${_regStaleHi ? ' (STALE)' : ''}`
+                                                  : '')}
                     <span class="cand-split-tag cand-proxy-tag"
+                          class:cand-proxy-stale={_regStaleHi || _regErrChip}
+                          class:cand-proxy-staleish={_regStaleMid}
                           title={_effQtyChip > 0
                             ? (_hasBeta
-                                ? `β=${_betaChip.toFixed(3)} × market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equiv${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''} · R²=${_r2Chip.toFixed(2)}`
-                                : `Market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}`)
-                            : `Proxy of ${c.proxy_for} — waiting on live ${c.proxy_for} spot`}>PROXY{_targetLot > 0 && _effQtyChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}{_hasBeta ? ` β${_betaChip.toFixed(2)}` : ''}</span>
+                                ? `β=${_betaChip.toFixed(3)} × market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equiv${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''} · R²=${_r2Chip.toFixed(2)}${_regSuffix}`
+                                : `Market value ₹${_marketValChip.toFixed(0)} ÷ ${c.proxy_for} spot ₹${_spotForChip.toFixed(0)} ≈ ${_effQtyChip.toFixed(2)} ${c.proxy_for}-equivalent${_targetLot > 0 ? ` ≈ ${_targetLots.toFixed(2)} ${c.proxy_for} lot${_targetLots === 1 ? '' : 's'} (lot=${_targetLot})` : ''}${_regSuffix}`)
+                            : `Proxy of ${c.proxy_for} — waiting on live ${c.proxy_for} spot${_regSuffix}`}>PROXY{_targetLot > 0 && _effQtyChip > 0 ? ` ${_targetLots.toFixed(2)}×` : ''}{_hasBeta ? ` β${_betaChip.toFixed(2)}` : ''}{_regErrChip ? ' ⚠' : (_regStaleHi ? ' ◷' : '')}</span>
                   {/if}
                 {/if}
                 {#if c._splitTag === 'closed'}
@@ -3873,17 +4001,17 @@
             </div>
             <div class="kv-pair">
               <span class="kv-k">POP <InfoHint popup text={'<b>Probability of profit</b> at expiry — sum of lognormal mass over every contiguous profitable region of the payoff curve. For range strategies (iron condors), this measures "P(spot ends inside the wings)".'} /></span>
-              <span class="kv-v {strategy.risk.pop > 0.6 ? 'kv-pos' : strategy.risk.pop < 0.4 ? 'kv-neg' : ''}">{fmtPct(strategy.risk.pop)}</span>
+              <span class="kv-v {(_mergedPop ?? strategy.risk.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy.risk.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy.risk.pop)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k">EV <InfoHint popup text={'<b>Expected value</b> — POP × win-magnitude − (1−POP) × loss-magnitude, integrated against the lognormal pdf of the underlying. Positive EV = edge in expectation; negative EV = no edge, even if POP is high.'} /></span>
-              <span class="kv-v {strategy.risk.ev > 0 ? 'kv-pos' : strategy.risk.ev < 0 ? 'kv-neg' : ''}">{fmtMoney(strategy.risk.ev)}</span>
+              <span class="kv-v {(_mergedEv ?? strategy.risk.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy.risk.ev) < 0 ? 'kv-neg' : ''}">{fmtMoney(_mergedEv ?? strategy.risk.ev)}</span>
             </div>
             {#if strategy.risk.ev_pct != null}
               <div class="kv-pair">
                 <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
-                <span class="kv-v {strategy.risk.ev_pct > 0 ? 'kv-pos' : strategy.risk.ev_pct < 0 ? 'kv-neg' : ''}">
-                  {pctFmt(strategy.risk.ev_pct)}%
+                <span class="kv-v {(_mergedEvPct ?? strategy.risk.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy.risk.ev_pct) < 0 ? 'kv-neg' : ''}">
+                  {pctFmt(_mergedEvPct ?? strategy.risk.ev_pct)}%
                 </span>
               </div>
             {/if}
@@ -4984,6 +5112,22 @@
     color: #c084fc;
     background: rgba(192, 132, 252, 0.16);
     border: 1px solid rgba(192, 132, 252, 0.45);
+  }
+  /* Sprint D — stale β surfaces in two intensities. `staleish` (2-7d
+     since last regression) is amber: operator should be aware but
+     the β is probably still useful. `stale` (> 7d or last attempt
+     errored) is red: the freshness window expired and the daily
+     background task hasn't been able to refresh — operator should
+     investigate. Tooltip carries the precise age + any error text. */
+  .cand-proxy-tag.cand-proxy-staleish {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+    border-color: rgba(251, 191, 36, 0.55);
+  }
+  .cand-proxy-tag.cand-proxy-stale {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.16);
+    border-color: rgba(248, 113, 113, 0.55);
   }
   /* Soft sky tint on the whole eq row so it reads as a different
      layer from the option/futures legs without competing with the

@@ -693,7 +693,22 @@ async def chase_order(
             # Check status
             status = await _run(_order_status, account, current_order_id)
             order_status = status.get("status", "").upper()
-            filled_qty = status.get("filled_quantity", 0)
+            # Sprint D — Kite reports `filled_quantity` in WHATEVER
+            # units `place_order` was given. For MCX/NCO we placed in
+            # LOTS (translate_qty divides by lot_size), so the status
+            # filled_quantity is also in lots — but our `remaining_qty`
+            # / `quantity` track CONTRACTS. Without the reverse-
+            # translate, every MCX partial-fill comparison fires
+            # (1 lot < 100 contracts always) and AlgoOrder.filled_qty
+            # accumulated as lots into a contracts column. Reverse-
+            # translate once here so downstream math is in one unit.
+            _kite_filled = int(status.get("filled_quantity", 0) or 0)
+            if cfg.exchange in ("MCX", "NCO") and _kite_filled > 0:
+                from backend.shared.brokers.kite import from_kite_qty
+                _lot = _lot_size_sync(cfg.exchange, symbol)
+                filled_qty = from_kite_qty(cfg.exchange, _kite_filled, _lot)
+            else:
+                filled_qty = _kite_filled
             avg_price = status.get("average_price", 0)
 
             if order_status == "COMPLETE":

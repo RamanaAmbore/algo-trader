@@ -20,7 +20,8 @@ import { fetchHedgeProxies } from '$lib/api';
 /** @typedef {{ id:number, proxy_symbol:string, target_root:string,
  *              is_active:boolean, note:string|null,
  *              beta:number|null, correlation:number,
- *              regression_at:string|null }} HedgeProxyRow */
+ *              regression_at:string|null,
+ *              regression_error:string|null }} HedgeProxyRow */
 
 /** @type {HedgeProxyRow[]} */
 let _rows = [];

@@ -1000,6 +1000,16 @@ async def _task_hedge_proxy_regression() -> None:
                     _compute_regression, broker, row.proxy_symbol, row.target_root, window,
                 )
             except Exception as exc:
+                # Sprint D — record the failure on the row so the UI
+                # can flag it. Still stamps `regression_at` to enforce
+                # the freshness gate; operator can clear by editing
+                # the pair or hitting /compute manually.
+                async with async_session() as s:
+                    db_row = await s.get(HedgeProxy, row.id)
+                    if db_row:
+                        db_row.regression_at = datetime.now(timezone.utc)
+                        db_row.regression_error = f"broker error: {str(exc)[:200]}"
+                        await s.commit()
                 logger.warning(
                     f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} failed: {exc}"
                 )
@@ -1014,6 +1024,9 @@ async def _task_hedge_proxy_regression() -> None:
                     db_row = await s.get(HedgeProxy, row.id)
                     if db_row:
                         db_row.regression_at = datetime.now(timezone.utc)
+                        db_row.regression_error = (
+                            f"too few overlapping bars (n={n}, need ≥ 15)"
+                        )
                         await s.commit()
                 failed += 1
                 continue
@@ -1024,6 +1037,8 @@ async def _task_hedge_proxy_regression() -> None:
                         db_row.beta = float(beta)
                         db_row.correlation = float(r2 if r2 is not None else 1.0)
                         db_row.regression_at = datetime.now(timezone.utc)
+                        # Successful run — clear any stale failure marker
+                        db_row.regression_error = None
                         await s.commit()
                 logger.info(
                     f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "

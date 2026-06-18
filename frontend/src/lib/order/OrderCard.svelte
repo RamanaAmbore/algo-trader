@@ -136,7 +136,9 @@
     </span>
     <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
       {order.status === 'COMPLETE' || order.status === 'FILLED' ? 'bg-green-500/15 text-green-400 border-green-500/40'
-      : order.status === 'REJECTED' || order.status === 'UNFILLED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
+      : order.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
+      : order.status === 'UNFILLED' ? 'bg-orange-500/15 text-orange-400 border-orange-500/40'
+      : order.status === 'CANCELLED' ? 'bg-slate-500/20 text-slate-300 border-slate-500/40'
       : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{order.status}</span>
   </div>
   <!-- Chip row — same .log-chip / .log-chip-key family the LogPanel

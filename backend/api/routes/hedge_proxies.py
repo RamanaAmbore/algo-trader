@@ -210,11 +210,15 @@ class HedgeProxyInfo(msgspec.Struct):
     # endpoint below; the derivatives page multiplies the dynamic
     # market_value / target_spot by β to get the right NIFTY-equivalent
     # for a RELIANCE → NIFTY hedge.
-    beta:          Optional[float] = None
-    correlation:   float           = 1.0
-    regression_at: Optional[str]   = None     # ISO-8601, NULL if never run
-    created_at:    str             = ""
-    updated_at:    str             = ""
+    beta:              Optional[float] = None
+    correlation:       float           = 1.0
+    regression_at:     Optional[str]   = None     # ISO-8601, NULL if never run
+    # Sprint D — last regression failure reason; NULL when the most
+    # recent attempt succeeded (or no attempt has run yet). UI uses
+    # this to render a warning chip + flag pairs stuck on stale β.
+    regression_error:  Optional[str]   = None
+    created_at:        str             = ""
+    updated_at:        str             = ""
 
 
 class HedgeProxyCreate(msgspec.Struct):
@@ -299,6 +303,12 @@ async def seed_hedge_proxies() -> int:
                     "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
                     "regression_at TIMESTAMP WITH TIME ZONE"
                 ))
+            if "regression_error" not in cols:
+                logger.info("hedge_proxies: adding regression_error column (Sprint D)")
+                await conn.execute(text(
+                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                    "regression_error VARCHAR(255)"
+                ))
     # init_db has already created the new shape if the table is gone —
     # if migration just dropped it, SQLAlchemy's metadata.create_all
     # (run from init_db) needs to re-fire. Easiest path: re-run it here
@@ -338,6 +348,7 @@ def _to_info(row: HedgeProxy) -> HedgeProxyInfo:
         beta=float(row.beta) if row.beta is not None else None,
         correlation=float(row.correlation if row.correlation is not None else 1.0),
         regression_at=row.regression_at.isoformat() if row.regression_at else None,
+        regression_error=row.regression_error,
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -432,6 +443,15 @@ class HedgeProxiesController(Controller):
                 _compute_regression, broker, row.proxy_symbol, row.target_root, 60,
             )
             if beta is None:
+                # Sprint D — record the failure on the row so the UI
+                # surfaces it (operator can tell "tried 3 days ago,
+                # failed" apart from "computed 3 days ago OK"). Still
+                # raise so the manual-trigger API caller sees the 422.
+                row.regression_error = (
+                    f"too few overlapping bars (n={n}, need ≥ 15)"
+                )
+                row.regression_at = datetime.now(timezone.utc)
+                await sess.commit()
                 raise HTTPException(
                     status_code=422,
                     detail=f"Regression failed — n={n} overlapping bars (need ≥ 15). "
@@ -439,6 +459,7 @@ class HedgeProxiesController(Controller):
             row.beta = float(beta)
             row.correlation = float(r2 if r2 is not None else 1.0)
             row.regression_at = datetime.now(timezone.utc)
+            row.regression_error = None     # success — clear stale failure marker
             await sess.commit()
             await sess.refresh(row)
             logger.info(

@@ -44,6 +44,27 @@ def to_kite_qty(exchange: str, raw_qty: int, lot_size: int) -> int:
     return raw_qty
 
 
+def from_kite_qty(exchange: str, kite_qty: int, lot_size: int) -> int:
+    """Reverse of `to_kite_qty`: convert Kite's reported qty (whatever
+    `place_order` was given) back to our internal contract qty.
+
+    Sprint D fix — the chase loop reads `status.filled_quantity` from
+    Kite and compares it against `remaining_qty` (which is contracts).
+    For MCX/NCO Kite returns lots, so without this reverse-translate
+    every MCX chase saw `filled_quantity=1` against `remaining=100`
+    and triggered the partial-fill branch on every poll — corrupting
+    `AlgoOrder.filled_quantity` (lots written into a contracts column)
+    and starting an infinite chase even when the order had fully
+    filled.
+
+    Equity paths pass through unchanged (Kite already reports
+    contracts on NSE/BSE/NFO).
+    """
+    if exchange in ("MCX", "NCO") and lot_size > 0 and kite_qty > 0:
+        return kite_qty * lot_size
+    return kite_qty
+
+
 async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     """Look up lot_size from the instruments cache.
 

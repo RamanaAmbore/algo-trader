@@ -1238,6 +1238,17 @@ class HedgeProxy(Base):
     regression_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # Sprint D — surfaces a failed regression run so the operator
+    # can distinguish "computed 3 days ago OK" from "tried 3 days
+    # ago, failed, won't retry until <max_age_days> elapses". Pre-fix
+    # the daily background task wrote `regression_at = now()` even on
+    # failure, so the freshness gate blocked retries silently for a
+    # week. Schema: nullable string holding the last failure reason
+    # (`"too few overlapping bars"`, `"symbol resolution failed"`,
+    # `"broker timeout"`, ...); NULL means the last run succeeded.
+    regression_error: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

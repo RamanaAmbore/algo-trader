@@ -13,6 +13,7 @@
   import { fetchSettings, updateSetting, resetSetting, fetchWatchlists,
            fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy,
            computeHedgeProxy } from '$lib/api';
+  import { loadHedgeProxies as _invalidateHedgeProxyCache } from '$lib/data/hedgeProxies';
   import Select   from '$lib/Select.svelte';
 
   // Pinned-watchlist symbols feed the orders.default_symbol dropdown
@@ -76,7 +77,8 @@
   // ── Hedge proxy CRUD (pair-only) ───────────────────────────────────
   /** @type {Array<{id:number,proxy_symbol:string,target_root:string,
    *                is_active:boolean,note:string|null,correlation:number,
-   *                beta:number|null,regression_at:string|null}>} */
+   *                beta:number|null,regression_at:string|null,
+   *                regression_error:string|null}>} */
   let proxies = $state([]);
   let proxiesErr = $state('');
   let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true, correlation: '1.0' });
@@ -126,7 +128,15 @@
   async function computeProxy(row) {
     proxiesErr = '';
     computingProxy = { ...computingProxy, [row.id]: true };
-    try { await computeHedgeProxy(row.id); await loadProxies(); }
+    try {
+      await computeHedgeProxy(row.id);
+      await loadProxies();
+      // Sprint D — invalidate the shared module-level cache so any
+      // open /admin/derivatives tab picks up the new β on its next
+      // poll cycle. Without this, the sibling page kept showing the
+      // pre-compute β until the user reloaded.
+      await _invalidateHedgeProxyCache(true);
+    }
     catch (e) { proxiesErr = e?.message || 'regression failed'; }
     finally { computingProxy = { ...computingProxy, [row.id]: false }; }
   }
@@ -403,7 +413,10 @@
                 <td class="p-1"><input bind:value={p.note} class="field-input w-44" /></td>
                 <td class="p-1 font-mono opacity-80">{p.beta != null ? Number(p.beta).toFixed(3) : '—'}</td>
                 <td class="p-1 font-mono opacity-80">{Number(p.correlation ?? 1).toFixed(2)}</td>
-                <td class="p-1 opacity-70">{_shortDate(p.regression_at)}</td>
+                <td class="p-1 opacity-70" title={p.regression_error || ''}
+                    class:text-red-400={!!p.regression_error}>
+                  {_shortDate(p.regression_at)}{p.regression_error ? ' ⚠' : ''}
+                </td>
                 <td class="p-1"><input type="checkbox" bind:checked={p.is_active} /></td>
                 <td class="p-1 flex gap-1">
                   <button class="btn-primary text-[0.6rem] py-0.5 px-2"

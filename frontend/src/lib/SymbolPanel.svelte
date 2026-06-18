@@ -957,12 +957,9 @@
       _stickyResultLevel = 'ok';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
       _stickyResultTimer = setTimeout(() => { _stickyResultMsg = ''; _stickyResultLevel = ''; }, 3000);
-      // Operator: "when order is placed from chain, the order modal is
-      // closed. i want it to be open like after placing order from
-      // order ticket until i close the modal." Match the
-      // OrderTicket / +Basket pattern — keep the modal open so the
-      // operator can place more legs without re-opening. They close
-      // it explicitly via × or Escape.
+      // Operator: modal stays open after a successful chain submit so
+      // they can place more legs without re-opening. Explicit close
+      // via × or Escape only.
     } else if (ok > 0) {
       basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}`;
       basketLegs = basketLegs.filter((_, i) => failedIdx.has(i));
