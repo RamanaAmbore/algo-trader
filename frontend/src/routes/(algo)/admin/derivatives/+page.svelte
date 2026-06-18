@@ -214,6 +214,12 @@
    *  needs the underlying overlaid. Operator: "add toggle button to
    *  show underlying holdings plus options or only options." */
   let _includeHoldings = $state(true);
+  // Stable callback reference for OptionsPayoff.onToggleHoldings.
+  // Hoisting it out of the JSX prevents the fresh-closure problem —
+  // every parent re-render would otherwise pass a new function ref,
+  // triggering OptionsPayoff to invalidate downstream $derived caches
+  // even when nothing about the chart actually changed.
+  function _flipHoldings() { _includeHoldings = !_includeHoldings; }
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
@@ -2603,6 +2609,24 @@
   // sees the chart appear cleanly when the next poll succeeds.
   let _stratFails = 0;
 
+  // Memoize equity-only synth — every 5s poll calls loadStrategy. When
+  // strategy is synthesized from eq legs, recomputing a fresh 41-point
+  // payoff array (+ new strategy ref) on each tick triggers
+  // `_mergedPayoff` / `_mergedRisk` / `_mergedGreeks` re-derive + the
+  // entire OptionsPayoff SVG re-render. The synth output only depends
+  // on (symbol, qty, avg_cost, ltp) per leg + selectedUnderlying; cache
+  // the result by that signature so polls that bring no relevant
+  // change return the same reference and downstream derives stay
+  // memoized.
+  let _synthCache = /** @type {{key: string, value: any} | null} */ (null);
+  function _synthCacheKey(eqs) {
+    const parts = [selectedUnderlying || ''];
+    for (const e of eqs) {
+      parts.push(`${e.symbol || ''}:${Number(e.qty) || 0}:${Number(e.avg_cost) || 0}:${Number(e.ltp) || 0}`);
+    }
+    return parts.join('|');
+  }
+
   /** Build a strategy-shaped object for an equity-only basket so the
    *  payoff card renders a linear long-stock curve when the operator
    *  has enabled eq legs but no options/futures. Spot anchor comes
@@ -2714,12 +2738,24 @@
         ? candidatePositions.filter(c => c.kind === 'eq' && _isLegEnabled(c))
         : [];
       if (enabledEqs.length > 0) {
-        strategy = _synthEquityOnlyStrategy(enabledEqs);
+        // Memoized synth — if the cache key matches, reuse the
+        // previous synth object so downstream derives skip the
+        // re-render. New object only when inputs actually changed.
+        const key = _synthCacheKey(enabledEqs);
+        if (!_synthCache || _synthCache.key !== key) {
+          _synthCache = { key, value: _synthEquityOnlyStrategy(enabledEqs) };
+        }
+        if (strategy !== _synthCache.value) {
+          strategy = _synthCache.value;
+        }
       } else {
-        strategy = null;
+        if (strategy !== null) strategy = null;
+        _synthCache = null;
       }
       strategyErr = ''; _stratFails = 0;
-      _saveCache();
+      // Only persist when the synth actually produced something new.
+      // Repeated _saveCache calls during idle polling were burning
+      // JSON.stringify + sessionStorage write on every 5s tick.
       return;
     }
     // Detect underlying change between the previous strategy fetch
@@ -3288,7 +3324,7 @@
               expiryISO: strategy.expiry ?? '' }
           : null}
         includeHoldings={_includeHoldings}
-        onToggleHoldings={() => { _includeHoldings = !_includeHoldings; }}
+        onToggleHoldings={_flipHoldings}
         loading={loading}
         height={320} />
     </div>
