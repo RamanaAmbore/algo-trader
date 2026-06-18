@@ -844,19 +844,31 @@ async def run_preflight(account: str, order: dict) -> dict:
     variety   = str(order.get("variety", "regular"))
 
     # ── 2. SEGMENT_INACTIVE ───────────────────────────────────────────────
-    try:
-        profile = await loop.run_in_executor(None, broker.profile)
-        enabled_exchanges = set(profile.get("exchanges") or [])
-        if exchange not in enabled_exchanges:
-            blocked.append({
-                "code":   "SEGMENT_INACTIVE",
-                "reason": f"{exchange} segment not activated on this account",
-                "fix":    (f"Activate the {exchange} segment in the Kite developer "
-                           "console for this account, then re-test"),
-                "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
-            })
-    except Exception as e:
-        logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
+    # Kite's profile() returns a canonical list of `exchanges` the account
+    # is enabled for — we use it to short-circuit a Kite order before
+    # the broker round-trip rejects it with a cryptic message. Dhan and
+    # Groww profile() synthesise a Kite-shape dict (just user_id /
+    # user_name / broker tags) WITHOUT an exchanges list because their
+    # auth-check endpoints don't expose per-segment activation. For those
+    # brokers we'd be checking `exchange not in set()` and ALWAYS landing
+    # in the blocked path. Operator: "for Dhan, I am getting the message
+    # MCX is not activated in order modal. I was able to place orders in
+    # Dhan portal." Skip the check for non-Kite — the broker's own
+    # place_order is then the source of truth for segment activation.
+    if broker.broker_id == "zerodha_kite":
+        try:
+            profile = await loop.run_in_executor(None, broker.profile)
+            enabled_exchanges = set(profile.get("exchanges") or [])
+            if enabled_exchanges and exchange not in enabled_exchanges:
+                blocked.append({
+                    "code":   "SEGMENT_INACTIVE",
+                    "reason": f"{exchange} segment not activated on this account",
+                    "fix":    (f"Activate the {exchange} segment in the Kite developer "
+                               "console for this account, then re-test"),
+                    "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
+                })
+        except Exception as e:
+            logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
 
     # ── 3. QTY_FREEZE ─────────────────────────────────────────────────────
     if exchange in ("NFO", "BFO", "MCX", "CDS") and qty > 0:
