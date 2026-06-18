@@ -388,9 +388,12 @@ def resolve_template_plan(
 
     # Override numeric fields (operator's inline edits on OrderTicket
     # win over the template default). None in either layer means "no
-    # attach for this slot".
+    # attach for this slot". Defensive: accept overrides=None from
+    # callers like `_attach_basket_leg_template` that don't surface
+    # operator overrides (the basket leg carries only template_id).
+    _ov = overrides or {}
     def _pick(key: str) -> Optional[float]:
-        v = overrides.get(key)
+        v = _ov.get(key)
         if v is None:
             v = template.get(key)
         if v is None:
@@ -403,7 +406,7 @@ def resolve_template_plan(
     tp_pct          = _pick("tp_pct")
     sl_pct          = _pick("sl_pct")
     wing_premium_pct = _pick("wing_premium_pct")
-    wing_offset_raw = overrides.get("wing_strike_offset")
+    wing_offset_raw = _ov.get("wing_strike_offset")
     if wing_offset_raw is None:
         wing_offset_raw = template.get("wing_strike_offset")
     try:
@@ -416,7 +419,7 @@ def resolve_template_plan(
     # tp_order_type — LIMIT (default) or MARKET. Override > template >
     # 'LIMIT'. SL legs always stay LIMIT (a MARKET SL = stop-market,
     # different semantics; would be a separate `sl_order_type` field).
-    _tp_ot_raw = overrides.get("tp_order_type")
+    _tp_ot_raw = _ov.get("tp_order_type")
     if _tp_ot_raw is None:
         _tp_ot_raw = template.get("tp_order_type")
     tp_order_type = str(_tp_ot_raw).upper() if _tp_ot_raw else "LIMIT"
@@ -493,10 +496,8 @@ def resolve_template_plan(
         # Phase 1B — apply_template_to_order pre-resolves the wing via
         # _pick_wing_by_premium when wing_premium_pct is set, and seeds
         # the picked tradingsymbol back into overrides. Use it first.
-        wing_picked_sym = (overrides.get("_wing_picked_symbol")
-                           if overrides else None)
-        wing_picked_ltp = (overrides.get("_wing_picked_ltp")
-                           if overrides else None)
+        wing_picked_sym = _ov.get("_wing_picked_symbol")
+        wing_picked_ltp = _ov.get("_wing_picked_ltp")
         if wing_picked_sym:
             plan.wing = WingSpec(
                 tradingsymbol=str(wing_picked_sym),
@@ -771,9 +772,13 @@ def build_adhoc_template(overrides: dict) -> dict:
     }
 
 
-def has_any_override(overrides: dict) -> bool:
+def has_any_override(overrides: Optional[dict]) -> bool:
     """True when at least one TP/SL/Wing override is non-None — means
-    "build an ad-hoc template even if no template_id was passed"."""
+    "build an ad-hoc template even if no template_id was passed".
+    Defensive against overrides=None from callers like
+    `_attach_basket_leg_template`."""
+    if not overrides:
+        return False
     keys = ("tp_pct", "sl_pct", "wing_premium_pct", "wing_strike_offset")
     return any(overrides.get(k) is not None for k in keys)
 
