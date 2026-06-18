@@ -266,9 +266,18 @@ Use `/admin/settings` to change the default, or override per-order inline on the
 
 ---
 
+## Derivatives page — Holdings toggle + closed positions freeze
+
+`/admin/derivatives` is your options research workspace. The payoff chart now has a **Holdings ON/OFF toggle** (small switch in the legend, sky-cyan when enabled) so you can:
+
+- **ON (default)** — see the full picture: option legs + your held equity positions (DIXON stock + NIFTY puts, for example). P&L reflects the net of all.
+- **OFF** — isolate the derivatives only. P&L shows pure option P&L without the stock's cost basis. Useful when you want to analyse the hedge separately from the spot position.
+
+Positions you've **partially sold intra-day now freeze correctly**. The day P&L stops drifting once you've sold your shares — if you sold IFCI at 3 PM and it drops 2% after hours, your day P&L stays locked at the 3 PM fill price. Same for any symbol: once qty=0, the day-change number doesn't move even if the LTP keeps falling.
+
 ## Derivatives page — 3-band Close layout
 
-`/admin/options` has been renamed to `/admin/derivatives`. The **Close** tab now surfaces three distinct buckets:
+The **Close** tab surfaces three distinct buckets:
 
 | Section | What | When to act |
 |---|---|---|

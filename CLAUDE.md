@@ -86,7 +86,7 @@ Both branches (`main`, `dev`) are kept in sync — every feature is developed on
 ## Key File Map
 
 ### Helpers (`backend/shared/helpers/`)
-- **`broker_apis.py`** — `fetch_holdings()`, `fetch_positions()`, `fetch_margins()` — each decorated with `@for_all_accounts`; returns a list (one DataFrame per account). `fetch_holidays(exchange)` — calls `kite.holidays(exchange)`, returns set of holiday dates for the current year; used by background refresh for NSE and MCX calendars.
+- **`broker_apis.py`** — `fetch_holdings()`, `fetch_positions()`, `fetch_margins()` — each decorated with `@for_all_accounts`; returns a list (one DataFrame per account). Each per-account fetch sets `df.attrs['fetch_failed']` on exception; routes raise 503 only when EVERY account failed, not on first error. Empty success returns `rows=[]` cleanly without treating it as a broker outage (commit 515c0770). `fetch_holidays(exchange)` — calls `kite.holidays(exchange)`, returns set of holiday dates for the current year; used by background refresh for NSE and MCX calendars.
 - **`connections.py`** — `Connections` singleton (extends `SingletonBase`) holds one `KiteConnection` per account; handles Kite 2FA login, TOTP, and access token refresh. Re-authenticates after 23 hours (`conn_reset_hours` in `backend_config.yaml`). Supports per-account `source_ip` binding (IPv6) to work around Kite's one-IP-per-app restriction — see Multi-Account IP Binding section below.
 - **`decorators.py`** — `@for_all_accounts` iterates all accounts or a single one; `@retry_kite_conn()` retries with `test_conn=True` from attempt 2; `@track_it()` logs execution time; `@lock_it_for_update` / `@update_lock` for thread safety
 - **`singleton_base.py`** — Thread-safe singleton via double-checked locking; `_instances` dict keyed by class
@@ -1117,7 +1117,7 @@ Action tokens (seeded): `place_order`, `modify_order`, `cancel_order`, `cancel_a
 All gated by `admin_guard`. Every mutating endpoint calls `REGISTRY.reload()` automatically.
 
 ### Deploy automation
-`deploy.sh` handles: git pull → pip install → npm build → restart API service → notify
+`deploy.sh` handles: git pull → pip install → npm build → restart API service → notify. Host-wide serialisation via single `/tmp/ramboq_deploy.lock` (was per-env) prevents concurrent prod + dev builds from race-condition npm conflicts. Prod + dev `npm run build` runs at `nice -n 19 ionice -c 3` so background builds never starve the API server's ability to respond to live requests.
 
 ### Logging
 - API uses `RAMBOQ_LOG_PREFIX=api_` env var for log file naming
@@ -1516,6 +1516,8 @@ Visual surface for the prod paper-trade engine, pairing with the simulator panel
 
 **API**: [`/api/charts/paper-status`](backend/api/routes/charts.py) — admin-guarded. Returns `{enabled, branch, open_order_count, open_order_details, captured_symbols, captured_underlyings}`. `enabled = (deploy_branch == 'main')` — the engine still exists on dev branches but no `tick_loop` is running, so no orders register and the page banner explains the gate.
 
+**Auto-reconcile** ([`backend/api/routes/orders.py::list_active_chases`](backend/api/routes/orders.py)) — when polling for active in-flight chase orders, the endpoint now auto-reconciles live OPEN `algo_orders` rows against the cached `/api/orders` snapshot (15s TTL). Helper `reconcile_algo_orders()` + `reconcile_single_order()` route through `get_broker(account)` (matches fix for `kill_chase` per commit 41133e16) so no stale `KiteConnection.cancel_order` no-op paths. Killed set marked via `mark_killed()` / `is_killed()` signal; chase_order's CANCELLED-status branch checks the flag and exits instead of re-placing. Dashboard chase panel + LogPanel Order grid both auto-clean after fills without requiring manual refresh.
+
 ---
 
 ## Derivatives analytics workspace (`/admin/derivatives`)
@@ -1616,6 +1618,8 @@ Both endpoints surface position-level expected value and R:R alongside the exist
 Live vs sim is **auto-detected** from `/api/simulator/status`. When a sim is active the page works off sim positions and the header carries a `SIMULATOR` badge; otherwise it works off live broker positions. Polled every 5 s.
 
 **Drafts** replace the old "hypothetical" mode — operator-typed positions appear as editable rows above the candidates list. Drafts whose symbol matches the selected underlying surface in Candidates and feed the strategy analytics like any other leg. The `+` button opens the chain picker (browse strikes for the chosen underlying, click +CE / +PE / a futures pill to drop a leg into Drafts).
+
+**Holdings ON/OFF toggle** — new slider-style switch in the OptionsPayoff legend (small label "Hold", filled sky-cyan when ON / outline when OFF). When OFF: eq (holding) legs hidden from Legs grid, dropped from TOTAL row, removed from chart overlay, excluded from candidatesActualPnl + candidatesDayPnl sums. Useful for equity-only payoff analysis (DIXON stock + NIFTY puts = pure derivative P&L without the stock's realized basis). Pre-fill from `localStorage` so operator's last choice persists. Backend: `_synthEquityOnlyStrategy()` builds zero-baseline payoff when holdings are toggled off; `_mergedPayoff` overlays the synthetics linearly. Perf: memoized by leg signature so chart re-render is free when holdings state unchanged.
 
 **Candidates panel** sits immediately below the payoff chart — replaces the older Per-leg breakdown card (the same backend data was shown twice, once with checkboxes, once read-only). Rows are scrollable horizontally + vertically (`.cand-scroll` wraps the grid; max-height 22rem; rows have a 720px min-width so the layout never breaks on narrow viewports). Toggling a checkbox rebuilds `legs[]` via `$effect`, which auto-triggers the strategy analytics endpoint — no Analyze button. Each Candidates row carries a chart-icon button (via the canonical `.row-chart-btn` global pattern) that opens `<ChartModal>` for that symbol.
 
@@ -2003,7 +2007,7 @@ Industry analogue: PagerDuty / Opsgenie / Sentry expose every alert-rule column 
 A single Svelte component handles every order op the platform needs (open / close / modify / repeat / cancel) across every instrument (EQ / FUT / OPT / commodities). One callsite per page; the ticket renders the right fields per instrument, owns its own validation, depth ladder, and submit lifecycle.
 
 **Files** ([`frontend/src/lib/order/`](frontend/src/lib/order/)):
-- `OrderTicket.svelte` — modal shell. Side toggle (BUY/SELL), qty + lot meta, order-type pills (MARKET / LIMIT / SL / SL-M), product pills (CNC/MIS for EQ; NRML/MIS for F&O — auto-filtered by parsed `kind`), conditional limit/trigger fields, mode toggle (DRAFT / PAPER / LIVE), validation messages, Cancel / Submit footer. Esc / overlay click / `×` to dismiss.
+- `OrderTicket.svelte` — modal shell. **Side toggle** (two-pill: ADD/CLOSE when position open, BUY/SELL otherwise; switches based on `currentQty`), qty + lot meta, order-type pills (MARKET / LIMIT / SL / SL-M), product pills (CNC/MIS for EQ; NRML/MIS for F&O — auto-filtered by parsed `kind`), conditional limit/trigger fields, mode toggle (DRAFT / PAPER / LIVE), validation messages, Cancel / Submit footer. Esc / overlay click / `×` to dismiss. On symbol change, resets `_lots=1` + clears `_lotsTouched` (new chain pick via +CE; skipped when `currentQty` set for close flows).
 - `OrderDepth.svelte` — top-5 bid/ask ladder. Polls `GET /api/quote?exchange=…&tradingsymbol=…` every 1.2 s while mounted. Falls back to em-dashes + a small "depth unavailable" hint when the broker call fails.
 
 **Three submit paths**:
@@ -2243,6 +2247,26 @@ Successful gated-write calls fire a single `_send_telegram(...)` after the audit
 ---
 
 ## Refactoring Notes
+
+### Canonical day P&L formula (SUZLON verified)
+
+Both `fetch_positions` and `fetch_holdings` ([`backend/shared/helpers/broker_apis.py`](backend/shared/helpers/broker_apis.py)) now use a decomposed intraday formula instead of naive `(LTP − close) × qty` MTM.
+
+**Positions** (intraday-added qty + overnight mix):
+```
+day_pnl = overnight_qty × (LTP − prev_close)
+        + (day_buy_qty × LTP − day_buy_value)
+        + (day_sell_value − day_sell_qty × LTP)
+```
+Verified against broker reports — pre-fix SUZLON overstated by ₹2,617 because the new lot's baseline was prev_close instead of today's actual entry. Closed-today rows FREEZE naturally — once `current_qty=0` the LTP coefficient drops out and the residual `−overnight×close + sv − bv` is static.
+
+**Holdings** (sold-today CNC):
+```
+day_change_val = broker.pnl − (close_price − cost) × opening_qty
+```
+Collapses to `(LTP − close) × opening_qty` when still held (same as the old formula). Correctly frozen at `(sale − close) × sold_qty + (LTP − close) × held_qty` when partially or fully sold. Pre-fix IFCI drifted from −₹77.3k → −₹150k as LTP fell after the sale; now stays at −₹77.3k. See commits b95ccd79 / 49b75cb4 / b47d851b / e5e836b8 / ba9cf39c.
+
+**MCX multiplier guard** (memory: `feedback_option_math_qty_vs_lots`) — Kite ships MCX `quantity` in lots; we multiply by `multiplier` (lot_size, ×10 for GOLDM, ×100 for CRUDEOIL) to convert to contracts before the formula runs. CRITICAL: the same multiplier is now applied to `overnight_quantity` / `day_buy_quantity` / `day_sell_quantity` because they land alongside per-contract `last_price` and `close_price` in the decomposition. Pre-fix the unit mismatch produced a ₹61k phantom on GOLDM146000CE alone, pushing the strip's P∆ to ₹1.11L on a ~₹50k day. **Always double-check unit consistency when touching qty math** — class of bug repeats easily.
 
 | Area | Note |
 |---|---|

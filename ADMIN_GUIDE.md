@@ -925,6 +925,8 @@ On a fresh server with no DB rows AND no `secrets.yaml::kite_accounts`, every br
 
 The `<OrderTicket>` modal in [`frontend/src/lib/order/`](frontend/src/lib/order/) is the single place every order op (open / close / modify / repeat / cancel) goes through, across every instrument (EQ / FUT / OPT). The ticket auto-detects the instrument kind from the symbol and only shows fields that apply (e.g. CNC/MIS for cash equities, NRML/MIS for F&O; trigger field only for SL / SL-M).
 
+**Side toggle** — two-pill format (ADD/CLOSE when you have an open position, BUY/SELL when you don't). Switches automatically based on the current qty in your holdings. Makes the intent clearer: you're either **closing** what you hold or **opening** a new position. Swapping symbols resets the qty to 1 lot (unless you have the position open — then it stays at current qty so a close-position flow doesn't accidentally change your close size).
+
 Three submit modes:
 
 - **DRAFT** — appends to the caller's local drafts array. No API hit. Used today by `/admin/derivatives` chain `+CE` / `+PE` clicks.
@@ -984,6 +986,10 @@ The day-to-day operator finds it here. For extended walkthroughs:
 | Alerts not reaching Telegram/email | Check `cap_in_<branch>.telegram` and `cap_in_<branch>.mail` in `backend_config.yaml`; dev may have these off by default |
 | Settings change didn't take effect | Most apply on the next agent tick (≤ 5 min). `logging.*` apply at Save. If you flipped an `execution.live.*` flag on dev, note that the branch gate forces every action back to paper regardless. |
 | Live agent fired but no real broker order | Check `/admin/settings` → **execution** section. If the relevant `execution.live.<action>` is `false`, the action wrote a paper `AlgoOrder` row instead. Telegram subject would have shown `[PAPER]`. |
+| Day P&L on positions looks wrong | Check against broker reports. Intraday P&L now uses decomposed formula: overnight_qty × (LTP − prev_close) + day_buy_qty × LTP − day_buy_value + day_sell_value − day_sell_qty × LTP. Verify each term separately. MCX: ensure multiplier is applied to all intraday qty fields. See CLAUDE.md "Canonical day P&L formula". |
+| Closed position's day P&L drifts after market close | **Fixed** in commit b47d851b. Holdings using `broker.pnl − (close−cost) × opening_qty` now freeze once sold. If still drifting, check deploy timestamp. |
+| Chase row reappeared after I clicked Kill | **Fixed** in commit 41133e16. Kill now routes through broker registry `get_broker(account)` instead of the stale `KiteConnection` singleton path. Auto-reconciliation on list poll also cleans up terminated orders. |
+| OrderTicket won't reset qty when I pick a new symbol | **Fixed** in commit 88e3a5f5. Symbol change now resets `_lots=1` + clears the "touched" flag. Exception: if you're in a close-position flow (`currentQty` set), qty stays at current so you don't accidentally close the wrong amount. |
 | "Invalid username or password" on sign-in | Ask the server admin to reset your password — there's no forgot-password flow yet |
 
 ---
