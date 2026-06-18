@@ -2855,7 +2855,14 @@
       row.ltp        = q.ltp        ?? row.ltp        ?? null;
       row.bid        = q.bid        ?? row.bid        ?? null;
       row.ask        = q.ask        ?? row.ask        ?? null;
-      if (row.change == null)     row.change     = q.change ?? null;
+      // Prev close + change/change_pct on the underlying anchor. The
+      // earlier shape only set ltp/bid/ask so the Prev Close + Day %
+      // columns rendered as "—" on every BHEL / BEL / NIFTY anchor
+      // row even though the broker quote carries the values. Operator:
+      // "why bhel, bel, prev close day %, day P&L in positions grid
+      // are not updated as underlyings in pulse"
+      if (row.close      == null) row.close      = q.close      ?? null;
+      if (row.change     == null) row.change     = q.change     ?? null;
       if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
     }
 
@@ -3713,12 +3720,17 @@
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
           const prev = Number(p.data?._prev_market_value);
-          if (!Number.isFinite(dpnl)) return null;
-          if (prev > 0) return (dpnl / prev) * 100;
-          // Fallback: per-symbol row with no close × qty (e.g. just-listed
-          // contract, watchlist-only) — use change_pct directly.
-          const cp = Number(p.data?.change_pct);
-          return Number.isFinite(cp) ? cp : null;
+          // Underlying anchor rows (BHEL / BEL / NIFTY) carry no qty
+          // and no day_pnl, but the underlying's change_pct IS on the
+          // row. Fall back to it so the Day % column reads the
+          // underlying's intraday move directly. Same fallback also
+          // covers just-listed contracts and watchlist-only rows where
+          // close × qty isn't computable.
+          if (!Number.isFinite(dpnl) || prev <= 0) {
+            const cp = Number(p.data?.change_pct);
+            return Number.isFinite(cp) ? cp : null;
+          }
+          return (dpnl / prev) * 100;
         },
         valueFormatter: pctFmtGrid,
         headerTooltip: 'Day P&L as % of yesterday’s market value (close × qty).' },
