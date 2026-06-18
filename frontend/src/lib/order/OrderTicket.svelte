@@ -1583,20 +1583,42 @@
            (side) and "how I'm doing it" (knobs) in one horizontal
            sweep. Locked when action='modify' (Kite doesn't support
            flipping side on a working order). -->
-      <!-- Side as a Select (operator: "buy and sell be drop down
-           like type in order ticket"). Frees up horizontal space
-           previously taken by the two-pill toggle. -->
+      <!-- Side as a two-pill toggle. Labels flip to ADD / CLOSE when
+           there's an existing position (sideLabels logic), BUY / SELL
+           otherwise. Operator: "make dropdown as a toggle between add
+           close or buy sell. use existing space for dropdown for this
+           without taking more space." Sized to match the surrounding
+           Selects (1.55 rem height, same knob flex slot) so the row
+           stays a single-pass horizontal sweep. -->
       <div class="ot-knob ot-knob-side">
-        <label class="ot-label" for="ot-side-sel">Side</label>
-        <Select id="ot-side-sel"
-                bind:value={_side}
-                disabled={action === 'modify'}
-                ariaLabel="Side"
-                onValueChange={(v) => onSideChange?.(/** @type {'BUY'|'SELL'} */ (v))}
-                options={[
-                  { value: 'BUY',  label: sideLabels.BUY  },
-                  { value: 'SELL', label: sideLabels.SELL },
-                ]} />
+        <label class="ot-label" for="ot-side-toggle">Side</label>
+        <div id="ot-side-toggle" class="ot-side-toggle-compact"
+             role="group" aria-label="Side">
+          <button type="button"
+                  class={'ot-side-btn ot-side-buy' + (_side === 'BUY' ? ' on' : '')}
+                  disabled={action === 'modify'}
+                  aria-pressed={_side === 'BUY'}
+                  title={sideLabels.BUY === 'ADD' ? 'Add to position (BUY)' :
+                         sideLabels.BUY === 'CLOSE' ? 'Close short position (BUY)' :
+                         'Buy'}
+                  onclick={() => { if (action !== 'modify') {
+                    _side = 'BUY'; onSideChange?.('BUY');
+                  } }}>
+            {sideLabels.BUY}
+          </button>
+          <button type="button"
+                  class={'ot-side-btn ot-side-sell' + (_side === 'SELL' ? ' on' : '')}
+                  disabled={action === 'modify'}
+                  aria-pressed={_side === 'SELL'}
+                  title={sideLabels.SELL === 'ADD' ? 'Add to position (SELL)' :
+                         sideLabels.SELL === 'CLOSE' ? 'Close long position (SELL)' :
+                         'Sell'}
+                  onclick={() => { if (action !== 'modify') {
+                    _side = 'SELL'; onSideChange?.('SELL');
+                  } }}>
+            {sideLabels.SELL}
+          </button>
+        </div>
       </div>
       <div class="ot-knob">
         <label class="ot-label" for="ot-type-sel">Type</label>
@@ -2404,26 +2426,34 @@
   .ot-side-toggle-compact {
     display: inline-flex;
     width: 100%;
-    height: 1.7rem;
+    height: 1.55rem;          /* match Select chip height */
+    min-height: 1.55rem;
     border-radius: 3px;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-sizing: border-box;
   }
   .ot-side-toggle-compact .ot-side-btn {
     flex: 1 1 0;
+    padding: 0;
     background: transparent;
     border: 0;
     color: #94a3b8;
     font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     font-weight: 800;
     letter-spacing: 0.04em;
+    line-height: 1;
     cursor: pointer;
     transition: background 0.12s, color 0.12s;
   }
+  .ot-side-toggle-compact .ot-side-btn:hover:not(.on):not([disabled]) {
+    background: rgba(255, 255, 255, 0.06);
+    color: #cbd5e1;
+  }
   .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: var(--algo-green-bg-strong); color: #4ade80; }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: var(--algo-red-bg-strong); color: #f87171; }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: var(--algo-red-bg-strong);   color: #f87171; }
   .ot-side-toggle-compact .ot-side-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* Mode row */
