@@ -32,7 +32,8 @@
    *   multiExpiry?: boolean,
    *   legSymbols?:  string[],
    *   spotAnchor?:  {contract:string, source:string, expiryISO?:string} | null,
-
+   *   includeHoldings?: boolean | null,
+   *   onToggleHoldings?: (() => void) | null,
    * }} */
   let {
     payoff = [],
@@ -75,6 +76,15 @@
     // rather than an index tick, this carries the contract symbol
     // and its expiry so the chip + roll warning can render.
     spotAnchor = /** @type {{contract:string, source:string, expiryISO?:string} | null} */ (null),
+    // Optional Holdings toggle — renders a switch-style icon at the
+    // right end of the chart legend when the caller wires both props.
+    // Lets the operator flip whether equity-holding legs contribute
+    // to the payoff curve + Greeks + Legs panel without leaving the
+    // chart's eye-line. Omit both to hide the toggle entirely
+    // (default — preserves the original legend layout for callers
+    // that don't expose holdings).
+    includeHoldings = /** @type {boolean | null} */ (null),
+    onToggleHoldings = /** @type {(() => void) | null} */ (null),
   } = $props();
 
   // Days until the anchor contract expires — used to decide whether
@@ -1189,6 +1199,26 @@
            operators who need to see which contract is driving the
            spot proxy; the legend-side duplicate was noise next to
            the SPOT readout. -->
+      {#if onToggleHoldings && includeHoldings !== null}
+        <!-- Holdings toggle — right-anchored switch in the legend so
+             the operator can flip equity-overlay on/off without
+             leaving the chart's eye-line. Slider style (track + thumb)
+             so the on/off state reads at a glance. Operator: "move
+             it to legend of pay off curve. make it look like truly
+             toggle icon." -->
+        <button type="button" class="legend-toggle"
+                class:legend-toggle-on={includeHoldings}
+                aria-pressed={includeHoldings}
+                title={includeHoldings
+                  ? 'Holdings ON — equity holdings included in Legs + overlaid on payoff. Click to hide.'
+                  : 'Holdings OFF — equity holdings hidden. Click to include.'}
+                onclick={() => onToggleHoldings && onToggleHoldings()}>
+          <span class="legend-toggle-label">Hold</span>
+          <span class="legend-toggle-track">
+            <span class="legend-toggle-thumb"></span>
+          </span>
+        </button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -1308,6 +1338,7 @@
     display: flex;
     gap: 0.9rem;
     flex-wrap: wrap;
+    align-items: center;
     /* Snug against the SVG bottom — the x-axis labels inside SVG
        provide enough breathing room above the legend. The earlier
        0.3rem margin + 0.4rem padding + border combination left a
@@ -1318,6 +1349,63 @@
     color: var(--algo-slate);
     margin-top: 0;
   }
+  /* Holdings toggle — right-anchored slider-style switch. Track is a
+     12-wide pill; thumb is a 7-tall circle that slides between left
+     (OFF) and right (ON). Sky-cyan palette matches the legend's
+     existing accent. `margin-left: auto` pushes it to the far right
+     so it never crowds the legend keys. */
+  .legend-toggle {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    padding: 0.1rem 0.25rem;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--algo-slate);
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.12s;
+  }
+  .legend-toggle:hover { color: #cfe3f8; }
+  .legend-toggle-label {
+    text-transform: uppercase;
+  }
+  .legend-toggle-track {
+    position: relative;
+    display: inline-block;
+    width: 1.5rem;
+    height: 0.7rem;
+    border-radius: 999px;
+    background: rgba(126, 151, 184, 0.22);
+    border: 1px solid rgba(126, 151, 184, 0.45);
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .legend-toggle-thumb {
+    position: absolute;
+    top: 50%;
+    left: 1px;
+    transform: translateY(-50%);
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 999px;
+    background: #cbd5e1;
+    transition: left 0.15s, background 0.15s;
+  }
+  .legend-toggle-on .legend-toggle-track {
+    background: rgba(125, 211, 252, 0.40);
+    border-color: rgba(125, 211, 252, 0.85);
+  }
+  .legend-toggle-on .legend-toggle-thumb {
+    left: calc(100% - 0.55rem - 1px);
+    background: #7dd3fc;
+  }
+  .legend-toggle-on .legend-toggle-label { color: #7dd3fc; }
   .legend-legs {
     display: inline-flex;
     align-items: baseline;

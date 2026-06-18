@@ -3055,18 +3055,6 @@
        account on the page — every leg landed via the chain routes
        through OrderTicket which needs an unambiguous routing
        account. -->
-  <div class="opt-trade" role="group" aria-label="Toggle holdings overlay">
-    <button type="button"
-            class="opt-toggle-pill"
-            class:opt-toggle-pill-on={_includeHoldings}
-            title={_includeHoldings
-              ? 'Holdings ON — equity holdings shown in Legs + overlaid on payoff. Click to hide.'
-              : 'Holdings OFF — equity holdings hidden from Legs + payoff. Click to show.'}
-            aria-pressed={_includeHoldings}
-            onclick={() => { _includeHoldings = !_includeHoldings; }}>
-      Hold
-    </button>
-  </div>
   <div class="opt-trade" role="group" aria-label="Open chain picker">
     <button type="button"
             class="opt-add-btn opt-add-btn-ochain"
@@ -3299,6 +3287,8 @@
               source: strategy.spot_source || 'futures',
               expiryISO: strategy.expiry ?? '' }
           : null}
+        includeHoldings={_includeHoldings}
+        onToggleHoldings={() => { _includeHoldings = !_includeHoldings; }}
         loading={loading}
         height={320} />
     </div>
@@ -4154,40 +4144,6 @@
     border-color: #fbbf24;
   }
 
-  /* Holdings toggle pill — same chrome as opt-add-btn but in the
-     sky-cyan palette so it reads as a state toggle (overlay on/off),
-     distinct from the amber action buttons. Compact: just "Hold"
-     label, filled when ON / outline when OFF. */
-  .opt-toggle-pill {
-    height: 1.55rem;
-    min-height: 1.55rem;
-    padding: 0 0.45rem;
-    flex: 0 0 auto;
-    align-self: flex-end;
-    border-radius: 3px;
-    border: 1px solid rgba(125,211,252,0.55);
-    background: rgba(125,211,252,0.10);
-    color: #7dd3fc;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 1;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.1s, border-color 0.1s, color 0.1s;
-  }
-  .opt-toggle-pill:hover {
-    background: rgba(125,211,252,0.22);
-    border-color: rgba(125,211,252,0.80);
-  }
-  .opt-toggle-pill-on {
-    background: #7dd3fc;
-    color: #0c1830;
-    border-color: #7dd3fc;
-  }
 
   /* Refresh button moved onto the chart's top-right corner — see
      OptionsPayoff.svelte for its styles. The picker bar now ends
