@@ -1723,6 +1723,17 @@ class OptionsController(Controller):
         if not data.legs:
             raise HTTPException(status_code=400, detail="legs is required")
 
+        # Pre-build a parse cache so every subsequent parse_tradingsymbol()
+        # call in this function is a dict lookup (O(1)) rather than a regex
+        # execution. For a 6-leg basket this avoids ~24-30 redundant regex
+        # runs — one per concern (quotes / expiries / scale-ratios / leg-
+        # details / payoff / greeks). Both successes (dict) and failures
+        # (None) are cached so .get() is a drop-in replacement everywhere.
+        parsed_by_sym: dict[str, Optional[dict]] = {
+            (leg.symbol or "").upper().strip(): parse_tradingsymbol((leg.symbol or "").upper().strip())
+            for leg in data.legs
+        }
+
         # ── 1. Resolve metadata + LTP per leg ─────────────────────────
         resolved_legs: list[dict] = []
         underlyings: set[str] = set()
@@ -1738,7 +1749,7 @@ class OptionsController(Controller):
             sym = (leg.symbol or "").upper().strip()
             if not sym:
                 raise HTTPException(status_code=400, detail="leg.symbol is required")
-            parsed = parse_tradingsymbol(sym)
+            parsed = parsed_by_sym.get(sym)
             if not parsed or parsed.get("kind") not in ("opt", "fut"):
                 raise HTTPException(
                     status_code=400,
@@ -1792,7 +1803,7 @@ class OptionsController(Controller):
         sorted_strikes = sorted({
             p["strike"]
             for l in data.legs
-            if (p := parse_tradingsymbol(l.symbol)) and "strike" in p
+            if (p := parsed_by_sym.get((l.symbol or "").upper().strip())) and "strike" in p
         })
         median_strike = (sorted_strikes[len(sorted_strikes) // 2]
                          if sorted_strikes else None)
@@ -1830,7 +1841,7 @@ class OptionsController(Controller):
         # charts on the front month).
         leg_expiries: list[tuple[str, str, str]] = []  # (expiry_iso, kind, symbol)
         for leg in data.legs:
-            p = parse_tradingsymbol(leg.symbol.upper().strip())
+            p = parsed_by_sym.get(leg.symbol.upper().strip())
             if not p:
                 continue
             kind = p.get("kind") or ""
@@ -1888,11 +1899,11 @@ class OptionsController(Controller):
         _is_commodity = is_mcx_underlying(underlying)
         _close_time = (23, 30) if _is_commodity else (15, 30)
         _option_T_list = [
-            days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))),
+            days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))),
                            close_time=_close_time) / 365.0
             for leg in data.legs
-            if parse_tradingsymbol(leg.symbol.upper().strip()) and
-               parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
+            if parsed_by_sym.get(leg.symbol.upper().strip()) and
+               parsed_by_sym.get(leg.symbol.upper().strip()).get("kind") == "opt"
         ]
         # eval_T — the payoff curve's "expiry" evaluation point (near leg).
         # Far legs are re-priced with remaining T via BS (not intrinsic).
@@ -1926,7 +1937,7 @@ class OptionsController(Controller):
             _month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
             for _leg in data.legs:
                 _lsym = _leg.symbol.upper().strip()
-                _lparsed = parse_tradingsymbol(_lsym)
+                _lparsed = parsed_by_sym.get(_lsym)
                 if not _lparsed:
                     continue
                 _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
@@ -1962,7 +1973,7 @@ class OptionsController(Controller):
             # Build per-leg scale_ratio.
             for _leg in data.legs:
                 _lsym = _leg.symbol.upper().strip()
-                _lparsed = parse_tradingsymbol(_lsym)
+                _lparsed = parsed_by_sym.get(_lsym)
                 if not _lparsed:
                     _leg_scale_ratios[_lsym] = 1.0
                     continue
@@ -1985,7 +1996,7 @@ class OptionsController(Controller):
         leg_details: list[dict] = []
         for leg in data.legs:
             sym = leg.symbol.upper().strip()
-            parsed = parse_tradingsymbol(sym)
+            parsed = parsed_by_sym.get(sym)
             # Operator-supplied expiry (instruments cache) wins over
             # the parser's last-Thursday inference.
             leg_expiry = date.fromisoformat(_leg_expiry_iso(leg, parsed))
@@ -2197,9 +2208,9 @@ class OptionsController(Controller):
         # GOLDM26JUN*CE = 2026-06-26) — without this guard a covered-call
         # basket reports the futures DTE instead of the option's.
         option_expiries = {
-            _leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))
+            _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
             for leg in data.legs
-            if (p := parse_tradingsymbol(leg.symbol.upper().strip())) and p.get("kind") == "opt"
+            if (p := parsed_by_sym.get(leg.symbol.upper().strip())) and p.get("kind") == "opt"
         }
         shared_expiry_iso = min(option_expiries) if option_expiries else min(expiries)
         shared_expiry     = date.fromisoformat(shared_expiry_iso)
@@ -2230,10 +2241,10 @@ class OptionsController(Controller):
             span_pct=span_pct_resolved,
             span_sigmas=float(data.span_sigmas) if data.span_pct is None else 0.0,
             multi_expiry=len({
-                _leg_expiry_iso(leg, parse_tradingsymbol(leg.symbol.upper().strip()))
+                _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
                 for leg in data.legs
-                if parse_tradingsymbol(leg.symbol.upper().strip())
-                   and parse_tradingsymbol(leg.symbol.upper().strip()).get("kind") == "opt"
+                if parsed_by_sym.get(leg.symbol.upper().strip())
+                   and parsed_by_sym.get(leg.symbol.upper().strip()).get("kind") == "opt"
             }) > 1,
             spot_anchor_contract=_spot_anchor,
             spot_source=_spot_src,
