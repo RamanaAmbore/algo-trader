@@ -1106,6 +1106,49 @@ async def _task_trail_stop() -> None:
                         AlgoOrder.attached_gtts_json.is_not(None),
                     ).limit(500)
                 )).scalars().all()
+            # Phase 3D #5 — batch broker.ltp per account. Pass 1 collects
+            # every (account, exchange:symbol) key referenced by a trailing
+            # SL entry, deduped per account. Pass 2 issues one batched
+            # broker.ltp([keys...]) per account. Pass 3 walks the rows
+            # again and uses the pre-fetched LTP map. Prior version did
+            # one ltp() call per entry — at 100 trailing rows that was
+            # 100 round-trips every poll cycle.
+            keys_by_account: dict[str, set[str]] = {}
+            for row in rows:
+                try:
+                    attached = _json.loads(row.attached_gtts_json or "[]")
+                except Exception:
+                    continue
+                if not isinstance(attached, list):
+                    continue
+                for entry in attached:
+                    if not (isinstance(entry, dict)
+                            and entry.get("kind") == "gtt"
+                            and entry.get("sl_trail_pct") not in (None, "")):
+                        continue
+                    account = str(entry.get("parent_account") or "")
+                    sym     = str(entry.get("parent_symbol") or "")
+                    exch    = str(entry.get("parent_exchange") or "NFO")
+                    if account and sym:
+                        keys_by_account.setdefault(account, set()).add(f"{exch}:{sym}")
+            ltp_map: dict[tuple[str, str], float] = {}
+            for account, key_set in keys_by_account.items():
+                try:
+                    broker = get_broker(account)
+                except Exception:
+                    continue
+                try:
+                    resp = await asyncio.to_thread(broker.ltp, list(key_set))
+                except Exception as e:
+                    logger.debug(f"[TRAIL] batched ltp failed for {account}: {e}")
+                    continue
+                for k in key_set:
+                    try:
+                        ltp_v = float((resp.get(k) or {}).get("last_price") or 0)
+                    except (TypeError, ValueError):
+                        ltp_v = 0.0
+                    if ltp_v > 0:
+                        ltp_map[(account, k)] = ltp_v
             for row in rows:
                 try:
                     attached = _json.loads(row.attached_gtts_json or "[]")
@@ -1139,11 +1182,7 @@ async def _task_trail_stop() -> None:
                     except Exception:
                         continue
                     key = f"{parent_exchange}:{parent_symbol}"
-                    try:
-                        ltp_resp = await asyncio.to_thread(broker.ltp, [key])
-                        ltp = float((ltp_resp.get(key) or {}).get("last_price") or 0)
-                    except Exception:
-                        continue
+                    ltp = ltp_map.get((account, key), 0.0)
                     if ltp <= 0:
                         continue
                     # Phase 3C #3 — persist watermark advances even when
