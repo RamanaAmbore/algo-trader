@@ -418,9 +418,14 @@ async def _task_performance(state: dict) -> None:
             ist_display = timestamp_display()
             perf_key    = get_nearest_time(interval=interval)
 
-            # Full portfolio summaries (no segment filtering)
-            all_sum_h = _summarise_holdings(df_holdings, sum_holdings, None)
-            all_sum_p = _summarise_positions(df_positions)
+            # Full portfolio summaries — _fetch_holdings_direct /
+            # _fetch_positions_direct already return (raw, summary) where
+            # summary IS the per-account + TOTAL groupby aggregate with the
+            # same columns that _summarise_holdings/positions would produce
+            # from the unfiltered raw frame. Reuse them directly instead of
+            # recomputing the same groupby.
+            all_sum_h = sum_holdings
+            all_sum_p = sum_positions
 
             # Intraday equity-curve — one point per tick during market hours.
             # Skipped while the simulator is active so fabricated P&L never
