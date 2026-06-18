@@ -81,7 +81,13 @@
 
   function _resolve_and_close(/** @type {boolean} */ ok) {
     const isPrompt = _inputType !== null;
-    const r = _resolve;
+    // svelte-check widens _resolve into the union `((boolean)=>void) |
+    // ((string|null)=>void) | null` whose narrowed call-signature
+    // becomes `(never)=>void` — so directly calling `r(ok)` or `r(v)`
+    // fails type-check even though we know exactly which arm is live.
+    // Cast through `any` here is the cleanest fix; the runtime branch
+    // above already picks the correct payload for the resolver.
+    const r = /** @type {any} */ (_resolve);
     _resolve = null;
     _open = false;
     if (isPrompt) {

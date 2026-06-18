@@ -347,7 +347,7 @@
 <!-- Tab row -->
 <div class="flex gap-1 mb-3">
   {#each /** @type {['condition'|'notify'|'action', string][]} */([['condition', 'Condition'], ['notify', 'Notify'], ['action', 'Action']]) as [key, label]}
-    <button onclick={() => { activeTab = key; expandedId = null; }}
+    <button onclick={() => { activeTab = /** @type {'condition'|'notify'|'action'} */ (key); expandedId = null; }}
       class="px-3 py-1 text-xs font-medium border-b-2 transition-colors
         {activeTab === key
           ? 'border-[#fbbf24] text-[#fbbf24]'
