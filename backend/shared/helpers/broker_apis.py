@@ -160,10 +160,46 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     _cls = pd.to_numeric(df_positions['close_price'],   errors='coerce').fillna(0)
     _qty = pd.to_numeric(df_positions['quantity'],      errors='coerce').fillna(0)
     _pnl_calc = (_ltp - _avg) * _qty
-    _dcv_calc = (_ltp - _cls) * _qty
+    # Day P&L — the CORRECT formula that handles intraday-added
+    # positions. The naive `(LTP - close_price) × qty` treats every
+    # share as if held since yesterday's close, which over/understates
+    # by the gap between prev_close and today's entry price for any
+    # position opened TODAY.
+    #
+    # Operator: "delta p is not correct for newly added position as
+    # it might be calculating incorrect price for calculation."
+    # Verified against SUZLON 26JUN60CE: overnight=-9025, today sold
+    # 9025 more at 1.21, LTP=1.03, prev_close=1.5. Naive formula
+    # gave ₹8484, correct = ₹4242 (overnight) + ₹1624 (today's trade)
+    # = ₹5866. Over by ₹2617 — phantom gain between prev_close 1.5
+    # and today's entry 1.21 on the new lot.
+    #
+    # Correct decomposition:
+    #   day_pnl = overnight_qty × (LTP − prev_close)        # carried
+    #           + day_buy_qty   × LTP − day_buy_value       # bought today
+    #           + day_sell_value − day_sell_qty × LTP       # sold today
+    #
+    # Falls back to the naive formula only when the intraday fields
+    # are missing entirely (adapter doesn't ship them — Dhan v2
+    # behaved this way until recently).
+    _intraday_fields = {'overnight_quantity', 'day_buy_quantity',
+                        'day_sell_quantity', 'day_buy_value', 'day_sell_value'}
+    if _intraday_fields.issubset(df_positions.columns):
+        _oq = pd.to_numeric(df_positions['overnight_quantity'], errors='coerce').fillna(0)
+        _bq = pd.to_numeric(df_positions['day_buy_quantity'],   errors='coerce').fillna(0)
+        _sq = pd.to_numeric(df_positions['day_sell_quantity'],  errors='coerce').fillna(0)
+        _bv = pd.to_numeric(df_positions['day_buy_value'],      errors='coerce').fillna(0)
+        _sv = pd.to_numeric(df_positions['day_sell_value'],     errors='coerce').fillna(0)
+        _dcv_calc = (
+            _oq * (_ltp - _cls)
+            + (_bq * _ltp - _bv)
+            + (_sv - _sq * _ltp)
+        )
+    else:
+        # Pre-intraday-fields fallback: assume everything is overnight.
+        _dcv_calc = (_ltp - _cls) * _qty
     # Trust broker pnl when present (not null / not NaN). Fall back
-    # to (LTP - avg) × qty only on missing values. Same posture for
-    # day_change_val.
+    # to (LTP - avg) × qty only on missing values.
     if 'pnl' in df_positions.columns:
         _broker_pnl = pd.to_numeric(df_positions['pnl'], errors='coerce')
         df_positions['pnl'] = _broker_pnl.where(_broker_pnl.notna(), _pnl_calc)
@@ -173,7 +209,16 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
         # phantom values during pre-open warm-up).
         _pnl_valid = (_ltp > 0) & (_avg > 0)
         df_positions['pnl'] = _pnl_calc.where(_pnl_valid, 0.0)
-    if 'day_change_val' in df_positions.columns:
+    # day_change_val — prefer Kite's `m2m` if shipped (it's the
+    # canonical day P&L per Kite docs and already accounts for
+    # intraday adds). Then prefer adapter-shipped day_change_val.
+    # Then the corrected intraday-aware formula above.
+    if 'm2m' in df_positions.columns:
+        _broker_m2m = pd.to_numeric(df_positions['m2m'], errors='coerce')
+        df_positions['day_change_val'] = _broker_m2m.where(
+            _broker_m2m.notna(), _dcv_calc
+        )
+    elif 'day_change_val' in df_positions.columns:
         _broker_dcv = pd.to_numeric(df_positions['day_change_val'], errors='coerce')
         df_positions['day_change_val'] = _broker_dcv.where(
             _broker_dcv.notna(), _dcv_calc
