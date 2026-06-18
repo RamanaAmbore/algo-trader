@@ -662,7 +662,9 @@ So real alerts and simulated alerts are never in the same bucket.
 
 ## Proxy hedges — when you hold GOLDBEES against GOLD options
 
-The `/admin/derivatives` Underlying picker treats your **ETF holdings** and **individual stocks** as PROXY hedges for the option underlyings they don't directly correspond to. Pick GOLD → GOLDBEES shows up in Legs with auto-converted gram-equivalent and GOLD lot count. Pick NIFTY → any held stock with a β regression on file shows up beta-scaled. Nothing to type or maintain.
+> **Major capability.** This is operator-grade beta hedging analytics — the kind of feature Bloomberg PRM, IBKR Portfolio Margin and OptionVue ship for institutional desks. No Indian retail platform offers it today. The plumbing is fully automated: add a `(proxy, target)` row in `/admin/settings → hedge_proxies`, optionally hit **Compute β**, and the derivatives page does the rest.
+
+The `/admin/derivatives` Underlying picker treats your **ETF holdings** and **individual stocks** as PROXY hedges for the option underlyings they don't directly correspond to. Pick GOLDM → GOLDBEES shows up in Legs with auto-converted gram-equivalent and GOLDM lot count. Pick NIFTY → any held stock with a β regression on file shows up beta-scaled. Nothing to type or maintain.
 
 ### The default pairs (seeded on first boot)
 
@@ -701,7 +703,7 @@ For **stock-vs-index** hedges (RELIANCE → NIFTY etc.) hit **Compute β** on th
 
 ### Auto-recompute schedule
 
-A background task runs daily at **02:30 IST**. For each active row whose last regression is older than `hedge_proxy.regression_max_age_days` (default 7), it runs the same regression. Failed pairs (broken symbol etc.) get stamped so they don't retry every day — fix or delete the row.
+A background task runs daily at **02:30 IST**. For each active row whose last regression is older than `hedge_proxies.regression_max_age_days` (default 7), it runs the same regression. Failed pairs (broken symbol etc.) get stamped so they don't retry every day — fix or delete the row.
 
 Knobs in `/admin/settings → Hedge proxy`:
 - `regression_enabled` (True) — kill-switch

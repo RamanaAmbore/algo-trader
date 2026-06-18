@@ -282,7 +282,9 @@ Netted pairs on MCX carry shared colors (N1 / N2 / … labels) — a teal row an
 
 ## Proxy hedges — when one instrument can hedge another
 
-If you hold an **ETF** that tracks a commodity or index (GOLDBEES tracks gold, NIFTYBEES tracks the NIFTY index), you don't need to buy the actual underlying to be exposed to it. The ETF's NAV moves with the underlying spot price. When you pick the underlying on `/admin/derivatives` (say GOLD), your GOLDBEES holding shows up in Legs as a PROXY hedge — automatically converted to gram-equivalent and then to GOLD option lots.
+**This is a major capability of the terminal**, and one no Indian retail trading platform (Sensibull, Streak, Opstra) currently offers. Institutional desks pay for it on Bloomberg PRM or IBKR Portfolio Margin; here it's a four-column DB row and a "Compute β" button.
+
+If you hold an **ETF** that tracks a commodity or index (GOLDBEES tracks gold, NIFTYBEES tracks the NIFTY index), you don't need to buy the actual underlying to be exposed to it. The ETF's NAV moves with the underlying spot price. When you pick the underlying on `/admin/derivatives` (say GOLDM), your GOLDBEES holding shows up in Legs as a PROXY hedge — automatically converted to gram-equivalent and then to GOLDM option lots.
 
 The math is fully derived from live broker prices: market value of your GOLDBEES ÷ current GOLD spot = grams-equivalent ÷ lot size = GOLD lots. The PROXY chip surfaces all three numbers so you can sanity-check.
 

@@ -43,6 +43,26 @@ The coordinator owns synthesis: never delegate "decide what to do based on your 
 - **Broker data** comes from Zerodha Kite API; no DB storage for market data
 - **Auth**: JWT (HS256) with PBKDF2-SHA256 password hashing; users in SQLAlchemy DB; stub mode when DB is empty
 
+### Current major capabilities (2026-06)
+
+| Surface | Status |
+|---|---|
+| Multi-mode execution ladder (sim → paper → shadow → live, with replay) | ✅ shipped |
+| Declarative agent grammar + 17 seeded agents | ✅ shipped |
+| Derivatives analytics (multi-leg payoff, σ-driven span, EV, R:R) | ✅ shipped |
+| **Proxy hedges — pair table + auto β regression** | ✅ shipped (2026-06-17), see "Proxy hedges" section below |
+| Multi-broker abstraction (Kite + Dhan + Groww), IP-binding, multi-account basket orders | ✅ shipped |
+| MCP server + Lab page (chat-driven research / agent authoring) | ✅ shipped |
+
+### Next focus area: order placement to various brokers
+
+Multi-broker order placement is the next major capability. Current state:
+- Basket-order endpoint exists, dispatches per-account in parallel via asyncio.gather (Kite-only path matured)
+- Dhan + Groww adapters have placeholder `place_order` methods — need full wiring to match Kite's variety/exchange/product/order_type/trigger_price coverage
+- OrderTicket already routes through a unified `/api/orders/ticket` endpoint that branches by mode; the broker dispatch beneath needs the per-vendor implementations completed and tested side-by-side
+- Confirmation path: post-fill webhook handling already mature for Kite postbacks; Dhan + Groww postback parsing needs equivalents
+- See `backend/shared/brokers/{kite,dhan,groww}.py` for adapter shape; `backend/api/routes/orders.py` for the route layer
+
 ---
 
 ## Deployment Architecture
@@ -1637,6 +1657,8 @@ Polling: strategy analytics auto-refreshes whenever the leg set changes (an `$ef
 
 ## Proxy hedges — held instrument hedges a different option underlying
 
+**Major capability.** No Indian retail platform (Sensibull / Streak / Opstra) ships this; institutional tools (Bloomberg PRM / IBKR Portfolio Margin / OptionVue) charge thousands per year for their version. The implementation here is operator-grade: edit a single 4-column row in `/admin/settings → hedge_proxies`, click Compute β, and the page auto-converts your held GOLDBEES into GOLDM-lot-equivalent exposure with no operator-typed factor anywhere.
+
 DB-backed cross-reference between holdings (GOLDBEES, SILVERBEES, NIFTYBEES, BANKBEES, individual stocks, …) and the option roots they can hedge against (GOLD, SILVER, NIFTY, BANKNIFTY, etc.). When the operator picks one of those underlyings on `/admin/derivatives`, matching proxy holdings surface as eq legs in the Legs panel with auto-derived conversion math.
 
 ### Data model
@@ -1693,12 +1715,12 @@ Proxy symbols default to NSE (works for stock proxies + ETFs that list on NSE). 
 
 ### Stage 4 — daily auto-recompute
 
-[`_task_hedge_proxy_regression`](backend/api/background.py) fires daily at 02:30 IST. For every active row whose `regression_at` is older than `hedge_proxy.regression_max_age_days` (default 7), it runs the same regression as the manual endpoint and writes back. Failed regressions still stamp `regression_at` so a broken pair doesn't retry daily. 1s pacing per row to stay within Kite's 3 req/s historical budget.
+[`_task_hedge_proxy_regression`](backend/api/background.py) fires daily at 02:30 IST. For every active row whose `regression_at` is older than `hedge_proxies.regression_max_age_days` (default 7), it runs the same regression as the manual endpoint and writes back. Failed regressions still stamp `regression_at` so a broken pair doesn't retry daily. 1s pacing per row to stay within Kite's 3 req/s historical budget.
 
 Settings:
-- `hedge_proxy.regression_enabled` (bool, True) — kill-switch
-- `hedge_proxy.regression_window_days` (int, 60) — daily candles in the regression
-- `hedge_proxy.regression_max_age_days` (int, 7) — skip freshness window
+- `hedge_proxies.regression_enabled` (bool, True) — kill-switch
+- `hedge_proxies.regression_window_days` (int, 60) — daily candles in the regression
+- `hedge_proxies.regression_max_age_days` (int, 7) — skip freshness window
 
 ### UI surfaces
 
