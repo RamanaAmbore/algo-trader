@@ -52,6 +52,25 @@ SYSTEM_TEMPLATES: list[dict] = [
         "sl_pct":             20.0,
         "wing_premium_pct":   None,
         "wing_strike_offset": None,
+        "tp_order_type":      "LIMIT",
+        "is_default":         False,
+        "is_system":          True,
+    },
+    {
+        "slug":               "default-long-option",
+        "name":               "Default Long Option",
+        "description":        "Long option entry — TP at +80% premium gain (e.g. paid "
+                              "₹100, exits when premium hits ₹180). TP fires as a "
+                              "MARKET order so it lands in fast-moving expiry markets "
+                              "even when the book thins out. No SL by default — "
+                              "operators relying on max-loss of premium-paid don't "
+                              "need one.",
+        "applies_to":         "buy_any",
+        "tp_pct":             80.0,
+        "sl_pct":             None,
+        "wing_premium_pct":   None,
+        "wing_strike_offset": None,
+        "tp_order_type":      "MARKET",
         "is_default":         True,
         "is_system":          True,
     },
@@ -66,6 +85,7 @@ SYSTEM_TEMPLATES: list[dict] = [
         "sl_pct":             20.0,
         "wing_premium_pct":   None,
         "wing_strike_offset": None,
+        "tp_order_type":      "LIMIT",
         "is_default":         False,
         "is_system":          True,
     },
@@ -83,6 +103,7 @@ SYSTEM_TEMPLATES: list[dict] = [
         "sl_pct":             None,
         "wing_premium_pct":   None,
         "wing_strike_offset": 500,
+        "tp_order_type":      "LIMIT",
         "is_default":         True,
         "is_system":          True,
     },
@@ -96,6 +117,7 @@ SYSTEM_TEMPLATES: list[dict] = [
         "sl_pct":             None,
         "wing_premium_pct":   None,
         "wing_strike_offset": None,
+        "tp_order_type":      "LIMIT",
         "is_default":         False,
         "is_system":          True,
     },
@@ -124,6 +146,27 @@ async def seed_templates() -> None:
         )
         by_slug = {row.slug: row for row in existing.scalars().all()}
 
+        # When a fresh system row claims is_default=True for an
+        # applies_to scope (e.g. the new `default-long-option` for
+        # buy_any), demote any existing is_default=True system row in
+        # that scope so the seeder enforces "one default per scope".
+        # Skips on already-seeded rows so the operator's `is_default`
+        # tuning on existing templates is preserved.
+        for spec in SYSTEM_TEMPLATES:
+            if not spec.get("is_default"):
+                continue
+            if spec["slug"] in by_slug:
+                continue   # row already exists, leave operator's pick alone
+            scope = spec["applies_to"]
+            for existing in by_slug.values():
+                if existing.applies_to == scope and existing.is_default:
+                    existing.is_default = False
+                    logger.info(
+                        f"Order template {existing.slug!r} demoted from "
+                        f"is_default — superseded by {spec['slug']!r} in "
+                        f"scope {scope!r}"
+                    )
+
         inserted = updated = 0
         for spec in SYSTEM_TEMPLATES:
             row = by_slug.get(spec["slug"])
@@ -137,6 +180,7 @@ async def seed_templates() -> None:
                     sl_pct=spec["sl_pct"],
                     wing_premium_pct=spec["wing_premium_pct"],
                     wing_strike_offset=spec["wing_strike_offset"],
+                    tp_order_type=spec.get("tp_order_type", "LIMIT"),
                     is_default=spec["is_default"],
                     is_system=True,
                     is_active=True,
@@ -146,6 +190,13 @@ async def seed_templates() -> None:
                 # Refresh mutable metadata; preserve numeric tuning.
                 for f in _MUTABLE_FIELDS:
                     setattr(row, f, spec[f])
+                # tp_order_type is mutable AND has an operator-tunable
+                # value, so we treat it like the numeric fields: only
+                # set it on initial seed, never overwrite the operator's
+                # edit. The exception is the new default-long-option
+                # row which we just shipped — it doesn't exist in the
+                # DB pre-migration so the "insert" branch above writes
+                # tp_order_type=MARKET as intended.
                 updated += 1
         await s.commit()
         logger.info(

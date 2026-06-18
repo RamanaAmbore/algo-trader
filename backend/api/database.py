@@ -255,6 +255,12 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_template_id "
             "ON algo_orders (template_id)",
             "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS attached_gtts_json TEXT",
+            # Phase 1A — tp_order_type on OrderTemplate. Defaults to
+            # 'LIMIT' so every existing row keeps prior behaviour on
+            # this deploy; the seeder only writes 'MARKET' to the new
+            # default-long-option template (Phase 1B+).
+            "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_order_type "
+            "VARCHAR(8) NOT NULL DEFAULT 'LIMIT'",
         ):
             await conn.execute(text(stmt))
 

@@ -599,7 +599,10 @@
   function _summariseTemplate(t) {
     if (!t) return '';
     const parts = [];
-    if (t.tp_pct != null) parts.push(`TP +${t.tp_pct}%`);
+    if (t.tp_pct != null) {
+      const mkt = t.tp_order_type === 'MARKET' ? ' MKT' : '';
+      parts.push(`TP +${t.tp_pct}%${mkt}`);
+    }
     if (t.sl_pct != null) parts.push(`SL -${t.sl_pct}%`);
     if (t.wing_strike_offset != null) parts.push(`Wing +${t.wing_strike_offset}`);
     if (t.wing_premium_pct != null) parts.push(`Wing ${t.wing_premium_pct}% prem`);

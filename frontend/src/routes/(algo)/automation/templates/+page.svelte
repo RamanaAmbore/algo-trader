@@ -51,6 +51,7 @@
   let formSlPct = $state('');
   let formWingPremPct = $state('');
   let formWingStrikeOffset = $state('');
+  let formTpOrderType = $state(/** @type {'LIMIT'|'MARKET'} */ ('LIMIT'));
   let formIsDefault = $state(false);
   let formIsActive = $state(true);
   let formError = $state('');
@@ -105,6 +106,7 @@
     formSlPct = '';
     formWingPremPct = '';
     formWingStrikeOffset = '';
+    formTpOrderType = 'LIMIT';
     formIsDefault = false;
     formIsActive = true;
     formError = '';
@@ -121,6 +123,7 @@
     formSlPct = t.sl_pct != null ? String(t.sl_pct) : '';
     formWingPremPct = t.wing_premium_pct != null ? String(t.wing_premium_pct) : '';
     formWingStrikeOffset = t.wing_strike_offset != null ? String(t.wing_strike_offset) : '';
+    formTpOrderType = /** @type {'LIMIT'|'MARKET'} */ (t.tp_order_type || 'LIMIT');
     formIsDefault = !!t.is_default;
     formIsActive = !!t.is_active;
     formError = '';
@@ -154,6 +157,7 @@
       sl_pct:             _parseNumOrNull(formSlPct),
       wing_premium_pct:   _parseNumOrNull(formWingPremPct),
       wing_strike_offset: _parseNumOrNull(formWingStrikeOffset),
+      tp_order_type:      formTpOrderType,
       is_default:         formIsDefault,
       is_active:          formIsActive,
     };
@@ -303,7 +307,7 @@
           <span class="tpl-applies">{appliesLabel(t.applies_to)}</span>
 
           <span class="tpl-numerics">
-            <span class="tpl-num tpl-num-tp">TP {fmtPct(t.tp_pct)}</span>
+            <span class="tpl-num tpl-num-tp">TP {fmtPct(t.tp_pct)}{t.tp_pct != null && t.tp_order_type === 'MARKET' ? ' MKT' : ''}</span>
             <span class="tpl-num tpl-num-sl">SL {fmtPct(t.sl_pct)}</span>
             {#if t.wing_strike_offset != null}
               <span class="tpl-num tpl-num-wing">Wing {fmtOffset(t.wing_strike_offset)} strike</span>
@@ -364,6 +368,15 @@
                   <span>Wing strike offset (alternative)</span>
                   <input type="number" step="50" bind:value={formWingStrikeOffset}
                          placeholder="e.g. 500" class="tpl-input" />
+                </label>
+                <label class="tpl-field">
+                  <span>TP order type</span>
+                  <Select
+                    bind:value={formTpOrderType}
+                    options={[
+                      { value: 'LIMIT',  label: 'LIMIT — quote at trigger price (slip-protected)' },
+                      { value: 'MARKET', label: 'MARKET — take book at trigger (sure fill, no slip cap)' },
+                    ]} />
                 </label>
                 <label class="tpl-checkbox">
                   <input type="checkbox" bind:checked={formIsDefault} />

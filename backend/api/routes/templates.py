@@ -39,6 +39,9 @@ logger = get_logger(__name__)
 _APPLIES_TO_CHOICES = {"buy_any", "sell_option", "both"}
 
 
+_TP_ORDER_TYPE_CHOICES = {"LIMIT", "MARKET"}
+
+
 def _to_out(row: OrderTemplate) -> OrderTemplateOut:
     return OrderTemplateOut(
         id=row.id,
@@ -51,10 +54,19 @@ def _to_out(row: OrderTemplate) -> OrderTemplateOut:
         wing_premium_pct=(float(row.wing_premium_pct)
                           if row.wing_premium_pct is not None else None),
         wing_strike_offset=row.wing_strike_offset,
+        tp_order_type=(row.tp_order_type or "LIMIT"),
         is_default=row.is_default,
         is_system=row.is_system,
         is_active=row.is_active,
     )
+
+
+def _validate_tp_order_type(value: str | None) -> None:
+    if value is not None and value not in _TP_ORDER_TYPE_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_order_type must be one of {sorted(_TP_ORDER_TYPE_CHOICES)}",
+        )
 
 
 def _validate_applies_to(value: str) -> None:
@@ -107,6 +119,7 @@ class OrderTemplateController(Controller):
                     status_code=409,
                     detail=f"template '{data.name}' already exists",
                 )
+            _validate_tp_order_type(data.tp_order_type)
             row = OrderTemplate(
                 name=data.name,
                 description=data.description or "",
@@ -115,6 +128,7 @@ class OrderTemplateController(Controller):
                 sl_pct=data.sl_pct,
                 wing_premium_pct=data.wing_premium_pct,
                 wing_strike_offset=data.wing_strike_offset,
+                tp_order_type=(data.tp_order_type or "LIMIT"),
                 is_default=data.is_default,
                 is_system=False,
                 is_active=data.is_active,
@@ -139,6 +153,8 @@ class OrderTemplateController(Controller):
                 )
             if data.applies_to is not None:
                 _validate_applies_to(data.applies_to)
+            if data.tp_order_type is not None:
+                _validate_tp_order_type(data.tp_order_type)
             # Apply only set fields. msgspec sentinels are None for
             # unset; we accept None as "leave unchanged" rather than
             # "clear" because the form sends every field every time.
@@ -146,6 +162,7 @@ class OrderTemplateController(Controller):
                 "name", "description", "applies_to",
                 "tp_pct", "sl_pct",
                 "wing_premium_pct", "wing_strike_offset",
+                "tp_order_type",
                 "is_default", "is_active",
             ):
                 v = getattr(data, field, None)

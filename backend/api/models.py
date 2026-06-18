@@ -854,6 +854,17 @@ class OrderTemplate(Base):
     # +500 for CE, -500 for PE). One of the two; never both.
     wing_premium_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
     wing_strike_offset: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    # Order type fired by the TP GTT when its trigger crosses. Default
+    # 'LIMIT' matches the historical behaviour. 'MARKET' lets operators
+    # express "take what the book gives me at +X% — don't risk a missed
+    # fill". NinjaTrader / IBKR Bracket Order both let the operator
+    # pick this; ours mirrored that. SL legs stay LIMIT — a MARKET SL
+    # is functionally a stop-market which we surface via a separate
+    # field if needed in Phase 3.
+    tp_order_type: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="LIMIT",
+        server_default="LIMIT",
+    )
     # Marks the operator's default pick — surfaced in OrderTicket as the
     # pre-selected option. Only one default per applies_to scope; the
     # seeder enforces a single is_default=True row for each scope.

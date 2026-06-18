@@ -222,6 +222,7 @@ class OrderTemplateOut(msgspec.Struct):
     sl_pct:              float | None = None
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
+    tp_order_type:       str = "LIMIT"   # 'LIMIT' | 'MARKET'
     is_default:          bool = False
     is_system:           bool = False
     is_active:           bool = True
@@ -235,6 +236,7 @@ class OrderTemplateCreate(msgspec.Struct):
     sl_pct:              float | None = None
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
+    tp_order_type:       str = "LIMIT"
     is_default:          bool = False
     is_active:           bool = True
 
@@ -251,6 +253,7 @@ class OrderTemplatePatch(msgspec.Struct):
     sl_pct:              float | None = None
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
+    tp_order_type:       str | None = None
     is_default:          bool | None = None
     is_active:           bool | None = None
 

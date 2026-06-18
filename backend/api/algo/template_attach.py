@@ -232,6 +232,16 @@ def resolve_template_plan(
     except (TypeError, ValueError):
         wing_strike_offset = None
 
+    # tp_order_type — LIMIT (default) or MARKET. Override > template >
+    # 'LIMIT'. SL legs always stay LIMIT (a MARKET SL = stop-market,
+    # different semantics; would be a separate `sl_order_type` field).
+    _tp_ot_raw = overrides.get("tp_order_type")
+    if _tp_ot_raw is None:
+        _tp_ot_raw = template.get("tp_order_type")
+    tp_order_type = str(_tp_ot_raw).upper() if _tp_ot_raw else "LIMIT"
+    if tp_order_type not in ("LIMIT", "MARKET"):
+        tp_order_type = "LIMIT"
+
     plan = TemplatePlan(
         template_id=template.get("id"),
         template_name=template.get("name") or "(unnamed)",
@@ -258,8 +268,8 @@ def resolve_template_plan(
                 trigger_type="two-leg",
                 trigger_values=[tp_trig, sl_trig],
                 orders=[
-                    _leg(exit_side, parent_qty, tp_trig, parent_product),
-                    _leg(exit_side, parent_qty, sl_trig, parent_product),
+                    _leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type),
+                    _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT"),
                 ],
                 label="TP+SL",
             ))
@@ -269,13 +279,13 @@ def resolve_template_plan(
             plan.gtts.append(GttSpec(
                 trigger_type="single",
                 trigger_values=[tp_trig],
-                orders=[_leg(exit_side, parent_qty, tp_trig, parent_product)],
+                orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type)],
                 label="TP",
             ))
             plan.gtts.append(GttSpec(
                 trigger_type="single",
                 trigger_values=[sl_trig],
-                orders=[_leg(exit_side, parent_qty, sl_trig, parent_product)],
+                orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
                 label="SL",
             ))
             plan.notes.append(
@@ -286,14 +296,14 @@ def resolve_template_plan(
         plan.gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[tp_trig],
-            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product)],
+            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type)],
             label="TP",
         ))
     elif sl_trig is not None:
         plan.gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[sl_trig],
-            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product)],
+            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
             label="SL",
         ))
 
@@ -330,14 +340,22 @@ def resolve_template_plan(
     return plan
 
 
-def _leg(side: str, qty: int, price: float, product: str) -> dict:
+def _leg(side: str, qty: int, price: float, product: str,
+         order_type: str = "LIMIT") -> dict:
     """Compose a GTT leg dict — same shape SimGttBook + KiteBroker.place_gtt
-    expect."""
+    expect.
+
+    `order_type='MARKET'` fires the GTT child as a market order at
+    trigger time. Kite still expects a numeric `price` field in the
+    leg dict (the SDK doesn't accept None), so MARKET legs pass the
+    trigger value as a placeholder — the broker ignores it and fills
+    at LTP. Same convention SimGttBook follows.
+    """
     return {
         "transaction_type": side,
         "quantity":         int(qty),
         "price":            float(price),
-        "order_type":       "LIMIT",
+        "order_type":       order_type,
         "product":          product,
     }
 
@@ -533,6 +551,7 @@ async def load_template_for_slug_or_id(
         "sl_pct":             float(row.sl_pct)            if row.sl_pct is not None else None,
         "wing_premium_pct":   float(row.wing_premium_pct)  if row.wing_premium_pct is not None else None,
         "wing_strike_offset": int(row.wing_strike_offset)  if row.wing_strike_offset is not None else None,
+        "tp_order_type":      (row.tp_order_type or "LIMIT"),
     }
 
 
@@ -551,6 +570,7 @@ def build_adhoc_template(overrides: dict) -> dict:
         "sl_pct":             overrides.get("sl_pct"),
         "wing_premium_pct":   overrides.get("wing_premium_pct"),
         "wing_strike_offset": overrides.get("wing_strike_offset"),
+        "tp_order_type":      overrides.get("tp_order_type", "LIMIT"),
     }
 
 
