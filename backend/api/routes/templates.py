@@ -36,7 +36,7 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
-_APPLIES_TO_CHOICES = {"buy_any", "sell_option", "both"}
+_APPLIES_TO_CHOICES = {"buy_any", "sell_option", "sell_any", "both"}
 
 
 _TP_ORDER_TYPE_CHOICES = {"LIMIT", "MARKET"}
@@ -158,6 +158,23 @@ def _validate_applies_to(value: str) -> None:
         )
 
 
+async def _demote_existing_default(s, applies_to: str, exclude_id: int | None) -> None:
+    """Find any existing is_default=True row in the given scope and flip
+    it off. Used by CREATE + PATCH to enforce one-default-per-scope —
+    auto-selector in OrderTicket would otherwise silently pick whichever
+    sorted first if two defaults co-existed. Same enforcement the seeder
+    runs at boot time."""
+    stmt = select(OrderTemplate).where(
+        OrderTemplate.applies_to == applies_to,
+        OrderTemplate.is_default.is_(True),
+    )
+    if exclude_id is not None:
+        stmt = stmt.where(OrderTemplate.id != exclude_id)
+    existing = (await s.execute(stmt)).scalars().all()
+    for r in existing:
+        r.is_default = False
+
+
 class OrderTemplateController(Controller):
     path = "/api/admin/templates"
 
@@ -203,6 +220,8 @@ class OrderTemplateController(Controller):
             _validate_tp_order_type(data.tp_order_type)
             _validate_tp_scales_json(data.tp_scales_json)
             _validate_sl_trail_pct(data.sl_trail_pct)
+            if data.is_default:
+                await _demote_existing_default(s, data.applies_to, exclude_id=None)
             row = OrderTemplate(
                 name=data.name,
                 description=data.description or "",
@@ -244,6 +263,16 @@ class OrderTemplateController(Controller):
                 _validate_tp_scales_json(data.tp_scales_json)
             if data.sl_trail_pct is not None:
                 _validate_sl_trail_pct(data.sl_trail_pct)
+            # One-default-per-scope enforcement. If the operator is
+            # flipping is_default on (or moving this row into a new
+            # scope while is_default stays on), demote any existing
+            # is_default=True row in the resolved scope so two rows
+            # can't co-exist as defaults — the auto-selector in
+            # OrderTicket would silently pick whichever sorts first.
+            target_scope = data.applies_to if data.applies_to is not None else row.applies_to
+            target_default = data.is_default if data.is_default is not None else row.is_default
+            if target_default:
+                await _demote_existing_default(s, target_scope, exclude_id=row.id)
             # Apply only set fields. msgspec sentinels are None for
             # unset; we accept None as "leave unchanged" rather than
             # "clear" because the form sends every field every time.

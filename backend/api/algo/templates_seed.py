@@ -80,13 +80,13 @@ SYSTEM_TEMPLATES: list[dict] = [
         "description":        "Short non-option entry (e.g. equity / future short). "
                               "Mirror of Default Bull — TP fires when price drops 30% "
                               "from short entry, SL fires on a 20% rally against.",
-        "applies_to":         "sell_option",   # actually sell-any-non-option; using closest scope
+        "applies_to":         "sell_any",
         "tp_pct":             30.0,
         "sl_pct":             20.0,
         "wing_premium_pct":   None,
         "wing_strike_offset": None,
         "tp_order_type":      "LIMIT",
-        "is_default":         False,
+        "is_default":         True,
         "is_system":          True,
     },
     {

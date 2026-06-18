@@ -570,6 +570,32 @@ async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
         return lk
 
 
+def _maybe_fire_template_attach_for_reconcile(row) -> None:
+    """Sprint A helper — when the reconcile path flips an AlgoOrder to
+    FILLED, fire the template attach if the row carries a template_id
+    and is a parent (parent_order_id IS NULL). Same idempotency guard
+    inside `_fire_template_attach_on_fill` ensures duplicate firings
+    (postback arriving after reconcile) are safe."""
+    try:
+        if not (row.template_id and row.parent_order_id is None):
+            return
+        if not row.fill_price:
+            return
+        asyncio.create_task(_fire_template_attach_on_fill(
+            parent_row_id=int(row.id),
+            parent_account=str(row.account),
+            parent_symbol=str(row.symbol),
+            parent_exchange=str(row.exchange or "NFO"),
+            parent_side=str(row.transaction_type),
+            parent_qty=int(row.quantity or 0),
+            fill_price=float(row.fill_price),
+            template_id=int(row.template_id),
+            parent_product=str(row.product or "NRML"),
+        ))
+    except Exception as e:
+        logger.warning(f"reconcile template attach failed for #{row.id}: {e}")
+
+
 async def _fire_template_attach_on_fill(
     *,
     parent_row_id: int,
@@ -678,7 +704,7 @@ async def _fire_template_attach_on_fill(
                     entry["parent_exchange"] = str(result.plan.parent_exchange)
                     entry["parent_account"]  = str(result.plan.parent_account)
                     entry["parent_qty"]      = int(result.plan.parent_qty)
-                    entry["parent_product"]  = "NRML"
+                    entry["parent_product"]  = str(parent_product)
                     entry["trigger_type"]    = str(spec.trigger_type)
                 attached.append(entry)
             if result.wing_order_id:
@@ -1304,6 +1330,11 @@ class OrdersController(Controller):
                                 r.filled_at = datetime.now(timezone.utc)
                             except (TypeError, ValueError):
                                 pass
+                            # Sprint A — missed postback recovered via
+                            # reconcile must still fire the template
+                            # attach. Pre-fix, a templated row reconciled
+                            # to FILLED silently lost its TP/SL bracket.
+                            _maybe_fire_template_attach_for_reconcile(r)
                         updated += 1
 
             await s.commit()
@@ -1396,6 +1427,10 @@ class OrdersController(Controller):
                             r.filled_at = datetime.now(timezone.utc)
                         except Exception:
                             pass
+                        # Sprint A — see reconcile_algo_orders for the
+                        # rationale. Templated rows recovered via
+                        # reconcile must still get their bracket attach.
+                        _maybe_fire_template_attach_for_reconcile(r)
                     r.detail = (r.detail or "") + f" [reconciled → {target}]"
                     updated = True
                     note = f"broker status={kite_status} → {target}"
@@ -2383,12 +2418,21 @@ class OrdersController(Controller):
             # always include a recognisable user_id). We have ≤5
             # accounts so the iteration is negligible.
             conns = Connections()
+            # Skip non-Kite connections — postbacks only come from Kite,
+            # and Dhan/Groww connections don't expose `api_secret` so
+            # iterating them would AttributeError. KiteConnection is
+            # the only class with the property today; check by class to
+            # avoid hardcoding strings.
+            from backend.shared.helpers.connections import KiteConnection
+            kite_candidates: list[str] = [
+                a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
+            ]
             candidates: list[str] = []
-            if account and account in conns.conn:
+            if account and account in kite_candidates:
                 # Put the claimed account first so the fast path hits.
-                candidates = [account] + [a for a in conns.conn if a != account]
+                candidates = [account] + [a for a in kite_candidates if a != account]
             else:
-                candidates = list(conns.conn.keys())
+                candidates = kite_candidates
 
             sig_valid = False
             for acct in candidates:

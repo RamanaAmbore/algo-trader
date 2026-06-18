@@ -562,6 +562,16 @@ class PaperTradeEngine:
                 "initial_price": init_price,
                 "agent_slug":    "(recovered)",
                 "action_type":   "recovered",
+                # Re-hydrate the bracket-attach context — template_id +
+                # product + mode + parent_order_id let the fill path
+                # know whether to fire `_fire_template_attach_on_fill`
+                # for this row, and what product to inherit on the
+                # exit GTT legs. Sprint A fix for the recover_from_db
+                # gap (templates auditor #13).
+                "template_id":     r.template_id,
+                "product":         r.product,
+                "mode":            r.mode,
+                "parent_order_id": r.parent_order_id,
             })
         if rows:
             logger.info(
@@ -693,7 +703,54 @@ class PaperTradeEngine:
                     f"[{tag}] {agent} {side} {qty} {symbol} · "
                     f"UNFILLED — gave up after {row.attempts} chase(s)"
                 )
+            # Snapshot row fields used downstream for the template-attach
+            # fire — captured BEFORE leaving the session so SQLAlchemy
+            # doesn't lazy-load post-commit.
+            _row_template_id     = row.template_id
+            _row_mode            = row.mode
+            _row_parent_order_id = row.parent_order_id
+            _row_product         = row.product
+            _row_account         = row.account
+            _row_symbol          = row.symbol
+            _row_exchange        = row.exchange
+            _row_side            = row.transaction_type
+            _row_qty             = int(row.quantity or 0)
             await s.commit()
+
+        # Sprint A fix — paper-engine fills must fire the template attach
+        # just like live-mode postbacks do. Pre-fix, an operator who
+        # placed a paper ticket with a template selected got the parent
+        # order filled but ZERO bracket legs ever attached because this
+        # path didn't have the hook. Live mode goes through the postback
+        # handler / chase terminal which both call _fire_template_attach_
+        # on_fill; paper has no postback so the engine has to fire it.
+        # Only fire on terminal-fill (not modify / unfilled), only when
+        # a template is set, and only for parent rows (parent_order_id
+        # IS NULL — children don't get their own brackets).
+        if (
+            kind == "fill"
+            and _row_template_id
+            and _row_parent_order_id is None
+            and order.get("fill_price") is not None
+        ):
+            try:
+                from backend.api.routes.orders import _fire_template_attach_on_fill
+                asyncio.create_task(_fire_template_attach_on_fill(
+                    parent_row_id=order["algo_order_id"],
+                    parent_account=str(_row_account),
+                    parent_symbol=str(_row_symbol),
+                    parent_exchange=str(_row_exchange or "NFO"),
+                    parent_side=str(_row_side),
+                    parent_qty=_row_qty,
+                    fill_price=float(order["fill_price"]),
+                    template_id=int(_row_template_id),
+                    parent_product=str(_row_product or "NRML"),
+                ))
+            except Exception as _e:
+                logger.warning(
+                    f"PaperTradeEngine[{self._label}] template attach failed for "
+                    f"#{order['algo_order_id']}: {_e}"
+                )
 
         # Write the timeline event AFTER the AlgoOrder update commits so the
         # event row is never orphaned ahead of the status it describes.
