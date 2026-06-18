@@ -39,7 +39,7 @@ def _is_broker_outage(err: Exception) -> bool:
     ))
 
 
-def _fetch() -> PositionsResponse:
+async def _fetch() -> PositionsResponse:
     per_acct = broker_apis.fetch_positions()
     # Outage detection: only raise when every per-account call failed
     # (`fetch_failed` flag set in broker_apis.py). An empty result with
@@ -67,6 +67,18 @@ def _fetch() -> PositionsResponse:
     # routes through Kite. Day_change_val + pnl on patched rows are
     # recomputed inside the helper.
     broker_apis.backfill_market_data(raw)
+
+    # Override stale close_price with yesterday's daily_book snapshot.
+    # Why: Kite's positions.close_price (and quote.ohlc.close) lag the
+    # actual previous-session close — observed on 2026-06-19 at 00:30
+    # IST showing close=7089 for GOLDM26JUN145000CE when the true 6/18
+    # EOD was 3402 (one full Kite roll behind). Without this override,
+    # the decomposed day_pnl formula computes (LTP - stale_close) × qty
+    # against a 2-session-old reference, producing the +1.33L phantom
+    # gain the operator reported. The snapshot is captured at our
+    # daemon's startup + 15:35 IST — the most recent one is the actual
+    # EOD of the prior session.
+    await _override_stale_close_from_snapshot(raw)
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)
@@ -119,6 +131,101 @@ def _fetch() -> PositionsResponse:
         for r in summary_df.to_dicts()
     ]
     return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+
+
+async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
+    """Replace `close_price` with the most-recent daily_book snapshot LTP
+    per (account, tradingsymbol). When found, recomputes the decomposed
+    day_change_val so the row reflects the actual move since the prior
+    session's authoritative close.
+
+    Only triggers when the snapshot LTP differs from Kite's reported
+    close_price by more than a tiny epsilon — rows where Kite is already
+    current pass through unchanged."""
+    if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
+        return
+
+    # Pull the latest snapshot per (account, symbol) — DISTINCT ON keeps
+    # only the most recent row, regardless of which date label the
+    # snapshot daemon used (00:09 IST captures end up labelled with the
+    # NEXT session's date; 23:52 IST captures end up labelled with the
+    # CURRENT session's date — both represent the same prior-session EOD).
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+
+    pairs = list({(str(r["account"]), str(r["tradingsymbol"]))
+                  for _, r in raw.iterrows()
+                  if r.get("account") and r.get("tradingsymbol")})
+    if not pairs:
+        return
+
+    snapshot_map: dict[tuple[str, str], float] = {}
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text("""
+                SELECT DISTINCT ON (account, symbol) account, symbol, ltp
+                FROM daily_book
+                WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
+                ORDER BY account, symbol, captured_at DESC
+            """))
+            for account, symbol, ltp in result.all():
+                snapshot_map[(str(account), str(symbol))] = float(ltp)
+    except Exception as e:
+        logger.warning(f"daily_book close-override query failed: {e}")
+        return
+
+    if not snapshot_map:
+        return
+
+    # Apply override row-by-row. Use a small epsilon (0.005) so we only
+    # patch when the values meaningfully diverge — protects against
+    # rounding noise between Kite's float repr and snapshot storage.
+    patched_idx: list = []
+    for idx in raw.index:
+        key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
+        snap_ltp = snapshot_map.get(key)
+        if snap_ltp is None:
+            continue
+        try:
+            current_close = float(raw.at[idx, 'close_price']) if pd.notna(raw.at[idx, 'close_price']) else 0.0
+        except (TypeError, ValueError):
+            current_close = 0.0
+        if abs(snap_ltp - current_close) <= 0.005:
+            continue
+        raw.at[idx, 'close_price'] = snap_ltp
+        patched_idx.append(idx)
+
+    if not patched_idx:
+        return
+
+    # Recompute day_change_val on patched rows only — same decomposed
+    # formula broker_apis uses, kept in sync. Non-patched rows keep
+    # broker_apis' value untouched so backfilled Dhan rows (where the
+    # backfill computes day_chg = (LTP - close) × qty as a fallback for
+    # missing intraday fields) stay correct.
+    _intraday_fields = {'overnight_quantity', 'day_buy_quantity',
+                        'day_sell_quantity', 'day_buy_value', 'day_sell_value'}
+    _sel = pd.Index(patched_idx)
+    _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
+    _qty = pd.to_numeric(raw.loc[_sel, 'quantity'], errors='coerce').fillna(0)
+    if _intraday_fields.issubset(raw.columns):
+        _oq = pd.to_numeric(raw.loc[_sel, 'overnight_quantity'], errors='coerce').fillna(0)
+        _bq = pd.to_numeric(raw.loc[_sel, 'day_buy_quantity'], errors='coerce').fillna(0)
+        _sq = pd.to_numeric(raw.loc[_sel, 'day_sell_quantity'], errors='coerce').fillna(0)
+        _bv = pd.to_numeric(raw.loc[_sel, 'day_buy_value'], errors='coerce').fillna(0)
+        _sv = pd.to_numeric(raw.loc[_sel, 'day_sell_value'], errors='coerce').fillna(0)
+        _dcv_calc = (
+            _oq * (_ltp - _cls)
+            + (_bq * _ltp - _bv)
+            + (_sv - _sq * _ltp)
+        )
+    else:
+        _dcv_calc = (_ltp - _cls) * _qty
+    _dcv_valid = (_ltp > 0)
+    raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_dcv_valid, raw.loc[_sel, 'day_change_val'])
+    raw.loc[_sel, 'day_change'] = _ltp - _cls
+    logger.info(f"positions: close-override patched {len(patched_idx)}/{len(raw)} rows from daily_book")
 
 
 def _enrich_position_greeks(rows: list) -> None:
