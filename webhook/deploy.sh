@@ -8,12 +8,23 @@
 # Services run uvicorn (Litestar API) + SvelteKit SPA as static files.
 # The SvelteKit build (frontend/build/) is served as static files by Litestar.
 
-# D7 — Lock file prevents two webhook events from racing against each other.
-# Common when GitHub fires two pushes back-to-back. MUST come before set -e
-# because flock -n exits 1 when the lock is held, which we handle explicitly.
-LOCK="/tmp/ramboq_deploy_${1:-prod}.lock"
+# D7 — Lock file serialises every deploy on this host. Previously the
+# lock was per-environment (`ramboq_deploy_${1:-prod}.lock`) so a push
+# to both prod and dev (the standard workflow) ran TWO `npm run build`
+# processes simultaneously. Each vite build pegs a CPU at 100 %; the
+# 2-vCPU box hit load avg ~1.8 and every page request stalled for the
+# 30-60s build window. Operator: "overall response time of website
+# degraded. each page is taking more time to load."
+#
+# Single host-wide lock + WAIT (not non-blocking). The second deploy
+# queues for up to 15 min; in practice ~60 s. CPU stays usable for
+# the running API process during the first build.
+#
+# Must come before `set -e`: flock returns non-zero on timeout, which
+# we surface explicitly via the message below.
+LOCK="/tmp/ramboq_deploy.lock"
 exec 200>"$LOCK"
-flock -n 200 || { echo "[$(date '+%F %T')] Another deploy in progress — aborting"; exit 0; }
+flock -w 900 200 || { echo "[$(date '+%F %T')] Lock wait timeout — aborting"; exit 0; }
 
 set -e
 
@@ -188,11 +199,18 @@ PYEOF
     || { echo "[$TS] ERROR: pip install failed"; exit 1; }
 
   # Build SvelteKit frontend
+  #
+  # nice -n 19 (lowest scheduling priority) + ionice -c 3 (idle I/O class)
+  # so vite build yields to the running API process. With a 2-vCPU box,
+  # a default-priority build starves the API for the 30-60s build window
+  # and every page request stalls. The build still completes in roughly
+  # the same wall-clock time when the host is otherwise idle; only the
+  # under-load case improves.
   if command -v npm &>/dev/null && [ -f "$APP_ROOT/frontend/package.json" ]; then
-    echo "[$TS] Building SvelteKit frontend..."
+    echo "[$TS] Building SvelteKit frontend (low priority)..."
     cd "$APP_ROOT/frontend"
-    npm install --prefer-offline 2>&1 | tail -3
-    npm run build \
+    nice -n 19 ionice -c 3 npm install --prefer-offline 2>&1 | tail -3
+    nice -n 19 ionice -c 3 npm run build \
       && echo "[$TS] SvelteKit build complete" \
       || echo "[$TS] WARNING: SvelteKit build failed (non-fatal)"
     cd "$APP_ROOT"
