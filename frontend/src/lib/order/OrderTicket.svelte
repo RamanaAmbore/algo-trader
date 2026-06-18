@@ -453,6 +453,24 @@
     }
   });
 
+  // Reset lots to 1 when the operator picks a NEW symbol (e.g. +CE in
+  // the chain tab). Without this, _lotsTouched=true from a prior
+  // stepper bump kept _lots stuck at the old value — operator clicked
+  // +CE expecting a fresh 1-lot ticket, got 2 lots from the previous
+  // symbol's stepper bump (the GOLDM 20-contracts-instead-of-10 incident,
+  // 2026-06-18). Skipped when currentQty is set (close-position flow
+  // wants the held qty seeded; that's a different prop path).
+  let _prevResolvedSymbol = '';
+  $effect(() => {
+    const r = (_resolvedSymbol || '').toString().toUpperCase();
+    if (!r) return;
+    if (!_prevResolvedSymbol) { _prevResolvedSymbol = r; return; }
+    if (r === _prevResolvedSymbol) return;
+    _prevResolvedSymbol = r;
+    if (currentQty) return;
+    untrack(() => { _lots = 1; _lotsTouched = false; });
+  });
+
   // When the operator flips side, reset to 1 lot (ADD direction) or
   // restore the held qty (CLOSE direction). "ADD" = same direction as
   // the existing position; "CLOSE" = opposite.
