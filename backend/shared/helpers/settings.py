@@ -245,6 +245,27 @@ SEEDS: list[tuple] = [
      "(weekly cadence).",
      "days", {"min": 1, "max": 90, "step": 1}),
 
+    # ── Order templates — wing pick by premium % ──────────────────────
+    # Knobs for the chain-scan that picks a wing strike when a SELL
+    # option template has wing_premium_pct set (instead of an explicit
+    # wing_strike_offset). See backend/api/algo/template_attach.py::
+    # _pick_wing_by_premium.
+    ("templates", "templates.wing_min_oi", "int", 1000,
+     "Minimum open interest a candidate wing strike must have to be "
+     "picked. Filters out illiquid strikes that would land a bad fill. "
+     "Set 0 to disable the OI filter.",
+     "lots", {"min": 0, "max": 1000000, "step": 100}),
+    ("templates", "templates.wing_max_spread_pct", "float", 10.0,
+     "Maximum bid-ask spread as % of LTP that a candidate wing is "
+     "allowed to have. Wide spreads = expensive entry. Set 100 to "
+     "disable.",
+     "%", {"min": 0, "max": 100, "step": 0.5}),
+    ("templates", "templates.wing_chain_radius", "int", 20,
+     "How many strikes ABOVE and BELOW the implied target the scanner "
+     "considers when picking the wing. Larger = more candidates + more "
+     "broker.quote() load.",
+     "strikes", {"min": 5, "max": 100, "step": 1}),
+
     # ── Notifications (per-branch capability toggles) ───────────────────
     # `is_enabled()` in utils.py reads notifications.<cap>_enabled from
     # the DB first, falling back to the cap_in_<branch>.<feature> YAML

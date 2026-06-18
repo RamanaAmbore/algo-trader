@@ -94,15 +94,18 @@ SYSTEM_TEMPLATES: list[dict] = [
         "name":               "Default Short Vol",
         "description":        "Short option entry — collects premium, expects decay. "
                               "TP at +50% premium recovery (buy-back when premium drops "
-                              "by half). Protective Wing leg auto-built at +500 strike "
-                              "(CE) / -500 strike (PE) to cap tail risk; submitted as "
-                              "an atomic basket on broker that supports it, paired "
-                              "fan-out otherwise.",
+                              "by half). Protective Wing auto-picked from the option "
+                              "chain — scanner finds the strike whose premium is ≈10% "
+                              "of the parent's premium, respecting OI + spread% filters "
+                              "(templates.wing_min_oi / templates.wing_max_spread_pct). "
+                              "Operators upgrading from the strike-offset shape keep "
+                              "their tuned values; fresh installs use the premium-% "
+                              "scan.",
         "applies_to":         "sell_option",
         "tp_pct":             50.0,
         "sl_pct":             None,
-        "wing_premium_pct":   None,
-        "wing_strike_offset": 500,
+        "wing_premium_pct":   10.0,
+        "wing_strike_offset": None,
         "tp_order_type":      "LIMIT",
         "is_default":         True,
         "is_system":          True,

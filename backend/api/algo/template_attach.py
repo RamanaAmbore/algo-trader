@@ -156,6 +156,187 @@ def _wing_symbol(parent_symbol: str, offset: int) -> Optional[str]:
     return f"{root}{expiry_token}{wing_strike}{opt}"
 
 
+async def _pick_wing_by_premium(
+    parent_symbol:    str,
+    parent_exchange:  str,
+    parent_fill_price: float,
+    wing_premium_pct: float,
+) -> tuple[Optional[str], Optional[float], str]:
+    """Scan the option chain and pick a wing strike whose premium is
+    closest to `parent_fill_price × wing_premium_pct / 100`, subject
+    to liquidity filters from `/admin/settings` (`templates.wing_*`).
+
+    Returns `(wing_tradingsymbol, picked_ltp, reason)`:
+      • wing_tradingsymbol — picked strike's tradingsymbol, or None
+      • picked_ltp         — its current LTP, or None
+      • reason             — human-readable note for plan.notes (always
+                              populated so the operator sees what
+                              happened, even on the success path)
+
+    Algorithm:
+      1. Parse parent symbol → root, expiry, parent_strike, opt_type.
+         Bail if unparseable.
+      2. Read settings: min OI, max spread%, chain radius.
+      3. Pull the cached instruments list, filter to same
+         (root, expiry, opt_type), sort by strike, slice to
+         `[parent_strike − radius × tick, parent_strike + radius × tick]`.
+      4. Batched broker.quote() across every candidate's key.
+      5. Score each: `abs(ltp − target_premium)` with a penalty if the
+         spread% exceeds the threshold. Drop candidates that fail OI.
+      6. Pick min score. Return tradingsymbol + ltp.
+
+    All errors are caught and converted to a (None, None, reason)
+    fallback — the plan resolver treats that as "no wing attached" and
+    surfaces the reason via plan.notes. The parent order is NEVER
+    blocked by a chain-scan failure.
+    """
+    target_premium = parent_fill_price * float(wing_premium_pct) / 100.0
+    if target_premium <= 0:
+        return None, None, (
+            f"wing_premium_pct skipped — target premium "
+            f"({target_premium:.2f}) not positive"
+        )
+
+    m = _OPT_SYM_RE.match(parent_symbol.upper())
+    if not m:
+        return None, None, (
+            f"wing_premium_pct skipped — parent symbol {parent_symbol!r} "
+            f"unparseable"
+        )
+    root         = m.group("root")
+    expiry_token = m.group("expiry_token")
+    parent_strike = int(float(m.group("strike")))
+    opt          = m.group("opt")
+
+    # Settings — read inside the function so operator tunes apply
+    # without a service restart.
+    try:
+        from backend.shared.helpers.settings import get_int, get_float
+        min_oi          = get_int("templates.wing_min_oi", 1000)
+        max_spread_pct  = get_float("templates.wing_max_spread_pct", 10.0)
+        chain_radius    = get_int("templates.wing_chain_radius", 20)
+    except Exception:
+        min_oi, max_spread_pct, chain_radius = 1000, 10.0, 20
+
+    # Resolve the cached instruments dump, filter to matching chain.
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        insts_resp = await get_or_fetch(
+            "instruments", _fetch_instruments, ttl_seconds=_TTL_SECONDS,
+        )
+    except Exception as e:
+        return None, None, (
+            f"wing_premium_pct skipped — instruments cache lookup "
+            f"failed: {e}"
+        )
+
+    # Filter to (root, expiry_token, opt_type) — match exactly the
+    # parent contract's chain. Use the cached `s` (tradingsymbol)
+    # field's prefix as the discriminator so MCX vs NFO doesn't
+    # matter; the parent's exchange flows through unchanged.
+    parent_prefix = f"{root}{expiry_token}"
+    suffix        = opt   # 'CE' or 'PE'
+    candidates: list[dict] = []
+    for inst in (insts_resp.items if insts_resp else []):
+        ts = str(inst.s).upper()
+        if not ts.startswith(parent_prefix):
+            continue
+        if not ts.endswith(suffix):
+            continue
+        if inst.k is None:
+            continue
+        candidates.append({
+            "ts":     ts,
+            "strike": float(inst.k),
+            "exch":   inst.e,
+        })
+
+    if not candidates:
+        return None, None, (
+            f"wing_premium_pct skipped — no chain candidates found "
+            f"for {root}{expiry_token}{suffix}"
+        )
+
+    # Slice to within chain_radius strikes of the parent. Sorted by
+    # strike for the slice arithmetic.
+    candidates.sort(key=lambda c: c["strike"])
+    parent_idx = next(
+        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
+        None,
+    )
+    if parent_idx is not None:
+        lo = max(0, parent_idx - chain_radius)
+        hi = min(len(candidates), parent_idx + chain_radius + 1)
+        candidates = candidates[lo:hi]
+
+    if not candidates:
+        return None, None, (
+            f"wing_premium_pct skipped — chain_radius filter eliminated "
+            f"all candidates"
+        )
+
+    # Batched quote — one round-trip across every candidate. Offload
+    # the sync broker call to a thread so we don't block the event
+    # loop while the round-trip is in flight.
+    quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
+    try:
+        import asyncio as _aio
+        from backend.shared.brokers.registry import get_price_broker
+        broker = get_price_broker()
+        quote_data = (
+            await _aio.to_thread(broker.quote, quote_keys)
+        ) or {}
+    except Exception as e:
+        return None, None, (
+            f"wing_premium_pct skipped — broker.quote() failed: {e}"
+        )
+
+    best = None
+    best_score = float("inf")
+    scanned, dropped_oi, dropped_spread = 0, 0, 0
+    for c in candidates:
+        key = f"{c['exch']}:{c['ts']}"
+        q = quote_data.get(key) or {}
+        ltp = float(q.get("last_price") or 0)
+        if ltp <= 0:
+            continue
+        scanned += 1
+        oi = int(q.get("oi") or 0)
+        if min_oi > 0 and oi < min_oi:
+            dropped_oi += 1
+            continue
+        depth = q.get("depth") or {}
+        buys = depth.get("buy") or []
+        sells = depth.get("sell") or []
+        bid = float(buys[0].get("price") if buys else 0) or 0
+        ask = float(sells[0].get("price") if sells else 0) or 0
+        spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
+        if max_spread_pct < 100 and spread_pct > max_spread_pct:
+            dropped_spread += 1
+            continue
+        # Score: closer to target premium is better; small spread% bonus.
+        dist = abs(ltp - target_premium)
+        score = dist + (spread_pct / 100.0) * target_premium
+        if score < best_score:
+            best_score = score
+            best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+
+    if best is None:
+        return None, None, (
+            f"wing_premium_pct skipped — scanned {scanned}, "
+            f"dropped_oi={dropped_oi}, dropped_spread={dropped_spread} "
+            f"(target ₹{target_premium:.2f})"
+        )
+
+    reason = (
+        f"wing picked by premium% — {best['ts']} @ ₹{best['ltp']:.2f} "
+        f"(target ₹{target_premium:.2f}, OI {best['oi']}, "
+        f"spread {best['spread_pct']:.1f}%)"
+    )
+    return best["ts"], float(best["ltp"]), reason
+
+
 # ── Trigger-price computation ────────────────────────────────────────
 
 def _tp_trigger(parent_side: str, fill_price: float, tp_pct: Optional[float]) -> Optional[float]:
@@ -309,7 +490,25 @@ def resolve_template_plan(
 
     # ── Wing spec — SELL option only ─────────────────────────────────
     if _is_sell_option(parent_side, parent_symbol):
-        if wing_strike_offset is not None:
+        # Phase 1B — apply_template_to_order pre-resolves the wing via
+        # _pick_wing_by_premium when wing_premium_pct is set, and seeds
+        # the picked tradingsymbol back into overrides. Use it first.
+        wing_picked_sym = (overrides.get("_wing_picked_symbol")
+                           if overrides else None)
+        wing_picked_ltp = (overrides.get("_wing_picked_ltp")
+                           if overrides else None)
+        if wing_picked_sym:
+            plan.wing = WingSpec(
+                tradingsymbol=str(wing_picked_sym),
+                transaction_type="BUY",
+                quantity=parent_qty,
+                exchange=parent_exchange,
+                product=parent_product,
+                order_type="MARKET",
+                estimated_price=(float(wing_picked_ltp)
+                                 if wing_picked_ltp is not None else None),
+            )
+        elif wing_strike_offset is not None:
             wing_sym = _wing_symbol(parent_symbol, wing_strike_offset)
             if wing_sym is None:
                 plan.notes.append(
@@ -331,11 +530,9 @@ def resolve_template_plan(
                     order_type="MARKET",
                     estimated_price=est,
                 )
-        elif wing_premium_pct is not None:
-            plan.notes.append(
-                "wing_premium_pct without wing_strike_offset can't yet "
-                "auto-pick a strike; set wing_strike_offset to attach wing"
-            )
+        # No fallback note here — apply_template_to_order already
+        # appended the chain-scan reason (success or skip) to plan.notes
+        # before this resolver ran.
 
     return plan
 
@@ -640,6 +837,43 @@ async def apply_template_to_order(
         except Exception:
             caps = None
 
+    # Phase 1B — when the template says "pick wing by premium %" AND
+    # no explicit wing_strike_offset overrides it, run the chain scan
+    # here (we're in async context) and feed the picked tradingsymbol
+    # back into the synchronous resolver via the merged overrides dict.
+    # Scan failures convert to a plan note + skip wing attach; the
+    # parent order is never blocked.
+    wing_scan_note: Optional[str] = None
+    wing_offset_pre = (overrides.get("wing_strike_offset")
+                       if overrides else None)
+    if wing_offset_pre is None:
+        wing_offset_pre = template.get("wing_strike_offset")
+    wing_pct_pre = (overrides.get("wing_premium_pct") if overrides else None)
+    if wing_pct_pre is None:
+        wing_pct_pre = template.get("wing_premium_pct")
+    if (parent_side == "SELL"
+            and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
+            and wing_pct_pre is not None
+            and wing_offset_pre is None
+            and parent_fill_price > 0):
+        try:
+            wsym, wltp, reason = await _pick_wing_by_premium(
+                parent_symbol=parent_symbol,
+                parent_exchange=parent_exchange,
+                parent_fill_price=parent_fill_price,
+                wing_premium_pct=float(wing_pct_pre),
+            )
+        except Exception as e:
+            wsym, wltp, reason = None, None, (
+                f"wing_premium_pct scan errored: {e}"
+            )
+        wing_scan_note = reason
+        if wsym:
+            overrides = dict(overrides or {})
+            overrides["_wing_picked_symbol"] = wsym
+            if wltp is not None:
+                overrides["_wing_picked_ltp"] = wltp
+
     plan = resolve_template_plan(
         template, overrides,
         parent_account=parent_account,
@@ -651,6 +885,8 @@ async def apply_template_to_order(
         parent_product=parent_product,
         broker_caps=caps,
     )
+    if wing_scan_note:
+        plan.notes.append(wing_scan_note)
 
     # Preview short-circuit — never apply.
     if apply_path == "preview":
