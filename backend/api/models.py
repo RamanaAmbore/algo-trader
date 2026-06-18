@@ -865,6 +865,17 @@ class OrderTemplate(Base):
         String(8), nullable=False, default="LIMIT",
         server_default="LIMIT",
     )
+    # Scale-out targets (Phase 3A). JSON list of {at_pct, close_pct}
+    # entries — e.g. [{"at_pct": 30, "close_pct": 50},
+    #                  {"at_pct": 60, "close_pct": 50}] means "close 50 %
+    # of the position at +30 % gain, the remaining 50 % at +60 %".
+    # When set, supersedes tp_pct (operator builds the full TP ladder
+    # here). N separate single GTTs are placed at submit time, one
+    # per scale, each for its fraction of parent_qty. Sum of close_pct
+    # must be <= 100 (validated at PATCH/POST); the remainder stays
+    # open with no TP. Industry analogue: NinjaTrader ATM Strategy
+    # multiple targets, IBKR Bracket Order auto-scale.
+    tp_scales_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Marks the operator's default pick — surfaced in OrderTicket as the
     # pre-selected option. Only one default per applies_to scope; the
     # seeder enforces a single is_default=True row for each scope.

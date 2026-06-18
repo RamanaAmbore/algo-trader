@@ -52,6 +52,7 @@
   let formWingPremPct = $state('');
   let formWingStrikeOffset = $state('');
   let formTpOrderType = $state(/** @type {'LIMIT'|'MARKET'} */ ('LIMIT'));
+  let formTpScalesJson = $state('');
   let formIsDefault = $state(false);
   let formIsActive = $state(true);
   let formError = $state('');
@@ -107,6 +108,7 @@
     formWingPremPct = '';
     formWingStrikeOffset = '';
     formTpOrderType = 'LIMIT';
+    formTpScalesJson = '';
     formIsDefault = false;
     formIsActive = true;
     formError = '';
@@ -124,6 +126,7 @@
     formWingPremPct = t.wing_premium_pct != null ? String(t.wing_premium_pct) : '';
     formWingStrikeOffset = t.wing_strike_offset != null ? String(t.wing_strike_offset) : '';
     formTpOrderType = /** @type {'LIMIT'|'MARKET'} */ (t.tp_order_type || 'LIMIT');
+    formTpScalesJson = t.tp_scales_json || '';
     formIsDefault = !!t.is_default;
     formIsActive = !!t.is_active;
     formError = '';
@@ -158,6 +161,7 @@
       wing_premium_pct:   _parseNumOrNull(formWingPremPct),
       wing_strike_offset: _parseNumOrNull(formWingStrikeOffset),
       tp_order_type:      formTpOrderType,
+      tp_scales_json:     formTpScalesJson.trim() === '' ? null : formTpScalesJson.trim(),
       is_default:         formIsDefault,
       is_active:          formIsActive,
     };
@@ -307,7 +311,12 @@
           <span class="tpl-applies">{appliesLabel(t.applies_to)}</span>
 
           <span class="tpl-numerics">
-            <span class="tpl-num tpl-num-tp">TP {fmtPct(t.tp_pct)}{t.tp_pct != null && t.tp_order_type === 'MARKET' ? ' MKT' : ''}</span>
+            {#if t.tp_scales_json}
+              {@const _scales = (() => { try { return JSON.parse(t.tp_scales_json) || []; } catch { return []; } })()}
+              <span class="tpl-num tpl-num-tp" title={t.tp_scales_json}>TP scale × {_scales.length}{t.tp_order_type === 'MARKET' ? ' MKT' : ''}</span>
+            {:else}
+              <span class="tpl-num tpl-num-tp">TP {fmtPct(t.tp_pct)}{t.tp_pct != null && t.tp_order_type === 'MARKET' ? ' MKT' : ''}</span>
+            {/if}
             <span class="tpl-num tpl-num-sl">SL {fmtPct(t.sl_pct)}</span>
             {#if t.wing_strike_offset != null}
               <span class="tpl-num tpl-num-wing">Wing {fmtOffset(t.wing_strike_offset)} strike</span>
@@ -377,6 +386,16 @@
                       { value: 'LIMIT',  label: 'LIMIT — quote at trigger price (slip-protected)' },
                       { value: 'MARKET', label: 'MARKET — take book at trigger (sure fill, no slip cap)' },
                     ]} />
+                </label>
+                <label class="tpl-field tpl-field-wide">
+                  <span>TP scale-out (JSON)
+                    <InfoHint popup={true} align="right" label="?"
+                      text={'Scale-out ladder. JSON list of at_pct + close_pct entries. Example: [{"at_pct": 30, "close_pct": 50}, {"at_pct": 60, "close_pct": 50}] — close 50 % of the position at +30 %, the rest at +60 %. Sum of close_pct must be ≤ 100. When set, supersedes the single TP %.'} />
+                  </span>
+                  <textarea bind:value={formTpScalesJson}
+                            rows="3"
+                            class="tpl-input tpl-input-mono"
+                            placeholder={'[{"at_pct": 30, "close_pct": 50}]'}></textarea>
                 </label>
                 <label class="tpl-checkbox">
                   <input type="checkbox" bind:checked={formIsDefault} />
@@ -655,6 +674,15 @@
   }
   .tpl-field-full {
     grid-column: 1 / -1;
+  }
+  .tpl-field-wide {
+    grid-column: span 2;
+  }
+  .tpl-input-mono {
+    font-family: ui-monospace, monospace;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 2.6rem;
   }
   .tpl-input {
     padding: 0.32rem 0.55rem;

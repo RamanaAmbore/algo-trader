@@ -223,6 +223,9 @@ class OrderTemplateOut(msgspec.Struct):
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
     tp_order_type:       str = "LIMIT"   # 'LIMIT' | 'MARKET'
+    # JSON string of [{at_pct, close_pct}] entries; None / empty = no
+    # scale-out (TP behaves as a single trigger via tp_pct).
+    tp_scales_json:      str | None = None
     is_default:          bool = False
     is_system:           bool = False
     is_active:           bool = True
@@ -237,6 +240,7 @@ class OrderTemplateCreate(msgspec.Struct):
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
     tp_order_type:       str = "LIMIT"
+    tp_scales_json:      str | None = None
     is_default:          bool = False
     is_active:           bool = True
 
@@ -254,6 +258,7 @@ class OrderTemplatePatch(msgspec.Struct):
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
     tp_order_type:       str | None = None
+    tp_scales_json:      str | None = None
     is_default:          bool | None = None
     is_active:           bool | None = None
 

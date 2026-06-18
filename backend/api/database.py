@@ -261,6 +261,11 @@ async def init_db() -> None:
             # default-long-option template (Phase 1B+).
             "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_order_type "
             "VARCHAR(8) NOT NULL DEFAULT 'LIMIT'",
+            # Phase 3A — scale-out targets. JSON list per OrderTemplate.
+            # NULL for every existing row → no scale-out (single TP via
+            # tp_pct keeps working). Operator opts in by editing the
+            # template on /automation/templates.
+            "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_scales_json TEXT",
         ):
             await conn.execute(text(stmt))
 

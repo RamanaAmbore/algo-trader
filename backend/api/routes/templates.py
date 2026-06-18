@@ -55,6 +55,7 @@ def _to_out(row: OrderTemplate) -> OrderTemplateOut:
                           if row.wing_premium_pct is not None else None),
         wing_strike_offset=row.wing_strike_offset,
         tp_order_type=(row.tp_order_type or "LIMIT"),
+        tp_scales_json=row.tp_scales_json,
         is_default=row.is_default,
         is_system=row.is_system,
         is_active=row.is_active,
@@ -66,6 +67,66 @@ def _validate_tp_order_type(value: str | None) -> None:
         raise HTTPException(
             status_code=400,
             detail=f"tp_order_type must be one of {sorted(_TP_ORDER_TYPE_CHOICES)}",
+        )
+
+
+def _validate_tp_scales_json(value: str | None) -> None:
+    """Parse + validate the scale-out JSON. Empty / None means "no
+    scale-out, fall back to tp_pct". Otherwise a list of dicts with
+    `at_pct > 0` and `0 < close_pct <= 100`, and the cumulative
+    close_pct must not exceed 100. Order of entries is preserved as
+    operator-supplied — caller may rely on at_pct ascending for
+    readability but we don't enforce sort here."""
+    if value is None:
+        return
+    s = value.strip()
+    if not s:
+        return
+    import json as _json
+    try:
+        parsed = _json.loads(s)
+    except _json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_scales_json must be valid JSON: {e}",
+        )
+    if not isinstance(parsed, list):
+        raise HTTPException(
+            status_code=400,
+            detail="tp_scales_json must be a JSON list",
+        )
+    cumulative_close = 0.0
+    for idx, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"tp_scales_json[{idx}] must be a dict with at_pct + close_pct",
+            )
+        at_pct    = entry.get("at_pct")
+        close_pct = entry.get("close_pct")
+        try:
+            at_pct    = float(at_pct)
+            close_pct = float(close_pct)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"tp_scales_json[{idx}] at_pct + close_pct must be numbers",
+            )
+        if at_pct <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"tp_scales_json[{idx}].at_pct must be > 0",
+            )
+        if close_pct <= 0 or close_pct > 100:
+            raise HTTPException(
+                status_code=400,
+                detail=f"tp_scales_json[{idx}].close_pct must be in (0, 100]",
+            )
+        cumulative_close += close_pct
+    if cumulative_close > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_scales_json cumulative close_pct ({cumulative_close}) exceeds 100",
         )
 
 
@@ -120,6 +181,7 @@ class OrderTemplateController(Controller):
                     detail=f"template '{data.name}' already exists",
                 )
             _validate_tp_order_type(data.tp_order_type)
+            _validate_tp_scales_json(data.tp_scales_json)
             row = OrderTemplate(
                 name=data.name,
                 description=data.description or "",
@@ -129,6 +191,7 @@ class OrderTemplateController(Controller):
                 wing_premium_pct=data.wing_premium_pct,
                 wing_strike_offset=data.wing_strike_offset,
                 tp_order_type=(data.tp_order_type or "LIMIT"),
+                tp_scales_json=data.tp_scales_json,
                 is_default=data.is_default,
                 is_system=False,
                 is_active=data.is_active,
@@ -155,6 +218,8 @@ class OrderTemplateController(Controller):
                 _validate_applies_to(data.applies_to)
             if data.tp_order_type is not None:
                 _validate_tp_order_type(data.tp_order_type)
+            if data.tp_scales_json is not None:
+                _validate_tp_scales_json(data.tp_scales_json)
             # Apply only set fields. msgspec sentinels are None for
             # unset; we accept None as "leave unchanged" rather than
             # "clear" because the form sends every field every time.
@@ -162,7 +227,7 @@ class OrderTemplateController(Controller):
                 "name", "description", "applies_to",
                 "tp_pct", "sl_pct",
                 "wing_premium_pct", "wing_strike_offset",
-                "tp_order_type",
+                "tp_order_type", "tp_scales_json",
                 "is_default", "is_active",
             ):
                 v = getattr(data, field, None)

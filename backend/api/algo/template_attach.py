@@ -406,6 +406,33 @@ def resolve_template_plan(
     tp_pct          = _pick("tp_pct")
     sl_pct          = _pick("sl_pct")
     wing_premium_pct = _pick("wing_premium_pct")
+
+    # tp_scales_json — Phase 3A scale-out targets. When set, supersedes
+    # tp_pct: a TP ladder of N entries, each placed as a separate
+    # single GTT at fill × (1 + at_pct/100), sized to parent_qty ×
+    # close_pct/100. Sum of close_pct ≤ 100; the remainder stays
+    # open with no auto-exit (operator's call).
+    tp_scales_raw = _ov.get("tp_scales_json")
+    if tp_scales_raw is None:
+        tp_scales_raw = template.get("tp_scales_json")
+    tp_scales: list[dict] = []
+    if tp_scales_raw:
+        import json as _json
+        try:
+            parsed = _json.loads(tp_scales_raw) if isinstance(tp_scales_raw, str) else tp_scales_raw
+            if isinstance(parsed, list):
+                for e in parsed:
+                    if not isinstance(e, dict):
+                        continue
+                    try:
+                        ap = float(e.get("at_pct"))
+                        cp = float(e.get("close_pct"))
+                    except (TypeError, ValueError):
+                        continue
+                    if ap > 0 and 0 < cp <= 100:
+                        tp_scales.append({"at_pct": ap, "close_pct": cp})
+        except Exception:
+            tp_scales = []
     wing_offset_raw = _ov.get("wing_strike_offset")
     if wing_offset_raw is None:
         wing_offset_raw = template.get("wing_strike_offset")
@@ -443,7 +470,57 @@ def resolve_template_plan(
     sl_trig = _sl_trigger(parent_side, parent_fill_price, sl_pct)
     exit_side = _close_side(parent_side)
 
-    if tp_trig is not None and sl_trig is not None:
+    # Phase 3A — scale-out path supersedes single tp_pct. Place one
+    # single GTT per scale (qty × close_pct/100 each) at fill ×
+    # (1 + at_pct/100). SL still uses the parent_qty SL trigger
+    # (operator's call — if SL fires after a partial TP has already
+    # closed some qty, the SL order may partial-fill against the
+    # remaining position; document this in the seeder).
+    if tp_scales:
+        # Integer qty allocation across scales — distribute floor
+        # values then add the leftover to the LAST scale so the
+        # numbers always sum to parent_qty (avoids "1 lot lost to
+        # rounding" surprise).
+        allocations: list[int] = []
+        used = 0
+        for i, sc in enumerate(tp_scales):
+            if i == len(tp_scales) - 1:
+                allocations.append(parent_qty - used)
+            else:
+                _q = int((parent_qty * float(sc["close_pct"])) // 100)
+                allocations.append(_q)
+                used += _q
+        for sc, q in zip(tp_scales, allocations):
+            if q <= 0:
+                continue
+            scale_trig = _tp_trigger(parent_side, parent_fill_price,
+                                     float(sc["at_pct"]))
+            if scale_trig is None:
+                continue
+            label = f"TP+{sc['at_pct']}% × {q}"
+            plan.gtts.append(GttSpec(
+                trigger_type="single",
+                trigger_values=[scale_trig],
+                orders=[_leg(exit_side, q, scale_trig,
+                             parent_product, tp_order_type)],
+                label=label,
+            ))
+        if sl_trig is not None:
+            plan.gtts.append(GttSpec(
+                trigger_type="single",
+                trigger_values=[sl_trig],
+                orders=[_leg(exit_side, parent_qty, sl_trig,
+                             parent_product, "LIMIT")],
+                label="SL",
+            ))
+        plan.notes.append(
+            f"Scale-out: {len(tp_scales)} TP step(s) — "
+            + " / ".join(f"+{s['at_pct']:g}% × {s['close_pct']:g}% qty"
+                         for s in tp_scales)
+            + (f"; SL at single trigger for full qty"
+               if sl_trig is not None else "")
+        )
+    elif tp_trig is not None and sl_trig is not None:
         # Operator wants both. On Kite/Dhan we pack as a two-leg OCO.
         # On Groww (no native OCO) we'd split into two singles — that's
         # done at the route layer when broker_caps.gtt_oco is False.
@@ -750,6 +827,7 @@ async def load_template_for_slug_or_id(
         "wing_premium_pct":   float(row.wing_premium_pct)  if row.wing_premium_pct is not None else None,
         "wing_strike_offset": int(row.wing_strike_offset)  if row.wing_strike_offset is not None else None,
         "tp_order_type":      (row.tp_order_type or "LIMIT"),
+        "tp_scales_json":     row.tp_scales_json,
     }
 
 
@@ -769,6 +847,7 @@ def build_adhoc_template(overrides: dict) -> dict:
         "wing_premium_pct":   overrides.get("wing_premium_pct"),
         "wing_strike_offset": overrides.get("wing_strike_offset"),
         "tp_order_type":      overrides.get("tp_order_type", "LIMIT"),
+        "tp_scales_json":     overrides.get("tp_scales_json"),
     }
 
 
