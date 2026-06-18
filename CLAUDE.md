@@ -997,6 +997,245 @@ Ramboq's risk + automation engine is built around four words:
 | **Notify** | A delivery channel (`telegram / email / websocket / log`). |
 | **Action** | A side-effect the alert invokes (order placement, monitoring, modify, cancel, close, flag-set, …). Handlers in `actions.py`; real broker wiring lands per-action as each is promoted out of stub mode. |
 
+### Templates vs Agents — non-overlapping responsibilities
+
+**Agents** are market-event driven: "when the portfolio's P&L drops below ₹50k, close all positions". They live on `/agents`, fire every 5 minutes per market cycle, and carry conditions, notifications, and actions.
+
+**Templates** are order-entry driven: "when I place a SELL order, auto-attach a TP exit at +0.5% and an SL at −1% with a 2% trailing stop". They live on `/admin/templates`, attach per-ticket as the operator enters an order, and carry exit-rule specifications (TP/SL/wings/scales/trails).
+
+**Why both?** Agents own portfolio-level risk rules that ignore where positions came from. Templates own trade-specific exit mechanics that apply to orders from _any_ source — agents, manual entry, templates themselves. They don't overlap because agents manage the _book_, templates manage _individual positions_.
+
+### Order Templates
+
+Order templates are per-position exit rules that attach to filled orders via broker-native GTT (Good-Till-Triggered) orders. Operator picks a template from the OrderTicket dropdown; template resolves to a bundle of exit orders (TP/SL/wing hedge/scaled close/trailing stop) at fill time. Each mechanism is independent — operator can activate TP without SL, or vice versa.
+
+#### Data model
+
+`order_templates` table ([`backend/api/models.py::OrderTemplate`](backend/api/models.py)):
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | PK | |
+| `name`, `description` | str | "Default bull call", "Short volatility (sell 2x vol, buy 1x)", etc. |
+| `is_default` | bool | One per user. OrderTicket pre-fills with this. |
+| `tp_type` | enum | LIMIT / MARKET (MARKET TP fills fast in volatile moves; LIMIT caps slip) |
+| `tp_pct`, `tp_abs` | numeric | TP target: qty × fill × (1 + tp_pct) or qty × fill + tp_abs |
+| `sl_type` | enum | LIMIT (standard stop-loss) — SL MARKET not yet supported |
+| `sl_pct`, `sl_abs` | numeric | SL trigger: same semantics as TP |
+| `sl_trail_pct` | numeric(8,4) | (0, 100) — trailing-stop %age; null = no trail |
+| `wing_strike_offset` | int | Null = no wing. N strikes away from parent (e.g. −2 for short 2 OTM puts); chain-scan picks closest by premium |
+| `wing_premium_pct` | numeric | Pct of parent LTP to spend on wing buy. Used to filter chain candidates. |
+| `tp_scales_json` | text | JSON list of `{at_pct, close_pct}` — multi-target TP ladder. NinjaTrader style. |
+| `created_at`, `updated_at` | timestamp | |
+
+Seeded system defaults:
+- `default-long-option` (CE buy) — TP +80% MARKET, no SL, no wing, no scale
+- `default-short-vol` — TP +10% LIMIT, SL −20% LIMIT, wing −1 strike premium-capped, no scale, no trail
+- One `is_default=True` row per user, auto-maintained by seeder (no more than one default)
+
+#### Unified entry pipeline
+
+Operator selects template in OrderTicket via Default/None 2-pill toggle (matches Side pill UX). At order submit:
+
+1. **Validate mode** — `_resolve_mode()` determines execution (sim / paper / live / shadow)
+2. **Check template eligibility** — templates live on LIVE + PAPER; skipped in SIM / SHADOW / REPLAY
+3. **Resolve template plan** — all async pre-resolves (wing chain scan, underlying spot for trailing stop context) happen before placing the parent
+4. **Place parent order** — broker.place_order() for the root position
+5. **Apply plan on fill** — when parent fills (via postback or chase_terminal hook), invoke `apply_template_to_order(apply_path='live')` which:
+   - `attached_gtts_json` column population (idempotent via `NOT (attached_gtts_json IS NOT NULL)`)
+   - For each exit rule: call `broker.place_gtt()` with the resolved parameters
+   - Track attempt state (failures logged; no retry loop — operator edits `/orders` row to re-trigger)
+
+#### Broker integration
+
+**Kite (full support)** — `place_gtt` accepts `trigger_price`, `execution_type` (MARKET / LIMIT), `quantity`, `price` (for LIMIT legs). Template resolves to N GTT specifications, one per exit rule.
+
+**Dhan + Groww (partial)** — GTT / conditional-order equivalents exist but differ in triggering semantics:
+- Dhan `place_gtt` is order-conditional (place new order on a parent-fill condition) — templates can adapt but SL mechanics differ
+- Groww OCO (one-cancels-other) exists but is per-pair (one TP, one SL; scaling / wings / trails not supported)
+- Current Phase 3B: errors raised when attempting template attach on non-Kite brokers; operator falls back to manual SL/TP
+
+#### Exit rule mechanics
+
+**Take-Profit (TP)**
+
+When parent_qty fills at fill_price:
+
+```
+LIMIT: trigger on LTP >= fill_price × (1 + tp_pct)
+       execute at exactly: fill_price × (1 + tp_pct)
+
+MARKET: trigger on LTP >= fill_price × (1 + tp_pct)
+        execute at market (best available bid/ask)
+        — MARKET TP chosen when tp_pct is large or underlying is volatile
+```
+
+- Single trigger — as soon as the threshold is touched, the exit fires
+- Qty equals parent qty (full exit)
+- Works on long + short (side-flipped automatically; short parent → SELL TP at lower price)
+
+**Stop-Loss (SL)**
+
+When parent_qty fills at fill_price:
+
+```
+LIMIT: trigger on LTP <= fill_price × (1 - sl_pct)
+       execute at exactly: fill_price × (1 - sl_pct)
+       — always LIMIT (MARKET SL can slip badly in gaps)
+```
+
+- Qty equals parent qty
+- Works on long + short
+
+**Trailing Stop (SL with trail_pct)** — Phase 3B
+
+When parent fills:
+
+```
+initial_trigger = fill_price × (1 - sl_pct)  # static SL baseline
+highest_ltp_seen = fill_price                  # for longs
+lowest_ltp_seen = fill_price                   # for shorts
+```
+
+Background task `_task_trail_stop` (every `templates.trail_poll_interval_seconds`, default 30s) polls LTP and advances the trigger:
+
+```
+for long:  highest_ltp_seen = max(highest_ltp_seen, current_ltp)
+           current_trigger = highest_ltp_seen × (1 - sl_trail_pct)
+           if current_trigger > initial_trigger:
+             broker.modify_gtt(trigger=current_trigger, price=current_trigger)
+
+for short: lowest_ltp_seen = min(lowest_ltp_seen, current_ltp)
+           current_trigger = lowest_ltp_seen × (1 + sl_trail_pct)
+           if current_trigger < initial_trigger:
+             broker.modify_gtt(trigger=current_trigger, price=current_trigger)
+```
+
+- Context persisted in `attached_gtts_json` → `{parent_id, parent_qty, parent_fill_price, parent_side, parent_metadata, highest_ltp_seen, lowest_ltp_seen, initial_trigger, current_trigger, trail_context}`
+- On postback reload or service restart: `_task_trail_stop` picks up where it left off (context read from `attached_gtts_json`)
+- Dhan / Groww: `NotImplementedError` raised; operator's `sl_trail_pct` is dropped so re-triggering stops (same as other unsupported features)
+
+**Wing Hedge** — Phase 1B
+
+When placing parent option (e.g. SELL 1 NIFTY25APR22000CE):
+
+```
+scope = same underlying + same expiry + opposite type
+        (parent CE → scope PE candidates; parent PE → scope CE candidates)
+        
+scan:   broker.quote([PE 21950, 21900, 22050, 22100, ...])
+        
+score:  per candidate: |ltp − wing_premium_pct × parent_ltp| + spread_penalty
+        
+filter: OI < wing_min_oi (default 1000) → dropped
+        spread% > wing_max_spread_pct (default 10%) → dropped
+        
+pick:   closest-scored candidate (greedy)
+```
+
+When parent fills → auto-place a BUY of the wing at wing strike (hedges gamma / vega for short strats).
+
+- Wing qty = parent qty (1:1 pair)
+- Wing TP = None (wing lives for duration, dies at expiry)
+- Same underlying / expiry, opposite type (pure gamma hedge)
+- Settings: `templates.wing_min_oi`, `templates.wing_max_spread_pct`, `templates.wing_chain_radius` (default ±20 strikes)
+
+**Scaled Close (TP scale ladder)** — Phase 3A
+
+`tp_scales_json` format:
+
+```json
+[
+  {"at_pct": 50, "close_pct": 30},
+  {"at_pct": 100, "close_pct": 40},
+  {"at_pct": 150, "close_pct": 30}
+]
+```
+
+When parent_qty fills: create N partial-close GTTs, each triggered at a spot level, each exiting a portion of the position:
+
+```
+scale 0: trigger at fill × (1 + 0.50) → close 30% of qty at that level
+scale 1: trigger at fill × (1 + 1.00) → close 40% of qty at that level
+scale 2: trigger at fill × (1 + 1.50) → close 30% of qty at that level
+```
+
+- Qty allocation: floors per leg, then fixes any remainder to the last leg (ensures ∑close_pct × qty = parent_qty)
+- Each leg is independent GTT (fires when its trigger is crossed, stays live even if others don't fire)
+- Example: 100 qty, scales [30%, 40%, 30%] → [30 qty, 40 qty, 30 qty] GTTs at [+50%, +100%, +150%] respectively
+- Useful for: taking partial profits at psychological levels, de-risking early winners, locking in incremental gains
+
+#### Settings
+
+`/admin/settings` → `templates.*` bucket:
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `templates.wing_min_oi` | int | 1000 | Minimum OI on wing candidate (filter noise) |
+| `templates.wing_max_spread_pct` | numeric | 10 | Max bid-ask spread as % of LTP (filter illiquid strikes) |
+| `templates.wing_chain_radius` | int | 20 | Chain scan ±N strikes around parent strike |
+| `templates.trail_poll_interval_seconds` | int | 30 | How often `_task_trail_stop` samples LTP |
+
+#### Attachment row state
+
+`AlgoOrder` gained:
+
+| Column | Type | Notes |
+|---|---|---|
+| `template_id` | FK | null if no template attached |
+| `attached_gtts_json` | TEXT | Persisted bundle of GTT specs at fill time. Null → not yet attached. Non-null → idempotent; refire is no-op. |
+
+OrderCard (LogPanel Order grid) renders:
+- Row chip `tmpl:#N ✓` once `attached_gtts_json` is populated post-fill
+- Row chip `tmpl:#N …` while OPEN (pending fill)
+- No chip if `template_id IS NULL`
+
+#### Postback + Chase integration
+
+**Kite LIVE postback wiring** (Phase 0) — when broker postback arrives (via webhook or polling), hook `_fire_template_attach_on_fill` invokes `apply_template_to_order(apply_path='live')` with the fill price from the postback. Gated by `not (attached_gtts_json IS NOT NULL)` so duplicate postbacks are safe.
+
+**Chase terminal hook** (Phase 0.5) — when a chased LIMIT order fills via the paper engine's `_emit_chase_terminal`, same `apply_template_to_order(apply_path='live')` is called (doesn't wait for postback). AlgoOrder lookup via `algo_order_id` → `broker_order_id` — chase swaps the ID on every cancel-and-replace via `_sync_algo_order_id`, so template attach finds the row even on retry.
+
+**Redundancy** — both postback + chase terminal trigger attach; the `attached_gtts_json` idempotency guard handles race. If both fire in quick succession (postback arrives while chase is mid-process), second invocation sees `attached_gtts_json IS NOT NULL` and exits cleanly.
+
+#### Per-broker capability matrix
+
+| Broker | TP | SL | Trail | Wing | Scale | Status |
+|---|---|---|---|---|---|---|
+| **Kite** | ✅ | ✅ | ✅ | ✅ | ✅ | Full support (Phases 0–3B) |
+| **Dhan** | ❌ | ❌ | ❌ | ❌ | ❌ | NotImplementedError; no GTT wiring yet |
+| **Groww** | ❌ | ❌ | ❌ | ❌ | ❌ | NotImplementedError; OCO support future |
+
+Operator sees an error at ticket submit if they attempt to attach a template on a non-Kite parent order. Template attachment is skipped, parent order places normally.
+
+#### Test matrix (from shipped phases)
+
+| Phase | Commit | Feature |
+|---|---|---|
+| 0 | `ad89fb7c` | LIVE postback wiring. AlgoOrder.template_id + attached_gtts_json. OrderTicket Default/None toggle. |
+| 1A | `6f4f49f7` | `tp_order_type` LIMIT/MARKET. `default-long-option` seeded template. Seeder enforces one-default per user. |
+| 1B | `efc80651` | Wing-by-premium chain scan. Async `_pick_wing_by_premium()`. `default-short-vol` seeded template. |
+| 0.5 | `68621c50` | Chase ↔ template integration. `_sync_algo_order_id` on cancel-and-replace. Chase terminal fires `apply_template_to_order` directly. |
+| 2 | `4e19598a` | Audit + visibility chip. No agent overlap detected. AlgoOrderInfo.template_id + attached_gtts_json. OrderCard `tmpl:#N ✓` chip. |
+| 3A | `3968c28d` | Scale-out targets. `tp_scales_json` TEXT column. Multi-trigger GTT ladder. |
+| 3B | `fd756146` | Trailing stop. `sl_trail_pct` NUMERIC(8,4). `_task_trail_stop` background task (every 30s). Kite-only; Dhan/Groww raise NotImplementedError. |
+
+Bonus fixes shipped:
+- `02fcd6b8` — priceFmt always 2 decimals (fixed ≥100 rounding artifact)
+- `2cba914e` — `template_attach` tolerates `overrides=None` (basket leg fix)
+- `4c1e1354` — Preflight SEGMENT_INACTIVE skipped for non-Kite brokers (Dhan profile fix)
+
+#### File map
+
+| Path | Purpose |
+|---|---|
+| `backend/api/models.py::OrderTemplate` | SQLAlchemy row |
+| `backend/api/routes/orders.py` | `/api/orders/ticket` handler, template resolution, postback hook |
+| `backend/api/algo/templates.py` | `resolve_template_plan`, `apply_template_to_order`, wing chain scan |
+| `backend/api/background.py::_task_trail_stop` | Trailing-stop modifier loop |
+| `frontend/src/lib/order/OrderTicket.svelte` | Template dropdown (Default/None toggle) |
+| `frontend/src/lib/OrderCard.svelte` | Row chip rendering (`tmpl:#N ✓`) |
+
 ### End-to-end flow on a real tick
 
 ```

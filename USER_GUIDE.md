@@ -99,6 +99,53 @@ The platform ships with 14 loss / risk agents pre-seeded and active:
 
 Edit them from `/agents` — change a threshold, add Telegram-only notification, or attach a `chase_close_positions` action that auto-cuts losses. The conditions are JSON trees you can read like a sentence.
 
+---
+
+## Order templates — per-position exit rules
+
+Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an order, you pick a template from the OrderTicket dropdown. Once the order fills, the platform automatically places the exit orders on the broker.
+
+Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is independent. You can mix and match: TP + SL, or just TP, or SL with a trailing stop that chases the price higher.
+
+### Three ways to use templates
+
+**Default template (most common)** — you choose one template as your default in `/admin/templates`. Every time you open the OrderTicket, it's pre-filled. You can override it per-ticket by clicking None.
+
+**Per-ticket pick** — Open OrderTicket → toggle "Default" off, or click "None". Pick a different template for that single trade.
+
+**No template** — Leave it as None. Order places with no auto exits; you close it manually or with an agent.
+
+### Exit mechanics (plain English)
+
+**Take-Profit (TP)** — auto-sell at a higher price (long) or auto-buy at a lower price (short). Pick % above your entry or ₹ per contract. When the market touches your target, the platform executes it. Type: LIMIT (exact price, may miss in fast markets) or MARKET (fills fast, no price guarantee).
+
+**Stop-Loss (SL)** — auto-sell (long) or auto-buy (short) if the market moves against you. Same per-entry or per-₹ choices. Always LIMIT to cap your slippage.
+
+**Trailing Stop** — SL that chases profit. Start at −1%, but if the position goes +2%, the stop rises to lock in +1% of gain. Platform checks every 30 seconds and moves the stop higher (long) or lower (short) as price improves. Useful for letting winners run while protecting downside.
+
+**Hedge Wing** — for option sellers. Sell 1 call → auto-buy 1 put at a nearby strike to hedge gamma. Platform scans the option chain, picks a reasonable wing candidate, and buys it when your parent fills.
+
+**Scaled Close** — multi-target TP. Instead of exiting all at once, exit 30% at +50%, 40% at +100%, 30% at +150%. Locks in incremental gains on the way up.
+
+### Seeded templates
+
+Platform ships with two:
+
+| Template | Use for | What happens at fill |
+|---|---|---|
+| **default-long-option** | Buying calls or puts | TP at +80% MARKET. No SL, no wing, no scale. |
+| **default-short-vol** | Selling puts / calls | TP at +10% LIMIT, SL at −20%, buys a hedge wing 1 strike away. |
+
+You can edit these, create new ones, and mark any template as your default so it auto-fills in OrderTicket.
+
+### Troubleshooting
+
+**My TP/SL didn't attach** — after the order fills, check the order's row on the `/orders` page. You should see a chip `tmpl:#N ✓` once the exit orders are live. If you see `tmpl:#N …` (dots), they're still placing. If there's no chip, the template didn't attach — check the `/api/admin/logs` for errors. Note: templates work on Kite only today; other brokers show an error at submit.
+
+**My trailing stop isn't advancing** — check `/api/admin/settings` → `trail_poll_interval_seconds` (default 30s). Stop advances on each poll. If the setting is very high, the lag increases. Also: trailing stop only works on Kite.
+
+**Can I use templates with agents?** — yes, independently. An agent can place an order (with a template attached); a separate template can handle the exit. They don't conflict — agents manage _when_ to trade, templates manage _how_ to exit.
+
 ### Adding your own agent
 
 Easiest path: copy an existing rule that's close to what you want, change the threshold or the action. The platform validates your edits before saving — you'll see a green check or a red error before the save button works.

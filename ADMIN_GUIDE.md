@@ -44,6 +44,164 @@ Put together: the first alert when things go bad is the static agent. After that
 
 ---
 
+## Order Templates — per-position exit rules (Kite only)
+
+Templates automate the exit workflow: operator picks one at order entry, platform attaches broker-native GTT (Good-Till-Triggered) orders when the position fills. One template per user is marked default (auto-fills OrderTicket); operator can override per-ticket.
+
+### Page: `/admin/templates` (admin-guarded)
+
+| Section | Feature |
+|---|---|
+| **List** | All templates (system-seeded + custom). Columns: Name | Type | TP | SL | Wing | Scale | Trail | Active | Default (radio) | Edit / Delete |
+| **Edit form** | name / description / tp_type (LIMIT / MARKET) / tp_pct / tp_abs / sl_pct / sl_abs / sl_trail_pct / wing_strike_offset / wing_premium_pct / tp_scales_json (JSON array) |
+| **Action** | "Save as Default" button (sets `is_default=True`, auto-demotes prior default) |
+
+Template rows show inline chips:
+- `TP` (gold) — tp_type + tp_pct/tp_abs
+- `SL` (red) — sl_pct/sl_abs
+- `SL X% trail Y%` (red) — when sl_trail_pct is set
+- `WING ±N` (teal) — wing_strike_offset
+- `Scale ×M` (violet) — when tp_scales_json has M entries
+- `MKT` (orange) — when tp_type is MARKET (LIMIT is default, unmarked)
+
+### OrderTicket integration
+
+Two-pill toggle in the entry card header:
+
+```
+[Default ✓] [None]
+```
+
+- **Default ✓** — uses the operator's marked-default template (or first seeded if no default chosen yet)
+- **None** — no template; order places without auto exits
+
+When Default is selected, the card shows inline summary below the toggle: `"TP +50%, SL −1%, Scale ×3"` or similar.
+
+### Exit rule row chips
+
+After the order fills, OrderCard (in LogPanel Order tab) renders:
+
+| State | Chip | Meaning |
+|---|---|---|
+| Template attached, GTTs live | `tmpl:#1 ✓` | All exits are placed. `#1` is the template ID. |
+| Template attached, placing | `tmpl:#1 …` | GTTs still being placed; brief (~1 sec) state during postback processing. |
+| No template | (none) | Order placed without templates. |
+
+Hover tooltip on chip shows template name + exit summary.
+
+### Settings
+
+`/admin/settings` → `templates.*` (all preserved across deploys):
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `wing_min_oi` | int | 1000 | Wing chain scan filters out strikes with OI < this. Reduces noise on illiquid strikes. |
+| `wing_max_spread_pct` | numeric | 10 | Wing filter: skip if bid-ask spread > this % of LTP. |
+| `wing_chain_radius` | int | 20 | Wing scan scope: ±N strikes around parent strike. Reduces API calls. |
+| `trail_poll_interval_seconds` | int | 30 | How often the background task checks LTP and advances trailing stops. Lower = tighter trail, more API calls. |
+
+### Seeded system templates
+
+Both auto-inserted on first boot; users can edit / delete them (not "system-locked" — templates can be freely customized).
+
+**default-long-option** — designed for BUY calls / BUY puts
+- TP: +80% MARKET (takes big moves fast)
+- SL: none
+- Wing: none
+- Scale: none
+- Trail: none
+
+**default-short-vol** — designed for SELL puts / SELL calls
+- TP: +10% LIMIT (tight profit lock)
+- SL: −20% LIMIT (realistic stop for short)
+- Wing: −1 strike (hedges gamma; wing_premium_pct auto-picks based on nearby premium)
+- Scale: none
+- Trail: none
+
+### API routes (admin-guarded)
+
+| Route | Purpose |
+|---|---|
+| `GET /api/admin/templates` | List all (system + user-created) |
+| `GET /api/admin/templates/{id}` | Read one |
+| `POST /api/admin/templates` | Create custom template |
+| `PATCH /api/admin/templates/{id}` | Edit (including setting is_default; auto-demotes prior default) |
+| `DELETE /api/admin/templates/{id}` | Delete (including seeded ones if customized away) |
+| `POST /api/orders/ticket` | Place order with template. Template ID optional in request body. |
+
+### Execution flow at order fill
+
+1. Operator enters order + picks template (or uses default)
+2. `POST /api/orders/ticket` validates mode (templates on LIVE / PAPER only)
+3. Broker.place_order() fires; order lands
+4. Order fill detected (Kite postback or chase engine terminal)
+5. `apply_template_to_order()` resolves TP/SL/wing/scale/trail → N GTT specs
+6. For each spec: `broker.place_gtt()` fires → enters broker's GTT engine
+7. `AlgoOrder.attached_gtts_json` populated with context (idempotent; re-fire = no-op)
+8. OrderCard chip renders `tmpl:#N ✓`
+
+### Wing hedge chain scan
+
+When resolving wing (Phase 1B):
+
+```
+parent = SELL NIFTY25APR22000CE (example)
+scope = NIFTY25APR22XXX PE (same underlying + expiry, opposite type)
+radius = wing_chain_radius (default ±20 strikes)
+```
+
+Broker.quote() fetches ~40 candidate PE strikes. Score each by: `|ltp − wing_premium_pct × parent_ltp| + spread_penalty`. Filter out OI < wing_min_oi and spread% > wing_max_spread_pct. Pick closest-scored candidate (greedy).
+
+If no candidates pass the filters, wing skips (error logged; parent still places). Common on low-liquidity options.
+
+### Scaled close (multi-target TP)
+
+Example `tp_scales_json`:
+```json
+[
+  {"at_pct": 50, "close_pct": 30},
+  {"at_pct": 100, "close_pct": 40},
+  {"at_pct": 150, "close_pct": 30}
+]
+```
+
+When parent (100 qty) fills → create 3 GTTs:
+- GTT 1: trigger at fill × 1.50 → close 30 qty (30%)
+- GTT 2: trigger at fill × 2.00 → close 40 qty (40%)
+- GTT 3: trigger at fill × 2.50 → close 30 qty (30%)
+
+Total closed: 100 qty. Each GTT is independent (fires in any order, doesn't block others). Qty allocation uses floor + remainder-fix so the sum always equals parent qty.
+
+### Trailing stop mechanics
+
+When parent fills + sl_trail_pct is set:
+
+```
+for long:
+  highest_ltp_seen = fill_price
+  initial_trigger = fill_price × (1 - sl_pct)
+  
+  [every trail_poll_interval_seconds]
+  highest_ltp_seen = max(highest_ltp_seen, current_ltp)
+  current_trigger = highest_ltp_seen × (1 - sl_trail_pct)
+  if current_trigger > initial_trigger:
+    broker.modify_gtt(trigger=current_trigger, price=current_trigger)
+```
+
+For shorts, invert (lowest_ltp_seen, subtraction becomes addition). Context (`highest_ltp_seen`, `current_trigger`, etc.) lives in `AlgoOrder.attached_gtts_json` so the task survives restarts.
+
+### Troubleshooting table
+
+| Issue | Check |
+|---|---|
+| Template not attaching after fill | Order's `attached_gtts_json` null? Check `/api/admin/logs` for "template attach error". Broker must be Kite; other brokers reject. |
+| Wing not filling / showing wrong strike | Check `templates.wing_min_oi` and `templates.wing_max_spread_pct` settings. Highly illiquid options may have no candidates. Check broker logs. |
+| Trailing stop not advancing | Check `trail_poll_interval_seconds` — if set to 3600s, stop updates hourly. Default 30s. Also Kite-only; other brokers raise NotImplementedError. |
+| Operator says "I can't pick my template in OrderTicket" | Confirm template `is_active=True` (soft-delete, if you want to hide it). No UI toggle yet; DB edit required (or re-save from admin form). |
+| Scale-out close_pct doesn't sum to 100% | Submit will raise 422 validation error. Fix in the template form; cumulative must be ≤ 100% (can be less if operator wants some qty to remain). |
+
+---
+
 ## How agents work — end to end
 
 Here's what happens every 5 minutes during market hours:
