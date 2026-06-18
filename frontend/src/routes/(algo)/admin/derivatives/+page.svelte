@@ -340,13 +340,24 @@
   const BAND_ORDER = { close: 0, netted: 1, otm: 2 };
 
   const expiryCloseAnalysis = $derived.by(() => {
-    // Each array now carries rows with _band ∈ {'close','netted','otm'}
-    // plus _pairId (shared by both members of a netted pair),
-    // _closeId (unique to each to-close row), and _reason.
+    // Track candidatePositions + selectedExpiries reactively (this is
+    // the heavy O(N²) work — we want it to re-run when positions
+    // actually change, but NOT on every 5 s `strategy` repoll just
+    // because spot drifted a paisa or analytics returned fresh refs).
+    // Spot + leg analytics are read via `untrack` so the derive
+    // captures them as of the moment of re-evaluation without
+    // re-firing on every poll. Trade-off: bands won't immediately
+    // re-classify on a sub-strike spot drift; the next position poll
+    // (30 s) re-runs the analysis cleanly. Operator never sees stale
+    // since the only way bands flip is positions adding/closing.
+    const cps = candidatePositions;
+    const expFilter = selectedExpiries;
+    const spot = untrack(() => Number(strategy?.spot || 0));
+    const legA = untrack(() => legAnalyticsBySymbol);
+    void expFilter;
     /** @type {{equity:any[], commodity:any[]}} */
     const result = { equity: [], commodity: [] };
-    const spot = Number(strategy?.spot || 0);
-    if (!spot || !candidatePositions.length) return result;
+    if (!spot || !cps.length) return result;
 
     // First pass — annotate every option candidate with parsed
     // metadata, ITM verdict, and theta from the strategy analytics.
@@ -355,14 +366,14 @@
     // arrive with empty / NSE exchange and were getting tagged as
     // equity before this fix. Skip futures, zero-qty, and drafts.
     const annotated = [];
-    for (const c of candidatePositions) {
+    for (const c of cps) {
       const qty = Number(c.qty || 0);
       // Operator: closed positions of the selected expiry should still
       // appear in the Close-tab analysis — they're informational ("this
       // expiry leg was closed today, nothing to do"). When no expiry is
       // selected, keep the old behavior of hiding zero-qty rows so the
       // unfiltered Close list isn't noisy with historical closeouts.
-      if (qty === 0 && !selectedExpiries.length) continue;
+      if (qty === 0 && !expFilter.length) continue;
       if (c.source === 'draft') continue;
       const inst = getInstrument(String(c.symbol || '').toUpperCase());
       if (!inst) continue;
@@ -374,7 +385,7 @@
       const expiry = String(inst.x || '');
       const segment = _MCX_UNDERLYINGS.has(underlying) ? 'commodity' : 'equity';
       const isITM = optType === 'CE' ? spot > strike : spot < strike;
-      const lg = legAnalyticsBySymbol[c.symbol];
+      const lg = legA[c.symbol];
       const theta = Number(lg?.greeks?.theta ?? 0) || 0;
       const otmDist = isITM ? 0
         : (optType === 'CE' ? strike - spot : spot - strike);
@@ -1386,14 +1397,19 @@
    *
    *  Pass-through when no equity legs are enabled (preserves
    *  strategy.payoff identity for OptionsPayoff $derived caches). */
-  const _mergedPayoff = $derived.by(() => {
-    const base = strategy?.payoff;
-    if (!Array.isArray(base) || base.length === 0) return base || [];
+  /** Shared linear-leg computation — every consumer
+   *  (`_mergedPayoff` / `_mergedGreeks` / `_mergedRisk`) needs to
+   *  know each eq leg's effective (qty, cost) after proxy-β scaling.
+   *  Pulled into one derived so the proxy lookup + math run ONCE per
+   *  state change, not three times. ETF case (β=null) → β=1.0 implicit;
+   *  Stage 3 stock-vs-index uses the regression slope. Skips legs
+   *  whose proxy price or target spot is unusable. */
+  const _equityLinearLegs = $derived.by(() => {
     const eqs = _equityLegs;
-    if (eqs.length === 0) return base;
     /** @type {Array<{qty:number,cost:number}>} */
-    const linearLegs = [];
-    const _targetSpot = Number(strategy?.spot) || 0;
+    const out = [];
+    if (!eqs.length) return out;
+    const targetSpot = Number(strategy?.spot) || 0;
     for (const eq of eqs) {
       const cost = Number(eq.avg_cost);
       if (!Number.isFinite(cost)) continue;
@@ -1402,26 +1418,24 @@
       let effQty = rawQty;
       let effCost = cost;
       if (eq.proxy_for) {
-        // Stage 2 ETF tracking case (β = null / 1.0):
-        //   market_value     = raw_qty × proxy_LTP
-        //   effective_qty    = market_value / target_spot
-        //   investment_value = raw_qty × avg_cost
-        //   effective_cost   = investment_value / effective_qty
-        // Stage 3 stock-vs-index case (β from regression):
-        //   effective_qty    = β × market_value / target_spot
-        // Skip when either price is missing.
         const proxyLtp = Number(eq.ltp);
-        if (proxyLtp <= 0 || _targetSpot <= 0) continue;
-        const _row = getProxyRow(eq.symbol, eq.proxy_for);
-        const _beta = _row?.beta != null ? Number(_row.beta) : 1.0;
+        if (proxyLtp <= 0 || targetSpot <= 0) continue;
+        const row = getProxyRow(eq.symbol, eq.proxy_for);
+        const beta = row?.beta != null ? Number(row.beta) : 1.0;
         const marketValue = rawQty * proxyLtp;
         const investmentValue = rawQty * cost;
-        effQty  = (_beta * marketValue) / _targetSpot;
+        effQty = (beta * marketValue) / targetSpot;
         if (effQty === 0) continue;
         effCost = investmentValue / effQty;
       }
-      linearLegs.push({ qty: effQty, cost: effCost });
+      out.push({ qty: effQty, cost: effCost });
     }
+    return out;
+  });
+  const _mergedPayoff = $derived.by(() => {
+    const base = strategy?.payoff;
+    if (!Array.isArray(base) || base.length === 0) return base || [];
+    const linearLegs = _equityLinearLegs;
     if (linearLegs.length === 0) return base;
     return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
       let add = 0;
@@ -1479,26 +1493,10 @@
   const _mergedGreeks = $derived.by(() => {
     const base = strategy?.aggregate_greeks;
     if (!base) return null;
-    const eqs = _equityLegs;
-    if (eqs.length === 0) return base;
+    const linearLegs = _equityLinearLegs;
+    if (linearLegs.length === 0) return base;
     let extraDelta = 0;
-    const _targetSpot = Number(strategy?.spot) || 0;
-    for (const eq of eqs) {
-      const rawQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
-      if (rawQty === 0) continue;
-      let effQty = rawQty;
-      if (eq.proxy_for) {
-        // Same derivation as _mergedPayoff — β × market_value /
-        // target_spot. ETF case has β=1.0 implicit; Stage 3
-        // stock-vs-index uses the regression slope.
-        const proxyLtp = Number(eq.ltp);
-        if (proxyLtp <= 0 || _targetSpot <= 0) continue;
-        const _row = getProxyRow(eq.symbol, eq.proxy_for);
-        const _beta = _row?.beta != null ? Number(_row.beta) : 1.0;
-        effQty = (_beta * rawQty * proxyLtp) / _targetSpot;
-      }
-      extraDelta += effQty;
-    }
+    for (const l of linearLegs) extraDelta += l.qty;
     if (extraDelta === 0) return base;
     return { ...base, delta: Number(base.delta || 0) + extraDelta };
   });
@@ -1769,6 +1767,29 @@
    *  or instrumentsReady changes — the chain picker always reflects
    *  the freshest book without a manual refresh. */
   const _COMMON_INDICES_AND_COMMODITIES = POPULAR_UNDERLYINGS;
+  // Static slice of the chain-picker universe — common indices /
+  // commodities + every underlying from the instruments cache. Depends
+  // only on `instrumentsReady`, so the ~5 k-entry universe scan runs
+  // ONCE after the cache warms, not on every 30 s positions poll
+  // (which was the prior cost — re-scanning the full Kite dump just to
+  // surface a dropdown the operator isn't even looking at).
+  const _staticUnderlyingChoices = $derived.by(() => {
+    if (!instrumentsReady) return /** @type {string[]} */ ([]);
+    const seen = new Set();
+    /** @type {string[]} */
+    const out = [];
+    for (const u of _COMMON_INDICES_AND_COMMODITIES) {
+      const k = String(u || '').toUpperCase();
+      if (k && !seen.has(k)) { seen.add(k); out.push(k); }
+    }
+    for (const u of suggestUnderlyings('', 100000)) {
+      const k = String(u || '').toUpperCase();
+      if (k && !seen.has(k)) { seen.add(k); out.push(k); }
+    }
+    return out;
+  });
+  // Dynamic prefix — currently-selected underlying + everything held.
+  // Cheap to rebuild on each positions poll.
   const underlyingChoices = $derived.by(() => {
     if (!instrumentsReady) return [];
     const seen = new Set();
@@ -1781,19 +1802,11 @@
       seen.add(k);
       out.push(k);
     };
-    // 1. Currently-selected underlying — top of the list.
     push(selectedUnderlying);
-    // 2. Underlyings the operator already holds.
     for (const p of positions) {
       push(String(p.symbol || '').replace(/\d.*$/, ''));
     }
-    // 3. Common indices + MCX commodities.
-    for (const u of _COMMON_INDICES_AND_COMMODITIES) push(u);
-    // 4. Everything else from the instruments cache — the full
-    // universe (Kite dump has ~5k unique underlyings, well under
-    // any sane bound) so a typed substring can match anything,
-    // not just the alphabetical-first-1000 slice.
-    for (const u of suggestUnderlyings('', 100000)) push(u);
+    for (const u of _staticUnderlyingChoices) push(u);
     return out;
   });
 
@@ -1911,7 +1924,11 @@
         chainQuotesKey = key;
       }
       _refreshChainQuotes();
-      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 5000);
+      // marketAwareInterval — same self-pausing as visibleInterval but
+      // also short-circuits outside trading hours, so the chain poll
+      // stops calling isMarketOpen() + new Date() per tick when the
+      // operator leaves the page open overnight.
+      chainQuotesPoll = marketAwareInterval(_refreshChainQuotes, 5000);
     });
   });
   onDestroy(() => {
@@ -2627,6 +2644,10 @@
   // change return the same reference and downstream derives stay
   // memoized.
   let _synthCache = /** @type {{key: string, value: any} | null} */ (null);
+  // Signature of the legs that produced the current `strategy` value
+  // via the broker fetch path. Used to short-circuit duplicate
+  // round-trips on the 5 s poll when nothing has changed.
+  let _stratLastKey = '';
   function _synthCacheKey(eqs) {
     const parts = [selectedUnderlying || ''];
     for (const e of eqs) {
@@ -2780,10 +2801,28 @@
     const oldU = strategy?.legs?.length ? decomposeSymbol(strategy.legs[0].symbol).root : '';
     if (newU && oldU && newU !== oldU) {
       strategy = null;
+      _stratLastKey = '';
+    }
+    // Legs-signature memo — the 5 s `marketAwareInterval` polls
+    // this function whether or not the leg set actually changed.
+    // When it hasn't (steady-state book, no new fills), the
+    // backend re-fetches broker quotes + recomputes BS IV +
+    // builds a 41-point payoff curve for the same inputs and
+    // sends back what the chart already has. Compare the
+    // cleanLegs signature to the last successful fetch; if
+    // identical, skip the network round-trip entirely. Same
+    // pattern the equity-only synth path already uses.
+    const legsKey = cleanLegs.map(l =>
+      `${l.symbol}:${l.qty}:${l.avg_cost ?? ''}:${l.ltp ?? ''}:${l.expiry ?? ''}`
+    ).join('|');
+    if (strategy && legsKey === _stratLastKey) {
+      strategyErr = ''; _stratFails = 0;
+      return;
     }
     loading = true;
     try {
       strategy = await fetchStrategyAnalytics(cleanLegs);
+      _stratLastKey = legsKey;
       strategyErr = '';
       _stratFails = 0;
       _saveCache();
