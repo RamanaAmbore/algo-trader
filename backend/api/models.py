@@ -1011,6 +1011,16 @@ class DailyBook(Base):
         # One snapshot per symbol per day per account per kind. Re-running
         # the snapshot updates the row instead of duplicating.
         UniqueConstraint("date", "account", "kind", "symbol", name="uq_daily_book_day_acct_kind_sym"),
+        # Sprint F (post-audit) — `_override_stale_close_from_snapshot`
+        # (Sprint D) runs on every `/api/positions/` cache miss and
+        # executes a `DISTINCT ON (account, symbol) ... ORDER BY
+        # account, symbol, captured_at DESC` over kind='positions'.
+        # With ~100 positions × multiple accounts that's a real query.
+        # Composite supports the DISTINCT ON sort.
+        Index(
+            "ix_daily_book_kind_acct_sym_captured",
+            "kind", "account", "symbol", "captured_at",
+        ),
     )
 
 

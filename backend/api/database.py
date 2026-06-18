@@ -295,6 +295,14 @@ async def init_db() -> None:
             # is the actual on-disk effect.
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode_status "
             "ON algo_orders (mode, status)",
+            # Sprint F (post-audit perf) — composite to back the
+            # `DISTINCT ON (account, symbol)` query in
+            # `_override_stale_close_from_snapshot` (Sprint D close-
+            # override). Runs on every /api/positions/ cache miss; the
+            # plain (date, account) + (date, segment) indexes don't
+            # support the captured_at-desc sort.
+            "CREATE INDEX IF NOT EXISTS ix_daily_book_kind_acct_sym_captured "
+            "ON daily_book (kind, account, symbol, captured_at)",
         ):
             await conn.execute(text(stmt))
 

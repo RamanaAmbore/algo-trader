@@ -1206,7 +1206,15 @@ OrderCard (LogPanel Order grid) renders:
 | **Dhan** | ❌ | ❌ | ❌ | ❌ | ❌ | NotImplementedError; no GTT wiring yet |
 | **Groww** | ❌ | ❌ | ❌ | ❌ | ❌ | NotImplementedError; OCO support future |
 
-Operator sees an error at ticket submit if they attempt to attach a template on a non-Kite parent order. Template attachment is skipped, parent order places normally.
+As of Sprint C templates work on **all three brokers** with broker-specific shapes:
+
+- **Kite** — native two-leg OCO via `kite.place_gtt(trigger_type="two-leg")`. Single broker id per GTT. Modify atomically updates both legs.
+- **Dhan** — native two-leg OCO via Forever Order (`order_flag="OCO"`). Modify needs TWO `modify_forever` calls (`leg_name="ENTRY_LEG"` then `"TARGET_LEG"`); the pre-Sprint-A shape hardcoded ENTRY_LEG so the TP slot never updated and the trail silently missed. MCX/NCO blocked at `place_gtt` with a clear runtime error since Dhan Forever doesn't cover commodity.
+- **Groww** — emulated OCO via two single-trigger Smart Orders; returns compound `"oco:{a}+{b}"` id parseable by modify_gtt + cancel_gtt. `_place_oco_emulated` rolls back leg 0 if leg 1 fails so the book never holds a naked half. The background `_task_oco_pair_watcher` polls `broker.get_gtts()` every `templates.oco_pair_poll_seconds` (default 15s) and cancels the surviving sibling when one leg fires.
+
+**Persistence shape**: `attached_gtts_json` carries an optional `sibling_id` pointer per emulated-OCO entry plus `parent_account` + `parent_exchange` so the pair-watcher knows which broker to query without re-resolving from `AlgoOrder`. Native OCO entries keep the legacy shape (single broker id, two-leg trigger_type).
+
+**Operator-facing capability surface**: `GET /api/admin/brokers/{account}/capabilities` returns the `BrokerCapabilities` dataclass (pure read, no broker call). OrderTicket fetches it on account-change (cached in-memory per page lifetime) and renders an amber warning chip below the template summary when the selected template asks for a feature the broker can't provide natively: "Groww OCO emulated — ~15s race window", "Dhan can't trail — SL stays fixed", etc. Operator sees the gap at SUBMIT time, not at fill time.
 
 #### Test matrix (from shipped phases)
 
@@ -1219,11 +1227,17 @@ Operator sees an error at ticket submit if they attempt to attach a template on 
 | 2 | `4e19598a` | Audit + visibility chip. No agent overlap detected. AlgoOrderInfo.template_id + attached_gtts_json. OrderCard `tmpl:#N ✓` chip. |
 | 3A | `3968c28d` | Scale-out targets. `tp_scales_json` TEXT column. Multi-trigger GTT ladder. |
 | 3B | `fd756146` | Trailing stop. `sl_trail_pct` NUMERIC(8,4). `_task_trail_stop` background task (every 30s). Kite-only; Dhan/Groww raise NotImplementedError. |
+| Sprint A | `24cced42`, `d2c12c4c` | Reconcile + paper-engine paths fire template attach. Postback HMAC skips non-Kite. `parent_product` no longer hardcoded NRML. Basket apply_path="preview". Two-leg OCO trail persists `tp_trigger` so the SL ratchets while TP rides through. `default-bear` moved to `sell_any` scope. PATCH templates enforces one-default-per-scope. `recover_from_db` re-hydrates `template_id` / `product` / `mode`. |
+| Sprint B | `1cfaabe7` | `_KILLED_ORDER_IDS` switched to dict with 60-min TTL + lazy sweep. `_TEMPLATE_ATTACH_LOCKS` switched to `WeakValueDictionary`. New `AlgoOrder.filled_quantity` column + `_record_partial_fill` helper accumulates partials across chase iterations. Template attach plumbing reads `filled_quantity` when > 0 so exit GTT sizing matches actual filled portion. |
+| Sprint C | `903559ff` | Dhan `modify_gtt` leg dispatch fix (ENTRY_LEG + TARGET_LEG). Dhan MCX guard. Groww emulated OCO via compound id + atomic rollback. New `_task_oco_pair_watcher` background task. Sibling-id persistence in `attached_gtts_json`. `GET /api/admin/brokers/{account}/capabilities` endpoint + OrderTicket warning chip. |
+| Sprint D | `b89eb590` | OrderCard CANCELLED chip distinct slate-grey. `_summariseTemplate` surfaces TP scales + SL trail + unit-tagged Wing. PROXY chip stale-β tag (amber 2-7d, red >7d). Settings hedge-proxy table renders ⚠ on `regression_error`. EV/POP recomputed client-side over the merged curve when proxy/eq legs are layered. New `HedgeProxy.regression_error` column. New `from_kite_qty` reverse-translate fixes MCX chase unit-mismatch (partial-fill branch fired every poll). |
+| Sprint E | `eb0ce825` | Composite `(mode, status)` index on `algo_orders`. ChaseStatus.PARTIAL wired up. `has_any_override` includes `tp_scales_json` + `sl_trail_pct`. `_mark_rate_limited` sweeps expired entries. `|β| > 5` rejected with log. `datetime.now(timezone.utc)` consistency. `_resolve_token` caches `broker.instruments(exchange)` for 1h. `correlation` dropped from HedgeProxy admin create form. |
 
-Bonus fixes shipped:
+Bonus fixes shipped (pre-Sprint-A):
 - `02fcd6b8` — priceFmt always 2 decimals (fixed ≥100 rounding artifact)
 - `2cba914e` — `template_attach` tolerates `overrides=None` (basket leg fix)
 - `4c1e1354` — Preflight SEGMENT_INACTIVE skipped for non-Kite brokers (Dhan profile fix)
+- `499a4bd7` — Positions P∆: `_override_stale_close_from_snapshot` reads `daily_book.ltp` as authoritative prior-close. Pre-fix Kite's `positions.close_price` lagged the actual previous-session close during the MCX overnight window and produced phantom +₹1.33L day_pnl readings.
 
 #### File map
 
