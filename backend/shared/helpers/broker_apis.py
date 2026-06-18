@@ -148,7 +148,25 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
             return df_positions
         df_positions = pd.DataFrame(net_rows)
         if not df_positions.empty and "multiplier" in df_positions.columns:
-            df_positions['quantity'] = df_positions['quantity'] * df_positions['multiplier']
+            # MCX commodities: Kite ships `quantity` in LOTS but
+            # `last_price` / `close_price` are per CONTRACT (gram for
+            # GOLDM, barrel for CRUDEOIL, etc.) so we multiply qty by
+            # `multiplier` (lot_size) to put it in contract units —
+            # downstream consumers can do `qty × price = ₹` without
+            # caring about the per-instrument lot size.
+            #
+            # CRITICAL: do the same for overnight_quantity +
+            # day_buy_quantity + day_sell_quantity. They land in the
+            # decomposed day_pnl formula alongside last_price/close_price
+            # so they MUST be in the same unit. Pre-fix, MCX intraday
+            # fields stayed in lots and `sq × LTP` was off by `multiplier`
+            # — producing the GOLDM146000CE ₹61 537 phantom that pushed
+            # the strip's P∆ to ₹1.11 L on a real ~₹50 k day.
+            _mult = df_positions['multiplier']
+            df_positions['quantity'] = df_positions['quantity'] * _mult
+            for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity'):
+                if _c in df_positions.columns:
+                    df_positions[_c] = df_positions[_c] * _mult
 
         if not df_positions.empty:
             df_positions["account"] = account
