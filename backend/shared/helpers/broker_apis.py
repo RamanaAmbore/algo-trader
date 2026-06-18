@@ -210,32 +210,35 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
         _pnl_valid = (_ltp > 0) & (_avg > 0)
         df_positions['pnl'] = _pnl_calc.where(_pnl_valid, 0.0)
     # day_change_val priority:
-    #   1. broker.m2m (Kite — canonical, accounts for intraday adds)
-    #   2. The decomposed intraday formula `_dcv_calc` when the row has
-    #      the full intraday-field set. Dhan + Groww BOTH normalise
-    #      to this shape today, so this branch covers them — even
-    #      though Dhan pre-computes its own `day_change_val` field
-    #      using the SAME naive (LTP - close) × qty bug Kite avoided
-    #      by shipping m2m, we deliberately override it with our
-    #      decomposed formula so non-Kite accounts get the same
-    #      correct P∆ on intraday-added qty. Operator: "the positions
-    #      and underlyings may be from non-Kite accounts. payoff and
-    #      legs should be accurate for them too."
+    #   1. Decomposed intraday formula `_dcv_calc` when the row carries
+    #      the full intraday-field set. Mathematically exact AND
+    #      naturally FREEZES closed positions — once current_qty hits
+    #      0 the LTP coefficient drops to 0 and day_pnl becomes
+    #      `−overnight × close + day_sell_value − day_buy_value`, all
+    #      static numbers that don't drift between polls. Operator:
+    #      "closed position should freeze delta p and p — there will
+    #      not be any more change in day p&l and day % in legs."
+    #
+    #      Kite + Dhan + Groww all normalise to this shape today so
+    #      this branch covers every broker. Kite's `m2m` was the prior
+    #      winner but its closed-position semantics aren't documented
+    #      and observed to drift across polls; the decomposed formula
+    #      is trust-the-math and stays stable.
+    #   2. broker.m2m (only when decomposed isn't available — Kite
+    #      without intraday fields is the theoretical case).
     #   3. Adapter-shipped day_change_val (fallback for adapters that
     #      ship it but DON'T expose the intraday-field set).
     #   4. Naive (LTP - close) × qty (final fallback).
-    if 'm2m' in df_positions.columns:
+    if _intraday_fields.issubset(df_positions.columns):
+        # Trust _dcv_calc unconditionally. Validity guard: zero the
+        # row when LTP is obviously unhealthy (pre-open warm-up).
+        _dcv_valid = (_ltp > 0)
+        df_positions['day_change_val'] = _dcv_calc.where(_dcv_valid, 0.0)
+    elif 'm2m' in df_positions.columns:
         _broker_m2m = pd.to_numeric(df_positions['m2m'], errors='coerce')
         df_positions['day_change_val'] = _broker_m2m.where(
             _broker_m2m.notna(), _dcv_calc
         )
-    elif _intraday_fields.issubset(df_positions.columns):
-        # Trust _dcv_calc unconditionally — Dhan ships its own
-        # day_change_val computed with the naive formula and we want
-        # the corrected one. Validity guard: zero out the row when
-        # LTP / close are obviously unhealthy (pre-open warm-up).
-        _dcv_valid = (_ltp > 0)
-        df_positions['day_change_val'] = _dcv_calc.where(_dcv_valid, 0.0)
     elif 'day_change_val' in df_positions.columns:
         _broker_dcv = pd.to_numeric(df_positions['day_change_val'], errors='coerce')
         df_positions['day_change_val'] = _broker_dcv.where(
