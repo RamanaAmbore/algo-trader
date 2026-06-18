@@ -287,6 +287,14 @@ async def init_db() -> None:
             # chasing the residual".
             "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity "
             "INTEGER NOT NULL DEFAULT 0",
+            # Sprint E (audit #7) — composite (mode, status) index. Hot
+            # path for _task_trail_stop + _task_oco_pair_watcher +
+            # paper recover_from_db. CREATE INDEX IF NOT EXISTS works
+            # on every supported Postgres; metadata.create_all skips
+            # adding the index to an existing table so this migration
+            # is the actual on-disk effect.
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode_status "
+            "ON algo_orders (mode, status)",
         ):
             await conn.execute(text(stmt))
 

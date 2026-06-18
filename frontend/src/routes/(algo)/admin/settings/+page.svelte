@@ -81,7 +81,7 @@
    *                regression_error:string|null}>} */
   let proxies = $state([]);
   let proxiesErr = $state('');
-  let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true, correlation: '1.0' });
+  let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true });
   async function loadProxies() {
     proxiesErr = '';
     try { const r = await fetchHedgeProxies(); proxies = Array.isArray(r?.rows) ? r.rows : []; }
@@ -90,20 +90,23 @@
   async function addProxy() {
     proxiesErr = '';
     try {
-      const corrNum = Number(proxyForm.correlation);
+      // Sprint E (audit) — `correlation` removed from the create form.
+      // The regression endpoint overwrites it on every run with R², so
+      // any operator-set value was silently destroyed. The DB column
+      // defaults to 1.0 (ETF tracking case) which is the right
+      // pre-regression default anyway.
       const payload = {
         proxy_symbol: String(proxyForm.proxy_symbol || '').trim().toUpperCase(),
         target_root:  String(proxyForm.target_root  || '').trim().toUpperCase(),
         note:         proxyForm.note || null,
         is_active:    !!proxyForm.is_active,
-        correlation:  Number.isFinite(corrNum) && corrNum >= 0 && corrNum <= 1 ? corrNum : 1.0,
       };
       if (!payload.proxy_symbol || !payload.target_root) {
         proxiesErr = 'proxy_symbol and target_root required';
         return;
       }
       await createHedgeProxy(payload);
-      proxyForm = { proxy_symbol:'', target_root:'', note:'', is_active:true, correlation:'1.0' };
+      proxyForm = { proxy_symbol:'', target_root:'', note:'', is_active:true };
       await loadProxies();
     } catch (e) { proxiesErr = e?.message || 'create failed'; }
   }
@@ -437,9 +440,10 @@
       <input placeholder="Proxy (e.g. GOLDBEES)" bind:value={proxyForm.proxy_symbol} class="field-input w-32" />
       <input placeholder="Target (e.g. GOLD)"    bind:value={proxyForm.target_root}  class="field-input w-28" />
       <input placeholder="note" bind:value={proxyForm.note} class="field-input flex-1 min-w-32" />
-      <input type="number" step="0.01" min="0" max="1" placeholder="corr"
-             bind:value={proxyForm.correlation} class="field-input w-14"
-             title="Stage 3 placeholder — keep at 1.0 for ETF tracking hedges" />
+      <!-- Sprint E (audit) — correlation removed from the form. The
+           regression endpoint overwrites it with R² on every run, so
+           an operator-set value was silently destroyed. The DB default
+           (1.0) is the right pre-regression baseline. -->
       <button class="btn-primary text-[0.65rem] py-0.5 px-2" onclick={addProxy}>+ Add</button>
     </div>
   </div>

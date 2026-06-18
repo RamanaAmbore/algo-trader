@@ -735,6 +735,16 @@ async def chase_order(
             if filled_qty > 0 and filled_qty < remaining_qty:
                 # Partial fill — chase the residual.
                 remaining_qty -= filled_qty
+                # Sprint E (audit) — flip the in-memory status to
+                # PARTIAL so the ChaseResult returned to callers
+                # reflects partial-fill state. Pre-fix the enum value
+                # existed but was never set anywhere; downstream
+                # consumers (chase panel, MCP audit log) couldn't
+                # distinguish "still chasing the residual" from "no
+                # progress yet". Persistent state on the AlgoOrder row
+                # still uses OPEN / FILLED / UNFILLED — PARTIAL is an
+                # in-process classifier, not a DB-status.
+                result.status = ChaseStatus.PARTIAL
                 logger.info(f"Chase {symbol}: partial fill {filled_qty}, remaining {remaining_qty}")
                 emit("partial_fill", {"filled": filled_qty, "remaining": remaining_qty})
                 # Sprint B (audit #4) — persist the partial state on the

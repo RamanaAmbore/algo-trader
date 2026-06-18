@@ -891,10 +891,18 @@ def has_any_override(overrides: Optional[dict]) -> bool:
     """True when at least one TP/SL/Wing override is non-None — means
     "build an ad-hoc template even if no template_id was passed".
     Defensive against overrides=None from callers like
-    `_attach_basket_leg_template`."""
+    `_attach_basket_leg_template`.
+
+    Sprint E (audit) — `tp_scales_json` + `sl_trail_pct` were missing
+    from the override key set. An operator hand-passing only
+    `tp_scales_json` (or only `sl_trail_pct`) would get
+    has_any_override → False and the ad-hoc template path silently
+    did nothing — no GTT placed despite a valid override blob.
+    """
     if not overrides:
         return False
-    keys = ("tp_pct", "sl_pct", "wing_premium_pct", "wing_strike_offset")
+    keys = ("tp_pct", "sl_pct", "wing_premium_pct", "wing_strike_offset",
+            "tp_scales_json", "sl_trail_pct")
     return any(overrides.get(k) is not None for k in keys)
 
 

@@ -342,6 +342,16 @@ class AlgoOrder(Base):
     )
     filled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Sprint E (audit #7) — composite (mode, status) index. The trail-
+    # stop poller, OCO pair-watcher, and paper recovery all hit
+    # `WHERE mode = ? AND status = ?` on every cycle. With only the
+    # single-column indexes Postgres uses one and filters in memory;
+    # the composite lets it drop straight to the matching rows. ~µs
+    # impact on the small dev DB but matters as algo_orders grows.
+    __table_args__ = (
+        Index("ix_algo_orders_mode_status", "mode", "status"),
+    )
+
 
 class AlgoEvent(Base):
     __tablename__ = "algo_events"

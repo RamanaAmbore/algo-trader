@@ -55,9 +55,22 @@ def _is_rate_limited(broker_id: str) -> bool:
 
 
 def _mark_rate_limited(broker_id: str) -> None:
-    """Record a rate-limit hit; blocks this broker for _RATE_LIMIT_COOLOFF_SECONDS."""
+    """Record a rate-limit hit; blocks this broker for _RATE_LIMIT_COOLOFF_SECONDS.
+
+    Sprint E — sweep stale entries on every mark so the dict stays
+    bounded. Pre-fix a broker that was rate-limited once and then
+    never queried again kept its entry forever (the lazy sweep in
+    `_is_rate_limited` only fires when that broker is asked about
+    again). Edge case but real: a decommissioned account in
+    Connections that triggered a cool-off would leak. Cheap O(N)
+    sweep on every mark.
+    """
     with _RATE_LIMIT_LOCK:
-        _RATE_LIMIT_COOLOFF[broker_id] = time.time() + _RATE_LIMIT_COOLOFF_SECONDS
+        now = time.time()
+        for k, expires in list(_RATE_LIMIT_COOLOFF.items()):
+            if expires <= now:
+                _RATE_LIMIT_COOLOFF.pop(k, None)
+        _RATE_LIMIT_COOLOFF[broker_id] = now + _RATE_LIMIT_COOLOFF_SECONDS
 
 
 # Broker id → adapter class. Both "zerodha_kite" (canonical, stored in

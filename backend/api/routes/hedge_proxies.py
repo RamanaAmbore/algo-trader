@@ -69,6 +69,17 @@ _MCX_COMMODITY_ROOTS: set[str] = {
 }
 
 
+# Sprint E (audit) — in-process instruments cache. `_compute_regression`
+# calls `_resolve_token` TWICE per pair (proxy + target). The background
+# task runs N pairs in series, so without caching that's 2N
+# `broker.instruments(exchange=…)` calls on every regression sweep —
+# each one returns a ~90k-row list. Instruments don't change intraday;
+# a 1-hour TTL is more than safe (Kite refreshes the dump nightly).
+import time as _time
+_INSTRUMENTS_CACHE: dict[str, tuple[float, list]] = {}
+_INSTRUMENTS_CACHE_TTL = 3600
+
+
 def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
     """Resolve `symbol` to a Kite instrument_token via broker.instruments().
     Returns None when the symbol isn't found on the hinted exchange and
@@ -76,10 +87,17 @@ def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
     either. Best-effort — quiet skip on miss; regression handler logs
     the resolved-pair-count so the operator knows what worked."""
     import re
-    try:
-        insts = broker.instruments(exchange=exchange_hint) or []
-    except Exception:
-        return None
+    cache_key = str(exchange_hint or "")
+    cached = _INSTRUMENTS_CACHE.get(cache_key)
+    insts: list = []
+    if cached and cached[0] > _time.time():
+        insts = cached[1]
+    else:
+        try:
+            insts = broker.instruments(exchange=exchange_hint) or []
+        except Exception:
+            return None
+        _INSTRUMENTS_CACHE[cache_key] = (_time.time() + _INSTRUMENTS_CACHE_TTL, insts)
     # Exact match first.
     for inst in insts:
         ts = str(inst.get("tradingsymbol") or "").upper()
@@ -153,7 +171,11 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
         min_overlap = 20
         min_returns = 15
 
-    to_d = datetime.now()
+    # Sprint E (audit) — tz-aware UTC; matches the rest of the codebase.
+    # Daily-bar `historical_data` ignores the time component so this is
+    # behaviourally equivalent today, but a future broker client may
+    # validate tz-awareness and reject naive datetimes.
+    to_d = datetime.now(timezone.utc)
     from_d = to_d - timedelta(days=days + 30)   # +30 to absorb holidays / weekends
     try:
         p_bars = broker.historical_data(p_token, from_d, to_d, "day") or []
@@ -191,6 +213,22 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
     cov = float(np.cov(p_ret, t_ret, ddof=1)[0][1])
     var_t = float(np.var(t_ret, ddof=1))
     beta = cov / var_t if var_t > 0 else None
+    # Sprint E (audit) — reject pathological β values. |β| > 5 means
+    # one of the bar series has a near-singular outlier (split day, bad
+    # tick, fat-finger trade) that's driving the regression off the
+    # rails. Bloomberg PRM caps β inputs to [−3, 3] for stability;
+    # OptionVue warns on |β| > 2. We're slightly more permissive (5)
+    # because leveraged ETF proxies can legitimately overshoot 3, but
+    # 5 is the operator-meaningful "this is broken" threshold. Log
+    # before rejecting so the operator can see WHY their regression
+    # failed in the UI/API trace.
+    if beta is not None and abs(beta) > 5.0:
+        logger.warning(
+            f"hedge-proxy regression: rejecting implausible β={beta:.3f} for "
+            f"{proxy_symbol}→{target_root} (n={len(p_ret)}). Likely a bad "
+            f"bar in the input series."
+        )
+        return None, None, len(p_ret)
     r = float(np.corrcoef(p_ret, t_ret)[0][1]) if np.std(p_ret) > 0 and np.std(t_ret) > 0 else 0.0
     r2 = max(0.0, min(1.0, r * r))
     return beta, r2, len(p_ret)
@@ -226,6 +264,11 @@ class HedgeProxyCreate(msgspec.Struct):
     target_root:  str
     is_active:    bool = True
     note:         Optional[str] = None
+    # Sprint E (audit) — `correlation` is no longer an operator-supplied
+    # input. The regression endpoint OVERWRITES it with R² on every
+    # successful run, so any value set here is silently destroyed.
+    # Accepted for back-compat (older clients may still send 1.0) but
+    # the field is no longer surfaced on the admin create form.
     correlation:  float = 1.0
 
 
@@ -235,6 +278,8 @@ class HedgeProxyUpdate(msgspec.Struct):
     target_root:  Optional[str]   = None
     is_active:    Optional[bool]  = None
     note:         Optional[str]   = None
+    # Operator-set correlation is overwritten by the regression endpoint.
+    # Kept for back-compat (old patches may send it) but cosmetic.
     correlation:  Optional[float] = None
 
 
