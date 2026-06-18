@@ -217,8 +217,26 @@
 }
 /* Hide header menu/filter icons */
 .ag-theme-ramboq .ag-header-cell-menu-button,
-.ag-theme-ramboq .ag-header-cell-filter-button,
-.ag-theme-ramboq .ag-header-icon {
+.ag-theme-ramboq .ag-header-cell-filter-button {
+  display: none !important;
+}
+/* Sort-arrow polish — same shrink as the algo theme but tinted to
+   the public-site champagne-gold accent. */
+.ag-theme-ramboq .ag-sort-indicator-container {
+  margin-left: 2px;
+}
+.ag-theme-ramboq .ag-sort-indicator-icon {
+  font-size: 9px;
+  color: #d4920c;
+}
+.ag-theme-ramboq .ag-sort-indicator-icon svg,
+.ag-theme-ramboq .ag-sort-ascending-icon svg,
+.ag-theme-ramboq .ag-sort-descending-icon svg,
+.ag-theme-ramboq .ag-sort-none-icon svg {
+  width: 9px;
+  height: 9px;
+}
+.ag-theme-ramboq .ag-sort-none-icon {
   display: none !important;
 }
 .ag-theme-ramboq .ag-cell {
@@ -624,8 +642,30 @@
   border-right: 1px solid rgba(251,191,36,0.18) !important;
 }
 .ag-theme-algo .ag-header-cell-menu-button,
-.ag-theme-algo .ag-header-cell-filter-button,
-.ag-theme-algo .ag-header-icon {
+.ag-theme-algo .ag-header-cell-filter-button {
+  display: none !important;
+}
+/* Sort-arrow polish. The default Quartz indicator paints a chunky
+   12 px SVG; shrink to 9 px and tint amber so it reads at-a-glance
+   without dominating the header label. Operator: "can you make the
+   arrow in grid header look better and smaller arrow?" */
+.ag-theme-algo .ag-sort-indicator-container {
+  margin-left: 2px;
+}
+.ag-theme-algo .ag-sort-indicator-icon {
+  font-size: 9px;
+  color: #fbbf24;          /* amber-400 — matches the header foreground */
+}
+.ag-theme-algo .ag-sort-indicator-icon svg,
+.ag-theme-algo .ag-sort-ascending-icon svg,
+.ag-theme-algo .ag-sort-descending-icon svg,
+.ag-theme-algo .ag-sort-none-icon svg {
+  width: 9px;
+  height: 9px;
+}
+/* Hide the no-sort placeholder so unsorted columns don't carry a
+   ghost-arrow that competes with the active sort. */
+.ag-theme-algo .ag-sort-none-icon {
   display: none !important;
 }
 .ag-theme-algo .ag-cell {
