@@ -207,6 +207,13 @@
    * Composite key so the same option symbol in two broker accounts gets
    * an independent checkbox + isn't double-counted in P&L. */
   let enabledSymbols = $state({});
+  /** Master toggle — when ON, enabled equity-holding legs contribute to
+   *  the payoff curve + Greeks + risk metrics. When OFF, eq legs are
+   *  excluded even if their row checkbox is ticked. Default ON because
+   *  the canonical use case (covered call / collar / hedged-stock view)
+   *  needs the underlying overlaid. Operator: "add toggle button to
+   *  show underlying holdings plus options or only options." */
+  let _includeHoldings = $state(true);
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
@@ -1319,13 +1326,15 @@
   //                              profit locked in, applied as a
   //                              constant offset regardless of spot)
   const _equityLegs = $derived(
-    candidatePositions.filter(c => {
-      if (c.kind !== 'eq') return false;
-      if (!_isLegEnabled(c)) return false;
-      const qty = Number(c.qty || 0);
-      const opq = Number(c.opening_qty || 0);
-      return qty !== 0 || opq !== 0;
-    })
+    !_includeHoldings
+      ? []
+      : candidatePositions.filter(c => {
+          if (c.kind !== 'eq') return false;
+          if (!_isLegEnabled(c)) return false;
+          const qty = Number(c.qty || 0);
+          const opq = Number(c.opening_qty || 0);
+          return qty !== 0 || opq !== 0;
+        })
   );
   /** Backend payoff with the equity-holding contribution layered on
    *  per-spot. Operator: "include underlying from holdings in legs.
@@ -1468,9 +1477,12 @@
   });
 
   // Auto-trigger strategy analytics whenever the leg set changes — no
-  // explicit Analyze button needed.
+  // explicit Analyze button needed. Also re-runs when the Holdings
+  // toggle flips so the equity-only synth path (or its absence)
+  // takes effect immediately.
   $effect(() => {
     void legs;
+    void _includeHoldings;
     untrack(() => loadStrategy());
   });
 
@@ -2577,6 +2589,69 @@
   // etc.) — only escalates after 2+ failures in a row so the user
   // sees the chart appear cleanly when the next poll succeeds.
   let _stratFails = 0;
+
+  /** Build a strategy-shaped object for an equity-only basket so the
+   *  payoff card renders a linear long-stock curve when the operator
+   *  has enabled eq legs but no options/futures. Spot anchor comes
+   *  from the first eq leg with a usable LTP (falls back to avg_cost
+   *  when the broker quote is stale). The payoff curve is a 41-point
+   *  ZERO baseline over ±15% of spot; `_mergedPayoff` overlays the
+   *  per-leg linear contribution on top via the existing eq-layering
+   *  branch, and `_mergedRisk` / `_mergedGreeks` recompute the chips
+   *  from the merged curve. Returns null when no eq leg has a usable
+   *  spot anchor. */
+  function _synthEquityOnlyStrategy(eqs) {
+    if (!Array.isArray(eqs) || eqs.length === 0) return null;
+    const primary = eqs.find(e => Number(e.ltp) > 0) || eqs[0];
+    const spot = Number(primary.ltp) || Number(primary.avg_cost) || 0;
+    if (spot <= 0) return null;
+    const prevClose = Number(primary.prev_close) || spot;
+    const spanPct = 0.15;
+    const N = 41;
+    const lo = spot * (1 - spanPct);
+    const hi = spot * (1 + spanPct);
+    const payoff = [];
+    for (let i = 0; i < N; i++) {
+      const s = lo + (i / (N - 1)) * (hi - lo);
+      payoff.push({ spot: s, today_value: 0, expiry_value: 0 });
+    }
+    let netCost = 0;
+    for (const e of eqs) {
+      const qty  = Number(e.qty) || Number(e.opening_qty) || 0;
+      const cost = Number(e.avg_cost) || 0;
+      netCost += qty * cost;
+    }
+    return {
+      payoff,
+      spot,
+      spot_prev_close: prevClose,
+      spot_source:     'live',
+      spot_anchor_contract: null,
+      underlying:      selectedUnderlying || '',
+      legs:            [],
+      multi_expiry:    false,
+      expiry:          null,
+      days_to_expiry:  0,
+      span_sigmas:     0,
+      span_pct:        spanPct,
+      iv_proxy:        0,
+      net_cost:        netCost,
+      intermediate_curves: [],
+      risk: {
+        max_profit: 0,
+        max_loss:   0,
+        breakevens: [],
+        rr_ratio:   null,
+        ev:         null,
+        ev_pct:     null,
+        pop:        null,
+      },
+      aggregate_greeks: {
+        delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0,
+      },
+    };
+  }
+
   async function loadStrategy() {
     const cleanLegs = legs
       // Equity-holding legs are layered onto the rendered payoff at the
@@ -2613,7 +2688,25 @@
       })
       .filter(l => l.symbol && l.qty);
     if (!cleanLegs.length) {
-      strategy = null; strategyErr = ''; _stratFails = 0;
+      // Equity-only path — operator has enabled eq legs (stock holding /
+      // proxy hedge) but no options/futures. Synthesize a strategy
+      // shell with a zero-baseline payoff curve + minimal anchor
+      // fields. `_mergedPayoff` already overlays eq legs onto any
+      // base curve, so this lets the chart render a pure linear
+      // long-stock payoff with no backend round-trip. Operator:
+      // "payoff will just show the payoff for whatever is in legs."
+      // Gated by `_includeHoldings` — when OFF, eq legs don't render
+      // and strategy stays null (no chart).
+      const enabledEqs = _includeHoldings
+        ? candidatePositions.filter(c => c.kind === 'eq' && _isLegEnabled(c))
+        : [];
+      if (enabledEqs.length > 0) {
+        strategy = _synthEquityOnlyStrategy(enabledEqs);
+      } else {
+        strategy = null;
+      }
+      strategyErr = ''; _stratFails = 0;
+      _saveCache();
       return;
     }
     // Detect underlying change between the previous strategy fetch
@@ -2676,7 +2769,7 @@
         ts: Date.now(),
         positions, strategy, drafts,
         selectedAccounts, selectedUnderlying, selectedExpiries,
-        enabledSymbols,
+        enabledSymbols, _includeHoldings,
       }));
     } catch (_) { /* quota / private mode — silent */ }
   }
@@ -2697,6 +2790,9 @@
       if (Array.isArray(d.selectedExpiries))          selectedExpiries  = d.selectedExpiries;
       if (d.enabledSymbols && typeof d.enabledSymbols === 'object') {
         enabledSymbols = d.enabledSymbols;
+      }
+      if (typeof d._includeHoldings === 'boolean') {
+        _includeHoldings = d._includeHoldings;
       }
       return true;
     } catch (_) { return false; }
@@ -2946,6 +3042,18 @@
        account on the page — every leg landed via the chain routes
        through OrderTicket which needs an unambiguous routing
        account. -->
+  <div class="opt-trade" role="group" aria-label="Toggle holdings overlay">
+    <button type="button"
+            class="opt-toggle-pill"
+            class:opt-toggle-pill-on={_includeHoldings}
+            title={_includeHoldings
+              ? 'Holdings are overlaid on the payoff. Click to show options/futures only.'
+              : 'Options/futures only. Click to overlay enabled equity holdings on the payoff.'}
+            aria-pressed={_includeHoldings}
+            onclick={() => { _includeHoldings = !_includeHoldings; }}>
+      Holdings {_includeHoldings ? 'ON' : 'OFF'}
+    </button>
+  </div>
   <div class="opt-trade" role="group" aria-label="Open chain picker">
     <button type="button"
             class="opt-add-btn opt-add-btn-ochain"
@@ -4031,6 +4139,40 @@
     background: #fbbf24;
     color: #0c1830;
     border-color: #fbbf24;
+  }
+
+  /* Holdings toggle pill — same chrome as opt-add-btn but in the
+     sky-cyan palette so it reads as a state toggle (overlay on/off),
+     distinct from the amber action buttons. */
+  .opt-toggle-pill {
+    height: 1.55rem;
+    min-height: 1.55rem;
+    padding: 0 0.65rem;
+    flex: 0 0 auto;
+    align-self: flex-end;
+    border-radius: 3px;
+    border: 1px solid rgba(125,211,252,0.55);
+    background: rgba(125,211,252,0.10);
+    color: #7dd3fc;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+  }
+  .opt-toggle-pill:hover {
+    background: rgba(125,211,252,0.22);
+    border-color: rgba(125,211,252,0.80);
+  }
+  .opt-toggle-pill-on {
+    background: #7dd3fc;
+    color: #0c1830;
+    border-color: #7dd3fc;
   }
 
   /* Refresh button moved onto the chart's top-right corner — see
