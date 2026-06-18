@@ -1213,7 +1213,7 @@
                   ? 'Holdings ON — equity holdings included in Legs + overlaid on payoff. Click to hide.'
                   : 'Holdings OFF — equity holdings hidden. Click to include.'}
                 onclick={() => onToggleHoldings && onToggleHoldings()}>
-          <span class="legend-toggle-label">H</span>
+          <span class="legend-toggle-label">Hold</span>
           <span class="legend-toggle-track">
             <span class="legend-toggle-thumb"></span>
           </span>
@@ -1358,16 +1358,16 @@
     margin-left: auto;
     display: inline-flex;
     align-items: center;
-    gap: 0.32rem;
-    padding: 0.1rem 0.25rem;
+    gap: 0.25rem;
+    padding: 0.1rem 0.2rem;
     border: 0;
     border-radius: 3px;
     background: transparent;
     color: var(--algo-slate);
     font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-size: 0.5rem;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     cursor: pointer;
     user-select: none;
     transition: color 0.12s;
