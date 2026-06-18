@@ -3556,11 +3556,19 @@
           {/each}
           {#if displayedCandidates.length > 0}
             <!-- TOTAL row — always the last row of the grid. Sums
-                 pnl + day_change_val across every displayed candidate so
-                 the two columns roll up to the strip's P and P∆ chips
-                 for the same set of accounts the grid is showing. -->
-            {@const _totalPnl = displayedCandidates.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
-            {@const _totalDcv = displayedCandidates.reduce((s, c) => s + Number(c.day_change_val ?? 0), 0)}
+                 pnl + day_change_val across the CHECKED candidates only
+                 so the operator sees totals that track their selection.
+                 Operator: "the legs totals should match the selection."
+                 Earlier the totals walked every displayed row, which
+                 conflicted with the eq-leg default-OFF + per-row
+                 checkbox semantics: unchecking BHEL eq still saw it
+                 contributing to the TOTAL while the payoff curve had
+                 already dropped it. _isLegEnabled is the same gate
+                 _mergedPayoff / _mergedGreeks already use, so the
+                 TOTAL row now reconciles cell-by-cell with the chart. -->
+            {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
+            {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
+            {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(c.day_change_val ?? 0), 0)}
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
