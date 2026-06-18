@@ -405,6 +405,14 @@ class AlgoOrderInfo(msgspec.Struct):
     target_abs: float | None = None
     parent_order_id: int | None = None
     basket_tag: str | None = None
+    # Phase 2 — surface template attachment so the chase panel +
+    # /orders log can show a "Tmpl ✓" chip on rows that picked up
+    # auto-brackets at submit. attached_gtts_json is the post-fill
+    # JSON list of {kind, label, id} dicts persisted by
+    # _fire_template_attach_on_fill. Both null on legacy rows or on
+    # rows that picked the 'none' template.
+    template_id: int | None = None
+    attached_gtts_json: str | None = None
 
 
 def _resolve_target_pct(override: float | None) -> float:
@@ -635,7 +643,19 @@ async def _arm_take_profit(
     parent_mode: str,      # "paper" | "live"
     parent_product: str = "NRML",
 ) -> None:
-    """Arm a take-profit child order on fill.
+    """[LEGACY — Phase 2 deprecation marker] Arm a take-profit child
+    order on fill via the v1 fractional target_pct path.
+
+    Prefer attaching an OrderTemplate to the parent order (Phase 0+);
+    the template pipeline (apply_template_to_order →
+    _fire_template_attach_on_fill) supports rich TP / SL / Wing /
+    MARKET-TP / wing-by-premium scan, broker-native OCO, and
+    chained chase orders. This helper survives as the back-compat
+    shim for Lab MCP scripts + legacy callers that still pass
+    `data.target_pct`; both the postback handler and chase terminal
+    handler keep firing both shim + template attach so neither path
+    interferes with the other (each is idempotent against double
+    fires).
 
     Called from the postback handler and _emit_chase_terminal when a parent
     order reaches FILLED.  Idempotent: skips if a child row already exists
@@ -846,6 +866,8 @@ class OrdersController(Controller):
                 target_abs=(float(r.target_abs) if r.target_abs is not None else None),
                 parent_order_id=r.parent_order_id,
                 basket_tag=r.basket_tag,
+                template_id=r.template_id,
+                attached_gtts_json=r.attached_gtts_json,
             )
             for r in rows
         ]
@@ -995,6 +1017,8 @@ class OrdersController(Controller):
                 target_abs=(float(r.target_abs) if r.target_abs is not None else None),
                 parent_order_id=r.parent_order_id,
                 basket_tag=r.basket_tag,
+                template_id=r.template_id,
+                attached_gtts_json=r.attached_gtts_json,
             )
             for r in kept
         ]

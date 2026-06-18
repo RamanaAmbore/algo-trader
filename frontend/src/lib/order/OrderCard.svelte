@@ -159,6 +159,7 @@
     {#if _ts}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(_ts))}</span>{/if}
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.target_pct != null}<span class="log-chip log-chip-tp"><span class="log-chip-key">tp:</span>+{(Number(order.target_pct) * 100).toFixed(1)}%</span>{/if}
+    {#if order.template_id != null}<span class="log-chip log-chip-template" title={order.attached_gtts_json ? 'Template attached on fill: ' + order.attached_gtts_json : 'Template selected — will attach on fill'}><span class="log-chip-key">tmpl:</span>#{order.template_id}{order.attached_gtts_json ? ' ✓' : '…'}</span>{/if}
     {#if order.parent_order_id != null}<span class="log-chip log-chip-parent"><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
     {#if order.basket_tag}<span class="log-chip log-chip-basket"><span class="log-chip-key">basket:</span>{order.basket_tag}</span>{/if}
     {#if order.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{order.status_message}</span>{/if}
@@ -180,6 +181,7 @@
   :global(.tag-agent)        { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
   /* TP / parent / basket linkage chips */
   :global(.log-chip-tp)      { color: #4ade80; background: var(--algo-green-bg); }
+  :global(.log-chip-template) { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-parent)  { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   :global(.log-chip-basket)  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
 </style>

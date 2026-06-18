@@ -2002,6 +2002,27 @@ Industry analogue: PagerDuty / Opsgenie / Sentry expose every alert-rule column 
 
 ---
 
+## Templates vs Agents — non-overlapping responsibilities
+
+Operators occasionally ask whether `OrderTemplate` could replace the loss-* agent grammar. The answer is no — they live on different layers and both are needed.
+
+| Layer | Trigger source | Scope | Action latency | Examples |
+|---|---|---|---|---|
+| **OrderTemplate** | Parent order fills (broker postback / chase terminal) | One position | Sub-second (broker-native GTT) | `default-long-option`: TP at +80 % MARKET on this BUY; `default-short-vol`: wing leg picked by premium %; OCO with TP/SL |
+| **Agent (loss-*)** | Periodic poll (every 5 s in market hours) | Per-account or book-wide aggregate | Up to 5 s + agent cooldown | `loss-positions-total`: book P&L ≤ −₹50k → notify; `loss-funds-negative`: cash < 0 → critical alert; `loss-pos-total-auto-close`: book P&L ≤ −₹50k → chase-close ALL |
+
+**Templates** are the primitive for "this fresh BUY will exit if it gains 80 % or stops out at −20 %". They ride at the broker (Kite GTT, Dhan Forever Order, Groww smart order with pair-watcher emulation) so they fire even if our API is offline.
+
+**Agents** are the primitive for "if the book-wide P&L crosses −₹50k, send me a critical alert". This needs central state across every account + position, can't sit at the broker, and is naturally polled.
+
+**They cohabit**: a `default-long-option` template attaches a per-position TP at fill; `loss-positions-total` watches the whole book in parallel. Both run, no overlap.
+
+**Legacy back-compat shim** ([`backend/api/routes/orders.py::_arm_take_profit`](backend/api/routes/orders.py)) — the v1 fractional `target_pct` / `target_abs` columns on `AlgoOrder` are still wired for Lab MCP scripts that pre-date templates. Both shim + template attach fire on the same FILL event; each is idempotent against double-fire (templates via `attached_gtts_json`; legacy via existing-child-row check). New code paths should write `template_id` and leave `target_pct` null.
+
+**Frontend visibility**: rows that picked up a template render a violet `tmpl:#42 ✓` chip in [`OrderCard.svelte`](frontend/src/lib/order/OrderCard.svelte) — `✓` once `_fire_template_attach_on_fill` has populated `attached_gtts_json`, `…` while the parent is still OPEN.
+
+---
+
 ## Reusable order ticket (`<OrderTicket>`)
 
 A single Svelte component handles every order op the platform needs (open / close / modify / repeat / cancel) across every instrument (EQ / FUT / OPT / commodities). One callsite per page; the ticket renders the right fields per instrument, owns its own validation, depth ladder, and submit lifecycle.
