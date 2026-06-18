@@ -1181,6 +1181,13 @@
     let s = 0;
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
+      // Holdings toggle gate — when OFF, eq legs are excluded from
+      // the chart everywhere else (`_equityLegs` returns [],
+      // `displayedCandidates` filters them out). The chart offset
+      // anchor MUST match that scope or the curve gets vertically
+      // shifted by the broker P&L of holdings the chart isn't
+      // actually showing.
+      if (!_includeHoldings && c.kind === 'eq') continue;
       s += Number(c.pnl || 0);
     }
     return s;
@@ -1197,6 +1204,7 @@
     let s = 0;
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
+      if (!_includeHoldings && c.kind === 'eq') continue;
       s += Number(c.day_change_val || 0);
     }
     return s;
