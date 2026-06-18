@@ -128,9 +128,19 @@ async def _emit_chase_terminal(
                         _filled = (await _s2.execute(
                             _sel2(_AO2).where(_AO2.broker_order_id == broker_order_id)
                         )).scalar_one_or_none()
+                    # Phase 3D #6 — gate the legacy single-target TP
+                    # shim on template_id IS NULL so a row with BOTH
+                    # legacy target_pct AND a template doesn't attach
+                    # exits twice. Template path supersedes whenever
+                    # both are set; the postback handler already
+                    # orders things this way (template attach fires
+                    # after _arm_take_profit and its GTT becomes the
+                    # operative exit) but chase fires both tasks
+                    # unconditionally and either may win the race.
                     if (_filled is not None
                             and (_filled.target_pct or _filled.target_abs)
-                            and _filled.parent_order_id is None):
+                            and _filled.parent_order_id is None
+                            and _filled.template_id is None):
                         from backend.api.routes.orders import _arm_take_profit
                         import asyncio as _aio3
                         _aio3.create_task(_arm_take_profit(

@@ -19,6 +19,7 @@ POST /api/orders/postback     — Kite postback: real-time order status updates
 GET  /api/accounts/           — list accounts (masked display + unmasked ID for order form)
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -547,6 +548,28 @@ async def _attach_basket_leg_template(
         )
 
 
+# Phase 3D #4 — per-parent-row in-process lock so the postback
+# handler and chase terminal can't both pass the
+# `attached_gtts_json is None` check simultaneously and double-place
+# the GTT at the broker. uvicorn runs with --workers 1 in prod, so
+# in-process locking is sufficient; the meta-lock guards the registry
+# write itself.
+_TEMPLATE_ATTACH_LOCKS: dict[int, "asyncio.Lock"] = {}
+_TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
+
+
+async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
+    """Lazily mint one asyncio.Lock per parent_row_id. The meta-lock
+    only protects the registry's get-or-create; the per-row lock then
+    serialises the read–decide–write triplet inside the fire fn."""
+    async with _TEMPLATE_ATTACH_META_LOCK:
+        lk = _TEMPLATE_ATTACH_LOCKS.get(parent_row_id)
+        if lk is None:
+            lk = asyncio.Lock()
+            _TEMPLATE_ATTACH_LOCKS[parent_row_id] = lk
+        return lk
+
+
 async def _fire_template_attach_on_fill(
     *,
     parent_row_id: int,
@@ -579,104 +602,114 @@ async def _fire_template_attach_on_fill(
     """
     if not fill_price or fill_price <= 0:
         return
-    try:
-        import json as _json
-        from sqlalchemy import select as _sel_t
-        from backend.api.database import async_session as _async_s
-        from backend.api.models import AlgoOrder as _AO
-        from backend.api.algo.template_attach import apply_template_to_order
+    # Phase 3D #4 — serialise concurrent calls for the same parent_row_id
+    # so the postback handler and chase terminal can't both pass the
+    # `attached_gtts_json is None` idempotency check simultaneously
+    # and double-place GTTs at the broker. The lock is per-row +
+    # in-process (uvicorn --workers 1 on prod) so there's zero
+    # contention against unrelated fills. Implementation is a 2-line
+    # guard in the inner body: acquire the lock, run the existing
+    # _attach_body, release.
+    _row_lock = await _get_template_attach_lock(parent_row_id)
+    async with _row_lock:
+        try:
+            import json as _json
+            from sqlalchemy import select as _sel_t
+            from backend.api.database import async_session as _async_s
+            from backend.api.models import AlgoOrder as _AO
+            from backend.api.algo.template_attach import apply_template_to_order
 
-        async with _async_s() as _s:
-            _row = (await _s.execute(
-                _sel_t(_AO).where(_AO.id == parent_row_id)
-            )).scalar_one_or_none()
-            if _row is None:
-                logger.warning(
-                    f"[TPL-ATTACH] parent row #{parent_row_id} vanished "
-                    f"before postback fired"
-                )
+            async with _async_s() as _s:
+                _row = (await _s.execute(
+                    _sel_t(_AO).where(_AO.id == parent_row_id)
+                )).scalar_one_or_none()
+                if _row is None:
+                    logger.warning(
+                        f"[TPL-ATTACH] parent row #{parent_row_id} vanished "
+                        f"before postback fired"
+                    )
+                    return
+                if _row.attached_gtts_json:
+                    # Duplicate postback — already attached.
+                    return
+    
+            result = await apply_template_to_order(
+                template_id=template_id,
+                template_slug=None,
+                overrides={},
+                parent_account=parent_account,
+                parent_symbol=parent_symbol,
+                parent_side=parent_side,
+                parent_qty=parent_qty,
+                parent_exchange=parent_exchange,
+                parent_fill_price=fill_price,
+                parent_product=parent_product,
+                parent_order_id=parent_row_id,
+                apply_path="live",
+            )
+            if result is None:
                 return
-            if _row.attached_gtts_json:
-                # Duplicate postback — already attached.
-                return
-
-        result = await apply_template_to_order(
-            template_id=template_id,
-            template_slug=None,
-            overrides={},
-            parent_account=parent_account,
-            parent_symbol=parent_symbol,
-            parent_side=parent_side,
-            parent_qty=parent_qty,
-            parent_exchange=parent_exchange,
-            parent_fill_price=fill_price,
-            parent_product=parent_product,
-            parent_order_id=parent_row_id,
-            apply_path="live",
-        )
-        if result is None:
-            return
-
-        attached = []
-        for spec in (result.plan.gtts or []):
-            if not spec.placed_id:
-                continue
-            entry = {
-                "kind":  "gtt",
-                "label": spec.label,
-                "id":    spec.placed_id,
-            }
-            # Phase 3B — when this leg carries a trailing stop, persist
-            # the metadata so _task_trail_stop can find + advance the
-            # trigger without re-loading the template (operator may
-            # have edited it post-fill). highest_ltp + low_ltp seed
-            # from parent fill price; the poller updates them in-place.
-            if spec.sl_trail_pct is not None and spec.trigger_values:
-                entry["sl_trail_pct"] = float(spec.sl_trail_pct)
-                # For two-leg OCO the SL trigger sits at orders[1]
-                # (index 1). For single SL it's [0]. The trigger_values
-                # parallel-index orders.
-                _last_trig = float(spec.trigger_values[-1])
-                entry["current_trigger"] = _last_trig
-                entry["highest_ltp"]     = float(result.plan.parent_fill_price)
-                entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
-                entry["parent_side"]     = str(result.plan.parent_side)
-                entry["parent_symbol"]   = str(result.plan.parent_symbol)
-                entry["parent_exchange"] = str(result.plan.parent_exchange)
-                entry["parent_account"]  = str(result.plan.parent_account)
-                entry["parent_qty"]      = int(result.plan.parent_qty)
-                entry["parent_product"]  = "NRML"
-                entry["trigger_type"]    = str(spec.trigger_type)
-            attached.append(entry)
-        if result.wing_order_id:
-            attached.append({
-                "kind":  "wing",
-                "label": "Wing",
-                "id":    result.wing_order_id,
-            })
-
-        async with _async_s() as _s:
-            _row = (await _s.execute(
-                _sel_t(_AO).where(_AO.id == parent_row_id)
-            )).scalar_one_or_none()
-            if _row is None:
-                return
-            _row.attached_gtts_json = _json.dumps(attached) if attached else _json.dumps([])
-            if result.errors:
-                _row.detail = ((_row.detail or "")[:200]
-                               + f" · template attach: "
-                               + "; ".join(result.errors[:2]))
-            await _s.commit()
-        logger.info(
-            f"[TPL-ATTACH] parent #{parent_row_id} {parent_account} "
-            f"{parent_side} {parent_symbol} fill={fill_price} → "
-            f"{len(attached)} child placement(s), "
-            f"{len(result.errors)} error(s)"
-        )
-    except Exception as e:
-        logger.error(
-            f"[TPL-ATTACH] failed for parent #{parent_row_id}: {e}"
-        )
+    
+            attached = []
+            for spec in (result.plan.gtts or []):
+                if not spec.placed_id:
+                    continue
+                entry = {
+                    "kind":  "gtt",
+                    "label": spec.label,
+                    "id":    spec.placed_id,
+                }
+                # Phase 3B — when this leg carries a trailing stop, persist
+                # the metadata so _task_trail_stop can find + advance the
+                # trigger without re-loading the template (operator may
+                # have edited it post-fill). highest_ltp + low_ltp seed
+                # from parent fill price; the poller updates them in-place.
+                if spec.sl_trail_pct is not None and spec.trigger_values:
+                    entry["sl_trail_pct"] = float(spec.sl_trail_pct)
+                    # For two-leg OCO the SL trigger sits at orders[1]
+                    # (index 1). For single SL it's [0]. The trigger_values
+                    # parallel-index orders.
+                    _last_trig = float(spec.trigger_values[-1])
+                    entry["current_trigger"] = _last_trig
+                    entry["highest_ltp"]     = float(result.plan.parent_fill_price)
+                    entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
+                    entry["parent_side"]     = str(result.plan.parent_side)
+                    entry["parent_symbol"]   = str(result.plan.parent_symbol)
+                    entry["parent_exchange"] = str(result.plan.parent_exchange)
+                    entry["parent_account"]  = str(result.plan.parent_account)
+                    entry["parent_qty"]      = int(result.plan.parent_qty)
+                    entry["parent_product"]  = "NRML"
+                    entry["trigger_type"]    = str(spec.trigger_type)
+                attached.append(entry)
+            if result.wing_order_id:
+                attached.append({
+                    "kind":  "wing",
+                    "label": "Wing",
+                    "id":    result.wing_order_id,
+                })
+    
+            async with _async_s() as _s:
+                _row = (await _s.execute(
+                    _sel_t(_AO).where(_AO.id == parent_row_id)
+                )).scalar_one_or_none()
+                if _row is None:
+                    return
+                _row.attached_gtts_json = _json.dumps(attached) if attached else _json.dumps([])
+                if result.errors:
+                    _row.detail = ((_row.detail or "")[:200]
+                                   + f" · template attach: "
+                                   + "; ".join(result.errors[:2]))
+                await _s.commit()
+            logger.info(
+                f"[TPL-ATTACH] parent #{parent_row_id} {parent_account} "
+                f"{parent_side} {parent_symbol} fill={fill_price} → "
+                f"{len(attached)} child placement(s), "
+                f"{len(result.errors)} error(s)"
+            )
+        except Exception as e:
+            logger.error(
+                f"[TPL-ATTACH] failed for parent #{parent_row_id}: {e}"
+            )
 
 
 async def _arm_take_profit(
@@ -2447,9 +2480,14 @@ class OrdersController(Controller):
                         # Auto TP — arm take-profit child on every fill that
                         # has a target_pct / target_abs set and is a parent
                         # (parent_order_id is NULL) to prevent TP-of-TP chains.
+                        # Phase 3D #6 — gate on template_id IS NULL so a
+                        # row with BOTH legacy target_pct AND a template
+                        # picks template path only (template's GTT
+                        # supersedes the v1 single-target child).
                         for _r in _filled_rows:
                             if ((_r.target_pct or _r.target_abs)
                                     and _r.parent_order_id is None
+                                    and _r.template_id is None
                                     and _r.fill_price):
                                 import asyncio as _aio2
                                 _aio2.create_task(_arm_take_profit(
