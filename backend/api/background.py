@@ -940,7 +940,7 @@ async def _task_hedge_proxy_regression() -> None:
     Stage 4 of the proxy-hedge feature. Runs once a day at 02:30 IST
     — outside market hours, low broker-quota window, after the daily
     sparkline warm has settled. For each active row whose
-    `regression_at` is older than `hedge_proxy.regression_max_age_days`
+    `regression_at` is older than `hedge_proxies.regression_max_age_days`
     (default 7) the task fetches 60 days of daily closes for the
     proxy + target and writes back β + R² + regression_at.
 
@@ -948,7 +948,7 @@ async def _task_hedge_proxy_regression() -> None:
     can still hit the "Compute β" button in /admin/settings for an
     immediate ad-hoc run.
 
-    Disabled by setting `hedge_proxy.regression_enabled = False` — the
+    Disabled by setting `hedge_proxies.regression_enabled = False` — the
     operator-triggered button keeps working independently.
     """
     from backend.api.database import async_session
@@ -958,11 +958,11 @@ async def _task_hedge_proxy_regression() -> None:
     from sqlalchemy import select as sql_select
 
     async def _run_once():
-        if not get_bool("hedge_proxy.regression_enabled", True):
+        if not get_bool("hedge_proxies.regression_enabled", True):
             logger.info("Background: hedge-proxy regression disabled")
             return
-        max_age = get_int("hedge_proxy.regression_max_age_days", 7)
-        window  = get_int("hedge_proxy.regression_window_days", 60)
+        max_age = get_int("hedge_proxies.regression_max_age_days", 7)
+        window  = get_int("hedge_proxies.regression_window_days", 60)
         try:
             from backend.shared.brokers.registry import get_price_broker
             broker = get_price_broker()

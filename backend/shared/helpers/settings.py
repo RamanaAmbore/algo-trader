@@ -226,17 +226,20 @@ SEEDS: list[tuple] = [
      "days", {"min": 0, "max": 730, "step": 1}),
 
     # ── Hedge proxies — Stage 4 ──────────────────────────────────────
-    ("hedge_proxy", "hedge_proxy.regression_enabled", "bool", True,
+    # Category matches the CRUD section header on /admin/settings so
+    # both surfaces (settings rows + pair table) render inside one
+    # card. Key prefix matches the category for visual consistency.
+    ("hedge_proxies", "hedge_proxies.regression_enabled", "bool", True,
      "Run the daily β regression background task at 02:30 IST. False "
      "disables the periodic auto-recompute; operator's 'Compute β' "
-     "button in /admin/settings still works.",
+     "button on each row still works.",
      None, None),
-    ("hedge_proxy", "hedge_proxy.regression_window_days", "int", 60,
+    ("hedge_proxies", "hedge_proxies.regression_window_days", "int", 60,
      "Number of daily candles used in the β / R² regression. 60 covers "
      "~3 months of trading days — long enough to smooth out single-day "
      "spikes, short enough to reflect current beta drift.",
      "days", {"min": 20, "max": 365, "step": 5}),
-    ("hedge_proxy", "hedge_proxy.regression_max_age_days", "int", 7,
+    ("hedge_proxies", "hedge_proxies.regression_max_age_days", "int", 7,
      "Skip rows that regressed within this window — daily firing still "
      "recomputes each pair exactly once per window. Default 7 days "
      "(weekly cadence).",

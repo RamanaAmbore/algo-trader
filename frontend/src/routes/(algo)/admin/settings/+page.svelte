@@ -351,16 +351,20 @@
           </div>
         {/each}
       </div>
+      {#if category === 'hedge_proxies'}
+        <!-- Pair-table CRUD rendered inside the same card as the
+             knobs above so the operator sees "everything about hedge
+             proxies" in one place — not split across two adjacent
+             cards. -->
+        {@render proxyCrud()}
+      {/if}
     </section>
   {/each}
 
-  <!-- Hedge-proxy pair table — backs the /admin/derivatives Underlying
-       picker's proxy-aware Tier 4 + the proxy-eq leg math. Pair-only;
-       conversion factor + lot count are derived at runtime from current
-       LTPs + the instruments cache. -->
-  <section class="algo-status-card p-2 mb-2" data-status="inactive">
-    <h2 class="text-[0.8rem] font-bold mb-1">Hedge proxies</h2>
-    <p class="text-[0.6rem] opacity-70 mb-1">
+{#snippet proxyCrud()}
+  <div class="mt-2 pt-2 border-t border-white/5">
+    <h3 class="text-[0.65rem] font-bold mb-1 opacity-90">Pair table</h3>
+    <p class="text-[0.55rem] opacity-70 mb-1">
       Pair-only cross-reference between a held instrument and the
       option underlying it can hedge. The derivatives page computes
       effective qty as <code>β × market_value ÷ target_spot</code>
@@ -425,7 +429,8 @@
              title="Stage 3 placeholder — keep at 1.0 for ETF tracking hedges" />
       <button class="btn-primary text-[0.65rem] py-0.5 px-2" onclick={addProxy}>+ Add</button>
     </div>
-  </section>
+  </div>
+{/snippet}
 {/if}
 
 <style>
