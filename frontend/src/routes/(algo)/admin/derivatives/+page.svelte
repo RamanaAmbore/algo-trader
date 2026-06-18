@@ -611,13 +611,26 @@
   // All three bands (close / netted / otm) are surfaced; _expiryStatus
   // encodes both segment and band so the CSS tint applies correctly.
   const displayedCandidates = $derived.by(() => {
-    if (legsTab !== 'expiry') return candidatePositions;
-    const out = [];
-    for (const r of expiryCloseAnalysis.equity)
-      out.push({ ...r, _expiryStatus: `equity-${r._band}` });
-    for (const r of expiryCloseAnalysis.commodity)
-      out.push({ ...r, _expiryStatus: `commodity-${r._band}` });
-    return out;
+    let rows;
+    if (legsTab !== 'expiry') {
+      rows = candidatePositions;
+    } else {
+      rows = [];
+      for (const r of expiryCloseAnalysis.equity)
+        rows.push({ ...r, _expiryStatus: `equity-${r._band}` });
+      for (const r of expiryCloseAnalysis.commodity)
+        rows.push({ ...r, _expiryStatus: `commodity-${r._band}` });
+    }
+    // Holdings toggle — when OFF, hide every equity-holding row from
+    // the panel + drop them from the TOTAL row sums. Operator:
+    // "when it is off, legs should not show holdings rows. the totals
+    // should reflect that." The chart-side gate is already in
+    // `_equityLegs`; this gate keeps the visible Candidates panel +
+    // its TOTAL row in lockstep with the payoff.
+    if (!_includeHoldings) {
+      rows = rows.filter(c => c.kind !== 'eq');
+    }
+    return rows;
   });
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
@@ -3047,11 +3060,11 @@
             class="opt-toggle-pill"
             class:opt-toggle-pill-on={_includeHoldings}
             title={_includeHoldings
-              ? 'Holdings are overlaid on the payoff. Click to show options/futures only.'
-              : 'Options/futures only. Click to overlay enabled equity holdings on the payoff.'}
+              ? 'Holdings ON — equity holdings shown in Legs + overlaid on payoff. Click to hide.'
+              : 'Holdings OFF — equity holdings hidden from Legs + payoff. Click to show.'}
             aria-pressed={_includeHoldings}
             onclick={() => { _includeHoldings = !_includeHoldings; }}>
-      Holdings {_includeHoldings ? 'ON' : 'OFF'}
+      Hold
     </button>
   </div>
   <div class="opt-trade" role="group" aria-label="Open chain picker">
@@ -4143,11 +4156,12 @@
 
   /* Holdings toggle pill — same chrome as opt-add-btn but in the
      sky-cyan palette so it reads as a state toggle (overlay on/off),
-     distinct from the amber action buttons. */
+     distinct from the amber action buttons. Compact: just "Hold"
+     label, filled when ON / outline when OFF. */
   .opt-toggle-pill {
     height: 1.55rem;
     min-height: 1.55rem;
-    padding: 0 0.65rem;
+    padding: 0 0.45rem;
     flex: 0 0 auto;
     align-self: flex-end;
     border-radius: 3px;
@@ -4155,9 +4169,9 @@
     background: rgba(125,211,252,0.10);
     color: #7dd3fc;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     line-height: 1;
     cursor: pointer;
     display: inline-flex;
