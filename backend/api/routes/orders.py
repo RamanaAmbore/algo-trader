@@ -891,19 +891,46 @@ class OrdersController(Controller):
 
             elif mode == "live":
                 try:
-                    from backend.shared.helpers.connections import Connections
-                    conn = Connections()
-                    broker = conn.conn.get(str(row.account or ""))
-                    if broker is None:
-                        err_msg = f"account {row.account} not loaded"
+                    # Use the broker registry — Connections.conn[account]
+                    # holds the raw KiteConnection (or vendor connection
+                    # object) which does NOT expose cancel_order. The
+                    # vendor-agnostic Broker adapter from get_broker()
+                    # is what every other order-mutating path uses.
+                    # Earlier this called Connections().conn.get(account)
+                    # directly and silently failed every kill on prod with
+                    # "'KiteConnection' object has no attribute 'cancel_order'".
+                    from backend.shared.brokers import get_broker
+                    if not str(row.account or "").strip():
+                        err_msg = "no account on row"
                     elif not (row.broker_order_id or "").strip():
                         err_msg = "no broker_order_id on row"
                     else:
-                        await _asyncio.to_thread(
-                            broker.cancel_order,
-                            variety="regular",
-                            order_id=str(row.broker_order_id),
-                        )
+                        try:
+                            broker = get_broker(str(row.account))
+                        except Exception as _ge:
+                            broker = None
+                            err_msg = f"broker not loaded for {row.account}: {_ge}"
+                        if broker is not None:
+                            # Mark BEFORE the broker call so the chase
+                            # loop sees the kill flag even if its 20-s
+                            # poll lands between cancel and mark. The
+                            # CANCELLED-handler in chase_order checks
+                            # is_killed(current_order_id) and exits
+                            # cleanly instead of re-placing.
+                            try:
+                                from backend.api.algo.chase import mark_killed
+                                mark_killed(str(row.broker_order_id))
+                            except Exception:
+                                pass
+                            # ChaseEngine + every other live-cancel path
+                            # passes order_id positionally then variety
+                            # kwarg — match that convention so adapters
+                            # don't double-bind 'order_id'.
+                            await _asyncio.to_thread(
+                                broker.cancel_order,
+                                str(row.broker_order_id),
+                                variety="regular",
+                            )
                 except Exception as e:
                     err_msg = f"broker cancel failed: {e}"
 

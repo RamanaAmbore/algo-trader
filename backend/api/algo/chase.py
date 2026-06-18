@@ -140,6 +140,38 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chase")
 _MAX_CHASE_ERRORS = 3
 
 
+# ── Operator kill signal ─────────────────────────────────────────────
+# When the operator clicks Kill in the chase panel, the kill_chase
+# route cancels the live broker order AND adds its broker_order_id
+# here. The chase loop checks this set before placing each new
+# attempt — if the *previous* attempt's broker_order_id is killed,
+# the loop terminates instead of re-placing. Without this signal the
+# loop's CANCELLED-status handler treated the operator kill the same
+# way it treats a broker auto-cancel (circuit/session-end) and
+# silently placed a new order — operator saw the row "reappear" on
+# the next poll.
+_KILLED_ORDER_IDS: set[str] = set()
+_KILLED_LOCK = __import__("threading").Lock()
+
+
+def mark_killed(broker_order_id: str) -> None:
+    """Signal the chase loop that this broker_order_id was killed by
+    the operator. The loop checks `is_killed()` after every status
+    poll and terminates instead of placing a fresh order. Idempotent;
+    multiple kills (same id) are fine."""
+    if not broker_order_id:
+        return
+    with _KILLED_LOCK:
+        _KILLED_ORDER_IDS.add(str(broker_order_id))
+
+
+def is_killed(broker_order_id: str) -> bool:
+    if not broker_order_id:
+        return False
+    with _KILLED_LOCK:
+        return str(broker_order_id) in _KILLED_ORDER_IDS
+
+
 class ChaseStatus(str, Enum):
     PENDING   = "pending"
     CHASING   = "chasing"
@@ -554,13 +586,35 @@ async def chase_order(
                 return result
 
             if order_status == "CANCELLED":
-                # External cancel (operator pressed cancel manually, or
-                # broker auto-cancelled due to circuit / session-end). Not
-                # a structural rejection — give the chase one re-try cycle
-                # to recover before the max-attempts guard or
-                # consecutive-error guard kicks in if the condition
-                # persists.
-                logger.warning(f"Chase {symbol}: order CANCELLED — {status.get('status_message', '')}")
+                # External cancel — three possible sources:
+                #   (a) operator clicked Kill in the chase panel
+                #   (b) broker auto-cancelled (circuit / session-end)
+                #   (c) operator cancelled directly in Kite app
+                # For (a), the kill route adds the broker_order_id to
+                # `_KILLED_ORDER_IDS` BEFORE issuing the broker cancel.
+                # Without this check the loop treated every CANCELLED
+                # as a transient hiccup and silently re-placed — the
+                # operator's kill was effectively ignored.
+                killed_by_op = is_killed(current_order_id)
+                logger.warning(
+                    f"Chase {symbol}: order CANCELLED "
+                    f"(operator_kill={killed_by_op}) — "
+                    f"{status.get('status_message', '')}"
+                )
+                if killed_by_op:
+                    result.status = ChaseStatus.CANCELLED
+                    result.detail = "Chase cancelled by operator"
+                    emit("chase_cancelled", {"attempts": attempt})
+                    cancelled_order_id = current_order_id
+                    current_order_id = None
+                    if cancelled_order_id:
+                        import asyncio as _asyncio
+                        _asyncio.create_task(_emit_chase_terminal(
+                            cancelled_order_id, "chase_cancelled",
+                            symbol, transaction_type, quantity,
+                            attempts=attempt,
+                        ))
+                    return result
                 current_order_id = None  # Need fresh order
                 backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
                 logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
