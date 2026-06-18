@@ -46,6 +46,11 @@ class GttSpec:
     label:          str = ""       # 'TP' / 'SL' / 'TP+SL' — operator-visible
     # Set during apply_plan_* — the broker / sim GTT id assigned at place.
     placed_id:      Optional[str] = None
+    # Phase 3B — when this GTT carries a trailing stop, the background
+    # poller (_task_trail_stop) ratchets the SL trigger toward LTP.
+    # `sl_trail_pct` (% distance) flows through to attached_gtts_json
+    # so the poller can resume across restarts. None on TP-only legs.
+    sl_trail_pct:   Optional[float] = None
 
 
 @dataclass
@@ -412,6 +417,11 @@ def resolve_template_plan(
     # single GTT at fill × (1 + at_pct/100), sized to parent_qty ×
     # close_pct/100. Sum of close_pct ≤ 100; the remainder stays
     # open with no auto-exit (operator's call).
+    # Trailing stop (Phase 3B). _ov override > template > None. The
+    # poller picks this up from attached_gtts_json so it survives
+    # restarts.
+    sl_trail_pct = _pick("sl_trail_pct")
+
     tp_scales_raw = _ov.get("tp_scales_json")
     if tp_scales_raw is None:
         tp_scales_raw = template.get("tp_scales_json")
@@ -512,6 +522,7 @@ def resolve_template_plan(
                 orders=[_leg(exit_side, parent_qty, sl_trig,
                              parent_product, "LIMIT")],
                 label="SL",
+                sl_trail_pct=sl_trail_pct,
             ))
         plan.notes.append(
             f"Scale-out: {len(tp_scales)} TP step(s) — "
@@ -533,6 +544,7 @@ def resolve_template_plan(
                     _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT"),
                 ],
                 label="TP+SL",
+                sl_trail_pct=sl_trail_pct,
             ))
         else:
             # Two singles + a note that the route layer will pair them
@@ -548,6 +560,7 @@ def resolve_template_plan(
                 trigger_values=[sl_trig],
                 orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
                 label="SL",
+                sl_trail_pct=sl_trail_pct,
             ))
             plan.notes.append(
                 f"{broker_caps.display_name} has no OCO — TP/SL placed as "
@@ -566,6 +579,7 @@ def resolve_template_plan(
             trigger_values=[sl_trig],
             orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
             label="SL",
+            sl_trail_pct=sl_trail_pct,
         ))
 
     # ── Wing spec — SELL option only ─────────────────────────────────
@@ -828,6 +842,7 @@ async def load_template_for_slug_or_id(
         "wing_strike_offset": int(row.wing_strike_offset)  if row.wing_strike_offset is not None else None,
         "tp_order_type":      (row.tp_order_type or "LIMIT"),
         "tp_scales_json":     row.tp_scales_json,
+        "sl_trail_pct":       float(row.sl_trail_pct)      if row.sl_trail_pct is not None else None,
     }
 
 

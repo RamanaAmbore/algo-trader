@@ -56,10 +56,30 @@ def _to_out(row: OrderTemplate) -> OrderTemplateOut:
         wing_strike_offset=row.wing_strike_offset,
         tp_order_type=(row.tp_order_type or "LIMIT"),
         tp_scales_json=row.tp_scales_json,
+        sl_trail_pct=(float(row.sl_trail_pct)
+                      if row.sl_trail_pct is not None else None),
         is_default=row.is_default,
         is_system=row.is_system,
         is_active=row.is_active,
     )
+
+
+def _validate_sl_trail_pct(value: float | None) -> None:
+    if value is None:
+        return
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="sl_trail_pct must be a number",
+        )
+    if v <= 0 or v >= 100:
+        raise HTTPException(
+            status_code=400,
+            detail="sl_trail_pct must be in (0, 100) — % distance to "
+                   "trail behind the favorable LTP extreme",
+        )
 
 
 def _validate_tp_order_type(value: str | None) -> None:
@@ -182,6 +202,7 @@ class OrderTemplateController(Controller):
                 )
             _validate_tp_order_type(data.tp_order_type)
             _validate_tp_scales_json(data.tp_scales_json)
+            _validate_sl_trail_pct(data.sl_trail_pct)
             row = OrderTemplate(
                 name=data.name,
                 description=data.description or "",
@@ -192,6 +213,7 @@ class OrderTemplateController(Controller):
                 wing_strike_offset=data.wing_strike_offset,
                 tp_order_type=(data.tp_order_type or "LIMIT"),
                 tp_scales_json=data.tp_scales_json,
+                sl_trail_pct=data.sl_trail_pct,
                 is_default=data.is_default,
                 is_system=False,
                 is_active=data.is_active,
@@ -220,6 +242,8 @@ class OrderTemplateController(Controller):
                 _validate_tp_order_type(data.tp_order_type)
             if data.tp_scales_json is not None:
                 _validate_tp_scales_json(data.tp_scales_json)
+            if data.sl_trail_pct is not None:
+                _validate_sl_trail_pct(data.sl_trail_pct)
             # Apply only set fields. msgspec sentinels are None for
             # unset; we accept None as "leave unchanged" rather than
             # "clear" because the form sends every field every time.
@@ -227,7 +251,7 @@ class OrderTemplateController(Controller):
                 "name", "description", "applies_to",
                 "tp_pct", "sl_pct",
                 "wing_premium_pct", "wing_strike_offset",
-                "tp_order_type", "tp_scales_json",
+                "tp_order_type", "tp_scales_json", "sl_trail_pct",
                 "is_default", "is_active",
             ):
                 v = getattr(data, field, None)

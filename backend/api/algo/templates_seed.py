@@ -185,6 +185,7 @@ async def seed_templates() -> None:
                     wing_strike_offset=spec["wing_strike_offset"],
                     tp_order_type=spec.get("tp_order_type", "LIMIT"),
                     tp_scales_json=spec.get("tp_scales_json"),
+                    sl_trail_pct=spec.get("sl_trail_pct"),
                     is_default=spec["is_default"],
                     is_system=True,
                     is_active=True,

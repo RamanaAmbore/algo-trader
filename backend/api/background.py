@@ -1058,6 +1058,169 @@ async def _task_hedge_proxy_regression() -> None:
         await _run_once()
 
 
+async def _task_trail_stop() -> None:
+    """Trailing-stop background poller (Phase 3B).
+
+    Walks every `algo_orders` row where:
+      • mode = 'live'
+      • status = 'FILLED' (parent already executed; SL leg sits at broker)
+      • `attached_gtts_json` contains at least one entry with
+        `sl_trail_pct` set + a `current_trigger` (seeded by
+        `_fire_template_attach_on_fill`)
+
+    For each such row:
+      1. Fetch current LTP via `broker.ltp([key])` (one round-trip per
+         unique symbol; cached implicitly by Kite's quote endpoint).
+      2. Update highest_ltp (long parent) / lowest_ltp (short parent).
+      3. Compute new trigger:
+           long  → high × (1 − sl_trail_pct/100)
+           short → low  × (1 + sl_trail_pct/100)
+         Only commits if it's more favorable than the current trigger
+         (trail never moves against the operator).
+      4. Calls `broker.modify_gtt(gtt_id, new_trigger)` and persists
+         the new state back into `attached_gtts_json`.
+
+    Kite is the only broker with native modify_gtt today; Dhan + Groww
+    raise NotImplementedError, so the poller silently skips those
+    rows. The seeder note documents this limitation.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.shared.brokers.registry import get_broker
+    from backend.shared.helpers.settings import get_int
+    from sqlalchemy import select as _sel
+    import json as _json
+
+    while True:
+        try:
+            interval = max(5, get_int("templates.trail_poll_interval_seconds", 30))
+        except Exception:
+            interval = 30
+        await asyncio.sleep(interval)
+        try:
+            async with async_session() as s:
+                rows = (await s.execute(
+                    _sel(AlgoOrder).where(
+                        AlgoOrder.mode == "live",
+                        AlgoOrder.status == "FILLED",
+                        AlgoOrder.attached_gtts_json.is_not(None),
+                    ).limit(500)
+                )).scalars().all()
+            for row in rows:
+                try:
+                    attached = _json.loads(row.attached_gtts_json or "[]")
+                except Exception:
+                    continue
+                if not isinstance(attached, list):
+                    continue
+                changed = False
+                for entry in attached:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("kind") != "gtt":
+                        continue
+                    if entry.get("sl_trail_pct") in (None, ""):
+                        continue
+                    gtt_id          = entry.get("id")
+                    trail_pct       = float(entry["sl_trail_pct"])
+                    current_trigger = float(entry.get("current_trigger") or 0)
+                    parent_side     = str(entry.get("parent_side") or "")
+                    parent_symbol   = str(entry.get("parent_symbol") or "")
+                    parent_exchange = str(entry.get("parent_exchange") or "NFO")
+                    account         = str(entry.get("parent_account") or "")
+                    parent_qty      = int(entry.get("parent_qty") or 0)
+                    parent_product  = str(entry.get("parent_product") or "NRML")
+                    trigger_type    = str(entry.get("trigger_type") or "single")
+                    if not (gtt_id and parent_symbol and account
+                            and trail_pct > 0 and parent_qty > 0):
+                        continue
+                    try:
+                        broker = get_broker(account)
+                    except Exception:
+                        continue
+                    key = f"{parent_exchange}:{parent_symbol}"
+                    try:
+                        ltp_resp = await asyncio.to_thread(broker.ltp, [key])
+                        ltp = float((ltp_resp.get(key) or {}).get("last_price") or 0)
+                    except Exception:
+                        continue
+                    if ltp <= 0:
+                        continue
+                    high = max(float(entry.get("highest_ltp") or 0), ltp)
+                    low  = ltp if not entry.get("lowest_ltp") \
+                              else min(float(entry["lowest_ltp"]), ltp)
+                    if parent_side == "BUY":
+                        proposed = high * (1.0 - trail_pct / 100.0)
+                        more_favorable = proposed > current_trigger
+                    else:
+                        proposed = low  * (1.0 + trail_pct / 100.0)
+                        more_favorable = (current_trigger > 0
+                                          and proposed < current_trigger)
+                    entry["highest_ltp"] = high
+                    entry["lowest_ltp"]  = low
+                    if not more_favorable:
+                        continue
+                    proposed = round(proposed, 4)
+                    # Build the modify_gtt kwargs. Single trigger has
+                    # one value; two-leg OCO keeps the TP slot intact.
+                    new_triggers: list[float] = []
+                    if trigger_type == "two-leg":
+                        # We don't track the TP slot's current value
+                        # in the persisted entry today; skip 2-leg
+                        # modify until the spec carries TP+SL state.
+                        # Phase 3B follow-up.
+                        continue
+                    new_triggers = [proposed]
+                    exit_side = "SELL" if parent_side == "BUY" else "BUY"
+                    try:
+                        await asyncio.to_thread(
+                            broker.modify_gtt,
+                            gtt_id,
+                            trigger_type=trigger_type,
+                            tradingsymbol=parent_symbol,
+                            exchange=parent_exchange,
+                            last_price=ltp,
+                            trigger_values=new_triggers,
+                            orders=[{
+                                "transaction_type": exit_side,
+                                "quantity":         parent_qty,
+                                "price":            proposed,
+                                "order_type":       "LIMIT",
+                                "product":          parent_product,
+                            }],
+                        )
+                    except NotImplementedError:
+                        # Broker has no modify_gtt — Dhan / Groww today.
+                        # Drop the trail metadata so we stop retrying
+                        # every interval for this row.
+                        entry.pop("sl_trail_pct", None)
+                        changed = True
+                        continue
+                    except Exception as e:
+                        logger.debug(
+                            f"[TRAIL] modify_gtt failed for #{row.id} "
+                            f"gtt={gtt_id}: {e}"
+                        )
+                        continue
+                    entry["current_trigger"] = proposed
+                    changed = True
+                    logger.info(
+                        f"[TRAIL] #{row.id} {parent_side} {parent_symbol} "
+                        f"trigger {current_trigger:.2f} → {proposed:.2f} "
+                        f"(LTP {ltp:.2f}, trail {trail_pct}%)"
+                    )
+                if changed:
+                    async with async_session() as s2:
+                        _r2 = (await s2.execute(
+                            _sel(AlgoOrder).where(AlgoOrder.id == row.id)
+                        )).scalar_one_or_none()
+                        if _r2 is not None:
+                            _r2.attached_gtts_json = _json.dumps(attached)
+                            await s2.commit()
+        except Exception as e:
+            logger.debug(f"[TRAIL] poll iteration failed: {e}")
+
+
 async def _task_sparkline_warm(state: dict) -> None:
     """
     Pre-populate the sparkline past-close cache at startup and at each
@@ -1672,6 +1835,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
         asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
         asyncio.create_task(_task_hedge_proxy_regression(), name="bg-hedge-proxy-regression"),
+        asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

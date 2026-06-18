@@ -594,12 +594,35 @@ async def _fire_template_attach_on_fill(
 
         attached = []
         for spec in (result.plan.gtts or []):
-            if spec.placed_id:
-                attached.append({
-                    "kind":  "gtt",
-                    "label": spec.label,
-                    "id":    spec.placed_id,
-                })
+            if not spec.placed_id:
+                continue
+            entry = {
+                "kind":  "gtt",
+                "label": spec.label,
+                "id":    spec.placed_id,
+            }
+            # Phase 3B — when this leg carries a trailing stop, persist
+            # the metadata so _task_trail_stop can find + advance the
+            # trigger without re-loading the template (operator may
+            # have edited it post-fill). highest_ltp + low_ltp seed
+            # from parent fill price; the poller updates them in-place.
+            if spec.sl_trail_pct is not None and spec.trigger_values:
+                entry["sl_trail_pct"] = float(spec.sl_trail_pct)
+                # For two-leg OCO the SL trigger sits at orders[1]
+                # (index 1). For single SL it's [0]. The trigger_values
+                # parallel-index orders.
+                _last_trig = float(spec.trigger_values[-1])
+                entry["current_trigger"] = _last_trig
+                entry["highest_ltp"]     = float(result.plan.parent_fill_price)
+                entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
+                entry["parent_side"]     = str(result.plan.parent_side)
+                entry["parent_symbol"]   = str(result.plan.parent_symbol)
+                entry["parent_exchange"] = str(result.plan.parent_exchange)
+                entry["parent_account"]  = str(result.plan.parent_account)
+                entry["parent_qty"]      = int(result.plan.parent_qty)
+                entry["parent_product"]  = "NRML"
+                entry["trigger_type"]    = str(spec.trigger_type)
+            attached.append(entry)
         if result.wing_order_id:
             attached.append({
                 "kind":  "wing",

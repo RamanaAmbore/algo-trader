@@ -53,6 +53,7 @@
   let formWingStrikeOffset = $state('');
   let formTpOrderType = $state(/** @type {'LIMIT'|'MARKET'} */ ('LIMIT'));
   let formTpScalesJson = $state('');
+  let formSlTrailPct = $state('');
   let formIsDefault = $state(false);
   let formIsActive = $state(true);
   let formError = $state('');
@@ -109,6 +110,7 @@
     formWingStrikeOffset = '';
     formTpOrderType = 'LIMIT';
     formTpScalesJson = '';
+    formSlTrailPct = '';
     formIsDefault = false;
     formIsActive = true;
     formError = '';
@@ -127,6 +129,7 @@
     formWingStrikeOffset = t.wing_strike_offset != null ? String(t.wing_strike_offset) : '';
     formTpOrderType = /** @type {'LIMIT'|'MARKET'} */ (t.tp_order_type || 'LIMIT');
     formTpScalesJson = t.tp_scales_json || '';
+    formSlTrailPct = t.sl_trail_pct != null ? String(t.sl_trail_pct) : '';
     formIsDefault = !!t.is_default;
     formIsActive = !!t.is_active;
     formError = '';
@@ -162,6 +165,7 @@
       wing_strike_offset: _parseNumOrNull(formWingStrikeOffset),
       tp_order_type:      formTpOrderType,
       tp_scales_json:     formTpScalesJson.trim() === '' ? null : formTpScalesJson.trim(),
+      sl_trail_pct:       _parseNumOrNull(formSlTrailPct),
       is_default:         formIsDefault,
       is_active:          formIsActive,
     };
@@ -317,7 +321,7 @@
             {:else}
               <span class="tpl-num tpl-num-tp">TP {fmtPct(t.tp_pct)}{t.tp_pct != null && t.tp_order_type === 'MARKET' ? ' MKT' : ''}</span>
             {/if}
-            <span class="tpl-num tpl-num-sl">SL {fmtPct(t.sl_pct)}</span>
+            <span class="tpl-num tpl-num-sl">SL {fmtPct(t.sl_pct)}{t.sl_trail_pct != null ? ' trail ' + fmtPct(t.sl_trail_pct) : ''}</span>
             {#if t.wing_strike_offset != null}
               <span class="tpl-num tpl-num-wing">Wing {fmtOffset(t.wing_strike_offset)} strike</span>
             {:else if t.wing_premium_pct != null}
@@ -396,6 +400,14 @@
                             rows="3"
                             class="tpl-input tpl-input-mono"
                             placeholder={'[{"at_pct": 30, "close_pct": 50}]'}></textarea>
+                </label>
+                <label class="tpl-field">
+                  <span>Trailing stop % (blank = none)
+                    <InfoHint popup={true} align="right" label="?"
+                      text="When set, the background _task_trail_stop poller ratchets the attached SL GTT's trigger toward the favorable side of LTP every templates.trail_poll_interval_seconds. New trigger = peak × (1 − trail/100) for longs, trough × (1 + trail/100) for shorts. Trigger only moves favorably — locks in profits as the position runs. Industry standard trailing stop (NinjaTrader Trail, IBKR Trailing Stop). Kite-only today; Dhan + Groww silently skipped." />
+                  </span>
+                  <input type="number" step="0.5" bind:value={formSlTrailPct}
+                         placeholder="e.g. 10" class="tpl-input" />
                 </label>
                 <label class="tpl-checkbox">
                   <input type="checkbox" bind:checked={formIsDefault} />

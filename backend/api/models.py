@@ -876,6 +876,21 @@ class OrderTemplate(Base):
     # open with no TP. Industry analogue: NinjaTrader ATM Strategy
     # multiple targets, IBKR Bracket Order auto-scale.
     tp_scales_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Trailing stop distance (Phase 3B). When set, the background
+    # `_task_trail_stop` poller watches every attached SL GTT and
+    # ratchets its trigger toward the highest LTP seen (long parent)
+    # or lowest LTP seen (short parent). New trigger = high × (1 −
+    # sl_trail_pct/100) for longs, low × (1 + sl_trail_pct/100) for
+    # shorts. Trigger only moves favorably — never against the
+    # operator. Locks in profits as the underlying runs without
+    # forcing the operator to manually drag the stop. Industry
+    # standard "trailing stop" — NinjaTrader Trail, IBKR Trailing
+    # Stop, Kite GTT modify cadence. Independent of sl_pct: if both
+    # are set, sl_pct is the floor (trail never pulls trigger lower
+    # than the initial sl_pct level on a long).
+    sl_trail_pct: Mapped[Optional[float]] = mapped_column(
+        Numeric(8, 4), nullable=True,
+    )
     # Marks the operator's default pick — surfaced in OrderTicket as the
     # pre-selected option. Only one default per applies_to scope; the
     # seeder enforces a single is_default=True row for each scope.

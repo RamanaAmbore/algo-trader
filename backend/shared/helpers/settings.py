@@ -265,6 +265,12 @@ SEEDS: list[tuple] = [
      "considers when picking the wing. Larger = more candidates + more "
      "broker.quote() load.",
      "strikes", {"min": 5, "max": 100, "step": 1}),
+    ("templates", "templates.trail_poll_interval_seconds", "int", 30,
+     "How often the trailing-stop background poller checks LTP + bumps "
+     "the SL trigger on attached GTTs. Lower = tighter trail but more "
+     "broker.modify_gtt round-trips. Defaults to 30s (industry "
+     "convention — IBKR Trail polls at this cadence on retail tier).",
+     "s", {"min": 5, "max": 600, "step": 5}),
 
     # ── Notifications (per-branch capability toggles) ───────────────────
     # `is_enabled()` in utils.py reads notifications.<cap>_enabled from

@@ -266,6 +266,13 @@ async def init_db() -> None:
             # tp_pct keeps working). Operator opts in by editing the
             # template on /automation/templates.
             "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_scales_json TEXT",
+            # Phase 3B — trailing stop distance %. NULL = no trailing
+            # (SL stays fixed at fill × (1 − sl_pct/100)). When set,
+            # the _task_trail_stop background poller bumps the
+            # attached SL GTT's trigger to track the favorable side
+            # of LTP every templates.trail_poll_interval_seconds.
+            "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS sl_trail_pct "
+            "NUMERIC(8, 4)",
         ):
             await conn.execute(text(stmt))
 
