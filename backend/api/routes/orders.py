@@ -780,6 +780,37 @@ class OrdersController(Controller):
         except Exception:
             _paper_open_ids = None  # engine unavailable → don't drop paper rows
 
+        # Snapshot live broker orders (cached 15 s in get_or_fetch).
+        # Operator: "once chase reconciled and order completed it should
+        # not show in chase reconcile card. example GOLDM 146000 strike
+        # completed but still listed." Postbacks can drop, leaving the
+        # row stuck at OPEN; the panel polled /chases/active every 3 s
+        # but never round-tripped to the broker, so a FILLED order kept
+        # rendering until the operator clicked Reconcile (which also
+        # had the KiteConnection bug — separate fix in this commit).
+        # Inline broker lookup uses the existing /api/orders cache so we
+        # pay 1 broker.orders() per account per 15 s, not 1 per 3 s poll.
+        _LIVE_TERMINAL = {"COMPLETE", "CANCELLED", "REJECTED", "EXPIRED"}
+        _KITE_TO_ALGO = {
+            "COMPLETE":  "FILLED",
+            "CANCELLED": "CANCELLED",
+            "REJECTED":  "REJECTED",
+            "EXPIRED":   "UNFILLED",
+        }
+        _broker_status_by_id: dict[str, dict] = {}
+        try:
+            _ord_resp = await get_or_fetch("orders", _fetch_orders,
+                                           ttl_seconds=_ORDERS_TTL)
+            for _o in (_ord_resp.rows or []):
+                _bid = str(getattr(_o, "order_id", "") or "")
+                if _bid:
+                    _broker_status_by_id[_bid] = {
+                        "status": str(getattr(_o, "status", "") or "").upper(),
+                        "average_price": float(getattr(_o, "average_price", 0) or 0),
+                    }
+        except Exception as _oe:
+            logger.debug(f"chases/active broker snapshot failed: {_oe}")
+
         async with async_session() as s:
             rows = (await s.execute(
                 sql_select(AlgoOrder)
@@ -791,6 +822,7 @@ class OrdersController(Controller):
             kept = []
             dropped_paper = 0
             dropped_live = 0
+            reconciled_live = 0
             for r in rows:
                 mode = (r.mode or "").lower()
                 if mode == "paper" and _paper_open_ids is not None:
@@ -816,8 +848,27 @@ class OrdersController(Controller):
                                     + " · live placement never returned broker_order_id")
                         dropped_live += 1
                         continue
+                    # Broker reconciliation — if the cached order book
+                    # shows this id at a terminal status, flip the row
+                    # and drop it from the response.
+                    _bo = _broker_status_by_id.get(str(r.broker_order_id))
+                    if _bo and _bo["status"] in _LIVE_TERMINAL:
+                        new_status = _KITE_TO_ALGO[_bo["status"]]
+                        if r.status != new_status:
+                            r.status = new_status
+                            if new_status == "FILLED":
+                                if _bo["average_price"]:
+                                    try:
+                                        r.fill_price = float(_bo["average_price"])
+                                    except (TypeError, ValueError):
+                                        pass
+                                r.filled_at = datetime.now(timezone.utc)
+                            r.detail = ((r.detail or "")[:200]
+                                        + f" · broker says {_bo['status']}")
+                            reconciled_live += 1
+                        continue
                 kept.append(r)
-            if dropped_paper or dropped_live:
+            if dropped_paper or dropped_live or reconciled_live:
                 await s.commit()
 
         do_mask = not is_admin_request(request)
@@ -970,7 +1021,7 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.shared.helpers.connections import Connections
+        from backend.shared.brokers import get_broker
         from datetime import datetime, timezone
 
         _KITE_TO_ALGO = {
@@ -997,14 +1048,21 @@ class OrdersController(Controller):
             for r in rows:
                 by_acct.setdefault(str(r.account or ""), []).append(r)
 
-            conn = Connections()
             updated = 0
             missing = 0
 
             for acct, acct_rows in by_acct.items():
-                broker = conn.conn.get(acct)
-                if broker is None:
-                    # Account not loaded — can't reconcile. Skip.
+                # Route via the broker registry — Connections.conn.get()
+                # returned the raw KiteConnection wrapper which has no
+                # .orders() method, so every reconcile silently failed
+                # at the broker and the operator's "Reconcile" click did
+                # nothing (the GOLDM 146000CE stayed OPEN even after
+                # filling at Kite). Same KiteConnection bug fixed in
+                # kill_chase (commit 41133e16).
+                try:
+                    broker = get_broker(acct)
+                except Exception as e:
+                    logger.warning(f"reconcile: get_broker({acct}) failed: {e}")
                     continue
                 try:
                     broker_orders = await _asyncio.to_thread(broker.orders)
@@ -1063,7 +1121,7 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.shared.helpers.connections import Connections
+        from backend.shared.brokers import get_broker
         from datetime import datetime, timezone
 
         _KITE_TO_ALGO = {
@@ -1077,9 +1135,14 @@ class OrdersController(Controller):
         if not acct:
             raise HTTPException(status_code=400, detail="account required")
 
-        broker = Connections().conn.get(acct)
-        if broker is None:
-            raise HTTPException(status_code=404, detail=f"account {acct} not loaded")
+        # Same broker-registry routing as reconcile_algo_orders /
+        # kill_chase — Connections().conn.get(acct) returns the raw
+        # KiteConnection wrapper which has no .orders() method.
+        try:
+            broker = get_broker(acct)
+        except Exception as e:
+            raise HTTPException(status_code=404,
+                                detail=f"account {acct} not loaded ({e})")
 
         try:
             broker_orders = await _asyncio.to_thread(broker.orders)
