@@ -209,15 +209,33 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
         # phantom values during pre-open warm-up).
         _pnl_valid = (_ltp > 0) & (_avg > 0)
         df_positions['pnl'] = _pnl_calc.where(_pnl_valid, 0.0)
-    # day_change_val — prefer Kite's `m2m` if shipped (it's the
-    # canonical day P&L per Kite docs and already accounts for
-    # intraday adds). Then prefer adapter-shipped day_change_val.
-    # Then the corrected intraday-aware formula above.
+    # day_change_val priority:
+    #   1. broker.m2m (Kite — canonical, accounts for intraday adds)
+    #   2. The decomposed intraday formula `_dcv_calc` when the row has
+    #      the full intraday-field set. Dhan + Groww BOTH normalise
+    #      to this shape today, so this branch covers them — even
+    #      though Dhan pre-computes its own `day_change_val` field
+    #      using the SAME naive (LTP - close) × qty bug Kite avoided
+    #      by shipping m2m, we deliberately override it with our
+    #      decomposed formula so non-Kite accounts get the same
+    #      correct P∆ on intraday-added qty. Operator: "the positions
+    #      and underlyings may be from non-Kite accounts. payoff and
+    #      legs should be accurate for them too."
+    #   3. Adapter-shipped day_change_val (fallback for adapters that
+    #      ship it but DON'T expose the intraday-field set).
+    #   4. Naive (LTP - close) × qty (final fallback).
     if 'm2m' in df_positions.columns:
         _broker_m2m = pd.to_numeric(df_positions['m2m'], errors='coerce')
         df_positions['day_change_val'] = _broker_m2m.where(
             _broker_m2m.notna(), _dcv_calc
         )
+    elif _intraday_fields.issubset(df_positions.columns):
+        # Trust _dcv_calc unconditionally — Dhan ships its own
+        # day_change_val computed with the naive formula and we want
+        # the corrected one. Validity guard: zero out the row when
+        # LTP / close are obviously unhealthy (pre-open warm-up).
+        _dcv_valid = (_ltp > 0)
+        df_positions['day_change_val'] = _dcv_calc.where(_dcv_valid, 0.0)
     elif 'day_change_val' in df_positions.columns:
         _broker_dcv = pd.to_numeric(df_positions['day_change_val'], errors='coerce')
         df_positions['day_change_val'] = _broker_dcv.where(
