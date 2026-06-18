@@ -578,6 +578,24 @@
     return 'both';
   }
 
+  // Two-state Template toggle (Default / None) — replaces the legacy
+  // multi-row Select. Operator: "Keep it simple to start using it."
+  // Default → auto-pick the is_default template for the current side.
+  // None    → explicit opt-out (no GTT / no wing on submit).
+  const _defaultTemplate = $derived.by(() => {
+    if (_templates.length === 0) return null;
+    const scope = _appliesToFor(_side, symbol);
+    return _templates.find(t =>
+      t.is_default && (t.applies_to === scope || t.applies_to === 'both')
+    ) || null;
+  });
+  const _noneTemplate = $derived(
+    _templates.find(t => t.slug === 'none') || null
+  );
+  const _isUsingNone = $derived(
+    _selectedTemplate?.slug === 'none' || _templateId === null
+  );
+
   function _summariseTemplate(t) {
     if (!t) return '';
     const parts = [];
@@ -1756,17 +1774,40 @@
         <div class="ot-label-block" style="flex: 1 1 0; min-width: 0">
           <label class="ot-label">Template <span class="ot-label-sub">(exit rules)</span></label>
           <div class="ot-template-block">
-            <Select
-              options={[
-                { value: '', label: '— No template (entry only) —' },
-                ...(_templates.map(t => ({
-                  value: String(t.id),
-                  label: `${t.name}${t.is_default ? ' ★' : ''}${t.slug === 'none' ? '' : '  — ' + _summariseTemplate(t)}`,
-                })))
-              ]}
-              value={_templateId === null ? '' : String(_templateId)}
-              onValueChange={(v) => { _templateId = v === '' ? null : Number(v); }}
-            />
+            <!-- Two-pill toggle — Default vs None. Operator picks the
+                 default for THIS side automatically (default-short-vol
+                 for SELL options, default-bull for BUY); None opts out
+                 entirely. Full editing of WHICH template is default
+                 lives on /automation/templates. The active default's
+                 name + summary renders underneath so the operator
+                 always sees what's about to be attached. -->
+            <div class="ot-tpl-toggle" role="group" aria-label="Template">
+              <button type="button"
+                      class={'ot-tpl-btn' + (!_isUsingNone ? ' on' : '')}
+                      disabled={!_defaultTemplate}
+                      title={_defaultTemplate
+                        ? `Use ${_defaultTemplate.name}: ${_summariseTemplate(_defaultTemplate)}`
+                        : 'No default template configured for this side'}
+                      onclick={() => {
+                        if (_defaultTemplate) _templateId = _defaultTemplate.id;
+                      }}>
+                Default
+              </button>
+              <button type="button"
+                      class={'ot-tpl-btn' + (_isUsingNone ? ' on' : '')}
+                      title="No template — entry only, no GTT / no wing"
+                      onclick={() => {
+                        _templateId = _noneTemplate ? _noneTemplate.id : null;
+                      }}>
+                None
+              </button>
+            </div>
+            {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+              <div class="ot-tpl-active">
+                <span class="ot-tpl-active-name">{_selectedTemplate.name}</span>
+                <span class="ot-tpl-active-summary">{_summariseTemplate(_selectedTemplate)}</span>
+              </div>
+            {/if}
             <div class="ot-template-overrides">
               <label class="ot-tpl-field">
                 <span>TP%</span>
@@ -2776,6 +2817,62 @@
   .ot-tpl-input {
     width: 4.2rem;
     min-width: 4.2rem;
+  }
+  /* Default / None toggle — 2-pill style matching Side toggle. Compact
+     so it sits inline with the row label without forcing a row break. */
+  .ot-tpl-toggle {
+    display: inline-flex;
+    height: 1.55rem;
+    min-height: 1.55rem;
+    border-radius: 3px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-sizing: border-box;
+    margin-bottom: 0.25rem;
+  }
+  .ot-tpl-toggle .ot-tpl-btn {
+    flex: 0 0 auto;
+    padding: 0 0.7rem;
+    background: transparent;
+    border: 0;
+    color: #94a3b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .ot-tpl-toggle .ot-tpl-btn:hover:not(.on):not([disabled]) {
+    background: rgba(255, 255, 255, 0.06);
+    color: #cbd5e1;
+  }
+  .ot-tpl-toggle .ot-tpl-btn.on {
+    background: rgba(125, 211, 252, 0.16);
+    color: #7dd3fc;
+  }
+  .ot-tpl-toggle .ot-tpl-btn[disabled] {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .ot-tpl-active {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.05rem 0 0.3rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+  }
+  .ot-tpl-active-name {
+    color: #cfe3f8;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .ot-tpl-active-summary {
+    color: rgba(180, 200, 230, 0.65);
   }
 
   /* Preview line — explains what will fire after the entry fills */

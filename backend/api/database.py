@@ -247,6 +247,14 @@ async def init_db() -> None:
             "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS basket_tag VARCHAR(64)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_parent_order_id "
             "ON algo_orders (parent_order_id)",
+            # Phase 0 — template_id + attached_gtts so the postback
+            # handler can fire apply_plan_live(template, actual_fill_price)
+            # on the COMPLETE event for each templated parent order.
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS template_id INTEGER "
+            "REFERENCES order_templates(id) ON DELETE SET NULL",
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_template_id "
+            "ON algo_orders (template_id)",
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS attached_gtts_json TEXT",
         ):
             await conn.execute(text(stmt))
 

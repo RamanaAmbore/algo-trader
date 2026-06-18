@@ -518,6 +518,108 @@ async def _attach_basket_leg_template(
         )
 
 
+async def _fire_template_attach_on_fill(
+    *,
+    parent_row_id: int,
+    parent_account: str,
+    parent_symbol: str,
+    parent_exchange: str,
+    parent_side: str,
+    parent_qty: int,
+    fill_price: float,
+    template_id: int,
+) -> None:
+    """Fire apply_plan_live for a templated parent order that just
+    flipped to FILLED via Kite/Dhan/Groww postback.
+
+    Persists the returned gtt_ids back onto AlgoOrder.attached_gtts_json
+    so the operator can cancel them later if they manually close the
+    parent. Errors are logged but never raised — the postback ACK has
+    already returned to the broker.
+
+    Idempotency: if attached_gtts_json is already populated for this
+    parent, skip — postbacks can arrive multiple times for the same
+    fill on Kite (delivery retry) and we don't want duplicate GTTs.
+    """
+    if not fill_price or fill_price <= 0:
+        return
+    try:
+        import json as _json
+        from sqlalchemy import select as _sel_t
+        from backend.api.database import async_session as _async_s
+        from backend.api.models import AlgoOrder as _AO
+        from backend.api.algo.template_attach import apply_template_to_order
+
+        async with _async_s() as _s:
+            _row = (await _s.execute(
+                _sel_t(_AO).where(_AO.id == parent_row_id)
+            )).scalar_one_or_none()
+            if _row is None:
+                logger.warning(
+                    f"[TPL-ATTACH] parent row #{parent_row_id} vanished "
+                    f"before postback fired"
+                )
+                return
+            if _row.attached_gtts_json:
+                # Duplicate postback — already attached.
+                return
+
+        result = await apply_template_to_order(
+            template_id=template_id,
+            template_slug=None,
+            overrides={},
+            parent_account=parent_account,
+            parent_symbol=parent_symbol,
+            parent_side=parent_side,
+            parent_qty=parent_qty,
+            parent_exchange=parent_exchange,
+            parent_fill_price=fill_price,
+            parent_product="NRML",
+            parent_order_id=parent_row_id,
+            apply_path="live",
+        )
+        if result is None:
+            return
+
+        attached = []
+        for spec in (result.plan.gtts or []):
+            if spec.placed_id:
+                attached.append({
+                    "kind":  "gtt",
+                    "label": spec.label,
+                    "id":    spec.placed_id,
+                })
+        if result.wing_order_id:
+            attached.append({
+                "kind":  "wing",
+                "label": "Wing",
+                "id":    result.wing_order_id,
+            })
+
+        async with _async_s() as _s:
+            _row = (await _s.execute(
+                _sel_t(_AO).where(_AO.id == parent_row_id)
+            )).scalar_one_or_none()
+            if _row is None:
+                return
+            _row.attached_gtts_json = _json.dumps(attached) if attached else _json.dumps([])
+            if result.errors:
+                _row.detail = ((_row.detail or "")[:200]
+                               + f" · template attach: "
+                               + "; ".join(result.errors[:2]))
+            await _s.commit()
+        logger.info(
+            f"[TPL-ATTACH] parent #{parent_row_id} {parent_account} "
+            f"{parent_side} {parent_symbol} fill={fill_price} → "
+            f"{len(attached)} child placement(s), "
+            f"{len(result.errors)} error(s)"
+        )
+    except Exception as e:
+        logger.error(
+            f"[TPL-ATTACH] failed for parent #{parent_row_id}: {e}"
+        )
+
+
 async def _arm_take_profit(
     parent_row_id: int,
     parent_account: str,
@@ -1815,6 +1917,42 @@ class OrdersController(Controller):
                 masked = mask_column(pd.Series([account]))[0]
                 logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
                             f"{side} {qty} {sym}{chase_tag}")
+                # Persist an AlgoOrder row so the postback handler can
+                # later fire apply_plan_live(template, fill_price) when
+                # the parent flips to FILLED. Captures the chosen
+                # template_id (Phase 0) + the legacy target_pct shim so
+                # the existing _arm_take_profit path still works for
+                # callers that haven't migrated to templates. Best-effort
+                # — never let a DB hiccup block the operator's "order
+                # placed" response.
+                try:
+                    from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
+                    _live_manual_aid: int | None = None
+                    try:
+                        _live_manual_aid = await _g_aid("manual")
+                    except Exception:
+                        pass
+                    _eff_target_pct = _resolve_target_pct(data.target_pct)
+                    async with async_session() as _s:
+                        _live_row = AlgoOrder(
+                            account=account, symbol=sym,
+                            exchange=(data.exchange or "NFO"),
+                            transaction_type=side, quantity=qty,
+                            initial_price=(float(data.price)
+                                           if data.price is not None else None),
+                            status="OPEN", engine="live", mode="live",
+                            agent_id=_live_manual_aid,
+                            broker_order_id=str(order_id),
+                            target_pct=(_eff_target_pct
+                                        if _eff_target_pct > 0 else None),
+                            template_id=data.template_id,
+                            detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
+                                   f"{' @₹' + str(data.price) if data.price else ''}",
+                        )
+                        _s.add(_live_row)
+                        await _s.commit()
+                except Exception as _e:
+                    logger.warning(f"[LIVE-TICKET] AlgoOrder persist failed: {_e}")
                 try:
                     import asyncio as _aio
                     from backend.api.algo.agent_engine import record_manual_event
@@ -2217,6 +2355,33 @@ class OrdersController(Controller):
                                                 and float(_r.target_abs)),
                                     parent_mode=str(_r.mode or "live"),
                                 ))
+                        # Phase 0 — template attachment on real broker fill.
+                        # Fires when the parent has template_id set, is a
+                        # parent (parent_order_id NULL → no TP-of-TP), is a
+                        # real broker order (mode='live'), and is now
+                        # FILLED with a known fill_price. Without this hook,
+                        # the LIVE path persisted the template_id but never
+                        # actually placed the TP/SL GTT + wing on the
+                        # broker, so the operator saw "Default" picked in
+                        # OrderTicket but the broker had no brackets.
+                        for _r in _filled_rows:
+                            if (_r.template_id
+                                    and _r.parent_order_id is None
+                                    and _r.mode == "live"
+                                    and _r.fill_price):
+                                import asyncio as _aio3
+                                _aio3.create_task(
+                                    _fire_template_attach_on_fill(
+                                        parent_row_id=int(_r.id),
+                                        parent_account=str(_r.account or ""),
+                                        parent_symbol=str(_r.symbol or ""),
+                                        parent_exchange=str(_r.exchange or "NFO"),
+                                        parent_side=str(_r.transaction_type or "BUY"),
+                                        parent_qty=int(_r.quantity or 0),
+                                        fill_price=float(_r.fill_price),
+                                        template_id=int(_r.template_id),
+                                    )
+                                )
                     except Exception as _pe:
                         logger.debug(f"postback event write failed: {_pe}")
 

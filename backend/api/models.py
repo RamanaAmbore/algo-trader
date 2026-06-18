@@ -296,6 +296,22 @@ class AlgoOrder(Base):
     parent_order_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("algo_orders.id"), nullable=True, index=True,
     )
+    # Template attachment — captured at submit time so the postback
+    # handler can fire apply_plan_live(template, actual_fill_price)
+    # when the parent flips to FILLED. Without this column the LIVE
+    # path computed a TemplatePlan at submit-time but never sent it
+    # to the broker, so the operator had no GTTs / wings attached even
+    # though the UI showed a template was picked.
+    template_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("order_templates.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    # JSON list of {broker, gtt_id, label} dicts returned by
+    # apply_plan_live after the parent fills. Used to cancel the
+    # attached GTTs when the parent is manually closed and for
+    # /admin/templates audit reporting. NULL means "no attach yet"
+    # (parent not yet filled, or no template was picked).
+    attached_gtts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # basket_tag groups the legs of a single basket submission.  Carried
     # through to kite.place_order(tag=…) so the broker also groups them.
     basket_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
