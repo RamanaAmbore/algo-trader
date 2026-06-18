@@ -34,14 +34,19 @@ async def _emit_chase_terminal(
     attempts: int = 0,
     slippage: float | None = None,
     error: str | None = None,
+    algo_order_id: int | None = None,
 ) -> None:
-    """Look up the AlgoOrder row by broker_order_id, update its terminal
-    status, and write a chase-terminal AgentEvent if the order carries
-    an agent_id.  Fire-and-forget.
+    """Look up the AlgoOrder row + update its terminal status, write a
+    chase-terminal AgentEvent, and on chase_fill fire any attached
+    template's GTT + wing. Fire-and-forget.
 
-    Previously this only wrote the AgentEvent and never touched
-    AlgoOrder.status — chase-driven orders stayed at OPEN forever
-    even though the chase loop had already filled/cancelled them.
+    Lookup priority: algo_order_id (Phase 0.5 — chase passes the row
+    id explicitly, immune to mid-chase broker_order_id mutation) →
+    broker_order_id (legacy callers that don't yet pass the row id).
+    Without the algo_order_id path, chased orders silently failed to
+    flip to FILLED because their AlgoOrder row stayed pinned to the
+    FIRST broker_order_id while _emit_chase_terminal was called with
+    the LATEST one.
     """
     try:
         from sqlalchemy import select as _sel
@@ -61,9 +66,17 @@ async def _emit_chase_terminal(
 
         agent_id = None
         async with _async_session() as _s:
-            row = (await _s.execute(
-                _sel(_AlgoOrder).where(_AlgoOrder.broker_order_id == broker_order_id)
-            )).scalar_one_or_none()
+            row = None
+            if algo_order_id is not None:
+                row = (await _s.execute(
+                    _sel(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                )).scalar_one_or_none()
+            if row is None:
+                row = (await _s.execute(
+                    _sel(_AlgoOrder).where(
+                        _AlgoOrder.broker_order_id == broker_order_id
+                    )
+                )).scalar_one_or_none()
             if row is not None:
                 agent_id = getattr(row, "agent_id", None)
                 if _new_status and row.status != _new_status:
@@ -96,19 +109,25 @@ async def _emit_chase_terminal(
             error=error,
         )
 
-        # Auto TP — arm take-profit child after a chase fill.
-        # Only fires when the filled parent row has target_pct / target_abs
-        # set and is itself a parent (parent_order_id IS NULL) so we never
-        # create TP-of-TP chains.
+        # Auto TP + Template attach — fire after a chase fill on a
+        # parent row (parent_order_id IS NULL so we never create
+        # TP-of-TP chains). Same lookup priority: algo_order_id first
+        # then broker_order_id.
         if outcome == "chase_fill" and final_price:
             try:
                 from sqlalchemy import select as _sel2
                 from backend.api.database import async_session as _as2
                 from backend.api.models import AlgoOrder as _AO2
                 async with _as2() as _s2:
-                    _filled = (await _s2.execute(
-                        _sel2(_AO2).where(_AO2.broker_order_id == broker_order_id)
-                    )).scalar_one_or_none()
+                    _filled = None
+                    if algo_order_id is not None:
+                        _filled = (await _s2.execute(
+                            _sel2(_AO2).where(_AO2.id == int(algo_order_id))
+                        )).scalar_one_or_none()
+                    if _filled is None:
+                        _filled = (await _s2.execute(
+                            _sel2(_AO2).where(_AO2.broker_order_id == broker_order_id)
+                        )).scalar_one_or_none()
                     if (_filled is not None
                             and (_filled.target_pct or _filled.target_abs)
                             and _filled.parent_order_id is None):
@@ -125,6 +144,28 @@ async def _emit_chase_terminal(
                             target_abs=(_filled.target_abs
                                         and float(_filled.target_abs)),
                             parent_mode=str(_filled.mode or "live"),
+                        ))
+                    # Phase 0.5 — template attach on chase fill. Same
+                    # idempotency guard (attached_gtts_json populated →
+                    # skip) lives inside _fire_template_attach_on_fill,
+                    # so a race against the postback hook is safe.
+                    if (_filled is not None
+                            and _filled.template_id
+                            and _filled.parent_order_id is None
+                            and (_filled.mode or "") == "live"):
+                        from backend.api.routes.orders import (
+                            _fire_template_attach_on_fill,
+                        )
+                        import asyncio as _aio4
+                        _aio4.create_task(_fire_template_attach_on_fill(
+                            parent_row_id=int(_filled.id),
+                            parent_account=str(_filled.account or ""),
+                            parent_symbol=str(_filled.symbol or symbol),
+                            parent_exchange=str(_filled.exchange or "NFO"),
+                            parent_side=str(_filled.transaction_type or side),
+                            parent_qty=int(_filled.quantity or qty),
+                            fill_price=float(final_price),
+                            template_id=int(_filled.template_id),
                         ))
             except Exception as _tp_e:
                 logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")
@@ -419,6 +460,31 @@ async def _run(fn, *args):
     return await loop.run_in_executor(_executor, fn, *args)
 
 
+async def _sync_algo_order_id(algo_order_id: int | None,
+                              new_broker_order_id: str) -> None:
+    """Update AlgoOrder.broker_order_id to the latest one the chase
+    just placed. Best-effort — never raises. Phase 0.5 — without this
+    every chase cancel-and-replace orphaned the row from its broker
+    id, so the terminal lookup in _emit_chase_terminal (and the
+    postback handler) couldn't match the row by broker_order_id.
+    """
+    if algo_order_id is None or not new_broker_order_id:
+        return
+    try:
+        from sqlalchemy import select as _sel
+        from backend.api.database import async_session as _as
+        from backend.api.models import AlgoOrder as _AO
+        async with _as() as _s:
+            row = (await _s.execute(
+                _sel(_AO).where(_AO.id == int(algo_order_id))
+            )).scalar_one_or_none()
+            if row is not None and row.broker_order_id != str(new_broker_order_id):
+                row.broker_order_id = str(new_broker_order_id)
+                await _s.commit()
+    except Exception as _e:
+        logger.debug(f"_sync_algo_order_id failed: {_e}")
+
+
 async def chase_order(
     account: str,
     symbol: str,
@@ -426,6 +492,7 @@ async def chase_order(
     quantity: int,
     cfg: ChaseConfig | None = None,
     on_event: Callable | None = None,
+    algo_order_id: int | None = None,
 ) -> ChaseResult:
     """
     Chase a limit order until filled.
@@ -437,6 +504,12 @@ async def chase_order(
         quantity: Number of lots/shares
         cfg: Chase configuration (defaults used if None)
         on_event: Optional callback(event_type: str, detail: dict) for real-time updates
+        algo_order_id: Optional AlgoOrder row id — when set, the chase
+                       loop syncs broker_order_id on every successful
+                       re-place and passes the id into all
+                       _emit_chase_terminal calls. Required for any
+                       chased order that has a template attached
+                       (Phase 0.5).
 
     Returns:
         ChaseResult with fill details
@@ -510,6 +583,11 @@ async def chase_order(
             logger.info(f"Chase {symbol}: attempt {attempt}/{cfg.max_attempts} "
                         f"— {transaction_type} {remaining_qty} @ {price} (order {current_order_id})")
             emit("order_placed", {"order_id": current_order_id, "price": price, "attempt": attempt})
+            # Phase 0.5 — keep the AlgoOrder row's broker_order_id in
+            # lockstep with the chase loop's current order so the
+            # terminal handler + postback handler + chase panel all
+            # see the LATEST broker id, not the FIRST one.
+            await _sync_algo_order_id(algo_order_id, current_order_id)
 
             # Wait for fill
             await asyncio.sleep(cfg.interval_seconds)
@@ -537,6 +615,7 @@ async def chase_order(
                     symbol, transaction_type, quantity,
                     final_price=avg_price, attempts=attempt,
                     slippage=result.slippage,
+                    algo_order_id=algo_order_id,
                 ))
                 return result
 
@@ -582,6 +661,7 @@ async def chase_order(
                         rejected_order_id, "chase_failed",
                         symbol, transaction_type, quantity,
                         attempts=attempt, error=abort_msg,
+                        algo_order_id=algo_order_id,
                     ))
                 return result
 
@@ -613,6 +693,7 @@ async def chase_order(
                             cancelled_order_id, "chase_cancelled",
                             symbol, transaction_type, quantity,
                             attempts=attempt,
+                            algo_order_id=algo_order_id,
                         ))
                     return result
                 current_order_id = None  # Need fresh order
@@ -656,6 +737,7 @@ async def chase_order(
                         current_order_id, "chase_failed",
                         symbol, transaction_type, quantity,
                         attempts=attempt, error=abort_msg,
+                        algo_order_id=algo_order_id,
                     ))
                 return result
             await asyncio.sleep(cfg.interval_seconds)
@@ -677,5 +759,6 @@ async def chase_order(
             result.order_id, "chase_unfilled",
             symbol, transaction_type, quantity,
             attempts=cfg.max_attempts,
+            algo_order_id=algo_order_id,
         ))
     return result

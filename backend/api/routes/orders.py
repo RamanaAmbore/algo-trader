@@ -244,7 +244,8 @@ def _live_chase_config(aggressiveness: str):
 
 async def _start_live_chase(account: str, symbol: str, exchange: str,
                             transaction_type: str, quantity: int,
-                            aggressiveness: str) -> str:
+                            aggressiveness: str,
+                            algo_order_id: int | None = None) -> str:
     """Place + chase a LIVE order in the background.
 
     Spawns `chase_order()` as an asyncio task and synchronously
@@ -254,11 +255,12 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
     aggressiveness config until the order fills or the attempt
     cap is hit.
 
-    Note: the chase loop CANCELS the current order and PLACES a
-    NEW one each attempt, so the order_id mutates over the chase
-    lifetime. The id we return here is the FIRST one. Operators
-    can poll /api/orders/ to see the currently-live order_id.
-    Future work could surface chase progress via WebSocket.
+    Phase 0.5 — algo_order_id is plumbed into chase_order so it can
+    keep AlgoOrder.broker_order_id in lockstep with each replace, and
+    so its terminal handler can identify the row even when broker_id
+    has mutated since the original place. Without this, chased orders
+    silently failed to flip to FILLED in the DB → templates never
+    attached on fill.
     """
     import asyncio
     from backend.api.algo.chase import chase_order
@@ -285,6 +287,7 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
         account=account, symbol=symbol,
         transaction_type=transaction_type, quantity=quantity,
         cfg=cfg, on_event=on_event,
+        algo_order_id=algo_order_id,
     ))
 
     # 15 s timeout — chase_order's first iteration fetches depth
@@ -1879,9 +1882,54 @@ class OrdersController(Controller):
                               and data.price > 0)
 
             try:
+                # Phase 0.5 — write the AlgoOrder row BEFORE the chase
+                # spawns so we can plumb its id into chase_order. The
+                # chase loop syncs broker_order_id on every re-place
+                # and identifies the row by id in _emit_chase_terminal,
+                # so chased orders flip to FILLED correctly even after
+                # multiple cancel-and-replaces. Same row write is done
+                # for the single-shot path so template attach works
+                # uniformly. Resolved id is None on persist failure;
+                # the chase still runs and the legacy broker_order_id
+                # lookup remains as a fallback.
+                _live_algo_id: int | None = None
+                try:
+                    from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
+                    _live_manual_aid: int | None = None
+                    try:
+                        _live_manual_aid = await _g_aid("manual")
+                    except Exception:
+                        pass
+                    _eff_target_pct = _resolve_target_pct(data.target_pct)
+                    async with async_session() as _s_pre:
+                        _live_row = AlgoOrder(
+                            account=account, symbol=sym,
+                            exchange=(data.exchange or "NFO"),
+                            transaction_type=side, quantity=qty,
+                            initial_price=(float(data.price)
+                                           if data.price is not None else None),
+                            status="OPEN", engine="live", mode="live",
+                            agent_id=_live_manual_aid,
+                            broker_order_id=None,
+                            target_pct=(_eff_target_pct
+                                        if _eff_target_pct > 0 else None),
+                            template_id=data.template_id,
+                            detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
+                                   f"{' @₹' + str(data.price) if data.price else ''}",
+                        )
+                        _s_pre.add(_live_row)
+                        await _s_pre.commit()
+                        _live_algo_id = _live_row.id
+                except Exception as _e_pre:
+                    logger.warning(
+                        f"[LIVE-TICKET] AlgoOrder pre-persist failed: {_e_pre}"
+                    )
+
                 if chase_eligible:
                     # Background chase loop — first place_order
-                    # returns synchronously; loop keeps running.
+                    # returns synchronously; loop keeps running. The
+                    # algo_order_id propagates into chase_order so
+                    # broker_order_id stays in sync per replace.
                     order_id = await _start_live_chase(
                         account=account,
                         symbol=sym,
@@ -1889,6 +1937,7 @@ class OrdersController(Controller):
                         transaction_type=side,
                         quantity=qty,
                         aggressiveness=(data.chase_aggressiveness or "low"),
+                        algo_order_id=_live_algo_id,
                     )
                     chase_tag = f" CHASE[{(data.chase_aggressiveness or 'low').lower()}]"
                 else:
@@ -1913,46 +1962,31 @@ class OrdersController(Controller):
                     )
                     chase_tag = ""
 
+                # Seed the row's broker_order_id with the first place
+                # result. For chased orders this gets overwritten on
+                # every re-place via _sync_algo_order_id; for single-
+                # shot orders this is the final value.
+                if _live_algo_id is not None and order_id:
+                    try:
+                        from sqlalchemy import select as _sel_seed
+                        async with async_session() as _s_seed:
+                            _r = (await _s_seed.execute(
+                                _sel_seed(AlgoOrder).where(
+                                    AlgoOrder.id == _live_algo_id
+                                )
+                            )).scalar_one_or_none()
+                            if _r is not None:
+                                _r.broker_order_id = str(order_id)
+                                await _s_seed.commit()
+                    except Exception as _e_seed:
+                        logger.debug(
+                            f"[LIVE-TICKET] broker_order_id seed failed: {_e_seed}"
+                        )
+
                 invalidate("orders")    # refresh /api/orders cache
                 masked = mask_column(pd.Series([account]))[0]
                 logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
                             f"{side} {qty} {sym}{chase_tag}")
-                # Persist an AlgoOrder row so the postback handler can
-                # later fire apply_plan_live(template, fill_price) when
-                # the parent flips to FILLED. Captures the chosen
-                # template_id (Phase 0) + the legacy target_pct shim so
-                # the existing _arm_take_profit path still works for
-                # callers that haven't migrated to templates. Best-effort
-                # — never let a DB hiccup block the operator's "order
-                # placed" response.
-                try:
-                    from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
-                    _live_manual_aid: int | None = None
-                    try:
-                        _live_manual_aid = await _g_aid("manual")
-                    except Exception:
-                        pass
-                    _eff_target_pct = _resolve_target_pct(data.target_pct)
-                    async with async_session() as _s:
-                        _live_row = AlgoOrder(
-                            account=account, symbol=sym,
-                            exchange=(data.exchange or "NFO"),
-                            transaction_type=side, quantity=qty,
-                            initial_price=(float(data.price)
-                                           if data.price is not None else None),
-                            status="OPEN", engine="live", mode="live",
-                            agent_id=_live_manual_aid,
-                            broker_order_id=str(order_id),
-                            target_pct=(_eff_target_pct
-                                        if _eff_target_pct > 0 else None),
-                            template_id=data.template_id,
-                            detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
-                                   f"{' @₹' + str(data.price) if data.price else ''}",
-                        )
-                        _s.add(_live_row)
-                        await _s.commit()
-                except Exception as _e:
-                    logger.warning(f"[LIVE-TICKET] AlgoOrder persist failed: {_e}")
                 try:
                     import asyncio as _aio
                     from backend.api.algo.agent_engine import record_manual_event
