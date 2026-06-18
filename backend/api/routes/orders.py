@@ -542,7 +542,22 @@ async def _attach_basket_leg_template(
 # the GTT at the broker. uvicorn runs with --workers 1 in prod, so
 # in-process locking is sufficient; the meta-lock guards the registry
 # write itself.
-_TEMPLATE_ATTACH_LOCKS: dict[int, "asyncio.Lock"] = {}
+#
+# Sprint B (audit #11): use weakref.WeakValueDictionary so locks
+# self-evict once every caller drops their strong reference. Pre-fix
+# the registry grew unbounded — one entry per filled parent forever.
+# The pattern is safe because:
+#   1. The meta-lock serialises get-or-create so two concurrent calls
+#      for the same parent_row_id can't both mint fresh locks.
+#   2. The caller stores the returned lock in a local strong ref
+#      (`_row_lock` inside `_fire_template_attach_on_fill`) — that
+#      ref keeps the WeakValueDictionary entry alive across the
+#      `async with` block.
+#   3. After the function returns AND any other concurrent waiter
+#      also releases, no strong refs remain → the entry is GC'd at
+#      the next pass and the dict shrinks naturally.
+import weakref as _weakref
+_TEMPLATE_ATTACH_LOCKS: "_weakref.WeakValueDictionary[int, asyncio.Lock]" = _weakref.WeakValueDictionary()
 _TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
 
 
@@ -569,13 +584,19 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
             return
         if not row.fill_price:
             return
+        # Sprint B (#4) — partial fills get their actual filled qty.
+        _attach_qty = (
+            int(row.filled_quantity)
+            if int(row.filled_quantity or 0) > 0
+            else int(row.quantity or 0)
+        )
         asyncio.create_task(_fire_template_attach_on_fill(
             parent_row_id=int(row.id),
             parent_account=str(row.account),
             parent_symbol=str(row.symbol),
             parent_exchange=str(row.exchange or "NFO"),
             parent_side=str(row.transaction_type),
-            parent_qty=int(row.quantity or 0),
+            parent_qty=_attach_qty,
             fill_price=float(row.fill_price),
             template_id=int(row.template_id),
             parent_product=str(row.product or "NRML"),
@@ -2563,6 +2584,16 @@ class OrdersController(Controller):
                                     and _r.mode == "live"
                                     and _r.fill_price):
                                 import asyncio as _aio3
+                                # Sprint B (#4) — size exit GTTs against
+                                # the actual filled qty when partials
+                                # occurred (chase took the order in
+                                # pieces). filled_quantity is the truth-
+                                # of-record; quantity is the original ask.
+                                _attach_qty = (
+                                    int(_r.filled_quantity)
+                                    if int(_r.filled_quantity or 0) > 0
+                                    else int(_r.quantity or 0)
+                                )
                                 _aio3.create_task(
                                     _fire_template_attach_on_fill(
                                         parent_row_id=int(_r.id),
@@ -2570,7 +2601,7 @@ class OrdersController(Controller):
                                         parent_symbol=str(_r.symbol or ""),
                                         parent_exchange=str(_r.exchange or "NFO"),
                                         parent_side=str(_r.transaction_type or "BUY"),
-                                        parent_qty=int(_r.quantity or 0),
+                                        parent_qty=_attach_qty,
                                         fill_price=float(_r.fill_price),
                                         template_id=int(_r.template_id),
                                         parent_product=str(_r.product or "NRML"),

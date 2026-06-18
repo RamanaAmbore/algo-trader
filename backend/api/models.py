@@ -263,6 +263,16 @@ class AlgoOrder(Base):
     exchange: Mapped[str]        = mapped_column(String(8), nullable=False, default="NFO")
     transaction_type: Mapped[str] = mapped_column(String(4), nullable=False)  # BUY/SELL
     quantity: Mapped[int]        = mapped_column(Integer, nullable=False)
+    # Sprint B (audit #4) — cumulative filled qty across partials.
+    # 0 → nothing filled yet. On chase terminal-fill this equals
+    # `quantity`. On partial fills it accumulates so downstream
+    # readers know how much actually traded vs the unfilled
+    # residual. Distinct from `quantity` (the ORIGINAL ask) so the
+    # template-attach path can size exit GTTs against the actual
+    # filled amount, not over-size.
+    filled_quantity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
     initial_price: Mapped[float] = mapped_column(Float, nullable=True)
     fill_price: Mapped[float]    = mapped_column(Float, nullable=True)
     attempts: Mapped[int]        = mapped_column(Integer, nullable=False, default=0)

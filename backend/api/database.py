@@ -278,6 +278,15 @@ async def init_db() -> None:
             # of LTP every templates.trail_poll_interval_seconds.
             "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS sl_trail_pct "
             "NUMERIC(8, 4)",
+            # Sprint B (#4) — cumulative filled qty across chase
+            # partials. Defaults to 0 so existing rows are well-formed
+            # without a back-fill pass; downstream readers can treat
+            # `filled_quantity == 0 AND status == FILLED` as "broker
+            # reported a single complete fill" (legacy behaviour) and
+            # `filled_quantity > 0 AND status == OPEN` as "actively
+            # chasing the residual".
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity "
+            "INTEGER NOT NULL DEFAULT 0",
         ):
             await conn.execute(text(stmt))
 

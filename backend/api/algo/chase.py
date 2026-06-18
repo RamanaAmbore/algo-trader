@@ -167,13 +167,26 @@ async def _emit_chase_terminal(
                             _fire_template_attach_on_fill,
                         )
                         import asyncio as _aio4
+                        # Sprint B (#4) — size exit GTTs against the
+                        # ACTUAL filled qty when the chase took partials.
+                        # Pre-fix the attach sized against the original
+                        # ask quantity, over-sizing the exit by any
+                        # already-filled portion. `filled_quantity > 0`
+                        # is the chase's truth-of-record for "how much
+                        # actually traded"; `quantity` is "how much the
+                        # operator asked for".
+                        _attach_qty = (
+                            int(_filled.filled_quantity)
+                            if int(_filled.filled_quantity or 0) > 0
+                            else int(_filled.quantity or qty)
+                        )
                         _aio4.create_task(_fire_template_attach_on_fill(
                             parent_row_id=int(_filled.id),
                             parent_account=str(_filled.account or ""),
                             parent_symbol=str(_filled.symbol or symbol),
                             parent_exchange=str(_filled.exchange or "NFO"),
                             parent_side=str(_filled.transaction_type or side),
-                            parent_qty=int(_filled.quantity or qty),
+                            parent_qty=_attach_qty,
                             fill_price=float(final_price),
                             template_id=int(_filled.template_id),
                             parent_product=str(_filled.product or "NRML"),
@@ -202,7 +215,18 @@ _MAX_CHASE_ERRORS = 3
 # way it treats a broker auto-cancel (circuit/session-end) and
 # silently placed a new order — operator saw the row "reappear" on
 # the next poll.
-_KILLED_ORDER_IDS: set[str] = set()
+#
+# Sprint B (audit #10): switched from `set[str]` to `dict[str, float]`
+# (broker_order_id → expire_epoch) so stale entries self-prune. A
+# previously-killed order ages out 60 minutes after the kill, which
+# is well past the longest realistic chase lifecycle (max_attempts ×
+# interval_seconds for the slowest config = 30 × 30s = 15 min). The
+# lazy sweep happens inside `is_killed()` — every read drops every
+# entry past its expiry — so the dict stays bounded without a
+# dedicated background task.
+import time as _time
+_KILLED_TTL_SECONDS = 3600
+_KILLED_ORDER_IDS: dict[str, float] = {}
 _KILLED_LOCK = __import__("threading").Lock()
 
 
@@ -214,13 +238,20 @@ def mark_killed(broker_order_id: str) -> None:
     if not broker_order_id:
         return
     with _KILLED_LOCK:
-        _KILLED_ORDER_IDS.add(str(broker_order_id))
+        _KILLED_ORDER_IDS[str(broker_order_id)] = _time.monotonic() + _KILLED_TTL_SECONDS
 
 
 def is_killed(broker_order_id: str) -> bool:
     if not broker_order_id:
         return False
     with _KILLED_LOCK:
+        now = _time.monotonic()
+        # Lazy sweep — drop every expired entry on read so the dict
+        # stays bounded without a background task. Iterating in a list
+        # snapshot so we can mutate during traversal.
+        for k, expires in list(_KILLED_ORDER_IDS.items()):
+            if expires <= now:
+                _KILLED_ORDER_IDS.pop(k, None)
         return str(broker_order_id) in _KILLED_ORDER_IDS
 
 
@@ -496,6 +527,62 @@ async def _sync_algo_order_id(algo_order_id: int | None,
         logger.debug(f"_sync_algo_order_id failed: {_e}")
 
 
+async def _record_partial_fill(algo_order_id: int | None,
+                                filled_qty: int,
+                                fill_price: float,
+                                total_qty: int) -> None:
+    """Sprint B (#4) — persist partial-fill state on the AlgoOrder row.
+
+    Accumulates `filled_quantity` across partials and rolls a fill-
+    qty-weighted `fill_price`. The terminal handler later overwrites
+    `fill_price` with the broker's final average — this interim value
+    keeps the row truthful between partials so:
+      - the order log shows live `filled/total` progress instead of
+        appearing stuck at 0,
+      - the UNFILLED give-up path reports the actual unfilled remainder
+        instead of restating the original qty,
+      - the template attach path sees the accurate `quantity` and
+        sizes exit GTTs against the residual, not the original lot.
+
+    Best-effort. Never raises — partial-fill telemetry is
+    informational, the chase loop continues whether the write
+    succeeds or not.
+    """
+    if algo_order_id is None or filled_qty <= 0:
+        return
+    try:
+        from sqlalchemy import select as _sel
+        from backend.api.database import async_session as _as
+        from backend.api.models import AlgoOrder as _AO
+        async with _as() as _s:
+            row = (await _s.execute(
+                _sel(_AO).where(_AO.id == int(algo_order_id))
+            )).scalar_one_or_none()
+            if row is None:
+                return
+            prior_filled = int(row.filled_quantity or 0)
+            prior_avg    = float(row.fill_price or 0)
+            new_filled   = prior_filled + int(filled_qty)
+            # Weighted-average fill price across partials. Drops back
+            # to current fill_price when no prior partials exist.
+            if prior_filled > 0 and prior_avg > 0 and fill_price > 0:
+                new_avg = (
+                    (prior_avg * prior_filled) + (float(fill_price) * filled_qty)
+                ) / new_filled
+            else:
+                new_avg = float(fill_price or 0)
+            row.filled_quantity = new_filled
+            if new_avg > 0:
+                row.fill_price = new_avg
+            row.detail = (
+                f"PARTIAL {new_filled}/{total_qty} @ ₹{new_avg:,.2f} "
+                f"(chasing residual {total_qty - new_filled})"
+            )[:240]
+            await _s.commit()
+    except Exception as _e:
+        logger.debug(f"_record_partial_fill failed: {_e}")
+
+
 async def chase_order(
     account: str,
     symbol: str,
@@ -631,10 +718,27 @@ async def chase_order(
                 return result
 
             if filled_qty > 0 and filled_qty < remaining_qty:
-                # Partial fill — chase remaining
+                # Partial fill — chase the residual.
                 remaining_qty -= filled_qty
                 logger.info(f"Chase {symbol}: partial fill {filled_qty}, remaining {remaining_qty}")
                 emit("partial_fill", {"filled": filled_qty, "remaining": remaining_qty})
+                # Sprint B (audit #4) — persist the partial state on the
+                # AlgoOrder row so downstream readers see the truth:
+                #   • `filled_quantity` accumulates across partials so the
+                #     order log + reconcile path know how much actually
+                #     traded.
+                #   • `fill_price` rolls the avg-of-fills weighting so a
+                #     subsequent terminal-fill (or UNFILLED give-up) row
+                #     surfaces the right blended average.
+                # Pre-fix `remaining_qty -= filled_qty` was in-memory only;
+                # if the chase eventually hit max_attempts the UNFILLED
+                # row showed the ORIGINAL quantity as unfilled (over-
+                # stated). Worse, the template-attach path read
+                # `_filled.quantity` to size the exit GTT and would
+                # over-size by the already-traded portion.
+                await _record_partial_fill(
+                    algo_order_id, filled_qty, avg_price, quantity
+                )
 
             if order_status == "REJECTED":
                 # Broker rejected the order — invalid product / no permission /
