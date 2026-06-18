@@ -37,9 +37,18 @@ _TTL = 30  # seconds — background task invalidates on each refresh
 
 
 def _fetch() -> HoldingsResponse:
-    raw = pd.concat(broker_apis.fetch_holdings(), ignore_index=True)
-    if raw.empty:
+    per_acct = broker_apis.fetch_holdings()
+    # Outage detection: only raise when every per-account call failed
+    # (`fetch_failed` flag set in broker_apis.py). Empty without the
+    # flag = legitimate "no holdings" state — operator who hasn't
+    # taken delivery yet, or holds only F&O positions. Returning
+    # outage on this produced a false "Holdings unavailable" banner
+    # on /performance.
+    if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
         raise Exception("Broker (Kite) returned no holdings data — upstream Bad Gateway / outage")
+    raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
+    if raw.empty:
+        return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
     # Account masking removed — admin-only pages show real account IDs
 
     # Backfill missing market data (close_price + last_price) for

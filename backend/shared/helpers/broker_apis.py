@@ -24,6 +24,7 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
         elif kite is not None:
             rows = kite.holdings()
         if rows is None:
+            df_holdings.attrs['fetch_failed'] = True
             return df_holdings
         df_holdings = pd.DataFrame(rows)
 
@@ -32,6 +33,7 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
             df_holdings["type"] = "H"
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch holdings: {e}")
+        df_holdings.attrs['fetch_failed'] = True
 
     # Calculated columns — guard against an empty / fetch-failed frame
     # (broker 502 / 503 outages leave df_holdings empty and skipping the
@@ -110,6 +112,7 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
         elif kite is not None:
             net_rows = kite.positions()["net"]
         if net_rows is None:
+            df_positions.attrs['fetch_failed'] = True
             return df_positions
         df_positions = pd.DataFrame(net_rows)
         if not df_positions.empty and "multiplier" in df_positions.columns:
@@ -120,6 +123,7 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
             df_positions["type"] = "P"
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch positions: {e}")
+        df_positions.attrs['fetch_failed'] = True
         return df_positions
 
     if df_positions.empty:

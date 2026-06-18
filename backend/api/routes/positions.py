@@ -40,9 +40,22 @@ def _is_broker_outage(err: Exception) -> bool:
 
 
 def _fetch() -> PositionsResponse:
-    raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
-    if raw.empty:
+    per_acct = broker_apis.fetch_positions()
+    # Outage detection: only raise when every per-account call failed
+    # (`fetch_failed` flag set in broker_apis.py). An empty result with
+    # the flag UNSET is a legitimate "no positions" state — e.g.
+    # operator placed a LIMIT order that hasn't filled yet, or simply
+    # has no open positions today. Surfacing that as a 503 produced a
+    # false "Positions feed unavailable" banner on /admin/derivatives.
+    if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
         raise Exception("Broker (Kite) returned no positions data — upstream Bad Gateway / outage")
+    raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
+    # Legitimate empty book — no positions on any account. Return a
+    # well-formed empty response so /admin/derivatives renders zero
+    # candidates instead of the false "Positions feed unavailable"
+    # banner (which only fires on actual outage 5xx now).
+    if raw.empty:
+        return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
     # Account masking removed — admin-only pages show real account IDs
 
     # Backfill missing market data (close_price + last_price) for
