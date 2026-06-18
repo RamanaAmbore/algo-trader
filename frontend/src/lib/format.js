@@ -60,7 +60,20 @@ function _decFmt(v) {
   return Math.abs(n) >= 100 ? _IN0.format(Math.round(n)) : _IN2.format(n);
 }
 
-export const priceFmt = _decFmt;
+// Prices ALWAYS render with 2 decimals so tick precision is visible.
+// CRUDEOIL options tick at ₹0.10, NSE F&O at ₹0.05, MCX bullion at
+// ₹0.05 — collapsing to integers (the previous shared _decFmt path)
+// made operator see "₹552" for a real ₹552.30 order and conclude
+// the price wasn't tick-aligned. Operator: "the price is not as per
+// ticker size" — display bug, not a placement bug. Aggregates (P&L,
+// money totals) keep the >=100 → integer collapse via aggFmt for
+// scan-ability.
+function _priceFmt(v) {
+  if (v == null || !isFinite(v)) return '—';
+  return _IN2.format(Number(v));
+}
+
+export const priceFmt = _priceFmt;
 export const pctFmt   = _decFmt;
 export const aggFmt   = _decFmt;
 
