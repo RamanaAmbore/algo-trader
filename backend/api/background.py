@@ -1146,9 +1146,19 @@ async def _task_trail_stop() -> None:
                         continue
                     if ltp <= 0:
                         continue
-                    high = max(float(entry.get("highest_ltp") or 0), ltp)
-                    low  = ltp if not entry.get("lowest_ltp") \
-                              else min(float(entry["lowest_ltp"]), ltp)
+                    # Phase 3C #3 — persist watermark advances even when
+                    # we DON'T issue a modify_gtt (no favorable move, or
+                    # two-leg OCO deferred). Previously the in-memory
+                    # update was discarded every poll cycle because
+                    # `changed` was only set after a successful
+                    # modify_gtt call. Compare against the persisted
+                    # value before mutating so we know when there's a
+                    # real diff to write back.
+                    prior_high = float(entry.get("highest_ltp") or 0)
+                    prior_low  = (float(entry["lowest_ltp"])
+                                  if entry.get("lowest_ltp") else None)
+                    high = max(prior_high, ltp)
+                    low  = ltp if prior_low is None else min(prior_low, ltp)
                     if parent_side == "BUY":
                         proposed = high * (1.0 - trail_pct / 100.0)
                         more_favorable = proposed > current_trigger
@@ -1156,8 +1166,10 @@ async def _task_trail_stop() -> None:
                         proposed = low  * (1.0 + trail_pct / 100.0)
                         more_favorable = (current_trigger > 0
                                           and proposed < current_trigger)
-                    entry["highest_ltp"] = high
-                    entry["lowest_ltp"]  = low
+                    if high != prior_high or low != prior_low:
+                        entry["highest_ltp"] = high
+                        entry["lowest_ltp"]  = low
+                        changed = True
                     if not more_favorable:
                         continue
                     proposed = round(proposed, 4)
@@ -1166,9 +1178,12 @@ async def _task_trail_stop() -> None:
                     new_triggers: list[float] = []
                     if trigger_type == "two-leg":
                         # We don't track the TP slot's current value
-                        # in the persisted entry today; skip 2-leg
-                        # modify until the spec carries TP+SL state.
-                        # Phase 3B follow-up.
+                        # in the persisted entry today; skip the
+                        # modify_gtt call until the spec carries TP+SL
+                        # state. The watermark update above DOES
+                        # persist so the modify_gtt path picks up the
+                        # right starting point once the spec is
+                        # extended.
                         continue
                     new_triggers = [proposed]
                     exit_side = "SELL" if parent_side == "BUY" else "BUY"

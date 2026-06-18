@@ -459,9 +459,27 @@ async def _maybe_attach_template_to_ticket(
     data, account: str, sym: str, side: str, qty: int,
     algo_order_id: int | None,
 ) -> dict | None:
-    """Run the unified template-attach pipeline for a ticket order.
-    Returns the AttachResult dict (for the response) or None when
-    neither a template nor an override was supplied."""
+    """Run the template-attach RESOLVER for a paper ticket order and
+    return the planned artefacts WITHOUT placing any broker orders.
+
+    Phase 3C #1 — pre-fix this called apply_template_to_order with
+    `apply_path="auto"`. When SimDriver was inactive (which is
+    almost always for a real paper ticket) "auto" routed to the
+    LIVE path and silently placed real Kite GTTs against the
+    operator's submitted LIMIT price BEFORE the parent ever filled.
+    Two correctness problems compounded:
+      1. The parent might fill at a price OTHER than data.price
+         (MARKET orders, partial slip, IOC) so the exit triggers
+         got computed off the wrong reference.
+      2. The paper engine itself was never told about the template,
+         so its own fill events never fired the attach.
+
+    Fix: always run the resolver in PREVIEW mode here so the API
+    response carries the planned chips for the OrderTicket preview,
+    but no broker order is sent. The paper engine fires the actual
+    attach when its order fills via _fire_template_attach_on_fill
+    using the engine's reported fill_price.
+    """
     if algo_order_id is None:
         return None
     from backend.api.algo.template_attach import apply_template_to_order
@@ -478,10 +496,10 @@ async def _maybe_attach_template_to_ticket(
             parent_fill_price=float(data.price or 0.0),
             parent_product=(data.product or "NRML"),
             parent_order_id=algo_order_id,
-            apply_path="auto",
+            apply_path="preview",
         )
     except Exception as e:
-        logger.error(f"[TICKET-TEMPLATE] attach failed for #{algo_order_id}: {e}")
+        logger.error(f"[TICKET-TEMPLATE] preview failed for #{algo_order_id}: {e}")
         return None
     if result is None:
         return None
@@ -539,6 +557,7 @@ async def _fire_template_attach_on_fill(
     parent_qty: int,
     fill_price: float,
     template_id: int,
+    parent_product: str = "NRML",
 ) -> None:
     """Fire apply_plan_live for a templated parent order that just
     flipped to FILLED via Kite/Dhan/Groww postback.
@@ -551,6 +570,12 @@ async def _fire_template_attach_on_fill(
     Idempotency: if attached_gtts_json is already populated for this
     parent, skip — postbacks can arrive multiple times for the same
     fill on Kite (delivery retry) and we don't want duplicate GTTs.
+
+    `parent_product` — exit GTT legs inherit this. NRML for F&O carry,
+    MIS for intraday equity / F&O, CNC for delivery. Defaulted only as
+    a back-compat shim for callers that don't have the row's product
+    in hand; real callers (postback handler, chase terminal) read it
+    off AlgoOrder.product (Phase 3C #2).
     """
     if not fill_price or fill_price <= 0:
         return
@@ -585,7 +610,7 @@ async def _fire_template_attach_on_fill(
             parent_qty=parent_qty,
             parent_exchange=parent_exchange,
             parent_fill_price=fill_price,
-            parent_product="NRML",
+            parent_product=parent_product,
             parent_order_id=parent_row_id,
             apply_path="live",
         )
@@ -1961,6 +1986,7 @@ class OrdersController(Controller):
                             target_pct=(_eff_target_pct
                                         if _eff_target_pct > 0 else None),
                             template_id=data.template_id,
+                            product=(data.product or "NRML"),
                             detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
                                    f"{' @₹' + str(data.price) if data.price else ''}",
                         )
@@ -2168,6 +2194,8 @@ class OrdersController(Controller):
                     status="OPEN", engine="paper", mode="paper",
                     agent_id=_manual_aid,
                     target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
+                    template_id=data.template_id,
+                    product=(data.product or "NRML"),
                     detail=detail,
                 )
                 s.add(row)
@@ -2461,6 +2489,7 @@ class OrdersController(Controller):
                                         parent_qty=int(_r.quantity or 0),
                                         fill_price=float(_r.fill_price),
                                         template_id=int(_r.template_id),
+                                        parent_product=str(_r.product or "NRML"),
                                     )
                                 )
                     except Exception as _pe:

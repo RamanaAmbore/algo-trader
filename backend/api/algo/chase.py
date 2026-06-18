@@ -166,6 +166,7 @@ async def _emit_chase_terminal(
                             parent_qty=int(_filled.quantity or qty),
                             fill_price=float(final_price),
                             template_id=int(_filled.template_id),
+                            parent_product=str(_filled.product or "NRML"),
                         ))
             except Exception as _tp_e:
                 logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")

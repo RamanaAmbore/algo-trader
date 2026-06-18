@@ -255,6 +255,11 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_template_id "
             "ON algo_orders (template_id)",
             "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS attached_gtts_json TEXT",
+            # Phase 3C #2 — parent_product on AlgoOrder. Pre-fix the
+            # postback handler hardcoded NRML on every exit leg; MIS
+            # day-trades got rejected or left as overnight carry.
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS product "
+            "VARCHAR(8) NOT NULL DEFAULT 'NRML'",
             # Phase 1A — tp_order_type on OrderTemplate. Defaults to
             # 'LIMIT' so every existing row keeps prior behaviour on
             # this deploy; the seeder only writes 'MARKET' to the new

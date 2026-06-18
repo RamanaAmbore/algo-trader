@@ -306,6 +306,16 @@ class AlgoOrder(Base):
         Integer, ForeignKey("order_templates.id", ondelete="SET NULL"),
         nullable=True, index=True,
     )
+    # Parent product code — needed at template-attach time so exit
+    # GTTs inherit the right product. NRML for F&O / commodity carry,
+    # MIS for intraday equity / F&O, CNC for cash-equity delivery.
+    # Without this column the postback handler defaulted every exit
+    # leg to NRML, which Kite rejects on MIS equity day-trades after
+    # 3:20 PM (auto-square-off) and silently leaves operator with
+    # unwanted overnight positions.
+    product: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="NRML", server_default="NRML",
+    )
     # JSON list of {broker, gtt_id, label} dicts returned by
     # apply_plan_live after the parent fills. Used to cancel the
     # attached GTTs when the parent is manually closed and for
