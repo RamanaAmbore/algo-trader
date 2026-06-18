@@ -1213,19 +1213,53 @@ async def _task_trail_stop() -> None:
                         continue
                     proposed = round(proposed, 4)
                     # Build the modify_gtt kwargs. Single trigger has
-                    # one value; two-leg OCO keeps the TP slot intact.
-                    new_triggers: list[float] = []
-                    if trigger_type == "two-leg":
-                        # We don't track the TP slot's current value
-                        # in the persisted entry today; skip the
-                        # modify_gtt call until the spec carries TP+SL
-                        # state. The watermark update above DOES
-                        # persist so the modify_gtt path picks up the
-                        # right starting point once the spec is
-                        # extended.
-                        continue
-                    new_triggers = [proposed]
+                    # one value; two-leg OCO needs [tp, new_sl] so the
+                    # untouched TP slot rides through unchanged.
                     exit_side = "SELL" if parent_side == "BUY" else "BUY"
+                    if trigger_type == "two-leg":
+                        tp_trigger = entry.get("tp_trigger")
+                        if tp_trigger is None:
+                            # Pre-Sprint-A entries (attached before the
+                            # tp_trigger snapshot landed) don't carry
+                            # the TP value. Skip — the watermark advance
+                            # above still commits so the moment the
+                            # operator re-attaches with a freshly-seeded
+                            # entry, trailing kicks in. Logged once at
+                            # info level so we can spot stragglers.
+                            logger.info(
+                                f"[TRAIL] #{row.id} skipping legacy "
+                                f"two-leg entry without tp_trigger — "
+                                f"re-attach to enable trailing"
+                            )
+                            continue
+                        new_triggers = [float(tp_trigger), proposed]
+                        # OCO `orders` array parallel-indexes triggers:
+                        # [TP order at index 0, SL order at index 1].
+                        orders_payload = [
+                            {
+                                "transaction_type": exit_side,
+                                "quantity":         parent_qty,
+                                "price":            float(tp_trigger),
+                                "order_type":       "LIMIT",
+                                "product":          parent_product,
+                            },
+                            {
+                                "transaction_type": exit_side,
+                                "quantity":         parent_qty,
+                                "price":            proposed,
+                                "order_type":       "LIMIT",
+                                "product":          parent_product,
+                            },
+                        ]
+                    else:
+                        new_triggers = [proposed]
+                        orders_payload = [{
+                            "transaction_type": exit_side,
+                            "quantity":         parent_qty,
+                            "price":            proposed,
+                            "order_type":       "LIMIT",
+                            "product":          parent_product,
+                        }]
                     try:
                         await asyncio.to_thread(
                             broker.modify_gtt,
@@ -1235,13 +1269,7 @@ async def _task_trail_stop() -> None:
                             exchange=parent_exchange,
                             last_price=ltp,
                             trigger_values=new_triggers,
-                            orders=[{
-                                "transaction_type": exit_side,
-                                "quantity":         parent_qty,
-                                "price":            proposed,
-                                "order_type":       "LIMIT",
-                                "product":          parent_product,
-                            }],
+                            orders=orders_payload,
                         )
                     except NotImplementedError:
                         # Broker has no modify_gtt — Dhan / Groww today.

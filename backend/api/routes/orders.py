@@ -519,33 +519,21 @@ async def _attach_basket_leg_template(
     price: float,
     product: str,
 ) -> None:
-    """Best-effort template attach for one basket leg. Mirrors the ticket
-    pipeline (`_ticket_attach`) but skips the overrides path — basket
-    legs carry only the shared `template_id` picked once for the whole
-    basket. Silent on failure; the parent order is already persisted."""
-    if not algo_order_id or not template_id:
-        return
-    from backend.api.algo.template_attach import apply_template_to_order
-    try:
-        await apply_template_to_order(
-            template_id=template_id,
-            template_slug=None,
-            overrides=None,
-            parent_account=account,
-            parent_symbol=sym,
-            parent_side=side,
-            parent_qty=qty,
-            parent_exchange=exch,
-            parent_fill_price=price,
-            parent_product=product,
-            parent_order_id=algo_order_id,
-            apply_path="auto",
-        )
-    except Exception as e:
-        logger.warning(
-            f"[BASKET-TEMPLATE] attach failed for #{algo_order_id} "
-            f"template={template_id}: {e}"
-        )
+    """Best-effort template ATTACH-AT-FILL plan for one basket leg.
+
+    Sprint A fix (audit finding #7): the previous shape called
+    `apply_template_to_order(apply_path="auto")` at submit time using
+    the operator's limit `price` as a synthetic fill price, which
+    placed broker GTTs at the wrong reference if the parent filled
+    away from the limit. Now we just persist `template_id` on the
+    AlgoOrder row (done at the caller) — the postback handler / chase
+    terminal will fire the real attach via
+    `_fire_template_attach_on_fill` with the actual fill price.
+
+    Kept as a no-op shim for callsite compatibility; future work can
+    inline the persist step here if it makes the basket flow clearer.
+    """
+    return
 
 
 # Phase 3D #4 — per-parent-row in-process lock so the postback
@@ -697,6 +685,20 @@ async def _fire_template_attach_on_fill(
                     # parallel-index orders.
                     _last_trig = float(spec.trigger_values[-1])
                     entry["current_trigger"] = _last_trig
+                    # Sprint A fix (#6): persist the TP trigger too so
+                    # the two-leg trail-stop modify_gtt call can pass
+                    # BOTH trigger values [tp, new_sl]. Pre-fix the
+                    # poller silently `continue`d on every two-leg
+                    # entry because it had no way to construct the
+                    # full triggers list — the trail effectively never
+                    # ratcheted for OCO templates. single-leg specs
+                    # leave `tp_trigger` absent (None) and the poller
+                    # falls through to its single-trigger path.
+                    if (
+                        str(spec.trigger_type) == "two-leg"
+                        and len(spec.trigger_values) >= 2
+                    ):
+                        entry["tp_trigger"] = float(spec.trigger_values[0])
                     entry["highest_ltp"]     = float(result.plan.parent_fill_price)
                     entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
                     entry["parent_side"]     = str(result.plan.parent_side)
@@ -2821,6 +2823,8 @@ class OrdersController(Controller):
                                 status="OPEN", engine="live", mode="live",
                                 basket_tag=basket_id,
                                 target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                                template_id=leg.template_id,
+                                product=(leg.product or "NRML"),
                             )
                             _s.add(_r)
                             await _s.commit()
@@ -2858,6 +2862,8 @@ class OrdersController(Controller):
                             status="OPEN", engine="shadow", mode="shadow",
                             basket_tag=basket_id,
                             target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                            template_id=leg.template_id,
+                            product=(leg.product or "NRML"),
                             detail=f"[SHADOW-BASKET] leg {i} tag={basket_id}",
                         )
                         _s.add(_r)
@@ -2895,6 +2901,8 @@ class OrdersController(Controller):
                             agent_id=_manual_aid2,
                             basket_tag=basket_id,
                             target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                            template_id=leg.template_id,
+                            product=(leg.product or "NRML"),
                             detail=_detail,
                         )
                         _s.add(_r)
