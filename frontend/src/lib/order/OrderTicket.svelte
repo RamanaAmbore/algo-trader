@@ -224,10 +224,10 @@
     }
     if (currentQty > 0) {
       // Long position: buying more = ADD, selling = CLOSE.
-      return { BUY: 'ADD', SELL: 'CLOSE' };
+      return { BUY: 'ADD · BUY', SELL: 'CLOSE · SELL' };
     }
     // Short position: selling more = ADD, buying back = CLOSE.
-    return { BUY: 'CLOSE', SELL: 'ADD' };
+    return { BUY: 'CLOSE · BUY', SELL: 'ADD · SELL' };
   });
 
   // Derived instrument kind. Reads suffix from either the resolved

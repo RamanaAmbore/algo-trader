@@ -299,6 +299,14 @@ async def _pick_wing_by_premium(
 
     best = None
     best_score = float("inf")
+    # Filter-relaxed fallback — best candidate by premium score
+    # ignoring OI / spread gates. Stock options (e.g. DIXON) have
+    # OI of a few hundred per strike, so the index-tuned min_oi=1000
+    # default drops every candidate. When that happens we still want
+    # a wing attached; we keep the filter-passing winner if any, and
+    # fall back to this when nothing passes.
+    fallback = None
+    fallback_score = float("inf")
     scanned, dropped_oi, dropped_spread = 0, 0, 0
     for c in candidates:
         key = f"{c['exch']}:{c['ts']}"
@@ -308,37 +316,55 @@ async def _pick_wing_by_premium(
             continue
         scanned += 1
         oi = int(q.get("oi") or 0)
-        if min_oi > 0 and oi < min_oi:
-            dropped_oi += 1
-            continue
         depth = q.get("depth") or {}
         buys = depth.get("buy") or []
         sells = depth.get("sell") or []
         bid = float(buys[0].get("price") if buys else 0) or 0
         ask = float(sells[0].get("price") if sells else 0) or 0
         spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
+        dist = abs(ltp - target_premium)
+        score = dist + (spread_pct / 100.0) * target_premium
+        # Track best-overall (ignoring filters) for the fallback path.
+        if score < fallback_score:
+            fallback_score = score
+            fallback = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+        # Hard filters — OI / spread — preferred winner.
+        if min_oi > 0 and oi < min_oi:
+            dropped_oi += 1
+            continue
         if max_spread_pct < 100 and spread_pct > max_spread_pct:
             dropped_spread += 1
             continue
-        # Score: closer to target premium is better; small spread% bonus.
-        dist = abs(ltp - target_premium)
-        score = dist + (spread_pct / 100.0) * target_premium
         if score < best_score:
             best_score = score
             best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
 
+    used_fallback = False
     if best is None:
-        return None, None, (
-            f"wing_premium_pct skipped — scanned {scanned}, "
-            f"dropped_oi={dropped_oi}, dropped_spread={dropped_spread} "
-            f"(target ₹{target_premium:.2f})"
-        )
+        if fallback is None:
+            return None, None, (
+                f"wing_premium_pct skipped — scanned {scanned}, "
+                f"dropped_oi={dropped_oi}, dropped_spread={dropped_spread} "
+                f"(target ₹{target_premium:.2f})"
+            )
+        best = fallback
+        used_fallback = True
 
-    reason = (
-        f"wing picked by premium% — {best['ts']} @ ₹{best['ltp']:.2f} "
-        f"(target ₹{target_premium:.2f}, OI {best['oi']}, "
-        f"spread {best['spread_pct']:.1f}%)"
-    )
+    if used_fallback:
+        reason = (
+            f"wing picked by premium% (fallback — every candidate failed "
+            f"OI≥{min_oi}/spread≤{max_spread_pct:g}%; scanned {scanned}, "
+            f"dropped_oi={dropped_oi}, dropped_spread={dropped_spread}): "
+            f"{best['ts']} @ ₹{best['ltp']:.2f} "
+            f"(target ₹{target_premium:.2f}, OI {best['oi']}, "
+            f"spread {best['spread_pct']:.1f}%)"
+        )
+    else:
+        reason = (
+            f"wing picked by premium% — {best['ts']} @ ₹{best['ltp']:.2f} "
+            f"(target ₹{target_premium:.2f}, OI {best['oi']}, "
+            f"spread {best['spread_pct']:.1f}%)"
+        )
     return best["ts"], float(best["ltp"]), reason
 
 
