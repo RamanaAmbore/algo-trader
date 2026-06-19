@@ -184,7 +184,15 @@
   </span>
 </div>
 
-{#if error}<div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>{/if}
+{#if error}
+  <!-- Audit fix — short banner per ops convention (<35 chars). Full
+       error detail surfaces via the `title=` hover; the raw message
+       can carry long stack fragments that wrap the layout. -->
+  <div class="mb-1 p-1.5 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40"
+       title={error}>
+    Orders feed unavailable — retry shortly.
+  </div>
+{/if}
 
 <!-- Status counter strip — at-a-glance counts (All / Open / Filled /
      Rejected / Cancelled). Click any card to uncollapse the Activity

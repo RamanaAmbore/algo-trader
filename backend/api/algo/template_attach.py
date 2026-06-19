@@ -437,6 +437,17 @@ def resolve_template_plan(
     tp_pct          = _pick("tp_pct")
     sl_pct          = _pick("sl_pct")
     wing_premium_pct = _pick("wing_premium_pct")
+    # Audit fix — non-positive % values silently produced an invalid GTT
+    # (trigger == fill price on a BUY, immediately rejected by Kite or
+    # firing instantly on a SELL). Drop to None + surface a note via
+    # `_validation_notes` (appended to `plan.notes` once plan exists).
+    _validation_notes: list[str] = []
+    if tp_pct is not None and tp_pct <= 0:
+        _validation_notes.append(f"tp_pct={tp_pct} is not positive — TP not attached")
+        tp_pct = None
+    if sl_pct is not None and sl_pct <= 0:
+        _validation_notes.append(f"sl_pct={sl_pct} is not positive — SL not attached")
+        sl_pct = None
 
     # tp_scales_json — Phase 3A scale-out targets. When set, supersedes
     # tp_pct: a TP ladder of N entries, each placed as a separate
@@ -500,6 +511,10 @@ def resolve_template_plan(
         parent_exchange=parent_exchange,
         parent_fill_price=float(parent_fill_price),
     )
+    # Surface the pre-plan validation notes (tp_pct/sl_pct rejected) so
+    # the operator sees them in the preview chip + retry response.
+    for _n in _validation_notes:
+        plan.notes.append(_n)
 
     # ── GTT spec — TP / SL / both ────────────────────────────────────
     tp_trig = _tp_trigger(parent_side, parent_fill_price, tp_pct)

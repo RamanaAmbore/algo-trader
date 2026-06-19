@@ -1077,9 +1077,15 @@
   }
   .oct-mode-btn + .oct-mode-btn { border-left: 1px solid rgba(255,255,255,0.12); }
   .oct-mode-btn:hover { background: rgba(255,255,255,0.05); color: #f1f7ff; }
+  /* Audit fix — neutral cyan active state. Pre-fix the "place mode"
+     workflow toggle painted green when on, which read as "direction =
+     long" on every other surface (SymbolPanel uses green = BUY, red =
+     SELL). On a SELL-heavy session this button visually competed with
+     the SELL pill's red. Workflow toggles use cyan throughout the
+     platform (card-control trio, Refresh, etc.). */
   .oct-mode-btn.on {
-    background: rgba(74,222,128,0.18);
-    color: #4ade80;
+    background: rgba(34, 211, 238, 0.18);
+    color: var(--algo-cyan, #22d3ee);
   }
 
   .oct-spot-row { margin-bottom: 0.25rem; }

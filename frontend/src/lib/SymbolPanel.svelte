@@ -504,12 +504,14 @@
   // Accept the three real execution modes (live / paper / shadow) +
   // draft for legacy callers. Anything else falls back to 'live'
   // since both /orders and the modal now default LIVE.
-  // Phase B: _sharedMode removed — execution mode is now read-only from the
-  // navbar mode dropdown via the global executionMode store. defaultMode /
-  // availableModes props are kept for backward-compat but are no longer consumed
-  // by the common-actions row or the basket submit.
-  // @deprecated — availableModes / defaultMode props have no effect. Mode is
-  //   read from $executionMode (set via the navbar mode dropdown).
+  // Phase B: _sharedMode is now read-only from the navbar mode dropdown
+  // via the global executionMode store — but the variable IS still
+  // load-bearing (passed as `mode={_sharedMode}` to OrderTicket below).
+  // The `defaultMode` / `availableModes` props are the parts kept only
+  // for backward-compat with old callers; THOSE have no effect.
+  // Audit fix — pre-fix comments labelled `_sharedMode` itself
+  // @deprecated which was misleading: the variable still drives the
+  // Ticket's mode display + submit path.
   let _sharedMode = $derived(/** @type {'draft'|'paper'|'live'|'shadow'} */ (
     /** @type {any} */ ($executionMode) || 'paper'
   ));
@@ -1903,14 +1905,20 @@
                   title={_modalNotice.detail || _modalNotice.text}>
               {_modalNotice.text}
             </span>
-          {:else if _marginInfo}
+          {:else if _marginInfo && !(_activeTab === 'chain' && _basketMarginRows.length > 0)}
             <!-- Margin pill is shared between Chain and Ticket so
                  the operator reads the same Required / Avail values
                  regardless of which tab is active. Operator:
                  "margin message should be common between chain and
                  order ticket". The chain-basket aggregate pill on
                  the basket-pill row above stays as a per-leg
-                 breakdown; this is the single live preview. -->
+                 breakdown; this is the single live preview.
+                 Audit fix — on Chain tab with staged legs, the chip's
+                 value reflects the Ticket form's stale last-entered
+                 state (qty / side / price). Hide it then so the
+                 basket-aggregate rows rendered above the basket bar
+                 are the operator's single source of truth. -->
+
             {@const _isCash = !!_marginInfo.isCashMode}
             {@const _reqKey = _isCash ? 'Cost' : 'Req'}
             {@const _avlKey = _isCash ? 'Cash' : 'Avail'}
@@ -1968,8 +1976,11 @@
             class:oes-common-submit-narrow={basketLegs.length > 0}
             title={basketLegs.length > 0
               ? `Submit all ${basketLegs.length} basket legs`
-              : 'Place the order via the active tab'}
-            disabled={basketSubmitting}
+              : (_activeTab === 'chain'
+                  ? 'Add legs via +CE / +PE on the chain rows first'
+                  : 'Place the order via the active tab')}
+            disabled={basketSubmitting
+                      || (basketLegs.length === 0 && _activeTab === 'chain')}
             onclick={() => {
               if (basketLegs.length > 0) submitBasket();
               else _modalFireSubmit();

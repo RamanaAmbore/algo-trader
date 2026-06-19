@@ -3504,7 +3504,13 @@
   </div>
 {/if}
 {#if strategyErr}
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{strategyErr}</div>
+  <!-- Audit fix — match positionsLoadErr's short-banner + title= pattern.
+       Strategy errors can carry long Python exception strings forwarded
+       from api.js; rendering verbatim wraps the layout. -->
+  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40"
+       title={strategyErr}>
+    Strategy analytics unavailable — retry shortly.
+  </div>
 {/if}
 
 {#if !strategy && !strategyErr && !loading && !drafts.length}

@@ -2928,84 +2928,14 @@
     gap: 0.35rem;
     width: 100%;
   }
-  .ot-template-overrides {
-    display: flex;
-    gap: 0.45rem;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-  .ot-tpl-field {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: 0.62rem;
-    color: rgba(180,200,230,0.75);
-    font-family: ui-monospace, monospace;
-  }
-  .ot-tpl-field span {
-    font-weight: 600;
-    letter-spacing: 0.03em;
-  }
-  .ot-tpl-input {
-    width: 4.2rem;
-    min-width: 4.2rem;
-  }
-  /* Default / None toggle — 2-pill style matching Side toggle. Compact
-     so it sits inline with the row label without forcing a row break. */
-  .ot-tpl-toggle {
-    display: inline-flex;
-    height: 1.55rem;
-    min-height: 1.55rem;
-    border-radius: 3px;
-    overflow: hidden;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    box-sizing: border-box;
-    margin-bottom: 0.25rem;
-  }
-  .ot-tpl-toggle .ot-tpl-btn {
-    flex: 0 0 auto;
-    padding: 0 0.7rem;
-    background: transparent;
-    border: 0;
-    color: #94a3b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
-    font-weight: 800;
-    letter-spacing: 0.04em;
-    line-height: 1;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-  }
-  .ot-tpl-toggle .ot-tpl-btn:hover:not(.on):not([disabled]) {
-    background: rgba(255, 255, 255, 0.06);
-    color: #cbd5e1;
-  }
-  .ot-tpl-toggle .ot-tpl-btn.on {
-    background: rgba(125, 211, 252, 0.16);
-    color: #7dd3fc;
-  }
-  .ot-tpl-toggle .ot-tpl-btn[disabled] {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-  .ot-tpl-active {
-    display: inline-flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
-    margin: 0.05rem 0 0.3rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-  }
-  .ot-tpl-active-name {
-    color: #cfe3f8;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-  }
-  .ot-tpl-active-summary {
-    color: rgba(180, 200, 230, 0.65);
-  }
+  /* Eight dead CSS rule-blocks removed — `.ot-template-overrides`,
+     `.ot-tpl-field`, `.ot-tpl-input`, `.ot-tpl-toggle`, `.ot-tpl-btn`,
+     `.ot-tpl-active`, `.ot-tpl-active-name`, `.ot-tpl-active-summary`
+     all targeted markup that was deleted when the OrderTicket-internal
+     Default/None pill toggle + override-inputs row was lifted to the
+     shell-level "On fill" picker in SymbolPanel (commit 17a8b73b).
+     Cap-warn + preview chip CSS below stays because those elements
+     survive in OrderTicket. */
   /* Sprint C — broker-capability warning chip below the template
      summary. Amber so it reads as "heads-up", not "blocker". Only
      visible when the selected template asks for a feature the
