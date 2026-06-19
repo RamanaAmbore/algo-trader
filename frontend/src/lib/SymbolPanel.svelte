@@ -1368,6 +1368,36 @@
 
     </div>
 
+    <!-- Shell-level template picker — visible from EVERY tab + the modal,
+         regardless of whether the basket has legs staged. Operator:
+         "I see template only for order ticket in order page. This
+         should be common for both chain and order ticket. It should
+         also appear in order modal." Bound to _sharedTemplateId so
+         the value persists across Ticket ↔ Chain tab flips. -->
+    {#if _templates.length > 0}
+      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell">
+        <label class="oes-basket-tpl-pick" title="On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.">
+          <span class="oes-basket-tpl-label">On fill</span>
+          <Select
+            bind:value={_sharedTemplateId}
+            options={_templates.map(t => ({
+              value: t.id,
+              label: t.name || t.slug || `Template #${t.id}`,
+            }))}
+            placeholder="select template" />
+        </label>
+        {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+          <span class="oes-basket-tpl-note">
+            <span class="oes-basket-tpl-note-arrow">↳</span>
+            <span class="oes-basket-tpl-note-name">{_selectedTemplate.name || _selectedTemplate.slug}</span>
+            {#if _selectedTemplate.description}
+              <span class="oes-basket-tpl-note-desc">· {_selectedTemplate.description}</span>
+            {/if}
+          </span>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Shell-level basket bar — visible from any tab when legs exist.
          Per-leg pills (B/S · sym · lots stepper · × remove) sit on the
          left; Clear / Submit on the right. Same shape as the chain
@@ -1375,35 +1405,6 @@
          any tab without flipping back to Chain. -->
     {#if basketLegs.length > 0}
       <div class="oes-basket-bar">
-        <!-- On-fill template picker — applies to every leg in this
-             basket. Operator: "template should be applicable to
-             option chain too". Hides when the catalog hasn't loaded
-             yet so the bar doesn't show an empty dropdown. The
-             active-template chip below surfaces the on-fill identity
-             when the pick isn't the 'none' (no-attach) default. -->
-        {#if _templates.length > 0}
-          <div class="oes-basket-tpl-row">
-            <label class="oes-basket-tpl-pick" title="On-fill template attached to every leg in this basket">
-              <span class="oes-basket-tpl-label">On fill</span>
-              <Select
-                bind:value={_sharedTemplateId}
-                options={_templates.map(t => ({
-                  value: t.id,
-                  label: t.name || t.slug || `Template #${t.id}`,
-                }))}
-                placeholder="select template" />
-            </label>
-            {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-              <span class="oes-basket-tpl-note">
-                <span class="oes-basket-tpl-note-arrow">↳</span>
-                <span class="oes-basket-tpl-note-name">{_selectedTemplate.name || _selectedTemplate.slug}</span>
-                {#if _selectedTemplate.description}
-                  <span class="oes-basket-tpl-note-desc">· {_selectedTemplate.description}</span>
-                {/if}
-              </span>
-            {/if}
-          </div>
-        {/if}
         <!-- Per-account margin strip — shown when basket spans >1 account.
              Single-account baskets keep using the existing common-footer
              margin pill so behaviour is unchanged for the typical case. -->
@@ -2115,6 +2116,17 @@
     gap: 0.5rem;
     width: 100%;
     flex-wrap: wrap;
+  }
+  /* Shell-level template row — sits ABOVE the optional basket-bar so
+     it's always visible on every tab (Ticket / Chain / Command) and
+     in the modal. Subtle border so it reads as part of the panel
+     chrome, not as a piece of the basket-bar that floats below. */
+  .oes-basket-tpl-row-shell {
+    padding: 0.4rem 0.7rem;
+    background: rgba(192, 132, 252, 0.06);
+    border-top: 1px solid rgba(192, 132, 252, 0.18);
+    border-bottom: 1px solid rgba(192, 132, 252, 0.18);
+    box-sizing: border-box;
   }
   .oes-basket-tpl-pick {
     display: inline-flex;
