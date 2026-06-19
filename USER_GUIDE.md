@@ -138,11 +138,30 @@ Platform ships with two:
 
 You can edit these, create new ones, and mark any template as your default so it auto-fills in OrderTicket.
 
+### Multi-broker support — what works where
+
+Templates now work on **all three brokers**, with a small caveat on Groww. The OrderTicket shows an inline warning chip (amber) below the template summary when the selected template asks for a feature the selected broker can't provide natively — you see the gap at submit time, not at fill time.
+
+| Broker | TP only | SL only | TP + SL (OCO) | Trailing stop | Notes |
+|---|---|---|---|---|---|
+| **Zerodha Kite** | ✅ | ✅ | ✅ native | ✅ native | Full coverage. |
+| **Dhan** | ✅ | ✅ | ✅ native | ✅ native | Forever Order maps 1:1. **MCX / commodity not supported** — use a Kite-mirrored account for MCX templates. |
+| **Groww** | ✅ | ✅ | ✅ emulated | ⚠ no trail | OCO is emulated by placing two single GTTs + a background "pair-watcher" that cancels the sibling when one side fires. There's a ~15-second race window between the fire and the sibling cancel — under fast moves, both legs can occasionally fill. The warning chip flags this. |
+
+If the broker can't natively do what your template asks, you'll see one of these chips:
+- **"Groww OCO emulated — ~15s race window"** — TP+SL template on a Groww account; both legs may fill on a fast move.
+- **"Dhan can't trail — SL stays fixed"** (only on future broker that lacks `modify_gtt`)
+- **"{broker} has no GTT — scale-out won't attach"** — scale-out ladder on a broker without GTT support.
+
 ### Troubleshooting
 
-**My TP/SL didn't attach** — after the order fills, check the order's row on the `/orders` page. You should see a chip `tmpl:#N ✓` once the exit orders are live. If you see `tmpl:#N …` (dots), they're still placing. If there's no chip, the template didn't attach — check the `/api/admin/logs` for errors. Note: templates work on Kite only today; other brokers show an error at submit.
+**My TP/SL didn't attach** — after the order fills, check the order's row on the `/orders` page. You should see a chip `tmpl:#N ✓` once the exit orders are live. If you see `tmpl:#N …` (dots), they're still placing. If there's no chip, the template didn't attach — check the `/api/admin/logs` for errors.
 
-**My trailing stop isn't advancing** — check `/api/admin/settings` → `trail_poll_interval_seconds` (default 30s). Stop advances on each poll. If the setting is very high, the lag increases. Also: trailing stop only works on Kite.
+**My trailing stop isn't advancing** — check `/admin/settings` → `templates.trail_poll_interval_seconds` (default 30s). Stop advances on each poll. If the setting is very high, the lag increases. Two-leg OCO trails ratchet the SL slot while the TP slot rides through unchanged.
+
+**Groww OCO: both legs filled** — the ~15s pair-watcher window let a fast move take both sides. There's no current mitigation other than using a tighter `templates.oco_pair_poll_seconds` setting (default 15s) — but lower cadence means more broker polling. Native-OCO brokers (Kite, Dhan) avoid this entirely.
+
+**Dhan template rejected with "Forever Order does not cover MCX/NCO"** — Dhan's Forever Order doesn't support commodity. Place the parent on your Kite-mirrored MCX account and the template attaches there instead.
 
 **Can I use templates with agents?** — yes, independently. An agent can place an order (with a template attached); a separate template can handle the exit. They don't conflict — agents manage _when_ to trade, templates manage _how_ to exit.
 
@@ -195,6 +214,10 @@ Real-world option orders rarely fill at exactly the price you asked. The platfor
 3. **Cap at `simulator.chase_max_attempts`** (default 5). After the cap, mark `UNFILLED` and stop.
 
 You see this in the Order tab as live updates: `chase #2 limit=₹180.00`, then `chase #3 limit=₹181.50`, then `FILLED @₹181.50 after 3 chase(s)`. The chase engine is the same code path for paper and live — just the quote source differs.
+
+**Partial fills** — when the broker fills part of your order and you chase the residual, the row's `detail` updates to `PARTIAL 60/100 @ ₹1234.50 (chasing residual 40)`. The exit GTT (TP/SL) sized when the rest fills correctly reflects only the actually-filled portion, not the original ask. (Pre-Sprint-B the chase ignored partial fills entirely; the UNFILLED give-up showed the original quantity even when 60 % had traded.)
+
+**MCX unit handling** — Kite reports MCX `filled_quantity` in lots while everything else in the chase tracks contracts. The chase converts back automatically; you don't see this — pre-Sprint-D it caused phantom partial-fill loops on every MCX order.
 
 ### Where the chase engine matters
 
@@ -347,6 +370,10 @@ The math is fully derived from live broker prices: market value of your GOLDBEES
 **For stocks vs. indices** (RELIANCE → NIFTY etc.), the relationship is statistical, not mechanical. The platform supports a **β regression**: it fetches 60 days of daily closes for both sides, computes the slope β and the R² confidence, and writes them back to the row. When you pick NIFTY, your RELIANCE holding shows as a β-scaled NIFTY-equivalent. A daily background task keeps β fresh on a 7-day cadence; you can also hit "Compute β" manually for an instant rerun.
 
 You only see this when you have the proxy holdings. The default seeded pairs (GOLDBEES/SILVERBEES/NIFTYBEES/BANKBEES) cover most ETF tracking cases out of the box.
+
+**Stale-β indicators** — the PROXY chip's tooltip carries an age tag: amber when β was computed 2–7 days ago (still usable but ageing), red ⚠ when β is older than 7 days OR the last regression attempt errored. If you see the ⚠, hover the chip — the tooltip shows the failure reason ("too few overlapping bars", "broker rate-limit", etc). Hit "Compute β" on `/admin/settings` to retry now. The daily background task at 02:30 IST will also retry on its own.
+
+**EV + POP with proxy legs on** — when proxy/equity legs are included in your strategy, the Expected Value and Probability-of-Profit numbers update to reflect the COMBINED payoff curve. Pre-Sprint-D those values came straight from the backend's option-only calculation; the hedged combined position now reads correctly on the panel.
 
 ---
 

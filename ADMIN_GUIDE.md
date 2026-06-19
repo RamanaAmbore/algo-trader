@@ -44,9 +44,24 @@ Put together: the first alert when things go bad is the static agent. After that
 
 ---
 
-## Order Templates — per-position exit rules (Kite only)
+## Order Templates — per-position exit rules (all brokers)
 
-Templates automate the exit workflow: operator picks one at order entry, platform attaches broker-native GTT (Good-Till-Triggered) orders when the position fills. One template per user is marked default (auto-fills OrderTicket); operator can override per-ticket.
+Templates automate the exit workflow: operator picks one at order entry, platform attaches broker-native GTT (Good-Till-Triggered) orders when the position fills. One template per scope is marked default (auto-fills OrderTicket); operator can override per-ticket.
+
+**Multi-broker coverage** (as of Sprint C):
+
+| Broker | TP single | SL single | OCO (TP+SL) | Trail (modify GTT) | MCX / commodity |
+|---|---|---|---|---|---|
+| Kite | ✅ native | ✅ native | ✅ native | ✅ native | ✅ |
+| Dhan | ✅ native | ✅ native | ✅ native (Forever Order) | ✅ native | ❌ Forever doesn't cover MCX — `place_gtt` raises a clear `RuntimeError` |
+| Groww | ✅ native | ✅ native | ⚠ emulated (two singles + 15s pair-watcher) | ❌ no modify_gtt | ✅ (single-trigger only) |
+
+When the operator picks a template whose features exceed the selected broker's natives, OrderTicket renders an amber capability warning chip below the template summary:
+- "Groww OCO emulated — ~15s race window"
+- "Dhan can't trail — SL stays fixed" (only on brokers without `modify_gtt`)
+- "{broker} has no GTT — scale-out won't attach"
+
+The chip is sourced from `GET /api/admin/brokers/{account}/capabilities` — a pure read of the `BrokerCapabilities` dataclass; no broker round-trip.
 
 ### Page: `/admin/templates` (admin-guarded)
 
@@ -98,7 +113,8 @@ Hover tooltip on chip shows template name + exit summary.
 | `wing_min_oi` | int | 1000 | Wing chain scan filters out strikes with OI < this. Reduces noise on illiquid strikes. |
 | `wing_max_spread_pct` | numeric | 10 | Wing filter: skip if bid-ask spread > this % of LTP. |
 | `wing_chain_radius` | int | 20 | Wing scan scope: ±N strikes around parent strike. Reduces API calls. |
-| `trail_poll_interval_seconds` | int | 30 | How often the background task checks LTP and advances trailing stops. Lower = tighter trail, more API calls. |
+| `trail_poll_interval_seconds` | int | 30 | How often `_task_trail_stop` checks LTP and advances trailing stops. Lower = tighter trail, more `broker.modify_gtt` round-trips. Two-leg OCO trails ratchet the SL slot while the TP slot rides through unchanged (Sprint A persists `tp_trigger` in `attached_gtts_json` so the poller has both values). |
+| `oco_pair_poll_seconds` | int | 15 | How often `_task_oco_pair_watcher` checks broker GTT state to cancel the surviving sibling after one leg of an emulated OCO fires. Only used by brokers without native OCO (Groww today). Tighter than the trail poller because the race window matters more — a fired-but-not-cancelled sibling can produce a second unwanted fill. |
 
 ### Seeded system templates
 
@@ -194,11 +210,15 @@ For shorts, invert (lowest_ltp_seen, subtraction becomes addition). Context (`hi
 
 | Issue | Check |
 |---|---|
-| Template not attaching after fill | Order's `attached_gtts_json` null? Check `/api/admin/logs` for "template attach error". Broker must be Kite; other brokers reject. |
+| Template not attaching after fill | Order's `attached_gtts_json` null? Check `/api/admin/logs` for "template attach error". As of Sprint A the attach fires from FOUR paths: postback handler, chase terminal, reconcile path, AND paper-engine fill. If one of those is silent the row still has another shot. Per-row `asyncio.Lock` (WeakValueDictionary) serialises concurrent fire attempts so duplicate GTTs can't be placed. |
 | Wing not filling / showing wrong strike | Check `templates.wing_min_oi` and `templates.wing_max_spread_pct` settings. Highly illiquid options may have no candidates. Check broker logs. |
-| Trailing stop not advancing | Check `trail_poll_interval_seconds` — if set to 3600s, stop updates hourly. Default 30s. Also Kite-only; other brokers raise NotImplementedError. |
+| Trailing stop not advancing | Check `templates.trail_poll_interval_seconds` (default 30s). Two-leg OCO trails: Sprint A persists `tp_trigger` in `attached_gtts_json` so the poller can pass both `[tp, new_sl]` to `modify_gtt`. Pre-Sprint-A entries without `tp_trigger` log a one-time INFO line and skip — re-attach to enable trailing. Dhan OCO trail: Sprint C fixed the silent ENTRY_LEG-only bug; both legs now modify correctly. Groww: `modify_gtt` for compound `oco:` ids is not yet wired for trail (it's emulated single trails only). |
 | Operator says "I can't pick my template in OrderTicket" | Confirm template `is_active=True` (soft-delete, if you want to hide it). No UI toggle yet; DB edit required (or re-save from admin form). |
 | Scale-out close_pct doesn't sum to 100% | Submit will raise 422 validation error. Fix in the template form; cumulative must be ≤ 100% (can be less if operator wants some qty to remain). |
+| Operator sees "Groww OCO emulated — ~15s race window" warning chip | Expected behaviour — Groww has no native OCO. Mitigation: lower `templates.oco_pair_poll_seconds` (default 15s) at the cost of more broker.get_gtts() polling. For zero race window, use Kite or Dhan. |
+| Operator sees "Dhan Forever Order does not cover MCX/NCO" error | Expected — Dhan's Forever Order doesn't cover commodity. The error is raised at `place_gtt` time with a clear RuntimeError so the operator can mirror the parent to a Kite account before re-attaching. |
+| Postback handler 500s after Kite fill, with Dhan/Groww accounts loaded | Pre-Sprint-A bug — `.api_secret` was called on every connection and Dhan/Groww raised AttributeError. Sprint A skips non-Kite connections in the HMAC loop. If you see this in old logs from before `24cced42`, the symptom would be Kite retrying the postback every few seconds. |
+| Partial-fill chase looks like it's stuck | Sprint B + D — chase loop's `_record_partial_fill` accumulates `filled_quantity` across partials and rolls a qty-weighted `fill_price`. Row `detail` reads `PARTIAL N/M @ ₹X (chasing residual M-N)`. MCX: Sprint D's `from_kite_qty` reverse-translates lots to contracts before the partial comparison, so a 1-lot fill on a 100-contract MCX order no longer triggers a phantom partial every poll. Persistent state writes happen on every partial so a chase that aborts at max_attempts shows the truthful UNFILLED residual, not the original ask. |
 
 ---
 
@@ -874,8 +894,21 @@ Knobs in `/admin/settings → Hedge proxy`:
 |---|---|
 | **β** | regression slope, blank for ETF tracking pairs |
 | **R²** | confidence: 1.0 = perfect, 0.0 = random |
-| **Run** | date of last regression, `—` if never |
+| **Run** | date of last regression, `—` if never. ⚠ next to the date when the last run errored — hover for the failure reason. |
 | **Compute β** | run the regression on demand (independent of the daily task) |
+
+### Failed regression — `regression_error` column
+
+Sprint D added the `regression_error` column to the `hedge_proxies` table. Every failed regression run writes a one-line reason here ("too few overlapping bars (n=8, need ≥ 15)", "broker error: rate-limited", etc.); every successful run clears it. The admin row shows ⚠ next to the date with the error in the tooltip; on `/admin/derivatives` the PROXY chip turns red ⚠ instead of amber when the error is present.
+
+The chip's age tag carries three states:
+- **No suffix** (β fresh, ≤ 2 days) — green/normal styling.
+- **"β computed Nd ago"** with amber tag — β is 2–7 days old, still usable but ageing.
+- **"⚠ regression failed: <reason>"** OR **"β computed Nd ago (STALE)"** with red tag — last attempt errored, OR β is older than 7 days. Hit Compute β to retry.
+
+### Pathological β rejection
+
+Sprint E added a `|β| > 5` guard in `_compute_regression`. A pathological β value typically comes from a single bad bar (split day, bad tick, fat-finger trade) driving the regression off the rails. Bloomberg PRM caps to ±3; we're slightly more permissive (5) because leveraged ETFs can legitimately overshoot. Rejection logs a clear WARNING line and the regression returns `(None, None, n)` so the caller treats it identically to "too few bars".
 
 ### ETF check: GOLDBEES → GOLD
 
@@ -1076,6 +1109,12 @@ Secrets are Fernet-encrypted at rest with a key derived from `cookie_secret` (th
 ### When the table is empty
 
 On a fresh server with no DB rows AND no `secrets.yaml::kite_accounts`, every broker call will fail until you add at least one account. The page surfaces this clearly: empty list + "Use **+ New account** to add one" prompt.
+
+### Capabilities endpoint
+
+`GET /api/admin/brokers/{account}/capabilities` returns the `BrokerCapabilities` dataclass for one account — pure in-process read, no broker round-trip. Fields include `display_name`, `gtt_single`, `gtt_oco`, `gtt_modify`, `gtt_cap_per_account`, `gtt_validity_days`, `bracket_order`, `cover_order`, `atomic_basket`, `order_tag`, `margin_preview`, `postback_gtt`, `rate_limit_orders_sec`.
+
+OrderTicket consumes this on account-change to render the inline template-capability warning chip (see Order Templates section). Useful for any future surface that needs to gate features by broker — e.g. a basket-builder that shows "atomic basket: yes (Dhan)" vs "fan-out in parallel (Kite/Groww)".
 
 ---
 
