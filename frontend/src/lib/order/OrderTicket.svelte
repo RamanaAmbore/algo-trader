@@ -1937,90 +1937,27 @@
          pipeline (sim or live based on SimDriver.active). The preview
          line below shows exactly what TP/SL/Wing will be placed.
          Industry analogue: NinjaTrader ATM Strategy attachment. -->
-    {#if action === 'open'}
+    <!-- Template Default/None toggle + override inputs were removed
+         from OrderTicket because the shell-level "On fill" picker
+         (SymbolPanel) renders the same picker + the same four
+         override fields ABOVE the tab body. Pre-fix the Ticket tab
+         carried TWO template controls (shell + internal) while the
+         Chain tab carried one — same logical concept, asymmetric UI
+         between tabs. Operator: "On order template info shown, while
+         it is not shown on chain." Cap warning + on-fill preview
+         chip survive here because they're per-leg context (broker
+         capability vs the resolved leg, fill-time TP/SL/Wing trigger
+         prices computed against the entered limit) that the Chain
+         tab's multi-leg basket can't surface directly. -->
+    {#if action === 'open' && _selectedTemplate && _selectedTemplate.slug !== 'none'}
       <div class="ot-row ot-template-row">
         <div class="ot-label-block" style="flex: 1 1 0; min-width: 0">
-          <label class="ot-label">Template <span class="ot-label-sub">(exit rules)</span></label>
           <div class="ot-template-block">
-            <!-- Two-pill toggle — Default vs None. Operator picks the
-                 default for THIS side automatically (default-short-vol
-                 for SELL options, default-bull for BUY); None opts out
-                 entirely. Full editing of WHICH template is default
-                 lives on /automation/templates. The active default's
-                 name + summary renders underneath so the operator
-                 always sees what's about to be attached. -->
-            <div class="ot-tpl-toggle" role="group" aria-label="Template">
-              <button type="button"
-                      class={'ot-tpl-btn' + (!_isUsingNone ? ' on' : '')}
-                      disabled={!_defaultTemplate}
-                      title={_defaultTemplate
-                        ? `Use ${_defaultTemplate.name}: ${_summariseTemplate(_defaultTemplate)}`
-                        : 'No default template configured for this side'}
-                      onclick={() => {
-                        if (_defaultTemplate) templateId = _defaultTemplate.id;
-                      }}>
-                Default
-              </button>
-              <button type="button"
-                      class={'ot-tpl-btn' + (_isUsingNone ? ' on' : '')}
-                      title="No template — entry only, no GTT / no wing"
-                      onclick={() => {
-                        templateId = _noneTemplate ? _noneTemplate.id : null;
-                      }}>
-                None
-              </button>
-            </div>
-            <!-- Descriptive template summary retired — operator wanted
-                 the editable parameter values surfaced inline so they
-                 can tweak TP/SL/Wing for a single submit without
-                 mutating the saved template row. The parameter inputs
-                 below render with the template's value as the placeholder
-                 (italic grey) and the operator's tweak as the actual
-                 value. Submitting carries the overrides through
-                 tp_pct_override / sl_pct_override / wing_*_override
-                 fields on the ticket route. Cap warning still surfaces
-                 because it reflects what the BROKER will accept, not
-                 the template's identity. -->
             {#if _templateCapWarning}
               <div class="ot-tpl-cap-warn" title={_templateCapWarning}>
                 ⚠ {_templateCapWarning}
               </div>
             {/if}
-            {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-              <div class="ot-template-overrides">
-                <label class="ot-tpl-field" title="Take-profit percentage above (BUY) or below (SELL) the fill price.">
-                  <span>TP%</span>
-                  <input type="number" class="ot-input ot-num ot-tpl-input"
-                         step="0.5"
-                         placeholder={_selectedTemplate?.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
-                         bind:value={tpOverride} />
-                </label>
-                <label class="ot-tpl-field" title="Stop-loss percentage opposite the TP side.">
-                  <span>SL%</span>
-                  <input type="number" class="ot-input ot-num ot-tpl-input"
-                         step="0.5"
-                         placeholder={_selectedTemplate?.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
-                         bind:value={slOverride} />
-                </label>
-                {#if _appliesToFor(_side, symbol) === 'sell_option'}
-                  <label class="ot-tpl-field" title="Protective wing BUY at this many strikes away from the parent.">
-                    <span>Wing strike+</span>
-                    <input type="number" class="ot-input ot-num ot-tpl-input"
-                           step="50"
-                           placeholder={_selectedTemplate?.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
-                           bind:value={wingStrikeOffsetOverride} />
-                  </label>
-                  <label class="ot-tpl-field" title="Wing premium target as a percentage of the parent's premium.">
-                    <span>Wing prem%</span>
-                    <input type="number" class="ot-input ot-num ot-tpl-input"
-                           step="0.5"
-                           placeholder={_selectedTemplate?.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
-                           bind:value={wingPremPctOverride} />
-                  </label>
-                {/if}
-              </div>
-            {/if}
-
             <!-- Pre-submit preview chip — shows the artefacts that
                  will be placed. Updates ~200ms after any field change. -->
             {#if _previewError}
