@@ -4040,10 +4040,10 @@
       <div class="byund-grid">
         <div class="byund-headrow">
           <span>Underlying</span>
-          <span class="num" title="Today's P&L change including any equity holding leg.">Day · Hold</span>
-          <span class="num" title="Total P&L including any equity holding leg's contribution.">P&amp;L · Hold</span>
-          <span class="num" title="Today's P&L change from F&O legs only.">Day · No-Hold</span>
-          <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L · No-Hold</span>
+          <span class="num" title="Today's P&L change from F&O legs only.">Day P&amp;L</span>
+          <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L</span>
+          <span class="num" title="Today's P&L change including any equity holding leg.">Day P&amp;L Hold</span>
+          <span class="num" title="Total P&L including any equity holding leg's contribution.">P&amp;L Hold</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
@@ -4062,10 +4062,10 @@
         {#each _byUnderlyingTotals as g (g.underlying)}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
-            <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_without)}</span>
             <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_without)}</span>
+            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
+            <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
             <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
@@ -4074,10 +4074,10 @@
         {#if _byUnderlyingTotals.length > 0}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
-            <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
-            <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
             <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
+            <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
+            <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
@@ -4805,10 +4805,10 @@
     display: grid;
     grid-template-columns:
       minmax(7rem, 1.4fr)    /* underlying */
-      minmax(5.5rem, 0.9fr)  /* Day Hold */
+      minmax(5.5rem, 0.9fr)  /* Day P&L */
+      minmax(5.5rem, 0.9fr)  /* P&L */
+      minmax(5.5rem, 0.9fr)  /* Day P&L Hold */
       minmax(5.5rem, 0.9fr)  /* P&L Hold */
-      minmax(5.5rem, 0.9fr)  /* Day No-Hold */
-      minmax(5.5rem, 0.9fr)  /* P&L No-Hold */
       minmax(3rem, 0.55fr)   /* Legs */
       minmax(4rem, 0.6fr)    /* F&O qty */
       minmax(4rem, 0.6fr);   /* Eq qty */
@@ -5247,35 +5247,33 @@
     row-gap: 0.2rem;
     width: max-content;
   }
-  /* TOTAL row — always last, visually distinct (top border + bolder
-     text) so the operator sees the roll-up at a glance. The two pnl
-     columns sum to the strip's P + P∆ chips for the same accounts.
-     position:sticky pins the row to the bottom of the .cand-scroll
-     container so the operator always sees the roll-up even when the
-     candidate list is long enough to scroll. Background is slightly
-     more opaque than the in-line variant so it reads as a solid pill
-     against the scrolling rows underneath. */
+  /* TOTAL row — same canonical amber stratum the Snapshot TOTAL row
+     uses (.byund-row-total) so both TOTAL rows on the page read with
+     identical visual weight. Operator: "legs total snapshot total
+     should have same decoration." Position-sticky keeps the row
+     pinned to the bottom of the .cand-scroll container.
+
+     Note: .cand-row uses `display: contents` to pass its children
+     into the parent .cand-grid template, so background/border MUST
+     be applied to the children, not the row itself. */
   .cand-row.cand-row-total {
-    border-top: 2px solid var(--algo-amber-border);
-    background: rgba(20, 28, 48, 0.96);
-    box-shadow: 0 -4px 8px rgba(0, 0, 0, 0.35);
     font-weight: 700;
-    margin-top: 0.2rem;
-    padding-top: 0.35rem;
+    /* sticky pin so the rollup stays visible on a tall list */
     position: sticky;
     bottom: 0;
     z-index: 2;
   }
-  .cand-row.cand-row-total::after {
-    /* Amber tint overlay — same colour family as the in-line variant,
-       layered on top of the dark base so the tint shows through but
-       the rows underneath don't bleed in. */
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: rgba(251, 191, 36, 0.08);
-    pointer-events: none;
+  .cand-row.cand-row-total > * {
+    background: rgba(251,191,36,0.22);
+    border-top: 2px solid rgba(251,191,36,0.70);
+    border-bottom: 1px solid rgba(251,191,36,0.40);
+    color: #fbbf24;
   }
+  /* Direction-tint variants — slightly lighter green/red so they
+     stay readable against the amber stratum, matching the
+     byund-row-total treatment. */
+  .cand-row.cand-row-total > .cell-pos { color: #86efac !important; }
+  .cand-row.cand-row-total > .cell-neg { color: #fca5a5 !important; }
   .cand-total-label {
     color: #fbbf24;
     font-weight: 800;
