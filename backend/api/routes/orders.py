@@ -1341,27 +1341,25 @@ class OrdersController(Controller):
             if (row.status or "").upper() != "FILLED":
                 return {"ok": False, "reason": f"parent must be FILLED to attach (status={row.status})"}
 
+            # Sanity-check the template row still exists before
+            # dispatching — apply_template_to_order does its own load via
+            # load_template_for_slug_or_id, but we want a clear "deleted"
+            # reason for the operator rather than a "no template found"
+            # surface from deep inside the attach pipeline.
             tpl = (await s.execute(
-                _sql_select(OrderTemplate).where(OrderTemplate.id == row.template_id)
+                _sql_select(OrderTemplate.id).where(OrderTemplate.id == row.template_id)
             )).scalar_one_or_none()
             if tpl is None:
                 return {"ok": False, "reason": f"template #{row.template_id} no longer exists"}
-            template_dict = {
-                "id": tpl.id, "slug": tpl.slug, "name": tpl.name,
-                "tp_pct": tpl.tp_pct, "sl_pct": tpl.sl_pct,
-                "tp_order_type": tpl.tp_order_type,
-                "tp_scales_json": tpl.tp_scales_json,
-                "sl_trail_pct": tpl.sl_trail_pct,
-                "wing_premium_pct": tpl.wing_premium_pct,
-                "wing_strike_offset": tpl.wing_strike_offset,
-            }
 
-            # Apply path mirrors the mode the parent was placed in.
-            apply_path = "sim" if (row.mode or "").lower() == "sim" else (
-                "paper" if (row.mode or "").lower() == "paper" else "live"
-            )
+            # Apply path mirrors the mode the parent was placed in. Paper
+            # mode flows through the live attach path (real GTTs against
+            # the broker — paper just refers to the parent's mode); sim
+            # mode flows through SimDriver.
+            apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
             result = await apply_template_to_order(
-                template=template_dict,
+                template_id=row.template_id,
+                template_slug=None,
                 overrides={},
                 parent_account=row.account or "",
                 parent_symbol=row.symbol or "",
@@ -1373,6 +1371,8 @@ class OrdersController(Controller):
                 parent_order_id=row.id,
                 apply_path=apply_path,
             )
+            if result is None:
+                return {"ok": False, "reason": "apply_template_to_order returned no result (template missing or empty plan)"}
             # apply_path != preview writes attached_gtts_json back to the
             # row via the engine. Refresh from DB so the response sees the
             # updated state.

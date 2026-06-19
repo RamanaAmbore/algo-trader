@@ -316,16 +316,49 @@
    prominent direction-tinted row backgrounds. */
 .ag-theme-algo .ltp-vs-avg-up   { background-color: rgba(74,222,128,0.10) !important; }
 .ag-theme-algo .ltp-vs-avg-down { background-color: rgba(248,113,113,0.10) !important; }
-.ag-theme-algo .ltp-vs-avg-flat { /* no override — keep row's own bg */ }
-.ag-theme-algo .ltp-vs-prev-up   { box-shadow: inset 3px 0 0 0 rgba(74,222,128,0.85); }
-.ag-theme-algo .ltp-vs-prev-down { box-shadow: inset 3px 0 0 0 rgba(248,113,113,0.85); }
-.ag-theme-algo .ltp-vs-prev-flat { box-shadow: inset 3px 0 0 0 rgba(126,151,184,0.50); }
+/* Left-edge stripe — thinned from 3 px to 1 px so the marker reads as
+   a subtle direction tick rather than a heavy band that competes with
+   the cell value. Operator: "in other grids, make the left vertical
+   border very thin for ltp." */
+.ag-theme-algo .ltp-vs-prev-up   { box-shadow: inset 1px 0 0 0 rgba(74,222,128,0.85); }
+.ag-theme-algo .ltp-vs-prev-down { box-shadow: inset 1px 0 0 0 rgba(248,113,113,0.85); }
+.ag-theme-algo .ltp-vs-prev-flat { box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.50); }
 
 .ag-theme-ramboq .ltp-vs-avg-up   { background-color: rgba(91,142,149,0.12) !important; }
 .ag-theme-ramboq .ltp-vs-avg-down { background-color: rgba(196,122,61,0.12) !important; }
-.ag-theme-ramboq .ltp-vs-prev-up   { box-shadow: inset 3px 0 0 0 rgba(91,142,149,0.85); }
-.ag-theme-ramboq .ltp-vs-prev-down { box-shadow: inset 3px 0 0 0 rgba(196,122,61,0.85); }
-.ag-theme-ramboq .ltp-vs-prev-flat { box-shadow: inset 3px 0 0 0 rgba(112,99,76,0.50); }
+.ag-theme-ramboq .ltp-vs-prev-up   { box-shadow: inset 1px 0 0 0 rgba(91,142,149,0.85); }
+.ag-theme-ramboq .ltp-vs-prev-down { box-shadow: inset 1px 0 0 0 rgba(196,122,61,0.85); }
+.ag-theme-ramboq .ltp-vs-prev-flat { box-shadow: inset 1px 0 0 0 rgba(112,99,76,0.50); }
+
+/* TOTAL row — clear both axes so the amber stratum reads uniformly.
+   Audit defect: the box-shadow stripe was leaking onto TOTAL cells
+   that carried any `.ltp-vs-prev-*` class. */
+.ag-theme-algo .ag-row.totals-row .ag-cell,
+.ag-theme-ramboq .ag-row.totals-row .ag-cell {
+  box-shadow: none !important;
+}
+
+/* Winners / Losers buckets — revert LTP heat entirely. These are
+   market-movers grids with no operator position context, so a
+   bg-vs-avg tint or prev-close stripe carries no useful signal —
+   the column's own value already encodes the move via the % column.
+   Operator: "for losers and gainers, revert the color coding for
+   ltp." */
+.mp-bucket-winners .ltp-vs-avg-up,
+.mp-bucket-winners .ltp-vs-avg-down,
+.mp-bucket-winners .ltp-vs-avg-flat,
+.mp-bucket-winners .ltp-vs-prev-up,
+.mp-bucket-winners .ltp-vs-prev-down,
+.mp-bucket-winners .ltp-vs-prev-flat,
+.mp-bucket-losers .ltp-vs-avg-up,
+.mp-bucket-losers .ltp-vs-avg-down,
+.mp-bucket-losers .ltp-vs-avg-flat,
+.mp-bucket-losers .ltp-vs-prev-up,
+.mp-bucket-losers .ltp-vs-prev-down,
+.mp-bucket-losers .ltp-vs-prev-flat {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
 
 /* P&L cell colors — theme-aware, applied via cellClass in PerformancePage */
 .ag-theme-ramboq .pnl-loss { color: #dc2626; background-color: rgba(220,38,38,0.05); }
@@ -1316,6 +1349,37 @@
   .fs-card-on .rf-btn {
     top: calc(0.5rem + 0.5rem) !important;
     right: calc(0.5rem + 0.55rem + 1.7rem) !important;
+  }
+}
+
+/* GridSearchButton — same pinned-trio treatment in fullscreen mode.
+   Slotted one step LEFT of the RefreshButton so the cluster reads
+   right-to-left as [Search | Refresh | Default]. The expanded input
+   floats inline to the LEFT of the button at the same fixed top so
+   it never overlaps the trio. Operator: "in full screen mode, the
+   search button is overlapping the other 2 icons in the header." */
+.fs-card-on .grid-search-btn {
+  position: fixed !important;
+  top: calc(2rem + 0.55rem) !important;
+  right: calc(2rem + 0.65rem + 1.7rem * 2) !important;
+  z-index: 10000 !important;
+}
+.fs-card-on .grid-search-input {
+  position: fixed !important;
+  top: calc(2rem + 0.55rem) !important;
+  right: calc(2rem + 0.65rem + 1.7rem * 2 + 1.4rem + 0.3rem) !important;
+  z-index: 10000 !important;
+  margin: 0 !important;
+}
+@media (max-width: 600px) {
+  .fs-card-on .grid-search-btn {
+    top: calc(0.5rem + 0.5rem) !important;
+    right: calc(0.5rem + 0.55rem + 1.7rem * 2) !important;
+  }
+  .fs-card-on .grid-search-input {
+    top: calc(0.5rem + 0.5rem) !important;
+    right: calc(0.5rem + 0.55rem + 1.7rem * 2 + 1.4rem + 0.3rem) !important;
+    width: 6rem !important;
   }
 }
 
