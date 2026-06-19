@@ -38,6 +38,7 @@
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
+  import ChaseCard       from '$lib/order/ChaseCard.svelte';
   import LogPanel        from '$lib/LogPanel.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -1686,6 +1687,17 @@
       </div>
     {/if}
 
+    <!-- Chases card — mirrors the /orders page Chases section so the
+         modal stays in sync. Self-hides on idle so it costs nothing
+         when no chases are in flight. Suppressed when the host renders
+         its own Chase card alongside (e.g. /orders page passes
+         hideBottomPanel). -->
+    {#if !hideBottomPanel}
+      <div class="oes-chase-slot">
+        <ChaseCard pollMs={3000} />
+      </div>
+    {/if}
+
     <!-- Activity panel — canonical 6-tab LogPanel (Orders · Agents ·
          Terminal · Ticks · System · News). Placed BELOW the common
          action footer per operator request ("move the order placement
@@ -2930,6 +2942,15 @@
      above the activity"). Mirrors ActivityLogModal's .alm-body —
      flex column, fixed slot inside the modal's overall height, the
      LogPanel inside expands via heightClass="flex-1 min-h-0". */
+  /* Chase slot — sits between the order ticket section and the
+     activity panel, mirroring the /orders page layout (Entry → Chases →
+     Activity). ChaseCard self-hides when idle, so the slot collapses
+     visually with zero in-flight orders. */
+  .oes-chase-slot {
+    padding: 0.3rem 0.6rem 0;
+    flex: 0 0 auto;
+  }
+
   /* Bottom activity panel — operator request: shrink so the order
      ticket (top of the modal) gets the screen real estate needed to
      surface the market-depth ladder. 22rem/18rem was eating ~46 % of
