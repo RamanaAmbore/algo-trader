@@ -5319,33 +5319,35 @@
     row-gap: 0.2rem;
     width: max-content;
   }
-  /* TOTAL row — same canonical amber stratum the Snapshot TOTAL row
-     uses (.byund-row-total) so both TOTAL rows on the page read with
-     identical visual weight. Operator: "legs total snapshot total
-     should have same decoration." Position-sticky keeps the row
-     pinned to the bottom of the .cand-scroll container.
-
-     Note: .cand-row uses `display: contents` to pass its children
-     into the parent .cand-grid template, so background/border MUST
-     be applied to the children, not the row itself. */
+  /* TOTAL row — canonical amber stratum identical to the Snapshot
+     TOTAL row (.byund-row-total). The Legs grid uses subgrid rows
+     (`.cand-row` is `display: grid` with subgrid columns), so the
+     row container itself paints the band — applying the amber to
+     the children would leave the column gutters un-tinted. Sticky
+     pin keeps the rollup visible on a tall list. Override the
+     pointer-events default so hover doesn't dim the amber. */
   .cand-row.cand-row-total {
     font-weight: 700;
+    background: rgba(251,191,36,0.22) !important;
+    border-top: 2px solid rgba(251,191,36,0.70) !important;
+    border-bottom: 1px solid rgba(251,191,36,0.40) !important;
+    border-radius: 0 !important;
+    color: #fbbf24;
     /* sticky pin so the rollup stays visible on a tall list */
     position: sticky;
     bottom: 0;
     z-index: 2;
+    cursor: default;
   }
-  .cand-row.cand-row-total > * {
-    background: rgba(251,191,36,0.22);
-    border-top: 2px solid rgba(251,191,36,0.70);
-    border-bottom: 1px solid rgba(251,191,36,0.40);
-    color: #fbbf24;
+  .cand-row.cand-row-total:hover {
+    background: rgba(251,191,36,0.22) !important;
   }
   /* Direction-tint variants — slightly lighter green/red so they
      stay readable against the amber stratum, matching the
      byund-row-total treatment. */
-  .cand-row.cand-row-total > .cell-pos { color: #86efac !important; }
-  .cand-row.cand-row-total > .cell-neg { color: #fca5a5 !important; }
+  .cand-row.cand-row-total .cell-pos { color: #86efac !important; }
+  .cand-row.cand-row-total .cell-neg { color: #fca5a5 !important; }
+  .cand-row.cand-row-total .cell-flat { color: rgba(251,191,36,0.75) !important; }
   .cand-total-label {
     color: #fbbf24;
     font-weight: 800;
