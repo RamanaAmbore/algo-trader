@@ -4816,7 +4816,7 @@
   .byund-grid {
     display: grid;
     grid-template-columns:
-      minmax(5rem, 0.9fr)    /* underlying */
+      minmax(4rem, 0.7fr)    /* underlying */
       minmax(5.5rem, 0.9fr)  /* Day */
       minmax(5.5rem, 0.9fr)  /* P&L */
       minmax(5.5rem, 0.9fr)  /* Day Net */
@@ -4824,27 +4824,34 @@
       minmax(3rem, 0.55fr)   /* Legs */
       minmax(4rem, 0.6fr)    /* F&O qty */
       minmax(4rem, 0.6fr);   /* Eq qty */
-    min-width: 640px;
+    min-width: 580px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.65rem;
+    font-size: 0.62rem;        /* match Pulse Positions ~0.625rem */
   }
   .byund-headrow,
   .byund-row {
     display: contents;
   }
+  /* Header row — amber underline + uppercase slate label, matching the
+     Pulse ag-theme-algo .ag-header-row + .ag-header-cell treatment. */
   .byund-headrow > span {
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid rgba(126,151,184,0.30);
-    font-size: 0.58rem;
+    padding: 0.3rem 0.45rem;
+    border-bottom: 1px solid rgba(251,191,36,0.30);
+    font-size: 0.55rem;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #a3b9d0;
   }
+  /* Data cells — no left/right borders (Pulse pattern strips them so
+     the row reads as one continuous band). Faint slate bottom border
+     separates rows. tabular-nums so digit widths don't jitter on
+     poll updates. */
   .byund-row > span {
-    padding: 0.35rem 0.5rem;
+    padding: 0.32rem 0.45rem;
     border-bottom: 1px solid rgba(126,151,184,0.10);
     color: #c8d8f0;
+    transition: background-color 0.1s;
   }
   .byund-row > span.num {
     text-align: right;
@@ -4853,17 +4860,33 @@
   .byund-headrow > span.num {
     text-align: right;
   }
+  /* Alternating row background — subtle navy stripe that matches the
+     algo card chrome below the row borders. Same idiom Pulse uses
+     via the bucket-row + bucket-bg-soft alternation. */
+  .byund-row:nth-of-type(even) > span {
+    background-color: rgba(34, 47, 75, 0.35);
+  }
+  /* Row hover — cyan tint, same as ag-theme-algo .ag-row-hover. The
+     `display:contents` row means hover has to apply to every child
+     `span` via the parent selector. */
+  .byund-row:hover > span {
+    background-color: rgba(34, 211, 238, 0.10) !important;
+  }
   .byund-und {
     font-weight: 700;
     color: #fbbf24;
     letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
   }
   .byund-row > .cell-pos { color: #4ade80; }
   .byund-row > .cell-neg { color: #f87171; }
   .byund-row > .cell-flat { color: #7e97b8; }
   .byund-row > .cell-muted { color: rgba(200,216,240,0.65); }
+  /* TOTAL row — same canonical amber stratum the Legs TOTAL uses
+     (commit fb0344fc). Override the alternating + hover bg so the
+     amber reads uniformly. */
   .byund-row-total > span {
-    background: rgba(251,191,36,0.22);
+    background: rgba(251,191,36,0.22) !important;
     border-top: 2px solid rgba(251,191,36,0.70);
     border-bottom: 1px solid rgba(251,191,36,0.40);
     color: #fbbf24;
