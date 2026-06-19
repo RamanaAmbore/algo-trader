@@ -2866,29 +2866,46 @@
     letter-spacing: 0.04em;
     font-weight: 700;
   }
+  /* Per-leg override inputs — same high-contrast treatment as the
+     shell-level "On fill" param inputs (commit ba4d1d59). Pre-fix the
+     input bg (rgba(34,211,238,0.08)) almost matched the surrounding
+     editor container bg (rgba(34,211,238,0.06)) so the field chrome
+     bled into the row. Dark slate fill + stronger cyan border, with
+     hover lifting the border and focus inverting to a saturated cyan
+     for an unmistakable active cue. Per-leg overrides ride the cyan
+     palette (matches the `.has-override` per-leg chip + the OrderCard
+     `has-override` styling). */
   .oes-leg-editor-field > input,
   .oes-leg-editor-field > select {
     height: 1.3rem;
     padding: 0 0.3rem;
-    background: rgba(34, 211, 238, 0.08);
-    border: 1px solid rgba(34, 211, 238, 0.30);
+    background: rgba(8, 14, 28, 0.78);
+    border: 1px solid rgba(34, 211, 238, 0.65);
     border-radius: 3px;
-    color: var(--algo-slate);
+    color: #d9f5fb;
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
+    font-weight: 600;
     box-sizing: border-box;
     font-variant-numeric: tabular-nums;
+    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.08);
+    transition: border-color 0.12s, background 0.12s;
   }
   .oes-leg-editor-field > input { width: 3.2rem; text-align: right; }
   .oes-leg-editor-field > select { min-width: 5.6rem; }
+  .oes-leg-editor-field > input:hover,
+  .oes-leg-editor-field > select:hover {
+    border-color: rgba(34, 211, 238, 0.90);
+  }
   .oes-leg-editor-field > input:focus,
   .oes-leg-editor-field > select:focus {
     outline: none;
-    border-color: rgba(34, 211, 238, 0.85);
-    background: rgba(34, 211, 238, 0.16);
+    border-color: var(--algo-cyan, #22d3ee);
+    background: rgba(12, 24, 40, 0.92);
+    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.45);
   }
   .oes-leg-editor-field > input::placeholder {
-    color: rgba(34, 211, 238, 0.55);
+    color: rgba(34, 211, 238, 0.70);
     font-style: italic;
   }
   .oes-leg-editor-clear,
