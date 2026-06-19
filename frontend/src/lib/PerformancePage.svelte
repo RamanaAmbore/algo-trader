@@ -163,10 +163,8 @@
       // backstop when this is empty or masked.
       account:  String(row.account || ''),
       accounts: [],
-      // Hide DRAFT — no drafts surface here. PAPER is the safe
-      // default; operator opts into LIVE per execution flag.
-      defaultMode:    'live',
-      availableModes: ['live'],
+      // defaultMode + availableModes props were removed (Wave C); the
+      // navbar's executionMode store now decides mode for every modal.
     };
   }
 
@@ -1065,8 +1063,6 @@
     lotSize={orderTicketProps.lotSize}
     accounts={orderTicketProps.accounts}
     account={orderTicketProps.account}
-    defaultMode={orderTicketProps.defaultMode}
-    availableModes={orderTicketProps.availableModes}
     currentQty={orderTicketProps.currentQty ?? 0}
     onSubmit={(payload) => {
       // PAPER + LIVE submissions already hit the backend before

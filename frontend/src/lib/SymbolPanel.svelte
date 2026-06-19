@@ -82,8 +82,6 @@
    *   accounts?:       string[],
    *   account?:        string,
    *   orderId?:        string,
-   *   defaultMode?:    'draft' | 'paper' | 'live' | 'shadow',
-   *   availableModes?: Array<'draft' | 'paper' | 'live' | 'shadow' | 'sim' | 'replay'>,
    *   currentQty?:     number,
    *   onSubmit:        (payload: any) => void | Promise<void>,
    *   onClose:         () => void,
@@ -118,8 +116,6 @@
     accounts       = /** @type {string[]} */ ([]),
     account        = '',
     orderId        = '',
-    defaultMode    = /** @type {'draft'|'paper'|'live'|'shadow'} */ ('live'),
-    availableModes = /** @type {Array<'draft'|'paper'|'live'|'shadow'|'sim'|'replay'>} */ (['draft', 'live']),
     currentQty     = 0,
     onSubmit,
     onClose,
@@ -399,7 +395,7 @@
   // gets a clear confirmation that submit landed. Cleared via
   // `_stickyResultTimer`.
   /** @type {string} */ let _stickyResultMsg = $state('');
-  /** @type {'ok' | 'err' | ''} */ let _stickyResultLevel = $state('');
+  /** @type {'ok' | 'warn' | 'err' | ''} */ let _stickyResultLevel = $state('');
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let _stickyResultTimer;
 
@@ -496,22 +492,9 @@
   // (modeChaseHidden=true on its end) so its in-form mode/chase row
   // is suppressed and the shared toolbar drives the values its submit
   // pipeline reads. Margin pill is already in the common row below.
-  // Initial value honours the caller's defaultMode prop so opening
-  // the modal from PageHeaderActions while the navbar is in LIVE
-  // gets a LIVE shared toolbar from the start (operator: "when live
-  // is active on navbar, the order should default to live").
-  // Falls back to 'paper' when defaultMode isn't a valid toolbar mode.
-  // Accept the three real execution modes (live / paper / shadow) +
-  // draft for legacy callers. Anything else falls back to 'live'
-  // since both /orders and the modal now default LIVE.
-  // Phase B: _sharedMode is now read-only from the navbar mode dropdown
-  // via the global executionMode store — but the variable IS still
-  // load-bearing (passed as `mode={_sharedMode}` to OrderTicket below).
-  // The `defaultMode` / `availableModes` props are the parts kept only
-  // for backward-compat with old callers; THOSE have no effect.
-  // Audit fix — pre-fix comments labelled `_sharedMode` itself
-  // @deprecated which was misleading: the variable still drives the
-  // Ticket's mode display + submit path.
+  // Mode is read from the navbar's executionMode store. defaultMode +
+  // availableModes props were removed (Wave C); the variable below is
+  // load-bearing (passed as `mode={_sharedMode}` to OrderTicket).
   let _sharedMode = $derived(/** @type {'draft'|'paper'|'live'|'shadow'} */ (
     /** @type {any} */ ($executionMode) || 'paper'
   ));
@@ -529,6 +512,27 @@
   const _selectedTemplate = $derived(
     _templates.find(t => t.id === _sharedTemplateId) || null
   );
+  // The seeded "none" template — used as the per-leg "(no template —
+  // entry only)" sentinel. When the operator picks this option, leg.
+  // template_id gets the none-template's REAL id (not null) so the
+  // `??` fallback in submitBasket doesn't silently revert to shell.
+  const _noneTpl = $derived(_templates.find(t => t.slug === 'none') || null);
+  // Templates excluding the "none" row — used by the per-leg editor's
+  // dropdown so "none" isn't listed twice (once as the explicit
+  // sentinel, once as a regular template).
+  const _nonNoneTemplates = $derived(_templates.filter(t => t.slug !== 'none'));
+  // Side-scope helper — mirrors OrderTicket's `_appliesToFor` so the
+  // shell can decide whether the active template matches the operator's
+  // current direction. Returns 'sell_option' for SELL CE/PE legs (the
+  // only scope that wants a protective wing), 'sell_any' / 'buy_any'
+  // for the directional defaults, and 'both' as a no-op catch.
+  /** @param {string} sd @param {string} sym */
+  function _appliesToFor(sd, sym) {
+    if (sd === 'SELL' && /\d+(CE|PE)$/i.test(sym || '')) return 'sell_option';
+    if (sd === 'SELL') return 'sell_any';
+    if (sd === 'BUY')  return 'buy_any';
+    return 'both';
+  }
   // Shell-level template parameter overrides. Editing these in the
   // "On fill" row updates them; OrderTicket binds them so its own
   // submit carries the values. Operator: "on fill selected, if there
@@ -656,6 +660,43 @@
         _sharedWingPremPctOverride      = '';
       });
     }
+  });
+  // Side-aware template auto-swap. When the operator flips BUY → SELL
+  // (or symbol changes from option to non-option), the currently-
+  // selected template's `applies_to` may no longer match the new
+  // direction (e.g. a long-call template on a SELL submit places a
+  // wrong-direction TP/SL). Swap to a different is_default template
+  // matching the new scope. Skipped when the operator has explicitly
+  // picked the "none" row (slug='none'), and when no matching default
+  // exists (we don't change a manual pick to something arbitrary).
+  // Operator: "side-aware template auto-select removed (BUY → SELL
+  // doesn't re-select default)" — restored via this effect.
+  let _lastSideScope = '';
+  $effect(() => {
+    if (action !== 'open') return;
+    if (_templates.length === 0) return;
+    const scope = _appliesToFor(_modalSide, _localSymbol);
+    if (scope === _lastSideScope) return;
+    untrack(() => {
+      _lastSideScope = scope;
+      // Don't override an explicit operator pick — "none" stays "none";
+      // a non-default template the operator picked stays as-is.
+      const current = _templates.find(t => t.id === _sharedTemplateId);
+      if (!current) return;
+      if (current.slug === 'none') return;
+      if (!current.is_default) return;
+      // If the current default still fits the new scope, leave it.
+      const cscope = (current.applies_to || '').toLowerCase();
+      if (cscope === scope || cscope === 'both') return;
+      // Find a different is_default that matches the new scope.
+      const next = _templates.find(t =>
+        t.is_default && ((t.applies_to || '').toLowerCase() === scope
+                         || (t.applies_to || '').toLowerCase() === 'both')
+      );
+      if (next && next.id !== _sharedTemplateId) {
+        _sharedTemplateId = next.id;
+      }
+    });
   });
   // Account list — falls through three layers:
   //   1. `accounts` prop (host page injects them, e.g. /orders)
@@ -1026,18 +1067,32 @@
         // Same template attaches to every leg. Backend basket route
         // reads BasketLeg.template_id; per-leg `apply_template_to_order`
         // runs on fill to attach TP/SL/Wing GTTs. Per-leg overrides
-        // (Phase 5) will eventually supersede the shell defaults; for
-        // now every leg carries the shell-level overrides verbatim.
+        // (Phase 5) supersede the shell defaults.
+        // Audit fix — when leg.template_id is set explicitly (operator
+        // picked a per-leg template), DON'T fall through to the shell
+        // overrides. The shell overrides were typed against the shell
+        // template's defaults; carrying them to a per-leg template T2
+        // silently contaminates T2's params with T1's overrides. Per-
+        // leg legs MUST opt-in to each override field independently.
         template_id:      leg.template_id ?? _sharedTemplateId,
-        tp_pct_override:             leg.tp_pct_override
-          ?? (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null),
-        sl_pct_override:             leg.sl_pct_override
-          ?? (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null),
-        wing_premium_pct_override:   leg.wing_premium_pct_override
-          ?? (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null),
-        wing_strike_offset_override: leg.wing_strike_offset_override
-          ?? (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null),
-      })),
+      })).map(/** @param {any} l */ (l) => {
+        const _hasLegTpl = (l.template_id !== _sharedTemplateId);
+        return {
+          ...l,
+          tp_pct_override:             l.tp_pct_override ?? (_hasLegTpl
+            ? null
+            : (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null)),
+          sl_pct_override:             l.sl_pct_override ?? (_hasLegTpl
+            ? null
+            : (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null)),
+          wing_premium_pct_override:   l.wing_premium_pct_override ?? (_hasLegTpl
+            ? null
+            : (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null)),
+          wing_strike_offset_override: l.wing_strike_offset_override ?? (_hasLegTpl
+            ? null
+            : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null)),
+        };
+      }),
     }));
 
     const total = basketLegs.length;
@@ -1101,10 +1156,28 @@
       // they can place more legs without re-opening. Explicit close
       // via × or Escape only.
     } else if (ok > 0) {
-      basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}`;
+      // Audit fix — basket partial-failure UX. Pre-fix the operator
+      // saw the rejected leg in the result message but the legs that
+      // SUCCEEDED were silently committed to the broker with no
+      // visible record. Their template attaches would still fire on
+      // fill but the operator had no way to know which legs were
+      // live + needed monitoring. Now: surface a persistent sticky
+      // banner (8s vs the 3s success banner) with the placed-vs-
+      // rejected counts, and clear the basket only of legs that
+      // DID succeed — the failed ones stay in the basket bar so
+      // the operator can fix the rejection cause and resubmit.
+      basketResultMsg = `${ok}/${total} placed — ${fails.length} rejected: ${fails[0]}. Placed legs are live; failed legs kept in basket for retry.`;
       basketLegs = basketLegs.filter((_, i) => failedIdx.has(i));
+      _stickyResultMsg = `${ok} placed · ${fails.length} rejected — check /orders for live legs`;
+      _stickyResultLevel = 'warn';
+      if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
+      _stickyResultTimer = setTimeout(() => { _stickyResultMsg = ''; _stickyResultLevel = ''; }, 8000);
     } else {
       basketResultMsg = `Failed: ${fails[0]}`;
+      _stickyResultMsg = `All ${total} legs rejected — no orders placed`;
+      _stickyResultLevel = 'err';
+      if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
+      _stickyResultTimer = setTimeout(() => { _stickyResultMsg = ''; _stickyResultLevel = ''; }, 8000);
     }
   }
 
@@ -1266,7 +1339,7 @@
     return {
       symbol, exchange, side, action, qty, product, orderType, variety,
       price, trigger, lotSize, accounts, account, orderId,
-      defaultMode, availableModes, currentQty, onAddToBasket,
+      currentQty, onAddToBasket,
     };
   });
 </script>
@@ -1515,8 +1588,6 @@
             onAccountChange={_onAccountChange}
             onSideChange={(s) => { _modalSide = s; }}
             orderId={_ticketProps.orderId ?? orderId}
-            defaultMode={_ticketProps.defaultMode ?? defaultMode}
-            availableModes={_ticketProps.availableModes ?? availableModes}
             currentQty={_ticketProps.currentQty ?? currentQty}
             onAddToBasket={addToBasket}
             basketMode={basketMode}
@@ -1650,31 +1721,24 @@
               <!-- Per-leg account picker — operator: "I should be able to
                    place order from different accounts by selecting account
                    for each order adding them to basket and place order".
-                   Native `<select>` keeps the pill compact; bubbles up
-                   via updateLegByKey so the submitBasket loop reads
-                   leg.account on each placement call. -->
+                   Switched from native `<select>` to the platform's
+                   custom `<Select>` component to follow the CLAUDE.md
+                   convention (no native popups anywhere in the algo
+                   surfaces). Same updateLegByKey reassignment pattern
+                   so the each-block iteration variable picks up the
+                   new value through basketLegs replacement. -->
               {#if _modalAccounts.length > 1}
-                <!-- updateLegByKey matches the pattern used by the lots
-                     stepper + limit input (lines 1375/1380/1398) — proven
-                     reactive in Svelte 5 because the array map+spread
-                     forces a basketLegs reassignment. Direct mutation
-                     (`leg.account = v`) did NOT propagate through the
-                     each-block iteration variable, possibly due to a
-                     Svelte 5 proxy quirk under the keyed `(leg.key)`
-                     binding. value=_legAcct on the select keeps the
-                     visible state in lockstep with leg.account. -->
-                <select class="oes-basket-pill-acct"
-                        disabled={basketSubmitting}
-                        value={_legAcct}
-                        title="Route this leg through this broker account"
-                        onchange={(e) => {
-                          const v = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
-                          updateLegByKey(leg.key, b => ({ ...b, account: v }));
-                        }}>
-                  {#each _modalAccounts as a}
-                    <option value={a}>{a}</option>
-                  {/each}
-                </select>
+                <span class="oes-basket-pill-acct-wrap"
+                      title="Route this leg through this broker account">
+                  <Select
+                    value={_legAcct}
+                    onValueChange={(v) => {
+                      const _v = String(v || '');
+                      updateLegByKey(leg.key, b => ({ ...b, account: _v }));
+                    }}
+                    options={_modalAccounts.map(a => ({ value: a, label: a }))}
+                    ariaLabel="Leg account" />
+                </span>
               {:else if _legAcct}
                 <span class="oes-basket-pill-acct-static" title="Routing account (single broker loaded)">{_legAcct}</span>
               {/if}
@@ -1715,8 +1779,20 @@
               {@const _showWing2 = (_eff2?.applies_to || '').toLowerCase() === 'sell_option'}
               <div class="oes-leg-editor" role="group" aria-label={`Override template for ${leg.sym}`}>
                 <span class="oes-leg-editor-label">tmpl for {leg.sym}</span>
-                <label class="oes-leg-editor-field" title="Override the template for THIS leg only. Empty = use shell default.">
+                <label class="oes-leg-editor-field" title="Override the template for THIS leg only. (shell default) inherits the On-fill picker; (no template) explicitly skips any GTT attach for this leg even when the shell has one set.">
                   <span>on fill</span>
+                  <!-- Audit fix — per-leg null-template sentinel.
+                       Pre-fix the dropdown only had "(shell default)"
+                       which set leg.template_id=null and silently fell
+                       through to the shell pick via the `??` operator
+                       in submitBasket. The operator could not say
+                       "this leg explicitly has NO template, ignore
+                       shell". Adding a separate "(no template)"
+                       option that maps to the seeded none-template's
+                       id covers that case — the id is non-null so
+                       the `??` no longer overrides it. The none row
+                       is excluded from the each-loop below so it's
+                       not duplicated. -->
                   <select disabled={basketSubmitting}
                           value={leg.template_id ?? ''}
                           onchange={(e) => {
@@ -1725,7 +1801,10 @@
                             updateLegByKey(leg.key, b => ({ ...b, template_id: v }));
                           }}>
                     <option value="">(shell default)</option>
-                    {#each _templates as t (t.id)}
+                    {#if _noneTpl}
+                      <option value={_noneTpl.id}>(no template — entry only)</option>
+                    {/if}
+                    {#each _nonNoneTemplates as t (t.id)}
                       <option value={t.id}>{t.name || t.slug || `#${t.id}`}</option>
                     {/each}
                   </select>
@@ -2584,7 +2663,7 @@
     /* Tighten the inner inputs so two of them can sit side-by-side on
        narrow viewports without forcing a wrap on every chip. */
     .oes-basket-pill-limit { width: 3.2rem !important; }
-    .oes-basket-pill-acct,
+    .oes-basket-pill-acct-wrap,
     .oes-basket-pill-acct-static { max-width: 4.5rem; }
     .oes-basket-pill-wing,
     .oes-basket-pill-tpl-chip { max-width: 6rem; overflow: hidden; text-overflow: ellipsis; }
@@ -2632,11 +2711,16 @@
     opacity: 0.7;
     font-weight: 600;
   }
-  /* Per-leg account picker — tight native <select> styled to match the
-     basket pill chrome. Stays narrow so two-leg pills don't blow up
+  /* Per-leg account picker — wrapper around the custom <Select>
+     component so the popup matches the platform's account-picker
+     style everywhere. Sized narrow so two-leg pills don't blow up
      the basket bar's horizontal budget. */
-  .oes-basket-pill-acct {
+  .oes-basket-pill-acct-wrap {
     margin-left: 0.35rem;
+    max-width: 5.5rem;
+    font-size: 0.58rem;
+  }
+  .oes-basket-pill-acct-wrap :global(.algo-select-btn) {
     height: 1.2rem;
     padding: 0 0.25rem;
     background: rgba(255,255,255,0.06);
@@ -2645,11 +2729,10 @@
     border-radius: 2px;
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
-    cursor: pointer;
-    max-width: 5.5rem;
   }
-  .oes-basket-pill-acct:hover { border-color: rgba(125,211,252,0.65); }
-  .oes-basket-pill-acct:disabled { opacity: 0.45; cursor: not-allowed; }
+  .oes-basket-pill-acct-wrap :global(.algo-select-btn:hover) {
+    border-color: rgba(125,211,252,0.65);
+  }
   .oes-basket-pill-acct-static {
     margin-left: 0.35rem;
     color: #7dd3fc;
@@ -3279,6 +3362,14 @@
     background: rgba(74,222,128,0.18);
     border-color: rgba(74,222,128,0.55);
     color: #4ade80;
+  }
+  /* Audit fix — basket partial-failure warn level. Amber palette so
+     the operator sees "some succeeded, some failed" as distinct from
+     full-success (green) and full-failure (red). */
+  .oes-sticky-result-warn {
+    background: rgba(251,191,36,0.18);
+    border-color: rgba(251,191,36,0.55);
+    color: #fbbf24;
   }
   .oes-sticky-result-err {
     background: rgba(248,113,113,0.18);

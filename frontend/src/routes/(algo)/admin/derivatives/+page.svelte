@@ -2555,10 +2555,8 @@
                    ? Number(c.avg_cost) : undefined,
       accounts:  ticketAccounts,
       account:   acct,
-      defaultMode:    'draft',
-      availableModes: ['draft', 'live'],
-      // Stashed for onTicketSubmit; OrderTicket ignores extra
-      // fields, so this rides through unchanged.
+      // defaultMode + availableModes removed (Wave C); navbar's
+      // executionMode store decides mode for the modal.
       _draftId:  c.draftId,
     });
   }

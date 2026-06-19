@@ -13,9 +13,10 @@
   import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchOptionsSpot, fetchChainQuotes,
-    placeTicketOrder, fetchLiveStatus,
+    placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';
+  import { executionMode } from '$lib/stores';
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import {
@@ -606,11 +607,16 @@
     const acct = _account;
     if (!acct) { basketError = 'No routable account. Pick an account above.'; return; }
 
-    let basketMode = 'paper';
-    try {
-      const live = await fetchLiveStatus();
-      if (live && live.paper_trading_mode === false && live.branch === 'main') basketMode = 'live';
-    } catch { /* safe default paper */ }
+    // Audit fix — read mode from the $executionMode store instead of
+    // an async fetchLiveStatus() round-trip. Same source the navbar
+    // dropdown writes to + SymbolPanel and OrderTicket read from, so
+    // a navbar mode change between the operator clicking Place and
+    // the response arriving can't desync the basket. `idle` / `sim` /
+    // `replay` / `shadow` fall through to paper since this standalone
+    // path is only for the chain modal's own basket; live mode here
+    // is gated by the same store the page-level chrome reads.
+    const _modeNow = String($executionMode || 'paper').toLowerCase();
+    const basketMode = _modeNow === 'live' ? 'live' : 'paper';
 
     basketPlacing = true; basketError = ''; basketProgress = 0;
     /** @type {string[]} */ const failures = [];

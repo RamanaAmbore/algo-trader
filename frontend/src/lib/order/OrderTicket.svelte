@@ -60,8 +60,6 @@
    *   accounts?: string[],
    *   account?:  string,
    *   orderId?:  string,
-   *   defaultMode?:    'draft' | 'paper' | 'live' | 'shadow',
-   *   availableModes?: Array<'draft' | 'paper' | 'live' | 'shadow'>,
    *   currentQty?: number,
    *   onSubmit:  (payload: any) => void | Promise<void>,
    *   onClose:   () => void,
@@ -108,15 +106,6 @@
     // the submit path knows which order to mutate. Ignored for
     // action='open'.
     orderId   = '',
-    // Initial mode pill the ticket opens on. Surfaces with no drafts
-    // concept (PerformancePage row click) typically pass 'paper';
-    // surfaces with a drafts panel (admin/options) keep 'draft'.
-    defaultMode    = /** @type {'draft' | 'paper' | 'live' | 'shadow'} */ ('live'),
-    // Which mode pills the operator can see. Default is DRAFT + LIVE.
-    // Callers that want PAPER as an explicit choice pass it here (e.g.
-    // admin surfaces that bypass the global execution.paper_trading_mode
-    // flag). The PAPER pill renders when 'paper' is in this array.
-    availableModes = /** @type {Array<'draft'|'paper'|'live'|'shadow'>} */ (['draft', 'live']),
     // Signed qty of the operator's existing position when the ticket
     // is opened from a position-row click. Drives the side toggle's
     // ADD/CLOSE labels — operator thinks in "I want to add to this
@@ -778,10 +767,8 @@
   // the store — drafts are a deliberate operator choice that requires
   // an explicit `mode='draft'` prop from the caller.
   function _resolveInitialMode() {
-    const explicit = defaultMode;
-    if (explicit === 'draft' || explicit === 'paper' || explicit === 'live' || explicit === 'shadow') {
-      return explicit;
-    }
+    // Wave-C / dead-prop sweep: defaultMode + availableModes props
+    // removed; the navbar's executionMode store is the sole source.
     const fromStore = get(executionMode) || 'paper';
     if (fromStore === 'sim' || fromStore === 'replay' || fromStore === 'shadow') return 'paper';
     if (fromStore === 'paper' || fromStore === 'live') return fromStore;
