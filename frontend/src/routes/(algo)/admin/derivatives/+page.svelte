@@ -1150,18 +1150,26 @@
     });
   });
 
-  /** Distinct expiries (YYYY-MM-DD) listed for the chosen underlying —
-   *  union of CE + PE + FUT contracts from the instruments cache.
-   *  Filter only: empty = all, picked = scope candidates to those.
-   *  Lists the full universe (not just expiries the operator holds)
-   *  so drafts can model legs on contracts they don't yet own. */
+  /** Distinct expiries (YYYY-MM-DD) the operator has positions /
+   *  drafts on for the chosen underlying. Operator: "expiry should
+   *  show only the expiry day values dropdown present in the
+   *  positions." Reverted from the full-universe instruments-cache
+   *  scan back to a book-only derivation so the picker reads as
+   *  "what's actually in scope right now" rather than every listed
+   *  contract Kite knows about. Drafts contribute too. */
   const expiryChoicesForUnderlying = $derived.by(() => {
     if (!instrumentsReady || !selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
+    const prefixRe = new RegExp(`^${target}\\d`, 'i');
     const set = new Set();
-    for (const e of listExpiries(target, 'CE')) set.add(e);
-    for (const e of listExpiries(target, 'PE')) set.add(e);
-    for (const f of listFutures(target)) if (f?.x) set.add(f.x);
+    const consider = /** @param {string} sym */ (sym) => {
+      const upper = String(sym || '').toUpperCase();
+      if (!upper || !prefixRe.test(upper)) return;
+      const inst = getInstrument(upper);
+      if (inst?.x) set.add(inst.x);
+    };
+    for (const p of positions) consider(p.symbol);
+    for (const d of drafts)    consider(d.symbol);
     return Array.from(set).sort();
   });
 
@@ -3352,8 +3360,11 @@
      and Expiry are filters on the Candidates panel; empty = all. -->
 <div class="opt-picker mb-3">
   <div class="opt-field opt-field-grow">
-    <label class="field-label" for="opt-acct" title="Filter the Candidates / Legs panel to positions held in these accounts. Empty = all accounts. Payoff updates automatically as legs are toggled.">Account</label>
-    <AccountMultiSelect id="opt-acct"
+    <label class="field-label" for="opt-acct" title="Filter the Candidates / Legs panel and the Snapshot rollup to positions held in these accounts. Empty = all accounts.">Account</label>
+    <!-- Plain MultiSelect (not AccountMultiSelect, which forces
+         singleSelect=true). Operator: "account dropdown should support
+         multi account select like expiry." -->
+    <MultiSelect id="opt-acct"
       bind:value={selectedAccounts}
       options={accountChoices.map(a => ({ value: a, label: a }))}
       placeholder={accountChoices.length ? 'All accounts' : 'No accounts loaded'} />
