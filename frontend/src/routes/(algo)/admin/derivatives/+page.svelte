@@ -4054,8 +4054,8 @@
           <span>Underlying</span>
           <span class="num" title="Today's P&L change from F&O legs only.">Day</span>
           <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L</span>
-          <span class="num" title="Today's P&L change including any equity holding leg.">Day +Eq</span>
-          <span class="num" title="Total P&L including any equity holding leg's contribution.">P&amp;L +Eq</span>
+          <span class="num" title="Today's P&L change including any equity holding leg (net of the full book — F&O + equity layer).">Day Net</span>
+          <span class="num" title="Total P&L including any equity holding leg's contribution (net of the full book — F&O + equity layer).">P&amp;L Net</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
@@ -4819,8 +4819,8 @@
       minmax(5rem, 0.9fr)    /* underlying */
       minmax(5.5rem, 0.9fr)  /* Day */
       minmax(5.5rem, 0.9fr)  /* P&L */
-      minmax(5.5rem, 0.9fr)  /* Day +Eq */
-      minmax(5.5rem, 0.9fr)  /* P&L +Eq */
+      minmax(5.5rem, 0.9fr)  /* Day Net */
+      minmax(5.5rem, 0.9fr)  /* P&L Net */
       minmax(3rem, 0.55fr)   /* Legs */
       minmax(4rem, 0.6fr)    /* F&O qty */
       minmax(4rem, 0.6fr);   /* Eq qty */
