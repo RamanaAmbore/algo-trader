@@ -2773,22 +2773,27 @@ class OrdersController(Controller):
                             # winner so subsequent postbacks for the same
                             # broker id find it directly. Idempotent:
                             # repeat postbacks land on the now-seeded row.
+                            # Regression-audit fix: ALSO scope by account
+                            # so two live accounts placing the same
+                            # symbol+side within 60s can't cross-pollinate
+                            # broker_order_id onto the wrong row.
                             if not _rows:
                                 from datetime import datetime, timezone, timedelta
                                 _cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
-                                try:
-                                    _q_user_id = str(user_id or "").strip()
-                                except NameError:
-                                    _q_user_id = ""
+                                _fallback_where = [
+                                    _AlgoOrder.broker_order_id.is_(None),
+                                    _AlgoOrder.status == "OPEN",
+                                    _AlgoOrder.mode == "live",
+                                    _AlgoOrder.symbol == str(tradingsymbol or ""),
+                                    _AlgoOrder.transaction_type == str(txn or "").upper(),
+                                    _AlgoOrder.created_at >= _cutoff,
+                                ]
+                                _pb_account = str(account or "").strip() if account else ""
+                                if _pb_account:
+                                    _fallback_where.append(_AlgoOrder.account == _pb_account)
                                 _fallback = (await _s.execute(
-                                    _sql_select(_AlgoOrder).where(
-                                        _AlgoOrder.broker_order_id.is_(None),
-                                        _AlgoOrder.status == "OPEN",
-                                        _AlgoOrder.mode == "live",
-                                        _AlgoOrder.symbol == str(tradingsymbol or ""),
-                                        _AlgoOrder.transaction_type == str(txn or "").upper(),
-                                        _AlgoOrder.created_at >= _cutoff,
-                                    ).order_by(_AlgoOrder.id.desc()).limit(1)
+                                    _sql_select(_AlgoOrder).where(*_fallback_where)
+                                    .order_by(_AlgoOrder.id.desc()).limit(1)
                                 )).scalars().first()
                                 if _fallback is not None:
                                     _fallback.broker_order_id = str(order_id)

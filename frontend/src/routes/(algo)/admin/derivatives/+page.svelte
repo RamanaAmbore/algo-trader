@@ -845,6 +845,21 @@
       t.pnl_with  += pnl;
       t.day_with  += day;
     }
+    // Operator: "still snapshot totals not in sync with nav strip numbers."
+    // Add back the rows the page filtered out at load time — equity
+    // intraday positions + derivative-looking holdings. The navbar
+    // PositionStrip sums EVERY row from /api/positions + /api/holdings
+    // without any F&O / equity filter, so the snapshot TOTAL has to add
+    // these back to match. Account filter still applies — `_excluded`
+    // is keyed by uppercased account so a per-account pick partitions
+    // correctly.
+    for (const [_acct, _ex] of Object.entries(_excludedByAccount)) {
+      if (!matchAccount(_acct)) continue;
+      t.pnl_without += _ex.pos_pnl;
+      t.pnl_with    += _ex.pos_pnl + _ex.hold_pnl;
+      t.day_without += _ex.pos_day;
+      t.day_with    += _ex.pos_day + _ex.hold_day;
+    }
     return t;
   });
 
@@ -2593,6 +2608,18 @@
    *  curve reflects covered calls / hedges correctly. */
   /** @type {Array<{symbol:string, account:string, qty:number, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number}>} */
   let holdings = $state([]);
+  /** Per-account totals of the rows the page FILTERS OUT of `positions`
+   *  (equity intraday) and `holdings` (derivative-looking). The
+   *  navbar PositionStrip sums every row from /api/positions +
+   *  /api/holdings without any F&O / equity filter; the page only
+   *  carries F&O rows for the per-underlying display. To keep the
+   *  Snapshot TOTAL row in sync with the strip when no account
+   *  filter is picked, the snapshot derivation adds these excluded
+   *  totals back. Keyed by account so an account-filter still
+   *  partitions correctly.
+   *  Operator: "still snapshot totals not in sync with nav strip numbers."
+   *  @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
+  let _excludedByAccount = $state({});
 
   /** Real (unmasked) broker account IDs from /api/accounts/. Loaded
    *  separately from positions because /positions masks the account
@@ -2794,6 +2821,21 @@
   async function loadPositions() {
     /** @type {Array<any>} */
     const merged = [];
+    // Reset the excluded-row totals for this load. Equity intraday
+    // positions (dropped by the F&O regex below) get accumulated into
+    // _excludedByAccount[acct].pos_* so the Snapshot TOTAL can add
+    // them back to match the navbar PositionStrip.
+    /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
+    const _excluded = {};
+    const _bumpExcluded = (/** @type {string} */ acct,
+                          /** @type {Partial<{pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */ delta) => {
+      const a = String(acct || '').toUpperCase();
+      if (!_excluded[a]) _excluded[a] = { pos_pnl: 0, pos_day: 0, hold_pnl: 0, hold_day: 0 };
+      _excluded[a].pos_pnl  += Number(delta.pos_pnl  || 0);
+      _excluded[a].pos_day  += Number(delta.pos_day  || 0);
+      _excluded[a].hold_pnl += Number(delta.hold_pnl || 0);
+      _excluded[a].hold_day += Number(delta.hold_day || 0);
+    };
 
     // Live broker positions
     try {
@@ -2803,8 +2845,16 @@
         const sym = p?.tradingsymbol || p?.symbol;
         if (!sym) continue;
         // Only options + futures (skip cash equities — this page is
-        // options-only).
-        if (!/(CE|PE|FUT)$/i.test(String(sym))) continue;
+        // options-only). Equity intraday positions still contribute to
+        // the navbar PositionStrip via /api/positions, so we capture
+        // their P&L + day_change here for the Snapshot TOTAL reconcile.
+        if (!/(CE|PE|FUT)$/i.test(String(sym))) {
+          _bumpExcluded(p?.account, {
+            pos_pnl: Number(p?.pnl || 0),
+            pos_day: Number(p?.day_change_val || 0),
+          });
+          continue;
+        }
         const baseRow = {
           symbol:   String(sym).toUpperCase(),
           account:  String(p?.account || ''),
@@ -2883,8 +2933,16 @@
           const sym = h?.tradingsymbol || h?.symbol;
           if (!sym) continue;
           // Skip anything that smells like a derivative — only cash
-          // equity holdings should layer as a long-stock leg.
-          if (/(CE|PE|FUT)$/i.test(String(sym))) continue;
+          // equity holdings should layer as a long-stock leg. Captured
+          // into _excluded so the Snapshot TOTAL can reconcile to the
+          // navbar PositionStrip which includes ALL holdings.
+          if (/(CE|PE|FUT)$/i.test(String(sym))) {
+            _bumpExcluded(h?.account, {
+              hold_pnl: Number(h?.pnl || 0),
+              hold_day: Number(h?.day_change_val || 0),
+            });
+            continue;
+          }
           // Backend HoldingRow drops `quantity` to 0 after an intraday
           // full-sell while `opening_quantity` keeps the start-of-day
           // amount. Two distinct cases:
@@ -2925,6 +2983,10 @@
     } else {
       holdings = [];
     }
+
+    // Persist excluded-row totals so the Snapshot TOTAL can add them
+    // back when reconciling with the navbar PositionStrip.
+    _excludedByAccount = _excluded;
 
     _saveCache();
   }

@@ -328,6 +328,13 @@ class BasketLeg(msgspec.Struct):
     sl_pct_override:             Optional[float] = None
     wing_premium_pct_override:   Optional[float] = None
     wing_strike_offset_override: Optional[int]   = None
+    # Optional carry-through for the trail-stop + scale-out template
+    # fields. Frontend doesn't expose inputs for these today, but the
+    # `_build_overrides_json` serializer reads them so a future per-
+    # ticket override path needs only the UI work. None = inherit the
+    # selected template's value.
+    sl_trail_pct_override:       Optional[float] = None
+    tp_scales_json_override:     Optional[str]   = None
 
 
 class BasketGroup(msgspec.Struct):
@@ -435,6 +442,12 @@ class TicketOrderRequest(msgspec.Struct):
     sl_pct_override:              Optional[float] = None
     wing_premium_pct_override:    Optional[float] = None
     wing_strike_offset_override:  Optional[int]   = None
+    # Trail-stop + scale-out override carriers. UI doesn't expose inputs
+    # for these yet; `_build_overrides_json` already reads them so they
+    # flow through the postback handler's override-replay path when the
+    # frontend starts sending them.
+    sl_trail_pct_override:        Optional[float] = None
+    tp_scales_json_override:      Optional[str]   = None
 
 
 class TicketOrderResponse(msgspec.Struct):

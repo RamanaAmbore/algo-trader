@@ -60,6 +60,12 @@
   }
 
   onMount(() => {
+    // Regression-audit fix: sync `_hidden` once at mount so a page
+    // loaded with the tab already in the background doesn't sit there
+    // polling depth quietly until the first visibilitychange event.
+    // The $state init only sees SSR's `false` (or the CSR snapshot at
+    // module-eval time); the actual current visibility may be `true`.
+    _hidden = !!document.hidden;
     document.addEventListener('visibilitychange', _onVisibilityChange);
   });
   onDestroy(() => {
