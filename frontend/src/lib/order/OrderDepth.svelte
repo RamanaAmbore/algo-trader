@@ -137,6 +137,17 @@
     background: rgba(0,0,0,0.18);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 3px;
+    /* Match the Chain-tab strike grid height when the parent (the
+       order modal) advertises --chain-depth-h. The depth content
+       sits at the top; the remaining vertical space pads out the
+       frame so the modal's body stays the same size on Ticket ↔
+       Chain tab flip. The variable falls back to `auto` so
+       standalone callers (where OrderDepth is rendered outside
+       SymbolPanel) keep their natural ~5-row height. */
+    min-height: var(--chain-depth-h, auto);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
   }
   .ot-depth-h {
     display: flex;

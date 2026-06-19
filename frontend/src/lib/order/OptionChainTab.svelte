@@ -1130,10 +1130,13 @@
     /* Operator: "show more pe and ce rows in chain". Was 9rem
        (~5–6 strike rows at default row height); bumped to 22rem
        so the operator sees ~15+ rows around ATM at a glance
-       without having to scroll. The flex:1 1 0 above still lets
-       the grid grow to fill the full modal body when there's more
-       room. */
-    min-height: 22rem;
+       without having to scroll. Reads --chain-depth-h from the
+       enclosing order modal so the Ticket-tab depth ladder matches
+       this height and the modal doesn't jump on tab flip. Falls
+       back to 22rem for standalone callers. The flex:1 1 0 above
+       still lets the grid grow to fill the full modal body when
+       there's more room. */
+    min-height: var(--chain-depth-h, 22rem);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 3px;
   }

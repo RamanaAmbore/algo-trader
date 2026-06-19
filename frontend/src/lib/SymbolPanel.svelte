@@ -2834,6 +2834,16 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
+    /* Shared height anchor for the Ticket-tab depth ladder + the
+       Chain-tab strike grid. Both panels read this custom property
+       so the modal stays the same vertical size when the operator
+       flips tabs — eye stays anchored to one horizontal baseline
+       (Sensibull / Streak convention). Mobile drops the lock so the
+       depth can collapse to its natural ~5-row height. */
+    --chain-depth-h: 22rem;
+  }
+  @media (max-width: 720px) {
+    .oes-body { --chain-depth-h: auto; }
   }
   /* Equal-height tab panels — ticket and chain BOTH absorb the
      full .oes-body height. Whichever tab is hidden via
