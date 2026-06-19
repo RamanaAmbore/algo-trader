@@ -697,19 +697,25 @@
   function _autoSelectTemplate() {
     if (templateId !== null) return;        // operator already picked
     if (_templates.length === 0) return;
+    // Operator: "by default the template is none to start with. Later,
+    // in future, default template will be default." So the first-paint
+    // pick is always the explicit 'none' template — opt-in to attach
+    // a default rule, never auto-attach. When the operator clicks the
+    // Default pill they get the side-aware default via the onclick
+    // handler in the template-row markup.
+    const none = _templates.find(t => t.slug === 'none');
+    if (none) {
+      templateId = none.id;
+      return;
+    }
+    // Catalog didn't ship a 'none' row (legacy install) — fall back to
+    // the side-aware default so the form doesn't end up with a stuck
+    // null templateId.
     const scope = _appliesToFor(_side, symbol);
-    // Prefer is_default within matching scope; fall back to 'both'.
     const match = _templates.find(t =>
       t.is_default && (t.applies_to === scope || t.applies_to === 'both')
     );
-    if (match) {
-      templateId = match.id;
-    } else {
-      // Last resort: the explicit "none" template so operator gets a
-      // sane pick rather than null + empty fields.
-      const none = _templates.find(t => t.slug === 'none');
-      if (none) templateId = none.id;
-    }
+    if (match) templateId = match.id;
   }
   let _product = $state(productVal);
   // Local exchange state — seeded from the resolved exchange. Operator
@@ -1952,42 +1958,56 @@
                 None
               </button>
             </div>
-            {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-              <div class="ot-tpl-active">
-                <span class="ot-tpl-active-name">{_selectedTemplate.name}</span>
-                <span class="ot-tpl-active-summary">{_summariseTemplate(_selectedTemplate)}</span>
+            <!-- Descriptive template summary retired — operator wanted
+                 the editable parameter values surfaced inline so they
+                 can tweak TP/SL/Wing for a single submit without
+                 mutating the saved template row. The parameter inputs
+                 below render with the template's value as the placeholder
+                 (italic grey) and the operator's tweak as the actual
+                 value. Submitting carries the overrides through
+                 tp_pct_override / sl_pct_override / wing_*_override
+                 fields on the ticket route. Cap warning still surfaces
+                 because it reflects what the BROKER will accept, not
+                 the template's identity. -->
+            {#if _templateCapWarning}
+              <div class="ot-tpl-cap-warn" title={_templateCapWarning}>
+                ⚠ {_templateCapWarning}
               </div>
-              {#if _templateCapWarning}
-                <div class="ot-tpl-cap-warn" title={_templateCapWarning}>
-                  ⚠ {_templateCapWarning}
-                </div>
-              {/if}
             {/if}
-            <div class="ot-template-overrides">
-              <label class="ot-tpl-field">
-                <span>TP%</span>
-                <input type="number" class="ot-input ot-num ot-tpl-input"
-                       step="0.5"
-                       placeholder={_selectedTemplate?.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
-                       bind:value={_tpOverride} />
-              </label>
-              <label class="ot-tpl-field">
-                <span>SL%</span>
-                <input type="number" class="ot-input ot-num ot-tpl-input"
-                       step="0.5"
-                       placeholder={_selectedTemplate?.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
-                       bind:value={_slOverride} />
-              </label>
-              {#if _appliesToFor(_side, symbol) === 'sell_option'}
-                <label class="ot-tpl-field">
-                  <span>Wing strike+</span>
+            {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+              <div class="ot-template-overrides">
+                <label class="ot-tpl-field" title="Take-profit percentage above (BUY) or below (SELL) the fill price.">
+                  <span>TP%</span>
                   <input type="number" class="ot-input ot-num ot-tpl-input"
-                         step="50"
-                         placeholder={_selectedTemplate?.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
-                         bind:value={_wingStrikeOffsetOverride} />
+                         step="0.5"
+                         placeholder={_selectedTemplate?.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
+                         bind:value={_tpOverride} />
                 </label>
-              {/if}
-            </div>
+                <label class="ot-tpl-field" title="Stop-loss percentage opposite the TP side.">
+                  <span>SL%</span>
+                  <input type="number" class="ot-input ot-num ot-tpl-input"
+                         step="0.5"
+                         placeholder={_selectedTemplate?.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
+                         bind:value={_slOverride} />
+                </label>
+                {#if _appliesToFor(_side, symbol) === 'sell_option'}
+                  <label class="ot-tpl-field" title="Protective wing BUY at this many strikes away from the parent.">
+                    <span>Wing strike+</span>
+                    <input type="number" class="ot-input ot-num ot-tpl-input"
+                           step="50"
+                           placeholder={_selectedTemplate?.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
+                           bind:value={_wingStrikeOffsetOverride} />
+                  </label>
+                  <label class="ot-tpl-field" title="Wing premium target as a percentage of the parent's premium.">
+                    <span>Wing prem%</span>
+                    <input type="number" class="ot-input ot-num ot-tpl-input"
+                           step="0.5"
+                           placeholder={_selectedTemplate?.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
+                           bind:value={_wingPremPctOverride} />
+                  </label>
+                {/if}
+              </div>
+            {/if}
 
             <!-- Pre-submit preview chip — shows the artefacts that
                  will be placed. Updates ~200ms after any field change. -->

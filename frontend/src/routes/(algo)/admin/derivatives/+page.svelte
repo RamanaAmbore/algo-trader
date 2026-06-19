@@ -785,20 +785,61 @@
     );
   });
 
+  /** TOTAL row — sums across EVERY filtered position + holding so the
+   *  rollup reconciles to the navbar PositionStrip's P / P∆ chips
+   *  exactly. Operator: "make sure snapshot totals are in sync with
+   *  nav strip numbers." Includes holdings even when their root has
+   *  no F&O exposure (those underlyings stay hidden from the row
+   *  display, but they still contribute to the rollup so the Net
+   *  columns match the strip). Same matchAccount + day-fallback
+   *  semantics as the per-row derivation. */
   const _byUnderlyingTotal = $derived.by(() => {
+    const wantedSource = simActive ? 'sim' : 'live';
+    const _wantedAccts = new Set(
+      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
+    );
+    const matchAccount = (acct) => {
+      if (_wantedAccts.size === 0) return true;
+      return _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    };
     const t = { qty_fno: 0, qty_eq: 0,
                 legs_with: 0, legs_without: 0,
                 pnl_with: 0, pnl_without: 0,
                 day_with: 0, day_without: 0 };
-    for (const g of _byUnderlyingTotals) {
-      t.qty_fno += g.qty_fno;
-      t.qty_eq  += g.qty_eq;
-      t.legs_with    += g.legs_with;
-      t.legs_without += g.legs_without;
-      t.pnl_with     += g.pnl_with;
-      t.pnl_without  += g.pnl_without;
-      t.day_with     += g.day_with;
-      t.day_without  += g.day_without;
+    // F&O positions — same opt/fut filter as the per-row derivation.
+    for (const _p of positions) {
+      const p = /** @type {any} */ (_p);
+      if (p.source !== wantedSource) continue;
+      if (!matchAccount(p.account)) continue;
+      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
+      if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
+      const qty = Number(p.quantity ?? p.qty) || 0;
+      const pnl = Number(p.pnl) || 0;
+      const _ov = Number(p.overnight_quantity ?? 0);
+      let day = Number(p.day_change_val) || 0;
+      if (day === 0 && _ov === 0 && pnl !== 0) day = pnl;
+      t.qty_fno      += qty;
+      t.legs_with++;
+      t.legs_without++;
+      t.pnl_with     += pnl;
+      t.pnl_without  += pnl;
+      t.day_with     += day;
+      t.day_without  += day;
+    }
+    // Holdings — every filtered holding contributes, even when its
+    // root has no F&O exposure. Display rows still drop those
+    // underlyings via the legs_without===0 gate, but the TOTAL keeps
+    // them so the Net columns reconcile to PositionStrip's HD∆+Hld.
+    for (const _h of holdings) {
+      const h = /** @type {any} */ (_h);
+      if (!matchAccount(h.account)) continue;
+      const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
+      const pnl = Number(h.pnl) || 0;
+      const day = Number(h.day_change_val) || 0;
+      t.qty_eq    += qty;
+      t.legs_with++;
+      t.pnl_with  += pnl;
+      t.day_with  += day;
     }
     return t;
   });
