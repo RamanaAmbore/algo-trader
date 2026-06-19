@@ -542,11 +542,18 @@ def _build_overrides_json(leg) -> str | None:
     straight through.
     """
     payload = {}
+    # Audit fix — also serialize sl_trail_pct + tp_scales_json so
+    # operator overrides of those fields persist through the postback
+    # handler's override-replay path (the attach pipeline already
+    # honors both fields when present in the overrides dict; the
+    # serializer just wasn't carrying them).
     for src_key, dst_key in (
         ("tp_pct_override",             "tp_pct"),
         ("sl_pct_override",             "sl_pct"),
         ("wing_premium_pct_override",   "wing_premium_pct"),
         ("wing_strike_offset_override", "wing_strike_offset"),
+        ("sl_trail_pct_override",       "sl_trail_pct"),
+        ("tp_scales_json_override",     "tp_scales_json"),
     ):
         v = getattr(leg, src_key, None)
         if v is not None:
@@ -630,6 +637,16 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
     inside `_fire_template_attach_on_fill` ensures duplicate firings
     (postback arriving after reconcile) are safe."""
     try:
+        # Audit fix — mode safety. Reconcile must only fire template
+        # attach for LIVE rows. The single-order reconcile endpoint
+        # (`/{broker_order_id}/reconcile`) is operator-driven and could
+        # accept a paper-mode row by mistake; without this guard the
+        # attach would route through `apply_path="live"` and place real
+        # Kite GTTs for a position that doesn't exist at the broker.
+        # Bulk `/algo/reconcile` already filters mode='live' upstream, so
+        # the guard is a no-op there.
+        if (row.mode or "").lower() != "live":
+            return
         if not (row.template_id and row.parent_order_id is None):
             return
         if not row.fill_price:
@@ -1431,7 +1448,15 @@ class OrdersController(Controller):
                 # raised AttributeError on every Re-attach click
                 # before any broker call.
                 parent_side=row.transaction_type or "BUY",
-                parent_qty=int(row.quantity or 0),
+                # Audit fix: prefer filled_quantity over original quantity
+                # when accumulated. Without this, a retry on a row that
+                # had partially filled (e.g. 25 of 50 lots) sizes the exit
+                # GTT at the original 50 — over-hedging on a SELL or
+                # over-flattening on a BUY. Same fix-pattern as the
+                # postback path.
+                parent_qty=(int(row.filled_quantity)
+                            if int(row.filled_quantity or 0) > 0
+                            else int(row.quantity or 0)),
                 parent_exchange=row.exchange or "NFO",
                 parent_fill_price=float(row.fill_price or row.initial_price or 0),
                 parent_product=row.product or "NRML",
@@ -1503,6 +1528,14 @@ class OrdersController(Controller):
 
             updated = 0
             missing = 0
+            # Audit fix — collect rows that need template attach AFTER
+            # commit instead of firing inline. The attach pipeline opens
+            # its own session and reads the row by id; if we call inside
+            # this loop, the in-memory mutations (status=FILLED,
+            # fill_price set) haven't committed yet so the attach reads
+            # the pre-commit state. Now ordering is: mutate in-memory →
+            # commit → fire attach → attach reads committed FILLED state.
+            _attach_queue: list = []
 
             for acct, acct_rows in by_acct.items():
                 # Route via the broker registry — Connections.conn.get()
@@ -1551,12 +1584,18 @@ class OrdersController(Controller):
                             # reconcile must still fire the template
                             # attach. Pre-fix, a templated row reconciled
                             # to FILLED silently lost its TP/SL bracket.
-                            _maybe_fire_template_attach_for_reconcile(r)
+                            # Audit fix — defer attach to AFTER commit.
+                            _attach_queue.append(r)
                         updated += 1
 
             await s.commit()
             if updated or missing:
                 invalidate("orders")
+            # Fire template attach AFTER commit so the new session opened
+            # inside `_fire_template_attach_on_fill` reads the committed
+            # FILLED state, not the pre-commit OPEN state.
+            for _r in _attach_queue:
+                _maybe_fire_template_attach_for_reconcile(_r)
 
         return {"scanned": len(rows), "updated": updated, "missing": missing}
 
@@ -2721,6 +2760,43 @@ class OrdersController(Controller):
                                     _AlgoOrder.broker_order_id == str(order_id)
                                 )
                             )).scalars().all()
+                            # Audit fix — postback-before-broker_id race.
+                            # The live-ticket path commits the row with
+                            # broker_order_id=NULL, then places the order,
+                            # then commits the broker_order_id in a second
+                            # session. A fast IOC/MARKET postback in that
+                            # gap (~200-500ms) finds zero rows above —
+                            # template attach silently misses. Fall back
+                            # to a recent-NULL-id match by
+                            # (account / symbol / qty / side) within the
+                            # last 60s, seeding broker_order_id on the
+                            # winner so subsequent postbacks for the same
+                            # broker id find it directly. Idempotent:
+                            # repeat postbacks land on the now-seeded row.
+                            if not _rows:
+                                from datetime import datetime, timezone, timedelta
+                                _cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+                                try:
+                                    _q_user_id = str(user_id or "").strip()
+                                except NameError:
+                                    _q_user_id = ""
+                                _fallback = (await _s.execute(
+                                    _sql_select(_AlgoOrder).where(
+                                        _AlgoOrder.broker_order_id.is_(None),
+                                        _AlgoOrder.status == "OPEN",
+                                        _AlgoOrder.mode == "live",
+                                        _AlgoOrder.symbol == str(tradingsymbol or ""),
+                                        _AlgoOrder.transaction_type == str(txn or "").upper(),
+                                        _AlgoOrder.created_at >= _cutoff,
+                                    ).order_by(_AlgoOrder.id.desc()).limit(1)
+                                )).scalars().first()
+                                if _fallback is not None:
+                                    _fallback.broker_order_id = str(order_id)
+                                    _rows = [_fallback]
+                                    logger.info(
+                                        f"postback fallback matched row #{_fallback.id} "
+                                        f"to broker_order_id={order_id} via account/symbol/side"
+                                    )
                             for _r in _rows:
                                 if _new_status and _r.status != _new_status:
                                     _r.status = _new_status

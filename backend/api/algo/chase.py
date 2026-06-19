@@ -65,6 +65,13 @@ async def _emit_chase_terminal(
         _new_status = _OUTCOME_TO_STATUS.get(outcome)
 
         agent_id = None
+        # Audit fix — snapshot the fields the downstream Auto-TP + template
+        # attach paths need (target_pct, target_abs, parent_order_id,
+        # template_id, mode, product, exchange, transaction_type, account,
+        # symbol, id, filled_quantity, quantity) BEFORE commit so we don't
+        # have to re-open a second session to re-fetch the same row at
+        # line ~120. Halves the DB round-trips on every chase fill event.
+        _row_snap: dict | None = None
         async with _async_session() as _s:
             row = None
             if algo_order_id is not None:
@@ -96,6 +103,23 @@ async def _emit_chase_terminal(
                     if error:
                         row.detail = (row.detail or "")[:200] + f" · {error[:120]}"
                     await _s.commit()
+                # Snapshot AFTER the optional mutation + commit so the
+                # downstream attach paths read post-commit values.
+                _row_snap = {
+                    "id":                int(row.id),
+                    "target_pct":        row.target_pct,
+                    "target_abs":        row.target_abs,
+                    "parent_order_id":   row.parent_order_id,
+                    "template_id":       row.template_id,
+                    "account":           str(row.account or ""),
+                    "symbol":            str(row.symbol or symbol),
+                    "exchange":          str(row.exchange or "NFO"),
+                    "transaction_type":  str(row.transaction_type or side),
+                    "product":           str(row.product or "NRML"),
+                    "mode":              str(row.mode or "live"),
+                    "filled_quantity":   int(row.filled_quantity or 0),
+                    "quantity":          int(row.quantity or qty),
+                }
 
         await record_chase_terminal(
             agent_id=agent_id,
@@ -111,86 +135,69 @@ async def _emit_chase_terminal(
 
         # Auto TP + Template attach — fire after a chase fill on a
         # parent row (parent_order_id IS NULL so we never create
-        # TP-of-TP chains). Same lookup priority: algo_order_id first
-        # then broker_order_id.
-        if outcome == "chase_fill" and final_price:
+        # TP-of-TP chains).
+        # Audit fix — uses the pre-commit snapshot above instead of
+        # re-fetching the same row in a second session. Pre-fix the
+        # function paid two full DB round-trips per chase fill event;
+        # now it pays one. The downstream `_fire_template_attach_on_fill`
+        # opens its own session to read the row state independently.
+        if outcome == "chase_fill" and final_price and _row_snap is not None:
             try:
-                from sqlalchemy import select as _sel2
-                from backend.api.database import async_session as _as2
-                from backend.api.models import AlgoOrder as _AO2
-                async with _as2() as _s2:
-                    _filled = None
-                    if algo_order_id is not None:
-                        _filled = (await _s2.execute(
-                            _sel2(_AO2).where(_AO2.id == int(algo_order_id))
-                        )).scalar_one_or_none()
-                    if _filled is None:
-                        _filled = (await _s2.execute(
-                            _sel2(_AO2).where(_AO2.broker_order_id == broker_order_id)
-                        )).scalar_one_or_none()
-                    # Phase 3D #6 — gate the legacy single-target TP
-                    # shim on template_id IS NULL so a row with BOTH
-                    # legacy target_pct AND a template doesn't attach
-                    # exits twice. Template path supersedes whenever
-                    # both are set; the postback handler already
-                    # orders things this way (template attach fires
-                    # after _arm_take_profit and its GTT becomes the
-                    # operative exit) but chase fires both tasks
-                    # unconditionally and either may win the race.
-                    if (_filled is not None
-                            and (_filled.target_pct or _filled.target_abs)
-                            and _filled.parent_order_id is None
-                            and _filled.template_id is None):
-                        from backend.api.routes.orders import _arm_take_profit
-                        import asyncio as _aio3
-                        _aio3.create_task(_arm_take_profit(
-                            parent_row_id=_filled.id,
-                            parent_account=str(_filled.account or ""),
-                            parent_symbol=str(_filled.symbol or symbol),
-                            parent_exchange=str(_filled.exchange or "NFO"),
-                            parent_side=str(_filled.transaction_type or side),
-                            fill_price=float(final_price),
-                            target_pct=float(_filled.target_pct or 0.0),
-                            target_abs=(_filled.target_abs
-                                        and float(_filled.target_abs)),
-                            parent_mode=str(_filled.mode or "live"),
-                        ))
-                    # Phase 0.5 — template attach on chase fill. Same
-                    # idempotency guard (attached_gtts_json populated →
-                    # skip) lives inside _fire_template_attach_on_fill,
-                    # so a race against the postback hook is safe.
-                    if (_filled is not None
-                            and _filled.template_id
-                            and _filled.parent_order_id is None
-                            and (_filled.mode or "") == "live"):
-                        from backend.api.routes.orders import (
-                            _fire_template_attach_on_fill,
-                        )
-                        import asyncio as _aio4
-                        # Sprint B (#4) — size exit GTTs against the
-                        # ACTUAL filled qty when the chase took partials.
-                        # Pre-fix the attach sized against the original
-                        # ask quantity, over-sizing the exit by any
-                        # already-filled portion. `filled_quantity > 0`
-                        # is the chase's truth-of-record for "how much
-                        # actually traded"; `quantity` is "how much the
-                        # operator asked for".
-                        _attach_qty = (
-                            int(_filled.filled_quantity)
-                            if int(_filled.filled_quantity or 0) > 0
-                            else int(_filled.quantity or qty)
-                        )
-                        _aio4.create_task(_fire_template_attach_on_fill(
-                            parent_row_id=int(_filled.id),
-                            parent_account=str(_filled.account or ""),
-                            parent_symbol=str(_filled.symbol or symbol),
-                            parent_exchange=str(_filled.exchange or "NFO"),
-                            parent_side=str(_filled.transaction_type or side),
-                            parent_qty=_attach_qty,
-                            fill_price=float(final_price),
-                            template_id=int(_filled.template_id),
-                            parent_product=str(_filled.product or "NRML"),
-                        ))
+                _filled_snap = _row_snap
+                # Phase 3D #6 — gate the legacy single-target TP shim on
+                # template_id IS NULL so a row with BOTH legacy
+                # target_pct AND a template doesn't attach exits twice.
+                if (_filled_snap.get("target_pct") or _filled_snap.get("target_abs")) \
+                        and _filled_snap.get("parent_order_id") is None \
+                        and _filled_snap.get("template_id") is None:
+                    from backend.api.routes.orders import _arm_take_profit
+                    asyncio.create_task(_arm_take_profit(
+                        parent_row_id=_filled_snap["id"],
+                        parent_account=_filled_snap["account"],
+                        parent_symbol=_filled_snap["symbol"],
+                        parent_exchange=_filled_snap["exchange"],
+                        parent_side=_filled_snap["transaction_type"],
+                        fill_price=float(final_price),
+                        target_pct=float(_filled_snap.get("target_pct") or 0.0),
+                        target_abs=(_filled_snap.get("target_abs")
+                                    and float(_filled_snap.get("target_abs"))),
+                        parent_mode=_filled_snap["mode"],
+                    ))
+                # Phase 0.5 — template attach on chase fill. Same
+                # idempotency guard (attached_gtts_json populated →
+                # skip) lives inside _fire_template_attach_on_fill,
+                # so a race against the postback hook is safe.
+                # Audit fix — drop the `mode == "live"` guard. The
+                # paper engine has its own attach path
+                # (`_update_algo_order`), but if a paper-mode row is
+                # ever chased directly via `chase_order()` (e.g.
+                # after a `recover_from_db` that re-hydrated mode),
+                # the gate silently dropped the attach. The downstream
+                # `apply_template_to_order(apply_path="live")` is the
+                # right call for both modes per Sprint A intent.
+                if _filled_snap.get("template_id") \
+                        and _filled_snap.get("parent_order_id") is None:
+                    from backend.api.routes.orders import (
+                        _fire_template_attach_on_fill,
+                    )
+                    # Sprint B (#4) — size exit GTTs against the
+                    # ACTUAL filled qty when the chase took partials.
+                    _attach_qty = (
+                        _filled_snap["filled_quantity"]
+                        if _filled_snap["filled_quantity"] > 0
+                        else _filled_snap["quantity"]
+                    )
+                    asyncio.create_task(_fire_template_attach_on_fill(
+                        parent_row_id=_filled_snap["id"],
+                        parent_account=_filled_snap["account"],
+                        parent_symbol=_filled_snap["symbol"],
+                        parent_exchange=_filled_snap["exchange"],
+                        parent_side=_filled_snap["transaction_type"],
+                        parent_qty=_attach_qty,
+                        fill_price=float(final_price),
+                        template_id=int(_filled_snap["template_id"]),
+                        parent_product=_filled_snap["product"],
+                    ))
             except Exception as _tp_e:
                 logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")
 

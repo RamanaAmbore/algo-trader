@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from backend.api.algo.quote import QuoteSource
@@ -109,7 +109,7 @@ class PaperTradeEngine:
         """
         order.setdefault("status",    "OPEN")
         order.setdefault("attempts",  0)
-        order.setdefault("placed_at", datetime.now().isoformat(timespec="seconds"))
+        order.setdefault("placed_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         with self._lock:
             self._open_orders.append(order)
 
@@ -193,7 +193,7 @@ class PaperTradeEngine:
                 fill_price = bid if side == "SELL" else ask
                 order["status"]     = "FILLED"
                 order["fill_price"] = fill_price
-                order["filled_at"]  = datetime.now().isoformat(timespec="seconds")
+                order["filled_at"]  = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self._record_event(order, kind="fill",
                                    note=f"filled @₹{fill_price:,.2f}")
                 # Hand off to the quote source — sim removes the
@@ -414,7 +414,7 @@ class PaperTradeEngine:
             parse_tradingsymbol, option_underlying_quote_key,
         )
 
-        ts   = datetime.now().isoformat(timespec="seconds")
+        ts   = datetime.now(timezone.utc).isoformat(timespec="seconds")
         seen: set[str] = set()
         underlyings: dict[str, str] = {}   # name → ltp_key
         for o in open_orders:
@@ -600,7 +600,7 @@ class PaperTradeEngine:
         """
         tag = self._label.upper()
         evt = {
-            "ts":         datetime.now().isoformat(timespec="seconds"),
+            "ts":         datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "kind":       kind,
             "label":      self._label,
             "note":       (f"[{tag}] {order.get('agent_slug','?')} · "
@@ -693,7 +693,7 @@ class PaperTradeEngine:
                 initial = row.initial_price or 0
                 if initial:
                     row.slippage = float(order["fill_price"]) - float(initial)
-                row.filled_at = datetime.now()
+                row.filled_at = datetime.now(timezone.utc)
                 row.detail = (
                     f"[{tag}] {agent} {side} {qty} {symbol} · "
                     f"FILLED @₹{row.fill_price:,.2f} after {row.attempts} chase(s)"
