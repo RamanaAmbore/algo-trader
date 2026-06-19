@@ -547,17 +547,15 @@
   // repeat). The store subscription below picks up CRUD mutations
   // on /automation/templates while the modal is open.
   loadOrderTemplates().catch(() => { /* picker stays empty */ });
+  // Pure subscription — keeps the basket-bar Select rows current when
+  // /automation/templates mutates. Default selection is owned by the
+  // bound children: OrderTicket (always mounted) applies its
+  // side-aware default on mount, OptionChainTab falls back to 'none'
+  // if templateId is still null when chain activates.
   $effect(() => {
     const rows = $orderTemplatesStore;
     if (rows && rows.length) {
       _templates = rows.filter(t => t.is_active);
-      // Default to the 'none' (no-attach) row on first arrival so
-      // the operator opts-in to attach rather than discovers an
-      // unexpected GTT after their first basket.
-      if (_sharedTemplateId === null) {
-        const none = _templates.find(t => t.slug === 'none');
-        if (none) _sharedTemplateId = none.id;
-      }
     }
   });
 
@@ -1324,6 +1322,7 @@
             mode={_sharedMode}
             bind:chase={_sharedChase}
             bind:chaseAgg={_sharedChaseAgg}
+            bind:templateId={_sharedTemplateId}
             modeChaseHidden={true}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
             {onSubmit}
@@ -1339,6 +1338,7 @@
           symbol={_localSymbol}
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
+          bind:templateId={_sharedTemplateId}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}

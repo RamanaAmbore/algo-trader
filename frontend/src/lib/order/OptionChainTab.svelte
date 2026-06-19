@@ -47,6 +47,7 @@
    *   onPlaceLeg?:     (props: any) => void,
    *   onAccountChange?: (account: string) => void,
    *   refreshKey?:     number,
+   *   templateId?:     number | null,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -76,6 +77,11 @@
     // (futures + strikes + ATM). Used by SymbolPanel on tab activation
     // so switching back to Chain always shows fresh data.
     refreshKey = 0,
+    // Shared exit-template id across SymbolPanel surfaces. Bound by the
+    // shell so a pick on the Ticket tab persists when the operator
+    // flips to Chain (and vice versa). Standalone callers leave it
+    // unbound — the chain falls back to 'none' on first paint.
+    templateId = $bindable(/** @type {number|null} */ (null)),
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -176,23 +182,21 @@
   // on placeBasket(). Operator picks once, the whole basket
   // inherits.
   let _templates = $state(/** @type {any[]} */ ([]));
-  let _templateId = $state(/** @type {number|null} */ (null));
   const _selectedTemplate = $derived(
-    _templates.find(t => t.id === _templateId) || null
+    _templates.find(t => t.id === templateId) || null
   );
   // Subscribe to the shared template store — keeps the picker
   // current when the operator edits a template on
-  // /automation/templates while the chain tab is mounted.
+  // /automation/templates while the chain tab is mounted. First-paint
+  // 'none' fallback is now handled by SymbolPanel so the default is
+  // shared across the Ticket / Chain / Basket-bar surfaces.
   $effect(() => {
     const rows = $orderTemplatesStore;
     if (rows && rows.length) {
       _templates = rows.filter(t => t.is_active);
-      // First-run default: pick the 'none' (no-attach) template if
-      // present, so the operator opts-in to attach rather than
-      // discovering an unexpected GTT after their first basket.
-      if (_templateId === null) {
+      if (templateId === null) {
         const none = _templates.find(t => t.slug === 'none');
-        if (none) _templateId = none.id;
+        if (none) templateId = none.id;
       }
     }
   });
@@ -634,7 +638,7 @@
           // backend ticket route reads `template_id` and runs
           // apply_template_to_order on fill — TP / SL / Wing GTTs
           // for each leg get queued individually.
-          template_id: _templateId,
+          template_id: templateId,
         });
       } catch (e) {
         failures.push(`${leg.side} ${leg.sym}: ${String(/** @type {any} */ (e)?.message || e || 'failed')}`);

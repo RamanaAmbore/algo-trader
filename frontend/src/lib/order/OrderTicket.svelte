@@ -84,6 +84,7 @@
    *   chaseAgg?:   'low' | 'med' | 'high' | undefined,
    *   modeChaseHidden?: boolean,
    *   suspended?: boolean,
+   *   templateId?: number | null,
    * }} */
   let {
     symbol,
@@ -207,6 +208,11 @@
     // is active in SymbolPanel). Preflight effects early-return to
     // avoid firing /api/orders/preflight while the tab is hidden.
     suspended = false,
+    // Shared exit-template id across SymbolPanel surfaces (Ticket /
+    // Chain / Basket bar). Operator picks once; selection persists
+    // across tabs and side flips. When unbound (parent passes a plain
+    // null), this falls back to standalone behaviour.
+    templateId = $bindable(/** @type {number|null} */ (null)),
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -546,14 +552,13 @@
 
   // ── v2 template picker ──────────────────────────────────────────────
   // Template state. `_templates` is the list fetched from
-  // /api/admin/templates on mount. `_templateId` is the selected row's
+  // /api/admin/templates on mount. `templateId` is the selected row's
   // id; null means "no template" (entry-only, no follow-on attach).
   // Override fields default to '' (blank) — the picker shows the
   // template's value as a placeholder so the operator sees what will
   // run unless they tweak it. Submitting with a blank override sends
   // null (= use template default).
   let _templates = $state(/** @type {any[]} */ ([]));
-  let _templateId = $state(/** @type {number|null} */ (null));
   let _tpOverride = $state(/** @type {number|''} */ (''));
   let _slOverride = $state(/** @type {number|''} */ (''));
   let _wingPremPctOverride = $state(/** @type {number|''} */ (''));
@@ -569,7 +574,7 @@
   let _previewSeq = 0;
 
   const _selectedTemplate = $derived(
-    _templates.find(t => t.id === _templateId) || null
+    _templates.find(t => t.id === templateId) || null
   );
 
   function _appliesToFor(side, sym) {
@@ -641,7 +646,7 @@
     return parts.join(' · ');
   });
   const _isUsingNone = $derived(
-    _selectedTemplate?.slug === 'none' || _templateId === null
+    _selectedTemplate?.slug === 'none' || templateId === null
   );
 
   function _summariseTemplate(t) {
@@ -678,7 +683,7 @@
   // mount AFTER templates are loaded so the dropdown opens with the
   // right pick already highlighted.
   function _autoSelectTemplate() {
-    if (_templateId !== null) return;        // operator already picked
+    if (templateId !== null) return;        // operator already picked
     if (_templates.length === 0) return;
     const scope = _appliesToFor(_side, symbol);
     // Prefer is_default within matching scope; fall back to 'both'.
@@ -686,12 +691,12 @@
       t.is_default && (t.applies_to === scope || t.applies_to === 'both')
     );
     if (match) {
-      _templateId = match.id;
+      templateId = match.id;
     } else {
       // Last resort: the explicit "none" template so operator gets a
       // sane pick rather than null + empty fields.
       const none = _templates.find(t => t.slug === 'none');
-      if (none) _templateId = none.id;
+      if (none) templateId = none.id;
     }
   }
   let _product = $state(productVal);
@@ -1266,7 +1271,7 @@
           // unified pipeline (sim or live) after the entry persists.
           // Legacy target_pct still flows for back-compat when no
           // template is chosen.
-          template_id:                  _templateId,
+          template_id:                  templateId,
           tp_pct_override:              _tpOverride !== '' ? Number(_tpOverride) : null,
           sl_pct_override:              _slOverride !== '' ? Number(_slOverride) : null,
           wing_premium_pct_override:    _wingPremPctOverride !== '' ? Number(_wingPremPctOverride) : null,
@@ -1397,20 +1402,10 @@
     }
   });
 
-  // Re-run auto-select whenever the side or symbol changes so the
-  // picker stays aligned with what the operator is about to trade.
-  // Guarded so an operator's explicit pick (_templateId !== null) is
-  // never overridden mid-flight.
-  $effect(() => {
-    if (_templates.length === 0) return;
-    // Read the side + symbol so this effect tracks them.
-    const _ = `${_side}-${symbol}`;
-    untrack(() => {
-      // Only auto-pick when the operator hasn't already chosen.
-      // Side flip can legitimately change the right default — let it.
-      _autoSelectTemplate();
-    });
-  });
+  // Side-flip auto-update removed when templateId became a shared
+  // SymbolPanel-level state — operator's pick persists across tabs and
+  // side flips. To restore a side-aware default after a side flip,
+  // click the Default pill in the template row.
 
   // Pre-submit preview — debounced fetch so an operator typing in the
   // override fields doesn't fire a request per keystroke.
@@ -1427,7 +1422,7 @@
   $effect(() => {
     // Track the inputs that affect the preview.
     const inputs = [
-      _templateId, _tpOverride, _slOverride,
+      templateId, _tpOverride, _slOverride,
       _wingPremPctOverride, _wingStrikeOffsetOverride,
       _side, symbol, _qty, _price,
     ];
@@ -1439,7 +1434,7 @@
     // on mount; only the preview API call is debounced behind a
     // valid account.
     if (!symbol || Number(_qty) <= 0 || !_account
-        || (_templateId === null && !_tpOverride && !_slOverride)) {
+        || (templateId === null && !_tpOverride && !_slOverride)) {
       _previewPlan = null;
       _previewError = '';
       return;
@@ -1460,8 +1455,8 @@
       _previewLoading = true; _previewError = '';
       // Snapshot the dispatching state so the comparison after
       // await checks the EXACT template_id we sent — not whatever
-      // _templateId says by the time the response lands.
-      const dispatchedTemplateId = _templateId;
+      // templateId says by the time the response lands.
+      const dispatchedTemplateId = templateId;
       try {
         const refPx = Number(_price) > 0 ? Number(_price) : 0;
         const res = await previewTicketTemplate({
@@ -1855,7 +1850,7 @@
                         ? `Use ${_defaultTemplate.name}: ${_summariseTemplate(_defaultTemplate)}`
                         : 'No default template configured for this side'}
                       onclick={() => {
-                        if (_defaultTemplate) _templateId = _defaultTemplate.id;
+                        if (_defaultTemplate) templateId = _defaultTemplate.id;
                       }}>
                 Default
               </button>
@@ -1863,7 +1858,7 @@
                       class={'ot-tpl-btn' + (_isUsingNone ? ' on' : '')}
                       title="No template — entry only, no GTT / no wing"
                       onclick={() => {
-                        _templateId = _noneTemplate ? _noneTemplate.id : null;
+                        templateId = _noneTemplate ? _noneTemplate.id : null;
                       }}>
                 None
               </button>
