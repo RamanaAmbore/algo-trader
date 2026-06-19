@@ -807,6 +807,12 @@
                 pnl_with: 0, pnl_without: 0,
                 day_with: 0, day_without: 0 };
     // F&O positions — same opt/fut filter as the per-row derivation.
+    // No frontend day-P&L fallback: backend's broker_apis.fetch_positions
+    // already handles the close-price=0 / fresh-buy edge case (commit
+    // 87c30f39). Adding a second fallback here over-counted closed-
+    // today round trips (day_change_val=0 + non-zero realised pnl)
+    // and de-synced the snapshot TOTAL from the navbar PositionStrip,
+    // which sums `p.day_change_val` faithfully without a fallback.
     for (const _p of positions) {
       const p = /** @type {any} */ (_p);
       if (p.source !== wantedSource) continue;
@@ -815,9 +821,7 @@
       if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
       const qty = Number(p.quantity ?? p.qty) || 0;
       const pnl = Number(p.pnl) || 0;
-      const _ov = Number(p.overnight_quantity ?? 0);
-      let day = Number(p.day_change_val) || 0;
-      if (day === 0 && _ov === 0 && pnl !== 0) day = pnl;
+      const day = Number(p.day_change_val) || 0;
       t.qty_fno      += qty;
       t.legs_with++;
       t.legs_without++;
