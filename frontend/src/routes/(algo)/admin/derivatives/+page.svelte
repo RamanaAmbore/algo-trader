@@ -743,6 +743,13 @@
       const q = _filterByund.toUpperCase();
       for (const [k] of groups) if (!k.includes(q)) groups.delete(k);
     }
+    // Hide eq-only rows (no F&O on this underlying) — operator's
+    // explicit ask. A stock holding without any options or futures
+    // open against it isn't an "underlying" in the derivative
+    // workspace sense; surface those via /performance Holdings.
+    for (const [k, g] of groups) {
+      if (g.legs_without === 0) groups.delete(k);
+    }
     return Array.from(groups.values()).sort(
       (a, b) => Math.abs(b.pnl_with) - Math.abs(a.pnl_with)
     );
