@@ -1322,7 +1322,8 @@
          (modal, inline /orders, even when headerless because /orders
          uses headerless to drop the title chip but still wants the
          picker). -->
-    {#if true}
+    <!-- Audit cleanup: dropped a `{#if true}` wrapper that did nothing
+         but trigger svelte-check warnings. The picker always renders. -->
       <div class="oes-picker">
         {#if _modalAccounts.length > 1}
           <div class="oes-account-pick">
@@ -1360,7 +1361,6 @@
           <span class="oes-exch">{exchange || _pickedExchange}</span>
         {/if}
       </div>
-    {/if}
 
     <!-- Tab strip — suppressed when the host page renders its own
          (tabsExternal). Operator clicks still flow back via the
@@ -1504,8 +1504,11 @@
            don't attach exit rules, so the picker would be inert there.
            Operator: "on fill and templates should be disabled based
            on the order." -->
-      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell">
-        <label class="oes-basket-tpl-pick" title="On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.">
+      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
+           title={_selectedTemplate && _selectedTemplate.slug !== 'none'
+             ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
+             : 'On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.'}>
+        <label class="oes-basket-tpl-pick">
           <span class="oes-basket-tpl-label">On fill</span>
           <Select
             bind:value={_sharedTemplateId}

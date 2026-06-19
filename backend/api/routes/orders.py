@@ -1334,10 +1334,23 @@ class OrdersController(Controller):
                 except Exception as e:
                     err_msg = f"broker cancel failed: {e}"
 
-            # Update DB row + write event in the same transaction.
-            row.status = "CANCELLED"
-            row.detail = ((row.detail or "")[:200]
-                          + f" · killed by operator{' — ' + err_msg if err_msg else ''}")
+            # Audit fix: only commit CANCELLED to the DB when the
+            # broker cancel actually succeeded. Pre-fix, a broker-side
+            # failure (network blip, "order not found" race with a
+            # post-postback delete, vendor-specific error) still
+            # flipped the row to CANCELLED — operator's UI claimed the
+            # order was killed while the exchange still carried the
+            # live position. CANCEL_FAILED keeps the row visible in
+            # the chase grid with a clear surface for the operator to
+            # retry or reconcile.
+            if err_msg:
+                row.status = "CANCEL_FAILED"
+                row.detail = ((row.detail or "")[:200]
+                              + f" · cancel failed: {err_msg}")
+            else:
+                row.status = "CANCELLED"
+                row.detail = ((row.detail or "")[:200]
+                              + " · killed by operator")
             await s.commit()
             _row_id = row.id
 
@@ -1413,7 +1426,11 @@ class OrdersController(Controller):
                 overrides=_retry_overrides,
                 parent_account=row.account or "",
                 parent_symbol=row.symbol or "",
-                parent_side=row.side or "BUY",
+                # Audit fix: AlgoOrder has no `.side` column; the
+                # field is `transaction_type`. The previous `row.side`
+                # raised AttributeError on every Re-attach click
+                # before any broker call.
+                parent_side=row.transaction_type or "BUY",
                 parent_qty=int(row.quantity or 0),
                 parent_exchange=row.exchange or "NFO",
                 parent_fill_price=float(row.fill_price or row.initial_price or 0),

@@ -534,7 +534,7 @@
    * in the ticket with a clean slate.
    */
   function clearForm() {
-    _lots = _lotSize > 0 ? 1 : 1;
+    _lots = 1;
     _lotsTouched = false;
     _qty = _lotSize > 0 ? _lots * _lotSize : (isEquity ? 1 : 0);
     _price = '';
