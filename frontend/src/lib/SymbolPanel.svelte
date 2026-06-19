@@ -561,6 +561,42 @@
       : (_selectedTemplate.wing_strike_offset ?? null);
     return (effPrem != null && effPrem > 0) || (effOff != null && effOff !== 0);
   });
+  // Phase 5 — which basket-leg keys currently have their per-leg
+  // override editor open. Operator clicks the "⚙ tmpl" chip on a
+  // pill to toggle inclusion. Per-leg overrides are stored directly
+  // on the leg object (leg.template_id / leg.tp_pct_override / etc.)
+  // and consumed at submit time by submitBasket — the backend already
+  // accepts BasketLeg overrides as of the Phase 2 commit.
+  let _legEditorsOpen = $state(/** @type {Set<string>} */ (new Set()));
+  function _toggleLegEditor(/** @type {string} */ key) {
+    const next = new Set(_legEditorsOpen);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    _legEditorsOpen = next;
+  }
+  /** Effective template id for a leg — per-leg override wins, else the
+   *  shell's pick. Used to label the per-leg chip. */
+  function _legEffectiveTplId(/** @type {any} */ leg) {
+    return leg?.template_id ?? _sharedTemplateId;
+  }
+  /** Effective template row for a leg — looked up in the catalog so
+   *  the chip can show the template name + the editor's inputs can
+   *  use the right placeholders. */
+  function _legEffectiveTpl(/** @type {any} */ leg) {
+    const id = _legEffectiveTplId(leg);
+    if (id == null) return null;
+    return _templates.find(t => t.id === id) || null;
+  }
+  /** True when the leg has ANY per-leg override set (template +
+   *  numeric fields). Used by the chip styling so the operator can
+   *  see at a glance which legs deviate from the shell defaults. */
+  function _legHasOverride(/** @type {any} */ leg) {
+    return (leg?.template_id != null)
+        || (leg?.tp_pct_override != null)
+        || (leg?.sl_pct_override != null)
+        || (leg?.wing_premium_pct_override != null)
+        || (leg?.wing_strike_offset_override != null);
+  }
+
   // Compute the protective wing's tradingsymbol when the template
   // uses a fixed `wing_strike_offset` — pure JS port of the backend
   // `_wing_symbol` helper. Returns null for premium-scan wings (the
@@ -1624,11 +1660,111 @@
                   + wing{_wingSym ? ` ${_wingSym}` : ''}
                 </span>
               {/if}
+              {#if action === 'open' && _templates.length > 0}
+                {@const _eff = _legEffectiveTpl(leg)}
+                {@const _has = _legHasOverride(leg)}
+                <button type="button"
+                        class="oes-basket-pill-tpl-chip"
+                        class:has-override={_has}
+                        disabled={basketSubmitting}
+                        title={_has
+                          ? `Per-leg override active. Click to edit / clear.`
+                          : `Inheriting shell defaults. Click to set a per-leg template or override TP / SL / Wing for THIS leg only.`}
+                        onclick={() => _toggleLegEditor(leg.key)}>
+                  ⚙ {(_eff?.name || _eff?.slug || 'tmpl')}
+                </button>
+              {/if}
               <button type="button" class="oes-basket-pill-remove"
                       title="Remove leg from basket"
                       disabled={basketSubmitting}
                       onclick={() => removeBasketLeg(i)}>×</button>
             </span>
+            {#if _legEditorsOpen.has(leg.key) && action === 'open' && _templates.length > 0}
+              <!-- Per-leg override editor — surfaces below the pill in
+                   the same flex container so it wraps to a new line.
+                   Template Select + 4 numeric inputs bound to leg
+                   fields. Empty = inherit shell defaults. -->
+              {@const _eff2 = _legEffectiveTpl(leg)}
+              {@const _showWing2 = (_eff2?.applies_to || '').toLowerCase() === 'sell_option'}
+              <div class="oes-leg-editor" role="group" aria-label={`Override template for ${leg.sym}`}>
+                <span class="oes-leg-editor-label">tmpl for {leg.sym}</span>
+                <label class="oes-leg-editor-field" title="Override the template for THIS leg only. Empty = use shell default.">
+                  <span>on fill</span>
+                  <select disabled={basketSubmitting}
+                          value={leg.template_id ?? ''}
+                          onchange={(e) => {
+                            const raw = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
+                            const v = raw === '' ? null : Number(raw);
+                            updateLegByKey(leg.key, b => ({ ...b, template_id: v }));
+                          }}>
+                    <option value="">(shell default)</option>
+                    {#each _templates as t (t.id)}
+                      <option value={t.id}>{t.name || t.slug || `#${t.id}`}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label class="oes-leg-editor-field" title="TP% for this leg. Empty = inherit shell / template default.">
+                  <span>TP%</span>
+                  <input type="number" step="0.5" disabled={basketSubmitting}
+                         placeholder={_eff2?.tp_pct != null ? String(_eff2.tp_pct) : '—'}
+                         value={leg.tp_pct_override ?? ''}
+                         oninput={(e) => {
+                           const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
+                           const v = raw === '' ? null : Number(raw);
+                           updateLegByKey(leg.key, b => ({ ...b, tp_pct_override: v }));
+                         }} />
+                </label>
+                <label class="oes-leg-editor-field" title="SL% for this leg. Empty = inherit shell / template default.">
+                  <span>SL%</span>
+                  <input type="number" step="0.5" disabled={basketSubmitting}
+                         placeholder={_eff2?.sl_pct != null ? String(_eff2.sl_pct) : '—'}
+                         value={leg.sl_pct_override ?? ''}
+                         oninput={(e) => {
+                           const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
+                           const v = raw === '' ? null : Number(raw);
+                           updateLegByKey(leg.key, b => ({ ...b, sl_pct_override: v }));
+                         }} />
+                </label>
+                {#if _showWing2}
+                  <label class="oes-leg-editor-field" title="Wing strike offset for this leg.">
+                    <span>Wing strike+</span>
+                    <input type="number" step="50" disabled={basketSubmitting}
+                           placeholder={_eff2?.wing_strike_offset != null ? String(_eff2.wing_strike_offset) : '—'}
+                           value={leg.wing_strike_offset_override ?? ''}
+                           oninput={(e) => {
+                             const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
+                             const v = raw === '' ? null : Number(raw);
+                             updateLegByKey(leg.key, b => ({ ...b, wing_strike_offset_override: v }));
+                           }} />
+                  </label>
+                  <label class="oes-leg-editor-field" title="Wing premium % for this leg.">
+                    <span>Wing prem%</span>
+                    <input type="number" step="0.5" disabled={basketSubmitting}
+                           placeholder={_eff2?.wing_premium_pct != null ? String(_eff2.wing_premium_pct) : '—'}
+                           value={leg.wing_premium_pct_override ?? ''}
+                           oninput={(e) => {
+                             const raw = /** @type {HTMLInputElement} */ (e.currentTarget).value;
+                             const v = raw === '' ? null : Number(raw);
+                             updateLegByKey(leg.key, b => ({ ...b, wing_premium_pct_override: v }));
+                           }} />
+                  </label>
+                {/if}
+                <button type="button" class="oes-leg-editor-clear"
+                        disabled={basketSubmitting}
+                        title="Clear every per-leg override on this leg — fall back to shell defaults."
+                        onclick={() => updateLegByKey(leg.key, b => ({
+                          ...b,
+                          template_id: null,
+                          tp_pct_override: null,
+                          sl_pct_override: null,
+                          wing_premium_pct_override: null,
+                          wing_strike_offset_override: null,
+                        }))}>clear</button>
+                <button type="button" class="oes-leg-editor-close"
+                        title="Close editor (overrides persist)."
+                        onclick={() => _toggleLegEditor(leg.key)}>×</button>
+              </div>
+            {/if}
           {/each}
         </div>
         <!-- Operator: "clear submit basket area duplicates common
@@ -2491,6 +2627,125 @@
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
   }
+  /* Per-leg template chip — click to open the override editor.
+     Subtle slate-grey when inheriting shell; cyan-tinted when the
+     leg has any per-leg override active so the operator can spot
+     deviating legs at a glance. */
+  .oes-basket-pill-tpl-chip {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.25rem;
+    padding: 0.05rem 0.35rem;
+    background: rgba(126, 151, 184, 0.16);
+    border: 1px solid rgba(126, 151, 184, 0.40);
+    border-radius: 3px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    max-width: 7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .oes-basket-pill-tpl-chip:hover:not(:disabled) {
+    background: rgba(126, 151, 184, 0.26);
+    border-color: rgba(126, 151, 184, 0.70);
+  }
+  .oes-basket-pill-tpl-chip.has-override {
+    background: rgba(34, 211, 238, 0.16);
+    border-color: rgba(34, 211, 238, 0.55);
+    color: #67e8f9;
+  }
+  .oes-basket-pill-tpl-chip.has-override:hover:not(:disabled) {
+    background: rgba(34, 211, 238, 0.26);
+    border-color: rgba(34, 211, 238, 0.80);
+  }
+  .oes-basket-pill-tpl-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Per-leg override editor — sits below the pill via flex-wrap.
+     Same cyan family as the chip's active state so the visual link
+     reads cleanly. Compact density matches the rest of the basket
+     bar; numeric inputs share the override-input shape used by the
+     shell-level row. */
+  .oes-leg-editor {
+    flex: 0 0 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0.15rem 0 0.3rem 0.4rem;
+    padding: 0.3rem 0.5rem;
+    background: rgba(34, 211, 238, 0.06);
+    border: 1px solid rgba(34, 211, 238, 0.30);
+    border-radius: 4px;
+  }
+  .oes-leg-editor-label {
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(200, 216, 240, 0.7);
+  }
+  .oes-leg-editor-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-family: monospace;
+    font-size: 0.55rem;
+    color: var(--algo-muted);
+  }
+  .oes-leg-editor-field > span {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+  }
+  .oes-leg-editor-field > input,
+  .oes-leg-editor-field > select {
+    height: 1.3rem;
+    padding: 0 0.3rem;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.30);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    box-sizing: border-box;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-leg-editor-field > input { width: 3.2rem; text-align: right; }
+  .oes-leg-editor-field > select { min-width: 5.6rem; }
+  .oes-leg-editor-field > input:focus,
+  .oes-leg-editor-field > select:focus {
+    outline: none;
+    border-color: rgba(34, 211, 238, 0.85);
+    background: rgba(34, 211, 238, 0.16);
+  }
+  .oes-leg-editor-field > input::placeholder {
+    color: rgba(34, 211, 238, 0.55);
+    font-style: italic;
+  }
+  .oes-leg-editor-clear,
+  .oes-leg-editor-close {
+    padding: 0.1rem 0.4rem;
+    background: transparent;
+    border: 1px solid rgba(126, 151, 184, 0.35);
+    border-radius: 3px;
+    color: rgba(200, 216, 240, 0.75);
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    cursor: pointer;
+  }
+  .oes-leg-editor-clear:hover:not(:disabled),
+  .oes-leg-editor-close:hover {
+    background: rgba(126, 151, 184, 0.15);
+    color: #c8d8f0;
+  }
+  .oes-leg-editor-close { margin-left: auto; }
   .oes-basket-pill.is-disabled { opacity: 0.55; }
   .oes-basket-pill-limit-wrap {
     display: inline-flex;
