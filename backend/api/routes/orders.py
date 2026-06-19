@@ -1555,6 +1555,8 @@ class OrdersController(Controller):
                         updated += 1
 
             await s.commit()
+            if updated or missing:
+                invalidate("orders")
 
         return {"scanned": len(rows), "updated": updated, "missing": missing}
 
