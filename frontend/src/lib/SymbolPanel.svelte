@@ -2106,7 +2106,9 @@
   .bms-kv-short .bms-v { color: #f87171; }
   .bms-err  { opacity: 0.85; }
 
-  /* On-fill template picker row — first child of .oes-basket-bar.
+  /* On-fill template picker row — lifted out of .oes-basket-bar in
+     commit 39184013 and now lives at SymbolPanel shell level (above
+     the sticky basket-bar) so it's visible on every tab + the modal.
      Operator picks once; submitBasket threads template_id into every
      leg. Active-template chip sits inline so the operator sees the
      identity of the rule that will attach to each leg's fill. */

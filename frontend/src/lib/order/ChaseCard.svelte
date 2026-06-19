@@ -125,7 +125,12 @@
     // auto-attached children (typically the wing of a SELL option),
     // kill the children first. Avoids the orphan-wing case where the
     // protective leg keeps chasing after the parent is gone.
-    const childIds = Array.isArray(row.child_order_ids) ? row.child_order_ids : [];
+    // Audit fix: re-read child_order_ids from the LIVE _chases snapshot
+    // at click time, not the stale row object the operator clicked on.
+    // Between poll cycles the parent may have gained or lost children;
+    // the row prop in the template doesn't update until the next render.
+    const liveRow = _chases.find(c => c.id === row.id) || row;
+    const childIds = Array.isArray(liveRow.child_order_ids) ? liveRow.child_order_ids : [];
     const toKill = [...childIds, row.id];
     _killing = new Set([..._killing, ...toKill]);
     try {

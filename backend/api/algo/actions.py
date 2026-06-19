@@ -954,28 +954,38 @@ async def run_preflight(
         bm_result = await loop.run_in_executor(
             None, broker.basket_order_margins, basket_orders
         )
-        # Kite returns a list per leg + an aggregate; sum the per-leg
-        # `total` when there's more than one entry so the paired-margin
-        # number reflects the whole basket. Single-leg path keeps the
-        # original first-element shape.
+        # Kite's /margins/basket returns one entry per input leg. Each
+        # has BOTH `initial.total` (bare margin for this leg in
+        # isolation) AND `final.total` (per-leg margin after the basket
+        # hedge offset). Audit fix: summing `initial.total` overstated
+        # paired SELL+wing margin by ignoring the spread offset —
+        # operator was seeing the naked-short number even with the
+        # protective wing factored in. Prefer `final.total` when the
+        # broker ships it; fall back to `initial.total` otherwise.
+        def _leg_required(entry: dict) -> float:
+            if not isinstance(entry, dict):
+                return 0.0
+            for branch in ("final", "initial"):
+                slot = (entry.get(branch) or {}).get("total")
+                if slot is not None:
+                    try:
+                        return float(slot)
+                    except (TypeError, ValueError):
+                        pass
+            try:
+                return float(entry.get("required") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
         if isinstance(bm_result, list) and bm_result:
             if len(bm_result) > 1:
-                required = float(sum(
-                    float((r or {}).get("initial", {}).get("total") or
-                          (r or {}).get("required") or 0)
-                    for r in bm_result
-                ))
-                bm_result = {
-                    "required": required,
-                    "_legs":    bm_result,
-                }
+                required = float(sum(_leg_required(r) for r in bm_result))
+                bm_result = {"required": required, "_legs": bm_result}
             else:
                 bm_result = bm_result[0]
-                required  = float((bm_result or {}).get("initial", {}).get("total") or
-                                  (bm_result or {}).get("required") or 0)
+                required  = _leg_required(bm_result)
         else:
-            required  = float((bm_result or {}).get("initial", {}).get("total") or
-                              (bm_result or {}).get("required") or 0)
+            required = _leg_required(bm_result if isinstance(bm_result, dict) else {})
 
         # Available margin is NOT in the basket_order_margins response —
         # that endpoint only returns the REQUIRED margin breakdown

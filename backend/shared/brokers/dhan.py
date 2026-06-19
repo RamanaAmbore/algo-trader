@@ -964,8 +964,22 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         # Operator: "I bought ifci shares in dhan account today.
         # However, I don't see them in positions or holdings in pulse
         # in other places."
+        #
+        # Audit guard: log a WARNING when BOTH fields are populated.
+        # The v2 Holdings API was observed to separate the two cleanly,
+        # but if a future Dhan rev bundles T+1 into totalQty, this
+        # addition would silently double-count. The log gives staging
+        # an early signal before the operator sees a 2× quantity.
+        _t_settled = int(h.get("totalQty",  0) or 0)
         t1q = int(h.get("t1Qty",     0) or 0)
-        qty = int(h.get("totalQty",  0) or 0) + t1q
+        if _t_settled > 0 and t1q > 0:
+            logger.warning(
+                f"Dhan holdings: both totalQty={_t_settled} AND t1Qty={t1q} "
+                f"set for {h.get('tradingSymbol') or h.get('symbol')!r} — "
+                f"verify Dhan v2 contract; current code sums them which "
+                f"would double-count if totalQty already includes T+1."
+            )
+        qty = _t_settled + t1q
         # Dhan returns securityId as a numeric string ("21131"); coerce
         # to int so concat with Kite holdings doesn't trip polars.
         try:

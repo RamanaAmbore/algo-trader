@@ -722,22 +722,22 @@
   // the freshly-resolved exchange; only overrides if the current
   // pick isn't in the new options list. Operator's manual pick on
   // the SAME symbol persists.
+  // Single combined re-sync — exchange + product MUST update atomically
+  // when the symbol kind flips. Pre-audit, these lived in two separate
+  // $effects: when the operator switched from an option (NFO+NRML) to
+  // an equity (NSE+CNC), the exchange effect could fire first and set
+  // `_exchange='NSE'` while `_product` was still `'NRML'`. Dhan rejects
+  // NSE+NRML for equity, so a Submit clicked in that one-frame window
+  // (rare but possible via SymbolPanel's _ticketBump-driven re-prefill)
+  // landed in a broker error. Merging the writes into one effect body
+  // closes the race — Svelte 5 flushes both reactivity writes within a
+  // single tick.
   $effect(() => {
-    void _resolvedExchange; void exchangeOptions;
+    void _resolvedExchange; void exchangeOptions; void productOptions;
     untrack(() => {
-      if (!_resolvedExchange) return;
-      if (!exchangeOptions.includes(_exchange)) {
+      if (_resolvedExchange && !exchangeOptions.includes(_exchange)) {
         _exchange = _resolvedExchange;
       }
-    });
-  });
-  // Auto-correct stale product when the symbol kind flips (e.g.
-  // operator typed a futures contract, ticket defaulted to NRML, then
-  // they switched to equity — without this _product stays NRML, and
-  // Dhan rejects equity orders submitted with NRML).
-  $effect(() => {
-    void productOptions;
-    untrack(() => {
       if (!productOptions.includes(_product)) {
         _product = productVal;
       }
@@ -1175,11 +1175,16 @@
     if (_isDemo || !_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
       _marginPreview = null;
       _marginLoading = false;
-      onMarginUpdate?.(null, false, _chipMeta);
+      // `_chipMeta` is read via untrack so it doesn't add itself to the
+      // effect's dep set — otherwise template-preview cycles (which
+      // update _previewPlan.wing → _chipMeta.pairedCount) re-fire the
+      // preflight unnecessarily. The chip emitter `$effect` above
+      // handles every chipMeta change on its own.
+      onMarginUpdate?.(null, false, untrack(() => _chipMeta));
       return;
     }
     _marginLoading = true;
-    onMarginUpdate?.(_marginPreview, true, _chipMeta);
+    onMarginUpdate?.(_marginPreview, true, untrack(() => _chipMeta));
     _marginTimer = setTimeout(async () => {
       try {
         // Paired legs — when the template preview has resolved a wing,
@@ -1217,6 +1222,9 @@
         _marginPreview = { error: (e?.message || 'preview failed').slice(0, 60) };
       } finally {
         _marginLoading = false;
+        // setTimeout callback runs outside the tracking frame so this
+        // _chipMeta read doesn't track regardless — keeping it bare for
+        // readability. The chip emitter $effect picks up changes.
         onMarginUpdate?.(_marginPreview, false, _chipMeta);
       }
     }, 350);
@@ -1468,10 +1476,13 @@
     }
   });
 
-  // Side-flip auto-update removed when templateId became a shared
-  // SymbolPanel-level state — operator's pick persists across tabs and
-  // side flips. To restore a side-aware default after a side flip,
-  // click the Default pill in the template row.
+  // Side-flip auto-update $effect removed when templateId became a
+  // shared SymbolPanel-level state (commit 108ce3a5) — operator's
+  // pick persists across tabs and side flips. The `_autoSelectTemplate`
+  // function itself is still called once on mount (line ~1454 onMount
+  // callback) to pick the side-aware default when templateId arrives
+  // null. To restore a side-aware default after a side flip, click
+  // the Default pill in the template row.
 
   // Pre-submit preview — debounced fetch so an operator typing in the
   // override fields doesn't fire a request per keystroke.

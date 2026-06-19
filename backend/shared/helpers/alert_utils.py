@@ -708,11 +708,32 @@ def _fmt_inr(n: float) -> str:
     return f"{sign}₹{a:,.0f}"
 
 
-# Legacy aliases — every callsite below already uses `_fmt_rupees` /
-# `_fmt_rupees_compact`. Point them at the unified `_fmt_inr` so we
-# don't have to touch every callsite individually.
+def _fmt_inr_precise(n: float) -> str:
+    """Same K/L/C convention as `_fmt_inr` but keeps one decimal at
+    the K-tier — used in per-underlying / per-alert breakdowns where
+    the ₹500 difference between '₹22K' and '₹22.3K' matters for the
+    operator's risk read. Audit fix: pre-fix, the Telegram per-
+    underlying chips were re-aliased to `_fmt_inr` which rounded
+    sub-K residue away (₹22,300 → "₹22K" loses ₹300).
+    """
+    a = abs(float(n))
+    sign = '-' if n < 0 else ''
+    if a >= 10_000_000:
+        return f"{sign}₹{a / 10_000_000:.2f}C"
+    if a >= 100_000:
+        return f"{sign}₹{a / 100_000:.2f}L"
+    if a >= 1_000:
+        return f"{sign}₹{a / 1_000:.1f}K"
+    return f"{sign}₹{a:,.0f}"
+
+
+# Legacy aliases. `_fmt_rupees` was the integer-rupee formatter used in
+# table cells (now upgraded to K/L/C alongside the grids — operator
+# explicitly asked for this). `_fmt_rupees_compact` was the inline
+# breakdown formatter that always carried K-tier `.1f` precision; we
+# keep that precision via `_fmt_inr_precise`.
 _fmt_rupees         = _fmt_inr
-_fmt_rupees_compact = _fmt_inr
+_fmt_rupees_compact = _fmt_inr_precise
 
 
 def _fmt_pct(n: float) -> str:
