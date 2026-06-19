@@ -213,27 +213,64 @@ def _fixed_table(headers, rows):
     return "\n".join([fmt(headers), sep] + [fmt(r) for r in rows])
 
 
+# ── Algo dark palette — mirrors the on-screen pages so the inbox reads
+#    in the same visual rhythm as the dashboard. Operator: "The email
+#    theme should align with overall algo pages color scheme.
+#    presenlty is blue gray color."
+_EMAIL_BG          = "#0c1830"   # outer page (algo body navy)
+_EMAIL_PANEL_BG    = "#152033"   # card surface
+_EMAIL_PANEL_ALT   = "#1a2640"   # alt-row stripe
+_EMAIL_BORDER      = "#3b4868"   # subtle separator
+_EMAIL_AMBER       = "#fbbf24"   # primary accent (matches navbar / TOTAL row)
+_EMAIL_AMBER_SOFT  = "#f59e0b"   # darker amber for headings
+_EMAIL_TEXT        = "#c8d8f0"   # body text (slate-blue light)
+_EMAIL_TEXT_MUTED  = "#a3b9d0"   # secondary text
+_EMAIL_GREEN       = "#4ade80"
+_EMAIL_RED         = "#f87171"
+
+
 def _html_table(headers, rows):
-    """Render a list of string-tuple rows as an HTML table for email."""
+    """Render a list of string-tuple rows as an HTML table for email,
+    styled in the algo dark palette."""
     th_style = (
-        "background-color:#1a3a5c;color:#ffffff;padding:8px 12px;"
-        "text-align:left;font-family:monospace;font-size:13px;white-space:nowrap"
+        f"background-color:{_EMAIL_BG};color:{_EMAIL_AMBER};padding:8px 12px;"
+        f"text-align:left;font-family:monospace;font-size:13px;"
+        f"font-weight:700;letter-spacing:0.04em;"
+        f"border-bottom:2px solid {_EMAIL_AMBER};white-space:nowrap"
     )
     td_style = (
-        "padding:6px 12px;font-family:monospace;font-size:13px;"
-        "border-bottom:1px solid #dce3ea;white-space:nowrap"
+        f"padding:6px 12px;font-family:monospace;font-size:13px;"
+        f"background-color:{_EMAIL_PANEL_BG};color:{_EMAIL_TEXT};"
+        f"border-bottom:1px solid {_EMAIL_BORDER};white-space:nowrap"
     )
-    td_alt_style = td_style + ";background-color:#f4f7fa"
+    td_alt_style = td_style.replace(_EMAIL_PANEL_BG, _EMAIL_PANEL_ALT)
+    # TOTAL row — stronger amber tint so the rollup stands out from the
+    # data rows above it. Matches the on-screen TOTAL row stratum.
+    td_total_style = (
+        f"padding:8px 12px;font-family:monospace;font-size:13px;"
+        f"background-color:#3a2c10;color:{_EMAIL_AMBER};font-weight:700;"
+        f"border-top:2px solid {_EMAIL_AMBER};"
+        f"border-bottom:1px solid {_EMAIL_AMBER_SOFT};white-space:nowrap"
+    )
+
+    def _is_total_row(row):
+        # First cell is account / label; flag the rollup row by name.
+        return bool(row) and str(row[0]).strip().upper() in ("TOTAL", "TOTALS", "GRAND TOTAL")
 
     header_cells = "".join(f"<th style='{th_style}'>{h}</th>" for h in headers)
     row_html = ""
     for i, row in enumerate(rows):
-        bg = td_alt_style if i % 2 else td_style
+        if _is_total_row(row):
+            bg = td_total_style
+        else:
+            bg = td_alt_style if i % 2 else td_style
         cells = "".join(f"<td style='{bg}'>{v}</td>" for v in row)
         row_html += f"<tr>{cells}</tr>"
 
     return (
-        f"<table style='border-collapse:collapse;width:100%'>"
+        f"<table style='border-collapse:collapse;width:100%;"
+        f"background-color:{_EMAIL_PANEL_BG};border:1px solid {_EMAIL_BORDER};"
+        f"border-radius:4px;overflow:hidden'>"
         f"<thead><tr>{header_cells}</tr></thead>"
         f"<tbody>{row_html}</tbody>"
         f"</table>"
@@ -243,9 +280,9 @@ def _html_table(headers, rows):
 def _branch_banner_html(branch: str) -> str:
     """Return a prominent HTML banner for non-main branches."""
     return (
-        f"<div style='background-color:#fff3cd;border:1px solid #ffc107;"
+        f"<div style='background-color:#3a2c10;border:1px solid {_EMAIL_AMBER};"
         f"border-radius:4px;padding:8px 14px;margin-bottom:12px;"
-        f"font-family:sans-serif;font-size:13px;color:#856404'>"
+        f"font-family:sans-serif;font-size:13px;color:{_EMAIL_AMBER}'>"
         f"&#9888; <strong>Non-production branch: {branch}</strong>"
         f"</div>"
     )
@@ -254,9 +291,9 @@ def _branch_banner_html(branch: str) -> str:
 def _sim_banner_html() -> str:
     """Red banner shown on every simulated-market email."""
     return (
-        "<div style='background-color:#fde4e4;border:1px solid #dc3545;"
-        "border-radius:4px;padding:8px 14px;margin-bottom:12px;"
-        "font-family:sans-serif;font-size:13px;color:#721c24'>"
+        f"<div style='background-color:#3a1010;border:1px solid {_EMAIL_RED};"
+        f"border-radius:4px;padding:8px 14px;margin-bottom:12px;"
+        f"font-family:sans-serif;font-size:13px;color:{_EMAIL_RED}'>"
         "&#128680; <strong>SIMULATOR RUN — fabricated market data, not a real alert.</strong>"
         "</div>"
     )
@@ -314,10 +351,15 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
         if branch != 'main':
             banners += _branch_banner_html(branch)
         html_body = (
-            f"<html><body style='font-family:sans-serif'>"
+            f"<html><body style='font-family:sans-serif;background-color:{_EMAIL_BG};"
+            f"color:{_EMAIL_TEXT};margin:0;padding:18px'>"
+            f"<div style='max-width:760px;margin:0 auto'>"
             f"{banners}"
-            f"<p style='font-size:14px'><b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
+            f"<p style='font-size:14px;color:{_EMAIL_AMBER};letter-spacing:0.04em;"
+            f"margin:0 0 14px 0'>"
+            f"<b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
             f"{email_table_html}"
+            f"</div>"
             f"</body></html>"
         )
         for email in alert_emails:
@@ -746,22 +788,24 @@ def _email_alert_body(alerts: list) -> str:
     severity kind so rate alerts pop visually.
     """
     th = (
-        "background-color:#1a3a5c;color:#ffffff;padding:8px 12px;"
-        "text-align:left;font-size:13px;white-space:nowrap"
+        f"background-color:{_EMAIL_BG};color:{_EMAIL_AMBER};padding:8px 12px;"
+        f"text-align:left;font-size:13px;font-weight:700;letter-spacing:0.04em;"
+        f"border-bottom:2px solid {_EMAIL_AMBER};white-space:nowrap"
     )
     td = (
-        "padding:7px 12px;font-size:13px;border-bottom:1px solid #dce3ea;"
-        "white-space:nowrap"
+        f"padding:7px 12px;font-size:13px;color:{_EMAIL_TEXT};"
+        f"border-bottom:1px solid {_EMAIL_BORDER};white-space:nowrap"
     )
-    # Mild color cues per rule family. Static floors: yellow. Rate: red.
-    # Funds: grey. Keeps the table scannable without being loud.
+    # Per-kind row tints in algo dark palette. Static = amber-tinted
+    # navy, rate = red-tinted, fund-negative = slate. Each is a
+    # mid-luminance fill that stays readable against the light text.
     row_bg = {
-        'static_pct': '#fff8e1',
-        'static_abs': '#fff8e1',
-        'rate_abs':   '#fde2e4',
-        'rate_pct':   '#fde2e4',
-        'negative_cash':   '#eceff1',
-        'negative_margin': '#eceff1',
+        'static_pct': '#3a2c10',   # amber-tinted dark
+        'static_abs': '#3a2c10',
+        'rate_abs':   '#3a1010',   # red-tinted dark
+        'rate_pct':   '#3a1010',
+        'negative_cash':   '#1f2a3f',  # slate-tinted dark
+        'negative_margin': '#1f2a3f',
     }
 
     def cell(v, bg=""):
@@ -806,24 +850,26 @@ def _email_alert_body(alerts: list) -> str:
         ub = a.get('underlyings_breakdown') or []
         if a['section'] == 'Positions' and ub:
             sub_cells = ''.join(
-                f"<td style='padding:3px 8px;font-size:11px;color:#444;"
-                f"border-right:1px solid #e8eef5'>"
-                f"<b>{u['underlying']}</b> "
-                f"<span style='color:#555'>{_fmt_rupees(u['pnl'])}</span>"
+                f"<td style='padding:3px 8px;font-size:11px;color:{_EMAIL_TEXT};"
+                f"border-right:1px solid {_EMAIL_BORDER}'>"
+                f"<b style='color:{_EMAIL_AMBER}'>{u['underlying']}</b> "
+                f"<span style='color:{_EMAIL_TEXT_MUTED}'>{_fmt_rupees(u['pnl'])}</span>"
                 f"</td>"
                 for u in ub
             )
             row_html += (
                 f"<tr><td colspan='6' style='padding:0 12px 8px;"
-                f"background-color:{bg or '#fafbfc'}'>"
-                f"<div style='font-size:11px;color:#666;padding:4px 0 2px'>"
+                f"background-color:{bg or _EMAIL_PANEL_BG}'>"
+                f"<div style='font-size:11px;color:{_EMAIL_TEXT_MUTED};padding:4px 0 2px'>"
                 f"By underlying:</div>"
                 f"<table style='border-collapse:collapse'>"
                 f"<tr>{sub_cells}</tr></table>"
                 f"</td></tr>"
             )
     return (
-        f"<table style='border-collapse:collapse;width:100%'>"
+        f"<table style='border-collapse:collapse;width:100%;"
+        f"background-color:{_EMAIL_PANEL_BG};border:1px solid {_EMAIL_BORDER};"
+        f"border-radius:4px;overflow:hidden'>"
         f"<thead><tr>{header_cells}</tr></thead>"
         f"<tbody>{row_html}</tbody>"
         f"</table>"
