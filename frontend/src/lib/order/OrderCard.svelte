@@ -193,7 +193,14 @@
       </button>
     {/if}
     {#if _retryNote}<span class="log-chip log-chip-retry-note">{_retryNote}</span>{/if}
-    {#if order.parent_order_id != null}<span class="log-chip log-chip-parent"><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
+    {#if order.parent_order_id != null}<span class="log-chip log-chip-parent" title="This row is an auto-attached leg of the listed parent order (typically the protective wing of a SELL option)."><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
+    {#if order.child_order_ids && order.child_order_ids.length}
+      <span class="log-chip log-chip-child"
+            title={`Auto-attached children of this order (typically the protective wing). Click any id in the activity log to inspect.`}>
+        <span class="log-chip-key">{order.child_order_ids.length === 1 ? 'wing:' : 'wings:'}</span>
+        {order.child_order_ids.map(id => '#' + String(id).slice(-6)).join(' ')}
+      </span>
+    {/if}
     {#if order.basket_tag}<span class="log-chip log-chip-basket"><span class="log-chip-key">basket:</span>{order.basket_tag}</span>{/if}
     {#if order.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{order.status_message}</span>{/if}
     {#if order.detail}<span class="log-chip"><span class="log-chip-key">note:</span>{order.detail}</span>{/if}
@@ -216,6 +223,7 @@
   :global(.log-chip-tp)      { color: #4ade80; background: var(--algo-green-bg); }
   :global(.log-chip-template) { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-parent)  { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
+  :global(.log-chip-child)   { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-basket)  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
 
   /* Re-attach button — same chip shape as the rest of the row so it

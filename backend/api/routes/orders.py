@@ -414,6 +414,31 @@ class AlgoOrderInfo(msgspec.Struct):
     # rows that picked the 'none' template.
     template_id: int | None = None
     attached_gtts_json: str | None = None
+    # Reverse linkage — every AlgoOrder row that points to THIS row via
+    # parent_order_id. Lets the OrderCard render a "wing: #N" chip on
+    # the parent so the operator sees the auto-attached protective leg
+    # without having to scroll through the activity log. Empty for
+    # standalone orders; one or more ids when a template's wing
+    # (or any future child mechanism) attached on fill.
+    child_order_ids: list[int] = []
+
+
+async def _fetch_child_order_ids(session, parent_ids: list[int]) -> dict[int, list[int]]:
+    """One round-trip lookup of child rows for the given parents. Returns
+    {parent_id: [child_id, ...]}. Empty dict when parent_ids is empty so
+    callers can early-return."""
+    if not parent_ids:
+        return {}
+    from sqlalchemy import select as _sql_select
+    from backend.api.models import AlgoOrder as _AlgoOrder
+    children = (await session.execute(
+        _sql_select(_AlgoOrder.id, _AlgoOrder.parent_order_id)
+        .where(_AlgoOrder.parent_order_id.in_(parent_ids))
+    )).all()
+    out: dict[int, list[int]] = {}
+    for child_id, parent_id in children:
+        out.setdefault(int(parent_id), []).append(int(child_id))
+    return out
 
 
 def _resolve_target_pct(override: float | None) -> float:
@@ -996,6 +1021,7 @@ class OrdersController(Controller):
             if mode in ("live", "sim", "paper", "replay", "shadow"):
                 q = q.where(AlgoOrder.mode == mode)
             rows = (await s.execute(q)).scalars().all()
+            child_map = await _fetch_child_order_ids(s, [r.id for r in rows])
         # Mask account codes for everyone who is NOT admin/designated.
         # Partner JWTs see masked codes too (audit fix). Same masking
         # the /performance grids apply — turns ZG0790 into ZG####.
@@ -1019,6 +1045,7 @@ class OrdersController(Controller):
                 basket_tag=r.basket_tag,
                 template_id=r.template_id,
                 attached_gtts_json=r.attached_gtts_json,
+                child_order_ids=child_map.get(r.id, []),
             )
             for r in rows
         ]
@@ -1148,6 +1175,7 @@ class OrdersController(Controller):
                 kept.append(r)
             if dropped_paper or dropped_live or reconciled_live:
                 await s.commit()
+            child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
 
         do_mask = not is_admin_request(request)
         masked_acct = (
@@ -1170,6 +1198,7 @@ class OrdersController(Controller):
                 basket_tag=r.basket_tag,
                 template_id=r.template_id,
                 attached_gtts_json=r.attached_gtts_json,
+                child_order_ids=child_map.get(r.id, []),
             )
             for r in kept
         ]

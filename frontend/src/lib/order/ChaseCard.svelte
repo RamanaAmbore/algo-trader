@@ -26,6 +26,42 @@
   } = $props();
 
   let _chases  = $state(/** @type {any[]} */ ([]));
+  // Group children directly under their parents so the operator sees
+  // parent + protective wing as a visual cluster. Rows are partitioned
+  // into "parents and standalones" first, then each child is spliced
+  // in immediately after its parent (or appended at the end if its
+  // parent isn't in the active-chase set).
+  const _orderedChases = $derived.by(() => {
+    const childrenByParent = new Map();
+    const standalones = [];
+    for (const r of _chases) {
+      if (r.parent_order_id != null) {
+        if (!childrenByParent.has(r.parent_order_id)) childrenByParent.set(r.parent_order_id, []);
+        childrenByParent.get(r.parent_order_id).push(r);
+      } else {
+        standalones.push(r);
+      }
+    }
+    const seen = new Set();
+    const out = [];
+    for (const p of standalones) {
+      out.push(p);
+      seen.add(p.id);
+      const kids = childrenByParent.get(p.id);
+      if (kids) {
+        for (const k of kids) {
+          out.push(k);
+          seen.add(k.id);
+        }
+      }
+    }
+    // Children whose parent isn't in the chase set (already filled /
+    // cancelled) — render at the end so they don't disappear.
+    for (const r of _chases) {
+      if (!seen.has(r.id)) out.push(r);
+    }
+    return out;
+  });
   let _loading = $state(false);
   let _err     = $state('');
   let _killing = $state(/** @type {Set<number>} */ (new Set()));
@@ -85,22 +121,30 @@
 
   async function _kill(/** @type {any} */ row) {
     if (_killing.has(row.id)) return;
-    _killing = new Set([..._killing, row.id]);
+    // Cancel cascade: when the operator kills a parent that has
+    // auto-attached children (typically the wing of a SELL option),
+    // kill the children first. Avoids the orphan-wing case where the
+    // protective leg keeps chasing after the parent is gone.
+    const childIds = Array.isArray(row.child_order_ids) ? row.child_order_ids : [];
+    const toKill = [...childIds, row.id];
+    _killing = new Set([..._killing, ...toKill]);
     try {
-      const r = await killChase(row.id);
-      if (r?.ok) {
-        // Remove from local view immediately; the next poll will
-        // confirm via the absence of the row.
-        _chases = _chases.filter(c => c.id !== row.id);
-        onKilled?.(row, r);
-      } else if (r?.err) {
-        _err = `kill #${row.id}: ${r.err}`;
+      for (const id of toKill) {
+        try {
+          const r = await killChase(id);
+          if (r?.ok) {
+            _chases = _chases.filter(c => c.id !== id);
+            if (id === row.id) onKilled?.(row, r);
+          } else if (r?.err) {
+            _err = `kill #${id}: ${r.err}`;
+          }
+        } catch (e) {
+          _err = `kill #${id}: ${e?.message || 'failed'}`;
+        }
       }
-    } catch (e) {
-      _err = `kill #${row.id}: ${e?.message || 'failed'}`;
     } finally {
       const next = new Set(_killing);
-      next.delete(row.id);
+      for (const id of toKill) next.delete(id);
       _killing = next;
     }
   }
@@ -173,9 +217,14 @@
       {/if}
       <span class="cc-col cc-col-actions"></span>
     </div>
-    {#each _chases as row (row.id)}
-      <div class="cc-row" role="row">
-        <span class="cc-col cc-col-acct" title="Account">{row.account}</span>
+    {#each _orderedChases as row, _ci (row.id)}
+      <div class="cc-row" class:cc-row-child={row.parent_order_id != null} role="row">
+        <span class="cc-col cc-col-acct" title="Account">
+          {#if row.parent_order_id != null}
+            <span class="cc-child-tee" aria-hidden="true">↳</span>
+          {/if}
+          {row.account}
+        </span>
         <span class="cc-col cc-col-side cc-side-{(row.transaction_type || '').toLowerCase()}">
           {row.transaction_type}
         </span>
@@ -192,7 +241,9 @@
         <span class="cc-col cc-col-actions">
           <button type="button" class="cc-kill"
             disabled={_killing.has(row.id)}
-            title="Cancel this chase"
+            title={row.child_order_ids && row.child_order_ids.length
+              ? `Cancel this chase + ${row.child_order_ids.length} auto-attached child order${row.child_order_ids.length === 1 ? '' : 's'}.`
+              : 'Cancel this chase'}
             onclick={() => _kill(row)}>
             {_killing.has(row.id) ? '…' : 'Kill'}
           </button>
@@ -311,6 +362,18 @@
       minmax(0, 1.4fr) minmax(0, 0.6fr) minmax(0, 0.6fr)
       minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, 0.8fr)
       minmax(2.6rem, auto);
+  }
+  /* Child rows — auto-attached legs of the parent above (typically
+     the protective wing of a SELL option). Subtle violet left-rule
+     so the visual cluster of parent + child reads as one unit. */
+  .cc-row-child {
+    background: rgba(192, 132, 252, 0.05);
+    box-shadow: inset 3px 0 0 0 rgba(192, 132, 252, 0.65);
+  }
+  .cc-child-tee {
+    color: rgba(192, 132, 252, 0.85);
+    font-weight: 700;
+    margin-right: 0.25rem;
   }
   .cc-row-h {
     color: var(--algo-muted);
