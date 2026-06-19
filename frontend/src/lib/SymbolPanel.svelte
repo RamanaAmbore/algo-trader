@@ -527,6 +527,38 @@
   const _selectedTemplate = $derived(
     _templates.find(t => t.id === _sharedTemplateId) || null
   );
+  // Shell-level template parameter overrides. Editing these in the
+  // "On fill" row updates them; OrderTicket binds them so its own
+  // submit carries the values. Operator: "on fill selected, if there
+  // are any parameters i should be update the parameters."
+  // Empty string = "no override; use the template's value".
+  let _sharedTpOverride               = $state(/** @type {number|''} */ (''));
+  let _sharedSlOverride               = $state(/** @type {number|''} */ (''));
+  let _sharedWingStrikeOffsetOverride = $state(/** @type {number|''} */ (''));
+  let _sharedWingPremPctOverride      = $state(/** @type {number|''} */ (''));
+  // Whether the selected template's scope is a SELL option (the only
+  // case where the wing fields are relevant). Mirrors OrderTicket's
+  // `_appliesToFor` check at SymbolPanel level so the shell-row UI
+  // can hide the wing inputs when they wouldn't apply.
+  const _sharedTplShowsWing = $derived.by(() => {
+    const s = (_selectedTemplate?.applies_to || '').toLowerCase();
+    return s === 'sell_option';
+  });
+  // Reset overrides when the template changes — operator's overrides
+  // were tied to a SPECIFIC template's defaults; carrying them across
+  // to a different template would silently surface unintended values.
+  let _lastSeenTemplateId = null;
+  $effect(() => {
+    if (_sharedTemplateId !== _lastSeenTemplateId) {
+      untrack(() => {
+        _lastSeenTemplateId = _sharedTemplateId;
+        _sharedTpOverride               = '';
+        _sharedSlOverride               = '';
+        _sharedWingStrikeOffsetOverride = '';
+        _sharedWingPremPctOverride      = '';
+      });
+    }
+  });
   // Account list — falls through three layers:
   //   1. `accounts` prop (host page injects them, e.g. /orders)
   //   2. cached fetch from /api/accounts/ on mount when prop is empty
@@ -1324,6 +1356,10 @@
             bind:chase={_sharedChase}
             bind:chaseAgg={_sharedChaseAgg}
             bind:templateId={_sharedTemplateId}
+            bind:tpOverride={_sharedTpOverride}
+            bind:slOverride={_sharedSlOverride}
+            bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
+            bind:wingPremPctOverride={_sharedWingPremPctOverride}
             modeChaseHidden={true}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
             {onSubmit}
@@ -1374,7 +1410,12 @@
          should be common for both chain and order ticket. It should
          also appear in order modal." Bound to _sharedTemplateId so
          the value persists across Ticket ↔ Chain tab flips. -->
-    {#if _templates.length > 0}
+    {#if _templates.length > 0 && action === 'open'}
+      <!-- Template / On-fill row only renders when the operator is
+           OPENING a new order. Modify / Cancel / Close / Repeat
+           don't attach exit rules, so the picker would be inert there.
+           Operator: "on fill and templates should be disabled based
+           on the order." -->
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell">
         <label class="oes-basket-tpl-pick" title="On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.">
           <span class="oes-basket-tpl-label">On fill</span>
@@ -1387,13 +1428,40 @@
             placeholder="select template" />
         </label>
         {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-          <span class="oes-basket-tpl-note">
-            <span class="oes-basket-tpl-note-arrow">↳</span>
-            <span class="oes-basket-tpl-note-name">{_selectedTemplate.name || _selectedTemplate.slug}</span>
-            {#if _selectedTemplate.description}
-              <span class="oes-basket-tpl-note-desc">· {_selectedTemplate.description}</span>
+          <!-- Editable parameter overrides — replace the descriptive
+               name + summary chip. Operator can tweak TP / SL / Wing
+               for the next submit without mutating the saved template.
+               Empty input = use the template's value (shown as
+               placeholder). Overrides reset when the operator picks a
+               different template. -->
+          <div class="oes-basket-tpl-params">
+            <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
+              <span>TP%</span>
+              <input type="number" step="0.5"
+                placeholder={_selectedTemplate.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
+                bind:value={_sharedTpOverride} />
+            </label>
+            <label class="oes-basket-tpl-param" title="Stop-loss % opposite the TP side.">
+              <span>SL%</span>
+              <input type="number" step="0.5"
+                placeholder={_selectedTemplate.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
+                bind:value={_sharedSlOverride} />
+            </label>
+            {#if _sharedTplShowsWing}
+              <label class="oes-basket-tpl-param" title="Protective wing BUY at this many strikes away from the parent.">
+                <span>Wing strike+</span>
+                <input type="number" step="50"
+                  placeholder={_selectedTemplate.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
+                  bind:value={_sharedWingStrikeOffsetOverride} />
+              </label>
+              <label class="oes-basket-tpl-param" title="Wing premium target as a % of the parent's premium.">
+                <span>Wing prem%</span>
+                <input type="number" step="0.5"
+                  placeholder={_selectedTemplate.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
+                  bind:value={_sharedWingPremPctOverride} />
+              </label>
             {/if}
-          </span>
+          </div>
         {/if}
       </div>
     {/if}
@@ -2129,6 +2197,53 @@
     border-top: 1px solid rgba(192, 132, 252, 0.18);
     border-bottom: 1px solid rgba(192, 132, 252, 0.18);
     box-sizing: border-box;
+  }
+  /* Parameter override row — sits inline with the Select. Each
+     param is a tight label+input pair. The input is bare-monospace
+     for density; placeholder shows the template's value so the
+     operator sees what the value would be without overrides. */
+  .oes-basket-tpl-params {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-left: 0.4rem;
+  }
+  .oes-basket-tpl-param {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-family: monospace;
+    font-size: 0.58rem;
+    color: var(--algo-muted);
+  }
+  .oes-basket-tpl-param > span {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+  }
+  .oes-basket-tpl-param > input {
+    width: 3.6rem;
+    height: 1.4rem;
+    padding: 0 0.35rem;
+    background: rgba(192, 132, 252, 0.08);
+    border: 1px solid rgba(192, 132, 252, 0.35);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    text-align: right;
+    box-sizing: border-box;
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-basket-tpl-param > input:focus {
+    outline: none;
+    border-color: rgba(192, 132, 252, 0.85);
+    background: rgba(192, 132, 252, 0.14);
+  }
+  .oes-basket-tpl-param > input::placeholder {
+    color: rgba(192, 132, 252, 0.55);
+    font-style: italic;
   }
   .oes-basket-tpl-pick {
     display: inline-flex;

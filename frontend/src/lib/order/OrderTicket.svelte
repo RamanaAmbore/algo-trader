@@ -85,6 +85,10 @@
    *   modeChaseHidden?: boolean,
    *   suspended?: boolean,
    *   templateId?: number | null,
+   *   tpOverride?: number | '',
+   *   slOverride?: number | '',
+   *   wingStrikeOffsetOverride?: number | '',
+   *   wingPremPctOverride?: number | '',
    * }} */
   let {
     symbol,
@@ -213,6 +217,14 @@
     // across tabs and side flips. When unbound (parent passes a plain
     // null), this falls back to standalone behaviour.
     templateId = $bindable(/** @type {number|null} */ (null)),
+    // Per-template parameter overrides. Shell (SymbolPanel) binds
+    // them at the panel level so editing the TP%/SL%/Wing inputs in
+    // the shell row updates the value the Ticket form would submit.
+    // Empty string = "no override; use the template's value".
+    tpOverride                = $bindable(/** @type {number|''} */ ('')),
+    slOverride                = $bindable(/** @type {number|''} */ ('')),
+    wingStrikeOffsetOverride  = $bindable(/** @type {number|''} */ ('')),
+    wingPremPctOverride       = $bindable(/** @type {number|''} */ ('')),
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -571,10 +583,10 @@
   // run unless they tweak it. Submitting with a blank override sends
   // null (= use template default).
   let _templates = $state(/** @type {any[]} */ ([]));
-  let _tpOverride = $state(/** @type {number|''} */ (''));
-  let _slOverride = $state(/** @type {number|''} */ (''));
-  let _wingPremPctOverride = $state(/** @type {number|''} */ (''));
-  let _wingStrikeOffsetOverride = $state(/** @type {number|''} */ (''));
+  // Override fields aliased onto the bindable props above so every
+  // existing read/write through these locals routes through the
+  // shell's shared state (when SymbolPanel binds them). Stand-alone
+  // OrderTicket mounts (no parent binding) get fresh per-mount state.
 
   // Pre-submit preview state.
   let _previewPlan = $state(/** @type {any} */ (null));
@@ -1352,10 +1364,10 @@
           // Legacy target_pct still flows for back-compat when no
           // template is chosen.
           template_id:                  templateId,
-          tp_pct_override:              _tpOverride !== '' ? Number(_tpOverride) : null,
-          sl_pct_override:              _slOverride !== '' ? Number(_slOverride) : null,
-          wing_premium_pct_override:    _wingPremPctOverride !== '' ? Number(_wingPremPctOverride) : null,
-          wing_strike_offset_override:  _wingStrikeOffsetOverride !== '' ? Number(_wingStrikeOffsetOverride) : null,
+          tp_pct_override:              tpOverride !== '' ? Number(tpOverride) : null,
+          sl_pct_override:              slOverride !== '' ? Number(slOverride) : null,
+          wing_premium_pct_override:    wingPremPctOverride !== '' ? Number(wingPremPctOverride) : null,
+          wing_strike_offset_override:  wingStrikeOffsetOverride !== '' ? Number(wingStrikeOffsetOverride) : null,
         });
         // Show inline confirmation so the operator sees the order
         // landed; modal stays open until the operator clicks Exit.
@@ -1505,8 +1517,8 @@
   $effect(() => {
     // Track the inputs that affect the preview.
     const inputs = [
-      templateId, _tpOverride, _slOverride,
-      _wingPremPctOverride, _wingStrikeOffsetOverride,
+      templateId, tpOverride, slOverride,
+      wingPremPctOverride, wingStrikeOffsetOverride,
       _side, symbol, _qty, _price,
     ];
     // Skip preview when basics are incomplete. Critically — guard on
@@ -1517,7 +1529,7 @@
     // on mount; only the preview API call is debounced behind a
     // valid account.
     if (!symbol || Number(_qty) <= 0 || !_account
-        || (templateId === null && !_tpOverride && !_slOverride)) {
+        || (templateId === null && !tpOverride && !slOverride)) {
       _previewPlan = null;
       _previewError = '';
       return;
@@ -1552,10 +1564,10 @@
           account:          _account || '',
           reference_price:  refPx,
           template_id:                  dispatchedTemplateId,
-          tp_pct_override:              _tpOverride !== '' ? Number(_tpOverride) : null,
-          sl_pct_override:              _slOverride !== '' ? Number(_slOverride) : null,
-          wing_premium_pct_override:    _wingPremPctOverride !== '' ? Number(_wingPremPctOverride) : null,
-          wing_strike_offset_override:  _wingStrikeOffsetOverride !== '' ? Number(_wingStrikeOffsetOverride) : null,
+          tp_pct_override:              tpOverride !== '' ? Number(tpOverride) : null,
+          sl_pct_override:              slOverride !== '' ? Number(slOverride) : null,
+          wing_premium_pct_override:    wingPremPctOverride !== '' ? Number(wingPremPctOverride) : null,
+          wing_strike_offset_override:  wingStrikeOffsetOverride !== '' ? Number(wingStrikeOffsetOverride) : null,
         });
         // Drop stale responses — a newer fetch has been dispatched.
         if (seq !== _previewSeq) return;
@@ -1981,14 +1993,14 @@
                   <input type="number" class="ot-input ot-num ot-tpl-input"
                          step="0.5"
                          placeholder={_selectedTemplate?.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
-                         bind:value={_tpOverride} />
+                         bind:value={tpOverride} />
                 </label>
                 <label class="ot-tpl-field" title="Stop-loss percentage opposite the TP side.">
                   <span>SL%</span>
                   <input type="number" class="ot-input ot-num ot-tpl-input"
                          step="0.5"
                          placeholder={_selectedTemplate?.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
-                         bind:value={_slOverride} />
+                         bind:value={slOverride} />
                 </label>
                 {#if _appliesToFor(_side, symbol) === 'sell_option'}
                   <label class="ot-tpl-field" title="Protective wing BUY at this many strikes away from the parent.">
@@ -1996,14 +2008,14 @@
                     <input type="number" class="ot-input ot-num ot-tpl-input"
                            step="50"
                            placeholder={_selectedTemplate?.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
-                           bind:value={_wingStrikeOffsetOverride} />
+                           bind:value={wingStrikeOffsetOverride} />
                   </label>
                   <label class="ot-tpl-field" title="Wing premium target as a percentage of the parent's premium.">
                     <span>Wing prem%</span>
                     <input type="number" class="ot-input ot-num ot-tpl-input"
                            step="0.5"
                            placeholder={_selectedTemplate?.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
-                           bind:value={_wingPremPctOverride} />
+                           bind:value={wingPremPctOverride} />
                   </label>
                 {/if}
               </div>
