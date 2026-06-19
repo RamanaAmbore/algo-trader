@@ -537,6 +537,7 @@
   function _appliesToFor(sd, sym) {
     if (sd === 'SELL' && /\d+(CE|PE)$/i.test(sym || '')) return 'sell_option';
     if (sd === 'SELL') return 'sell_any';
+    if (sd === 'BUY'  && /\d+(CE|PE)$/i.test(sym || '')) return 'buy_option';
     if (sd === 'BUY')  return 'buy_any';
     return 'both';
   }

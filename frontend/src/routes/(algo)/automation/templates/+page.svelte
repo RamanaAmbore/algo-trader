@@ -224,8 +224,36 @@
   function fmtPct(v) { return v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(1)}%`; }
   function fmtOffset(v) { return v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${v}`; }
   function appliesLabel(v) {
-    return v === 'buy_any' ? 'Buy' : v === 'sell_option' ? 'Sell-Option' : 'Both';
+    if (v === 'buy_any')     return 'BUY EQ/FUT';
+    if (v === 'buy_option')  return 'BUY OPT';
+    if (v === 'sell_any')    return 'SELL EQ/FUT';
+    if (v === 'sell_option') return 'SELL OPT';
+    return 'BOTH';
   }
+  // The 4 side-aware default scopes. Used by the filter chips, the
+  // form selects, and the "defaults matrix" header card so the page's
+  // scope vocabulary is one canonical list. `both` is intentionally
+  // NOT in this list — it's a write-time choice (a custom template
+  // that targets every direction), not a Default slot the platform
+  // resolves to.
+  const _SCOPES = [
+    { value: 'buy_any',     label: 'BUY EQ/FUT' },
+    { value: 'buy_option',  label: 'BUY OPT' },
+    { value: 'sell_any',    label: 'SELL EQ/FUT' },
+    { value: 'sell_option', label: 'SELL OPT' },
+  ];
+  // For each scope, the active is_default template (or null when no
+  // seed claims that slot). Drives the matrix card above the list so
+  // the operator sees at a glance which scopes are covered.
+  const _defaultByScope = $derived.by(() => {
+    const out = /** @type {Record<string, any>} */ ({});
+    for (const s of _SCOPES) {
+      out[s.value] = templates.find(t =>
+        t.is_default && t.is_active && t.applies_to === s.value
+      ) || null;
+    }
+    return out;
+  });
 </script>
 
 <div class="page-header">
@@ -251,23 +279,56 @@
   </div>
 {/if}
 
+<!-- Defaults matrix — at-a-glance view of which of the 4 side-scopes
+     have an is_default template seeded. The Default pill in the order
+     modal resolves to one of these per (side × instrument-type) combo.
+     Click a cell to filter the list to that scope below + jump to the
+     active row when one exists. -->
+<section class="bucket-card bucket-card-data p-3 mb-3">
+  <div class="tpl-matrix-head">
+    <span class="mp-section-label">Side-default coverage</span>
+    <InfoHint popup={true} align="right"
+      text="Each (BUY/SELL) × (EQ-FUT / OPTION) combo resolves to one is_default template. The order modal's <b>Default</b> pill picks the right one per leg automatically. ✓ = scope covered; — = unclaimed (Default falls back to None on that scope)." />
+  </div>
+  <div class="tpl-matrix">
+    {#each _SCOPES as s}
+      {@const def = _defaultByScope[s.value]}
+      <button class="tpl-matrix-cell {def ? 'tpl-matrix-cell-on' : ''}"
+              onclick={() => {
+                filterScope = s.value;
+                if (def) expandedId = def.id;
+              }}
+              title={def
+                ? `${def.name} — TP ${fmtPct(def.tp_pct)} · SL ${fmtPct(def.sl_pct)}`
+                : `No default template seeded for ${s.label}`}
+              type="button">
+        <span class="tpl-matrix-scope">{s.label}</span>
+        <span class="tpl-matrix-tpl">
+          {def ? def.name : '— unclaimed'}
+        </span>
+        <span class="tpl-matrix-mark">{def ? '✓' : '—'}</span>
+      </button>
+    {/each}
+  </div>
+</section>
+
 <!-- Filter strip + create button -->
 <section class="bucket-card bucket-card-data p-3 mb-3">
   <div class="flex items-center justify-between gap-2 flex-wrap">
-    <div class="flex items-center gap-1">
+    <div class="flex items-center gap-1 flex-wrap">
       <span class="mp-section-label">Filter:</span>
-      {#each [
-        ['all', 'All'],
-        ['buy_any', 'Buy'],
-        ['sell_option', 'Sell-Option'],
-        ['both', 'Both'],
-      ] as [k, label]}
+      <button class="tpl-chip {filterScope === 'all' ? 'tpl-chip-on' : ''}"
+              onclick={() => { filterScope = 'all'; }} type="button">All</button>
+      {#each _SCOPES as s}
         <button
-          class="tpl-chip {filterScope === k ? 'tpl-chip-on' : ''}"
-          onclick={() => { filterScope = k; }}
+          class="tpl-chip {filterScope === s.value ? 'tpl-chip-on' : ''}"
+          onclick={() => { filterScope = s.value; }}
           type="button"
-        >{label}</button>
+        >{s.label}</button>
       {/each}
+      <button class="tpl-chip {filterScope === 'both' ? 'tpl-chip-on' : ''}"
+              onclick={() => { filterScope = 'both'; }} type="button"
+              title="Custom templates that target every direction">Both</button>
     </div>
 
     {#if !isDemo}
@@ -348,9 +409,11 @@
                   <span>Applies to</span>
                   <Select
                     options={[
-                      { value: 'buy_any', label: 'Buy (any instrument)' },
-                      { value: 'sell_option', label: 'Sell-Option (CE / PE)' },
-                      { value: 'both', label: 'Both' },
+                      { value: 'buy_any',     label: 'BUY EQ / FUT' },
+                      { value: 'buy_option',  label: 'BUY Option (CE / PE)' },
+                      { value: 'sell_any',    label: 'SELL EQ / FUT' },
+                      { value: 'sell_option', label: 'SELL Option (CE / PE)' },
+                      { value: 'both',        label: 'Both (every direction)' },
                     ]}
                     bind:value={formAppliesTo}
                     disabled={t.is_system}
@@ -470,9 +533,11 @@
         <span>Applies to</span>
         <Select
           options={[
-            { value: 'buy_any', label: 'Buy (any instrument)' },
-            { value: 'sell_option', label: 'Sell-Option (CE / PE)' },
-            { value: 'both', label: 'Both' },
+            { value: 'buy_any',     label: 'BUY EQ / FUT' },
+            { value: 'buy_option',  label: 'BUY Option (CE / PE)' },
+            { value: 'sell_any',    label: 'SELL EQ / FUT' },
+            { value: 'sell_option', label: 'SELL Option (CE / PE)' },
+            { value: 'both',        label: 'Both (every direction)' },
           ]}
           bind:value={formAppliesTo}
         />
@@ -521,6 +586,86 @@
 <ConfirmModal bind:this={_confirmRef} />
 
 <style>
+  /* Defaults coverage matrix — at-a-glance grid of the 4 side-default
+     slots. Each cell renders the slot's scope (BUY EQ/FUT, SELL OPT,
+     etc.) and the seeded template name, with a ✓/— mark. Cells light
+     up amber when the slot is covered; muted when unclaimed. Click
+     filters the list + auto-expands the active template's row. */
+  .tpl-matrix-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+  }
+  .tpl-matrix {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.45rem;
+  }
+  .tpl-matrix-cell {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 0.1rem 0.45rem;
+    align-items: center;
+    padding: 0.55rem 0.7rem;
+    background: rgba(20, 30, 55, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.08s, border-color 0.08s;
+  }
+  .tpl-matrix-cell:hover { background: rgba(20, 30, 55, 0.80); }
+  .tpl-matrix-cell-on {
+    background: linear-gradient(90deg,
+      rgba(251, 191, 36, 0.10) 0%,
+      rgba(251, 191, 36, 0.04) 100%),
+      rgba(20, 30, 55, 0.65);
+    border-color: rgba(251, 191, 36, 0.55);
+  }
+  .tpl-matrix-cell-on:hover {
+    border-color: rgba(251, 191, 36, 0.80);
+  }
+  .tpl-matrix-scope {
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    color: rgba(200, 216, 240, 0.70);
+    text-transform: uppercase;
+  }
+  .tpl-matrix-cell-on .tpl-matrix-scope {
+    color: var(--algo-amber, #fbbf24);
+  }
+  .tpl-matrix-tpl {
+    grid-column: 1 / -1;
+    font-family: ui-monospace, monospace;
+    font-size: 0.66rem;
+    font-weight: 600;
+    color: #f8fafc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tpl-matrix-cell:not(.tpl-matrix-cell-on) .tpl-matrix-tpl {
+    color: rgba(148, 163, 184, 0.60);
+    font-style: italic;
+    font-weight: 500;
+  }
+  .tpl-matrix-mark {
+    grid-row: 1;
+    grid-column: 2;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85rem;
+    font-weight: 800;
+    color: rgba(148, 163, 184, 0.40);
+    line-height: 1;
+  }
+  .tpl-matrix-cell-on .tpl-matrix-mark {
+    color: var(--algo-green, #4ade80);
+  }
+
   /* Filter chips */
   .tpl-chip {
     padding: 0.25rem 0.7rem;

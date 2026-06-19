@@ -15,10 +15,15 @@ Industry analogue: NinjaTrader ships with built-in ATM Strategy
 templates (e.g. "1-tick stop, 2-tick target"); operators clone or
 tweak them. Our equivalent ships four canonical presets:
 
-    default-bull       — long position, TP+30%, SL-20%
-    default-bear       — short non-option, TP+30% (gain), SL-20% (loss)
-    default-short-vol  — short option, TP+50% (premium decay), Wing +500
-    none               — explicit "no auto-exit" pick
+    default-bull         — BUY EQ / FUT, TP+30%, SL-20%
+    default-long-option  — BUY option (CE/PE), TP+80% MARKET, no SL
+    default-bear         — SELL EQ / FUT, TP+30%, SL-20%
+    default-short-vol    — SELL option (CE/PE), TP+50% + protective wing
+    none                 — explicit "no auto-exit" pick
+
+The four side-defaults form a 2×2 matrix over (BUY/SELL) × (EQ-FUT/OPTION)
+so the Default pill in the order modal's Template row always lands on a
+template that matches the leg's scope without operator interaction.
 """
 
 from __future__ import annotations
@@ -43,29 +48,32 @@ SYSTEM_TEMPLATES: list[dict] = [
     {
         "slug":               "default-bull",
         "name":               "Default Bull",
-        "description":        "Long entry with +30% take-profit and -20% stop-loss. "
-                              "Translates to a Kite GTT-OCO on supported brokers; on "
-                              "Groww the two trigger as separate singles with a "
-                              "pair-watcher cancelling the sibling on either fill.",
+        "description":        "BUY EQ / FUT (non-option) entry with +30% take-profit "
+                              "and -20% stop-loss. Translates to a Kite GTT-OCO on "
+                              "supported brokers; on Groww the two trigger as separate "
+                              "singles with a pair-watcher cancelling the sibling on "
+                              "either fill. Side-default for the buy_any scope (BUY of "
+                              "equity / futures).",
         "applies_to":         "buy_any",
         "tp_pct":             30.0,
         "sl_pct":             20.0,
         "wing_premium_pct":   None,
         "wing_strike_offset": None,
         "tp_order_type":      "LIMIT",
-        "is_default":         False,
+        "is_default":         True,
         "is_system":          True,
     },
     {
         "slug":               "default-long-option",
         "name":               "Default Long Option",
-        "description":        "Long option entry — TP at +80% premium gain (e.g. paid "
-                              "₹100, exits when premium hits ₹180). TP fires as a "
-                              "MARKET order so it lands in fast-moving expiry markets "
-                              "even when the book thins out. No SL by default — "
-                              "operators relying on max-loss of premium-paid don't "
-                              "need one.",
-        "applies_to":         "buy_any",
+        "description":        "BUY option (CE/PE) entry — TP at +80% premium gain "
+                              "(e.g. paid ₹100, exits when premium hits ₹180). TP "
+                              "fires as a MARKET order so it lands in fast-moving "
+                              "expiry markets even when the book thins out. No SL "
+                              "by default — operators relying on max-loss of "
+                              "premium-paid don't need one. Side-default for the "
+                              "buy_option scope.",
+        "applies_to":         "buy_option",
         "tp_pct":             80.0,
         "sl_pct":             None,
         "wing_premium_pct":   None,
@@ -195,14 +203,36 @@ async def seed_templates() -> None:
                 # Refresh mutable metadata; preserve numeric tuning.
                 for f in _MUTABLE_FIELDS:
                     setattr(row, f, spec[f])
-                # tp_order_type is mutable AND has an operator-tunable
-                # value, so we treat it like the numeric fields: only
-                # set it on initial seed, never overwrite the operator's
-                # edit. The exception is the new default-long-option
-                # row which we just shipped — it doesn't exist in the
-                # DB pre-migration so the "insert" branch above writes
-                # tp_order_type=MARKET as intended.
                 updated += 1
+
+        # One-time rebalance for the 4-default matrix migration:
+        # - `default-long-option` flips from buy_any → buy_option.
+        #   The applies_to mutable-fields refresh above already does
+        #   this on existing rows, so no extra work here.
+        # - `default-bull` is now the buy_any side-default. Existing
+        #   prod installs had `is_default=False` for this row; promote
+        #   to True when no other buy_any system template currently
+        #   claims is_default (so an operator who manually promoted a
+        #   custom buy_any template still wins).
+        # is_default is NOT in _MUTABLE_FIELDS by design (operators may
+        # have intentionally demoted a default); this one-time path
+        # only PROMOTES when the scope is unclaimed.
+        bull = by_slug.get("default-bull")
+        if bull is not None and not bull.is_default:
+            others = await s.execute(
+                select(OrderTemplate).where(
+                    OrderTemplate.applies_to == "buy_any",
+                    OrderTemplate.is_default == True,  # noqa: E712
+                    OrderTemplate.slug != "default-bull",
+                )
+            )
+            if not others.scalars().first():
+                bull.is_default = True
+                logger.info(
+                    "Order template 'default-bull' promoted to is_default — "
+                    "now the side-default for buy_any (BUY EQ/FUT)."
+                )
+
         await s.commit()
         logger.info(
             f"Order templates seeded — inserted={inserted} updated={updated}"
