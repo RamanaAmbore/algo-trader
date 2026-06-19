@@ -246,8 +246,16 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
             + (_sv - _sq * _ltp)
         )
     else:
-        # Pre-intraday-fields fallback: assume everything is overnight.
+        # Pre-intraday-fields fallback. Operator rule: newly-added
+        # positions read from purchase price; old positions read from
+        # prev_close. When close_price is missing/zero (typical for
+        # fresh same-day buys before EOD reconciliation), fall back to
+        # (LTP - avg_price) × qty so the Day P&L still reflects the
+        # operator's actual movement since entry.
         _dcv_calc = (_ltp - _cls) * _qty
+        _missing_close = (_cls <= 0) & (_avg > 0) & (_ltp > 0)
+        if bool(_missing_close.any()):
+            _dcv_calc = _dcv_calc.mask(_missing_close, (_ltp - _avg) * _qty)
     # Trust broker pnl when present (not null / not NaN). Fall back
     # to (LTP - avg) × qty only on missing values.
     if 'pnl' in df_positions.columns:

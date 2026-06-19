@@ -191,18 +191,39 @@ def get_scenario(slug: str) -> Optional[dict]:
 
 def _recompute_position_row(row: dict, spread_pct: float = 0.0) -> None:
     """
-    Mutate a positions row in-place: keep `pnl` / `bid` / `ask` consistent
-    with the current `last_price`. Real Kite `pnl` includes realised + m2m;
-    for the simulator we use the simple model
-    `(last_price - average_price) × quantity` because that's what the
-    loss-* agents read. `bid` / `ask` are derived from `spread_pct` (a
-    decimal fraction — 0.001 = 0.10% spread) so paper-trade limit prices
-    can pick the correct side of the market.
+    Mutate a positions row in-place: keep `pnl` / `bid` / `ask` /
+    `day_change_val` consistent with the current `last_price`. Real Kite
+    `pnl` includes realised + m2m; for the simulator we use the simple
+    model `(last_price - average_price) × quantity` because that's what
+    the loss-* agents read. `bid` / `ask` are derived from `spread_pct`
+    (a decimal fraction — 0.001 = 0.10% spread) so paper-trade limit
+    prices can pick the correct side of the market.
+
+    `day_change_val` uses the canonical operator rule: newly-added
+    positions (no close_price baseline) read from purchase price; old
+    positions (carried over with a close_price) read from prev_close.
+    Operator: "in legs, day p&l is not showing for options. for newly
+    added positions it should consider purchase price. for old
+    positions, it should consider prev close for calculating it."
     """
-    qty = float(row.get("quantity")       or 0)
-    avg = float(row.get("average_price")  or 0)
-    lp  = float(row.get("last_price")     or 0)
+    qty   = float(row.get("quantity")       or 0)
+    avg   = float(row.get("average_price")  or 0)
+    lp    = float(row.get("last_price")     or 0)
+    close = float(row.get("close_price")    or row.get("close")    or 0)
     row["pnl"] = (lp - avg) * qty
+    # Day P&L baseline: prev_close for carried positions, avg_price
+    # (purchase price) for fresh same-day buys (where close_price
+    # hasn't been recorded yet, typical for sim + fresh-mid-day
+    # positions).
+    if close > 0:
+        row["day_change_val"] = (lp - close) * qty
+        row["day_change"]     = lp - close
+    elif avg > 0:
+        row["day_change_val"] = (lp - avg) * qty
+        row["day_change"]     = lp - avg
+    else:
+        row["day_change_val"] = 0.0
+        row["day_change"]     = 0.0
     half = max(0.0, float(spread_pct)) / 2.0
     row["bid"] = lp * (1.0 - half) if lp else 0.0
     row["ask"] = lp * (1.0 + half) if lp else 0.0
