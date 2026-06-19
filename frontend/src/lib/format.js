@@ -81,9 +81,10 @@ export function aggCompact(v) {
   if (v == null || !isFinite(v)) return '—';
   const n = Number(v);
   const a = Math.abs(n);
-  if (a < 1_000)    return _decFmt(n);
-  if (a < 100_000)  return `${Math.round(n / 1_000)}K`;
-  return `${(n / 100_000).toFixed(2)}L`;
+  if (a < 1_000)      return _decFmt(n);
+  if (a < 100_000)    return `${Math.round(n / 1_000)}K`;
+  if (a < 10_000_000) return `${(n / 100_000).toFixed(2)}L`;
+  return `${(n / 10_000_000).toFixed(2)}C`;
 }
 
 export function qtyFmt(v) {

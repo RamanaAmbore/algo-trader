@@ -343,8 +343,8 @@ def _build_funds_rows(df_margins):
         avail_net = float(row.get('net', 0) or 0)
         used      = float(row.get('util debits', 0) or 0)
         collat    = float(row.get('avail collateral', 0) or 0)
-        rows.append((account, f"₹{cash:,.0f}", f"₹{avail_net:,.0f}",
-                     f"₹{used:,.0f}", f"₹{collat:,.0f}"))
+        rows.append((account, _fmt_inr(cash), _fmt_inr(avail_net),
+                     _fmt_inr(used), _fmt_inr(collat)))
     return rows
 
 
@@ -376,10 +376,10 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
         day_pct  = float(row.get('day_change_percentage', 0) or 0)
         h_rows.append((
             account,
-            f"₹{cur_val:,.0f}",
-            f"₹{pnl:,.0f}",
+            _fmt_inr(cur_val),
+            _fmt_inr(pnl),
             f"{pnl_pct:.2f}%",
-            f"₹{day_val:,.0f}",
+            _fmt_inr(day_val),
             f"{day_pct:.2f}%",
         ))
 
@@ -389,7 +389,7 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
     for _, row in sum_positions.iterrows():
         account = str(row.get('account', ''))
         pnl     = float(row.get('pnl', 0) or 0)
-        p_rows.append((account, f"₹{pnl:,.0f}"))
+        p_rows.append((account, _fmt_inr(pnl)))
 
     # Funds table: Account | Cash | Avail Margin | Used Margin | Collateral
     f_headers = ("Account", "Cash", "Avail Margin", "Used Margin", "Collateral")
@@ -642,28 +642,39 @@ _KIND_LABEL = {
 _SECTION_SHORT = {'Holdings': 'HLD', 'Positions': 'POS', 'Funds': 'FND'}
 
 
-def _fmt_rupees(n: float) -> str:
-    """Human-readable ₹ string with thousands separator and sign."""
-    return f"-₹{abs(n):,.0f}" if n < 0 else f"₹{n:,.0f}"
+def _fmt_inr(n: float) -> str:
+    """₹ amount in Indian K/L/C convention — mirrors the frontend
+    grid's aggCompact rounding so email + Telegram + on-screen
+    grids all read with the same precision. Operator: "in the email
+    and telegram follow thousand as K, Lakh as L and crore as C
+    convention you followed rounding off the numbers in the grids."
+
+    Examples:
+      9_999      → "₹9,999"
+      50_000     → "₹50K"
+      150_000    → "₹1.50L"
+      27_500_000 → "₹2.75C"
+    """
+    a = abs(float(n))
+    sign = '-' if n < 0 else ''
+    if a >= 10_000_000:        # 1 Cr
+        return f"{sign}₹{a / 10_000_000:.2f}C"
+    if a >= 100_000:           # 1 L
+        return f"{sign}₹{a / 100_000:.2f}L"
+    if a >= 1_000:             # 1 K
+        return f"{sign}₹{round(a / 1_000)}K"
+    return f"{sign}₹{a:,.0f}"
+
+
+# Legacy aliases — every callsite below already uses `_fmt_rupees` /
+# `_fmt_rupees_compact`. Point them at the unified `_fmt_inr` so we
+# don't have to touch every callsite individually.
+_fmt_rupees         = _fmt_inr
+_fmt_rupees_compact = _fmt_inr
 
 
 def _fmt_pct(n: float) -> str:
     return f"{n:.2f}%"
-
-
-def _fmt_rupees_compact(n: float) -> str:
-    """Compact ₹ string for inline breakdowns — switches to k/L/Cr above
-    1,000 so the per-underlying line stays under ~32 char on a phone.
-    Examples: -₹22k, +₹1.2L, -₹3.4Cr, -₹450."""
-    a = abs(n)
-    sign = '-' if n < 0 else ''
-    if a >= 10_000_000:
-        return f"{sign}₹{a / 10_000_000:.1f}Cr"
-    if a >= 100_000:
-        return f"{sign}₹{a / 100_000:.1f}L"
-    if a >= 1_000:
-        return f"{sign}₹{a / 1_000:.1f}k"
-    return f"{sign}₹{a:.0f}"
 
 
 def _tg_alert_body(alerts: list) -> str:
