@@ -3632,7 +3632,27 @@
       // re-evaluates the getter when refreshCells is called on 'ltp'.
       colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA,
+      // Heat encoding: bg vs purchase price (avg_pos / avg_hold),
+      // left-border stripe vs prev_close. Operator can scan both
+      // axes simultaneously — "am I up overall?" (bg) and "is it
+      // going my way today?" (stripe). TOTAL row suppresses both.
+      cellClass: (p) => {
+        if (!p.data || p.data._isTotal) return RA;
+        const sym = String(p.data.tradingsymbol || '').toUpperCase();
+        const ltp  = _liveLtpSnap[sym] ?? p.data.ltp ?? null;
+        const prev = p.data.close ?? null;
+        const avg  = (p.data.qty_pos && p.data.avg_pos) ? p.data.avg_pos
+                   : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
+                   : null;
+        const cls = [RA];
+        if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
+          cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
+        }
+        if (typeof ltp === 'number' && typeof prev === 'number' && prev > 0) {
+          cls.push(ltp > prev ? 'ltp-vs-prev-up' : ltp < prev ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat');
+        }
+        return cls.join(' ');
+      },
       valueGetter: (p) => {
         if (!p.data) return null;
         const sym = String(p.data.tradingsymbol || '').toUpperCase();
@@ -5580,15 +5600,26 @@
      value-level direction). */
   :global(.ag-theme-algo .mp-total-row) {
     font-weight: 700;
-    background: rgba(251, 191, 36, 0.12) !important;
-    border-top: 1px solid var(--algo-amber-border) !important;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.25) !important;
+    /* Stronger amber stratum so TOTAL stands out over data-row
+       directional tints + (incoming) LTP heat cells. Operator:
+       "total row should have a different background color scheme." */
+    background: rgba(251, 191, 36, 0.22) !important;
+    border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.40) !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
      direction tint so the row reads as an aggregate, not as a
      direction-coded data row. */
   :global(.ag-theme-algo .mp-total-row .ag-col-sym) {
-    background-color: rgba(251, 191, 36, 0.10) !important;
+    background-color: rgba(251, 191, 36, 0.20) !important;
+  }
+  /* TOTAL row LTP cell — suppress the incoming LTP heat colouring
+     so the amber TOTAL stratum stays uniform. */
+  :global(.ag-theme-algo .mp-total-row .ltp-vs-prev-up),
+  :global(.ag-theme-algo .mp-total-row .ltp-vs-prev-down),
+  :global(.ag-theme-algo .mp-total-row .ltp-vs-avg-up),
+  :global(.ag-theme-algo .mp-total-row .ltp-vs-avg-down) {
+    background-color: transparent !important;
   }
   /* Hide the day-P&L mini-bar on TOTAL rows — the aggregate doesn't
      get a per-day sign indicator (the operator reads the TOTAL P&L

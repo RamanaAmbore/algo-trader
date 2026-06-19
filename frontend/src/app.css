@@ -288,12 +288,44 @@
 }
 .ag-theme-ramboq .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(29,41,57,0.12) !important; }
 .ag-theme-algo .ag-row.totals-row {
-  background-color: rgba(251,191,36,0.15) !important;
+  /* Stronger amber tint so the TOTAL row reads as a clear stratum
+     above the data rows even when those rows carry their own bg
+     direction tints (long-green / short-red) or LTP heat colouring.
+     Operator: "total row should have a different background color
+     scheme." */
+  background-color: rgba(251,191,36,0.22) !important;
   color: #fbbf24 !important;
-  border-top: 1px solid rgba(251,191,36,0.55) !important;
+  border-top: 2px solid rgba(251,191,36,0.70) !important;
   border-bottom: 1px solid rgba(251,191,36,0.55) !important;
 }
-.ag-theme-algo .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(251,191,36,0.2) !important; }
+.ag-theme-algo .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(251,191,36,0.30) !important; }
+
+/* ── LTP cell heat — two-axis encoding ─────────────────────────────────
+   Operator: "color code ltp with background color if it is more than
+   prev close or purchase price. I should be able to identify if it is
+   more than prev close or purchase price based on the background color.
+   This should be done across all grids and across all pages."
+
+   Two reference prices, two visual axes so both reads side-by-side:
+   - Background tint   = LTP vs AVG_COST   (am I up on this position?)
+   - Left-border stripe = LTP vs PREV_CLOSE (is it moving my way today?)
+
+   The bg uses sage/terracotta in the public ramboq theme + green/red
+   in the algo theme — same palette as the existing pos-long/pos-short
+   row tints. Subtle alpha so it doesn't compete with the more
+   prominent direction-tinted row backgrounds. */
+.ag-theme-algo .ltp-vs-avg-up   { background-color: rgba(74,222,128,0.10) !important; }
+.ag-theme-algo .ltp-vs-avg-down { background-color: rgba(248,113,113,0.10) !important; }
+.ag-theme-algo .ltp-vs-avg-flat { /* no override — keep row's own bg */ }
+.ag-theme-algo .ltp-vs-prev-up   { box-shadow: inset 3px 0 0 0 rgba(74,222,128,0.85); }
+.ag-theme-algo .ltp-vs-prev-down { box-shadow: inset 3px 0 0 0 rgba(248,113,113,0.85); }
+.ag-theme-algo .ltp-vs-prev-flat { box-shadow: inset 3px 0 0 0 rgba(126,151,184,0.50); }
+
+.ag-theme-ramboq .ltp-vs-avg-up   { background-color: rgba(91,142,149,0.12) !important; }
+.ag-theme-ramboq .ltp-vs-avg-down { background-color: rgba(196,122,61,0.12) !important; }
+.ag-theme-ramboq .ltp-vs-prev-up   { box-shadow: inset 3px 0 0 0 rgba(91,142,149,0.85); }
+.ag-theme-ramboq .ltp-vs-prev-down { box-shadow: inset 3px 0 0 0 rgba(196,122,61,0.85); }
+.ag-theme-ramboq .ltp-vs-prev-flat { box-shadow: inset 3px 0 0 0 rgba(112,99,76,0.50); }
 
 /* P&L cell colors — theme-aware, applied via cellClass in PerformancePage */
 .ag-theme-ramboq .pnl-loss { color: #dc2626; background-color: rgba(220,38,38,0.05); }

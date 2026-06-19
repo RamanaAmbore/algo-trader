@@ -256,12 +256,29 @@
   const qtyCls = ({ value }) =>
     ['ag-right-aligned-cell', value < 0 ? 'qty-short' : value > 0 ? 'qty-long' : 'qty-flat'];
   const avgVsLtpCls = (params) => {
-    const avg = params.data?.average_price;
-    // Prefer the live last_price; fall back to close_price for rows
-    // produced before the schema gained last_price (cache-warm path).
-    const ltp = params.data?.last_price ?? params.data?.close_price;
-    if (avg == null || ltp == null) return 'ag-right-aligned-cell';
-    return ['ag-right-aligned-cell', avg > ltp ? 'pnl-loss' : avg < ltp ? 'pnl-gain' : 'pnl-zero'];
+    if (params?.data?._isTotal || params?.data?.tradingsymbol === 'TOTAL' || params?.data?.account === 'TOTAL') {
+      return 'ag-right-aligned-cell';
+    }
+    const avg  = params.data?.average_price;
+    const ltp  = params.data?.last_price ?? params.data?.close_price;
+    const prev = params.data?.close_price;
+    if (ltp == null) return 'ag-right-aligned-cell';
+    const cls = ['ag-right-aligned-cell'];
+    // Two-axis heat: bg vs avg_cost ("am I up overall?"), left-border
+    // vs prev_close ("is it moving my way today?"). Operator scans
+    // both axes at once. Legacy pnl-* text-colour kept alongside so
+    // the cell value still reads green/red.
+    if (typeof avg === 'number' && avg > 0) {
+      if (ltp > avg) cls.push('ltp-vs-avg-up', 'pnl-gain');
+      else if (ltp < avg) cls.push('ltp-vs-avg-down', 'pnl-loss');
+      else cls.push('ltp-vs-avg-flat', 'pnl-zero');
+    }
+    if (typeof prev === 'number' && prev > 0 && prev !== ltp) {
+      cls.push(ltp > prev ? 'ltp-vs-prev-up' : 'ltp-vs-prev-down');
+    } else if (typeof prev === 'number' && prev > 0) {
+      cls.push('ltp-vs-prev-flat');
+    }
+    return cls;
   };
 
   const defaultCol = { resizable: true, sortable: true, filter: true, suppressHeaderMenuButton: true, flex: 1, minWidth: 55 };
