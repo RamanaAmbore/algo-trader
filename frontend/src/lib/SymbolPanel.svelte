@@ -602,22 +602,40 @@
   // `_wing_symbol` helper. Returns null for premium-scan wings (the
   // exact strike comes from the chain scan at fill time, so we show
   // a generic "+ wing on fill" instead).
+  // Audit fix — memoize the regex parse keyed by `parentSym` so the
+  // basket-pill render loop doesn't re-exec the regex per leg per
+  // render. Cache is keyed by the parsed-symbol shape (root + exp +
+  // strike + opt) only; the wing offset and selected template are
+  // applied after lookup so an override change doesn't have to bust
+  // the cache. The cache is process-lifetime; tradingsymbols don't
+  // change identity, so unbounded growth is bounded by the number of
+  // unique contracts the operator touches in a session.
+  /** @type {Map<string, {root: string, expTok: string, strike: number, opt: string} | null>} */
+  const _SYMBOL_PARSE_CACHE = new Map();
+  /** @param {string} parentSym */
+  function _parseOptionSymbol(parentSym) {
+    const key = String(parentSym || '').toUpperCase();
+    if (_SYMBOL_PARSE_CACHE.has(key)) return _SYMBOL_PARSE_CACHE.get(key);
+    const m = key.match(
+      /^([A-Z]+?)(\d{2}[A-Z]{3}|\d{4,5})(\d+(?:\.\d+)?)(CE|PE)$/
+    );
+    if (!m) { _SYMBOL_PARSE_CACHE.set(key, null); return null; }
+    const [, root, expTok, strikeStr, opt] = m;
+    const strike = parseInt(strikeStr, 10);
+    if (!Number.isFinite(strike)) { _SYMBOL_PARSE_CACHE.set(key, null); return null; }
+    const parsed = { root, expTok, strike, opt };
+    _SYMBOL_PARSE_CACHE.set(key, parsed);
+    return parsed;
+  }
   function _wingSymbolFor(/** @type {string} */ parentSym) {
     if (!_sharedWingPlanned || !_selectedTemplate) return null;
     const effOff = _sharedWingStrikeOffsetOverride !== ''
       ? Number(_sharedWingStrikeOffsetOverride)
       : (_selectedTemplate.wing_strike_offset ?? null);
     if (!effOff || isNaN(effOff)) return null;
-    // Parse parent: ROOT + EXPIRY-TOKEN + STRIKE + (CE|PE). The
-    // expiry token can be either YY-MMM (monthly, e.g. 26JUN) or
-    // YY-MM-DD (weekly, e.g. 26424). Match the backend regex shape.
-    const m = String(parentSym || '').toUpperCase().match(
-      /^([A-Z]+?)(\d{2}[A-Z]{3}|\d{4,5})(\d+(?:\.\d+)?)(CE|PE)$/
-    );
-    if (!m) return null;
-    const [, root, expTok, strikeStr, opt] = m;
-    const strike = parseInt(strikeStr, 10);
-    if (!Number.isFinite(strike)) return null;
+    const parsed = _parseOptionSymbol(parentSym);
+    if (!parsed) return null;
+    const { root, expTok, strike, opt } = parsed;
     const wingStrike = opt === 'CE' ? strike + effOff : strike - effOff;
     if (wingStrike <= 0) return null;
     return `${root}${expTok}${wingStrike}${opt}`;
@@ -3405,15 +3423,15 @@
     padding: 0.2rem 0.5rem;
     font-size: 0.55rem;
     border-radius: 3px;
-    border: 1px solid rgba(248, 113, 133, 0.40);
+    border: 1px solid rgba(248, 113, 113, 0.40);
     background: transparent;
-    color: rgba(248, 113, 133, 0.85);
+    color: rgba(248, 113, 113, 0.85);
     cursor: pointer;
     font-family: monospace;
     font-weight: 700;
     letter-spacing: 0.04em;
   }
-  .oes-common-clear-inline:hover { background: rgba(248, 113, 133, 0.10); }
+  .oes-common-clear-inline:hover { background: rgba(248, 113, 113, 0.10); }
   .oes-common-basket:hover:not(.is-disabled) { background: var(--algo-sky-bg); }
   /* Grayed-out +Basket on Chain tab — affordance stays visible so
      the operator knows the basket flow exists; clicking it would

@@ -43,14 +43,20 @@
     }
   }
 
+  // Audit fix — consolidate timer lifecycle into a single `$effect` so
+  // the visibility handler can't race the paused-effect on `timer`.
+  // Pre-fix the visibility handler and the $effect both independently
+  // started/stopped the timer; when `paused` flipped false while the
+  // tab was hidden, the $effect called `setInterval(poll, 2000)` even
+  // though the visibility handler had just cleared the timer and would
+  // clear it again on the next visibilitychange — but the inverse race
+  // (visibility handler sets timer, $effect immediately clears it for
+  // paused, $effect doesn't restart on the next visibility transition)
+  // left depth permanently stale. Now: `_hidden` is a $state read by
+  // the single effect; the visibility handler just flips the flag.
+  let _hidden = $state(typeof document !== 'undefined' && document.hidden);
   function _onVisibilityChange() {
-    if (document.hidden) {
-      if (timer) { clearInterval(timer); timer = null; }
-    } else {
-      // Page became visible — poll immediately then resume cadence.
-      poll();
-      timer = setInterval(poll, 2000);
-    }
+    _hidden = !!document.hidden;
   }
 
   onMount(() => {
@@ -61,15 +67,11 @@
     document.removeEventListener('visibilitychange', _onVisibilityChange);
   });
 
-  // Reactive lifecycle — start polling when `paused` flips false and
-  // stop when it flips true. Previously the start was wired through
-  // onMount only, so an OrderTicket that mounted while its parent
-  // (SymbolPanel) was on the Chain tab (suspended=true) never started
-  // depth polling even after the operator switched to the Ticket tab.
-  // Operator: "Orders is not updating prices in order ticket and chain."
+  // Single lifecycle effect — start polling iff: have symbol, not
+  // paused by host, not hidden. Stop otherwise. The effect re-runs
+  // whenever any of those flip.
   $effect(() => {
-    if (!symbol) return;
-    if (paused) {
+    if (!symbol || paused || _hidden) {
       if (timer) { clearInterval(timer); timer = null; }
       return;
     }
@@ -169,7 +171,7 @@
     opacity: 0.7;
   }
   .ot-depth-ltp {
-    color: #fbbf24;
+    color: var(--algo-amber, #fbbf24);
     font-weight: 700;
     font-size: 0.62rem;
     text-transform: none;
@@ -179,7 +181,7 @@
      weight so the eye reads LTP first (the live number) and PREV
      second (the reference). */
   .ot-depth-prev {
-    color: #7dd3fc;
+    color: var(--algo-sky, #7dd3fc);
     font-weight: 600;
     font-size: 0.62rem;
     text-transform: none;
@@ -191,6 +193,10 @@
     grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 0.15rem 0.4rem;
     font-family: monospace;
+    /* Audit fix — explicit tabular-nums on the price/qty cells. Monospace
+       covers digit-width consistency in most faces, but `tabular-nums`
+       is the canonical spec per the CLAUDE.md number-formatting rule. */
+    font-variant-numeric: tabular-nums;
     font-size: 0.62rem;
   }
   .ot-depth-label {
@@ -204,8 +210,8 @@
     text-align: right;
     color: var(--algo-slate);
   }
-  .ot-depth-bid     { color: #4ade80; }
-  .ot-depth-bid-qty { color: #4ade80; opacity: 0.7; }
-  .ot-depth-ask     { color: #f87171; }
-  .ot-depth-ask-qty { color: #f87171; opacity: 0.7; }
+  .ot-depth-bid     { color: var(--algo-green, #4ade80); }
+  .ot-depth-bid-qty { color: var(--algo-green, #4ade80); opacity: 0.7; }
+  .ot-depth-ask     { color: var(--algo-red, #f87171); }
+  .ot-depth-ask-qty { color: var(--algo-red, #f87171); opacity: 0.7; }
 </style>

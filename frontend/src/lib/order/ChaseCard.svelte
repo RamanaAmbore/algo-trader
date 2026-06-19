@@ -18,6 +18,7 @@
   import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { visibleInterval } from '$lib/stores';
 
   let {
     pollMs   = 3000,
@@ -75,7 +76,7 @@
   // entirely when empty, the network noise goes to near-zero on
   // idle pages. Exposed so the parent can react.
   let _idle = $state(false);
-  /** @type {ReturnType<typeof setInterval>|null} */
+  /** @type {(() => void) | null} */
   let _timer = null;
 
   async function _load() {
@@ -98,9 +99,13 @@
   }
 
   function _rescheduleTimer() {
-    if (_timer) { clearInterval(_timer); _timer = null; }
+    // Audit fix — `visibleInterval` pauses on `document.hidden`, so
+    // when the operator switches away from the tab the polling stops
+    // (was `setInterval` with no visibility gate; chase polled every
+    // 3 s even on a hidden tab, generating background network noise).
+    if (_timer) { _timer(); _timer = null; }
     const ms = _idle ? Math.max(15000, pollMs * 10) : Math.max(1000, pollMs);
-    _timer = setInterval(_load, ms);
+    _timer = visibleInterval(_load, ms);
   }
 
   async function _reconcile() {
@@ -133,19 +138,32 @@
     const childIds = Array.isArray(liveRow.child_order_ids) ? liveRow.child_order_ids : [];
     const toKill = [...childIds, row.id];
     _killing = new Set([..._killing, ...toKill]);
+    // Audit fix — parallel kill via Promise.all instead of sequential
+    // await loop. Each killChase call marks the broker_order_id with
+    // mark_killed BEFORE the broker.cancel_order returns (Sprint A),
+    // so the cascade order is preserved by mark_killed itself — every
+    // chase loop in the cascade sees is_killed=true on its next
+    // iteration regardless of the order kill_chase endpoints complete.
+    // N child orders + parent now resolve in ~1 round-trip instead of N+1.
     try {
-      for (const id of toKill) {
+      const results = await Promise.all(toKill.map(async (id) => {
         try {
           const r = await killChase(id);
-          if (r?.ok) {
-            _chases = _chases.filter(c => c.id !== id);
-            if (id === row.id) onKilled?.(row, r);
-          } else if (r?.err) {
-            _err = `kill #${id}: ${r.err}`;
-          }
+          return { id, ok: !!r?.ok, err: r?.err || null };
         } catch (e) {
-          _err = `kill #${id}: ${e?.message || 'failed'}`;
+          return { id, ok: false, err: e?.message || 'failed' };
         }
+      }));
+      const successIds = new Set(results.filter(r => r.ok).map(r => r.id));
+      if (successIds.size) {
+        _chases = _chases.filter(c => !successIds.has(c.id));
+        if (successIds.has(row.id)) onKilled?.(row, { ok: true });
+      }
+      const failures = results.filter(r => !r.ok);
+      if (failures.length) {
+        // Surface only the first failure to keep the error banner short.
+        const f = failures[0];
+        _err = `kill #${f.id}: ${f.err || 'failed'}`;
       }
     } finally {
       const next = new Set(_killing);
@@ -178,7 +196,7 @@
     _rescheduleTimer();
   });
   onDestroy(() => {
-    if (_timer) { clearInterval(_timer); _timer = null; }
+    if (_timer) { _timer(); _timer = null; }
   });
 </script>
 
@@ -283,16 +301,16 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(248, 113, 133, 0.8);
+    color: rgba(248, 113, 113, 0.8);
   }
   .cc-count {
     display: inline-flex;
     align-items: center;
     padding: 0 0.4rem;
     border-radius: 8px;
-    background: rgba(248, 113, 133, 0.18);
-    border: 1px solid rgba(248, 113, 133, 0.45);
-    color: #fb7185;
+    background: rgba(248, 113, 113, 0.18);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    color: #f87171;
     font-size: 0.55rem;
     font-weight: 800;
     font-variant-numeric: tabular-nums;
@@ -413,9 +431,9 @@
   .cc-kill {
     padding: 0.18rem 0.5rem;
     border-radius: 3px;
-    border: 1px solid rgba(248, 113, 133, 0.45);
+    border: 1px solid rgba(248, 113, 113, 0.45);
     background: transparent;
-    color: rgba(248, 113, 133, 0.9);
+    color: rgba(248, 113, 113, 0.9);
     font-family: monospace;
     font-size: 0.55rem;
     font-weight: 800;
@@ -424,8 +442,8 @@
     text-transform: uppercase;
   }
   .cc-kill:hover:not(:disabled) {
-    background: rgba(248, 113, 133, 0.12);
-    color: #fb7185;
+    background: rgba(248, 113, 113, 0.12);
+    color: #f87171;
   }
   .cc-kill:disabled { opacity: 0.45; cursor: progress; }
 </style>

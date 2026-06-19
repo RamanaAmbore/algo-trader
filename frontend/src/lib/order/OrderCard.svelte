@@ -64,13 +64,22 @@
   // Per-account hue — same algorithm /orders uses so the same account
   // gets the same tint on both surfaces. Module-level cache keeps the
   // assignment stable across mounts.
+  // Audit fix — switched from unbounded `string[]` + O(n) indexOf to a
+  // bounded Map<acct, idx> with O(1) lookup. Pre-fix the array grew
+  // by one entry per unique account seen across all OrderCard
+  // instances and `_acctList.indexOf(a)` ran O(n) on every render.
+  // In LogPanel with 50 orders polling at 3 s that was 150 indexOf
+  // searches per cycle. With a Map it's a single hash lookup; the
+  // Map size is capped by the number of unique accounts (handful in
+  // practice), so unbounded growth isn't a real concern but using
+  // Map makes the bound explicit + the lookup constant-time.
   const _ACCT_COLORS = ['text-sky-300', 'text-amber-300', 'text-fuchsia-300', 'text-teal-300'];
-  /** @type {string[]} */
-  const _acctList = [];
+  /** @type {Map<string, number>} */
+  const _ACCT_IDX = new Map();
   /** @param {string} a */
   function _acctColor(a) {
-    let idx = _acctList.indexOf(a);
-    if (idx < 0) { _acctList.push(a); idx = _acctList.length - 1; }
+    let idx = _ACCT_IDX.get(a);
+    if (idx === undefined) { idx = _ACCT_IDX.size; _ACCT_IDX.set(a, idx); }
     return _ACCT_COLORS[idx % _ACCT_COLORS.length];
   }
 
