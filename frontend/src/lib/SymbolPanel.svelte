@@ -1383,6 +1383,75 @@
     </div>
     {/if}
 
+    <!-- Shell-level template picker — visible from EVERY tab + the modal,
+         regardless of whether the basket has legs staged. Operator:
+         "why template is present only for order ticket, but not for
+         chain" — moved ABOVE the tab body so it sits at the same
+         altitude as the tabs themselves on both Ticket + Chain views.
+         Pre-fix, the picker lived BELOW the body so a tall Chain tab
+         (strike grid + futures row + basket) pushed it past the
+         modal's scrolled-into-view area and the operator only saw it
+         on the shorter Ticket tab. Bound to _sharedTemplateId so the
+         value persists across Ticket ↔ Chain tab flips. -->
+    {#if _templates.length > 0 && action === 'open'}
+      <!-- Template / On-fill row only renders when the operator is
+           OPENING a new order. Modify / Cancel / Close / Repeat
+           don't attach exit rules, so the picker would be inert there.
+           Operator: "on fill and templates should be disabled based
+           on the order." -->
+      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
+           title={_selectedTemplate && _selectedTemplate.slug !== 'none'
+             ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
+             : 'On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.'}>
+        <label class="oes-basket-tpl-pick">
+          <span class="oes-basket-tpl-label">On fill</span>
+          <Select
+            bind:value={_sharedTemplateId}
+            options={_templates.map(t => ({
+              value: t.id,
+              label: t.name || t.slug || `Template #${t.id}`,
+            }))}
+            placeholder="select template" />
+        </label>
+        {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+          <!-- Editable parameter overrides — replace the descriptive
+               name + summary chip. Operator can tweak TP / SL / Wing
+               for the next submit without mutating the saved template.
+               Empty input = use the template's value (shown as
+               placeholder). Overrides reset when the operator picks a
+               different template. -->
+          <div class="oes-basket-tpl-params">
+            <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
+              <span>TP%</span>
+              <input type="number" step="0.5"
+                placeholder={_selectedTemplate.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
+                bind:value={_sharedTpOverride} />
+            </label>
+            <label class="oes-basket-tpl-param" title="Stop-loss % opposite the TP side.">
+              <span>SL%</span>
+              <input type="number" step="0.5"
+                placeholder={_selectedTemplate.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
+                bind:value={_sharedSlOverride} />
+            </label>
+            {#if _sharedTplShowsWing}
+              <label class="oes-basket-tpl-param" title="Protective wing BUY at this many strikes away from the parent.">
+                <span>Wing strike+</span>
+                <input type="number" step="50"
+                  placeholder={_selectedTemplate.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
+                  bind:value={_sharedWingStrikeOffsetOverride} />
+              </label>
+              <label class="oes-basket-tpl-param" title="Wing premium target as a % of the parent's premium.">
+                <span>Wing prem%</span>
+                <input type="number" step="0.5"
+                  placeholder={_selectedTemplate.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
+                  bind:value={_sharedWingPremPctOverride} />
+              </label>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Tab content. Command Line tab retired — was the third option
          alongside Chain and Ticket; the in-tab account+symbol inputs
          duplicated the modal header's. /console keeps its own
@@ -1491,71 +1560,6 @@
       {/if}
 
     </div>
-
-    <!-- Shell-level template picker — visible from EVERY tab + the modal,
-         regardless of whether the basket has legs staged. Operator:
-         "I see template only for order ticket in order page. This
-         should be common for both chain and order ticket. It should
-         also appear in order modal." Bound to _sharedTemplateId so
-         the value persists across Ticket ↔ Chain tab flips. -->
-    {#if _templates.length > 0 && action === 'open'}
-      <!-- Template / On-fill row only renders when the operator is
-           OPENING a new order. Modify / Cancel / Close / Repeat
-           don't attach exit rules, so the picker would be inert there.
-           Operator: "on fill and templates should be disabled based
-           on the order." -->
-      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
-           title={_selectedTemplate && _selectedTemplate.slug !== 'none'
-             ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
-             : 'On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.'}>
-        <label class="oes-basket-tpl-pick">
-          <span class="oes-basket-tpl-label">On fill</span>
-          <Select
-            bind:value={_sharedTemplateId}
-            options={_templates.map(t => ({
-              value: t.id,
-              label: t.name || t.slug || `Template #${t.id}`,
-            }))}
-            placeholder="select template" />
-        </label>
-        {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-          <!-- Editable parameter overrides — replace the descriptive
-               name + summary chip. Operator can tweak TP / SL / Wing
-               for the next submit without mutating the saved template.
-               Empty input = use the template's value (shown as
-               placeholder). Overrides reset when the operator picks a
-               different template. -->
-          <div class="oes-basket-tpl-params">
-            <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
-              <span>TP%</span>
-              <input type="number" step="0.5"
-                placeholder={_selectedTemplate.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
-                bind:value={_sharedTpOverride} />
-            </label>
-            <label class="oes-basket-tpl-param" title="Stop-loss % opposite the TP side.">
-              <span>SL%</span>
-              <input type="number" step="0.5"
-                placeholder={_selectedTemplate.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
-                bind:value={_sharedSlOverride} />
-            </label>
-            {#if _sharedTplShowsWing}
-              <label class="oes-basket-tpl-param" title="Protective wing BUY at this many strikes away from the parent.">
-                <span>Wing strike+</span>
-                <input type="number" step="50"
-                  placeholder={_selectedTemplate.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
-                  bind:value={_sharedWingStrikeOffsetOverride} />
-              </label>
-              <label class="oes-basket-tpl-param" title="Wing premium target as a % of the parent's premium.">
-                <span>Wing prem%</span>
-                <input type="number" step="0.5"
-                  placeholder={_selectedTemplate.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
-                  bind:value={_sharedWingPremPctOverride} />
-              </label>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {/if}
 
     <!-- Shell-level basket bar — visible from any tab when legs exist.
          Per-leg pills (B/S · sym · lots stepper · × remove) sit on the
@@ -2527,6 +2531,34 @@
     letter-spacing: 0.04em;
     line-height: 1;
     white-space: nowrap;
+    /* Cap each pill at the basket-bar's inner width so a fully-loaded
+       pill (sym + stepper + lots + qty + limit input + acct + wing
+       chip + tmpl chip + remove) can't horizontally overflow the
+       container on narrow viewports. min-width:0 lets internal flex
+       children shrink. */
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  /* Mobile (< 720 px) — flip the pill from a single nowrap row to a
+     wrapping flex container so the limit input + acct select + wing
+     + tmpl chips can drop to a second line instead of pushing past
+     the modal's right edge. Operator: "the order chips overflowing
+     the container horizontally on mobile." Each chip keeps its own
+     fixed width; the pill grows vertically rather than horizontally. */
+  @media (max-width: 720px) {
+    .oes-basket-pill {
+      flex-wrap: wrap;
+      white-space: normal;
+      row-gap: 0.2rem;
+    }
+    /* Tighten the inner inputs so two of them can sit side-by-side on
+       narrow viewports without forcing a wrap on every chip. */
+    .oes-basket-pill-limit { width: 3.2rem !important; }
+    .oes-basket-pill-acct,
+    .oes-basket-pill-acct-static { max-width: 4.5rem; }
+    .oes-basket-pill-wing,
+    .oes-basket-pill-tpl-chip { max-width: 6rem; overflow: hidden; text-overflow: ellipsis; }
   }
   .oes-basket-pill-buy {
     color:        #67e8f9;
