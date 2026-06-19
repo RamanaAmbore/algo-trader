@@ -1642,16 +1642,27 @@
          the platform picks the right one for the leg + side. Override
          inputs surface inline only when Default is active and the
          template has the relevant fields. -->
-    {#if _templates.length > 0 && action === 'open'}
+    <!-- Symbol gate — the side-aware Default resolution depends on the
+         CE/PE regex against _localSymbol. Without a symbol picked the
+         scope would silently fall back to buy_any/sell_any and surface
+         the wrong template; better to hide the row entirely until the
+         operator has committed to what they're trading. Operator:
+         "when no order type selected, template should not be displayed.
+         when symbol and buy or sell selected, then template container
+         should be displayed". Side is always set (default BUY), so
+         symbol presence is the meaningful gate. -->
+    {#if _templates.length > 0 && action === 'open' && (_localSymbol || '').trim()}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={!_shellUsingNone && _selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
              : 'Default attaches the saved template that matches the current side + symbol type. None opts out of any GTT attach.'}>
         <span class="oes-basket-tpl-pick">
           <span class="oes-basket-tpl-label">Template</span>
-          <span class="oes-tpl-toggle" role="group" aria-label="Template attach">
+          <span class="oes-tpl-toggle"
+                class:oes-tpl-toggle-none={_shellUsingNone}
+                role="group" aria-label="Template attach">
             <button type="button"
-                    class={'oes-tpl-btn' + (!_shellUsingNone ? ' on' : '')}
+                    class={'oes-tpl-btn oes-tpl-btn-default' + (!_shellUsingNone ? ' on' : '')}
                     disabled={!_sideAwareDefault}
                     title={_sideAwareDefault
                       ? `Attach ${_sideAwareDefault.name} on fill`
@@ -1662,7 +1673,7 @@
               Default
             </button>
             <button type="button"
-                    class={'oes-tpl-btn' + (_shellUsingNone ? ' on' : '')}
+                    class={'oes-tpl-btn oes-tpl-btn-none' + (_shellUsingNone ? ' on' : '')}
                     title="No template — entry only, no GTT / no wing"
                     onclick={() => {
                       if (_noneTpl) _sharedTemplateId = _noneTpl.id;
@@ -2656,8 +2667,14 @@
   }
   /* Default / None two-pill toggle — mirrors the Side toggle in
      OrderTicket so the operator's mental model is the same: Default
-     attaches the platform-resolved template, None opts out. Sits
-     compact next to the "Template" label. */
+     attaches the platform-resolved template, None opts out.
+     Distinct color schemes per active state so the operator can tell
+     them apart at a glance. Operator: "for default and none, template
+     values use a different color scheme for text".
+       Default ON → amber (algo primary, "rule is armed")
+       None ON    → slate-gray (neutral, "nothing fires post-fill")
+     The container's border tracks the active pill so the row itself
+     reads as either amber-armed or slate-neutral. */
   .oes-tpl-toggle {
     display: inline-flex;
     height: 1.4rem;
@@ -2667,6 +2684,10 @@
     background: rgba(8, 14, 28, 0.55);
     border: 1px solid rgba(251, 191, 36, 0.55);
     box-sizing: border-box;
+    transition: border-color 0.12s;
+  }
+  .oes-tpl-toggle-none {
+    border-color: rgba(148, 163, 184, 0.55);
   }
   .oes-tpl-btn {
     flex: 0 0 auto;
@@ -2680,16 +2701,31 @@
     letter-spacing: 0.05em;
     line-height: 1;
     cursor: pointer;
-    transition: background 0.12s, color 0.12s;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
-  .oes-tpl-btn + .oes-tpl-btn { border-left: 1px solid rgba(251, 191, 36, 0.30); }
-  .oes-tpl-btn:hover:not(.on):not([disabled]) {
+  .oes-tpl-btn + .oes-tpl-btn {
+    border-left: 1px solid rgba(251, 191, 36, 0.30);
+  }
+  .oes-tpl-toggle-none .oes-tpl-btn + .oes-tpl-btn {
+    border-left-color: rgba(148, 163, 184, 0.30);
+  }
+  .oes-tpl-btn-default:hover:not(.on):not([disabled]) {
     background: rgba(251, 191, 36, 0.08);
     color: #f1f7ff;
   }
-  .oes-tpl-btn.on {
-    background: rgba(251, 191, 36, 0.22);
+  .oes-tpl-btn-none:hover:not(.on):not([disabled]) {
+    background: rgba(148, 163, 184, 0.10);
+    color: #f1f7ff;
+  }
+  .oes-tpl-btn-default.on {
+    background: rgba(251, 191, 36, 0.24);
     color: var(--algo-amber, #fbbf24);
+    text-shadow: 0 0 8px rgba(251, 191, 36, 0.45);
+  }
+  .oes-tpl-btn-none.on {
+    background: rgba(148, 163, 184, 0.22);
+    color: #cbd5e1;
+    text-shadow: 0 0 6px rgba(148, 163, 184, 0.45);
   }
   .oes-tpl-btn:disabled {
     opacity: 0.35;
