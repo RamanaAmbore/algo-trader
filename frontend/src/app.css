@@ -122,7 +122,14 @@
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 200;
+  /* Must sit above .fs-card-on (z-index 9999) so any modal opened
+     from within a fullscreen card — e.g. clicking a symbol in a
+     fullscreened Pulse / Holdings grid — lands on TOP of the card,
+     not behind it. 10500 also stays clear of the fullscreen
+     control trio (.default-btn / .rf-btn at 10000) so those icons
+     remain reachable on the host card if the operator dismisses
+     the modal. */
+  z-index: 10500;
   display: flex;
   align-items: center;
   justify-content: center;
