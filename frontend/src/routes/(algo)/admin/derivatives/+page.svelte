@@ -301,8 +301,11 @@
   // on mount (keyed by username + cardId).
   let _colPayoff = $state(false);
   let _colLegs   = $state(false);
+  let _colByund  = $state(false);
   let _fsPayoff  = $state(false);
   let _fsLegs    = $state(false);
+  let _fsByund   = $state(false);
+  let _filterByund = $state('');
 
   // Tab inside the Legs card — 'legs' shows the full candidate
   // grid; 'expiry' shows positions identified for close before
@@ -657,6 +660,78 @@
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
     return rows;
+  });
+
+  /** Per-underlying P&L rollup with Hold / No-Hold side-by-side.
+   *  Rows are grouped by the parsed underlying root; each row tracks
+   *  F&O qty separately from equity qty (different unit — contracts vs
+   *  shares), then P&L + Day P&L are summed twice: once including
+   *  equity-holding legs (kind === 'eq'), once excluding them. Lets
+   *  the operator see at a glance whether an equity holding is
+   *  carrying or dragging the F&O book on a given underlying
+   *  (covered-call performance, hedge effectiveness, etc.).
+   *
+   *  Sourced from `candidatePositions` (not displayedCandidates) so
+   *  the rollup ignores the Legs card's own search filter — operator
+   *  scoping the Legs view to a single symbol doesn't shrink the
+   *  by-underlying summary. The Account / Expiry / Holdings-toggle
+   *  filters DO apply since those are upstream of candidatePositions. */
+  const _byUnderlyingTotals = $derived.by(() => {
+    const groups = new Map();
+    for (const c of candidatePositions) {
+      const root = (decomposeSymbol(c.symbol).root || c.symbol || '').toUpperCase();
+      if (!root) continue;
+      let g = groups.get(root);
+      if (!g) {
+        g = {
+          underlying: root,
+          qty_fno: 0, qty_eq: 0,
+          legs_with: 0, legs_without: 0,
+          pnl_with: 0, pnl_without: 0,
+          day_with: 0, day_without: 0,
+        };
+        groups.set(root, g);
+      }
+      const qty = Number(c.qty) || 0;
+      const pnl = Number(c.pnl) || 0;
+      const day = Number(c.day_change_val) || 0;
+      g.legs_with++;
+      g.pnl_with += pnl;
+      g.day_with += day;
+      if (c.kind === 'eq') {
+        g.qty_eq += qty;
+      } else {
+        g.qty_fno += qty;
+        g.legs_without++;
+        g.pnl_without += pnl;
+        g.day_without += day;
+      }
+    }
+    if (_filterByund) {
+      const q = _filterByund.toUpperCase();
+      for (const [k] of groups) if (!k.includes(q)) groups.delete(k);
+    }
+    return Array.from(groups.values()).sort(
+      (a, b) => Math.abs(b.pnl_with) - Math.abs(a.pnl_with)
+    );
+  });
+
+  const _byUnderlyingTotal = $derived.by(() => {
+    const t = { qty_fno: 0, qty_eq: 0,
+                legs_with: 0, legs_without: 0,
+                pnl_with: 0, pnl_without: 0,
+                day_with: 0, day_without: 0 };
+    for (const g of _byUnderlyingTotals) {
+      t.qty_fno += g.qty_fno;
+      t.qty_eq  += g.qty_eq;
+      t.legs_with    += g.legs_with;
+      t.legs_without += g.legs_without;
+      t.pnl_with     += g.pnl_with;
+      t.pnl_without  += g.pnl_without;
+      t.day_with     += g.day_with;
+      t.day_without  += g.day_without;
+    }
+    return t;
   });
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
@@ -3884,6 +3959,83 @@
   </div>
 </div>
 
+<!-- Per-underlying snapshot — totals rows grouped by parsed root, with
+     P&L + Day P&L shown side-by-side for "with hold" (eq legs
+     included) and "without hold" (F&O only). Lets the operator see
+     at a glance whether an equity holding is carrying or dragging
+     the F&O book on each underlying. Always mounted (no outer gate)
+     so the chrome stays stable across symbol switches. -->
+<div class="algo-status-card cmd-surface p-3 opt-byund-card mb-3"
+  data-status="inactive"
+  class:fs-card-on={_fsByund}
+  class:is-collapsed={_colByund}>
+  <div class="bucket-header">
+    <span class="opt-section-h" style="padding-bottom:0">
+      Underlyings snapshot
+      <span class="opt-section-meta">({_byUnderlyingTotals.length}) — per-root rollup of legs; hold vs no-hold side-by-side</span>
+    </span>
+    <span class="payoff-card-controls">
+      {#if _fsByund}
+        <RefreshButton onClick={() => { loadPositions(); loadStrategy(); }}
+                       loading={loading} label="snapshot" />
+      {/if}
+      <GridSearchButton bind:filter={_filterByund} label="Underlyings" />
+      <CollapseButton bind:isCollapsed={_colByund} cardId="optByund" label="Underlyings snapshot" />
+      <DefaultSizeButton bind:isFullscreen={_fsByund} bind:isCollapsed={_colByund} label="Underlyings snapshot" />
+      <FullscreenButton bind:isFullscreen={_fsByund} label="Underlyings snapshot" />
+    </span>
+  </div>
+  {#if !_colByund}
+    <div class="byund-scroll">
+      <div class="byund-grid">
+        <div class="byund-headrow">
+          <span>Underlying</span>
+          <span class="num">Legs</span>
+          <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
+          <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
+          <span class="num" title="Total P&L including any equity holding leg's contribution.">P&amp;L · Hold</span>
+          <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L · No-Hold</span>
+          <span class="num" title="Today's P&L change including any equity holding leg.">Day · Hold</span>
+          <span class="num" title="Today's P&L change from F&O legs only.">Day · No-Hold</span>
+        </div>
+        {#if _byUnderlyingTotals.length === 0}
+          <div class="byund-empty">
+            {#if !selectedUnderlying}
+              No legs in scope. Pick an underlying or filter to surface a rollup.
+            {:else}
+              No legs match the current filters.
+            {/if}
+          </div>
+        {/if}
+        {#each _byUnderlyingTotals as g (g.underlying)}
+          <div class="byund-row">
+            <span class="byund-und">{g.underlying}</span>
+            <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? ` / ${g.legs_without}` : ''}</span>
+            <span class="num cell-muted">{g.qty_fno || '—'}</span>
+            <span class="num cell-muted">{g.qty_eq || '—'}</span>
+            <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
+            <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_without)}</span>
+            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
+            <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_without)}</span>
+          </div>
+        {/each}
+        {#if _byUnderlyingTotals.length > 0}
+          <div class="byund-row byund-row-total">
+            <span class="byund-und">TOTAL</span>
+            <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? ` / ${_byUnderlyingTotal.legs_without}` : ''}</span>
+            <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
+            <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
+            <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
+            <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
+            <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
+            <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+</div>
+
 <!-- Aggregate / Greeks / Risk cards — three cards in a horizontal
      flex row under the candidates panel. Each card has its own
      internal kv-pair flow. -->
@@ -4567,6 +4719,83 @@
      mounted across underlying switches (the grid only rebuilds its
      row contents, not its chrome). */
   .cand-empty {
+    grid-column: 1 / -1;
+    padding: 0.85rem 0.7rem;
+    font-family: monospace;
+    font-size: 0.65rem;
+    color: #7e97b8;
+    font-style: italic;
+    text-align: center;
+  }
+
+  /* ── Per-underlying snapshot card ────────────────────────────────
+     Compact 8-column table; first column is the underlying root,
+     followed by leg-count + qty + four side-by-side P&L columns
+     (Hold / No-Hold for both lifetime + today). Right-aligned numeric
+     cells with the standard cell-pos / cell-neg / cell-flat tinting. */
+  .byund-scroll {
+    overflow-x: auto;
+    margin-top: 0.4rem;
+  }
+  .byund-grid {
+    display: grid;
+    grid-template-columns:
+      minmax(7rem, 1.4fr)   /* underlying */
+      minmax(3rem, 0.55fr)  /* legs */
+      minmax(4rem, 0.6fr)   /* F&O qty */
+      minmax(4rem, 0.6fr)   /* Eq qty */
+      minmax(5.5rem, 0.9fr) /* P&L Hold */
+      minmax(5.5rem, 0.9fr) /* P&L No-Hold */
+      minmax(5.5rem, 0.9fr) /* Day Hold */
+      minmax(5.5rem, 0.9fr);/* Day No-Hold */
+    min-width: 640px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.65rem;
+  }
+  .byund-headrow,
+  .byund-row {
+    display: contents;
+  }
+  .byund-headrow > span {
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid rgba(126,151,184,0.30);
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #a3b9d0;
+  }
+  .byund-row > span {
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid rgba(126,151,184,0.10);
+    color: #c8d8f0;
+  }
+  .byund-row > span.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .byund-headrow > span.num {
+    text-align: right;
+  }
+  .byund-und {
+    font-weight: 700;
+    color: #fbbf24;
+    letter-spacing: 0.02em;
+  }
+  .byund-row > .cell-pos { color: #4ade80; }
+  .byund-row > .cell-neg { color: #f87171; }
+  .byund-row > .cell-flat { color: #7e97b8; }
+  .byund-row > .cell-muted { color: rgba(200,216,240,0.65); }
+  .byund-row-total > span {
+    background: rgba(251,191,36,0.22);
+    border-top: 2px solid rgba(251,191,36,0.70);
+    border-bottom: 1px solid rgba(251,191,36,0.40);
+    color: #fbbf24;
+    font-weight: 700;
+  }
+  .byund-row-total > .cell-pos { color: #86efac !important; }
+  .byund-row-total > .cell-neg { color: #fca5a5 !important; }
+  .byund-empty {
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
     font-family: monospace;
