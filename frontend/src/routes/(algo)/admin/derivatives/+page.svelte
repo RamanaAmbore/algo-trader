@@ -4816,15 +4816,15 @@
   .byund-grid {
     display: grid;
     grid-template-columns:
-      minmax(4rem, 0.7fr)    /* underlying */
-      minmax(5.5rem, 0.9fr)  /* Day */
-      minmax(5.5rem, 0.9fr)  /* P&L */
-      minmax(5.5rem, 0.9fr)  /* Day Net */
-      minmax(5.5rem, 0.9fr)  /* P&L Net */
+      minmax(3.5rem, 0.55fr) /* underlying */
+      minmax(3.8rem, 0.6fr)  /* Day */
+      minmax(3.8rem, 0.6fr)  /* P&L */
+      minmax(3.8rem, 0.6fr)  /* Day Net */
+      minmax(3.8rem, 0.6fr)  /* P&L Net */
       minmax(3rem, 0.55fr)   /* Legs */
       minmax(4rem, 0.6fr)    /* F&O qty */
       minmax(4rem, 0.6fr);   /* Eq qty */
-    min-width: 580px;
+    min-width: 500px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.62rem;        /* match Pulse Positions ~0.625rem */
   }
