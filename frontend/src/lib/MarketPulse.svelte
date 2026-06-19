@@ -3957,6 +3957,7 @@
         theme: 'legacy',
         columnDefs: posSummaryCols,
         rowData: [],
+        getRowId: ({ data }) => String(data?.account || ''),
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
           suppressHeaderMenuButton: true,
@@ -3998,6 +3999,7 @@
         theme: 'legacy',
         columnDefs: holdSummaryCols,
         rowData: [],
+        getRowId: ({ data }) => String(data?.account || ''),
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
           suppressHeaderMenuButton: true,
@@ -4057,6 +4059,7 @@
         theme: 'legacy',
         columnDefs: fundsCols,
         rowData: [],
+        getRowId: ({ data }) => String(data?.account || ''),
         defaultColDef: {
           resizable: true, sortable: true, suppressMovable: true,
           suppressHeaderMenuButton: true,

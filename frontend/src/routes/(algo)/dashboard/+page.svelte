@@ -1205,6 +1205,17 @@
     sortingOrder: ['asc', 'desc', null],
     headerHeight: 26,
     rowHeight: 26,
+    // Row identity for in-place updates. Without this, each
+    // setGridOption('rowData') call tears down every row's DOM and
+    // rebuilds (the dashboard polls every 30s, so the grids were
+    // re-mounting on every cycle). Covers both per-symbol grids
+    // (winners/losers) and per-account grids (funds, margin, equity).
+    getRowId: ({ data }) => {
+      if (!data) return '';
+      if (data.symbol)  return String(data.symbol);
+      if (data.account) return String(data.account);
+      return '';
+    },
   };
 
   $effect(() => {

@@ -524,6 +524,16 @@
       theme: 'legacy',
       columnDefs: colDefs,
       rowData,
+      // Row identity for in-place updates — without this, ag-Grid
+      // tears down every <div> row on every setGridOption('rowData')
+      // call (the 30 s polls or any tab refresh would otherwise wipe
+      // selection / cell focus / flash animations).
+      getRowId: ({ data }) => {
+        if (!data) return '';
+        if (data.tradingsymbol) return `${data.tradingsymbol}|${data.account || ''}`;
+        if (data.account) return String(data.account);
+        return '';
+      },
       defaultColDef: defaultCol,
       // Three-state sort cycle: ASC → DESC → no-sort (back to the
       // original row order). Applied at the grid level — same idiom
