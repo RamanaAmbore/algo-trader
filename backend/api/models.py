@@ -332,6 +332,15 @@ class AlgoOrder(Base):
     # /admin/templates audit reporting. NULL means "no attach yet"
     # (parent not yet filled, or no template was picked).
     attached_gtts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Per-order template parameter overrides — JSON dict with keys
+    # tp_pct / sl_pct / wing_premium_pct / wing_strike_offset. Set
+    # by the basket / ticket route when the operator tweaks the
+    # shell-level "On fill" inputs at submit. The postback handler
+    # reads it back and passes it as `overrides` to
+    # apply_template_to_order so the actual GTTs reflect the
+    # operator's per-submit tweaks even though the template row
+    # itself stays untouched. NULL when no overrides were supplied.
+    template_overrides_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # basket_tag groups the legs of a single basket submission.  Carried
     # through to kite.place_order(tag=…) so the broker also groups them.
     basket_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

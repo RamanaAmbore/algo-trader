@@ -927,8 +927,18 @@
         target_abs:       leg.target_abs   ?? null,
         // Same template attaches to every leg. Backend basket route
         // reads BasketLeg.template_id; per-leg `apply_template_to_order`
-        // runs on fill to attach TP/SL/Wing GTTs.
-        template_id:      _sharedTemplateId,
+        // runs on fill to attach TP/SL/Wing GTTs. Per-leg overrides
+        // (Phase 5) will eventually supersede the shell defaults; for
+        // now every leg carries the shell-level overrides verbatim.
+        template_id:      leg.template_id ?? _sharedTemplateId,
+        tp_pct_override:             leg.tp_pct_override
+          ?? (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null),
+        sl_pct_override:             leg.sl_pct_override
+          ?? (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null),
+        wing_premium_pct_override:   leg.wing_premium_pct_override
+          ?? (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null),
+        wing_strike_offset_override: leg.wing_strike_offset_override
+          ?? (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null),
       })),
     }));
 

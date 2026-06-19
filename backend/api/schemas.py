@@ -319,6 +319,15 @@ class BasketLeg(msgspec.Struct):
     # carries these too).
     target_pct: Optional[float] = None
     target_abs: Optional[float] = None
+    # Per-leg template parameter overrides — operator's tweaks to
+    # the selected template's defaults for THIS submit. Persisted on
+    # the AlgoOrder row as `template_overrides_json` so the postback
+    # handler re-applies them when the parent fills. Empty / None on
+    # any field means "use the template's default for that param."
+    tp_pct_override:             Optional[float] = None
+    sl_pct_override:             Optional[float] = None
+    wing_premium_pct_override:   Optional[float] = None
+    wing_strike_offset_override: Optional[int]   = None
 
 
 class BasketGroup(msgspec.Struct):

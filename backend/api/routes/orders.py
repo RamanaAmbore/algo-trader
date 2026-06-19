@@ -532,6 +532,31 @@ async def _maybe_attach_template_to_ticket(
     return result.to_dict()
 
 
+def _build_overrides_json(leg) -> str | None:
+    """Serialize per-leg template parameter overrides into a JSON string
+    for persistence on AlgoOrder.template_overrides_json. Returns None
+    when no overrides were supplied (caller leaves the DB column null).
+
+    Mirrors the override keys `apply_template_to_order` expects in its
+    `overrides` dict so the postback handler can pass the parsed JSON
+    straight through.
+    """
+    payload = {}
+    for src_key, dst_key in (
+        ("tp_pct_override",             "tp_pct"),
+        ("sl_pct_override",             "sl_pct"),
+        ("wing_premium_pct_override",   "wing_premium_pct"),
+        ("wing_strike_offset_override", "wing_strike_offset"),
+    ):
+        v = getattr(leg, src_key, None)
+        if v is not None:
+            payload[dst_key] = v
+    if not payload:
+        return None
+    import json as _json
+    return _json.dumps(payload)
+
+
 async def _attach_basket_leg_template(
     *,
     algo_order_id: int | None,
@@ -679,6 +704,7 @@ async def _fire_template_attach_on_fill(
             from backend.api.models import AlgoOrder as _AO
             from backend.api.algo.template_attach import apply_template_to_order
 
+            _row_overrides: dict = {}
             async with _async_s() as _s:
                 _row = (await _s.execute(
                     _sel_t(_AO).where(_AO.id == parent_row_id)
@@ -692,11 +718,25 @@ async def _fire_template_attach_on_fill(
                 if _row.attached_gtts_json:
                     # Duplicate postback — already attached.
                     return
-    
+                # Phase 2 of the template/on-fill rework: pull the
+                # operator's per-submit overrides off the row so the
+                # attach reflects them. Empty dict when the column is
+                # null (no overrides supplied at submit time).
+                if _row.template_overrides_json:
+                    try:
+                        _parsed = _json.loads(_row.template_overrides_json)
+                        if isinstance(_parsed, dict):
+                            _row_overrides = _parsed
+                    except Exception as _e:
+                        logger.warning(
+                            f"[TPL-ATTACH] could not parse template_overrides_json "
+                            f"for parent #{parent_row_id}: {_e}"
+                        )
+
             result = await apply_template_to_order(
                 template_id=template_id,
                 template_slug=None,
-                overrides={},
+                overrides=_row_overrides,
                 parent_account=parent_account,
                 parent_symbol=parent_symbol,
                 parent_side=parent_side,
@@ -1357,10 +1397,20 @@ class OrdersController(Controller):
             # the broker — paper just refers to the parent's mode); sim
             # mode flows through SimDriver.
             apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
+            # Re-use the per-submit overrides persisted on the row.
+            _retry_overrides: dict = {}
+            if row.template_overrides_json:
+                try:
+                    import json as _json2
+                    _parsed = _json2.loads(row.template_overrides_json)
+                    if isinstance(_parsed, dict):
+                        _retry_overrides = _parsed
+                except Exception:
+                    pass
             result = await apply_template_to_order(
                 template_id=row.template_id,
                 template_slug=None,
-                overrides={},
+                overrides=_retry_overrides,
                 parent_account=row.account or "",
                 parent_symbol=row.symbol or "",
                 parent_side=row.side or "BUY",
@@ -2212,6 +2262,7 @@ class OrdersController(Controller):
                             target_pct=(_eff_target_pct
                                         if _eff_target_pct > 0 else None),
                             template_id=data.template_id,
+                            template_overrides_json=_build_overrides_json(data),
                             product=(data.product or "NRML"),
                             detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
                                    f"{' @₹' + str(data.price) if data.price else ''}",
@@ -2421,6 +2472,7 @@ class OrdersController(Controller):
                     agent_id=_manual_aid,
                     target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
                     template_id=data.template_id,
+                    template_overrides_json=_build_overrides_json(data),
                     product=(data.product or "NRML"),
                     detail=detail,
                 )
@@ -2990,6 +3042,7 @@ class OrdersController(Controller):
                                 basket_tag=basket_id,
                                 target_pct=(eff_target_pct if eff_target_pct > 0 else None),
                                 template_id=leg.template_id,
+                                template_overrides_json=_build_overrides_json(leg),
                                 product=(leg.product or "NRML"),
                             )
                             _s.add(_r)
@@ -3029,6 +3082,7 @@ class OrdersController(Controller):
                             basket_tag=basket_id,
                             target_pct=(eff_target_pct if eff_target_pct > 0 else None),
                             template_id=leg.template_id,
+                            template_overrides_json=_build_overrides_json(leg),
                             product=(leg.product or "NRML"),
                             detail=f"[SHADOW-BASKET] leg {i} tag={basket_id}",
                         )
@@ -3068,6 +3122,7 @@ class OrdersController(Controller):
                             basket_tag=basket_id,
                             target_pct=(eff_target_pct if eff_target_pct > 0 else None),
                             template_id=leg.template_id,
+                            template_overrides_json=_build_overrides_json(leg),
                             product=(leg.product or "NRML"),
                             detail=_detail,
                         )
