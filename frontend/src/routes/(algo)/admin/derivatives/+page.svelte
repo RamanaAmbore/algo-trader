@@ -662,50 +662,82 @@
     return rows;
   });
 
-  /** Per-underlying P&L rollup with Hold / No-Hold side-by-side.
-   *  Rows are grouped by the parsed underlying root; each row tracks
-   *  F&O qty separately from equity qty (different unit — contracts vs
-   *  shares), then P&L + Day P&L are summed twice: once including
-   *  equity-holding legs (kind === 'eq'), once excluding them. Lets
-   *  the operator see at a glance whether an equity holding is
-   *  carrying or dragging the F&O book on a given underlying
-   *  (covered-call performance, hedge effectiveness, etc.).
+  /** Whole-book snapshot grouped by parsed underlying root. Operator:
+   *  "The underlying snapshot should show all totals for all
+   *  underlying with no relation with root/symbol selector for
+   *  derivatives. There should be one row for each root/underlying.
+   *  It should be wired to account dropdown in the page. not
+   *  underlying."
    *
-   *  Sourced from `candidatePositions` (not displayedCandidates) so
-   *  the rollup ignores the Legs card's own search filter — operator
-   *  scoping the Legs view to a single symbol doesn't shrink the
-   *  by-underlying summary. The Account / Expiry / Holdings-toggle
-   *  filters DO apply since those are upstream of candidatePositions. */
+   *  Reads raw `positions` (opt + fut) + `holdings` (eq) directly so
+   *  the picker bar's Underlying / Expiry filters DO NOT scope this
+   *  rollup. The only filter applied is the Account multi-select.
+   *  Each row is one underlying root; columns split totals into
+   *  "with Hold" (eq layer included) and "without Hold" (F&O only)
+   *  so the operator sees the covered-call / hedge contribution at
+   *  a glance. */
   const _byUnderlyingTotals = $derived.by(() => {
+    const wantedSource = simActive ? 'sim' : 'live';
+    const matchAccount = (acct) => {
+      if (!selectedAccounts.length) return true;
+      return selectedAccounts.includes(String(acct || ''));
+    };
     const groups = new Map();
-    for (const c of candidatePositions) {
-      const root = (decomposeSymbol(c.symbol).root || c.symbol || '').toUpperCase();
-      if (!root) continue;
+    const ensure = (root) => {
       let g = groups.get(root);
       if (!g) {
-        g = {
-          underlying: root,
-          qty_fno: 0, qty_eq: 0,
-          legs_with: 0, legs_without: 0,
-          pnl_with: 0, pnl_without: 0,
-          day_with: 0, day_without: 0,
-        };
+        g = { underlying: root,
+              qty_fno: 0, qty_eq: 0,
+              legs_with: 0, legs_without: 0,
+              pnl_with: 0, pnl_without: 0,
+              day_with: 0, day_without: 0 };
         groups.set(root, g);
       }
-      const qty = Number(c.qty) || 0;
-      const pnl = Number(c.pnl) || 0;
-      const day = Number(c.day_change_val) || 0;
+      return g;
+    };
+    // F&O positions — opt + fut. Grouped by parsed underlying root.
+    // Cast through `any` because the JSDoc shape for `positions` lists
+    // a minimal subset (`symbol`/`account`/`qty`/`source`); the actual
+    // backend row carries `quantity`/`pnl`/`day_change_val` too.
+    for (const _p of positions) {
+      const p = /** @type {any} */ (_p);
+      if (p.source !== wantedSource) continue;
+      if (!matchAccount(p.account)) continue;
+      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const isFut = /FUT$/i.test(sym);
+      const isOpt = /(CE|PE)$/i.test(sym);
+      if (!isFut && !isOpt) continue;
+      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+      if (!root) continue;
+      const g = ensure(root);
+      const qty = Number(p.quantity ?? p.qty) || 0;
+      const pnl = Number(p.pnl) || 0;
+      const day = Number(p.day_change_val) || 0;
+      g.qty_fno += qty;
+      g.legs_with++;
+      g.legs_without++;
+      g.pnl_with     += pnl;
+      g.pnl_without  += pnl;
+      g.day_with     += day;
+      g.day_without  += day;
+    }
+    // Equity holdings — each stock is its OWN root. Counted only in
+    // the "with Hold" totals so the operator can read the F&O book
+    // alone via the No-Hold column.
+    for (const _h of holdings) {
+      const h = /** @type {any} */ (_h);
+      if (!matchAccount(h.account)) continue;
+      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const g = ensure(sym);
+      const qty = Number(h.opening_quantity ?? h.quantity ?? h.qty) || 0;
+      const pnl = Number(h.pnl) || 0;
+      const day = Number(h.day_change_val) || 0;
+      g.qty_eq += qty;
       g.legs_with++;
       g.pnl_with += pnl;
       g.day_with += day;
-      if (c.kind === 'eq') {
-        g.qty_eq += qty;
-      } else {
-        g.qty_fno += qty;
-        g.legs_without++;
-        g.pnl_without += pnl;
-        g.day_without += day;
-      }
     }
     if (_filterByund) {
       const q = _filterByund.toUpperCase();
@@ -3977,18 +4009,18 @@
   class:is-collapsed={_colByund}>
   <div class="bucket-header">
     <span class="opt-section-h" style="padding-bottom:0">
-      Underlyings snapshot
-      <span class="opt-section-meta">({_byUnderlyingTotals.length}) — per-root rollup of legs; hold vs no-hold side-by-side</span>
+      Snapshot
+      <span class="opt-section-meta">({_byUnderlyingTotals.length}) — whole-book rollup by underlying; scoped to the Account filter only</span>
     </span>
     <span class="payoff-card-controls">
       {#if _fsByund}
         <RefreshButton onClick={() => { loadPositions(); loadStrategy(); }}
                        loading={loading} label="snapshot" />
       {/if}
-      <GridSearchButton bind:filter={_filterByund} label="Underlyings" />
-      <CollapseButton bind:isCollapsed={_colByund} cardId="optByund" label="Underlyings snapshot" />
-      <DefaultSizeButton bind:isFullscreen={_fsByund} bind:isCollapsed={_colByund} label="Underlyings snapshot" />
-      <FullscreenButton bind:isFullscreen={_fsByund} label="Underlyings snapshot" />
+      <GridSearchButton bind:filter={_filterByund} label="Snapshot" />
+      <CollapseButton bind:isCollapsed={_colByund} cardId="optByund" label="Snapshot" />
+      <DefaultSizeButton bind:isFullscreen={_fsByund} bind:isCollapsed={_colByund} label="Snapshot" />
+      <FullscreenButton bind:isFullscreen={_fsByund} label="Snapshot" />
     </span>
   </div>
   {#if !_colByund}
@@ -4006,10 +4038,12 @@
         </div>
         {#if _byUnderlyingTotals.length === 0}
           <div class="byund-empty">
-            {#if !selectedUnderlying}
-              No legs in scope. Pick an underlying or filter to surface a rollup.
+            {#if positions.length === 0 && holdings.length === 0}
+              Loading book…
+            {:else if selectedAccounts.length > 0}
+              No positions or holdings in the selected account(s).
             {:else}
-              No legs match the current filters.
+              No positions or holdings in the book.
             {/if}
           </div>
         {/if}
