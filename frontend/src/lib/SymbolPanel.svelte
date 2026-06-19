@@ -521,6 +521,13 @@
   // dropdown so "none" isn't listed twice (once as the explicit
   // sentinel, once as a regular template).
   const _nonNoneTemplates = $derived(_templates.filter(t => t.slug !== 'none'));
+  // True when the shell row is on the explicit "None" pill — the
+  // operator opted out of any GTT attach for this submit. Derived so
+  // the pill toggle and the Default-template resolution stay in
+  // lockstep.
+  const _shellUsingNone = $derived(
+    !!(_noneTpl && _sharedTemplateId === _noneTpl.id)
+  );
   // Side-scope helper — mirrors OrderTicket's `_appliesToFor` so the
   // shell can decide whether the active template matches the operator's
   // current direction. Returns 'sell_option' for SELL CE/PE legs (the
@@ -566,6 +573,25 @@
       ? Number(_sharedWingStrikeOffsetOverride)
       : (_selectedTemplate.wing_strike_offset ?? null);
     return (effPrem != null && effPrem > 0) || (effOff != null && effOff !== 0);
+  });
+  // Side-aware default template — resolves the saved is_default row
+  // whose applies_to matches the operator's current scope (SELL CE/PE
+  // → sell_option; SELL eq/fut → sell_any; BUY any → buy_any). The
+  // Default pill in the on-fill row clicks this. Falls back through
+  // (a) side-matching default → (b) 'both' default → (c) null when
+  // nothing fits. Reactive so a side flip or symbol change refreshes
+  // both the pill state and the rendered template params.
+  const _sideAwareDefault = $derived.by(() => {
+    if (_templates.length === 0) return null;
+    const scope = _appliesToFor(_modalSide, _localSymbol);
+    const sideMatch = _templates.find(t =>
+      t.is_default && (t.applies_to || '').toLowerCase() === scope
+    );
+    if (sideMatch) return sideMatch;
+    const bothMatch = _templates.find(t =>
+      t.is_default && (t.applies_to || '').toLowerCase() === 'both'
+    );
+    return bothMatch || null;
   });
   // Phase 5 — which basket-leg keys currently have their per-leg
   // override editor open. Operator clicks the "⚙ tmpl" chip on a
@@ -1601,34 +1627,58 @@
 
     </div>
 
-    <!-- Shell-level On-fill picker — sits BELOW the tab body. Visible
-         on every tab + every modal mount when the operator is opening
-         a new order. The picker's "On fill" label declares WHEN the
-         attached rule fires (the moment the order fills at the
-         broker); the override inputs adapt the saved template's
-         TP / SL / Wing for THIS submit without mutating the saved
-         row. Persists across Ticket ↔ Chain tab flips via
-         _sharedTemplateId.
-         First-paint default is now the side-aware is_default
-         template that matches the current scope (operator: "instead
-         of None, going forward use the default valid template for
-         buy or sell"). -->
+    <!-- Shell-level Template picker — sits BELOW the tab body. Two-
+         pill toggle (Default / None) mirrors the Side toggle in the
+         Ticket tab so the operator's mental model is the same.
+         Operator: "so just have default or none like add or close.
+         based on the symbol type order type, for default show the
+         specific template values."
+         Default → side-aware is_default template (resolved at render
+                   time via `_sideAwareDefault`; auto-refreshes on
+                   side flip + symbol change)
+         None    → explicit opt-out, no GTT attach
+         No dropdown: the operator never picks the template by name,
+         the platform picks the right one for the leg + side. Override
+         inputs surface inline only when Default is active and the
+         template has the relevant fields. -->
     {#if _templates.length > 0 && action === 'open'}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
-           title={_selectedTemplate && _selectedTemplate.slug !== 'none'
+           title={!_shellUsingNone && _selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
-             : 'On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.'}>
-        <label class="oes-basket-tpl-pick">
-          <span class="oes-basket-tpl-label">On fill</span>
-          <Select
-            bind:value={_sharedTemplateId}
-            options={_templates.map(t => ({
-              value: t.id,
-              label: t.name || t.slug || `Template #${t.id}`,
-            }))}
-            placeholder="select template" />
-        </label>
-        {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+             : 'Default attaches the saved template that matches the current side + symbol type. None opts out of any GTT attach.'}>
+        <span class="oes-basket-tpl-pick">
+          <span class="oes-basket-tpl-label">Template</span>
+          <span class="oes-tpl-toggle" role="group" aria-label="Template attach">
+            <button type="button"
+                    class={'oes-tpl-btn' + (!_shellUsingNone ? ' on' : '')}
+                    disabled={!_sideAwareDefault}
+                    title={_sideAwareDefault
+                      ? `Attach ${_sideAwareDefault.name} on fill`
+                      : 'No side-default template configured for this scope'}
+                    onclick={() => {
+                      if (_sideAwareDefault) _sharedTemplateId = _sideAwareDefault.id;
+                    }}>
+              Default
+            </button>
+            <button type="button"
+                    class={'oes-tpl-btn' + (_shellUsingNone ? ' on' : '')}
+                    title="No template — entry only, no GTT / no wing"
+                    onclick={() => {
+                      if (_noneTpl) _sharedTemplateId = _noneTpl.id;
+                    }}>
+              None
+            </button>
+          </span>
+          {#if !_shellUsingNone && _selectedTemplate}
+            <!-- Active template name + description so the operator sees
+                 WHICH default Default resolved to (relevant when there
+                 are multiple side-defaults seeded). -->
+            <span class="oes-basket-tpl-name" title={_selectedTemplate.description || ''}>
+              {_selectedTemplate.name || _selectedTemplate.slug}
+            </span>
+          {/if}
+        </span>
+        {#if !_shellUsingNone && _selectedTemplate}
           <div class="oes-basket-tpl-params">
             <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
               <span>TP%</span>
@@ -2602,6 +2652,61 @@
     font-weight: 800;
     color: var(--algo-amber, #fbbf24);
     font-size: 0.6rem;
+  }
+  /* Default / None two-pill toggle — mirrors the Side toggle in
+     OrderTicket so the operator's mental model is the same: Default
+     attaches the platform-resolved template, None opts out. Sits
+     compact next to the "Template" label. */
+  .oes-tpl-toggle {
+    display: inline-flex;
+    height: 1.4rem;
+    min-height: 1.4rem;
+    border-radius: 3px;
+    overflow: hidden;
+    background: rgba(8, 14, 28, 0.55);
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    box-sizing: border-box;
+  }
+  .oes-tpl-btn {
+    flex: 0 0 auto;
+    padding: 0 0.75rem;
+    background: transparent;
+    border: 0;
+    color: rgba(200, 216, 240, 0.65);
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .oes-tpl-btn + .oes-tpl-btn { border-left: 1px solid rgba(251, 191, 36, 0.30); }
+  .oes-tpl-btn:hover:not(.on):not([disabled]) {
+    background: rgba(251, 191, 36, 0.08);
+    color: #f1f7ff;
+  }
+  .oes-tpl-btn.on {
+    background: rgba(251, 191, 36, 0.22);
+    color: var(--algo-amber, #fbbf24);
+  }
+  .oes-tpl-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  /* Active-template name chip — sits inline next to the Default pill
+     so the operator sees WHICH default Default resolved to (relevant
+     once 4 side-defaults are seeded). */
+  .oes-basket-tpl-name {
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: #f8fafc;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.32);
+    padding: 0.12rem 0.42rem;
+    border-radius: 3px;
+    letter-spacing: 0.02em;
   }
   .oes-basket-tpl-note {
     display: inline-flex;
