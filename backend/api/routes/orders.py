@@ -1281,6 +1281,83 @@ class OrdersController(Controller):
         )
         return {"ok": True, "err": err_msg or None}
 
+    @post("/{algo_order_id:int}/retry-template", guards=[admin_guard])
+    async def retry_template(self, algo_order_id: int, request: Request) -> dict:
+        """Re-run apply_template_to_order against an already-filled
+        parent. Useful when the original attach failed silently — e.g.
+        a SELL option with wing_premium_pct=10 picked nothing because
+        every chain candidate failed the OI gate (fixed forward in
+        d826590e, but pre-existing positions need this to catch up).
+
+        Idempotent: bails when `attached_gtts_json` is already set,
+        when the order isn't FILLED, or when no template was attached
+        in the first place. Operator gets a clear reason string back
+        rather than a generic 4xx.
+        """
+        from sqlalchemy import select as _sql_select
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder, OrderTemplate
+        from backend.api.algo.template_attach import apply_template_to_order
+
+        async with async_session() as s:
+            row = (await s.execute(
+                _sql_select(AlgoOrder).where(AlgoOrder.id == algo_order_id)
+            )).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="order not found")
+            if row.template_id is None:
+                return {"ok": False, "reason": "no template attached to this order"}
+            if row.attached_gtts_json:
+                return {"ok": False, "reason": "template already attached — nothing to retry"}
+            if (row.status or "").upper() != "FILLED":
+                return {"ok": False, "reason": f"parent must be FILLED to attach (status={row.status})"}
+
+            tpl = (await s.execute(
+                _sql_select(OrderTemplate).where(OrderTemplate.id == row.template_id)
+            )).scalar_one_or_none()
+            if tpl is None:
+                return {"ok": False, "reason": f"template #{row.template_id} no longer exists"}
+            template_dict = {
+                "id": tpl.id, "slug": tpl.slug, "name": tpl.name,
+                "tp_pct": tpl.tp_pct, "sl_pct": tpl.sl_pct,
+                "tp_order_type": tpl.tp_order_type,
+                "tp_scales_json": tpl.tp_scales_json,
+                "sl_trail_pct": tpl.sl_trail_pct,
+                "wing_premium_pct": tpl.wing_premium_pct,
+                "wing_strike_offset": tpl.wing_strike_offset,
+            }
+
+            # Apply path mirrors the mode the parent was placed in.
+            apply_path = "sim" if (row.mode or "").lower() == "sim" else (
+                "paper" if (row.mode or "").lower() == "paper" else "live"
+            )
+            result = await apply_template_to_order(
+                template=template_dict,
+                overrides={},
+                parent_account=row.account or "",
+                parent_symbol=row.symbol or "",
+                parent_side=row.side or "BUY",
+                parent_qty=int(row.quantity or 0),
+                parent_exchange=row.exchange or "NFO",
+                parent_fill_price=float(row.fill_price or row.initial_price or 0),
+                parent_product=row.product or "NRML",
+                parent_order_id=row.id,
+                apply_path=apply_path,
+            )
+            # apply_path != preview writes attached_gtts_json back to the
+            # row via the engine. Refresh from DB so the response sees the
+            # updated state.
+            await s.refresh(row)
+
+        return {
+            "ok": True,
+            "wing_order_id": result.wing_order_id,
+            "gtt_ids":       result.gtt_ids,
+            "notes":         result.plan.notes if result.plan else [],
+            "errors":        result.errors,
+            "attached":      row.attached_gtts_json is not None,
+        }
+
     @post("/algo/reconcile")
     async def reconcile_algo_orders(self, request: Request) -> dict:
         """Admin sweep — re-syncs stale OPEN algo_orders rows against the

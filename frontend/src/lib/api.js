@@ -460,6 +460,13 @@ export const killChase = (algoOrderId) =>
  *  OPEN rows against the broker. Returns {scanned, updated, missing}. */
 export const reconcileAlgoOrders = () =>
   _post('/orders/algo/reconcile', {}, { auth: true });
+/** POST /api/orders/{algo_order_id}/retry-template — re-run
+ *  apply_template_to_order against an already-filled parent. Useful
+ *  when the initial attach failed silently (e.g. wing scan returned
+ *  no candidate). Idempotent: bails when already attached / not
+ *  filled / no template was set. */
+export const retryTemplateAttach = (algoOrderId) =>
+  _post(`/orders/${algoOrderId}/retry-template`, {}, { auth: true });
 /** POST /api/orders/{broker_order_id}/reconcile — re-sync ONE order
  *  against the broker. Body `{account}` tells the route which Kite
  *  handle to query. Returns

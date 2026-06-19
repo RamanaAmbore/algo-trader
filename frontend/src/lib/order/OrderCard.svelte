@@ -27,6 +27,13 @@
   import { formatDualTz } from '$lib/stores';
   import { longPress } from '$lib/actions/longPress.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { retryTemplateAttach } from '$lib/api';
+
+  // Re-attach button state — per-card spinner + inline note. The note
+  // disappears the next time the parent OrderCard re-renders with a
+  // fresh order prop (typical poll cadence ≤5s) so it stays ephemeral.
+  let _retrying = $state(false);
+  let _retryNote = $state('');
 
   let {
     /** @type {any} */                                   order,
@@ -161,7 +168,31 @@
     {#if _ts}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(_ts))}</span>{/if}
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.target_pct != null}<span class="log-chip log-chip-tp"><span class="log-chip-key">tp:</span>+{(Number(order.target_pct) * 100).toFixed(1)}%</span>{/if}
-    {#if order.template_id != null}<span class="log-chip log-chip-template" title={order.attached_gtts_json ? 'Template attached on fill: ' + order.attached_gtts_json : 'Template selected — will attach on fill'}><span class="log-chip-key">tmpl:</span>#{order.template_id}{order.attached_gtts_json ? ' ✓' : '…'}</span>{/if}
+    {#if order.template_id != null}<span class="log-chip log-chip-template" title={order.attached_gtts_json ? 'Template attached on fill: ' + order.attached_gtts_json : (order.status === 'FILLED' ? 'Template was selected but attach did not run — click Re-attach to retry.' : 'Template selected — will attach on fill')}><span class="log-chip-key">tmpl:</span>#{order.template_id}{order.attached_gtts_json ? ' ✓' : (order.status === 'FILLED' ? ' ⟳' : '…')}</span>{/if}
+    {#if order.template_id != null && (order.status || '').toUpperCase() === 'FILLED' && !order.attached_gtts_json}
+      <button type="button"
+              class="log-chip log-chip-retry-attach"
+              disabled={_retrying}
+              title="Re-run template attach against this filled parent — useful when the original attach silently dropped the wing (low OI etc.)."
+              onclick={async () => {
+                _retrying = true;
+                try {
+                  const r = await retryTemplateAttach(order.id);
+                  if (r?.ok) {
+                    _retryNote = 'Re-attach OK' + (r.wing_order_id ? ` · wing #${String(r.wing_order_id).slice(-6)}` : '');
+                  } else {
+                    _retryNote = `Re-attach skipped: ${r?.reason || 'unknown'}`;
+                  }
+                } catch (e) {
+                  _retryNote = `Re-attach failed: ${e?.message || e}`;
+                } finally {
+                  _retrying = false;
+                }
+              }}>
+        {_retrying ? '…' : '⟳ Re-attach'}
+      </button>
+    {/if}
+    {#if _retryNote}<span class="log-chip log-chip-retry-note">{_retryNote}</span>{/if}
     {#if order.parent_order_id != null}<span class="log-chip log-chip-parent"><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
     {#if order.basket_tag}<span class="log-chip log-chip-basket"><span class="log-chip-key">basket:</span>{order.basket_tag}</span>{/if}
     {#if order.status_message}<span class="log-chip"><span class="log-chip-key">note:</span>{order.status_message}</span>{/if}
@@ -186,4 +217,28 @@
   :global(.log-chip-template) { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-parent)  { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   :global(.log-chip-basket)  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+
+  /* Re-attach button — same chip shape as the rest of the row so it
+     visually slots in next to the template chip. Cyan-400 (cyan)
+     palette since it's an active action (vs purple's "informational"
+     template chip). Disabled while in-flight. */
+  :global(.log-chip-retry-attach) {
+    color: #22d3ee;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    cursor: pointer;
+  }
+  :global(.log-chip-retry-attach:hover) {
+    background: rgba(34, 211, 238, 0.18);
+    border-color: rgba(34, 211, 238, 0.75);
+  }
+  :global(.log-chip-retry-attach:disabled) {
+    opacity: 0.5;
+    cursor: wait;
+  }
+  :global(.log-chip-retry-note) {
+    color: #a3b9d0;
+    background: rgba(126, 151, 184, 0.10);
+    font-style: italic;
+  }
 </style>
