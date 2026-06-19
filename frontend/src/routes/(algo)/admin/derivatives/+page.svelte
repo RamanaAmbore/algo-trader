@@ -678,9 +678,19 @@
    *  a glance. */
   const _byUnderlyingTotals = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
+    // Account filter — when the operator picks one or more accounts in
+    // the page's Account multi-select, ONLY positions / holdings on
+    // those accounts contribute to the snapshot rows. Empty filter =
+    // all accounts. Operator: "when account is selected, the snapshot
+    // should include only the positions in the account for rows."
+    // Trim + uppercase both sides so casing / whitespace mismatches
+    // never cause a silent zero row.
+    const _wantedAccts = new Set(
+      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
+    );
     const matchAccount = (acct) => {
-      if (!selectedAccounts.length) return true;
-      return selectedAccounts.includes(String(acct || ''));
+      if (_wantedAccts.size === 0) return true;
+      return _wantedAccts.has(String(acct || '').trim().toUpperCase());
     };
     const groups = new Map();
     const ensure = (root) => {
@@ -4035,7 +4045,16 @@
   class:fs-card-on={_fsByund}
   class:is-collapsed={_colByund}>
   <div class="bucket-header">
-    <span class="opt-section-h" style="padding-bottom:0">Snapshot</span>
+    <span class="opt-section-h" style="padding-bottom:0">
+      Snapshot
+      <span class="byund-scope" title="Snapshot rows include only positions / holdings in this account scope. Empty = all accounts.">
+        {#if selectedAccounts.length === 0}
+          all accounts
+        {:else}
+          {selectedAccounts.join(' · ')}
+        {/if}
+      </span>
+    </span>
     <span class="payoff-card-controls">
       {#if _fsByund}
         <RefreshButton onClick={() => { loadPositions(); loadStrategy(); }}
@@ -4882,6 +4901,24 @@
   .byund-row > .cell-neg { color: #f87171; }
   .byund-row > .cell-flat { color: #7e97b8; }
   .byund-row > .cell-muted { color: rgba(200,216,240,0.65); }
+  /* Scope chip — small slate-grey tag inline with the Snapshot title
+     that names the active account filter. Empty filter reads "all
+     accounts" so the operator can confirm the snapshot is unscoped
+     at a glance. */
+  .byund-scope {
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 3px;
+    background: rgba(126, 151, 184, 0.18);
+    border: 1px solid rgba(126, 151, 184, 0.35);
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: none;
+  }
+
   /* TOTAL row — same canonical amber stratum the Legs TOTAL uses
      (commit fb0344fc). Override the alternating + hover bg so the
      amber reads uniformly. */
