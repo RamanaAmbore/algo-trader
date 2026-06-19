@@ -713,7 +713,13 @@ class DhanBroker(Broker):
         # ("security_id not found"). Operators with a Dhan account
         # placing MCX templates should mirror to their Kite account.
         if exchange in ("MCX", "NCO"):
-            raise RuntimeError(
+            # Audit fix — raise NotImplementedError, not RuntimeError. The
+            # template-attach pipeline + trail-stop background task catch
+            # NotImplementedError as "broker doesn't support this feature"
+            # and surface it through AttachResult.errors. Pre-fix the
+            # RuntimeError bubbled up uncaught, producing a 500 + no exit
+            # GTT for any MCX template attach on Dhan.
+            raise NotImplementedError(
                 f"Dhan Forever Order does not cover MCX/NCO — operator "
                 f"should attach the template via the Kite-mirrored "
                 f"account (got exchange={exchange!r}, symbol={tradingsymbol!r})"
@@ -1269,17 +1275,39 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
     return payload
 
 
+# Audit fix — map Dhan terminal status strings to Kite canonical values.
+# Pre-fix the chase loop checked `status == "COMPLETE"` (Kite's COMPLETE
+# string) against Dhan's verbatim "TRADED", so every Dhan order chase
+# stalled at chase_max_attempts and terminated UNFILLED, never firing
+# the FILLED branch + template attach. PENDING/TRANSIT map to OPEN so
+# the chase loop's mid-flight handling treats Dhan TRANSIT the same
+# way it treats Kite OPEN.
+_DHAN_STATUS_TO_KITE = {
+    "TRADED":    "COMPLETE",
+    "EXECUTED":  "COMPLETE",
+    "FILLED":    "COMPLETE",
+    "PENDING":   "OPEN",
+    "TRANSIT":   "OPEN",
+    "OPEN":      "OPEN",
+    "CANCELLED": "CANCELLED",
+    "REJECTED":  "REJECTED",
+    "EXPIRED":   "EXPIRED",
+}
+
+
 def _normalise_orders(resp: Any) -> list[dict]:
     out: list[dict] = []
     for o in _unwrap(resp):
         # Translate Dhan F&O symbol → Kite-style (see _dhan_to_kite_symbol)
         # so orders + positions display under one canonical tradingsymbol.
         _raw_ts_o = str(o.get("tradingSymbol") or "")
+        _raw_status = (o.get("orderStatus") or "").upper()
+        _status = _DHAN_STATUS_TO_KITE.get(_raw_status, _raw_status)
         out.append({
             "order_id":         str(o.get("orderId") or ""),
             "tradingsymbol":    _dhan_to_kite_symbol(_raw_ts_o),
             "exchange":         o.get("exchange") or "",
-            "status":           (o.get("orderStatus") or "").upper(),
+            "status":           _status,
             "transaction_type": o.get("transactionType") or "BUY",
             "order_type":       o.get("orderType") or "MARKET",
             "product":          {"INTRADAY": "MIS",

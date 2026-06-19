@@ -467,17 +467,28 @@ def get_historical_brokers() -> list[Broker]:
     ordered: list[Broker] = []
     seen: set[str] = set()
 
-    # Pinned account first (if it exists, is eligible, and not rate-limited).
-    if pinned and pinned in accounts and _is_hist_enabled(pinned):
+    # Audit fix — restrict to Kite. Pre-fix any account with
+    # historical_data_enabled=True (DB default true) was eligible, so
+    # Dhan + Groww accounts entered the list and the historical handler
+    # tried them in sequence. DhanBroker.historical_data() + Groww's
+    # equivalent return [] by design ("not wired"), so every attempt
+    # burned a network round-trip + marked the account rate-limited on
+    # error, then fell through to the next broker — delayed + noisy.
+    # Mirror the existing `get_sparkline_broker()` Kite-only filter.
+    def _is_kite_account(a: str) -> bool:
+        return _broker_id_for(a) == "zerodha_kite"
+
+    # Pinned account first (if it exists, is eligible, Kite, and not rate-limited).
+    if pinned and pinned in accounts and _is_hist_enabled(pinned) and _is_kite_account(pinned):
         broker_key = f"{_broker_id_for(pinned)}/{pinned}"
         if not _is_rate_limited(broker_key):
             ordered.append(get_broker(pinned))
             seen.add(pinned)
 
-    # Remaining eligible accounts, sorted by priority then insertion order.
+    # Remaining eligible Kite accounts, sorted by priority then insertion order.
     remaining = [
         a for a in accounts
-        if a not in seen and _is_hist_enabled(a)
+        if a not in seen and _is_hist_enabled(a) and _is_kite_account(a)
     ]
     remaining.sort(key=lambda a: (_account_priority(a), accounts.index(a)))
     for acct in remaining:

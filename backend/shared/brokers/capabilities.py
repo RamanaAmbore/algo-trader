@@ -112,7 +112,14 @@ DHAN_CAPS = BrokerCapabilities(
     atomic_basket=True,         # API-supported multi-leg basket
     order_tag=True,             # `correlation_id` field
     margin_preview=True,        # margin_calculator endpoint
-    postback_gtt="reliable",    # WebSocket order updates
+    # Audit fix — no Dhan WebSocket listener or GTT-fire postback handler
+    # is wired anywhere in the codebase today. Pre-fix this said
+    # "reliable" (intended future state) and the OrderTicket capability
+    # chip therefore advertised reliable GTT postback to the operator
+    # when actually the only Dhan GTT-fire detection is the
+    # `_task_oco_pair_watcher` poll loop. Switch to "poll_only" until a
+    # real WebSocket order-update listener lands.
+    postback_gtt="poll_only",
     rate_limit_orders_sec=20,
 )
 
