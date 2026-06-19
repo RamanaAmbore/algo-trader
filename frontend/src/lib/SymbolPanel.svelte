@@ -1486,64 +1486,13 @@
          modal's scrolled-into-view area and the operator only saw it
          on the shorter Ticket tab. Bound to _sharedTemplateId so the
          value persists across Ticket ↔ Chain tab flips. -->
-    {#if _templates.length > 0 && action === 'open'}
-      <!-- Template / On-fill row only renders when the operator is
-           OPENING a new order. Modify / Cancel / Close / Repeat
-           don't attach exit rules, so the picker would be inert there.
-           Operator: "on fill and templates should be disabled based
-           on the order." -->
-      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
-           title={_selectedTemplate && _selectedTemplate.slug !== 'none'
-             ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
-             : 'On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.'}>
-        <label class="oes-basket-tpl-pick">
-          <span class="oes-basket-tpl-label">On fill</span>
-          <Select
-            bind:value={_sharedTemplateId}
-            options={_templates.map(t => ({
-              value: t.id,
-              label: t.name || t.slug || `Template #${t.id}`,
-            }))}
-            placeholder="select template" />
-        </label>
-        {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
-          <!-- Editable parameter overrides — replace the descriptive
-               name + summary chip. Operator can tweak TP / SL / Wing
-               for the next submit without mutating the saved template.
-               Empty input = use the template's value (shown as
-               placeholder). Overrides reset when the operator picks a
-               different template. -->
-          <div class="oes-basket-tpl-params">
-            <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
-              <span>TP%</span>
-              <input type="number" step="0.5"
-                placeholder={_selectedTemplate.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
-                bind:value={_sharedTpOverride} />
-            </label>
-            <label class="oes-basket-tpl-param" title="Stop-loss % opposite the TP side.">
-              <span>SL%</span>
-              <input type="number" step="0.5"
-                placeholder={_selectedTemplate.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
-                bind:value={_sharedSlOverride} />
-            </label>
-            {#if _sharedTplShowsWing}
-              <label class="oes-basket-tpl-param" title="Protective wing BUY at this many strikes away from the parent.">
-                <span>Wing strike+</span>
-                <input type="number" step="50"
-                  placeholder={_selectedTemplate.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
-                  bind:value={_sharedWingStrikeOffsetOverride} />
-              </label>
-              <label class="oes-basket-tpl-param" title="Wing premium target as a % of the parent's premium.">
-                <span>Wing prem%</span>
-                <input type="number" step="0.5"
-                  placeholder={_selectedTemplate.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
-                  bind:value={_sharedWingPremPctOverride} />
-              </label>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {/if}
+    <!-- On-fill container is now rendered BELOW the tab body
+         (immediately above the basket bar). Operator: "on fill
+         container should be after chain picker or order ticket
+         depth." Sequence reads top-to-bottom as: header → tabs →
+         body (depth / strike grid) → On-fill → basket bar →
+         actions. The picker stays visible from BOTH tabs because
+         it lives at the shell level. -->
 
     <!-- Tab content. Command Line tab retired — was the third option
          alongside Chain and Ticket; the in-tab account+symbol inputs
@@ -1651,6 +1600,66 @@
       {/if}
 
     </div>
+
+    <!-- Shell-level On-fill picker — sits BELOW the tab body. Visible
+         on every tab + every modal mount when the operator is opening
+         a new order. The picker's "On fill" label declares WHEN the
+         attached rule fires (the moment the order fills at the
+         broker); the override inputs adapt the saved template's
+         TP / SL / Wing for THIS submit without mutating the saved
+         row. Persists across Ticket ↔ Chain tab flips via
+         _sharedTemplateId.
+         First-paint default is now the side-aware is_default
+         template that matches the current scope (operator: "instead
+         of None, going forward use the default valid template for
+         buy or sell"). -->
+    {#if _templates.length > 0 && action === 'open'}
+      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
+           title={_selectedTemplate && _selectedTemplate.slug !== 'none'
+             ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
+             : 'On-fill template attached to every leg the operator submits from this panel. Persists across Ticket / Chain tabs.'}>
+        <label class="oes-basket-tpl-pick">
+          <span class="oes-basket-tpl-label">On fill</span>
+          <Select
+            bind:value={_sharedTemplateId}
+            options={_templates.map(t => ({
+              value: t.id,
+              label: t.name || t.slug || `Template #${t.id}`,
+            }))}
+            placeholder="select template" />
+        </label>
+        {#if _selectedTemplate && _selectedTemplate.slug !== 'none'}
+          <div class="oes-basket-tpl-params">
+            <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
+              <span>TP%</span>
+              <input type="number" step="0.5"
+                placeholder={_selectedTemplate.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
+                bind:value={_sharedTpOverride} />
+            </label>
+            <label class="oes-basket-tpl-param" title="Stop-loss % opposite the TP side.">
+              <span>SL%</span>
+              <input type="number" step="0.5"
+                placeholder={_selectedTemplate.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
+                bind:value={_sharedSlOverride} />
+            </label>
+            {#if _sharedTplShowsWing}
+              <label class="oes-basket-tpl-param" title="Protective wing BUY at this many strikes away from the parent.">
+                <span>Wing strike+</span>
+                <input type="number" step="50"
+                  placeholder={_selectedTemplate.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
+                  bind:value={_sharedWingStrikeOffsetOverride} />
+              </label>
+              <label class="oes-basket-tpl-param" title="Wing premium target as a % of the parent's premium.">
+                <span>Wing prem%</span>
+                <input type="number" step="0.5"
+                  placeholder={_selectedTemplate.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
+                  bind:value={_sharedWingPremPctOverride} />
+              </label>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Shell-level basket bar — visible from any tab when legs exist.
          Per-leg pills (B/S · sym · lots stepper · × remove) sit on the
@@ -2499,15 +2508,23 @@
     width: 100%;
     flex-wrap: wrap;
   }
-  /* Shell-level template row — sits ABOVE the optional basket-bar so
-     it's always visible on every tab (Ticket / Chain / Command) and
-     in the modal. Subtle border so it reads as part of the panel
-     chrome, not as a piece of the basket-bar that floats below. */
+  /* Shell-level template row — sits BELOW the tab body, above the
+     basket bar. Repalette: violet (0.06 bg / 0.18 borders) was dull
+     and blended into the surrounding navy. Switched to a deeper
+     navy-into-amber gradient with stronger amber accent borders so
+     the row reads as the algo primary action band. Amber matches the
+     platform's "this is the algo primary accent" everywhere else
+     (template chip, agent rules, GTT pills). */
   .oes-basket-tpl-row-shell {
-    padding: 0.4rem 0.7rem;
-    background: rgba(192, 132, 252, 0.06);
-    border-top: 1px solid rgba(192, 132, 252, 0.18);
-    border-bottom: 1px solid rgba(192, 132, 252, 0.18);
+    padding: 0.45rem 0.7rem;
+    background:
+      linear-gradient(90deg,
+        rgba(251, 191, 36, 0.10) 0%,
+        rgba(251, 191, 36, 0.04) 100%),
+      rgba(13, 22, 38, 0.55);
+    border-top: 1px solid rgba(251, 191, 36, 0.42);
+    border-bottom: 1px solid rgba(251, 191, 36, 0.42);
+    box-shadow: inset 0 1px 0 rgba(251, 191, 36, 0.10);
     box-sizing: border-box;
   }
   /* Parameter override row — sits inline with the Select. Each
@@ -2533,21 +2550,19 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 700;
+    color: rgba(251, 191, 36, 0.85);
   }
-  /* Operator: "on fill elements parameter values are background and
-     border are not clearly visible".  Pre-fix the input bg
-     (rgba(192,132,252,0.08)) matched the surrounding shell-row bg
-     (rgba(192,132,252,0.06)) so the field chrome bled into the row.
-     Switched to a dark slate background with a stronger violet border
-     + small inset shadow so the inputs read as distinct editable
-     widgets against the row backdrop. Hover lifts the border further,
-     focus inverts the violet for a clear "active" cue. */
+  /* On-fill param inputs — amber accent on dark navy. The new
+     container gradient already carries an amber wash, so the input
+     borders use a solid amber that pops against the gradient and
+     reads as algo-primary. Focus state inverts to bright amber with
+     an inset glow so the active field jumps out. */
   .oes-basket-tpl-param > input {
     width: 3.6rem;
     height: 1.4rem;
     padding: 0 0.35rem;
-    background: rgba(8, 14, 28, 0.78);
-    border: 1px solid rgba(192, 132, 252, 0.65);
+    background: rgba(12, 18, 32, 0.82);
+    border: 1px solid rgba(251, 191, 36, 0.70);
     border-radius: 3px;
     color: #f8fafc;
     font-family: ui-monospace, monospace;
@@ -2556,20 +2571,21 @@
     text-align: right;
     box-sizing: border-box;
     font-variant-numeric: tabular-nums;
-    box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.08);
-    transition: border-color 0.12s, background 0.12s;
+    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.10);
+    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
   }
   .oes-basket-tpl-param > input:hover {
-    border-color: rgba(192, 132, 252, 0.90);
+    border-color: rgba(251, 191, 36, 0.95);
   }
   .oes-basket-tpl-param > input:focus {
     outline: none;
-    border-color: #c084fc;
-    background: rgba(20, 12, 40, 0.92);
-    box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.45);
+    border-color: var(--algo-amber, #fbbf24);
+    background: rgba(28, 22, 8, 0.92);
+    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.55),
+                0 0 0 2px rgba(251, 191, 36, 0.20);
   }
   .oes-basket-tpl-param > input::placeholder {
-    color: rgba(192, 132, 252, 0.70);
+    color: rgba(251, 191, 36, 0.75);
     font-style: italic;
   }
   .oes-basket-tpl-pick {
@@ -2583,7 +2599,9 @@
   .oes-basket-tpl-label {
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    font-weight: 700;
+    font-weight: 800;
+    color: var(--algo-amber, #fbbf24);
+    font-size: 0.6rem;
   }
   .oes-basket-tpl-note {
     display: inline-flex;

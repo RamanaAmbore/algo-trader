@@ -698,25 +698,26 @@
   function _autoSelectTemplate() {
     if (templateId !== null) return;        // operator already picked
     if (_templates.length === 0) return;
-    // Operator: "by default the template is none to start with. Later,
-    // in future, default template will be default." So the first-paint
-    // pick is always the explicit 'none' template — opt-in to attach
-    // a default rule, never auto-attach. When the operator clicks the
-    // Default pill they get the side-aware default via the onclick
-    // handler in the template-row markup.
-    const none = _templates.find(t => t.slug === 'none');
-    if (none) {
-      templateId = none.id;
-      return;
-    }
-    // Catalog didn't ship a 'none' row (legacy install) — fall back to
-    // the side-aware default so the form doesn't end up with a stuck
-    // null templateId.
+    // Operator (turn N): "Some templates are valid only for sell or
+    // buy. Instead of None, going forward use the default valid
+    // template for buy or sell, instead of None."
+    // First-paint pick is now the side-aware is_default template that
+    // matches the current scope (`_appliesToFor` resolves SELL CE/PE
+    // → sell_option, BUY any → buy_any, etc.). Falls back to a 'both'
+    // scope default, then to the 'none' row, then to null — so the
+    // form is never stuck and a legacy install without seeded
+    // defaults still works.
     const scope = _appliesToFor(_side, symbol);
-    const match = _templates.find(t =>
-      t.is_default && (t.applies_to === scope || t.applies_to === 'both')
+    const sideMatch = _templates.find(t =>
+      t.is_default && t.applies_to === scope
     );
-    if (match) templateId = match.id;
+    if (sideMatch) { templateId = sideMatch.id; return; }
+    const bothMatch = _templates.find(t =>
+      t.is_default && t.applies_to === 'both'
+    );
+    if (bothMatch) { templateId = bothMatch.id; return; }
+    const none = _templates.find(t => t.slug === 'none');
+    if (none) { templateId = none.id; return; }
   }
   let _product = $state(productVal);
   // Local exchange state — seeded from the resolved exchange. Operator

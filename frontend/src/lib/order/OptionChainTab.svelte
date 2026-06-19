@@ -196,6 +196,14 @@
     if (rows && rows.length) {
       _templates = rows.filter(t => t.is_active);
       if (templateId === null) {
+        // Operator: "instead of None, going forward use the default
+        // valid template for buy or sell". Standalone OptionChainTab
+        // has no _side prop in scope, so we pick the first is_default
+        // (any applies_to) — the shell's side-aware effect overrides
+        // this whenever it is mounted, so this fallback only matters
+        // for the rare standalone mount.
+        const def = _templates.find(t => t.is_default);
+        if (def) { templateId = def.id; return; }
         const none = _templates.find(t => t.slug === 'none');
         if (none) templateId = none.id;
       }
