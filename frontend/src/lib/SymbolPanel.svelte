@@ -2534,27 +2534,42 @@
     letter-spacing: 0.06em;
     font-weight: 700;
   }
+  /* Operator: "on fill elements parameter values are background and
+     border are not clearly visible".  Pre-fix the input bg
+     (rgba(192,132,252,0.08)) matched the surrounding shell-row bg
+     (rgba(192,132,252,0.06)) so the field chrome bled into the row.
+     Switched to a dark slate background with a stronger violet border
+     + small inset shadow so the inputs read as distinct editable
+     widgets against the row backdrop. Hover lifts the border further,
+     focus inverts the violet for a clear "active" cue. */
   .oes-basket-tpl-param > input {
     width: 3.6rem;
     height: 1.4rem;
     padding: 0 0.35rem;
-    background: rgba(192, 132, 252, 0.08);
-    border: 1px solid rgba(192, 132, 252, 0.35);
+    background: rgba(8, 14, 28, 0.78);
+    border: 1px solid rgba(192, 132, 252, 0.65);
     border-radius: 3px;
-    color: var(--algo-slate);
+    color: #e8d9ff;
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
+    font-weight: 600;
     text-align: right;
     box-sizing: border-box;
     font-variant-numeric: tabular-nums;
+    box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.08);
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .oes-basket-tpl-param > input:hover {
+    border-color: rgba(192, 132, 252, 0.90);
   }
   .oes-basket-tpl-param > input:focus {
     outline: none;
-    border-color: rgba(192, 132, 252, 0.85);
-    background: rgba(192, 132, 252, 0.14);
+    border-color: #c084fc;
+    background: rgba(20, 12, 40, 0.92);
+    box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.45);
   }
   .oes-basket-tpl-param > input::placeholder {
-    color: rgba(192, 132, 252, 0.55);
+    color: rgba(192, 132, 252, 0.70);
     font-style: italic;
   }
   .oes-basket-tpl-pick {
