@@ -1172,7 +1172,14 @@
     gap: 0.4rem;
     width: 100%;
   }
-  .chain-td-strike  { text-align: center; color: var(--algo-slate); font-weight: 700; }
+  /* Audit fix — tabular-nums on strike + bid/ask cells. Strikes are
+     fixed integers but column-align with LTP/IV/OI in adjacent
+     columns; without tabular-nums the digit widths can drift between
+     fonts. Bid + ask are the most frequently changing numbers in
+     the chain — without tabular-nums, digits shift horizontally
+     on every quote update, creating visual jitter that obscures
+     the spread. */
+  .chain-td-strike  { text-align: center; color: var(--algo-slate); font-weight: 700; font-variant-numeric: tabular-nums; }
   .chain-td-strike-atm { color: #fbbf24; font-weight: 800; letter-spacing: 0.04em; }
   .chain-cell-quote {
     display: inline-flex;
@@ -1183,13 +1190,20 @@
     font-weight: 600;
     white-space: nowrap;
     text-align: center;
+    font-variant-numeric: tabular-nums;
   }
-  .chain-cell-bid { color: #4ade80; }
-  .chain-cell-ask { color: #f87171; }
+  .chain-cell-bid { color: var(--algo-green, #4ade80); }
+  .chain-cell-ask { color: var(--algo-red, #f87171); }
   .chain-cell-sep { color: var(--algo-muted); opacity: 0.7; margin: 0 0.18rem; }
   .chain-side-action { display: inline-flex; align-items: center; }
-  .chain-row-itm-call > td { background: rgba(56,189,248,0.05); }
-  .chain-row-itm-put  > td { background: rgba(251,146,60,0.05); }
+  /* Audit fix — align ITM row tints to CE/PE palette. Pre-fix ITM
+     calls were sky-blue (rgba 56,189,248) and ITM puts were orange
+     (rgba 251,146,60), inverting the CE=green / PE=red convention
+     used by the chain headers one row above. Now the ITM tint reads
+     "the call/put on this row is in the money" in the same color
+     family as the header. */
+  .chain-row-itm-call > td { background: rgba(74,222,128,0.06); }
+  .chain-row-itm-put  > td { background: rgba(248,113,113,0.06); }
   .chain-row-atm > td {
     background: rgba(251,191,36,0.18);
     border-top:    1px solid rgba(251,191,36,0.55);
@@ -1299,9 +1313,15 @@
     cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
   }
   .chain-basket-chase-pill:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Audit fix — HIGH is RED (danger / urgent), not green. Pre-fix
+     OrderTicket painted HIGH red and OptionChainTab painted it
+     green; same semantic control conveyed opposite meanings on tab
+     switch. Industry convention (NinjaTrader / Zerodha) is amber → red
+     ascending urgency. Aligned to LOW=sky, MED=amber, HIGH=red on
+     both surfaces. */
   .chain-basket-chase-pill-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
   .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
-  .chain-basket-chase-pill-high.on { background: rgba(74,222,128,0.20);  color: #4ade80; border-color: rgba(74,222,128,0.55); }
+  .chain-basket-chase-pill-high.on { background: rgba(248,113,113,0.20); color: #f87171; border-color: rgba(248,113,113,0.55); }
   .chain-basket-actions { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-wrap: wrap; }
   /* Template selector — small inline label + dropdown. Sized to sit
      next to Clear / Place without dominating the action row. */

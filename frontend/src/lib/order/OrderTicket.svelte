@@ -2791,9 +2791,13 @@
   }
   .ot-chase-agg-pill:last-child { border-right: 0; }
   .ot-chase-agg-pill:hover { color: var(--algo-slate); background: rgba(255,255,255,0.08); }
-  .ot-chase-agg-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; }
-  .ot-chase-agg-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; }
-  .ot-chase-agg-high.on { background: rgba(248,113,113,0.20); color: #f87171; }
+  /* Audit fix — add border-color in .on state so the active pill
+     visually matches OptionChainTab's chain-basket-chase-pill family.
+     Pre-fix, switching from Ticket to Chain tab caused the same three
+     pills to gain/lose visible borders. */
+  .ot-chase-agg-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
+  .ot-chase-agg-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
+  .ot-chase-agg-high.on { background: rgba(248,113,113,0.20); color: #f87171; border-color: rgba(248,113,113,0.55); }
 
   .ot-err {
     background: rgba(248,113,113,0.10);
