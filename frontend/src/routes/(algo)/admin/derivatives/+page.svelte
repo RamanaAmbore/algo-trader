@@ -722,22 +722,30 @@
       g.day_with     += day;
       g.day_without  += day;
     }
-    // Equity holdings — each stock is its OWN root. Counted only in
-    // the "with Hold" totals so the operator can read the F&O book
-    // alone via the No-Hold column.
+    // Equity holdings — each stock contributes to its DIRECT root
+    // (RELIANCE holding → RELIANCE) AND to every underlying it's a
+    // configured proxy for (NIFTYBEES holding → NIFTY via the
+    // /admin/settings hedge-proxies table). Counted only in the
+    // "with Hold" totals so the operator can read the F&O book
+    // alone via the No-Hold column. Bare holdings whose root has
+    // no F&O exposure get filtered out below (legs_without === 0).
     for (const _h of holdings) {
       const h = /** @type {any} */ (_h);
       if (!matchAccount(h.account)) continue;
       const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const g = ensure(sym);
       const qty = Number(h.opening_quantity ?? h.quantity ?? h.qty) || 0;
       const pnl = Number(h.pnl) || 0;
       const day = Number(h.day_change_val) || 0;
-      g.qty_eq += qty;
-      g.legs_with++;
-      g.pnl_with += pnl;
-      g.day_with += day;
+      const _targets = targetsForProxy(sym);
+      const credits = _targets.length ? _targets : [sym];
+      for (const root of credits) {
+        const g = ensure(root);
+        g.qty_eq += qty;
+        g.legs_with++;
+        g.pnl_with += pnl;
+        g.day_with += day;
+      }
     }
     if (_filterByund) {
       const q = _filterByund.toUpperCase();
@@ -4015,10 +4023,7 @@
   class:fs-card-on={_fsByund}
   class:is-collapsed={_colByund}>
   <div class="bucket-header">
-    <span class="opt-section-h" style="padding-bottom:0">
-      Snapshot
-      <span class="opt-section-meta">({_byUnderlyingTotals.length}) — whole-book rollup by underlying; scoped to the Account filter only</span>
-    </span>
+    <span class="opt-section-h" style="padding-bottom:0">Snapshot</span>
     <span class="payoff-card-controls">
       {#if _fsByund}
         <RefreshButton onClick={() => { loadPositions(); loadStrategy(); }}
@@ -4035,13 +4040,13 @@
       <div class="byund-grid">
         <div class="byund-headrow">
           <span>Underlying</span>
-          <span class="num">Legs</span>
-          <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
-          <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
           <span class="num" title="Total P&L including any equity holding leg's contribution.">P&amp;L · Hold</span>
           <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L · No-Hold</span>
           <span class="num" title="Today's P&L change including any equity holding leg.">Day · Hold</span>
           <span class="num" title="Today's P&L change from F&O legs only.">Day · No-Hold</span>
+          <span class="num">Legs</span>
+          <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
+          <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
         </div>
         {#if _byUnderlyingTotals.length === 0}
           <div class="byund-empty">
@@ -4057,25 +4062,25 @@
         {#each _byUnderlyingTotals as g (g.underlying)}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? ` / ${g.legs_without}` : ''}</span>
-            <span class="num cell-muted">{g.qty_fno || '—'}</span>
-            <span class="num cell-muted">{g.qty_eq || '—'}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
             <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_without)}</span>
             <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_without)}</span>
+            <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
+            <span class="num cell-muted">{g.qty_fno || '—'}</span>
+            <span class="num cell-muted">{g.qty_eq || '—'}</span>
           </div>
         {/each}
         {#if _byUnderlyingTotals.length > 0}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
-            <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? ` / ${_byUnderlyingTotal.legs_without}` : ''}</span>
-            <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
-            <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
             <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
+            <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
+            <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
+            <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
           </div>
         {/if}
       </div>
@@ -4799,14 +4804,14 @@
   .byund-grid {
     display: grid;
     grid-template-columns:
-      minmax(7rem, 1.4fr)   /* underlying */
-      minmax(3rem, 0.55fr)  /* legs */
-      minmax(4rem, 0.6fr)   /* F&O qty */
-      minmax(4rem, 0.6fr)   /* Eq qty */
-      minmax(5.5rem, 0.9fr) /* P&L Hold */
-      minmax(5.5rem, 0.9fr) /* P&L No-Hold */
-      minmax(5.5rem, 0.9fr) /* Day Hold */
-      minmax(5.5rem, 0.9fr);/* Day No-Hold */
+      minmax(7rem, 1.4fr)    /* underlying */
+      minmax(5.5rem, 0.9fr)  /* P&L Hold */
+      minmax(5.5rem, 0.9fr)  /* P&L No-Hold */
+      minmax(5.5rem, 0.9fr)  /* Day Hold */
+      minmax(5.5rem, 0.9fr)  /* Day No-Hold */
+      minmax(3rem, 0.55fr)   /* Legs */
+      minmax(4rem, 0.6fr)    /* F&O qty */
+      minmax(4rem, 0.6fr);   /* Eq qty */
     min-width: 640px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.65rem;
