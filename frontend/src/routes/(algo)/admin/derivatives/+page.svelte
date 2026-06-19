@@ -3872,7 +3872,13 @@
               {:else}
                 <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty }))}</span>
               {/if}
-              <span class="num">{ltp != null ? priceFmt(ltp) : '—'}</span>
+              <span class="num
+                {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
+                  ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
+                  : ''}
+                {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
+                  ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
+                  : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
               <span class="num cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
@@ -4712,6 +4718,18 @@
     border-radius: 3px;
     cursor: help;
   }
+
+  /* LTP heat encoding inside .cand-grid — mirrors the rules in
+     app.css that target ag-theme-algo, but scoped to the Legs CSS
+     grid (which isn't an ag-Grid surface so the global theme-
+     prefixed selectors don't reach it). Operator: "check every
+     where else for ltp and color code the way ltp is color coded
+     in pulse positions, holding ltp." */
+  .cand-grid .ltp-vs-avg-up   { background-color: rgba(74,222,128,0.10); }
+  .cand-grid .ltp-vs-avg-down { background-color: rgba(248,113,113,0.10); }
+  .cand-grid .ltp-vs-prev-up   { box-shadow: inset 1px 0 0 0 rgba(74,222,128,0.85); }
+  .cand-grid .ltp-vs-prev-down { box-shadow: inset 1px 0 0 0 rgba(248,113,113,0.85); }
+  .cand-grid .ltp-vs-prev-flat { box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.50); }
 
   /* Empty-state row inside .cand-grid — spans the whole grid width
      so it reads as a single placeholder line, not a half-width cell
